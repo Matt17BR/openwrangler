@@ -28,6 +28,17 @@ all native sessions and removes that option. This transport is not yet a launch
 path: exact `NotebookDocument` ownership, IRkernel acquisition, recovery, and UI
 coordination remain required before an R viewer can be exposed.
 
+Native variable discovery is a separate observation-only provider request on
+that exact kernel. It returns only the binding name, canonical
+base/tibble/data.table class, and bounded shape. Producer and host mirror the
+4,096-binding scan, 256-item, name, type, shape, and 256-KiB response ceilings;
+the host checks raw bytes before parsing and rejects duplicate or noncanonical
+descriptors before any picker state can exist. Active bindings are skipped
+rather than invoked. Promise-backed bindings are inspected through public
+non-forcing base-R substitution and skipped conservatively whether unforced or
+already forced. Discovery has no URI fallback and does not itself open, copy,
+profile, or serialize a dataframe.
+
 Non-notebook R surfaces never become available from a boolean “connected”
 flag. The experimental helper handshake issues an opaque receipt bound to the
 exact editor document object, R process instance, and helper instance; stale,

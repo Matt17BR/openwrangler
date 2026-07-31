@@ -66,7 +66,11 @@ export class RKernelProviderTransport {
     const requestId = this.createRequestId();
     const context = createRProviderDispatchContext(requestId, request, session);
     const framed = frameRKernelRequest(context, this.bundle.optionKey, requestId.replaceAll("-", ""));
-    const output = await collectRKernelOutput(this.kernel.executeCode(framed.code, token));
+    const responseLimit =
+      request.kind === "discoverVariables"
+        ? R_PROVIDER_LIMITS.maxDiscoveryResponseBytes
+        : R_PROVIDER_LIMITS.maxResponseBytes;
+    const output = await collectRKernelOutput(this.kernel.executeCode(framed.code, token), responseLimit);
     this.assertGeneration(generation);
     assertNotCancelled(token);
     return parseRKernelResponse(output, framed);
@@ -257,13 +261,19 @@ export function parseRKernelResponse(
   return response;
 }
 
-export async function collectRKernelOutput(output: ReturnType<Kernel["executeCode"]>): Promise<string> {
+export async function collectRKernelOutput(
+  output: ReturnType<Kernel["executeCode"]>,
+  responseLimit: number = R_PROVIDER_LIMITS.maxResponseBytes
+): Promise<string> {
+  if (!Number.isSafeInteger(responseLimit) || responseLimit < 1 || responseLimit > R_PROVIDER_LIMITS.maxResponseBytes) {
+    throw new Error("The native R kernel output limit is invalid.");
+  }
   const chunks: string[] = [];
   let bytes = 0;
   for await (const item of output) {
     const chunk = rKernelOutputItemToText(item);
     bytes += Buffer.byteLength(chunk, "utf8");
-    if (bytes > R_PROVIDER_LIMITS.maxResponseBytes + R_KERNEL_OUTPUT_OVERHEAD_BYTES) {
+    if (bytes > responseLimit + R_KERNEL_OUTPUT_OVERHEAD_BYTES) {
       throw new Error("The native R kernel output exceeded the bounded transport budget.");
     }
     chunks.push(chunk);

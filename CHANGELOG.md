@@ -107,6 +107,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   request framing, contextual response validation, cancellation preflight, and
   deterministic disposal. The user-facing R viewer remains gated on exact
   notebook lifecycle, recovery, and installed-editor acceptance.
+- Added private native-R variable discovery through the exact owned IRkernel:
+  base dataframes, tibbles, and data.tables yield only bounded picker metadata,
+  while active and promise-backed bindings, noncanonical subclasses, duplicate
+  or malformed output, and oversized scans, names, or responses fail closed or
+  report explicit truncation. Promise inspection uses public non-forcing base-R
+  substitution, so opening a future picker cannot execute delayed user code. No
+  public R picker or stable-support claim is enabled by this foundation slice.
 
 ### Fixed
 

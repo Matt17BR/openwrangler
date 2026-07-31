@@ -79,17 +79,60 @@ target_env$invalid_class_frame <- data.frame(value = character(), check.names = 
 class(target_env$invalid_class_frame$value) <- c("bad,class", "character")
 target_env$invalid_storage_frame <- data.frame(value = integer(), check.names = FALSE)
 class(target_env$invalid_storage_frame$value) <- "Date"
+target_env$tibble_frame <- tibble::tibble(value = 1:2)
+target_env$data_table_frame <- data.table::data.table(value = 1:2)
+target_env$ordinary_value <- 42L
+target_env$.hidden_frame <- data.frame(value = 1L)
+target_env$custom_frame <- structure(
+  data.frame(value = 1L, check.names = FALSE),
+  class = c("custom_frame", "data.frame")
+)
+oversized_discovery_name <- strrep("n", 129L)
+assign(oversized_discovery_name, data.frame(value = 1L), envir = target_env)
+active_binding_calls <- 0L
+makeActiveBinding(
+  "active_frame",
+  function(value) {
+    active_binding_calls <<- active_binding_calls + 1L
+    data.frame(value = 1L)
+  },
+  target_env
+)
+unforced_promise_calls <- 0L
+delayedAssign(
+  "unforced_promise_frame",
+  {
+    unforced_promise_calls <<- unforced_promise_calls + 1L
+    data.frame(value = 1L)
+  },
+  assign.env = target_env
+)
+forced_promise_calls <- 0L
+delayedAssign(
+  "forced_promise_frame",
+  {
+    forced_promise_calls <<- forced_promise_calls + 1L
+    data.frame(value = 1L)
+  },
+  assign.env = target_env
+)
+invisible(get("forced_promise_frame", envir = target_env, inherits = FALSE))
+stopifnot(identical(unforced_promise_calls, 0L), identical(forced_promise_calls, 1L))
 original_bytes <- serialize(target_env$base_frame, NULL, version = 3L)
 provider <- create_open_wrangler_r_provider(target_env)
 
-request <- function(request_id, body) {
+request_with <- function(provider_instance, request_id, body) {
   payload <- jsonlite::toJSON(
     list(protocolVersion = 1L, requestId = request_id, request = body),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
   )
-  jsonlite::fromJSON(provider$dispatch_json(payload), simplifyVector = FALSE)
+  jsonlite::fromJSON(provider_instance$dispatch_json(payload), simplifyVector = FALSE)
+}
+
+request <- function(request_id, body) {
+  request_with(provider, request_id, body)
 }
 
 initialized <- request("initialize", list(kind = "initialize"))
@@ -98,8 +141,122 @@ stopifnot(
   identical(initialized$requestId, "initialize"),
   identical(initialized$response$kind, "initialized"),
   identical(initialized$response$language, "r"),
+  identical(initialized$response$capabilities$variableDiscovery, TRUE),
   identical(initialized$response$capabilities$editing, FALSE)
 )
+
+discovered <- request("discover", list(kind = "discoverVariables"))
+discovered_names <- vapply(
+  discovered$response$variables,
+  function(variable) variable$name,
+  character(1)
+)
+discovered_by_name <- setNames(discovered$response$variables, discovered_names)
+stopifnot(
+  identical(discovered$response$kind, "variablesDiscovered"),
+  identical(discovered$response$truncated, TRUE),
+  length(discovered_names) == length(unique(discovered_names)),
+  identical(discovered_by_name$base_frame$sourceClass, "data.frame"),
+  identical(discovered_by_name$base_frame$shape, list(rows = 3L, columns = 5L)),
+  identical(discovered_by_name$tibble_frame$sourceClass, "tbl_df"),
+  identical(discovered_by_name$tibble_frame$shape, list(rows = 2L, columns = 1L)),
+  identical(discovered_by_name$data_table_frame$sourceClass, "data.table"),
+  identical(discovered_by_name$data_table_frame$shape, list(rows = 2L, columns = 1L)),
+  identical(discovered_by_name$.hidden_frame$sourceClass, "data.frame"),
+  !"ordinary_value" %in% discovered_names,
+  !"custom_frame" %in% discovered_names,
+  !oversized_discovery_name %in% discovered_names,
+  !"active_frame" %in% discovered_names,
+  !"unforced_promise_frame" %in% discovered_names,
+  !"forced_promise_frame" %in% discovered_names,
+  identical(active_binding_calls, 0L),
+  identical(unforced_promise_calls, 0L),
+  identical(forced_promise_calls, 1L)
+)
+
+discovery_unknown_field <- request(
+  "discover-extra",
+  list(kind = "discoverVariables", extra = TRUE)
+)
+stopifnot(
+  identical(discovery_unknown_field$response$kind, "error"),
+  identical(discovery_unknown_field$response$code, "invalid_request")
+)
+
+limited_env <- new.env(parent = emptyenv())
+for (index in seq_len(257L)) {
+  assign(sprintf("frame_%03d", index), data.frame(value = index), envir = limited_env)
+}
+limited_provider <- create_open_wrangler_r_provider(limited_env)
+limited_discovery <- request_with(
+  limited_provider,
+  "discover-limit",
+  list(kind = "discoverVariables")
+)
+stopifnot(
+  identical(limited_discovery$response$kind, "variablesDiscovered"),
+  identical(limited_discovery$response$truncated, TRUE),
+  length(limited_discovery$response$variables) == 256L,
+  length(unique(vapply(
+    limited_discovery$response$variables,
+    function(variable) variable$name,
+    character(1)
+  ))) == 256L
+)
+limited_provider$close()
+
+scan_limited_env <- new.env(parent = emptyenv())
+for (index in seq_len(4097L)) {
+  assign(sprintf("binding_%04d", index), index, envir = scan_limited_env)
+}
+scan_limited_env$zzzz_frame_after_scan_limit <- data.frame(value = 1L)
+scan_limited_provider <- create_open_wrangler_r_provider(scan_limited_env)
+scan_limited_discovery <- request_with(
+  scan_limited_provider,
+  "discover-scan-limit",
+  list(kind = "discoverVariables")
+)
+stopifnot(
+  identical(scan_limited_discovery$response$kind, "variablesDiscovered"),
+  identical(scan_limited_discovery$response$truncated, TRUE),
+  length(scan_limited_discovery$response$variables) == 0L
+)
+scan_limited_provider$close()
+
+promise_env <- new.env(parent = emptyenv())
+promise_unforced_calls <- 0L
+delayedAssign(
+  "promise_unforced_frame",
+  {
+    promise_unforced_calls <<- promise_unforced_calls + 1L
+    data.frame(value = 1L)
+  },
+  assign.env = promise_env
+)
+promise_forced_calls <- 0L
+delayedAssign(
+  "promise_forced_frame",
+  {
+    promise_forced_calls <<- promise_forced_calls + 1L
+    data.frame(value = 1L)
+  },
+  assign.env = promise_env
+)
+invisible(get("promise_forced_frame", envir = promise_env, inherits = FALSE))
+promise_provider <- create_open_wrangler_r_provider(promise_env)
+promise_discovery <- request_with(
+  promise_provider,
+  "discover-promises",
+  list(kind = "discoverVariables")
+)
+stopifnot(
+  identical(promise_discovery$response$kind, "variablesDiscovered"),
+  identical(promise_discovery$response$truncated, TRUE),
+  length(promise_discovery$response$variables) == 0L,
+  identical(promise_unforced_calls, 0L),
+  identical(promise_forced_calls, 1L)
+)
+promise_provider$close()
 
 opened <- request("open", list(
   kind = "openSession",
@@ -427,7 +584,6 @@ closed <- request("close", list(kind = "closeSession", sessionId = "r-session-sm
 stopifnot(identical(closed$response$kind, "sessionClosed"))
 stopifnot(identical(original_bytes, serialize(target_env$base_frame, NULL, version = 3L)))
 
-target_env$tibble_frame <- tibble::tibble(value = 1:2)
 tibble_open <- request("tibble-open", list(
   kind = "openSession",
   source = list(kind = "notebookVariable", label = "tibble_frame", variableName = "tibble_frame"),
@@ -441,7 +597,6 @@ stopifnot(
   inherits(target_env$tibble_frame, "tbl_df")
 )
 
-target_env$data_table_frame <- data.table::data.table(value = 1:2)
 data_table_open <- request("data-table-open", list(
   kind = "openSession",
   source = list(kind = "notebookVariable", label = "data_table_frame", variableName = "data_table_frame"),

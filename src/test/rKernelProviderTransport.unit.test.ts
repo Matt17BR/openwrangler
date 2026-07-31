@@ -24,11 +24,25 @@ const initializedEnvelope = (requestId: string): RProviderResponseEnvelope => ({
     capabilities: {
       sourceKinds: ["notebookVariable"],
       dataFrameClasses: ["data.frame", "tbl_df", "data.table"],
+      variableDiscovery: true,
       paging: true,
       filtering: false,
       sorting: false,
       editing: false
     }
+  }
+});
+
+const discoveredEnvelope = (requestId: string): RProviderResponseEnvelope => ({
+  protocolVersion: 1,
+  requestId,
+  response: {
+    kind: "variablesDiscovered",
+    truncated: false,
+    variables: [
+      { name: "orders", sourceClass: "data.frame", shape: { rows: 12, columns: 4 } },
+      { name: "summary", sourceClass: "tbl_df", shape: { rows: 2, columns: 3 } }
+    ]
   }
 });
 
@@ -115,10 +129,61 @@ describe("native R kernel provider bundle", () => {
         }
       )
     ).toThrow("cannot carry unrelated session state");
+    expect(createRProviderDispatchContext("discover", { kind: "discoverVariables" })).toEqual({
+      requestId: "discover",
+      request: { kind: "discoverVariables" }
+    });
   });
 });
 
 describe("native R exact-kernel transport", () => {
+  it("discovers bounded native dataframe picker metadata through the owned kernel", async () => {
+    const requestId = "44444444-4444-4444-8444-444444444444";
+    const marker = requestId.replaceAll("-", "");
+    const executions: string[] = [];
+    const kernel = fakeKernel((code) => {
+      executions.push(code);
+      if (!code.includes(`__OPEN_WRANGLER_R_START_${marker}__`)) return "";
+      return `__OPEN_WRANGLER_R_START_${marker}__\n${JSON.stringify(
+        discoveredEnvelope(requestId)
+      )}\n__OPEN_WRANGLER_R_END_${marker}__\n`;
+    });
+    const transport = new RKernelProviderTransport(
+      kernel,
+      buildRKernelProviderBundle("function(target) list()"),
+      () => requestId
+    );
+    const tokenSource = new vscode.CancellationTokenSource();
+
+    await expect(transport.dispatch({ kind: "discoverVariables" }, tokenSource.token)).resolves.toEqual(
+      discoveredEnvelope(requestId)
+    );
+    expect(executions).toHaveLength(2);
+    expect(executions[1]!).toContain("jsonlite::base64_dec");
+    expect(executions[1]!).not.toContain("orders");
+    tokenSource.dispose();
+  });
+
+  it("applies the smaller discovery-output ceiling while collecting exact-kernel output", async () => {
+    const requestId = "55555555-5555-4555-8555-555555555555";
+    const kernel = fakeKernel((code) =>
+      code.includes("__OPEN_WRANGLER_R_START_")
+        ? "x".repeat(R_PROVIDER_LIMITS.maxDiscoveryResponseBytes + 1_048_577)
+        : ""
+    );
+    const transport = new RKernelProviderTransport(
+      kernel,
+      buildRKernelProviderBundle("function(target) list()"),
+      () => requestId
+    );
+    const tokenSource = new vscode.CancellationTokenSource();
+
+    await expect(transport.dispatch({ kind: "discoverVariables" }, tokenSource.token)).rejects.toThrow(
+      "output exceeded the bounded transport budget"
+    );
+    tokenSource.dispose();
+  });
+
   it("bootstraps once, dispatches correlated requests, and disposes the private provider", async () => {
     const executions: string[] = [];
     const requestIds = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];

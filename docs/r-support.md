@@ -41,6 +41,8 @@ identity using the same lifecycle rules as the existing Python notebook bridge.
 inside the exact R process owning the dataframe. The first provider protocol is
 private, versioned, correlated, strict, and read-only. It supports:
 
+- bounded discovery of picker metadata for exact base `data.frame`, tibble, and
+  `data.table` bindings in the provider's owned R environment;
 - base `data.frame`, tibble, and `data.table` objects without converting their
   class;
 - full schema metadata and bounded two-dimensional pages;
@@ -88,6 +90,18 @@ packages, obtain confirmation, and install into the user-selected library. The
 required repository gate additionally pins and exercises `tibble` so none of the
 three advertised dataframe flavors can disappear behind an optional test skip.
 
+Discovery returns only a variable name, canonical dataframe class, and bounded
+row/column shape. It never serializes cells, profiles columns, or snapshots a
+dataframe. The producer examines at most 4,096 bindings, returns at most 256
+variables, accepts names only through the mirrored 128-code-point/512-byte
+ceiling, and emits at most 256 KiB for this request. The transport checks that
+smaller raw byte ceiling before `JSON.parse`; the parsed response must contain
+exact keys, unique names, one of the three canonical class tags, and a valid
+bounded shape. Active bindings, promise-backed bindings (including already
+forced promises, whose force state is not exposed by the public base-R API), and
+noncanonical dataframe subclasses are not evaluated or presented. An incomplete
+scan is labeled `truncated` rather than silently claimed as exhaustive.
+
 ## IRkernel transport foundation
 
 `src/extension/r/rKernelProviderTransport.ts` implements the first exact-kernel
@@ -98,21 +112,25 @@ user's `.GlobalEnv`. Every dispatch is base64 framed, marker isolated, bounded
 before JSON parsing, and validated against its exact request plus confirmed
 session. Disposal closes the provider and removes the private option.
 
+The same private provider now performs variable discovery through that owned
+kernel object. There is still no notebook-URI lookup or fallback, and the
+discovery result is not yet connected to a public picker.
+
 The transport intentionally receives one already-owned Jupyter `Kernel` object;
 it has no URI lookup or fallback path. The user-facing IRkernel viewer remains
 disabled until an R-specific notebook bridge adds exact `NotebookDocument` and
-kernel acquisition, variable discovery, cancellation-safe failed-open cleanup,
-restart recovery, coordinator mapping, and installed-editor acceptance. This is
-transport evidence, not an R support claim.
+kernel acquisition, picker wiring, cancellation-safe failed-open cleanup,
+restart recovery, coordinator mapping, and installed-editor acceptance. This
+is transport evidence, not an R support claim.
 
 ## Delivery slices
 
 1. **Foundation:** provider protocol, native serializer, capability model,
    package allowlist, and R-only smoke test.
 2. **IRkernel viewer (in progress):** exact-kernel provider bootstrap, framing,
-   response validation, and disposal are implemented. Exact-notebook launch,
-   variable discovery, paging coordination, cancellation cleanup, recovery, and
-   editor acceptance remain.
+   bounded native variable discovery, response validation, and disposal are
+   implemented. Exact-notebook launch, picker wiring, paging coordination,
+   cancellation cleanup, recovery, and editor acceptance remain.
 3. **Explicit session helper:** a documented helper for `.R`, `.Rmd`, and
    `.qmd` sessions with an unambiguous connection handshake.
 4. **Viewing parity:** native filtering, multi-sort, profiles, large pages,

@@ -17,6 +17,11 @@
 .ow_r_max_text_characters <- 65536L
 .ow_r_max_request_bytes <- 1048576L
 .ow_r_max_response_bytes <- 33554432L
+.ow_r_max_discovery_response_bytes <- 262144L
+.ow_r_max_discovery_variables <- 256L
+.ow_r_max_discovery_scanned_bindings <- 4096L
+.ow_r_max_discovery_name_characters <- 128L
+.ow_r_max_discovery_name_bytes <- 512L
 .ow_r_max_shape_rows <- 2147483647
 .ow_r_max_shape_columns <- 16384L
 
@@ -35,7 +40,13 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     .ow_assert_string(envelope$requestId, "requestId", max_characters = 256L)
     .ow_assert_record(envelope$request, "kind", allow_extra = TRUE)
     .ow_assert_string(envelope$request$kind, "request.kind", max_characters = 64L)
-    if (!envelope$request$kind %in% c("initialize", "openSession", "getPage", "closeSession")) {
+    if (!envelope$request$kind %in% c(
+      "initialize",
+      "discoverVariables",
+      "openSession",
+      "getPage",
+      "closeSession"
+    )) {
       stop("Unsupported R provider request kind.", call. = FALSE)
     }
 
@@ -43,6 +54,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     response <- switch(
       request$kind,
       initialize = .ow_initialize(request),
+      discoverVariables = .ow_discover_variables(request, target_env),
       openSession = .ow_open_session(request, target_env, sessions),
       getPage = .ow_get_page(request, sessions),
       closeSession = .ow_close_session(request, sessions),
@@ -80,7 +92,13 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
         ) {
           request_id <- envelope$requestId
         }
-        .ow_to_json(dispatch(envelope))
+        response <- dispatch(envelope)
+        response_limit <- if (identical(envelope$request$kind, "discoverVariables")) {
+          .ow_r_max_discovery_response_bytes
+        } else {
+          .ow_r_max_response_bytes
+        }
+        .ow_to_json(response, max_bytes = response_limit)
       },
       error = function(error) {
         provider_error <- inherits(error, "open_wrangler_r_provider_error")
@@ -120,12 +138,113 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     capabilities = list(
       sourceKinds = list("notebookVariable"),
       dataFrameClasses = list("data.frame", "tbl_df", "data.table"),
+      variableDiscovery = TRUE,
       paging = TRUE,
       filtering = FALSE,
       sorting = FALSE,
       editing = FALSE
     )
   )
+}
+
+.ow_discover_variables <- function(request, target_env) {
+  .ow_assert_record(request, "kind")
+  .ow_assert_kind(request, "discoverVariables")
+
+  binding_names <- ls(envir = target_env, all.names = TRUE, sorted = TRUE)
+  truncated <- FALSE
+  if (length(binding_names) > .ow_r_max_discovery_scanned_bindings) {
+    binding_names <- binding_names[seq_len(.ow_r_max_discovery_scanned_bindings)]
+    truncated <- TRUE
+  }
+
+  variables <- list()
+  for (name in binding_names) {
+    if (
+      nchar(name, type = "chars") == 0L ||
+        nchar(name, type = "chars") > .ow_r_max_discovery_name_characters ||
+        nchar(name, type = "bytes") > .ow_r_max_discovery_name_bytes
+    ) {
+      truncated <- TRUE
+      next
+    }
+    if (bindingIsActive(name, target_env)) {
+      truncated <- TRUE
+      next
+    }
+
+    value <- .ow_inspect_binding_without_forcing(name, target_env)
+    if (is.language(value) || is.expression(value)) {
+      truncated <- TRUE
+      next
+    }
+    source_class <- .ow_discoverable_dataframe_class(value)
+    if (is.null(source_class)) {
+      next
+    }
+    shape <- .ow_discovery_shape(value)
+    if (is.null(shape)) {
+      truncated <- TRUE
+      next
+    }
+    if (length(variables) >= .ow_r_max_discovery_variables) {
+      truncated <- TRUE
+      break
+    }
+    variables[[length(variables) + 1L]] <- list(
+      name = name,
+      sourceClass = source_class,
+      shape = shape
+    )
+  }
+
+  list(
+    kind = "variablesDiscovered",
+    truncated = truncated,
+    variables = unname(variables)
+  )
+}
+
+.ow_inspect_binding_without_forcing <- function(name, target_env) {
+  # Public base-R substitution returns an ordinary evaluated binding's value,
+  # but returns a delayed binding's original expression without forcing it.
+  tryCatch(
+    do.call(substitute, list(as.name(name), target_env)),
+    error = function(error) NULL
+  )
+}
+
+.ow_discoverable_dataframe_class <- function(value) {
+  if (!is.list(value)) return(NULL)
+  classes <- class(value)
+  if (identical(classes, c("data.table", "data.frame"))) return("data.table")
+  if (identical(classes, c("tbl_df", "tbl", "data.frame"))) return("tbl_df")
+  if (identical(classes, "data.frame")) return("data.frame")
+  NULL
+}
+
+.ow_discovery_shape <- function(value) {
+  rows <- tryCatch(nrow(value), error = function(error) NA_real_)
+  columns <- tryCatch(ncol(value), error = function(error) NA_real_)
+  if (
+    length(rows) != 1L ||
+      is.na(rows) ||
+      !is.numeric(rows) ||
+      !is.finite(rows) ||
+      rows != floor(rows) ||
+      rows < 0 ||
+      rows > .ow_r_max_shape_rows ||
+      length(columns) != 1L ||
+      is.na(columns) ||
+      !is.numeric(columns) ||
+      !is.finite(columns) ||
+      columns != floor(columns) ||
+      columns < 0 ||
+      columns > .ow_r_max_shape_columns
+  ) {
+    return(NULL)
+  }
+  list(rows = rows, columns = columns)
 }
 
 .ow_open_session <- function(request, target_env, sessions) {
@@ -725,7 +844,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   stop(condition)
 }
 
-.ow_to_json <- function(value) {
+.ow_to_json <- function(value, max_bytes = .ow_r_max_response_bytes) {
   encoded <- jsonlite::toJSON(
     value,
     auto_unbox = TRUE,
@@ -735,7 +854,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     POSIXt = "ISO8601",
     force = TRUE
   )
-  if (nchar(encoded, type = "bytes") > .ow_r_max_response_bytes) {
+  if (nchar(encoded, type = "bytes") > max_bytes) {
     .ow_stop_provider(
       "The R provider response exceeds the bounded transport budget.",
       code = "response_too_large",

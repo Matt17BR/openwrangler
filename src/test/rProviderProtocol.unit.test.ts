@@ -105,6 +105,11 @@ describe("native R provider protocol guard", () => {
     const mirrored = {
       ".ow_r_max_request_bytes": R_PROVIDER_LIMITS.maxRequestBytes,
       ".ow_r_max_response_bytes": R_PROVIDER_LIMITS.maxResponseBytes,
+      ".ow_r_max_discovery_response_bytes": R_PROVIDER_LIMITS.maxDiscoveryResponseBytes,
+      ".ow_r_max_discovery_variables": R_PROVIDER_LIMITS.maxDiscoveryVariables,
+      ".ow_r_max_discovery_scanned_bindings": R_PROVIDER_LIMITS.maxDiscoveryScannedBindings,
+      ".ow_r_max_discovery_name_characters": R_PROVIDER_LIMITS.maxDiscoveryNameCodePoints,
+      ".ow_r_max_discovery_name_bytes": R_PROVIDER_LIMITS.maxDiscoveryNameBytes,
       ".ow_r_max_page_rows": R_PROVIDER_LIMITS.maxPageRows,
       ".ow_r_max_page_columns": R_PROVIDER_LIMITS.maxPageColumns,
       ".ow_r_max_page_cells": R_PROVIDER_LIMITS.maxPageCells,
@@ -157,6 +162,7 @@ describe("native R provider protocol guard", () => {
         capabilities: {
           sourceKinds: ["notebookVariable"],
           dataFrameClasses: ["data.frame", "tbl_df", "data.table"],
+          variableDiscovery: true,
           paging: true,
           filtering: false,
           sorting: false,
@@ -186,6 +192,116 @@ describe("native R provider protocol guard", () => {
     ).toBeUndefined();
   });
 
+  it("accepts only bounded, unambiguous picker metadata for the exact discovery request", () => {
+    const context = { requestId: "discover-r", request: { kind: "discoverVariables" } } as const;
+    const discovered = {
+      protocolVersion: 1,
+      requestId: "discover-r",
+      response: {
+        kind: "variablesDiscovered",
+        truncated: false,
+        variables: [
+          { name: "base_orders", sourceClass: "data.frame", shape: { rows: 3, columns: 2 } },
+          { name: "table_orders", sourceClass: "data.table", shape: { rows: 4, columns: 3 } },
+          { name: "tibble_orders", sourceClass: "tbl_df", shape: { rows: 5, columns: 4 } }
+        ]
+      }
+    } as const;
+
+    expect(isRProviderResponseEnvelopeForDispatch(discovered, context)).toBe(true);
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          ...discovered,
+          response: {
+            ...discovered.response,
+            variables: [...discovered.response.variables, discovered.response.variables[0]]
+          }
+        },
+        context
+      )
+    ).toBe(false);
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          ...discovered,
+          response: {
+            ...discovered.response,
+            variables: [{ name: "orders", sourceClass: "grouped_df", shape: { rows: 1, columns: 1 } }]
+          }
+        },
+        context
+      )
+    ).toBe(false);
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          ...discovered,
+          response: {
+            ...discovered.response,
+            variables: [{ name: "orders", sourceClass: "data.frame", shape: { rows: -1, columns: 1 } }]
+          }
+        },
+        context
+      )
+    ).toBe(false);
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          ...discovered,
+          response: {
+            ...discovered.response,
+            variables: [
+              {
+                name: "x".repeat(R_PROVIDER_LIMITS.maxDiscoveryNameCodePoints + 1),
+                sourceClass: "data.frame",
+                shape: { rows: 1, columns: 1 }
+              }
+            ]
+          }
+        },
+        context
+      )
+    ).toBe(false);
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          ...discovered,
+          response: {
+            ...discovered.response,
+            variables: Array.from({ length: R_PROVIDER_LIMITS.maxDiscoveryVariables + 1 }, (_, index) => ({
+              name: `frame_${index}`,
+              sourceClass: "data.frame",
+              shape: { rows: 1, columns: 1 }
+            }))
+          }
+        },
+        context
+      )
+    ).toBe(false);
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          ...discovered,
+          response: {
+            ...discovered.response,
+            variables: [{ ...discovered.response.variables[0], label: "not picker metadata" }]
+          }
+        },
+        context
+      )
+    ).toBe(false);
+
+    const encoded = JSON.stringify(discovered);
+    const exact =
+      encoded + " ".repeat(R_PROVIDER_LIMITS.maxDiscoveryResponseBytes - Buffer.byteLength(encoded, "utf8"));
+    expect(parseRProviderResponseJsonForDispatch(exact, context)).toEqual(discovered);
+    expect(parseRProviderResponseJsonForDispatch(`${exact} `, context)).toBeUndefined();
+    expect(
+      parseRProviderResponseJsonForDispatch(JSON.stringify({ ...discovered, requestId: "stale-discovery" }), context)
+    ).toBeUndefined();
+  });
+
   it("accepts the bounded native-R initialization contract", () => {
     expect(
       isRProviderResponseEnvelope({
@@ -199,6 +315,7 @@ describe("native R provider protocol guard", () => {
           capabilities: {
             sourceKinds: ["notebookVariable"],
             dataFrameClasses: ["data.frame", "tbl_df", "data.table"],
+            variableDiscovery: true,
             paging: true,
             filtering: false,
             sorting: false,
@@ -365,6 +482,7 @@ describe("native R provider protocol guard", () => {
             capabilities: {
               sourceKinds: ["notebookVariable"],
               dataFrameClasses: ["data.frame", "tbl_df", "data.table"],
+              variableDiscovery: true,
               paging: true,
               filtering: false,
               sorting: false,

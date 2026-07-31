@@ -6,6 +6,11 @@ export const R_PROVIDER_PROTOCOL_VERSION = 1 as const;
 export const R_PROVIDER_LIMITS = Object.freeze({
   maxRequestBytes: 1_048_576,
   maxResponseBytes: 33_554_432,
+  maxDiscoveryResponseBytes: 262_144,
+  maxDiscoveryVariables: 256,
+  maxDiscoveryScannedBindings: 4_096,
+  maxDiscoveryNameCodePoints: 128,
+  maxDiscoveryNameBytes: 512,
   maxPageRows: 10_000,
   maxPageColumns: 256,
   maxPageCells: 100_000,
@@ -18,6 +23,10 @@ export const R_PROVIDER_LIMITS = Object.freeze({
 
 export interface RProviderInitializeRequest {
   readonly kind: "initialize";
+}
+
+export interface RProviderDiscoverVariablesRequest {
+  readonly kind: "discoverVariables";
 }
 
 export interface RProviderOpenSessionRequest {
@@ -58,7 +67,11 @@ export interface RProviderCloseSessionRequest {
 }
 
 export type RProviderRequest =
-  RProviderInitializeRequest | RProviderOpenSessionRequest | RProviderGetPageRequest | RProviderCloseSessionRequest;
+  | RProviderInitializeRequest
+  | RProviderDiscoverVariablesRequest
+  | RProviderOpenSessionRequest
+  | RProviderGetPageRequest
+  | RProviderCloseSessionRequest;
 
 export interface RProviderInitialized {
   readonly kind: "initialized";
@@ -68,11 +81,26 @@ export interface RProviderInitialized {
   readonly capabilities: {
     readonly sourceKinds: readonly ["notebookVariable"];
     readonly dataFrameClasses: readonly ["data.frame", "tbl_df", "data.table"];
+    readonly variableDiscovery: true;
     readonly paging: true;
     readonly filtering: false;
     readonly sorting: false;
     readonly editing: false;
   };
+}
+
+export type RProviderDataFrameClass = "data.frame" | "tbl_df" | "data.table";
+
+export interface RProviderVariableDescriptor {
+  readonly name: string;
+  readonly sourceClass: RProviderDataFrameClass;
+  readonly shape: { readonly rows: number; readonly columns: number };
+}
+
+export interface RProviderVariablesDiscovered {
+  readonly kind: "variablesDiscovered";
+  readonly truncated: boolean;
+  readonly variables: readonly RProviderVariableDescriptor[];
 }
 
 export interface RProviderSessionMetadata {
@@ -85,7 +113,7 @@ export interface RProviderSessionMetadata {
     readonly label: string;
     readonly variableName: string;
   };
-  readonly sourceClass: string;
+  readonly sourceClass: RProviderDataFrameClass;
   readonly shape: { readonly rows: number; readonly columns: number };
   readonly schema: readonly ColumnSchema[];
 }
@@ -101,6 +129,10 @@ export type RProviderDispatchContext =
   | {
       readonly requestId: string;
       readonly request: RProviderInitializeRequest;
+    }
+  | {
+      readonly requestId: string;
+      readonly request: RProviderDiscoverVariablesRequest;
     }
   | {
       readonly requestId: string;
@@ -144,7 +176,12 @@ export interface RProviderError {
 }
 
 export type RProviderResponse =
-  RProviderInitialized | RProviderSessionOpened | RProviderPage | RProviderSessionClosed | RProviderError;
+  | RProviderInitialized
+  | RProviderVariablesDiscovered
+  | RProviderSessionOpened
+  | RProviderPage
+  | RProviderSessionClosed
+  | RProviderError;
 
 export interface RProviderResponseEnvelope {
   readonly protocolVersion: typeof R_PROVIDER_PROTOCOL_VERSION;
@@ -175,6 +212,12 @@ export function parseRProviderResponseJsonForDispatch(
   context: RProviderDispatchContext
 ): RProviderResponseEnvelope | undefined {
   if (!isRProviderResponsePayloadWithinLimit(payload)) return undefined;
+  if (
+    context.request.kind === "discoverVariables" &&
+    Buffer.byteLength(payload, "utf8") > R_PROVIDER_LIMITS.maxDiscoveryResponseBytes
+  ) {
+    return undefined;
+  }
   try {
     const value: unknown = JSON.parse(payload);
     return isRProviderResponseEnvelopeForDispatch(value, context) ? value : undefined;
@@ -251,6 +294,8 @@ export function isRProviderResponseEnvelopeForDispatch(
   switch (context.request.kind) {
     case "initialize":
       return value.response.kind === "initialized";
+    case "discoverVariables":
+      return value.response.kind === "variablesDiscovered";
     case "openSession":
       return value.response.kind === "sessionOpened" && isOpenedResponseForRequest(value.response, context.request);
     case "getPage":
@@ -286,6 +331,8 @@ function isRProviderResponse(value: unknown): value is RProviderResponse {
   switch (kind) {
     case "initialized":
       return isInitialized(value);
+    case "variablesDiscovered":
+      return isVariablesDiscovered(value);
     case "sessionOpened":
       return isSessionOpened(value);
     case "page":
@@ -313,6 +360,7 @@ function isInitialized(value: unknown): value is RProviderInitialized {
   const capabilities = exactRecord(candidate.capabilities, [
     "sourceKinds",
     "dataFrameClasses",
+    "variableDiscovery",
     "paging",
     "filtering",
     "sorting",
@@ -328,11 +376,42 @@ function isInitialized(value: unknown): value is RProviderInitialized {
     capabilities.dataFrameClasses[0] === "data.frame" &&
     capabilities.dataFrameClasses[1] === "tbl_df" &&
     capabilities.dataFrameClasses[2] === "data.table" &&
+    capabilities.variableDiscovery === true &&
     capabilities.paging === true &&
     capabilities.filtering === false &&
     capabilities.sorting === false &&
     capabilities.editing === false
   );
+}
+
+function isVariablesDiscovered(value: unknown): value is RProviderVariablesDiscovered {
+  const candidate = exactRecord(value, ["kind", "truncated", "variables"]);
+  if (
+    candidate === undefined ||
+    candidate.kind !== "variablesDiscovered" ||
+    typeof candidate.truncated !== "boolean" ||
+    !Array.isArray(candidate.variables) ||
+    candidate.variables.length > R_PROVIDER_LIMITS.maxDiscoveryVariables
+  ) {
+    return false;
+  }
+
+  const names = new Set<string>();
+  for (const value of candidate.variables) {
+    const descriptor = exactRecord(value, ["name", "sourceClass", "shape"]);
+    if (
+      descriptor === undefined ||
+      !isNonEmptyBoundedString(descriptor.name, R_PROVIDER_LIMITS.maxDiscoveryNameCodePoints) ||
+      Buffer.byteLength(descriptor.name, "utf8") > R_PROVIDER_LIMITS.maxDiscoveryNameBytes ||
+      names.has(descriptor.name) ||
+      !isOneOf(descriptor.sourceClass, ["data.frame", "tbl_df", "data.table"]) ||
+      !isShape(descriptor.shape)
+    ) {
+      return false;
+    }
+    names.add(descriptor.name);
+  }
+  return true;
 }
 
 function isSessionOpened(value: unknown): value is RProviderSessionOpened {

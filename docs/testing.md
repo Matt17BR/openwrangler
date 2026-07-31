@@ -5,7 +5,11 @@
 The v2 R provider has a dependency-light smoke test that runs entirely inside R.
 It proves base dataframe paging, typed cells, strict request rejection,
 deterministic close, private loading, shaped-column rejection, and immutable
-revision-zero `data.table` snapshots:
+revision-zero `data.table` snapshots. It also discovers exact base dataframe,
+tibble, and data.table picker descriptors without invoking active bindings,
+does not force unforced or already-forced promise bindings, rejects
+noncanonical subclasses, and proves both the 4,096-binding scan and 256-item
+truncation boundaries:
 
 ```bash
 npm run test:r
@@ -27,9 +31,11 @@ npx vitest run src/test/rKernelProviderTransport.unit.test.ts src/test/rProvider
 
 It proves deterministic source embedding for remote kernels, exact-kernel
 ownership, single-flight bootstrap, correlated marker extraction, response-byte
-ceilings, stable Jupyter error handling, cancellation before dispatch, private
-provider disposal, and rejection of stale or contradictory responses. It does
-not substitute for the future isolated VS Code/Cursor IRkernel journey.
+ceilings (including the smaller discovery ceiling before parsing), strict and
+unique picker metadata, stable Jupyter error handling, cancellation before
+dispatch, private provider disposal, and rejection of stale or contradictory
+responses. It does not substitute for the future isolated VS Code/Cursor
+IRkernel journey.
 
 ## Automated layers
 
