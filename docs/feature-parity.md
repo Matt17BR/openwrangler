@@ -647,7 +647,7 @@ Selected-column Insights hierarchy, 2026-07-29:
 - Dataset and Filters are separate tab panels. Exact dataset statistics start only in Dataset, distinct-value work starts only in Filters, and leaving either view cancels its pending request. Duplicate display names remain positionally disambiguated while name-addressed viewing controls fail closed.
 - Component coverage proves selected-column ownership transfer, stale-response rejection, rollback, duplicate-label safety, view-specific cancellation, and roving Arrow, Home, and End tab navigation. Production-bundle axe scans cover all three views at 800px and 200% zoom. A local wide-grid run recorded cached and uncached p95 interaction times of 32.0ms and 92.3ms.
 
-This advances the chosen selected-column direction in [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The broader command-row and draft-strip redesign, refreshed packaged-editor screenshots, and complete VS Code and Cursor evidence remain follow-up work, so the issue stays open.
+This advances the chosen selected-column direction in [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The draft-review hierarchy is completed in the bounded slice below; the broader command-row redesign, refreshed packaged-editor screenshots, and complete VS Code and Cursor evidence remain follow-up work, so the issue stays open.
 
 Exact text-column Insights, 2026-07-30:
 
@@ -657,6 +657,15 @@ Exact text-column Insights, 2026-07-30:
 - Contract, snapshot, React, and all-engine regressions live in `src/test/protocolValidation.unit.test.ts`, `src/test/snapshotModel.unit.test.ts`, `src/test/filterSummary.component.test.tsx`, and the four engine test modules. `scripts/capture-screenshots.mjs` and `scripts/test-webview-accessibility.mjs` exercise the real Pandas-produced metrics in an 800px selected-column drawer with keyboard focus restoration and axe coverage.
 
 This closes the text-statistics sub-slice of [issue #88](https://github.com/Matt17BR/openwrangler/issues/88), not the issue's remaining workbench redesign or performance-comparison scope.
+
+Compact draft-review hierarchy, 2026-07-31:
+
+- A pending cleaning operation now uses one compact **Draft review** region for the human-readable operation, exact ordered schema diff, warnings, and one **Discard** / **Apply step** action pair. The data grid remains visible instead of being displaced by a second tall editor surface.
+- Generated cleaning code appears only in the native **Code Preview** panel. Draft review and applied-step inspection no longer repeat a second inline code block, while the existing editable code-preview workflow remains unchanged.
+- Production-bundle screenshot and axe acceptance covers ordinary and by-example drafts at 1280px, 800px, and 200% zoom. The checks require the review and grid to remain visible, keep overflow inside the grid scroller, preserve warning text exactly once, and reject duplicate code or action clusters.
+- React regressions cover draft creation, apply/discard, applied-step inspection, and Code Preview publication; native-view and coordinator tests retain the same draft ownership and command boundaries.
+
+This completes the draft-review sub-slice of [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The permanent command/status row and refreshed installed-editor visual evidence remain open.
 
 Released-Jupyter argument provenance slice, 2026-07-26:
 

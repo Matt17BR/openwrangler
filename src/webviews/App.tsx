@@ -88,7 +88,6 @@ export function App() {
   const [operationKind, setOperationKind] = useState<OperationKind | undefined>();
   const [editingStep, setEditingStep] = useState<TransformStep | undefined>();
   const [diff, setDiff] = useState<DataDiff | undefined>();
-  const [generatedCode, setGeneratedCode] = useState("");
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
   const [stepInspection, setStepInspection] = useState<StepInspectionResponse | undefined>();
   const [pendingStepInspection, setPendingStepInspection] = useState<PendingStepInspection | undefined>();
@@ -895,7 +894,6 @@ export function App() {
         ) {
           return;
         }
-        setGeneratedCode(response.presentation.code);
         setDiff(response.presentation.draft?.diff);
         setDraftBefore(response.presentation.draft ? { schema: response.presentation.draft.beforeSchema } : undefined);
         setDraftWarnings(response.presentation.draft?.warnings ?? []);
@@ -1195,7 +1193,6 @@ export function App() {
         setStepInspectionError(undefined);
         setDraftBefore(undefined);
         setDiff(undefined);
-        setGeneratedCode("");
         setDraftWarnings([]);
         resetViewProfiling();
         summaryOwnersByColumnId.current.clear();
@@ -1292,7 +1289,6 @@ export function App() {
         } else {
           storeGoToColumnRequest(undefined);
         }
-        setGeneratedCode(response.code);
         setDiff(response.kind === "stepPreview" ? response.diff : undefined);
         setDraftBefore(
           response.kind === "stepPreview" && previous
@@ -2096,69 +2092,87 @@ export function App() {
           )}
         </header>
 
-        {metadata && metadata.mode === "editing" && (metadata.steps.length > 0 || metadata.draftStep !== undefined) && (
+        {metadata && metadata.mode === "editing" && metadata.draftStep && (
+          <section className="draftReview" aria-label="Draft review">
+            <div className="draftReviewHeading">
+              <span className="codicon codicon-beaker" aria-hidden="true" />
+              <span className="draftReviewLabel">Draft review</span>
+              <strong>{operationByKind(metadata.draftStep.kind).title}</strong>
+            </div>
+            {diff && (
+              <div className="diffStats draftReviewDiff" aria-label="Data diff summary">
+                {draftDiffLabels(diff, displayPage?.rows.length ?? 0).map((label) => (
+                  <span key={label}>{label}</span>
+                ))}
+              </div>
+            )}
+            {draftWarnings.length > 0 && (
+              <div className="draftReviewWarnings" role="alert">
+                {draftWarnings.map((warning) => (
+                  <span key={warning}>
+                    <span className="codicon codicon-warning" aria-hidden="true" /> {warning}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="cleaningActions">
+              <button
+                type="button"
+                className="secondaryButton"
+                disabled={loading || projectionLoading || importOptionsPending}
+                aria-describedby={projectionStatusId}
+                aria-keyshortcuts="Escape"
+                title={projectionActionTitle ?? "Discard draft (Escape)"}
+                onClick={() => sendPlanAction("discardDraft")}
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                data-operation-focus-fallback
+                disabled={loading || projectionLoading || importOptionsPending}
+                aria-describedby={projectionStatusId}
+                aria-keyshortcuts="Control+Enter Meta+Enter"
+                title={projectionActionTitle ?? "Apply draft (Ctrl/Cmd+Enter)"}
+                onClick={() => sendPlanAction("applyDraft")}
+              >
+                Apply step
+              </button>
+            </div>
+          </section>
+        )}
+
+        {metadata && metadata.mode === "editing" && metadata.steps.length > 0 && !metadata.draftStep && (
           <section className="cleaningBar" aria-label="Cleaning plan">
             <div className="cleaningSummary">
               <span className="codicon codicon-layers" aria-hidden="true" />
               <strong>
                 {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
               </strong>
-              {metadata.draftStep && (
-                <span className="draftBadge">Draft: {operationByKind(metadata.draftStep.kind).title}</span>
-              )}
             </div>
             <div className="cleaningActions">
-              {metadata.draftStep ? (
-                <>
-                  <button
-                    type="button"
-                    className="secondaryButton"
-                    disabled={loading || projectionLoading || importOptionsPending}
-                    aria-describedby={projectionStatusId}
-                    aria-keyshortcuts="Escape"
-                    title={projectionActionTitle ?? "Discard draft (Escape)"}
-                    onClick={() => sendPlanAction("discardDraft")}
-                  >
-                    Discard
-                  </button>
-                  <button
-                    type="button"
-                    data-operation-focus-fallback
-                    disabled={loading || projectionLoading || importOptionsPending}
-                    aria-describedby={projectionStatusId}
-                    aria-keyshortcuts="Control+Enter Meta+Enter"
-                    title={projectionActionTitle ?? "Apply draft (Ctrl/Cmd+Enter)"}
-                    onClick={() => sendPlanAction("applyDraft")}
-                  >
-                    Apply step
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    className="secondaryButton"
-                    disabled={loading || projectionLoading || importOptionsPending || metadata.steps.length === 0}
-                    aria-describedby={projectionStatusId}
-                    aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
-                    title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
-                    onClick={editLatestStep}
-                  >
-                    Edit latest
-                  </button>
-                  <button
-                    type="button"
-                    className="secondaryButton"
-                    disabled={loading || projectionLoading || importOptionsPending || metadata.steps.length === 0}
-                    aria-describedby={projectionStatusId}
-                    aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
-                    title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
-                    onClick={() => sendPlanAction("undoStep")}
-                  >
-                    <span className="codicon codicon-discard" aria-hidden="true" /> Undo
-                  </button>
-                </>
-              )}
+              <button
+                type="button"
+                className="secondaryButton"
+                disabled={loading || projectionLoading || importOptionsPending}
+                aria-describedby={projectionStatusId}
+                aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
+                title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
+                onClick={editLatestStep}
+              >
+                Edit latest
+              </button>
+              <button
+                type="button"
+                className="secondaryButton"
+                disabled={loading || projectionLoading || importOptionsPending}
+                aria-describedby={projectionStatusId}
+                aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
+                title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
+                onClick={() => sendPlanAction("undoStep")}
+              >
+                <span className="codicon codicon-discard" aria-hidden="true" /> Undo
+              </button>
             </div>
           </section>
         )}
@@ -2191,24 +2205,16 @@ export function App() {
               </div>
             )}
             {stepInspection && (
-              <>
-                <div className="diffStats" aria-label="Selected step data diff summary">
-                  <span>+{stepInspection.diff.addedRows} rows</span>
-                  <span>-{stepInspection.diff.removedRows} rows</span>
-                  <span>+{stepInspection.diff.addedColumns.length} columns</span>
-                  <span>-{stepInspection.diff.removedColumns.length} columns</span>
-                  <span>
-                    {stepInspection.diff.changedCells} changed cells
-                    {stepInspection.diff.truncated ? " in this block" : ""}
-                  </span>
-                </div>
-                <details className="draftCode">
-                  <summary>Generated code through this applied step</summary>
-                  <pre tabIndex={0} aria-label="Selected step generated Python code">
-                    <code>{stepInspection.code}</code>
-                  </pre>
-                </details>
-              </>
+              <div className="diffStats" aria-label="Selected step data diff summary">
+                <span>+{stepInspection.diff.addedRows} rows</span>
+                <span>-{stepInspection.diff.removedRows} rows</span>
+                <span>+{stepInspection.diff.addedColumns.length} columns</span>
+                <span>-{stepInspection.diff.removedColumns.length} columns</span>
+                <span>
+                  {stepInspection.diff.changedCells} changed cells
+                  {stepInspection.diff.truncated ? " in this block" : ""}
+                </span>
+              </div>
             )}
           </section>
         )}
@@ -2366,38 +2372,6 @@ export function App() {
             </aside>
           )}
         </section>
-        {metadata?.draftStep && !inspectionMode && (
-          <section className="draftPanel" aria-label="Draft preview">
-            <header>
-              <div>
-                <strong>Previewing {operationByKind(metadata.draftStep.kind).title}</strong>
-                <span>The grid shows the draft result. Apply or discard it explicitly.</span>
-              </div>
-              {diff && (
-                <div className="diffStats" aria-label="Data diff summary">
-                  {draftDiffLabels(diff, displayPage?.rows.length ?? 0).map((label) => (
-                    <span key={label}>{label}</span>
-                  ))}
-                </div>
-              )}
-              {draftWarnings.length > 0 && (
-                <div className="draftWarnings" role="alert">
-                  {draftWarnings.map((warning) => (
-                    <span key={warning}>
-                      <span className="codicon codicon-warning" aria-hidden="true" /> {warning}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </header>
-            <details className="draftCode">
-              <summary>Generated {dataBackendLabel(metadata.backend)} code · edit in Code Preview panel</summary>
-              <pre tabIndex={0} aria-label="Generated Python code preview">
-                <code>{generatedCode}</code>
-              </pre>
-            </details>
-          </section>
-        )}
       </div>
       {metadata && operationOpen && (
         <OperationBuilder

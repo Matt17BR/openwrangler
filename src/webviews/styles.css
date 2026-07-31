@@ -182,8 +182,10 @@ textarea {
 .toolbarActions {
   display: flex;
   align-items: center;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   gap: 8px;
+  justify-content: flex-end;
   min-width: 0;
 }
 
@@ -223,12 +225,61 @@ textarea {
   min-width: 0;
 }
 
-.draftBadge {
-  background: var(--vscode-editorWarning-foreground, #cca700);
-  border-radius: 999px;
-  color: var(--vscode-editor-background);
+.draftReview {
+  align-items: center;
+  background: var(--vscode-diffEditor-unchangedRegionBackground, var(--vscode-editorGroupHeader-tabsBackground));
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  min-height: 36px;
+  padding: 5px 10px;
+}
+
+.draftReviewHeading {
+  align-items: baseline;
+  display: flex;
+  flex: 0 1 auto;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.draftReviewHeading > .codicon {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.draftReviewLabel {
+  color: var(--vscode-descriptionForeground);
   font-size: 11px;
-  padding: 2px 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.draftReviewDiff {
+  flex: 1 1 280px;
+}
+
+.draftReview > .cleaningActions {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.draftReviewWarnings {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.draftReviewWarnings > span {
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  font-size: 11px;
+  margin: 0;
+  padding: 4px 7px;
 }
 
 .inspectionBadge {
@@ -247,18 +298,17 @@ textarea {
   border-bottom: 1px solid var(--vscode-panel-border);
   display: grid;
   flex: 0 0 auto;
-  gap: 10px 16px;
-  grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
-  max-height: min(28vh, 250px);
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  max-height: min(24vh, 210px);
   overflow: auto;
-  padding: 10px 14px;
+  padding: 8px 12px;
 }
 
 .inspectionPanel > header {
   align-items: center;
   display: flex;
   gap: 16px;
-  grid-column: 1 / -1;
   justify-content: space-between;
 }
 
@@ -273,17 +323,13 @@ textarea {
   font-size: 11px;
 }
 
-.inspectionPanel > .draftCode {
-  border: 1px solid var(--vscode-panel-border);
-  grid-column: 2;
-}
-
 .goToColumn {
   display: flex;
   align-items: center;
   flex: 1 1 241px;
   gap: 6px;
   margin: 0;
+  max-width: 420px;
   min-width: 140px;
   color: var(--vscode-descriptionForeground);
   font-size: 12px;
@@ -291,6 +337,7 @@ textarea {
 
 .columnSearchControl {
   flex: 1 1 auto;
+  max-width: 360px;
   min-width: 80px;
   position: relative;
 }
@@ -1472,31 +1519,6 @@ dd {
   padding: 24px;
 }
 
-.draftPanel {
-  background: var(--vscode-panel-background, var(--vscode-editor-background));
-  border-top: 1px solid var(--vscode-panel-border);
-  display: grid;
-  flex: 0 0 auto;
-  grid-template-columns: minmax(260px, 0.7fr) minmax(320px, 1.3fr);
-  max-height: min(32vh, 270px);
-  min-height: 140px;
-}
-
-.draftPanel > header {
-  border-right: 1px solid var(--vscode-panel-border);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  justify-content: center;
-  padding: 14px 16px;
-}
-
-.draftPanel > header > div:first-child {
-  display: grid;
-  gap: 4px;
-}
-
-.draftPanel > header span,
 .diffStats {
   color: var(--vscode-descriptionForeground);
   font-size: 11px;
@@ -1508,50 +1530,13 @@ dd {
   padding: 2px 7px;
 }
 
-.draftWarnings {
-  display: grid;
-  gap: 5px;
-}
-
-.draftWarnings > span,
 .operationFormError {
-  background: var(--vscode-inputValidation-warningBackground);
-  border: 1px solid var(--vscode-inputValidation-warningBorder);
-  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
   font-size: 11px;
   margin: 0;
   padding: 6px 8px;
-}
-
-.operationFormError {
-  background: var(--vscode-inputValidation-errorBackground);
-  border-color: var(--vscode-inputValidation-errorBorder);
-  color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
-}
-
-.draftCode {
-  min-height: 0;
-  overflow: auto;
-}
-
-.draftCode summary {
-  background: var(--vscode-editorGroupHeader-tabsBackground);
-  border-bottom: 1px solid var(--vscode-panel-border);
-  cursor: pointer;
-  font-size: 11px;
-  padding: 6px 10px;
-  position: sticky;
-  top: 0;
-}
-
-.draftCode pre {
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: var(--vscode-editor-font-size, 12px);
-  line-height: 1.45;
-  margin: 0;
-  overflow: auto;
-  padding: 10px 14px 16px;
-  white-space: pre;
 }
 
 .operationDialogBackdrop {
@@ -1923,15 +1908,6 @@ dd {
   .operationDialogBody {
     grid-template-columns: minmax(220px, 0.7fr) minmax(340px, 1.3fr);
   }
-
-  .draftPanel {
-    grid-template-columns: 1fr;
-  }
-
-  .draftPanel > header {
-    border-bottom: 1px solid var(--vscode-panel-border);
-    border-right: 0;
-  }
 }
 
 @media (max-width: 620px) {
@@ -1949,7 +1925,7 @@ dd {
   }
 
   .columnSearchControl input {
-    width: min(46vw, 220px);
+    width: 100%;
   }
 
   .columnSearchPopup {
@@ -1962,9 +1938,35 @@ dd {
     display: none;
   }
 
-  .cleaningBar {
+  .cleaningBar,
+  .draftReview {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .draftReview {
+    flex-wrap: nowrap;
+  }
+
+  .draftReviewDiff {
+    flex-basis: auto;
+  }
+
+  .draftReviewWarnings {
+    flex: 0 1 auto;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .draftReviewWarnings > span {
+    box-sizing: border-box;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    width: 100%;
+  }
+
+  .draftReview > .cleaningActions {
+    margin-left: 0;
   }
 
   .operationDialogBackdrop {

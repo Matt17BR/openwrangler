@@ -6267,17 +6267,38 @@ async function exercisePackagedFirstUseInteractionJourney(
     discardedDraft.metadata.schema.some((column) => column.name === "market_upper"),
     "The draft grid must preview its added output column."
   );
-  await app.getByRole("region", { name: "Cleaning plan" }).getByText("Draft: Uppercase").waitFor({
-    state: "visible",
-    timeout: 10_000
-  });
-  await app.getByText("Previewing Uppercase", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-  await app.getByText(`+1 column`, { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-  await app.getByText(/values added in this block$/u).waitFor({ state: "visible", timeout: 10_000 });
+  const draftReview = app.getByRole("region", { name: "Draft review" });
+  await draftReview.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await draftReview.count(), 1, "A pending operation must expose exactly one compact draft review.");
   assert.equal(
-    await app.getByText(/0 changed cells/u).count(),
+    await app.getByRole("region", { name: "Cleaning plan" }).count(),
+    0,
+    "A pending operation must not duplicate its controls in the applied cleaning-plan bar."
+  );
+  await draftReview.getByText("Uppercase", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  const draftDiff = draftReview.locator('[aria-label="Data diff summary"]');
+  await draftDiff.getByText("+1 column", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await draftDiff.getByText(/values added in this block$/u).waitFor({ state: "visible", timeout: 10_000 });
+  const discardDraft = draftReview.getByRole("button", { name: "Discard", exact: true });
+  const applyDraft = draftReview.getByRole("button", { name: "Apply step", exact: true });
+  await discardDraft.waitFor({ state: "visible", timeout: 10_000 });
+  await applyDraft.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await app.getByRole("button", { name: "Discard", exact: true }).count(), 1);
+  assert.equal(await app.getByRole("button", { name: "Apply step", exact: true }).count(), 1);
+  assert.equal(
+    await draftDiff.getByText(/0 changed cells/u).count(),
     0,
     "An added-column preview must not misleadingly report zero changed cells."
+  );
+  assert.equal(
+    await app.locator(".draftCode").count(),
+    0,
+    "Generated cleaning code must remain in the native Code Preview instead of being duplicated inline."
+  );
+  assert.equal(
+    await app.getByLabel("Generated Python code preview").count(),
+    0,
+    "The compact draft review must not render a second generated-code surface."
   );
   const addedHeader = app.locator('th[data-column="market_upper"]').first();
   try {
@@ -6337,12 +6358,7 @@ async function exercisePackagedFirstUseInteractionJourney(
     .locator('td[data-grid-row="0"][data-grid-column="15"]')
     .filter({ hasText: "BENELUX" })
     .waitFor({ state: "visible", timeout: 10_000 });
-  const generatedCodeDetails = app.locator("details.draftCode").first();
-  await generatedCodeDetails.locator("summary").click();
-  const generatedCode = await app.getByLabel("Generated Python code preview").innerText();
-  assert.match(generatedCode, /import polars as pl/u);
-  assert.match(generatedCode, /market_upper/u);
-  await app.getByRole("button", { name: "Discard", exact: true }).click();
+  await discardDraft.click();
   await waitFor(
     () =>
       testing.activeSession()?.metadata.draftStep === undefined &&
@@ -6352,18 +6368,16 @@ async function exercisePackagedFirstUseInteractionJourney(
     30_000,
     "discarding the preview to restore the confirmed dataframe"
   );
-  const emptyCleaningPlan = app.getByRole("region", { name: "Cleaning plan" });
-  await emptyCleaningPlan.waitFor({ state: "hidden", timeout: 10_000 });
-  assert.equal(
-    await emptyCleaningPlan.count(),
-    0,
-    "Discarding the only draft must remove the now-empty cleaning-plan bar."
-  );
+  await draftReview.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(await draftReview.count(), 0, "Discarding the only draft must remove the compact draft-review region.");
 
   recordAcceptanceProgress("platform-smoke:draft-apply");
   await previewUppercaseMarket(app, testing, "market_upper");
   app = await rediscoverApp("Draft-apply validation");
-  await app.getByRole("button", { name: "Apply step", exact: true }).click();
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -8598,7 +8612,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             const bounds = cell.getBoundingClientRect();
             return bounds.right > scrollerBounds.left && bounds.left < scrollerBounds.right;
           });
-          const controls = Array.from(appRoot.querySelectorAll(".toolbar, .cleaningBar, .gridControls, .draftPanel"));
+          const controls = Array.from(appRoot.querySelectorAll(".toolbar, .cleaningBar, .gridControls, .draftReview"));
           const clippedControls = controls
             .filter((element) => element.scrollWidth > element.clientWidth + 1)
             .map((element) => element.className);
@@ -8608,7 +8622,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           const insightValues = Array.from(insights?.querySelectorAll(".summaryStatGrid dd") ?? []);
           const insightsBounds = insights?.getBoundingClientRect();
           const workspaceBounds = workspace.getBoundingClientRect();
-          const draft = appRoot.querySelector('.draftPanel[aria-label="Draft preview"]');
+          const draft = appRoot.querySelector('.draftReview[aria-label="Draft review"]');
           const columnSearch = appRoot.querySelector(".columnSearchPopup");
           return {
             workspaceOverflow: workspace.scrollWidth - workspace.clientWidth,

@@ -41,8 +41,8 @@ Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python 
 
 - **Stay native to the selected engine.** Polars remains Polars, DuckDB remains DuckDB, and Pandas remains
   Pandas. Polars and DuckDB operations never detour through Pandas.
-- **Preview every change.** Review the draft result, data diff, and executable engine-specific code before
-  applying or discarding a step.
+- **Preview every change.** Review the draft result and exact data diff in the workbench, with executable
+  engine-specific code in VS Code's native **Code Preview** panel, before applying or discarding a step.
 - **Keep exploration separate from cleaning.** Filters and ordered multi-column sorts change the view, not the
   source or cleaning plan. The newest sort becomes priority 1, and priorities remain editable from Filters /
   Sorts in the workbench or Activity Bar. Exports always target a separate file.
@@ -58,7 +58,8 @@ _The same packaged session in VS Code's default light and dark themes._
 1. Open a CSV, TSV, Parquet, JSONL/NDJSON, or Excel file and choose **Open in Open Wrangler** from the branded
    editor-toolbar action or context menu.
 2. Explore column summaries, search, filter, and sort without changing the source.
-3. Choose **Add step**, review the data diff and generated code, then apply the step or discard it.
+3. Choose **Add step**, review the data diff in **Draft review** and the generated engine-specific code in
+   **Code Preview**, then apply the step or discard it.
 4. Choose **Export** to save cleaned CSV or Parquet data without overwriting the source.
 
 Ordinary CSV and TSV opens infer the delimiter, encoding, quote style, and header automatically. Use **Import

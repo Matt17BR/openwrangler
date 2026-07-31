@@ -160,6 +160,8 @@ describe("App applied-step inspection", () => {
       expect(sortButton).toBeDisabled();
     }
     expect(screen.getByText(/confirmed dataframe view and filters are unchanged/u)).toBeVisible();
+    expect(screen.queryByLabelText("Selected step generated Python code")).toBeNull();
+    expect(document.querySelector(".draftCode")).toBeNull();
 
     postMessage.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Next block" }));
