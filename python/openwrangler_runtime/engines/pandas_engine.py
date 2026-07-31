@@ -729,7 +729,8 @@ class PandasEngine(DataFrameEngine):
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
-        lines = ["from collections import Counter"]
+        needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan)
+        lines = ["from collections import Counter"] if needs_counter else []
         if needs_object_isolation:
             lines.append("from copy import deepcopy")
         if needs_missing_helpers:

@@ -77,6 +77,30 @@ def test_operation_registry_is_complete_and_validation_is_strict():
         )
 
 
+def test_generated_code_imports_counter_only_for_categorical_encoding(engine_and_frame):
+    engine, _frame = engine_and_frame
+    plain_plan = [
+        bound_step(
+            "upper",
+            "upperText",
+            column=bound_ref("c:source:1", "text", 1),
+            newColumn="upper_text",
+        )
+    ]
+    encoded_plan = [
+        bound_step(
+            "one-hot",
+            "oneHotEncode",
+            columns=[bound_ref("c:source:0", "group", 0)],
+            prefixSeparator="_",
+            dropOriginal=True,
+        )
+    ]
+
+    assert "from collections import Counter" not in engine.compile_plan(plain_plan)
+    assert "from collections import Counter" in engine.compile_plan(encoded_plan)
+
+
 @pytest.mark.parametrize(
     "operation",
     [
