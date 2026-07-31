@@ -281,6 +281,7 @@ test("released-Jupyter installs its released compatibility versions into a clean
     assert.deepEqual(commands[2].input.args.slice(0, 3), ["-I", "-m", "venv"]);
     assert.equal(commands[3].input.executable, kernelPython);
     assert.deepEqual(commands[3].input.args.slice(0, 5), ["-I", "-m", "pip", "--isolated", "install"]);
+    assert.equal(commands[3].input.args.filter((value) => value === "--no-cache-dir").length, 1);
     assert.ok(commands[3].input.args.includes("--only-binary=:all:"));
     assert.deepEqual(commands[3].input.args.slice(-11), [
       "ipykernel==6.30.1",
@@ -301,6 +302,7 @@ test("released-Jupyter installs its released compatibility versions into a clean
     );
     assert.equal(commands[4].input.label, "Released-Jupyter private kernel PySpark installation");
     assert.equal(commands[4].input.executable, kernelPython);
+    assert.equal(commands[4].input.args.filter((value) => value === "--no-cache-dir").length, 1);
     assert.ok(commands[4].input.args.includes("--no-deps"));
     assert.match(commands[4].input.args.at(-1), /^pyspark @ https:\/\/files\.pythonhosted\.org\/.+#sha256=/u);
     assert.equal(commands[5].input.executable, kernelPython);

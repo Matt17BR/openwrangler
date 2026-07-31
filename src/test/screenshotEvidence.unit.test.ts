@@ -19,6 +19,7 @@ import {
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
+  packagedViewportHeightWithoutPartialBottomRow,
   packagedFirstUseAccountNoteKind,
   packagedFirstUseFixtureCsv,
   packagedProductFixtureCsv,
@@ -195,6 +196,16 @@ describe("packaged editor screenshot evidence", () => {
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width).toBe(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT.width);
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height).toBeLessThan(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT.height);
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width / PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height).toBeLessThan(2.2);
+  });
+
+  it("aligns a screenshot viewport to the measured bottom-row boundary", () => {
+    expect(packagedViewportHeightWithoutPartialBottomRow(900, 13.2, 28)).toBe(886);
+    expect(packagedViewportHeightWithoutPartialBottomRow(886, 2, 28)).toBe(884);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(0, 2, 28)).toThrow(TypeError);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(900, Number.NaN, 28)).toThrow(TypeError);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(900, 0, 28)).toThrow(RangeError);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(900, 28, 28)).toThrow(RangeError);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(1, 0.5, 28)).toThrow(RangeError);
   });
 
   it("keeps README scene names explicit across file and notebook workflows", () => {

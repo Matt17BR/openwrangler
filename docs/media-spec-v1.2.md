@@ -12,6 +12,9 @@ shows the workflows behind the feature claims, and keeps the README compact enou
   explain integration.
 - Fidelity: packaged-editor capture viewports are 1440 × 900 or 1280 × 900. The native workbench chrome is then
   trimmed to accepted 1440 × 870/874 or 1280 × 600/874 assets where the runner owns deterministic outer pixels.
+  The filter-result scene is the sole row-boundary exception: it begins at 1440 × 900, measures any bottom partial
+  grid row, reduces only the viewport height by that visible intersection, rechecks the complete layout, and
+  restores 1440 × 900 immediately afterward. This keeps native bottom chrome while preventing a cut data row.
   README details may select one documented, pixel-exact rectangle from a complete accepted scene; do not scale,
   mask, add device frames, or reconstruct editor UI.
 - Portability: full-scene README copies preserve every accepted source pixel and add only a standard sRGB PNG
@@ -132,6 +135,8 @@ workflow named above.
 - The grid reports the exact filtered row count, and every visible market cell is `DACH`.
 - The native **Filters / Sorts** view mirrors the same condition and keeps both individual removal and **Clear all**
   controls visible without clipping.
+- The capture height is derived from the live bottom-row boundary; no partial top or bottom row may remain, and the
+  standard product viewport is restored before another scene begins.
 - Cleanup clears the filter through the real UI and restores the complete 100,000-row source view.
 
 ### Operation catalog and history

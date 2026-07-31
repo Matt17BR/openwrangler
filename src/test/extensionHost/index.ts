@@ -92,6 +92,7 @@ import {
   PACKAGED_WIDE_SCHEMA_ROW_COUNT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
+  packagedViewportHeightWithoutPartialBottomRow,
   packagedFirstUseAccountNoteKind,
   packagedFirstUseFixtureCsv,
   packagedProductFixtureCsv,
@@ -10419,6 +10420,15 @@ async function capturePackagedFilterResultScene(
   editor: string
 ): Promise<void> {
   recordAcceptanceProgress("verify:screenshots:file-scenes:filter-result");
+  const originalViewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  assert.deepEqual(
+    originalViewport,
+    PACKAGED_PRODUCT_VIEWPORT,
+    "The filter-result scene must begin at the standard packaged product viewport."
+  );
   const expectedRows = Array.from({ length: PACKAGED_SCREENSHOT_ROW_COUNT }, (_, index) => index).filter(
     (index) => packagedScreenshotRow(index)[1] === "DACH"
   ).length;
@@ -10498,43 +10508,139 @@ async function capturePackagedFilterResultScene(
       .locator('td[data-grid-row="0"][data-grid-column="1"]')
       .filter({ hasText: "DACH" })
       .waitFor({ state: "visible", timeout: 10_000 });
-    await assertPackagedFilterResultGeometry(app, sidebar);
     await clearPackagedProductSceneTransientUi(workbench);
+    await alignPackagedFilterResultRowBoundary(workbench, app);
+    await assertPackagedFilterResultGeometry(app, sidebar);
     mkdirSync(outputDirectory, { recursive: true });
     await captureWorkbenchScreenshot(
       workbench,
       path.resolve(outputDirectory, packagedScreenshotFileName(editor, "filter-result", "dark"))
     );
   } finally {
-    const active = testing.activeSession();
-    if (active?.sessionId === sessionId && active.viewState.filterModel.filters.length > 0) {
-      const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-      const app = await exactSessionApp(target.frame, sessionId);
-      assert.ok(app, "Filter-result cleanup requires the exact production renderer.");
-      const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
-      if (!(await drawer.isVisible().catch(() => false))) {
-        await app.getByRole("button", { name: "Column profiles and filters" }).click();
-        await drawer.waitFor({ state: "visible", timeout: 10_000 });
+    try {
+      const active = testing.activeSession();
+      if (active?.sessionId === sessionId && active.viewState.filterModel.filters.length > 0) {
+        const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+        const app = await exactSessionApp(target.frame, sessionId);
+        assert.ok(app, "Filter-result cleanup requires the exact production renderer.");
+        const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
+        if (!(await drawer.isVisible().catch(() => false))) {
+          await app.getByRole("button", { name: "Column profiles and filters" }).click();
+          await drawer.waitFor({ state: "visible", timeout: 10_000 });
+        }
+        await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+        await drawer
+          .locator(".filterSortPanel")
+          .first()
+          .getByRole("button", { name: "Clear all", exact: true })
+          .click();
+        await waitFor(
+          () => {
+            const current = testing.activeSession();
+            return (
+              current?.sessionId === sessionId &&
+              current.viewState.filterModel.filters.length === 0 &&
+              current.viewState.filterModel.sort.length === 0 &&
+              current.metadata.filteredShape.rows === PACKAGED_SCREENSHOT_ROW_COUNT
+            );
+          },
+          30_000,
+          "the filter-result scene to restore the complete unfiltered file session"
+        );
+        assert.equal(await testing.synchronizePanel(sessionId), true);
+        await drawer.getByRole("tab", { name: "Column", exact: true }).click();
       }
-      await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
-      await drawer.locator(".filterSortPanel").first().getByRole("button", { name: "Clear all", exact: true }).click();
-      await waitFor(
-        () => {
-          const current = testing.activeSession();
-          return (
-            current?.sessionId === sessionId &&
-            current.viewState.filterModel.filters.length === 0 &&
-            current.viewState.filterModel.sort.length === 0 &&
-            current.metadata.filteredShape.rows === PACKAGED_SCREENSHOT_ROW_COUNT
-          );
-        },
-        30_000,
-        "the filter-result scene to restore the complete unfiltered file session"
+    } finally {
+      await workbench.setViewportSize(originalViewport);
+      assert.deepEqual(
+        await workbench.evaluate(() => {
+          const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+          return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+        }),
+        PACKAGED_PRODUCT_VIEWPORT,
+        "The filter-result scene must restore the standard packaged product viewport."
       );
-      assert.equal(await testing.synchronizePanel(sessionId), true);
-      await drawer.getByRole("tab", { name: "Column", exact: true }).click();
     }
   }
+}
+
+async function alignPackagedFilterResultRowBoundary(workbench: Page, app: Locator): Promise<void> {
+  const maximumAttempts = 4;
+  let lastMeasurement: Awaited<ReturnType<typeof measurePackagedFilterResultRowBoundary>> | undefined;
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    const viewport = await workbench.evaluate(() => {
+      const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+      return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+    });
+    const measurement = await measurePackagedFilterResultRowBoundary(app);
+    lastMeasurement = measurement;
+    assert.equal(
+      measurement.partialTopRows,
+      0,
+      "The filter-result screenshot may align only a bottom partial row, never hide a clipped top row."
+    );
+    if (measurement.partialBottomRows.length === 0) return;
+    assert.equal(
+      measurement.partialBottomRows.length,
+      1,
+      "The filter-result screenshot must expose at most one measurable bottom partial row."
+    );
+    const partial = measurement.partialBottomRows[0]!;
+    const alignedHeight = packagedViewportHeightWithoutPartialBottomRow(
+      viewport.height,
+      partial.visibleHeight,
+      partial.rowHeight
+    );
+    await workbench.setViewportSize({ width: viewport.width, height: alignedHeight });
+    await app.evaluate(() => {
+      const frameWindow = globalThis as unknown as {
+        requestAnimationFrame(callback: () => void): number;
+      };
+      return new Promise<void>((resolve) => {
+        frameWindow.requestAnimationFrame(() => frameWindow.requestAnimationFrame(() => resolve()));
+      });
+    });
+  }
+  throw new Error(
+    `The filter-result screenshot could not align its bottom row after ${maximumAttempts} measured viewport adjustments: ${JSON.stringify(lastMeasurement)}`
+  );
+}
+
+async function measurePackagedFilterResultRowBoundary(app: Locator): Promise<{
+  partialTopRows: number;
+  partialBottomRows: Array<{ rowHeight: number; visibleHeight: number }>;
+}> {
+  return app.evaluate((root) => {
+    type RowBoundaryRect = { bottom: number; top: number };
+    type RowBoundaryElement = {
+      getBoundingClientRect(): RowBoundaryRect & { height: number };
+      querySelector(selector: string): RowBoundaryElement | null;
+      querySelectorAll(selector: string): ArrayLike<RowBoundaryElement>;
+    };
+    const appRoot = root as unknown as RowBoundaryElement;
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    if (!scroller) throw new Error("The filter-result row-boundary scroller is unavailable.");
+    const headers = Array.from(scroller.querySelectorAll("thead th"));
+    if (headers.length === 0) throw new Error("The filter-result row-boundary headers are unavailable.");
+    const bodyTop = Math.max(...headers.map((header) => header.getBoundingClientRect().bottom));
+    const scrollerBottom = scroller.getBoundingClientRect().bottom;
+    const visibleRows = Array.from(scroller.querySelectorAll("tbody tr")).filter((row) => {
+      const bounds = row.getBoundingClientRect();
+      return bounds.bottom > bodyTop + 1 && bounds.top < scrollerBottom - 1;
+    });
+    return {
+      partialTopRows: visibleRows.filter((row) => row.getBoundingClientRect().top < bodyTop - 1).length,
+      partialBottomRows: visibleRows
+        .filter((row) => row.getBoundingClientRect().bottom > scrollerBottom + 1)
+        .map((row) => {
+          const bounds = row.getBoundingClientRect();
+          return {
+            rowHeight: bounds.height,
+            visibleHeight: scrollerBottom - Math.max(bodyTop, bounds.top)
+          };
+        })
+    };
+  });
 }
 
 async function assertPackagedFilterResultGeometry(app: Locator, sidebar: Locator): Promise<void> {

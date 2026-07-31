@@ -166,6 +166,7 @@ export async function createJupyterAcceptanceKernelPython(
         "--disable-pip-version-check",
         "--no-input",
         "--no-warn-script-location",
+        "--no-cache-dir",
         "--only-binary=:all:",
         ...BINARY_DEPENDENCIES.map(
           (dependency) => `${dependency}==${RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency]}`
@@ -189,6 +190,7 @@ export async function createJupyterAcceptanceKernelPython(
         "--disable-pip-version-check",
         "--no-input",
         "--no-warn-script-location",
+        "--no-cache-dir",
         "--no-deps",
         PYSPARK_SOURCE_REQUIREMENT
       ],
