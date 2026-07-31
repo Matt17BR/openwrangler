@@ -7061,22 +7061,47 @@ async function exercisePackagedFileLaunchSurfaces(
 
 async function assertOpenWranglerTabBrandIcon(tab: Locator): Promise<void> {
   await tab.waitFor({ state: "visible", timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
-  const iconReferences = await tab.evaluate((root) => {
-    const references = new Set<string>();
+  const expectedFileName =
+    vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Light ||
+    vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.HighContrastLight
+      ? "action-icon-light.svg"
+      : "action-icon-dark.svg";
+  const iconReferences = await tab.evaluate((root, expectedIcon) => {
+    const references: Array<{ reference: string; visible: boolean; source: string }> = [];
     for (const element of [root, ...root.querySelectorAll("*")]) {
-      if (element instanceof HTMLImageElement && element.src) references.add(element.src);
+      const bounds = element.getBoundingClientRect();
+      const elementStyle = getComputedStyle(element);
+      const elementIsVisible =
+        bounds.width > 0 &&
+        bounds.height > 0 &&
+        elementStyle.display !== "none" &&
+        elementStyle.visibility !== "hidden" &&
+        Number.parseFloat(elementStyle.opacity || "1") > 0;
+      if (element instanceof HTMLImageElement && element.src.includes(expectedIcon)) {
+        references.push({ reference: element.src, visible: elementIsVisible, source: "image" });
+      }
       for (const pseudo of [undefined, "::before", "::after"] as const) {
         const style = getComputedStyle(element, pseudo);
         for (const value of [style.backgroundImage, style.maskImage]) {
-          if (value && value !== "none") references.add(value);
+          if (value?.includes(expectedIcon)) {
+            references.push({
+              reference: value,
+              visible:
+                elementIsVisible &&
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                Number.parseFloat(style.opacity || "1") > 0,
+              source: pseudo ?? "element"
+            });
+          }
         }
       }
     }
-    return [...references];
-  });
+    return references;
+  }, expectedFileName);
   assert.ok(
-    iconReferences.some((reference) => /action-icon-(?:dark|light)\.svg/iu.test(reference)),
-    `The Open Wrangler custom-editor tab must use its branded theme icon, not a generic file glyph. Observed icon references: ${JSON.stringify(iconReferences)}.`
+    iconReferences.some(({ visible }) => visible),
+    `The Open Wrangler custom-editor tab must visibly use ${expectedFileName} for the active theme, not a generic or wrong-theme file glyph. Observed matching references: ${JSON.stringify(iconReferences)}.`
   );
 }
 

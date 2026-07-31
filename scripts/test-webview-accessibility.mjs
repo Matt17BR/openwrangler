@@ -438,6 +438,104 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await page.getByText("Min 1", { exact: true }).waitFor();
     await page.getByText("Max 6", { exact: true }).waitFor();
 
+    const numericChart = page.getByRole("img", { name: /numeric distribution/u }).first();
+    const histogram = numericChart.locator("xpath=..");
+    const histogramBins = histogram.locator(".numericHistogramHitTarget");
+    const firstBin = histogramBins.first();
+    const secondBin = histogramBins.nth(1);
+    const firstBar = histogram.locator(".numericHistogramBar").first();
+    await firstBar.evaluate((bar) => {
+      const chartHeight = bar.ownerSVGElement?.viewBox.baseVal.height;
+      if (!chartHeight) throw new Error("Histogram bar has no owning SVG view box.");
+      bar.setAttribute("height", "2");
+      bar.setAttribute("y", String(chartHeight - 2));
+    });
+    const [chartBounds, firstHitBounds, firstBarBounds] = await Promise.all([
+      numericChart.boundingBox(),
+      firstBin.boundingBox(),
+      firstBar.boundingBox()
+    ]);
+    if (
+      !chartBounds ||
+      !firstHitBounds ||
+      !firstBarBounds ||
+      firstHitBounds.width <= 0 ||
+      firstHitBounds.height < chartBounds.height - 1 ||
+      firstHitBounds.height > chartBounds.height + 3 ||
+      firstBarBounds.height > chartBounds.height * 0.08
+    ) {
+      throw new Error(
+        `${harness} did not preserve a full-chart-height pointer target above a two-pixel bar: ` +
+          `${JSON.stringify({ chartBounds, firstHitBounds, firstBarBounds })}.`
+      );
+    }
+    const firstLabel = await firstBin.getAttribute("aria-label");
+    const initialFill = await firstBar.evaluate((bar) => getComputedStyle(bar).fill);
+    await firstBin.hover({ position: { x: firstHitBounds.width / 2, y: 1 } });
+    const tooltip = histogram.getByRole("tooltip");
+    await tooltip.waitFor();
+    if ((await tooltip.textContent())?.trim() !== firstLabel) {
+      throw new Error(`${harness} did not show the hovered bin's exact interval and row count immediately.`);
+    }
+    const hoveredFill = await firstBar.evaluate((bar) => getComputedStyle(bar).fill);
+    if (hoveredFill === initialFill) {
+      throw new Error(`${harness} did not visibly highlight the hovered histogram bin.`);
+    }
+    await page.locator(".backendBadge").first().hover();
+    await tooltip.waitFor({ state: "detached" });
+    await firstBin.focus();
+    await tooltip.waitFor();
+    if ((await tooltip.textContent())?.trim() !== firstLabel) {
+      throw new Error(`${harness} did not show the keyboard-focused bin's exact interval and row count.`);
+    }
+    await page.locator(".backendBadge").first().hover();
+    if ((await tooltip.textContent())?.trim() !== firstLabel) {
+      throw new Error(`${harness} let pointer exit hide the still-keyboard-focused histogram bin.`);
+    }
+    await page.keyboard.press("Tab");
+    if (!(await secondBin.evaluate(isActiveTab))) {
+      throw new Error(`${harness} did not expose adjacent histogram bins in keyboard order.`);
+    }
+    if ((await tooltip.textContent())?.trim() !== (await secondBin.getAttribute("aria-label"))) {
+      throw new Error(`${harness} did not update the tooltip for the next keyboard-focused histogram bin.`);
+    }
+    await page.locator('input[placeholder="Search columns"]').focus();
+    await tooltip.waitFor({ state: "detached" });
+    if (width === 800) {
+      await page.emulateMedia({ forcedColors: "active" });
+      const forcedRestingColors = await firstBar.evaluate((bar) => {
+        const probe = document.createElement("span");
+        probe.style.color = "CanvasText";
+        document.body.append(probe);
+        const canvasText = getComputedStyle(probe).color;
+        probe.remove();
+        return { bar: getComputedStyle(bar).fill, canvasText };
+      });
+      if (forcedRestingColors.bar !== forcedRestingColors.canvasText) {
+        throw new Error(
+          `${harness} kept an author blue histogram fill instead of the forced-color CanvasText: ` +
+            `${JSON.stringify(forcedRestingColors)}.`
+        );
+      }
+      await firstBin.hover({ position: { x: firstHitBounds.width / 2, y: 1 } });
+      const forcedActiveColors = await firstBar.evaluate((bar) => {
+        const probe = document.createElement("span");
+        probe.style.color = "Highlight";
+        document.body.append(probe);
+        const highlight = getComputedStyle(probe).color;
+        probe.remove();
+        return { bar: getComputedStyle(bar).fill, highlight };
+      });
+      if (forcedActiveColors.bar !== forcedActiveColors.highlight) {
+        throw new Error(
+          `${harness} did not map the active histogram bin to the forced-color Highlight: ` +
+            `${JSON.stringify(forcedActiveColors)}.`
+        );
+      }
+      await page.locator(".backendBadge").first().hover();
+      await page.emulateMedia({ forcedColors: "none" });
+    }
+
     const headerLayout = await page.locator("th[data-column]").evaluateAll((headers) =>
       headers.flatMap((header) => {
         const scroller = header.closest('[data-testid="data-grid-scroller"]');
@@ -648,7 +746,7 @@ async function verifyInsightsDrawerWorkflow(browser) {
   await extremaPage.close();
 
   console.log(
-    "Column profiles drawer focus, duplicate labels, numeric/text summary-family semantics, and bounded exact extrema verified."
+    "Column profiles drawer focus, duplicate labels, histogram pointer/keyboard inspection, numeric/text summary-family semantics, and bounded exact extrema verified."
   );
 }
 

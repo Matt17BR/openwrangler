@@ -2202,6 +2202,10 @@ dd {
     color: CanvasText;
   }
 
+  .miniChart .numericHistogramBar {
+    fill: CanvasText;
+  }
+
   .numericHistogramBin:hover .numericHistogramBar,
   .numericHistogramBin:focus-within .numericHistogramBar {
     fill: Highlight;

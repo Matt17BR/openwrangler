@@ -7,7 +7,8 @@ interface NumericHistogramProps {
 }
 
 export function NumericHistogram({ visualization, compact = false }: NumericHistogramProps) {
-  const [activeBinIndex, setActiveBinIndex] = useState<number>();
+  const [hoveredBinIndex, setHoveredBinIndex] = useState<number>();
+  const [focusedBinIndex, setFocusedBinIndex] = useState<number>();
   const tooltipId = useId();
   const maximumCount = Math.max(1, ...visualization.bins.map((bin) => bin.count));
   const width = compact ? 160 : 320;
@@ -19,6 +20,7 @@ export function NumericHistogram({ visualization, compact = false }: NumericHist
     rangeStart === undefined || rangeEnd === undefined
       ? "No finite values"
       : `${formatHistogramValue(rangeStart)} to ${formatHistogramValue(rangeEnd)}`;
+  const activeBinIndex = hoveredBinIndex ?? focusedBinIndex;
   const activeBin = activeBinIndex === undefined ? undefined : visualization.bins[activeBinIndex];
   const activeBinLabel = activeBin ? histogramBinLabel(activeBin) : undefined;
 
@@ -58,12 +60,11 @@ export function NumericHistogram({ visualization, compact = false }: NumericHist
                 tabIndex={0}
                 role="graphics-symbol"
                 aria-label={label}
-                aria-describedby={activeBinIndex === index ? tooltipId : undefined}
-                onPointerEnter={() => setActiveBinIndex(index)}
-                onPointerLeave={() => setActiveBinIndex((active) => (active === index ? undefined : active))}
-                onPointerCancel={() => setActiveBinIndex((active) => (active === index ? undefined : active))}
-                onFocus={() => setActiveBinIndex(index)}
-                onBlur={() => setActiveBinIndex((active) => (active === index ? undefined : active))}
+                onPointerEnter={() => setHoveredBinIndex(index)}
+                onPointerLeave={() => setHoveredBinIndex((hovered) => (hovered === index ? undefined : hovered))}
+                onPointerCancel={() => setHoveredBinIndex((hovered) => (hovered === index ? undefined : hovered))}
+                onFocus={() => setFocusedBinIndex(index)}
+                onBlur={() => setFocusedBinIndex((focused) => (focused === index ? undefined : focused))}
               />
             </g>
           );

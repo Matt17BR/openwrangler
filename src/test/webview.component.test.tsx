@@ -458,12 +458,12 @@ describe("DataGrid", () => {
     expect(bins[1]).toHaveAttribute("tabindex", "0");
     expect(bins[1]).toHaveAttribute("height", "36");
     expect(numericHeader.querySelectorAll(".numericHistogramBar")[1]).toHaveAttribute("height", "2");
+    fireEvent.focus(bins[0]!);
+    expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("1-2.5: 100 rows");
+    expect(bins[0]).not.toHaveAttribute("aria-describedby");
     fireEvent.pointerEnter(bins[1]!);
     expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("2.5-4: 1 row");
-    expect(bins[1]).toHaveAttribute("aria-describedby", within(numericHeader).getByRole("tooltip").id);
     fireEvent.pointerLeave(bins[1]!);
-    expect(within(numericHeader).queryByRole("tooltip")).not.toBeInTheDocument();
-    fireEvent.focus(bins[0]!);
     expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("1-2.5: 100 rows");
     fireEvent.blur(bins[0]!);
     expect(within(numericHeader).queryByRole("tooltip")).not.toBeInTheDocument();
