@@ -17,15 +17,33 @@ if (unexpectedArguments.length > 0) {
 
 const assets = [
   nativeAsset("explore.png", "vscode-explore-dark.png", 1_440, 870),
-  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 852),
+  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 862),
   nativeAsset("workflow.png", "vscode-workflow-dark.png", 1_440, 870),
-  nativeAsset("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600),
+  nativeCrop("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600, {
+    x: 45,
+    y: 25,
+    width: 1_210,
+    height: 540
+  }),
   nativeAsset("gallery/column-search-wide.png", "vscode-column-search-wide-dark.png", 1_440, 865),
+  nativeAsset("gallery/file-explorer-action.png", "vscode-file-explorer-action-dark.png", 1_440, 870),
+  nativeAsset("gallery/high-contrast-explore.png", "vscode-high-contrast-explore-high-contrast.png", 1_440, 846),
   nativeAsset("gallery/import-options.png", "vscode-import-options-dark.png", 1_440, 870),
   nativeAsset("gallery/export-script.png", "vscode-export-code-dark.png", 1_440, 870),
   nativeAsset("gallery/export-data.png", "vscode-export-data-dark.png", 1_440, 870),
   nativeAsset("gallery/cursor-explore.png", "cursor-explore-dark.png", 1_440, 865),
-  nativeAsset("gallery/notebook-variable-picker.png", "vscode-notebook-variable-picker-dark.png", 1_440, 900),
+  nativeCrop("gallery/notebook-variable-picker.png", "vscode-notebook-variable-picker-dark.png", 1_440, 900, {
+    x: 45,
+    y: 20,
+    width: 1_040,
+    height: 590
+  }),
+  nativeCrop("gallery/notebook-code-insertion.png", "vscode-notebook-code-insertion-dark.png", 1_440, 900, {
+    x: 45,
+    y: 29,
+    width: 1_000,
+    height: 288
+  }),
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
@@ -33,6 +51,38 @@ const assets = [
   nativeAsset("gallery/operation-catalog.png", "vscode-operation-catalog-dark.png", 1_280, 874),
   nativeAsset("gallery/operation-configuration.png", "vscode-operation-configuration-dark.png", 1_280, 874),
   nativeAsset("gallery/applied-step-inspection.png", "vscode-applied-step-inspection-dark.png", 1_440, 870),
+  nativeAsset("gallery/latest-step-edited.png", "vscode-latest-step-edited-dark.png", 1_440, 865),
+  nativeAsset("gallery/latest-step-undone.png", "vscode-latest-step-undone-dark.png", 1_440, 865),
+  nativeCrop("gallery/file-explorer-action-detail.png", "vscode-file-explorer-action-dark.png", 1_440, 870, {
+    x: 48,
+    y: 0,
+    width: 920,
+    height: 616
+  }),
+  nativeCrop("gallery/column-search-wide-detail.png", "vscode-column-search-wide-dark.png", 1_440, 865, {
+    x: 850,
+    y: 54,
+    width: 540,
+    height: 420
+  }),
+  nativeCrop("gallery/latest-step-edited-detail.png", "vscode-latest-step-edited-dark.png", 1_440, 865, {
+    x: 0,
+    y: 0,
+    width: 448,
+    height: 440
+  }),
+  nativeCrop("gallery/latest-step-undone-detail.png", "vscode-latest-step-undone-dark.png", 1_440, 865, {
+    x: 0,
+    y: 0,
+    width: 448,
+    height: 440
+  }),
+  nativeCrop("gallery/notebook-code-insertion-detail.png", "vscode-notebook-code-insertion-dark.png", 1_440, 900, {
+    x: 45,
+    y: 29,
+    width: 1_000,
+    height: 288
+  }),
   nativeCrop("gallery/operation-configuration-detail.png", "vscode-operation-configuration-dark.png", 1_280, 874, {
     x: 744,
     y: 170,
@@ -80,6 +130,12 @@ const assets = [
     y: 32,
     width: 1_372,
     height: 868
+  }),
+  nativeCrop("gallery/notebook-pyspark-detail.png", "vscode-notebook-pyspark-dark.png", 1_440, 900, {
+    x: 48,
+    y: 32,
+    width: 1_372,
+    height: 820
   }),
   nativeCrop("gallery/sidebar-explore.png", "vscode-explore-dark.png", 1_440, 870, {
     x: 0,

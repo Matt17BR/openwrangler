@@ -1,185 +1,177 @@
 # Product gallery
 
-The full editor scenes below come from the packaged extension running against realistic, license-clean fixtures.
-Focused interaction scenes use the same production webview bundle and deterministic fixtures. Visible dimensions
-describe the captured scenario, not a product row or column limit.
+These scenes use generated business data and show Open Wrangler as users see it in VS Code and Cursor. Dataset
+sizes in the images describe the example, not a row or column limit.
 
-[Explore](#explore-in-vs-code) · [Open files](#open-files-where-you-already-work) ·
-[Profile and navigate](#profile-and-navigate) · [Transform](#build-and-review-a-cleaning-plan) ·
-[Export](#export-code-and-clean-data) · [Notebooks](#notebook-workflows) · [Editors](#vs-code-and-cursor)
+[Workbench](#workbench-at-a-glance) · [Files](#open-files-where-you-work) ·
+[Explore](#explore-profile-and-navigate) · [Clean](#build-a-cleaning-plan) · [Export](#keep-the-result) ·
+[Notebooks](#notebook-workflows) · [Editors](#editors-and-themes)
 
-## Explore in VS Code
+## Workbench at a glance
 
-![Open Wrangler in VS Code with the selected Activity Bar icon, native dataframe views, a virtualized Polars grid, header summaries, and the exact revenue profile](images/readme/v1.2/explore.png)
+![Open Wrangler in VS Code with a Polars dataframe, column summaries, profiles, and native Activity Bar views](images/readme/v1.2/explore.png)
 
-The workbench keeps the virtualized grid, header summaries, exact profiles, and editor-native controls together.
-Grid cell data crosses the runtime boundary only in requested row and column blocks.
+The grid, column summaries, detailed profiles, and editor-native controls stay in one workspace.
 
-### Native Activity Bar views
+![Operations, Summary, Filters and Sorts, and Cleaning Steps beside a dataframe draft](images/readme/v1.2/gallery/sidebar-overview.png)
 
-![All four Open Wrangler Activity Bar views populated beside a realistic dataframe](images/readme/v1.2/gallery/sidebar-overview.png)
+The sidebar keeps the operation catalog, dataset health, viewing state, and cleaning history visible beside the
+data. Filters and sorts remain separate from applied cleaning steps.
 
-Operations, Summary, Filters / Sorts, and Cleaning Steps stay useful without another editor tab. This scene shows
-the native backend and shape, exact dataset counts, an editable two-key sort, one applied step, and a separate
-draft at the same time.
-
-## Open files where you already work
-
-### Editor title action
-
-[![The branded Open in Open Wrangler action in a CSV editor title bar](images/readme/v1.2/gallery/file-title-action.png)](images/readme/v1.2/gallery/file-title-action.png)
-
-Open a supported file without leaving its current editor.
-
-### Tab context menu
-
-<a href="images/readme/v1.2/gallery/tab-context-menu.png"><img alt="The Open in Open Wrangler command in a CSV editor tab context menu" src="images/readme/v1.2/gallery/tab-context-menu.png" width="540"></a>
-
-The same command is available from the open editor tab.
-
-CSV and TSV inputs infer delimiter, encoding, quote style, and header automatically. **Import options** remains
-available for explicit overrides.
-
-![Open Wrangler Import options opened on the delimiter inferred from a semicolon-delimited CSV](images/readme/v1.2/gallery/import-options.png)
-
-The ordinary open path asks no import-option questions. When a source is unusual, **Import options** starts from
-the detected configuration instead of asking the user to reconstruct it from memory.
-
-## Profile and navigate
-
-![A packaged Polars file session filtered to 14,285 DACH rows with the active predicate, clear controls, and matching native Filters and Sorts state](images/readme/v1.2/filter-result.png)
-
-The result, exact row count, active predicate, and recovery controls stay visible together. The native sidebar
-mirrors the same viewing filter; neither surface adds a cleaning step or changes the source.
+## Open files where you work
 
 <table>
   <tr>
-    <td width="50%"><a href="images/readme/v1.2/gallery/histogram-hover.png"><img alt="An exact numeric profile with a full-height histogram bin focused and its interval and row count visible" src="images/readme/v1.2/gallery/histogram-hover.png"></a></td>
-    <td width="50%"><a href="images/readme/v1.2/gallery/sort-priority.png"><img alt="The Filters and Sorts sidebar with two ordered sorts and visible reorder and remove controls" src="images/readme/v1.2/gallery/sort-priority.png"></a></td>
+    <td width="62%"><a href="images/readme/v1.2/gallery/file-explorer-action.png"><img alt="Opening a CSV in Open Wrangler from the VS Code Explorer context menu" src="images/readme/v1.2/gallery/file-explorer-action-detail.png"></a></td>
+    <td width="38%"><a href="images/readme/v1.2/gallery/tab-context-menu.png"><img alt="Opening the active CSV in Open Wrangler from its editor-tab menu" src="images/readme/v1.2/gallery/tab-context-menu.png"></a></td>
   </tr>
   <tr>
-    <td><strong>Inspect sparse bins.</strong> Keyboard focus and pointer hover use the full bin height, then expose the exact interval and row count.</td>
-    <td><strong>Control compound sorts.</strong> The latest key becomes priority 1; inline actions reorder, edit, or remove keys without changing the source.</td>
+    <td><strong>Explorer.</strong> Open CSV, TSV, Parquet, JSONL, NDJSON, or Excel files from the file tree.</td>
+    <td><strong>Editor tab.</strong> The same action is available from an already-open file.</td>
   </tr>
 </table>
 
-![Open Wrangler column search showing the final result in a realistic 417-column dataframe](images/readme/v1.2/gallery/column-search-wide.png)
+[![The branded Open in Open Wrangler action in a CSV editor title bar](images/readme/v1.2/gallery/file-title-action.png)](images/readme/v1.2/gallery/file-title-action.png)
 
-Column search virtualizes the complete schema and keeps type icons, full names, and keyboard position available.
-The scene reaches item 417 of 417 to prove the list is not capped at its first page; 417 is a fixture size, not a
-product limit.
+The editor-title action is the shortest route when the source is already open. CSV and TSV inputs infer delimiter,
+encoding, quote style, and header automatically. **Import options** is an explicit override for unusual sources.
 
-## Build and review a cleaning plan
+![Import options starting from the detected configuration for a semicolon-delimited CSV](images/readme/v1.2/gallery/import-options.png)
 
-### Choose from the complete operation catalog
+## Explore, profile, and navigate
 
-![The packaged Open Wrangler operation picker showing its grouped cleaning catalog beside the native Operations view](images/readme/v1.2/gallery/operation-catalog.png)
+![A Polars file session filtered to 14,285 DACH rows with the active predicate and matching native sidebar state](images/readme/v1.2/filter-result.png)
 
-Search or browse the operation set by task. Opening the catalog does not change the dataframe or cleaning plan.
-
-### Configure before anything changes
-
-![A Formula column operation configured as revenue plus 500 into projected_revenue, ready to preview](images/readme/v1.2/gallery/operation-configuration.png)
-
-The selected source column, operator, value, and output remain visible together. **Preview changes** creates a
-draft; it does not commit the step.
-
-### Preview the draft and generated code
-
-![Open Wrangler reviewing a Polars draft with two ordered viewing sorts, cleaning history, a current grid-block diff, and generated code](images/readme/v1.2/workflow.png)
-
-Viewing sorts remain separate from the cleaning plan. The draft highlights its added values, exposes Apply and
-Discard, and generates executable Polars code in the native bottom panel before the step is committed.
-
-### Inspect applied history
-
-![Open Wrangler inspecting the latest applied Formula column step with filters paused and history controls visible](images/readme/v1.2/gallery/applied-step-inspection.png)
-
-Selecting an applied step opens a bounded, read-only projection while the confirmed dataframe remains unchanged.
-Viewing filters, sorts, and profiling pause during inspection, then return exactly when **Show confirmed data** is
-selected. **Edit latest** and **Undo** remain explicit actions.
-
-### Transform by example
-
-<a href="images/readme/v1.2/gallery/by-example-setup.png"><img alt="Open Wrangler by-example setup with structured account-code examples" src="images/readme/v1.2/gallery/by-example-setup-detail.png"></a>
-
-**Teach it.** Give exact source/output examples such as `DACH-DE-00482 → DE` and
-`NORDICS-SE-01940 → SE`. Both mappings remain visible before deterministic synthesis begins. Open the image for
-the complete operation dialog.
-
-<a href="images/readme/v1.2/gallery/by-example-preview.png"><img alt="Open Wrangler by-example preview deriving country codes for eight unseen structured account IDs" src="images/readme/v1.2/gallery/by-example-preview-detail.png"></a>
-
-**Review it.** Confirm the two examples and eight unseen account IDs together, then use Apply or Discard only after
-the candidate program has been previewed. Open the image for the complete draft and controls.
-
-## Export code and clean data
+The result count, predicate, clear controls, grid, and native Filters / Sorts view stay synchronized without
+changing the source.
 
 <table>
   <tr>
-    <td width="50%"><a href="images/readme/v1.2/gallery/export-script.png"><img alt="A generated native Polars cleaning script saved and opened in VS Code" src="images/readme/v1.2/gallery/export-script-detail.png"></a></td>
-    <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A separate cleaned CSV export opened after the source workflow" src="images/readme/v1.2/gallery/export-data-detail.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/histogram-hover.png"><img alt="A numeric histogram showing the exact interval and row count for a focused bin" src="images/readme/v1.2/gallery/histogram-hover.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with priority, reorder, edit, and remove controls" src="images/readme/v1.2/gallery/sort-priority.png"></a></td>
   </tr>
   <tr>
-    <td><strong>Reusable code.</strong> The saved script contains the applied engine-native cleaning plan.</td>
-    <td><strong>Separate output.</strong> The cleaned file opens normally while the source bytes remain unchanged.</td>
+    <td><strong>Inspect distributions.</strong> Every bin has an easy-to-target interaction area and exact interval.</td>
+    <td><strong>Control compound sorts.</strong> Reorder, change direction and null placement, or remove any key.</td>
+  </tr>
+</table>
+
+<a href="images/readme/v1.2/gallery/column-search-wide.png"><img alt="Searching to the final result in a 417-column synthetic dataframe" src="images/readme/v1.2/gallery/column-search-wide-detail.png"></a>
+
+Column search reaches the complete schema and keeps type icons, full names, and keyboard navigation available even
+for very wide dataframes.
+
+## Build a cleaning plan
+
+<table>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/gallery/operation-catalog.png"><img alt="The grouped Open Wrangler cleaning-operation catalog" src="images/readme/v1.2/gallery/operation-catalog.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/operation-configuration.png"><img alt="Configuring a Formula column operation before preview" src="images/readme/v1.2/gallery/operation-configuration-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Choose a task.</strong> Search or browse 27 built-in operations, custom code, and by-example transforms.</td>
+    <td><strong>Configure safely.</strong> Parameters remain editable until Preview changes creates a draft.</td>
+  </tr>
+</table>
+
+![A Polars formula draft with ordered viewing sorts, highlighted added values, Apply and Discard, and generated code](images/readme/v1.2/workflow.png)
+
+Every operation follows draft → preview → apply or discard. The visible result and executable engine-native code
+are available before a step joins the plan.
+
+<table>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/gallery/latest-step-edited.png"><img alt="Cleaning Steps after editing the latest formula while retaining the earlier uppercase step" src="images/readme/v1.2/gallery/latest-step-edited-detail.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/latest-step-undone.png"><img alt="Cleaning Steps after undoing the formula while retaining the earlier uppercase step" src="images/readme/v1.2/gallery/latest-step-undone-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Edit in place.</strong> Updating the latest step replaces it instead of duplicating history.</td>
+    <td><strong>Undo precisely.</strong> Remove the latest step while keeping the rest of the plan and view.</td>
+  </tr>
+</table>
+
+<a href="images/readme/v1.2/gallery/applied-step-inspection.png"><img alt="Inspecting an applied Formula column step with history controls visible" src="images/readme/v1.2/gallery/applied-step-inspection-detail.png"></a>
+
+Select any applied step to inspect that point in history, then return to confirmed data without changing the plan.
+
+<table>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/gallery/by-example-setup.png"><img alt="Teaching a structured account-code transformation with two examples" src="images/readme/v1.2/gallery/by-example-setup-detail.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/by-example-preview.png"><img alt="Previewing the learned country-code transformation on unseen values" src="images/readme/v1.2/gallery/by-example-preview-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Teach it.</strong> Provide exact input and output examples.</td>
+    <td><strong>Review it.</strong> Confirm the deterministic candidate on unseen rows before applying.</td>
+  </tr>
+</table>
+
+## Keep the result
+
+<table>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/gallery/export-script.png"><img alt="Generated native Polars cleaning code saved as a Python script" src="images/readme/v1.2/gallery/export-script-detail.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="images/readme/v1.2/gallery/export-data-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Reusable code.</strong> Copy it, insert it into a notebook, or save a native Python script.</td>
+    <td><strong>Separate output.</strong> Export cleaned CSV or Parquet without overwriting the source.</td>
   </tr>
 </table>
 
 ## Notebook workflows
 
-### Choose a live variable by engine
+<table>
+  <tr>
+    <td width="51%"><a href="images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling DuckDB, Pandas, and Polars variables by engine and dataframe type" src="images/readme/v1.2/gallery/notebook-variable-picker-detail.png"></a></td>
+    <td width="49%"><a href="images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating notebook" src="images/readme/v1.2/gallery/notebook-code-insertion-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Open the live object.</strong> Variables are labeled by engine and dataframe type before launch.</td>
+    <td><strong>Keep the work reproducible.</strong> Insert generated code into the notebook that owns the data.</td>
+  </tr>
+</table>
 
-![The Open Wrangler notebook variable picker identifying live DuckDB, Pandas, and Polars variables by engine and dataframe type](images/readme/v1.2/gallery/notebook-variable-picker.png)
+<table>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/notebook-pandas.png"><img alt="A Pandas dataframe previewed inline in a VS Code notebook" src="images/readme/v1.2/gallery/notebook-pandas-detail.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/notebook-polars.png"><img alt="A native Polars notebook session with a formula draft and generated Polars code" src="images/readme/v1.2/gallery/notebook-polars-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Pandas.</strong> Preview inline, then open and edit the complete live dataframe.</td>
+    <td><strong>Polars.</strong> Edit natively and generate executable Polars code.</td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="images/readme/v1.2/gallery/notebook-duckdb-detail.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="An experimental native PySpark notebook session with exact profiles" src="images/readme/v1.2/gallery/notebook-pyspark-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>DuckDB, experimental.</strong> Query the same live relation without converting it.</td>
+    <td><strong>PySpark 4.2.x, experimental.</strong> View, filter, sort, page, and profile in Spark.</td>
+  </tr>
+</table>
 
-The notebook toolbar discovers supported variables from the active kernel and labels each candidate with its
-actual engine and dataframe type before launch.
+DuckDB and PySpark notebook sessions are currently viewing-only. PySpark uses the Spark session supplied by the
+notebook and can be expensive to open on large or remote dataframes.
 
-### Pandas inline preview
+## Rich file types
 
-![A Pandas dataframe rendered by Open Wrangler inside a packaged VS Code Jupyter notebook](images/readme/v1.2/notebook-pandas.png)
+<a href="images/readme/v1.2/gallery/duckdb-rich-parquet.png"><img alt="A DuckDB Parquet source with decimal, time-zone, list, and struct columns" src="images/readme/v1.2/gallery/duckdb-rich-parquet-detail.png"></a>
 
-The portable inline table stays with the notebook. When the originating live variable is available, the action
-opens the complete current dataframe in the workbench rather than limiting exploration to captured rows.
+Decimal, time-zone-aware timestamp, list, and struct values remain typed through the grid and summaries.
 
-### Polars live editing
+## Editors and themes
 
-![A live native Polars notebook session with a formula-column draft and generated Polars code](images/readme/v1.2/gallery/notebook-polars.png)
+<table>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/gallery/cursor-explore.png"><img alt="Open Wrangler running in Cursor" src="images/readme/v1.2/gallery/cursor-explore.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/high-contrast-explore.png"><img alt="Open Wrangler populated with high-contrast theme tokens" src="images/readme/v1.2/gallery/high-contrast-explore.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Cursor.</strong> VS Code and Cursor are release-tested from the same VSIX.</td>
+    <td><strong>High contrast.</strong> Grid, views, profiles, and controls use native editor theme tokens.</td>
+  </tr>
+</table>
 
-The dataframe remains in Polars while Open Wrangler pages, profiles, previews the draft, computes the current
-grid-block diff, and generates native code.
-
-### DuckDB live relation (experimental)
-
-![A live native DuckDB relation with an exact filter, ordered two-key sort, paging, and column profiles](images/readme/v1.2/gallery/notebook-duckdb.png)
-
-The viewing-only session queries the exact originating `DuckDBPyRelation`; it does not convert through Pandas,
-Polars, or Arrow.
-
-### PySpark Classic live notebook
-
-![An experimental PySpark Classic notebook DataFrame with selected revenue column profiles](images/readme/v1.2/gallery/notebook-pyspark.png)
-
-PySpark 4.2.x support is experimental and viewing-only. The exact selected Python kernel must already contain a
-user-managed Classic or Connect session. Opening scans the complete DataFrame, assigns stable row positions, caches
-an Open Wrangler-owned indexed child, and computes the exact row total; this can be expensive on large or remote
-data. Filtering, sorting, paging, and requested profiling then run in Spark and return only bounded results. The
-packaged scene validates local Classic; external or authenticated Connect remains unclaimed. File opening,
-cleaning, export, code insertion, and saved inline previews are not supported.
-
-## Experimental DuckDB rich file types
-
-<a href="images/readme/v1.2/gallery/duckdb-rich-parquet.png"><img alt="A file-backed DuckDB Parquet source with decimal, time-zone, list, and struct columns" src="images/readme/v1.2/gallery/duckdb-rich-parquet-detail.png"></a>
-
-This focused production-webview scene uses a native DuckDB session over a deterministic 100,000-row Parquet
-fixture. Decimal, time-zone-aware timestamp, list, and struct values remain typed through the grid and summaries.
-
-## VS Code and Cursor
-
-![The packaged Open Wrangler workbench in an isolated Cursor profile](images/readme/v1.2/gallery/cursor-explore.png)
-
-VS Code and Cursor are release-tested from the same VSIX. Other desktop VS Code forks are experimental until
-their marketplace, menus, notebook APIs, and packaged install path are validated.
-
-The automated visual and accessibility suite also covers light, dark, and high-contrast themes, 80% to 200% zoom,
-keyboard-only operation, loading and error states, empty frames, long Unicode content, and narrow and wide
-layouts. Those regression images remain in the testing record rather than being presented as product media.
+Other desktop VS Code forks are experimental. The automated visual and accessibility suite also covers light and
+dark themes, 80% to 200% zoom, keyboard-only operation, loading and error states, empty frames, long Unicode
+content, and narrow and wide layouts. See [Testing](testing.md) for the acceptance process.

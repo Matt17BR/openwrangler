@@ -335,10 +335,10 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).not.toContain('.filter({ hasText: "def clean_data(df):" })');
     expect(extensionHost).not.toContain(".monaco-list-row.code-cell-row");
     expect(extensionHost).toContain("editor.visibleRanges.some");
-    expect(mediaSpec).toContain("### Explorer, edit, undo, and high contrast");
-    expect(mediaSpec).toContain("Generated-code insertion uses the live Pandas session's engine-generated code");
+    expect(mediaSpec).toContain("### Workbench and files");
+    expect(mediaSpec).toContain("Generated-code insertion is verified through the public `NotebookDocument`");
     expect(mediaSpec).not.toContain("## Remaining capture backlog");
-    expect(testing).toContain("The product capture now starts from the exact 100,000-row source's native Explorer");
+    expect(testing).toMatch(/Private Monaco DOM structure is\s+not part of that proof\./u);
   });
 
   it("keeps the README to a concise portable v1.2 product story", () => {
@@ -358,27 +358,35 @@ describe("packaged editor screenshot evidence", () => {
     const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
       ["explore.png", 1_440, 870, 50_000],
-      ["filter-result.png", 1_440, 852, 50_000],
-      ["gallery/sidebar-explore.png", 448, 500, 50_000],
-      ["gallery/sidebar-workflow.png", 448, 500, 30_000],
+      ["filter-result.png", 1_440, 862, 50_000],
+      ["gallery/sidebar-overview.png", 1_440, 874, 50_000],
+      ["gallery/file-explorer-action.png", 1_440, 870, 50_000],
+      ["gallery/file-explorer-action-detail.png", 920, 616, 20_000],
       ["gallery/column-search-wide.png", 1_440, 865, 50_000],
+      ["gallery/column-search-wide-detail.png", 540, 420, 10_000],
       ["workflow.png", 1_440, 870, 50_000],
       ["gallery/histogram-hover.png", 448, 480, 20_000],
       ["gallery/sort-priority.png", 448, 480, 20_000],
+      ["gallery/latest-step-edited.png", 1_440, 865, 50_000],
+      ["gallery/latest-step-edited-detail.png", 448, 440, 10_000],
+      ["gallery/latest-step-undone.png", 1_440, 865, 50_000],
+      ["gallery/latest-step-undone-detail.png", 448, 440, 10_000],
       ["gallery/export-script.png", 1_440, 870, 50_000],
       ["gallery/export-data.png", 1_440, 870, 50_000],
-      ["gallery/notebook-variable-picker.png", 1_440, 900, 50_000],
-      ["notebook-pandas.png", 1_280, 600, 50_000],
-      ["gallery/operation-configuration.png", 1_280, 874, 50_000],
-      ["gallery/applied-step-inspection.png", 1_440, 870, 50_000],
-      ["gallery/operation-configuration-detail.png", 510, 605, 20_000],
-      ["gallery/applied-step-inspection-detail.png", 995, 320, 20_000],
       ["gallery/export-script-detail.png", 995, 230, 20_000],
       ["gallery/export-data-detail.png", 995, 344, 20_000],
+      ["gallery/notebook-variable-picker.png", 1_040, 590, 50_000],
       ["gallery/notebook-variable-picker-detail.png", 602, 380, 20_000],
+      ["gallery/notebook-code-insertion.png", 1_000, 288, 10_000],
+      ["gallery/notebook-code-insertion-detail.png", 1_000, 288, 10_000],
+      ["notebook-pandas.png", 1_210, 540, 50_000],
       ["gallery/notebook-pandas-detail.png", 1_205, 370, 20_000],
+      ["gallery/notebook-polars.png", 1_440, 900, 50_000],
       ["gallery/notebook-polars-detail.png", 1_372, 758, 50_000],
-      ["gallery/notebook-duckdb-detail.png", 1_372, 868, 50_000]
+      ["gallery/notebook-duckdb.png", 1_440, 900, 50_000],
+      ["gallery/notebook-duckdb-detail.png", 1_372, 868, 50_000],
+      ["gallery/notebook-pyspark.png", 1_440, 900, 50_000],
+      ["gallery/notebook-pyspark-detail.png", 1_372, 820, 50_000]
     ] as const;
 
     expect(icon.readUInt32BE(16)).toBe(512);

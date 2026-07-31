@@ -1,179 +1,117 @@
 # Open Wrangler v1.2 product media
 
-This is the canonical v1.2 README and gallery contract. It presents the packaged extension as an editor product,
-shows the workflows behind the feature claims, and keeps the README compact enough to scan.
+This is the canonical README and gallery contract for v1.2. The media must explain the product to a prospective
+user, match the packaged extension, and remain readable at its rendered width.
 
 ## Source and capture contract
 
-- Source: one verified VSIX installed into a disposable VS Code profile.
-- Display: Chromium's zero-window headless platform. The run cannot open or focus a desktop window.
-- Data: deterministic, license-clean fixtures only. No user or private data is read.
-- Chrome: preserve the native Activity Bar, sidebar, editor tabs, notebook chrome, and bottom panel where they
-  explain integration.
-- Fidelity: packaged-editor capture viewports are 1440 × 900 or 1280 × 900. The native workbench chrome is then
-  trimmed to accepted 1440 × 870/874 or 1280 × 600/874 assets where the runner owns deterministic outer pixels.
-  The filter-result, high-contrast Explore, and executed edit/undo scenes begin at 1440 × 900, measure any bottom
-  partial grid row, reduce only the viewport height by that visible intersection, recheck the complete layout, and
-  restore 1440 × 900 immediately afterward. This keeps native bottom chrome while preventing a cut data row.
-  README details may select one documented, pixel-exact rectangle from a complete accepted scene; do not scale,
-  mask, add device frames, or reconstruct editor UI.
-- Portability: full-scene README copies preserve every accepted source pixel and add only a standard sRGB PNG
-  chunk when the native capture lacks one. Focused entry-point crops preserve the exact selected source pixels
-  without scaling, masking, reconstruction, or annotation.
-- Hygiene: reject unrelated Quick Input, context menus, notifications, hovers, temporary paths, internal
-  acceptance labels, clipped required text, or partially visible required controls. A Quick Pick or Save dialog
-  may remain visible only when that exact native interaction is the subject of the scene; its state, destination
-  suggestion, cancellation, and zero-write cleanup must be asserted by the packaged-editor harness. Copy receipts
-  remain test evidence rather than public gallery media.
+- Install one verified VSIX into a disposable editor profile.
+- Run native VS Code/Cursor capture through the zero-window headless platform so no desktop window can open or
+  steal focus.
+- Use deterministic, license-clean fixtures. Never read or display user or private data.
+- Keep editor chrome when it explains integration: Activity Bar, sidebar, tabs, notebook toolbar, and code panel.
+- Reject clipped required text, partial grid rows, unrelated dialogs, notifications, temporary paths, fixture
+  markers, setup cells, or acceptance-only labels.
+- Crops select exact rectangles from accepted screenshots. Do not scale, mask, annotate, recolor, or reconstruct
+  editor UI.
+- Add only the standard sRGB PNG chunk when preparing portable copies.
 
-## README sequence
+The packaged workbench starts at 1440 × 900 or 1280 × 900. Some grid captures trim only the measured partial
+bottom row after verifying the complete layout. Notebook crops remove empty canvas or private collapsed cells,
+never visible product controls.
 
-The README uses compact visual blocks instead of one uninterrupted screenshot wall. The generated inventory is
-authoritative; do not maintain a handwritten asset count.
+## README story
 
-1. `explore.png`: full-width 1440 × 870 workbench with the selected Open Wrangler Activity Bar item, all four
-   populated native views, virtualized Polars grid, header summaries, and exact `revenue` profile.
-2. `gallery/sidebar-explore.png` and `gallery/sidebar-workflow.png`: two linked 448 × 500 pixel-exact details,
-   displayed side-by-side, that make the native Activity Bar views legible without repeating another full editor
-   scene. The first shows Operations and Summary; the second shows ordered Filters / Sorts and separate Cleaning
-   Steps.
-3. `gallery/operation-configuration-detail.png` and `gallery/applied-step-inspection-detail.png`: two pixel-exact
-   details displayed side-by-side and linked to their complete packaged-editor scenes. They keep the full
-   `revenue + 500 → projected_revenue` form and latest-step inspection controls legible at README width.
-4. `gallery/column-search-wide.png`: one full-width 1440 × 865 schema-navigation scene that reaches item 417 of
-   417 with type icons and complete names. The fixture proves the list is uncapped; it is not a column limit.
-5. `workflow.png`: full-width 1440 × 870 workbench with two ordered viewing sorts, applied market normalization,
-   a separate projected-revenue formula draft, data diff, Apply / Discard, and executable Polars code.
-6. `gallery/histogram-hover.png` and `gallery/sort-priority.png`: two linked 448 × 480 pixel-exact details showing
-   a sparse histogram bin's full-height interaction target and the native sidebar controls for reordering or
-   removing compound sort keys.
-7. `gallery/export-script-detail.png` and `gallery/export-data-detail.png`: two pixel-exact details linked to the
-   complete 1440 × 870 packaged outcomes. The first opens the generated `.clean.py`; the second opens the
-   separately exported cleaned file. The harness proves both were written through the real product path and that
-   the source bytes never changed.
-8. `gallery/notebook-variable-picker-detail.png` and `gallery/notebook-pandas-detail.png`: two pixel-exact details
-   linked to complete packaged notebook scenes. The 1440 × 900 picker labels every fully visible live-variable row
-   by engine/type; the separate 1280 × 600 Pandas scene shows the portable inline table.
-9. `gallery/notebook-polars-detail.png`: a linked pixel-exact detail at full README content width. It keeps the
-   engine badge, formula draft, added values, and generated code legible.
-10. `gallery/notebook-duckdb-detail.png`: a linked pixel-exact detail at full README content width. It keeps the
-    native grid, engine badge, filter, reorderable multi-sort, paging, and profiles legible without conversion.
+The README uses six visual chapters instead of an unexplained screenshot wall:
 
-The Polars and DuckDB links retain their complete 1440 × 900 packaged scenes. The two details appear one after
-another at full README content width.
+1. **Explore:** `explore.png` and `gallery/sidebar-overview.png` introduce the grid, profiles, and all four native
+   views.
+2. **Open and navigate:** the Explorer action, full-schema search, filter result, histogram, and compound-sort
+   controls show how users reach and understand data.
+3. **Clean:** `workflow.png` plus the edit/undo pair show draft, generated code, applied history, and precise
+   recovery.
+4. **Notebooks:** the live-variable picker, generated-code insertion, and Pandas/Polars/DuckDB/PySpark matrix show
+   how each engine behaves.
+5. **Export:** paired script and data outcomes show reproducible code and separate cleaned files.
+6. **Evidence and roadmap:** concise engine, format, compatibility, performance, and future-scope tables follow
+   the visual proof.
 
-By-example remains represented in the gallery until its setup and result can be recaptured against a realistic
-wide workflow without a dense JSON-editor-first presentation or an otherwise empty two-column canvas.
+## Public media inventory
 
-Fixture sizes visible in these scenes are evidence, never product limits.
+### Workbench and files
 
-## Full gallery
+- `explore.png`: 1440 × 870 full workbench.
+- `gallery/sidebar-overview.png`: 1440 × 874 with Operations, Summary, Filters / Sorts, and Cleaning Steps.
+- `gallery/file-explorer-action.png`: 1440 × 870; `file-explorer-action-detail.png`: 920 × 616.
+- `gallery/file-title-action.png`: 1440 × 120; `gallery/tab-context-menu.png`: 540 × 570.
+- `gallery/import-options.png`: 1440 × 870 explicit override flow.
 
-`docs/media-gallery.md` adds:
+### Explore and clean
 
-- a complete native Explorer-row context menu over the realistic 100,000-row order fixture, with exactly one
-  canonical **Open in Open Wrangler** action and the full source name visible;
-- branded file entry points cropped from the accepted 1440 × 865 editor scenes: a 1440 × 120 title strip and a
-  540 × 570 tab-menu view;
-- pixel-exact sidebar details cropped from the accepted Explore and Workflow scenes, showing the operation catalog,
-  dataframe summary, ordered viewing state, and separate cleaning history at a readable size;
-- a full native-sidebar overview with all four views populated, the complete catalog and configured Formula
-  operation, and an applied-step inspection with its history controls visible;
-- a realistic populated high-contrast Explore workbench and two executed plan-history outcomes: applying an edit
-  to the latest Formula step without appending a step, then undoing exactly that edited step while preserving the
-  earlier normalization;
-- pixel-exact by-example details cropped from accepted production-webview scenes: a readable 660 × 760 setup
-  detail linked to the complete 1080 × 760 operation dialog whose real scrollable editor shows both mapping values
-  and outputs, followed by a readable 700 × 525 result-table detail linked to the complete ten-row draft and its
-  Apply / Discard controls;
-- the full-size Pandas, Polars, and DuckDB notebook scenes, while README-specific notebook crops remain linked
-  back to those complete sources;
-- the exact originating Jupyter notebook after the real **Insert into Notebook** path adds one engine-generated,
-  uniquely marked Pandas cleaning-code cell without modifying any existing cell or an active decoy notebook;
-- a clearly labeled experimental, viewing-only PySpark 4.2 scene at 1440 × 900;
-- a focused native DuckDB rich-Parquet detail with decimal, time-zone, list, and struct values, linked to its
-  complete 1920 × 640 source scene;
-- the automatic-import override, complete wide-schema search, real script/data export outcomes, and a current
-  Cursor workbench from the same candidate VSIX;
-- focused packaged-editor details for exact histogram interaction and editable compound-sort priority;
-- an applied `market equals "DACH"` file-filter result beside the matching native Filters / Sorts state, individual
-  remove control, and Clear all control;
-- the real 1440 × 900 notebook variable picker with native engine/type labels and no partially visible option row
-  before a live launch;
-- a separate real Jupyter picker filtered to `spark_classic_frame`, with complete **Viewing only**, **Full-frame
-  open (scan, index, cache)**, and **Requires PySpark 4.2.x** guidance, dismissed without opening the variable;
-- focused production-webview captures for a realistic by-example setup and its generalized result.
+- `filter-result.png`: 1440 × 862 with one exact viewing filter and synchronized sidebar state.
+- `gallery/histogram-hover.png` and `gallery/sort-priority.png`: 448 × 480 interaction details.
+- `gallery/column-search-wide.png`: 1440 × 865; `column-search-wide-detail.png`: 540 × 420.
+- `gallery/operation-catalog.png` and `gallery/operation-configuration.png`: complete selection/configuration.
+- `workflow.png`: 1440 × 870 draft, highlighted values, Apply / Discard, history, and native Polars code.
+- `gallery/applied-step-inspection.png`: 1440 × 870; detail: 995 × 320.
+- `gallery/latest-step-edited.png` and `gallery/latest-step-undone.png`: 1440 × 865; details: 448 × 440.
+- `gallery/by-example-setup.png` and `gallery/by-example-preview.png`: complete dialogs with readable details.
 
-Every caption states what the image proves and distinguishes fully supported editing, supported viewing, and
-experimental viewing-only surfaces.
+### Notebooks and engines
 
-Do not substitute the older `vscode-columns-*`, `cursor-*`, `grid-view.png`, `filter-panel.png`, `wide-grid.png`,
-or `notebook-preview.png` captures: they predate the current toolbar/sidebar presentation or do not prove the
-workflow named above.
+- Accepted notebook source captures use a 1440 × 900 workbench except the 1280 × 600 Pandas inline scene.
+- `gallery/notebook-variable-picker.png`: 1040 × 590; detail: 602 × 380. It shows an actual inline preview behind
+  native DuckDB, Pandas, and Polars choices and contains no private setup source.
+- `notebook-pandas.png`: 1210 × 540; detail: 1205 × 370. It shows one complete ten-row inline page and the live
+  Open action.
+- `gallery/notebook-code-insertion.png` and its detail: 1000 × 288. It shows the generated Pandas function inside
+  the exact originating notebook without empty canvas.
+- `gallery/notebook-polars.png`: complete source; detail: 1372 × 758 with draft and generated native code.
+- `gallery/notebook-duckdb.png`: complete source; detail: 1372 × 868 with filter, paging, profiles, and ordered
+  sorts.
+- `gallery/notebook-pyspark.png`: complete source; detail: 1372 × 820 with Experimental, Viewing only, and PySpark
+  badges plus exact profiles.
 
-## Scene assertions
+The raw PySpark variable-picker capture is acceptance evidence, not public product media, because its notebook
+setup cell is intentionally implementation-oriented. The native PySpark workbench is the truthful public scene.
 
-### Explore
+### Results, rich types, and editors
 
-- **Operations**, **Summary**, **Filters / Sorts**, and **Cleaning Steps** are visible and populated.
-- Summary shows the source, native backend, mode, shape, selected column, missing cells, and duplicate rows.
-- Exact Min, Max, Mean, Median, standard deviation, and distribution are legible in **Column profiles**.
-- Sidebar rows, drawer statistics, grid headers, source name, shape, toolbar, and status remain contained.
+- `gallery/export-script.png` / `export-script-detail.png` and `gallery/export-data.png` /
+  `export-data-detail.png` show the real export outcomes.
+- `gallery/duckdb-rich-parquet.png` and `duckdb-rich-parquet-detail.png` show decimal, time-zone, list, and struct
+  values from a generated Parquet source.
+- `gallery/cursor-explore.png` and `gallery/high-contrast-explore.png` show the same product in Cursor and with
+  high-contrast theme tokens.
 
-### Workflow
+## Required scene assertions
 
-- `revenue` is Priority 1 and `market` Priority 2 in the non-destructive view.
-- Cleaning Steps shows Original data, one applied Uppercase normalization, and a separate Formula column draft.
-- The projected-revenue draft's added column and changed values are visible beside Apply and Discard.
-- Code Preview starts with `import polars as pl`, contains the market normalization and revenue projection, and
-  contains no unused import.
+### Workbench
 
-### Viewing filters
+- Operations, Summary, Filters / Sorts, and Cleaning Steps are visible and populated.
+- Summary identifies source, backend, mode, shape, selected column, missing cells, and duplicate rows.
+- Numeric profiles show Min, Max, Mean, Median, standard deviation, and a usable distribution.
+- Column names, type icons, sidebar rows, toolbar controls, and profile values remain contained.
 
-- The deterministic orders fixture applies `market equals "DACH"` through the production filter drawer.
-- The grid reports the exact filtered row count, and every visible market cell is `DACH`.
-- The native **Filters / Sorts** view mirrors the same condition and keeps both individual removal and **Clear all**
-  controls visible without clipping.
-- The capture height is derived from the live bottom-row boundary; no partial top or bottom row may remain, and the
-  standard product viewport is restored before another scene begins.
-- Cleanup clears the filter through the real UI and restores the complete 100,000-row source view.
+### Viewing and history
 
-### Operation catalog and history
-
-- The catalog shows grouped operations and leaves the dataframe and plan unchanged.
-- Formula configuration shows `revenue`, `add`, `500`, `projected_revenue`, and Preview changes without overflow.
-- Applied-step inspection selects the latest Formula column step, pauses viewing filters, and settles before
-  capture.
-- Show confirmed data, Edit latest, and Undo remain visible while the confirmed dataframe and filters are
-  unchanged.
-
-### Explorer, edit, undo, and high contrast
-
-- The Explorer scene opens the real source as a text editor, reveals that exact row through the native Files
-  Explorer, shows its complete name, and exposes exactly one complete **Open in Open Wrangler** context action.
-- The edit scene changes the latest projected-revenue formula from `500` to `750` through the production dialog,
-  previews and applies it, retains the stable step identity and exactly two applied steps, and shows executable
-  Polars code with `pl.lit(750)`.
-- The undo scene removes exactly that edited Formula step, retains the earlier `market_upper` normalization as the
-  sole applied step, removes `projected_revenue` from schema and code, and then reconstructs the original
-  500-unit formula before export evidence continues.
-- The high-contrast scene reuses the complete 100,000-row Explore layout, populated native views, exact revenue
-  profile, and virtualized grid. It must receive real high-contrast theme tokens rather than recolored pixels.
-- Every transition proves the synthetic source bytes are unchanged; captures reject clipped sidebar rows, toolbar
-  controls, column names, context-menu items, and partial grid rows.
+- The filter scene shows the exact row count, active predicate, individual clear action, and Clear all.
+- The sort scene shows two keys, priorities, directions, null placement, reorder controls, and removal.
+- Column search reaches the final fixture column without capping the result list.
+- A new operation remains a draft until Apply; viewing filters/sorts remain outside the cleaning plan.
+- Editing the latest step replaces it; Undo removes exactly that step and retains earlier work.
 
 ### Notebook engines
 
-- Pandas labels the inline output as a portable capture while the action opens the complete live variable.
-- Polars shows Editing and Polars badges, a formula draft, added-column diff, and complete generated code.
-- DuckDB shows Viewing and DuckDB badges, the native relation shape, a real filter, ordered two-key sort, visible
-  profiles, and no cleaning or export controls.
-- PySpark shows Experimental, Viewing only, and PySpark badges, exact profiles, and no cleaning or export controls.
-- The separate released-Jupyter PySpark picker shows the complete viewing-mode, full-frame-open, and 4.2.x
-  prerequisite guidance on one fully visible `spark_classic_frame` row, then closes without selecting it.
-- Generated-code insertion uses the live Pandas session's engine-generated code, targets the exact originating
-  notebook while a different notebook is active, adds one uniquely marked cell, preserves every prior cell, then
-  returns to that exact origin and captures the complete unclipped generated cell.
+- The variable picker labels every visible row by native engine and type.
+- Pandas shows ten complete preview rows and opens the complete live dataframe when available.
+- Polars shows Editing and Polars badges, one draft, changed values, and executable Polars code.
+- DuckDB shows Viewing and DuckDB badges, native relation shape, filter, paging, profiles, and ordered sorts without
+  conversion.
+- PySpark shows Experimental, Viewing only, and PySpark badges, exact profiles, and no cleaning/export controls.
+- Generated-code insertion is verified through the public `NotebookDocument`: one uniquely marked cell is added to
+  the exact origin, surrounding cells remain unchanged, and that cell is visibly revealed before capture.
+- Private setup, restart-probe, and runtime-transfer cells are collapsed before public notebook screenshots.
 
 ## Reproduction and publication gate
 
@@ -185,6 +123,5 @@ node --test scripts/readme-media.test.mjs
 npm run verify:readme-media
 ```
 
-Then inspect every README and gallery image at its rendered width. Do not publish a media change when any image
-comes from a different VSIX, disagrees with the documented capability, clips required content, or fails the
-pixel-equivalence check.
+Then inspect every README and gallery image at its rendered width. Do not publish when an image disagrees with the
+documented capability, comes from another VSIX, contains internal setup content, or fails pixel equivalence.
