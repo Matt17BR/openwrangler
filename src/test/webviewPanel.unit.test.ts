@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as vscode from "vscode";
-import { commands, window, workspace } from "vscode";
+import { commands, Uri, window, workspace } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY } from "../extension/files/confirmedFileConfigurations";
 import { OpenWranglerPanel } from "../extension/webviewPanel";
@@ -120,6 +120,14 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.html).not.toContain("script-src 'unsafe-inline'");
     expect(script?.[2].replaceAll("\\", "/")).toBe("file:///extension/media/webview.js");
     expect(harness.html).toContain('data-fetch-column-block-size="16"');
+  });
+
+  it("brands every workbench tab with theme-specific Open Wrangler action icons", () => {
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+
+    const iconPath = harness.iconPath as { light: vscode.Uri; dark: vscode.Uri };
+    expect(iconPath.light.toString()).toBe("file:///extension/media/action-icon-light.svg");
+    expect(iconPath.dark.toString()).toBe("file:///extension/media/action-icon-dark.svg");
   });
 
   it("exposes import reconfiguration only for configurable file formats", () => {
@@ -3982,6 +3990,7 @@ function createPanelHarness(
   posted: unknown[];
   readonly html: string;
   readonly htmlAssignmentCount: number;
+  readonly iconPath: vscode.WebviewPanel["iconPath"];
   open(): Promise<void>;
   receive(message: unknown): Promise<void>;
   send(message: unknown): Promise<void>;
@@ -4021,6 +4030,7 @@ function createPanelHarness(
     webview,
     active: options?.active ?? true,
     viewColumn: 1,
+    iconPath: undefined as vscode.WebviewPanel["iconPath"],
     reveal,
     dispose: () => disposeListener?.(),
     onDidDispose: (listener: () => void) => {
@@ -4032,7 +4042,11 @@ function createPanelHarness(
       return { dispose: () => undefined };
     }
   };
-  const context = { extensionPath: "/extension", workspaceState: options?.workspaceState };
+  const context = {
+    extensionPath: "/extension",
+    extensionUri: Uri.file("/extension"),
+    workspaceState: options?.workspaceState
+  };
   const delegatedRequest: OpenWranglerBridge["request"] = options?.delegateOpen
     ? (request, requestOptions) => bridge.request(request, requestOptions)
     : (request, requestOptions) => {
@@ -4092,6 +4106,9 @@ function createPanelHarness(
     },
     get htmlAssignmentCount() {
       return htmlAssignmentCount;
+    },
+    get iconPath() {
+      return panel.iconPath;
     },
     open: () => instance.open(),
     async receive(message: unknown) {

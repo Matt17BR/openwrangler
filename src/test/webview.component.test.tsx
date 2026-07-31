@@ -384,8 +384,8 @@ describe("DataGrid", () => {
         visualization: {
           kind: "numeric",
           bins: [
-            { min: 1, max: 2.5, count: 2 },
-            { min: 2.5, max: 4, count: 2 }
+            { min: 1, max: 2.5, count: 100 },
+            { min: 2.5, max: 4, count: 1 }
           ],
           sampled: true
         }
@@ -453,9 +453,20 @@ describe("DataGrid", () => {
     ).toBeVisible();
     const bins = within(numericHeader).getAllByRole("graphics-symbol");
     expect(bins).toHaveLength(2);
-    expect(bins[0]).toHaveAccessibleName("1-2.5: 2 rows");
-    expect(bins[1]).toHaveAccessibleName("2.5-4: 2 rows");
+    expect(bins[0]).toHaveAccessibleName("1-2.5: 100 rows");
+    expect(bins[1]).toHaveAccessibleName("2.5-4: 1 row");
     expect(bins[1]).toHaveAttribute("tabindex", "0");
+    expect(bins[1]).toHaveAttribute("height", "36");
+    expect(numericHeader.querySelectorAll(".numericHistogramBar")[1]).toHaveAttribute("height", "2");
+    fireEvent.pointerEnter(bins[1]!);
+    expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("2.5-4: 1 row");
+    expect(bins[1]).toHaveAttribute("aria-describedby", within(numericHeader).getByRole("tooltip").id);
+    fireEvent.pointerLeave(bins[1]!);
+    expect(within(numericHeader).queryByRole("tooltip")).not.toBeInTheDocument();
+    fireEvent.focus(bins[0]!);
+    expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("1-2.5: 100 rows");
+    fireEvent.blur(bins[0]!);
+    expect(within(numericHeader).queryByRole("tooltip")).not.toBeInTheDocument();
     expect(screen.getByRole("img", { name: "boolean distribution: true 3, false 1." })).toHaveTextContent(
       "True 3False 1"
     );

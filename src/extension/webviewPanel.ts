@@ -90,6 +90,10 @@ export class OpenWranglerPanel {
     openImmediately = true,
     private readonly backendPreference: DataBackend | "auto" = backend ?? "auto"
   ) {
+    this.panel.iconPath = {
+      light: vscode.Uri.joinPath(this.context.extensionUri, "media", "action-icon-light.svg"),
+      dark: vscode.Uri.joinPath(this.context.extensionUri, "media", "action-icon-dark.svg")
+    };
     this.panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.file(path.join(this.context.extensionPath, "media"))]

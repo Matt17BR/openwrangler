@@ -125,6 +125,24 @@ export const Uri = {
       fsPath: path,
       toString: () => value
     };
+  },
+  joinPath(
+    base: { scheme: string; authority: string; path: string; fsPath: string },
+    ...parts: string[]
+  ): { scheme: string; authority: string; path: string; fsPath: string; toString(): string } {
+    const suffix = parts
+      .map((part) => part.replace(/^\/+|\/+$/gu, ""))
+      .filter(Boolean)
+      .join("/");
+    const basePath = base.path.replace(/\/+$/gu, "");
+    const joinedPath = suffix ? `${basePath}/${suffix}` : basePath;
+    return {
+      scheme: base.scheme,
+      authority: base.authority,
+      path: joinedPath,
+      fsPath: joinedPath,
+      toString: () => `${base.scheme}://${base.authority}${joinedPath}`
+    };
   }
 };
 

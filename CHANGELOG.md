@@ -4,6 +4,17 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Changed
+
+- Made every numeric histogram bin use an equal-width, full-chart-height pointer and keyboard target while keeping
+  its visible bar proportional to the count. Hovering or focusing even a two-pixel bar now highlights it
+  immediately and shows the bin range and row count in a theme-aware tooltip.
+
+### Fixed
+
+- Branded Open Wrangler workbench and custom-editor tabs with the theme-specific Open Wrangler action icon instead
+  of inheriting a generic text or source-file glyph.
+
 ## [1.1.9] - 2026-07-31
 
 ### Fixed

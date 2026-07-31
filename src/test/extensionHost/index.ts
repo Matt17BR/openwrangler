@@ -7041,6 +7041,7 @@ async function exercisePackagedFileLaunchSurfaces(
     .locator(".tabs-container .tab.active")
     .filter({ hasText: path.basename(fixture.fsPath) })
     .last();
+  await assertOpenWranglerTabBrandIcon(openWranglerTab);
   const { menu: openWranglerContextMenu } = await openEditorTabContextMenu(page, openWranglerTab);
   assert.equal(
     await openWranglerContextMenu.getByRole("menuitem", { name: "Open in Open Wrangler", exact: true }).count(),
@@ -7056,6 +7057,27 @@ async function exercisePackagedFileLaunchSurfaces(
   );
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   recordAcceptanceProgress("verify:file-launch:complete");
+}
+
+async function assertOpenWranglerTabBrandIcon(tab: Locator): Promise<void> {
+  await tab.waitFor({ state: "visible", timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+  const iconReferences = await tab.evaluate((root) => {
+    const references = new Set<string>();
+    for (const element of [root, ...root.querySelectorAll("*")]) {
+      if (element instanceof HTMLImageElement && element.src) references.add(element.src);
+      for (const pseudo of [undefined, "::before", "::after"] as const) {
+        const style = getComputedStyle(element, pseudo);
+        for (const value of [style.backgroundImage, style.maskImage]) {
+          if (value && value !== "none") references.add(value);
+        }
+      }
+    }
+    return [...references];
+  });
+  assert.ok(
+    iconReferences.some((reference) => /action-icon-(?:dark|light)\.svg/iu.test(reference)),
+    `The Open Wrangler custom-editor tab must use its branded theme icon, not a generic file glyph. Observed icon references: ${JSON.stringify(iconReferences)}.`
+  );
 }
 
 interface ContextMenuDiagnostic {
