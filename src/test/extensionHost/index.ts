@@ -189,6 +189,7 @@ const IMPORT_FOCUS_POLL_INTERVAL_MS = 50;
 const IMPORT_FOCUS_PROBE_TIMEOUT_MS = 1_000;
 const NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS = 30_000;
 const NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS = 1_000;
+const NOTEBOOK_RENDERER_ACTION_STABLE_MS = 750;
 const NOTEBOOK_RENDERER_TARGET_LIMIT = 64;
 const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
 const RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS = 120_000;
@@ -3958,10 +3959,47 @@ async function openReleasedRendererVariableSession(
     description,
     activate: async () => {
       recordAcceptanceProgress(`${checkpoint}:activate`);
+      assert.equal(
+        await action.evaluate((element) => {
+          type RendererActionElement = {
+            readonly isConnected: boolean;
+            readonly ownerDocument: { readonly activeElement: unknown };
+            dataset: Record<string, string | undefined>;
+            focus(): void;
+            addEventListener(
+              type: "click",
+              listener: (event: { readonly isTrusted: boolean }) => void,
+              options: { once: boolean }
+            ): void;
+          };
+          const candidate = element as RendererActionElement;
+          if (!candidate.isConnected) return false;
+          candidate.dataset.openWranglerAcceptanceActivation = "pending";
+          candidate.addEventListener(
+            "click",
+            (event) => {
+              if (event.isTrusted) candidate.dataset.openWranglerAcceptanceActivation = "seen";
+            },
+            { once: true }
+          );
+          candidate.focus();
+          return candidate.ownerDocument.activeElement === candidate;
+        }),
+        true,
+        "The exact notebook renderer action must remain connected and accept focus before activation."
+      );
       await withAcceptanceOperationDeadline(
         action.click(),
         WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
         "the exact notebook renderer action to receive one Playwright click"
+      );
+      assert.equal(
+        await action.evaluate(
+          (element) =>
+            (element as { dataset: Record<string, string | undefined> }).dataset.openWranglerAcceptanceActivation
+        ),
+        "seen",
+        "The exact notebook renderer action must receive one trusted click."
       );
     },
     receipt,
@@ -12525,6 +12563,8 @@ interface NotebookRendererLoadObserver {
 }
 
 interface NotebookRendererButton {
+  readonly page: Page;
+  readonly frame: Frame;
   readonly pointer: {
     click(x: number, y: number): Promise<void>;
   };
@@ -12625,8 +12665,41 @@ async function waitForNotebookRendererButton(
         }
       }
       if (nestedButtons.length === 1) {
-        returnedNestedButton = nestedButtons[0]!;
-        return returnedNestedButton;
+        const candidate = nestedButtons[0]!;
+        const remainingMs = deadline - Date.now();
+        if (remainingMs > 0) {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, Math.min(NOTEBOOK_RENDERER_ACTION_STABLE_MS, remainingMs))
+          );
+          try {
+            const [ready, box] = await Promise.all([
+              candidate.evaluate((element) => {
+                type RendererActionElement = {
+                  readonly isConnected: boolean;
+                  readonly disabled?: boolean;
+                  getAttribute(name: string): string | null;
+                };
+                const action = element as RendererActionElement;
+                return (
+                  action.isConnected && action.disabled !== true && action.getAttribute("aria-disabled") !== "true"
+                );
+              }),
+              candidate.boundingBox()
+            ]);
+            if (ready && box && box.width > 0 && box.height > 0) {
+              returnedNestedButton = candidate;
+              return returnedNestedButton;
+            }
+          } catch (error) {
+            ignoreRetiredRendererProbeFailure(
+              workbench,
+              workbench.context().browser(),
+              candidate.page,
+              candidate.frame,
+              error
+            );
+          }
+        }
       }
     } finally {
       await Promise.allSettled(
@@ -12753,6 +12826,8 @@ async function resolveNestedNotebookRendererButton(
     throw error;
   }
   return {
+    page: frame.page(),
+    frame,
     pointer: frame.page().mouse,
     click: () => element.click(),
     boundingBox: () => element.boundingBox(),
