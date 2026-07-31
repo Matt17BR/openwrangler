@@ -296,6 +296,10 @@ describe("packaged editor screenshot evidence", () => {
     const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
     const mediaSpec = readFileSync(resolve("docs/media-spec-v1.2.md"), "utf8");
     const testing = readFileSync(resolve("docs/testing.md"), "utf8");
+    const notebookInsertion = extensionHost.slice(
+      extensionHost.indexOf("async function assertReleasedNotebookCodeInsertion"),
+      extensionHost.indexOf("async function captureReleasedJupyterCodeInsertion")
+    );
 
     expect(extensionHost).toContain('packagedScreenshotFileName(editor, "file-explorer-action", "dark")');
     expect(extensionHost).toContain("await action.click();");
@@ -308,7 +312,9 @@ describe("packaged editor screenshot evidence", () => {
     );
     expect(extensionHost).toContain("const boundaryTolerance = 1;");
     expect(extensionHost).toContain('"notebook-code-insertion"');
-    expect(extensionHost).toContain("const code = active.code;");
+    expect(notebookInsertion).toContain('newColumn: "value_plus_10"');
+    expect(notebookInsertion).toContain("const code = insertionActive?.code;");
+    expect(notebookInsertion).not.toContain("setCodeForExport");
     expect(mediaSpec).toContain("### Explorer, edit, undo, and high contrast");
     expect(mediaSpec).toContain("Generated-code insertion uses the live Pandas session's engine-generated code");
     expect(mediaSpec).not.toContain("## Remaining capture backlog");

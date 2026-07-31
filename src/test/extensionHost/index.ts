@@ -1536,6 +1536,7 @@ async function exerciseReleasedJupyterExtension(
     assertExactOpenNotebookDocument(notebook, "before resolving the pandas_frame action from Jupyter Variables");
 
     recordAcceptanceProgress(`${phase}:variables-action`);
+    await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     await dispatchReleasedJupyterVariableAction(workbench, notebook, "pandas_frame", `${phase}:variables`);
     recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
     recordAcceptanceProgress(`${phase}:variables-panel-created`);
@@ -1546,6 +1547,7 @@ async function exerciseReleasedJupyterExtension(
       { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
       "the Pandas DataFrame opened from the real Jupyter Variables view"
     );
+    assert.equal(pandasFrame.metadata.mode, "editing");
 
     recordAcceptanceProgress(`${phase}:pandas-dataframe`);
     await assertReleasedSessionPage(testing, pandasFrame, "1", "released-jupyter-pandas-dataframe");
@@ -1554,6 +1556,7 @@ async function exerciseReleasedJupyterExtension(
     }
     await assertReleasedNotebookCodeInsertion(testing, notebook, pandasFrame, "pandas_frame", phase);
     await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
+    await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
 
     recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
     await showExactReleasedNotebook(notebook);
@@ -4124,10 +4127,55 @@ async function assertReleasedNotebookCodeInsertion(
   phase: ReleasedJupyterPhase
 ): Promise<void> {
   assert.equal(active.metadata.source.kind, "notebookVariable");
-  const code = active.code;
+  assert.equal(active.metadata.mode, "editing");
+  assert.equal(active.metadata.steps.length, 0);
+  const preview = await testing.request({
+    kind: "previewStep",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: active.sessionId,
+    revision: active.metadata.revision,
+    step: {
+      id: "released-jupyter-insertion-formula",
+      kind: "formula",
+      params: {
+        leftColumn: columnReference(active.metadata, "value"),
+        operator: "add",
+        value: 10,
+        newColumn: "value_plus_10"
+      }
+    },
+    offset: 0,
+    limit: 10
+  });
+  assert.equal(preview.kind, "stepPreview");
+  if (preview.kind !== "stepPreview") {
+    throw new Error("Released-Jupyter insertion did not preview its real formula step.");
+  }
+  const applied = await testing.request({
+    kind: "applyDraft",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: active.sessionId,
+    revision: preview.revision,
+    offset: 0,
+    limit: 10
+  });
+  assert.equal(applied.kind, "planUpdated");
+  if (applied.kind !== "planUpdated") {
+    throw new Error("Released-Jupyter insertion did not apply its real formula step.");
+  }
+  const insertionActive = testing.activeSession();
+  assert.equal(insertionActive?.sessionId, active.sessionId);
+  assert.equal(insertionActive?.metadata.steps.length, 1);
+  assert.equal(insertionActive?.metadata.steps[0]?.kind, "formula");
+  assert.equal(
+    insertionActive?.metadata.schema.some((column) => column.name === "value_plus_10"),
+    true
+  );
+  const code = insertionActive?.code;
   assert.ok(code, "Released-Jupyter insertion requires the engine's real generated cleaning code.");
   assert.match(code, /import pandas as pd/u);
   assert.match(code, /def clean_data\(df\):/u);
+  assert.match(code, /value_plus_10/u);
   const before = Array.from({ length: notebook.cellCount }, (_, index) => notebook.cellAt(index).document.getText());
   const decoyPath = path.join(path.dirname(notebook.uri.fsPath), "released-jupyter-insertion-decoy.ipynb");
   writeFileSync(
@@ -4162,7 +4210,6 @@ async function assertReleasedNotebookCodeInsertion(
     const decoyBefore = Array.from({ length: decoy.cellCount }, (_, index) => decoy.cellAt(index).document.getText());
 
     testing.setActiveSession(active.sessionId);
-    testing.setCodeForExport(code);
     recordAcceptanceProgress(`${phase}:insertion-decoy-active`);
     assertExactOpenNotebookDocument(notebook, "before released-Jupyter generated-code insertion");
     assertExactOpenNotebookDocument(decoy, "before insertion while the decoy remained open");
