@@ -1840,7 +1840,26 @@ async function exerciseReleasedJupyterExtension(
         selectedColumnId: recoveryDuckdbRevenue.id,
         viewport: { firstVisibleRow: 123, scrollLeft: 120 }
       };
+      await waitFor(
+        () => testing.panelHydrated(duckdbVariablesRelation.sessionId),
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        "the native DuckDB recovery panel to hydrate before presentation injection"
+      );
+      assert.equal(
+        await testing.synchronizePanel(duckdbVariablesRelation.sessionId),
+        true,
+        "The native DuckDB recovery panel must settle its default presentation before injection."
+      );
       await testing.updateViewState(duckdbVariablesRelation.sessionId, recoveryDuckdbViewState);
+      assert.equal(
+        await testing.synchronizePanel(duckdbVariablesRelation.sessionId),
+        true,
+        "The native DuckDB recovery presentation must commit through the real renderer before restart."
+      );
+      assert.deepEqual(testing.activeSession()?.viewState, {
+        ...recoveryDuckdbViewState,
+        filterModel: filteredDuckdbModel
+      });
       duckdbRecoverySession = {
         sessionId: duckdbVariablesRelation.sessionId,
         revision: recoveryDuckdbPage.revision,
