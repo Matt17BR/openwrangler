@@ -60,6 +60,7 @@ interface CoordinatedSession extends RuntimeSessionState {
   backgroundQueue: QueuedSessionOperation[];
   terminalOperation?: QueuedSessionOperation;
   idleWaiters: Set<() => void>;
+  cancelledActiveViewRequestIds: Set<string>;
   closing: boolean;
   reconfiguring: boolean;
   recoveryRequired: boolean;
@@ -506,6 +507,7 @@ export class SessionCoordinator implements vscode.Disposable {
       interactiveQueue: [],
       backgroundQueue: [],
       idleWaiters: new Set(),
+      cancelledActiveViewRequestIds: new Set(),
       metadata: response.metadata,
       code: "",
       viewState: initialViewingState(response.metadata),
@@ -1032,6 +1034,8 @@ export class SessionCoordinator implements vscode.Disposable {
           session.activeBackgroundOperation = undefined;
           session.activeBackgroundRequest = undefined;
         }
+        const viewRequestId = requestViewId(operation.request);
+        if (viewRequestId) session.cancelledActiveViewRequestIds.delete(viewRequestId);
         this.startNextSessionOperation(session);
       });
     if (lane === "foreground") session.activeForegroundOperation = activeOperation;
@@ -1057,6 +1061,12 @@ export class SessionCoordinator implements vscode.Disposable {
     const session = this.sessions.get(sessionId);
     if (!session || viewRequestIds.length === 0) return;
     const cancelled = new Set(viewRequestIds);
+    for (const active of [session.activeForegroundRequest, session.activeBackgroundRequest]) {
+      const viewRequestId = active ? requestViewId(active) : undefined;
+      if (active && viewRequestId && cancelled.has(viewRequestId) && isCancellableQueuedViewRequest(active)) {
+        session.cancelledActiveViewRequestIds.add(viewRequestId);
+      }
+    }
     const discarded: QueuedSessionOperation[] = [];
     const retainUncancelled = (queue: QueuedSessionOperation[]): QueuedSessionOperation[] =>
       queue.filter((operation) => {
@@ -1142,8 +1152,25 @@ export class SessionCoordinator implements vscode.Disposable {
     let requestRuntimeRevision = session.runtimeRevision;
     const previousFilterModel = session.metadata.filterModel;
     const isBackground = sessionRequestPriority(publicRequest, options) === "background";
-    const canRecoverUnknownSession = (): boolean => !this.disposed && !session.closing && !isBackground;
+    const rendererBackgroundRead =
+      isBackground && isRecoverableRendererBackgroundRead(publicRequest) && options?.viewContextId !== undefined;
+    const requestWasCancelled = (): boolean => {
+      const viewRequestId = requestViewId(publicRequest);
+      return Boolean(viewRequestId && session.cancelledActiveViewRequestIds.has(viewRequestId));
+    };
+    const rendererBackgroundReadIsCurrent = (): boolean =>
+      rendererBackgroundRead && !requestWasCancelled() && isCurrentLogicalView(session, options);
+    const canRecoverUnknownSession = (): boolean =>
+      !this.disposed && !session.closing && (!isBackground || rendererBackgroundReadIsCurrent());
     const canRecoverTransport = (): boolean => canRecoverUnknownSession() && isIdempotentReadRequest(publicRequest);
+    const staleBackgroundResponse = (): OpenWranglerResponse =>
+      protocolError(
+        "stale_response",
+        "Ignored a cancelled or superseded profiling request before runtime recovery.",
+        true,
+        session.publicId,
+        requestViewId(publicRequest)
+      );
     const runtimeRequest = (): SessionBoundRequest =>
       ({
         ...publicRequest,
@@ -1163,18 +1190,60 @@ export class SessionCoordinator implements vscode.Disposable {
       // A transport failure is ambiguous for mutations and exports: the remote
       // runtime may have committed before delivery failed. Only pure reads may
       // be replayed and reissued automatically.
-      const recovered = canRecoverTransport() && (await this.replay(session, options));
+      if (rendererBackgroundRead && !requestWasCancelled() && !isCurrentLogicalView(session, options)) {
+        return staleBackgroundResponse();
+      }
+      const recovered =
+        canRecoverTransport() &&
+        (await this.replayAfterRuntimeLoss(session, requestRuntimeId, automaticRecoveryOptions(options)));
       if (!recovered) throw error;
+      if (rendererBackgroundRead && !rendererBackgroundReadIsCurrent()) {
+        if (requestWasCancelled()) throw error;
+        return staleBackgroundResponse();
+      }
       requestRuntimeId = session.runtimeId;
       requestRuntimeRevision = session.runtimeRevision;
       response = await session.delegate.request(runtimeRequest(), options);
     }
 
     if (isUnknownRuntimeSession(response, requestRuntimeId)) {
+      const unknownValidationRequest = {
+        ...publicRequest,
+        sessionId: requestRuntimeId,
+        revision: requestRuntimeRevision
+      } as SessionBoundRequest;
+      const unknownMismatch = responseMismatch(
+        unknownValidationRequest,
+        response,
+        requestRuntimeId,
+        session.metadata.schema
+      );
+      if (unknownMismatch) {
+        return protocolError(
+          "invalid_runtime_response",
+          `Ignored an invalid ${publicRequest.kind} response: ${unknownMismatch}`,
+          true,
+          session.publicId,
+          requestViewId(publicRequest)
+        );
+      }
+      const confirmedUnknownResponse = { ...response };
       // An explicit unknown-session response proves the request did not run, so
-      // replay and reissue are safe for all interactive operations.
-      const recovered = canRecoverUnknownSession() && (await this.replay(session, options));
+      // replay and reissue are safe for interactive operations and current,
+      // renderer-owned idempotent profiling reads.
+      if (rendererBackgroundRead && !requestWasCancelled() && !isCurrentLogicalView(session, options)) {
+        return staleBackgroundResponse();
+      }
+      const recovered =
+        canRecoverUnknownSession() &&
+        (await this.replayAfterRuntimeLoss(session, requestRuntimeId, automaticRecoveryOptions(options)));
       if (recovered) {
+        if (rendererBackgroundRead && !rendererBackgroundReadIsCurrent()) {
+          if (requestWasCancelled()) {
+            return { ...confirmedUnknownResponse, sessionId: session.publicId };
+          }
+          return staleBackgroundResponse();
+        }
         session.recoveryRequired = false;
         requestRuntimeId = session.runtimeId;
         requestRuntimeRevision = session.runtimeRevision;
@@ -1774,6 +1843,18 @@ export class SessionCoordinator implements vscode.Disposable {
     return this.serializeSessionEstablishment(session.delegate, () => this.replayExclusive(session, options));
   }
 
+  private replayAfterRuntimeLoss(
+    session: CoordinatedSession,
+    failedRuntimeId: string,
+    options?: BridgeRequestOptions
+  ): Promise<boolean> {
+    return this.serializeSessionEstablishment(session.delegate, async () => {
+      if (!this.isLiveSession(session) || session.closing) return false;
+      if (session.runtimeId !== failedRuntimeId) return true;
+      return this.replayExclusive(session, options);
+    });
+  }
+
   private serializeSessionEstablishment<T>(delegate: OpenWranglerBridge, establish: () => Promise<T>): Promise<T> {
     const preceding = this.sessionEstablishmentTails.get(delegate) ?? Promise.resolve();
     const result = preceding.then(establish, establish);
@@ -2019,6 +2100,10 @@ function isIdempotentReadRequest(request: SessionBoundRequest): boolean {
     request.kind === "getColumnValues" ||
     request.kind === "inspectStep"
   );
+}
+
+function isRecoverableRendererBackgroundRead(request: SessionBoundRequest): boolean {
+  return request.kind === "getSummary" || request.kind === "getDatasetStats";
 }
 
 function isRuntimeStateMutation(request: SessionBoundRequest): boolean {
@@ -2288,6 +2373,10 @@ function terminalRuntimeCleanupOptions(options?: BridgeRequestOptions): BridgeRe
 
 function runtimeRecoveryOptions(): BridgeRequestOptions {
   return { priority: "interactive" };
+}
+
+function automaticRecoveryOptions(options?: BridgeRequestOptions): BridgeRequestOptions {
+  return { ...options, priority: "interactive" };
 }
 
 function isConfirmedAbsentSession(response: OpenWranglerResponse, expectedSessionId: string): boolean {

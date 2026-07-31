@@ -4,6 +4,22 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.8] - 2026-07-31
+
+### Fixed
+
+- Recovered the confirmed dataframe session when a current renderer-owned **Header profiles** request is the
+  first read after a standalone runtime exit. Summary and dataset-statistics reads now share one replacement
+  runtime with a concurrent foreground recovery, while a cancelled or superseded profiling request is never
+  reissued and mutations retain their no-retry guarantee.
+
+### Changed
+
+- Extended zero-window native acceptance to physical Explorer context-menu launch plus fresh-process rendered
+  persistence and recovery. The release gate now verifies one exact **Open in Open Wrangler** action, prompt-free
+  inferred CSV import, unchanged source bytes, committed cleaning state, sort priority, column presentation,
+  nonzero viewport restoration, visible-row status, and renderer-triggered profile recovery.
+
 ## [1.1.7] - 2026-07-31
 
 ### Changed

@@ -2202,10 +2202,10 @@ describe("SessionCoordinator", () => {
     expect(coordinator.activeSession()?.metadata.revision).toBe(1);
   });
 
-  it("does not replay a failed background profile and lets the next interactive request recover", async () => {
+  it("replays and reissues a current renderer-owned background profile after a transport failure", async () => {
     const executionOrder: string[] = [];
     let openCount = 0;
-    let interactivePageAttempts = 0;
+    let profileAttempts = 0;
     const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") {
         openCount += 1;
@@ -2213,17 +2213,13 @@ describe("SessionCoordinator", () => {
         return openedResponse(`runtime-${openCount}`);
       }
       if (request.kind === "getSummary") {
-        executionOrder.push("profile");
-        throw new Error("profile transport failed");
+        profileAttempts += 1;
+        executionOrder.push(`profile-${request.sessionId}-${profileAttempts}`);
+        if (profileAttempts === 1) throw new Error("profile transport failed");
+        return summaryResponse(request.viewRequestId);
       }
       if (request.kind === "getPage") {
-        if (request.limit === 1) {
-          executionOrder.push("restore-page");
-        } else {
-          interactivePageAttempts += 1;
-          executionOrder.push(`interactive-page-${interactivePageAttempts}`);
-          if (interactivePageAttempts === 1) throw new Error("interactive transport failed");
-        }
+        executionOrder.push("restore-page");
         return pageResponse(request, `runtime-${openCount}`);
       }
       if (request.kind === "closeSession") {
@@ -2236,39 +2232,468 @@ describe("SessionCoordinator", () => {
     const bridge = coordinator.createBridge({ request: delegateRequest });
     const opened = await bridge.request(openRequest);
     if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    bridge.setViewContext?.(opened.metadata.sessionId, "renderer-view");
 
     await expect(
-      bridge.request({
-        kind: "getSummary",
-        sessionId: opened.metadata.sessionId,
-        revision: opened.metadata.revision,
-        viewRequestId: "failure-profile",
-        filterModel: opened.metadata.filterModel
-      })
-    ).rejects.toThrow("profile transport failed");
-    expect(openCount).toBe(1);
-
-    const page = await bridge.request({
-      kind: "getPage",
-      sessionId: opened.metadata.sessionId,
-      revision: opened.metadata.revision,
-      viewRequestId: "failure-interactive-page",
-      offset: 0,
-      limit: 100,
-      ...columnWindow,
-      filterModel: opened.metadata.filterModel
-    });
-
-    expect(page).toMatchObject({ kind: "page", viewRequestId: "failure-interactive-page" });
+      bridge.request(
+        {
+          kind: "getSummary",
+          sessionId: opened.metadata.sessionId,
+          revision: opened.metadata.revision,
+          viewRequestId: "failure-profile",
+          filterModel: opened.metadata.filterModel
+        },
+        { viewContextId: "renderer-view" }
+      )
+    ).resolves.toMatchObject({ kind: "summary", viewRequestId: "failure-profile" });
+    expect(openCount).toBe(2);
     expect(executionOrder).toEqual([
       "open-1",
-      "profile",
-      "interactive-page-1",
+      "profile-runtime-1-1",
       "open-2",
       "restore-page",
       "close-runtime-1",
-      "interactive-page-2"
+      "profile-runtime-2-2"
     ]);
+  });
+
+  it("replays and reissues current renderer-owned dataset statistics after an unknown-session response", async () => {
+    const executionOrder: string[] = [];
+    let openCount = 0;
+    let statsAttempts = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        executionOrder.push(`open-${openCount}`);
+        return openedResponse(`runtime-${openCount}`);
+      }
+      if (request.kind === "getDatasetStats") {
+        statsAttempts += 1;
+        executionOrder.push(`stats-${request.sessionId}-${statsAttempts}`);
+        if (statsAttempts === 1) {
+          return {
+            kind: "error",
+            code: "unknown_session",
+            message: `Unknown session: ${request.sessionId}`,
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
+        return datasetStatsResponse(request.viewRequestId);
+      }
+      if (request.kind === "getPage") {
+        executionOrder.push("restore-page");
+        return pageResponse(request, `runtime-${openCount}`);
+      }
+      if (request.kind === "closeSession") {
+        executionOrder.push(`close-${request.sessionId}`);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    bridge.setViewContext?.(opened.metadata.sessionId, "renderer-view");
+
+    await expect(
+      bridge.request(
+        {
+          kind: "getDatasetStats",
+          sessionId: opened.metadata.sessionId,
+          revision: opened.metadata.revision,
+          viewRequestId: "missing-runtime-stats",
+          filterModel: opened.metadata.filterModel
+        },
+        { viewContextId: "renderer-view" }
+      )
+    ).resolves.toMatchObject({ kind: "datasetStats", viewRequestId: "missing-runtime-stats" });
+    expect(openCount).toBe(2);
+    expect(executionOrder).toEqual([
+      "open-1",
+      "stats-runtime-1-1",
+      "open-2",
+      "restore-page",
+      "close-runtime-1",
+      "stats-runtime-2-2"
+    ]);
+  });
+
+  it.each([
+    { label: "missing", returnedViewRequestId: undefined },
+    { label: "mismatched", returnedViewRequestId: "another-profile" }
+  ])(
+    "rejects an unknown-session profile with a $label view request ID before recovery",
+    async ({ returnedViewRequestId }) => {
+      const executionOrder: string[] = [];
+      let openCount = 0;
+      let cancelDuringReplay = (): void => undefined;
+      const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") {
+          openCount += 1;
+          executionOrder.push(`open-${openCount}`);
+          if (openCount === 2) cancelDuringReplay();
+          return openedResponse(`runtime-${openCount}`);
+        }
+        if (request.kind === "getSummary") {
+          executionOrder.push(`summary-${request.sessionId}`);
+          return {
+            kind: "error",
+            code: "unknown_session",
+            message: `Unknown session: ${request.sessionId}`,
+            recoverable: true,
+            sessionId: request.sessionId,
+            ...(returnedViewRequestId === undefined ? {} : { viewRequestId: returnedViewRequestId })
+          };
+        }
+        if (request.kind === "getPage") {
+          executionOrder.push(`restore-${request.sessionId}`);
+          return pageResponse(request, request.sessionId);
+        }
+        if (request.kind === "closeSession") {
+          executionOrder.push(`close-${request.sessionId}`);
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        throw new Error(`Unexpected delegate request: ${request.kind}`);
+      });
+      const coordinator = new SessionCoordinator();
+      const bridge = coordinator.createBridge({ request: delegateRequest });
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+      bridge.setViewContext?.(opened.metadata.sessionId, "renderer-view");
+      cancelDuringReplay = () =>
+        bridge.cancelViewRequests?.(opened.metadata.sessionId, ["mis-correlated-unknown-profile"]);
+
+      const response = await bridge.request(
+        {
+          kind: "getSummary",
+          sessionId: opened.metadata.sessionId,
+          revision: opened.metadata.revision,
+          viewRequestId: "mis-correlated-unknown-profile",
+          filterModel: opened.metadata.filterModel
+        },
+        { viewContextId: "renderer-view" }
+      );
+
+      expect(response).toMatchObject({
+        kind: "error",
+        code: "invalid_runtime_response",
+        sessionId: opened.metadata.sessionId,
+        viewRequestId: "mis-correlated-unknown-profile"
+      });
+      expect(openCount).toBe(1);
+      expect(executionOrder).toEqual(["open-1", "summary-runtime-1"]);
+    }
+  );
+
+  it("completes shared recovery but does not reissue a renderer profile cancelled during replay", async () => {
+    const summaryFailure = deferred<OpenWranglerResponse>();
+    const pageFailure = deferred<OpenWranglerResponse>();
+    const recoveryStarted = deferred<void>();
+    const finishRecoveryOpen = deferred<void>();
+    const executionOrder: string[] = [];
+    let openCount = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        executionOrder.push(`open-${openCount}`);
+        if (openCount === 2) {
+          recoveryStarted.resolve(undefined);
+          await finishRecoveryOpen.promise;
+        }
+        return openedResponse(`runtime-${openCount}`);
+      }
+      if (request.kind === "getSummary") {
+        executionOrder.push(`summary-${request.sessionId}`);
+        if (request.sessionId === "runtime-1") return summaryFailure.promise;
+        return summaryResponse(request.viewRequestId);
+      }
+      if (request.kind === "getPage") {
+        if (request.limit === 1) {
+          executionOrder.push(`restore-${request.sessionId}`);
+          return pageResponse(request, request.sessionId);
+        }
+        executionOrder.push(`page-${request.sessionId}`);
+        if (request.sessionId === "runtime-1") return pageFailure.promise;
+        return pageResponse(request, request.sessionId);
+      }
+      if (request.kind === "closeSession") {
+        executionOrder.push(`close-${request.sessionId}`);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    bridge.setViewContext?.(opened.metadata.sessionId, "renderer-view");
+
+    const summary = bridge.request(
+      {
+        kind: "getSummary",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "cancelled-during-shared-replay",
+        filterModel: opened.metadata.filterModel
+      },
+      { viewContextId: "renderer-view" }
+    );
+    await vi.waitFor(() => expect(executionOrder).toContain("summary-runtime-1"));
+    const page = bridge.request(
+      {
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "shared-recovery-page",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      },
+      { viewContextId: "renderer-view" }
+    );
+    await vi.waitFor(() => expect(executionOrder).toContain("page-runtime-1"));
+    summaryFailure.resolve({
+      kind: "error",
+      code: "unknown_session",
+      message: "Unknown session: runtime-1",
+      recoverable: true,
+      sessionId: "runtime-1",
+      viewRequestId: "cancelled-during-shared-replay"
+    });
+    pageFailure.resolve({
+      kind: "error",
+      code: "unknown_session",
+      message: "Unknown session: runtime-1",
+      recoverable: true,
+      sessionId: "runtime-1",
+      viewRequestId: "shared-recovery-page"
+    });
+    await recoveryStarted.promise;
+    bridge.cancelViewRequests?.(opened.metadata.sessionId, ["cancelled-during-shared-replay"]);
+    finishRecoveryOpen.resolve(undefined);
+
+    await expect(summary).resolves.toMatchObject({
+      kind: "error",
+      code: "unknown_session",
+      sessionId: opened.metadata.sessionId,
+      viewRequestId: "cancelled-during-shared-replay"
+    });
+    await expect(page).resolves.toMatchObject({ kind: "page", viewRequestId: "shared-recovery-page" });
+    expect(openCount).toBe(2);
+    expect(executionOrder.filter((entry) => entry === "open-2")).toHaveLength(1);
+    expect(executionOrder).toContain("restore-runtime-2");
+    expect(executionOrder).toContain("page-runtime-2");
+    expect(executionOrder).not.toContain("summary-runtime-2");
+  });
+
+  it("recovers the session but does not reissue a renderer profile superseded during replay", async () => {
+    const replayOpen = deferred<void>();
+    const finishReplayOpen = deferred<void>();
+    const executionOrder: string[] = [];
+    let openCount = 0;
+    let profileAttempts = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        executionOrder.push(`open-${openCount}`);
+        if (openCount === 2) {
+          replayOpen.resolve(undefined);
+          await finishReplayOpen.promise;
+        }
+        return openedResponse(`runtime-${openCount}`);
+      }
+      if (request.kind === "getSummary") {
+        profileAttempts += 1;
+        executionOrder.push(`profile-${request.sessionId}-${profileAttempts}`);
+        throw new Error("profile transport failed");
+      }
+      if (request.kind === "getPage") {
+        executionOrder.push("restore-page");
+        return pageResponse(request, `runtime-${openCount}`);
+      }
+      if (request.kind === "closeSession") {
+        executionOrder.push(`close-${request.sessionId}`);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    bridge.setViewContext?.(opened.metadata.sessionId, "renderer-view-a");
+
+    const profile = bridge.request(
+      {
+        kind: "getSummary",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "superseded-profile",
+        filterModel: opened.metadata.filterModel
+      },
+      { viewContextId: "renderer-view-a" }
+    );
+    await replayOpen.promise;
+    bridge.setViewContext?.(opened.metadata.sessionId, "renderer-view-b");
+    finishReplayOpen.resolve(undefined);
+
+    await expect(profile).resolves.toMatchObject({
+      kind: "error",
+      code: "stale_response",
+      viewRequestId: "superseded-profile"
+    });
+    expect(profileAttempts).toBe(1);
+    expect(openCount).toBe(2);
+    expect(executionOrder).toEqual(["open-1", "profile-runtime-1-1", "open-2", "restore-page", "close-runtime-1"]);
+  });
+
+  it("does not recover or reissue an active renderer profile cancelled before its transport failure", async () => {
+    const activeProfile = deferred<void>();
+    const executionOrder: string[] = [];
+    let openCount = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        executionOrder.push(`open-${openCount}`);
+        return openedResponse(`runtime-${openCount}`);
+      }
+      if (request.kind === "getSummary") {
+        executionOrder.push(`profile-${request.sessionId}`);
+        await activeProfile.promise;
+        throw new Error("cancelled profile transport failed");
+      }
+      if (request.kind === "closeSession") {
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    bridge.setViewContext?.(opened.metadata.sessionId, "renderer-view");
+
+    const profile = bridge.request(
+      {
+        kind: "getSummary",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "cancelled-active-profile",
+        filterModel: opened.metadata.filterModel
+      },
+      { viewContextId: "renderer-view" }
+    );
+    await vi.waitFor(() => expect(executionOrder).toEqual(["open-1", "profile-runtime-1"]));
+    bridge.cancelViewRequests?.(opened.metadata.sessionId, ["cancelled-active-profile"]);
+    activeProfile.resolve(undefined);
+
+    await expect(profile).rejects.toThrow("cancelled profile transport failed");
+    expect(openCount).toBe(1);
+    expect(executionOrder).toEqual(["open-1", "profile-runtime-1"]);
+  });
+
+  it("coalesces concurrent foreground and renderer-background recovery for one lost runtime", async () => {
+    const summaryFailure = deferred<OpenWranglerResponse>();
+    const pageFailure = deferred<OpenWranglerResponse>();
+    const recoveryStarted = deferred<void>();
+    const finishRecoveryOpen = deferred<void>();
+    const executionOrder: string[] = [];
+    let openCount = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        executionOrder.push(`open-${openCount}`);
+        if (openCount === 2) {
+          recoveryStarted.resolve(undefined);
+          await finishRecoveryOpen.promise;
+        }
+        return openedResponse(`runtime-${openCount}`);
+      }
+      if (request.kind === "getSummary") {
+        executionOrder.push(`summary-${request.sessionId}`);
+        if (request.sessionId === "runtime-1") return summaryFailure.promise;
+        return summaryResponse(request.viewRequestId);
+      }
+      if (request.kind === "getPage") {
+        if (request.limit === 1) {
+          executionOrder.push(`restore-${request.sessionId}`);
+          return pageResponse(request, request.sessionId);
+        }
+        executionOrder.push(`page-${request.sessionId}`);
+        if (request.sessionId === "runtime-1") return pageFailure.promise;
+        return pageResponse(request, request.sessionId);
+      }
+      if (request.kind === "closeSession") {
+        executionOrder.push(`close-${request.sessionId}`);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    bridge.setViewContext?.(opened.metadata.sessionId, "renderer-view");
+
+    const summary = bridge.request(
+      {
+        kind: "getSummary",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "single-flight-summary",
+        filterModel: opened.metadata.filterModel
+      },
+      { viewContextId: "renderer-view" }
+    );
+    await vi.waitFor(() => expect(executionOrder).toContain("summary-runtime-1"));
+    const page = bridge.request(
+      {
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "single-flight-page",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      },
+      { viewContextId: "renderer-view" }
+    );
+    await vi.waitFor(() => expect(executionOrder).toContain("page-runtime-1"));
+    summaryFailure.resolve({
+      kind: "error",
+      code: "unknown_session",
+      message: "Unknown session: runtime-1",
+      recoverable: true,
+      sessionId: "runtime-1",
+      viewRequestId: "single-flight-summary"
+    });
+    pageFailure.resolve({
+      kind: "error",
+      code: "unknown_session",
+      message: "Unknown session: runtime-1",
+      recoverable: true,
+      sessionId: "runtime-1",
+      viewRequestId: "single-flight-page"
+    });
+    await recoveryStarted.promise;
+    await Promise.resolve();
+    finishRecoveryOpen.resolve(undefined);
+
+    await expect(summary).resolves.toMatchObject({
+      kind: "summary",
+      viewRequestId: "single-flight-summary"
+    });
+    await expect(page).resolves.toMatchObject({ kind: "page", viewRequestId: "single-flight-page" });
+    expect(openCount).toBe(2);
+    expect(executionOrder.filter((entry) => entry === "open-2")).toHaveLength(1);
+    expect(executionOrder).toContain("restore-runtime-2");
+    expect(executionOrder).toContain("summary-runtime-2");
+    expect(executionOrder).toContain("page-runtime-2");
   });
 
   it("pins an automatically selected backend for confirmed missing-runtime replay", async () => {
