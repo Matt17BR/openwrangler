@@ -13,6 +13,42 @@ const nativeAssets = [
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
+  nativeCrop("gallery/notebook-polars-detail.png", "vscode-notebook-polars-dark.png", 1_440, 900, {
+    x: 48,
+    y: 32,
+    width: 1_372,
+    height: 758
+  }),
+  nativeCrop("gallery/notebook-duckdb-detail.png", "vscode-notebook-duckdb-dark.png", 1_440, 900, {
+    x: 48,
+    y: 32,
+    width: 1_372,
+    height: 868
+  }),
+  nativeCrop("gallery/sidebar-explore.png", "vscode-explore-dark.png", 1_440, 870, {
+    x: 0,
+    y: 0,
+    width: 448,
+    height: 500
+  }),
+  nativeCrop("gallery/sidebar-workflow.png", "vscode-workflow-dark.png", 1_440, 870, {
+    x: 0,
+    y: 0,
+    width: 448,
+    height: 500
+  }),
+  acceptanceCrop("gallery/by-example-setup.png", "by-example-dialog-dark-1280.png", 1_280, 760, {
+    x: 520,
+    y: 68,
+    width: 660,
+    height: 625
+  }),
+  acceptanceCrop("gallery/by-example-preview.png", "by-example-preview-dark-1280.png", 1_280, 760, {
+    x: 0,
+    y: 0,
+    width: 520,
+    height: 500
+  }),
   nativeCrop("gallery/file-title-action.png", "vscode-file-title-action.png", 1_440, 865, {
     x: 0,
     y: 0,
@@ -24,6 +60,12 @@ const nativeAssets = [
     y: 0,
     width: 540,
     height: 570
+  }),
+  readmeCrop("gallery/duckdb-rich-parquet-detail.png", "gallery/duckdb-rich-parquet.png", 1_920, 640, {
+    x: 0,
+    y: 45,
+    width: 1_500,
+    height: 595
   })
 ];
 
@@ -101,7 +143,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(extensionHost, /A notebook workbench media scene requires the standard 1440 by 900 editor viewport/u);
 
   for (const asset of nativeAssets) {
-    const acceptedPath = resolve(root, "docs", "images", "editor-acceptance", asset.source);
+    const acceptedPath = resolve(root, "docs", "images", asset.sourceDirectory, asset.source);
     const readmePath = resolve(root, "docs", "images", "readme", "v1.2", asset.destination);
     const accepted = readFileSync(acceptedPath);
     const portable = readFileSync(readmePath);
@@ -119,15 +161,26 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
 
   for (const image of [
     "explore.png",
+    "gallery/sidebar-explore.png",
+    "gallery/sidebar-workflow.png",
     "workflow.png",
+    "gallery/by-example-setup.png",
+    "gallery/by-example-preview.png",
     "notebook-pandas.png",
-    "gallery/notebook-polars.png",
-    "gallery/notebook-duckdb.png"
+    "gallery/notebook-polars-detail.png",
+    "gallery/notebook-duckdb-detail.png"
   ]) {
     assert.ok(readme.includes(`docs/images/readme/v1.2/${image}`), `README must show ${image}.`);
   }
   assert.doesNotMatch(readme, /docs\/images\/readme\/v1\.1|docs\/images\/editor-acceptance/u);
   assert.match(readme, /Operations, Summary, Filters \/ Sorts, Cleaning Steps/u);
+  assert.match(readme, /Native Activity Bar views/u);
+  assert.match(readme, /Source at a glance\./u);
+  assert.match(readme, /View and plan stay separate\./u);
+  assert.match(readme, /Teach transformations by example/u);
+  assert.match(readme, /DACH-DE-00482 → DE/u);
+  assert.match(readme, /NORDICS-SE-01940 → SE/u);
+  assert.match(readme, /Confirm the generalization\./u);
   assert.match(readme, /reorderable sort priorities, applied history, a draft diff/u);
   assert.match(
     readme,
@@ -161,6 +214,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
 
   for (const image of [
     "images/readme/v1.2/explore.png",
+    "images/readme/v1.2/gallery/sidebar-explore.png",
+    "images/readme/v1.2/gallery/sidebar-workflow.png",
+    "images/readme/v1.2/gallery/by-example-setup.png",
+    "images/readme/v1.2/gallery/by-example-preview.png",
     "images/readme/v1.2/workflow.png",
     "images/readme/v1.2/gallery/file-title-action.png",
     "images/readme/v1.2/gallery/tab-context-menu.png",
@@ -169,9 +226,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "images/readme/v1.2/gallery/notebook-duckdb.png",
     "images/readme/v1.2/gallery/notebook-pyspark.png",
     "images/readme/v1.2/gallery/duckdb-rich-parquet.png",
-    "images/acceptance/by-example-dialog-dark-1280.png",
+    "images/readme/v1.2/gallery/duckdb-rich-parquet-detail.png",
     "images/acceptance/operation-dialog-dark-1280.png",
-    "images/acceptance/by-example-preview-dark-1280.png",
     "images/acceptance/step-inspection-dark-1280.png",
     "images/acceptance/grid-high-contrast-1280.png"
   ]) {
@@ -184,11 +240,14 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /Transform by example/u);
   assert.match(gallery, /Confirm the synthesized split across unseen account IDs/u);
   assert.match(gallery, /High contrast/u);
+  assert.match(gallery, /## Native Activity Bar views/u);
+  assert.match(gallery, /Operations and Summary remain useful without opening another editor tab/u);
+  assert.match(gallery, /ordered priorities and never masquerade as cleaning steps/u);
   assert.match(gallery, /## Open files where you already work[\s\S]{0,120}### Editor title action/u);
   assert.match(gallery, /### Tab context menu/u);
   assert.match(
     gallery,
-    /href="images\/acceptance\/by-example-dialog-dark-1280\.png"[\s\S]{0,500}href="images\/acceptance\/by-example-preview-dark-1280\.png"/u
+    /href="images\/readme\/v1\.2\/gallery\/by-example-setup\.png"[\s\S]{0,500}href="images\/readme\/v1\.2\/gallery\/by-example-preview\.png"/u
   );
   assert.doesNotMatch(gallery, /images\/readme\/v1\.1/u);
 
@@ -198,11 +257,17 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assertPng(richDuckDb, 1_920, 640, true);
   assert.ok(richDuckDb.byteLength < 300 * 1_024);
 
+  const richDuckDbDetail = readFileSync(
+    resolve(root, "docs", "images", "readme", "v1.2", "gallery", "duckdb-rich-parquet-detail.png")
+  );
+  assertPng(richDuckDbDetail, 1_500, 595, true);
+  assert.ok(richDuckDbDetail.byteLength < 300 * 1_024);
+
   assert.match(mediaSpec, /canonical v1\.2 README and gallery contract/u);
-  assert.match(mediaSpec, /five images in three moments/u);
+  assert.match(mediaSpec, /nine images in six compact sections/u);
   assert.match(mediaSpec, /preserve the exact selected source pixels/u);
   assert.match(mediaSpec, /contains no unused import/u);
-  assert.match(testing, /derives eight assets from accepted packaged-editor sources/u);
+  assert.match(testing, /derives fifteen assets from accepted packaged-editor and production-webview sources/u);
   assert.match(testing, /pixel-exact decoded output/u);
 });
 
@@ -211,6 +276,7 @@ function nativeAsset(destination, source, width, height) {
     factory: "nativeAsset",
     destination,
     source,
+    sourceDirectory: "editor-acceptance",
     sourceWidth: width,
     sourceHeight: height,
     outputWidth: width,
@@ -223,6 +289,35 @@ function nativeCrop(destination, source, sourceWidth, sourceHeight, crop) {
     factory: "nativeCrop",
     destination,
     source,
+    sourceDirectory: "editor-acceptance",
+    sourceWidth,
+    sourceHeight,
+    outputWidth: crop.width,
+    outputHeight: crop.height,
+    crop
+  };
+}
+
+function acceptanceCrop(destination, source, sourceWidth, sourceHeight, crop) {
+  return {
+    factory: "acceptanceCrop",
+    destination,
+    source,
+    sourceDirectory: "acceptance",
+    sourceWidth,
+    sourceHeight,
+    outputWidth: crop.width,
+    outputHeight: crop.height,
+    crop
+  };
+}
+
+function readmeCrop(destination, source, sourceWidth, sourceHeight, crop) {
+  return {
+    factory: "readmeCrop",
+    destination,
+    source,
+    sourceDirectory: "readme/v1.2",
     sourceWidth,
     sourceHeight,
     outputWidth: crop.width,

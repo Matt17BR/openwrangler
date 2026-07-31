@@ -6,6 +6,7 @@ import { PNG } from "pngjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const editorImages = resolve(root, "docs", "images", "editor-acceptance");
+const acceptanceImages = resolve(root, "docs", "images", "acceptance");
 const readmeImages = resolve(root, "docs", "images", "readme", "v1.2");
 const verify = process.argv.includes("--verify");
 const unexpectedArguments = process.argv.slice(2).filter((argument) => argument !== "--verify");
@@ -21,6 +22,42 @@ const assets = [
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
+  nativeCrop("gallery/notebook-polars-detail.png", "vscode-notebook-polars-dark.png", 1_440, 900, {
+    x: 48,
+    y: 32,
+    width: 1_372,
+    height: 758
+  }),
+  nativeCrop("gallery/notebook-duckdb-detail.png", "vscode-notebook-duckdb-dark.png", 1_440, 900, {
+    x: 48,
+    y: 32,
+    width: 1_372,
+    height: 868
+  }),
+  nativeCrop("gallery/sidebar-explore.png", "vscode-explore-dark.png", 1_440, 870, {
+    x: 0,
+    y: 0,
+    width: 448,
+    height: 500
+  }),
+  nativeCrop("gallery/sidebar-workflow.png", "vscode-workflow-dark.png", 1_440, 870, {
+    x: 0,
+    y: 0,
+    width: 448,
+    height: 500
+  }),
+  acceptanceCrop("gallery/by-example-setup.png", "by-example-dialog-dark-1280.png", 1_280, 760, {
+    x: 520,
+    y: 68,
+    width: 660,
+    height: 625
+  }),
+  acceptanceCrop("gallery/by-example-preview.png", "by-example-preview-dark-1280.png", 1_280, 760, {
+    x: 0,
+    y: 0,
+    width: 520,
+    height: 500
+  }),
   nativeCrop("gallery/file-title-action.png", "vscode-file-title-action.png", 1_440, 865, {
     x: 0,
     y: 0,
@@ -32,6 +69,12 @@ const assets = [
     y: 0,
     width: 540,
     height: 570
+  }),
+  readmeCrop("gallery/duckdb-rich-parquet-detail.png", "gallery/duckdb-rich-parquet.png", 1_920, 640, {
+    x: 0,
+    y: 45,
+    width: 1_500,
+    height: 595
   })
 ];
 
@@ -66,6 +109,30 @@ function nativeCrop(destination, sourceName, sourceWidth, sourceHeight, crop) {
   return {
     destination,
     source: resolve(editorImages, sourceName),
+    sourceWidth,
+    sourceHeight,
+    outputWidth: crop.width,
+    outputHeight: crop.height,
+    crop
+  };
+}
+
+function acceptanceCrop(destination, sourceName, sourceWidth, sourceHeight, crop) {
+  return {
+    destination,
+    source: resolve(acceptanceImages, sourceName),
+    sourceWidth,
+    sourceHeight,
+    outputWidth: crop.width,
+    outputHeight: crop.height,
+    crop
+  };
+}
+
+function readmeCrop(destination, sourceName, sourceWidth, sourceHeight, crop) {
+  return {
+    destination,
+    source: resolve(readmeImages, sourceName),
     sourceWidth,
     sourceHeight,
     outputWidth: crop.width,

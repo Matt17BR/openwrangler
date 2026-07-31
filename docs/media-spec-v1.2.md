@@ -10,8 +10,9 @@ shows the workflows behind the feature claims, and keeps the README compact enou
 - Data: deterministic, license-clean fixtures only. No user or private data is read.
 - Chrome: preserve the native Activity Bar, sidebar, editor tabs, notebook chrome, and bottom panel where they
   explain integration.
-- Fidelity: omit only the native test-host title strip from the two 1440 × 870 file-workbench captures. Do not
-  crop, scale, mask, add device frames, or reconstruct editor UI.
+- Fidelity: omit only the native test-host title strip from the two 1440 × 870 file-workbench captures. README
+  notebook details may select one documented, pixel-exact rectangle from their complete accepted scenes; do not
+  scale, mask, add device frames, or reconstruct editor UI.
 - Portability: full-scene README copies preserve every accepted source pixel and add only a standard sRGB PNG
   chunk when the native capture lacks one. Focused entry-point crops preserve the exact selected source pixels
   without scaling, masking, reconstruction, or annotation.
@@ -20,17 +21,27 @@ shows the workflows behind the feature claims, and keeps the README compact enou
 
 ## README sequence
 
-The README uses five images in three moments instead of one uninterrupted screenshot wall:
+The README uses nine images in six compact sections instead of one uninterrupted screenshot wall:
 
 1. `explore.png`: full-width 1440 × 870 workbench with the selected Open Wrangler Activity Bar item, all four
    populated native views, virtualized Polars grid, header summaries, and exact `revenue` profile.
-2. `workflow.png`: full-width 1440 × 870 workbench with two ordered viewing sorts, applied history, a separate
+2. `gallery/sidebar-explore.png` and `gallery/sidebar-workflow.png`: two linked 448 × 500 pixel-exact details,
+   displayed side-by-side, that make the native Activity Bar views legible without repeating another full editor
+   scene. The first shows Operations and Summary; the second shows ordered Filters / Sorts and separate Cleaning
+   Steps.
+3. `workflow.png`: full-width 1440 × 870 workbench with two ordered viewing sorts, applied history, a separate
    draft, data diff, Apply / Discard, and executable Polars code.
-3. `notebook-pandas.png`: 1280 × 600 inline Pandas preview with honest captured/total row labels and the live
+4. `gallery/by-example-setup.png` and `gallery/by-example-preview.png`: two pixel-exact details from the accepted
+   production-webview scenes, displayed side-by-side, that show deterministic synthesis from structured
+   account-code examples and confirmation across unseen rows before the draft is applied. Their tight crops keep
+   the setup and diff legible at README width instead of preserving empty canvas; adjacent captions state both
+   complete source/output pairs because the accepted dialog scene scrolls the second pair inside its editor.
+5. `notebook-pandas.png`: 1280 × 600 inline Pandas preview with honest captured/total row labels and the live
    **Open in Open Wrangler** action.
-4. `gallery/notebook-polars.png` and `gallery/notebook-duckdb.png`: two linked 1440 × 900 images displayed
-   side-by-side. Polars shows native editing and generated code; DuckDB shows native viewing, filtering,
-   reorderable multi-sort, paging, and profiles without conversion.
+6. `gallery/notebook-polars-detail.png` and `gallery/notebook-duckdb-detail.png`: two linked pixel-exact details
+   displayed one after another at full README content width. The links retain the complete 1440 × 900 packaged
+   scenes. Polars keeps the engine badge, formula draft, added values, and generated code legible; DuckDB keeps
+   the native grid, engine badge, filter, reorderable multi-sort, paging, and profiles legible without conversion.
 
 Fixture sizes visible in these scenes are evidence, never product limits.
 
@@ -40,9 +51,15 @@ Fixture sizes visible in these scenes are evidence, never product limits.
 
 - branded file entry points cropped from the accepted 1440 × 865 editor scenes: a 1440 × 120 title strip and a
   540 × 570 tab-menu view;
-- the full-size Pandas, Polars, and DuckDB notebook scenes;
+- pixel-exact sidebar details cropped from the accepted Explore and Workflow scenes, showing the operation catalog,
+  dataframe summary, ordered viewing state, and separate cleaning history at a readable size;
+- pixel-exact by-example details cropped from accepted production-webview scenes, showing the example program and
+  resulting draft without empty-canvas thumbnails;
+- the full-size Pandas, Polars, and DuckDB notebook scenes, while README-specific notebook crops remain linked
+  back to those complete sources;
 - a clearly labeled experimental, viewing-only PySpark 4.2 scene at 1440 × 900;
-- a focused native DuckDB rich-Parquet scene with decimal, time-zone, list, and struct values;
+- a focused native DuckDB rich-Parquet detail with decimal, time-zone, list, and struct values, linked to its
+  complete 1920 × 640 source scene;
 - focused production-webview captures for a realistic by-example setup and its generalized result, the operation
   picker, applied-step inspection, and high-contrast rendering.
 

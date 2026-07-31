@@ -12,6 +12,19 @@ The native sidebar keeps the operation catalog, active dataframe summary, viewin
 visible beside the grid. Header summaries and the **Column profiles** drawer show exact statistics and a complete
 distribution for the selected numeric column.
 
+## Native Activity Bar views
+
+<table>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/gallery/sidebar-explore.png"><img alt="Open Wrangler Activity Bar views showing Operations and the active dataframe Summary" src="images/readme/v1.2/gallery/sidebar-explore.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/sidebar-workflow.png"><img alt="Open Wrangler Activity Bar views showing ordered Filters and Sorts plus separate Cleaning Steps" src="images/readme/v1.2/gallery/sidebar-workflow.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Operations and Summary remain useful without opening another editor tab.</strong> The catalog is grouped by task, while source, engine, mode, shape, selection, missing cells, and duplicate rows stay visible beside the dataframe.</td>
+    <td><strong>Viewing state and cleaning history remain independent.</strong> Two sorts retain ordered priorities and never masquerade as cleaning steps; Original data, applied history, and the current draft stay separately inspectable.</td>
+  </tr>
+</table>
+
 ## Review a cleaning workflow
 
 ![Open Wrangler reviewing a Polars draft with two ordered viewing sorts, cleaning history, a data diff, and generated code](images/readme/v1.2/workflow.png)
@@ -51,7 +64,8 @@ current live variable and pages it in the workbench.
 ![A live native Polars notebook session with a formula-column draft and generated Polars code](images/readme/v1.2/gallery/notebook-polars.png)
 
 The dataframe remains in Polars while Open Wrangler pages, profiles, previews the draft, computes the diff, and
-generates native code.
+generates native code. The README uses a pixel-exact crop of this complete scene at full content width so the
+draft values, engine badge, and generated code remain readable.
 
 ### DuckDB live relation
 
@@ -59,7 +73,8 @@ generates native code.
 
 The viewing-only session queries the exact originating `DuckDBPyRelation`; it does not convert through Pandas,
 Polars, or Arrow. The image shows a real filter, two reorderable sort priorities, requested profiles, and bounded
-paging.
+paging. The README uses a pixel-exact crop of this complete scene at full content width so the native grid,
+engine badge, filter, and sort controls remain readable.
 
 ### PySpark Classic live notebook
 
@@ -71,20 +86,21 @@ saved inline snapshots are not supported.
 
 ## Rich DuckDB file types
 
-![A file-backed DuckDB Parquet source with decimal, time-zone, list, and struct columns](images/readme/v1.2/gallery/duckdb-rich-parquet.png)
+<a href="images/readme/v1.2/gallery/duckdb-rich-parquet.png"><img alt="A file-backed DuckDB Parquet source with decimal, time-zone, list, and struct columns" src="images/readme/v1.2/gallery/duckdb-rich-parquet-detail.png"></a>
 
 This focused production-webview scene uses a native DuckDB session over a deterministic 100,000-row Parquet
 fixture. Decimal, time-zone-aware timestamp, list, and struct values remain typed through the grid and summaries.
+The detail removes only the unused right canvas; open it for the complete 1920 × 640 source scene.
 
 ## Transform by example
 
 <table>
   <tr>
-    <td width="50%"><a href="images/acceptance/by-example-dialog-dark-1280.png"><img alt="Open Wrangler by-example setup with two structured account-code examples" src="images/acceptance/by-example-dialog-dark-1280.png"></a></td>
-    <td width="50%"><a href="images/acceptance/by-example-preview-dark-1280.png"><img alt="Open Wrangler by-example preview deriving country codes for ten structured account IDs" src="images/acceptance/by-example-preview-dark-1280.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/by-example-setup.png"><img alt="Open Wrangler by-example setup with structured account-code examples" src="images/readme/v1.2/gallery/by-example-setup.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/by-example-preview.png"><img alt="Open Wrangler by-example preview deriving country codes for unseen structured account IDs" src="images/readme/v1.2/gallery/by-example-preview.png"></a></td>
   </tr>
   <tr>
-    <td><strong>Teach it.</strong> Give two source/output examples using the selected input columns.</td>
+    <td><strong>Teach it.</strong> Give exact source/output examples: <code>DACH-DE-00482 → DE</code> and <code>NORDICS-SE-01940 → SE</code>.</td>
     <td><strong>Review it.</strong> Confirm the synthesized split across unseen account IDs before applying the new column.</td>
   </tr>
 </table>

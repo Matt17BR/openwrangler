@@ -54,6 +54,19 @@ Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It u
 _Explore a real packaged Polars file session with Operations, Summary, Filters / Sorts, Cleaning Steps, and exact
 column profiles beside the grid._
 
+### Native Activity Bar views
+
+<table>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sidebar-explore.png"><img alt="Open Wrangler Activity Bar views showing the transformation catalog and active dataframe summary" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sidebar-explore.png"></a></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sidebar-workflow.png"><img alt="Open Wrangler Activity Bar views showing ordered viewing sorts and separate cleaning history" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sidebar-workflow.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Source at a glance.</strong> Browse transformations and check backend, shape, selected column, missing cells, and duplicates beside the dataframe.</td>
+    <td><strong>View and plan stay separate.</strong> Reorder multi-column sort priorities while applied and draft cleaning steps remain independently visible.</td>
+  </tr>
+</table>
+
 ## Quick start
 
 1. Open a CSV, TSV, Parquet, JSONL/NDJSON, or Excel file and choose **Open in Open Wrangler** from the branded
@@ -70,6 +83,19 @@ options** only when a file needs an explicit override.
 
 _Viewing state and cleaning stay separate: reorderable sort priorities, applied history, a draft diff, and
 executable Polars code remain reviewable before **Apply step**._
+
+### Teach transformations by example
+
+<table>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/by-example-setup.png"><img alt="Open Wrangler configuring input and output examples for structured account codes" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/by-example-setup.png"></a></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/by-example-preview.png"><img alt="Open Wrangler draft review applying the synthesized country-code extraction to unseen rows" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/by-example-preview.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Give examples.</strong> Map <code>DACH-DE-00482 → DE</code> and <code>NORDICS-SE-01940 → SE</code>; Open Wrangler ranks the simplest deterministic program that fits them.</td>
+    <td><strong>Confirm the generalization.</strong> Review unseen rows and the diff before the new column enters the cleaning plan.</td>
+  </tr>
+</table>
 
 ## Notebook workflows
 
@@ -88,16 +114,15 @@ run its cell again rather than opening a partial workbench.
 _The portable Pandas table stays inside the notebook; **Open in Open Wrangler** reconnects to the complete,
 current live variable._
 
-<table>
-  <tr>
-    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A live native Polars notebook session in Open Wrangler with a formula-column draft and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-polars.png"></a></td>
-    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A live native DuckDB relation in Open Wrangler with an exact filter, two ordered sorts, paging, and column profiles" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-duckdb.png"></a></td>
-  </tr>
-  <tr>
-    <td><strong>Polars editing.</strong> Preview a formula column and inspect executable native Polars code before applying it.</td>
-    <td><strong>DuckDB exploration.</strong> Filter, profile, page, and reorder multi-column sorts against the originating relation.</td>
-  </tr>
-</table>
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A live native Polars notebook session in Open Wrangler with a formula-column draft and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-polars-detail.png"></a>
+
+_**Polars editing.** Preview a formula column, its added values, and executable native Polars code before applying
+the draft. Open the image for the complete packaged-editor scene._
+
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A live native DuckDB relation in Open Wrangler with an exact filter, two ordered sorts, paging, and column profiles" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png"></a>
+
+_**DuckDB exploration.** Filter, profile, page, and reorder multi-column sorts against the originating relation.
+Open the image for the complete packaged-editor scene._
 
 DuckDB relations open as native, viewing-only notebook sessions: paging, filtering, sorting, and requested
 profiles run against the exact originating relation without converting it to Pandas, Polars, or Arrow. Cleaning,

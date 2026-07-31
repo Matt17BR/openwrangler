@@ -234,11 +234,15 @@ describe("packaged editor screenshot evidence", () => {
     const activityIconSvg = readFileSync(resolve("assets/activity-icon.svg"), "utf8");
     const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
-      ["explore.png", 1_440, 870],
-      ["workflow.png", 1_440, 870],
-      ["notebook-pandas.png", 1_280, 600],
-      ["gallery/notebook-polars.png", 1_440, 900],
-      ["gallery/notebook-duckdb.png", 1_440, 900]
+      ["explore.png", 1_440, 870, 50_000],
+      ["gallery/sidebar-explore.png", 448, 500, 50_000],
+      ["gallery/sidebar-workflow.png", 448, 500, 30_000],
+      ["gallery/by-example-setup.png", 660, 625, 50_000],
+      ["gallery/by-example-preview.png", 520, 500, 20_000],
+      ["workflow.png", 1_440, 870, 50_000],
+      ["notebook-pandas.png", 1_280, 600, 50_000],
+      ["gallery/notebook-polars-detail.png", 1_372, 758, 50_000],
+      ["gallery/notebook-duckdb-detail.png", 1_372, 868, 50_000]
     ] as const;
 
     expect(icon.readUInt32BE(16)).toBe(512);
@@ -287,13 +291,13 @@ describe("packaged editor screenshot evidence", () => {
     expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');
     expect(readme).not.toContain("The image automatically follows your GitHub theme.");
     expect(readme).not.toMatch(/\b10,?000-row\b/iu);
-    for (const [name, width, height] of images) {
+    for (const [name, width, height, minimumBytes] of images) {
       expect(readme).toContain(name);
       const png = readFileSync(resolve("docs/images/readme/v1.2", name));
       expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
       expect(png.readUInt32BE(16)).toBe(width);
       expect(png.readUInt32BE(20)).toBe(height);
-      expect(png.byteLength).toBeGreaterThan(50_000);
+      expect(png.byteLength).toBeGreaterThan(minimumBytes);
     }
     for (const omitted of [
       "vscode-hero-light.png",
