@@ -741,7 +741,9 @@ class PandasEngine(DataFrameEngine):
             )
         if needs_missing_helpers:
             lines.append("from numbers import Real")
-        lines.extend(["", "import numpy as np", "import pandas as pd", "", ""])
+        if lines:
+            lines.append("")
+        lines.extend(["import numpy as np", "import pandas as pd", "", ""])
         if needs_missing_helpers:
             lines.extend(generated_view_value_helper_lines())
             lines.extend(

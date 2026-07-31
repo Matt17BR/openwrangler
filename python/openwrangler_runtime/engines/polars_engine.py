@@ -1109,7 +1109,9 @@ class PolarsEngine(DataFrameEngine):
         lines = ["from collections import Counter"] if needs_counter else []
         if needs_filter_helpers:
             lines.extend(["from datetime import date, datetime, timedelta", "from decimal import Decimal"])
-        lines.extend(["", "import polars as pl", ""])
+        if lines:
+            lines.append("")
+        lines.extend(["import polars as pl", ""])
         if needs_filter_helpers:
             lines.extend(generated_view_value_helper_lines())
         if any(_polars_step_needs_checked_integer_helpers(step) for step in plan):

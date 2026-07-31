@@ -92,6 +92,53 @@ def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any
     return result
 
 
+def test_duckdb_generated_code_imports_counter_only_for_categorical_encoding() -> None:
+    engine = DuckDBEngine()
+    plain_plan = [
+        bound_step(
+            "upperText",
+            column=bound_ref("c:source:1", "text", 1),
+            newColumn="upper_text",
+        )
+    ]
+    categorical_plans = [
+        [
+            bound_step(
+                "oneHotEncode",
+                columns=[bound_ref("c:source:0", "group", 0)],
+                prefixSeparator="_",
+                dropOriginal=True,
+            )
+        ],
+        [
+            bound_step(
+                "multiLabelBinarize",
+                column=bound_ref("c:source:2", "tags", 2),
+                delimiter="|",
+                prefix="tag_",
+                dropOriginal=False,
+            )
+        ],
+    ]
+
+    try:
+        plain_code = engine.compile_plan(plain_plan)
+        assert "from collections import Counter" not in plain_code
+        assert plain_code.startswith("import math")
+        assert_same_relation(
+            engine.apply_transform(source_relation(), plain_plan[0]),
+            execute_generated(engine, source_relation(), plain_plan),
+        )
+        for plan in categorical_plans:
+            assert "from collections import Counter" in engine.compile_plan(plan)
+            assert_same_relation(
+                engine.apply_transform(source_relation(), plan[0]),
+                execute_generated(engine, source_relation(), plan),
+            )
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize(
     "operation",
     [

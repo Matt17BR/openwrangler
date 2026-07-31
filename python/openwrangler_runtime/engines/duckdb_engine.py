@@ -752,13 +752,17 @@ class DuckDBEngine(DataFrameEngine):
         raise EngineError(f"DuckDB does not implement transformation: {kind}")
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
+        plan = list(steps)
+        generated_helpers = _GENERATED_HELPERS.rstrip()
+        if any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan):
+            generated_helpers = f"from collections import Counter\n\n{generated_helpers}"
         lines = [
-            _GENERATED_HELPERS.rstrip(),
+            generated_helpers,
             "",
             *generated_view_value_helper_lines(),
             "def clean_data(df):",
         ]
-        for index, step in enumerate(steps):
+        for index, step in enumerate(plan):
             lines.extend(self._compile_step(step, index))
         lines.append("    return df")
         return "\n".join(lines) + "\n"
@@ -1771,7 +1775,6 @@ def _checked_duckdb_integer_formula(left: str, right: str, operator: str) -> str
 
 
 _GENERATED_HELPERS = r"""import math
-from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
