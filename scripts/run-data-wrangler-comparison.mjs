@@ -1319,15 +1319,6 @@ function requireProductKey(value) {
 }
 
 function readComparisonInputSnapshot(path, { label, executable }) {
-  let initial;
-  try {
-    initial = lstatSync(path, { bigint: true });
-  } catch (error) {
-    throw new Error(`${label} could not be opened as a pinned input.`, {
-      cause: error
-    });
-  }
-  requireComparisonInputMetadata(initial, { label, executable });
   let descriptor;
   try {
     descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
@@ -1335,7 +1326,7 @@ function readComparisonInputSnapshot(path, { label, executable }) {
     const named = lstatSync(path, { bigint: true });
     requireComparisonInputMetadata(opened, { label, executable });
     requireComparisonInputMetadata(named, { label, executable });
-    if (!sameInputMetadata(opened, initial) || !sameInputMetadata(named, opened)) {
+    if (!sameInputMetadata(named, opened)) {
       throw new Error(`${label} changed while its identity was captured.`);
     }
     const canonicalPath = realpathSync(path);
@@ -1351,6 +1342,11 @@ function readComparisonInputSnapshot(path, { label, executable }) {
   } catch (error) {
     if (error?.code === "ELOOP") {
       throw new Error(`${label} must not be a symbolic link.`, {
+        cause: error
+      });
+    }
+    if (descriptor === undefined) {
+      throw new Error(`${label} could not be opened as a pinned input.`, {
         cause: error
       });
     }
