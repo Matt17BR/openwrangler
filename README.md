@@ -111,6 +111,10 @@ Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backen
 Notebook variables are matched to their native supported dataframe type, including Pandas 2 and 3, DuckDB
 relations, and PySpark 4.2 DataFrames. Polars LazyFrames collect when opened from a notebook.
 
+To keep a notebook result native to DuckDB, open the relation itself. For example,
+`orders = duckdb.read_csv("orders.csv")`. Calling `orders.df()` explicitly materializes a Pandas DataFrame, so
+Open Wrangler correctly opens that resulting object with the Pandas backend.
+
 Python pickle files are deliberately unsupported: loading a pickle can execute arbitrary code. Convert trusted
 pickle data to Parquet, CSV, or JSONL in a controlled Python environment before opening it in Open Wrangler.
 

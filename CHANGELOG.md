@@ -17,6 +17,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   the webview still owns focus, and that exact button remains the focus origin; host actions, shortcuts, deliberate
   focus moves, background tabs, and failed or cancelled mutations do not reclaim focus. The advertised Undo
   shortcut follows the same rule when invoked from that exact button, but never when invoked elsewhere.
+- Clarified the notebook guidance that a DuckDB relation remains native, while DuckDB's explicit `.df()` result is
+  a real Pandas DataFrame and therefore opens with the Pandas backend.
 
 ### Fixed
 
