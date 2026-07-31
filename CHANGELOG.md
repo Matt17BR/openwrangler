@@ -16,6 +16,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   stable internal relationships. The separate grid-header control is now the constant pressed **Header profiles**
   toggle; `openWrangler.insightsOnOpen` keeps its existing key and behavior.
 
+### Fixed
+
+- Kept appended draft-column navigation pending across longer Cursor Code Preview layout transitions, so the grid
+  reveals the generated column instead of retaining the previous horizontal position.
+
 ## [1.1.6] - 2026-07-31
 
 ### Changed

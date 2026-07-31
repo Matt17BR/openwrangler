@@ -80,11 +80,11 @@ const rowHeaderWidth = 58;
 const overscanRows = 8;
 const overscanColumns = 2;
 const scrollQuantizationTolerance = 1;
-const columnRevealLayoutRetryLimit = 12;
 const maximumRenderedCellCharacters = 4_096;
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
+const ignoreColumnRevealSignal = (): void => undefined;
 
 export function DataGrid({
   metadata,
@@ -127,6 +127,8 @@ export function DataGrid({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const requestedGoToColumnRequest = useRef<{ requestId: number; restoreVersion: number } | undefined>(undefined);
   const handledGoToColumnRequest = useRef<{ requestId: number; restoreVersion: number } | undefined>(undefined);
+  const scheduleColumnRevealAttempt = useRef<() => void>(ignoreColumnRevealSignal);
+  const stopColumnRevealWakeSources = useRef<() => void>(ignoreColumnRevealSignal);
   const goToColumnRequestRef = useRef({
     columnId: goToColumnId,
     requestId: goToColumnRequestId,
@@ -361,29 +363,31 @@ export function DataGrid({
     }
   }, []);
 
+  const interruptColumnReveal = useCallback(() => {
+    stopColumnRevealWakeSources.current();
+    viewportUpdatesSuspended.current = false;
+    programmaticViewportTarget.current = undefined;
+    const pending = goToColumnRequestRef.current;
+    if (
+      pending.columnId &&
+      pending.requestId !== undefined &&
+      requestedGoToColumnRequest.current?.requestId === pending.requestId &&
+      requestedGoToColumnRequest.current.restoreVersion === pending.restoreVersion &&
+      (handledGoToColumnRequest.current?.requestId !== pending.requestId ||
+        handledGoToColumnRequest.current.restoreVersion !== pending.restoreVersion)
+    ) {
+      handledGoToColumnRequest.current = {
+        requestId: pending.requestId,
+        restoreVersion: pending.restoreVersion
+      };
+      pending.onHandled(pending.requestId, "interrupted");
+    }
+  }, []);
+
   useEffect(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
     const update = () => updateViewportFromScroller();
-    const clearProgrammaticTarget = () => {
-      viewportUpdatesSuspended.current = false;
-      programmaticViewportTarget.current = undefined;
-      const pending = goToColumnRequestRef.current;
-      if (
-        pending.columnId &&
-        pending.requestId !== undefined &&
-        requestedGoToColumnRequest.current?.requestId === pending.requestId &&
-        requestedGoToColumnRequest.current.restoreVersion === pending.restoreVersion &&
-        (handledGoToColumnRequest.current?.requestId !== pending.requestId ||
-          handledGoToColumnRequest.current.restoreVersion !== pending.restoreVersion)
-      ) {
-        handledGoToColumnRequest.current = {
-          requestId: pending.requestId,
-          restoreVersion: pending.restoreVersion
-        };
-        pending.onHandled(pending.requestId, "interrupted");
-      }
-    };
     const suspendViewportUpdates = () => {
       viewportUpdatesSuspended.current = true;
       const firstVisibleRow =
@@ -429,22 +433,22 @@ export function DataGrid({
     };
     update();
     scroller.addEventListener("scroll", update, { passive: true });
-    scroller.addEventListener("wheel", clearProgrammaticTarget, { passive: true });
-    scroller.addEventListener("pointerdown", clearProgrammaticTarget, { passive: true });
-    scroller.addEventListener("touchstart", clearProgrammaticTarget, { passive: true });
+    scroller.addEventListener("wheel", interruptColumnReveal, { passive: true });
+    scroller.addEventListener("pointerdown", interruptColumnReveal, { passive: true });
+    scroller.addEventListener("touchstart", interruptColumnReveal, { passive: true });
     window.addEventListener("blur", suspendViewportUpdates);
     window.addEventListener("focus", resumeViewportUpdates);
     window.addEventListener("resize", rebaseAfterResize);
     return () => {
       scroller.removeEventListener("scroll", update);
-      scroller.removeEventListener("wheel", clearProgrammaticTarget);
-      scroller.removeEventListener("pointerdown", clearProgrammaticTarget);
-      scroller.removeEventListener("touchstart", clearProgrammaticTarget);
+      scroller.removeEventListener("wheel", interruptColumnReveal);
+      scroller.removeEventListener("pointerdown", interruptColumnReveal);
+      scroller.removeEventListener("touchstart", interruptColumnReveal);
       window.removeEventListener("blur", suspendViewportUpdates);
       window.removeEventListener("focus", resumeViewportUpdates);
       window.removeEventListener("resize", rebaseAfterResize);
     };
-  }, [updateViewportFromScroller]);
+  }, [interruptColumnReveal, updateViewportFromScroller]);
 
   useEffect(() => {
     updateViewportFromScroller();
@@ -545,10 +549,14 @@ export function DataGrid({
     };
     preserveGridFocusAfterScroll.current = false;
     focusRequested.current = document.hasFocus();
-    let retryFrame: number | undefined;
-    let remainingLayoutRetries = columnRevealLayoutRetryLimit;
-    const reveal = (): boolean => {
-      if (scrollerRef.current !== scroller) return true;
+    const grid = scroller.closest<HTMLElement>(".dataGrid");
+    const table = scroller.querySelector<HTMLElement>('table[role="grid"]');
+    let wakeSourcesActive = true;
+    let positionRevealed = false;
+    let scheduledFrame: number | undefined;
+    let resizeObserver: ResizeObserver | undefined;
+    const reveal = (): "pending" | "revealed" | "stale" => {
+      if (scrollerRef.current !== scroller) return "stale";
       const pending = goToColumnRequestRef.current;
       if (
         pending.columnId !== goToColumnId ||
@@ -557,7 +565,7 @@ export function DataGrid({
         (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
           handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
       ) {
-        return true;
+        return "stale";
       }
 
       const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
@@ -571,14 +579,22 @@ export function DataGrid({
         scrollTop: scroller.scrollTop,
         scrollLeft
       };
-      setViewport((current) => ({
-        ...current,
-        firstVisibleRow,
-        scrollLeft,
-        scrollTop: scroller.scrollTop,
-        width: scroller.clientWidth,
-        height: scroller.clientHeight
-      }));
+      setViewport((current) => {
+        const next = {
+          firstVisibleRow,
+          scrollLeft,
+          scrollTop: scroller.scrollTop,
+          width: scroller.clientWidth,
+          height: scroller.clientHeight
+        };
+        return current.firstVisibleRow === next.firstVisibleRow &&
+          current.scrollLeft === next.scrollLeft &&
+          current.scrollTop === next.scrollTop &&
+          current.width === next.width &&
+          current.height === next.height
+          ? current
+          : next;
+      });
 
       const columnEnd = columnStart + targetWidth;
       const visibleStart = scrollLeft + rowHeaderWidth;
@@ -587,34 +603,88 @@ export function DataGrid({
       const actualVisibleWidth = Math.max(0, Math.min(columnEnd, visibleEnd) - Math.max(columnStart, visibleStart));
       const targetIsVisible =
         requiredVisibleWidth > 0 && actualVisibleWidth + scrollQuantizationTolerance >= requiredVisibleWidth;
-      if (!targetIsVisible) return false;
+      if (!targetIsVisible) return "pending";
 
-      setFocusedCell((current) => ({ ...current, column: index }));
+      setFocusedCell((current) => (current.column === index ? current : { ...current, column: index }));
       const currentViewState = viewStateRef.current;
+      const selectedColumnId = metadata.schema[index].id;
       reportViewState({
         ...currentViewState,
-        selectedColumnId: metadata.schema[index].id,
+        selectedColumnId,
         viewport: {
           ...currentViewState.viewport,
           scrollLeft
         }
       });
-      return true;
+      return "revealed";
     };
-    const retryAfterLayout = () => {
-      retryFrame = undefined;
-      if (reveal() || remainingLayoutRetries <= 0) return;
-      remainingLayoutRetries -= 1;
-      retryFrame = window.requestAnimationFrame(retryAfterLayout);
-    };
-    if (!reveal()) {
-      remainingLayoutRetries -= 1;
-      retryFrame = window.requestAnimationFrame(retryAfterLayout);
+
+    function stopWakeSources(): void {
+      if (!wakeSourcesActive) return;
+      wakeSourcesActive = false;
+      if (scheduledFrame !== undefined) {
+        window.cancelAnimationFrame(scheduledFrame);
+        scheduledFrame = undefined;
+      }
+      resizeObserver?.disconnect();
+      window.removeEventListener("focus", scheduleAttempt);
+      window.removeEventListener("resize", scheduleAttempt);
+      document.removeEventListener("visibilitychange", scheduleWhenVisible);
+      grid?.removeEventListener("transitionend", scheduleAttempt);
+      grid?.removeEventListener("animationend", scheduleAttempt);
+      if (scheduleColumnRevealAttempt.current === scheduleAttempt) {
+        scheduleColumnRevealAttempt.current = ignoreColumnRevealSignal;
+      }
+      if (stopColumnRevealWakeSources.current === stopWakeSources) {
+        stopColumnRevealWakeSources.current = ignoreColumnRevealSignal;
+      }
     }
+
+    function runScheduledAttempt(): void {
+      scheduledFrame = undefined;
+      if (!wakeSourcesActive) return;
+      const outcome = reveal();
+      if (outcome === "pending") return;
+      positionRevealed = outcome === "revealed";
+      stopWakeSources();
+    }
+
+    function scheduleAttempt(): void {
+      // A failed attempt becomes dormant. Concrete layout, projection, or
+      // visibility signals coalesce into one frame instead of a polling loop.
+      if (!wakeSourcesActive || scheduledFrame !== undefined) return;
+      scheduledFrame = window.requestAnimationFrame(runScheduledAttempt);
+    }
+
+    function scheduleWhenVisible(): void {
+      if (document.visibilityState === "visible") scheduleAttempt();
+    }
+
+    scheduleColumnRevealAttempt.current = scheduleAttempt;
+    stopColumnRevealWakeSources.current = stopWakeSources;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(scheduleAttempt);
+      resizeObserver.observe(scroller);
+      if (grid) resizeObserver.observe(grid);
+      if (table) resizeObserver.observe(table);
+    }
+    window.addEventListener("focus", scheduleAttempt);
+    window.addEventListener("resize", scheduleAttempt);
+    document.addEventListener("visibilitychange", scheduleWhenVisible);
+    grid?.addEventListener("transitionend", scheduleAttempt);
+    grid?.addEventListener("animationend", scheduleAttempt);
+    const initialOutcome = reveal();
+    if (initialOutcome !== "pending") {
+      positionRevealed = initialOutcome === "revealed";
+      stopWakeSources();
+    } else {
+      scheduleAttempt();
+    }
+
     return () => {
-      if (retryFrame === undefined) return;
-      window.cancelAnimationFrame(retryFrame);
+      stopWakeSources();
       if (
+        !positionRevealed &&
         requestedGoToColumnRequest.current?.requestId === goToColumnRequestId &&
         requestedGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion &&
         (handledGoToColumnRequest.current?.requestId !== goToColumnRequestId ||
@@ -632,6 +702,10 @@ export function DataGrid({
     viewStateRestoreVersion,
     widths
   ]);
+
+  useLayoutEffect(() => {
+    scheduleColumnRevealAttempt.current();
+  }, [busy, loadedColumnSignature, logicalViewContext, page.offset, projecting]);
 
   useLayoutEffect(() => {
     if (!goToColumnId || goToColumnRequestId === undefined) return;
@@ -695,6 +769,7 @@ export function DataGrid({
 
   const goToPage = (offset: number, restoreFocus = false) => {
     if (busy) return;
+    interruptColumnReveal();
     const bounded = Math.max(0, Math.min(offset, Math.max(0, page.totalRows - 1)));
     const block = Math.floor(bounded / pageSize) * pageSize;
     requestedOffset.current = block;
@@ -967,6 +1042,7 @@ export function DataGrid({
     nextColumn = Math.max(0, Math.min(nextColumn, columnCount - 1));
     const block = Math.floor(nextRow / pageSize) * pageSize;
     if (busy && block !== page.offset) return;
+    interruptColumnReveal();
     event.preventDefault();
     preserveGridFocusAfterScroll.current = false;
     focusRequested.current = document.hasFocus();
