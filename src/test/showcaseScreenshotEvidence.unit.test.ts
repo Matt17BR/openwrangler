@@ -47,8 +47,8 @@ describe("wide-schema showcase evidence", () => {
     expect(extensionHost).toContain("Cleaned-data export must preserve the source bytes.");
     expect(extensionHost).not.toContain("`${editor}-copy-code-dark.png`");
     expect(extensionHost).not.toContain("The documentation capture must cancel without writing a script.");
-    expect(extensionHost).toContain('operator: "multiply"');
-    expect(extensionHost).toContain("value: 1.1");
+    expect(extensionHost).toContain('operator: "add"');
+    expect(extensionHost).toContain("value: 500");
     expect(extensionHost).toContain('title: "Open Wrangler preview: orders_preview_df (pandas) - 100000 x 12"');
     expect(extensionHost).toContain("partialHeaderColumns: []");
     expect(extensionHost).toContain("partialBodyColumns: []");
@@ -56,5 +56,24 @@ describe("wide-schema showcase evidence", () => {
     expect(extensionHost).toContain('"enterprise-account-model-417-columns.csv"');
     expect(extensionHost).not.toContain('mkdtempSync(path.join(tmpdir(), "openwrangler-wide-schema-showcase-"))');
     expect(extensionHost).toContain("Public wide-schema evidence must not expose random acceptance paths.");
+  });
+
+  it("reserves readable toolbar identity space while inspection controls wrap", () => {
+    const stylesheet = readFileSync(resolve("src/webviews/styles.css"), "utf8");
+    const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
+
+    expect(stylesheet).toMatch(/\.toolbarIdentity\s*\{[^}]*min-width:\s*15ch;/u);
+    expect(stylesheet).toMatch(/\.toolbarActions\s*\{[^}]*flex-wrap:\s*wrap;/u);
+    expect(stylesheet).toMatch(
+      /\.toolbarIdentity strong,\s*\.toolbarIdentity span\s*\{[^}]*text-overflow:\s*ellipsis;/u
+    );
+    expect(extensionHost).toContain('assert.equal(measurement.title, "orders.csv")');
+    expect(extensionHost).toContain('assert.equal(measurement.shape, "100,000 × 17")');
+    expect(extensionHost).toContain(
+      'assert.equal(measurement.titleClipped, false, "The public product screenshot must show the complete source title.")'
+    );
+    expect(extensionHost).toContain(
+      'assert.equal(measurement.shapeClipped, false, "The public product screenshot must show the complete dataset shape.")'
+    );
   });
 });

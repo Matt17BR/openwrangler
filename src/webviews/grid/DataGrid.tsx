@@ -1027,7 +1027,8 @@ export function DataGrid({
                   const cellUnavailable = localColumnPosition === undefined;
                   const cellDiff = diffPresentation?.changedCells.get(diffCellKey(row.rowNumber, column.id));
                   const addedColumn = diffPresentation?.addedColumnIds.has(column.id) ?? false;
-                  const renderedCell = boundedGridText(cell?.display);
+                  const displayCell = gridCellPresentation(cell);
+                  const renderedCell = boundedGridText(displayCell.text);
                   const diffLabel = cellDiff
                     ? changedCellLabel(column.name, row.rowNumber, cellDiff)
                     : addedColumn
@@ -1053,7 +1054,7 @@ export function DataGrid({
                       ]
                         .filter(Boolean)
                         .join(" ")}
-                      title={accessibleLabel ?? renderedCell}
+                      title={accessibleLabel ?? displayCell.title ?? renderedCell}
                       onFocus={() => {
                         focusRequested.current = false;
                         setFocusedCell({ row: row.rowNumber, column: column.position });
@@ -1194,6 +1195,24 @@ function boundedGridText(value: string | undefined): string | undefined {
   const finalCodeUnit = value.charCodeAt(end - 1);
   if (finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff) end -= 1;
   return `${value.slice(0, end)}…`;
+}
+
+const maximumGridNumberSignificantDigits = 12;
+
+function gridCellPresentation(cell: CellValue | undefined): { text: string | undefined; title?: string } {
+  if (
+    cell?.kind !== "number" ||
+    typeof cell.raw !== "number" ||
+    !Number.isFinite(cell.raw) ||
+    cell.display !== String(cell.raw)
+  ) {
+    return { text: cell?.display };
+  }
+
+  const text = Object.is(cell.raw, -0)
+    ? "-0"
+    : String(Number.parseFloat(cell.raw.toPrecision(maximumGridNumberSignificantDigits)));
+  return text === cell.display ? { text } : { text, title: cell.display };
 }
 
 interface GridDiffPresentation {

@@ -122,7 +122,8 @@ describe("ColumnSearch", () => {
 
     fireEvent.focus(input);
     const listbox = screen.getByRole("listbox", { name: "Matching columns" });
-    Object.defineProperty(listbox, "clientHeight", { configurable: true, value: 360 });
+    expect(listbox).toHaveStyle({ "--column-search-viewport-height": "352px" });
+    Object.defineProperty(listbox, "clientHeight", { configurable: true, value: 352 });
     expect(screen.queryByText(/Showing 100 of/u)).not.toBeInTheDocument();
     expect(screen.getByRole("option", { name: "column_000, Text column" })).toHaveAttribute("aria-setsize", "417");
 

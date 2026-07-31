@@ -253,10 +253,10 @@ enter the gallery only after VS Code and Cursor both capture them from the same 
 
 These images are release evidence for the exact VSIX supplied to that packaged-editor run. Capture them only after the candidate source is integrated and packaged; never carry an older commit's images forward as if they represented the current UI. The capture is optional and never mutates baselines automatically.
 
-`npm run compose:readme-media` derives twenty-three assets from accepted packaged-editor and production-webview sources
-under `docs/images/readme/v1.2`. Twelve full scenes preserve every source pixel; the two Activity Bar details,
-histogram and sort-control details, two notebook details, two by-example details, title-action strip, tab-menu view, and rich DuckDB detail
-preserve exact source-pixel rectangles without scaling or reconstruction. The gallery-only by-example setup keeps
+`npm run compose:readme-media` derives the declared media inventory from accepted packaged-editor and
+production-webview sources under `docs/images/readme/v1.2`. Full scenes preserve every source pixel; Activity Bar,
+histogram, sort-control, notebook, by-example, entry-point, and rich DuckDB details preserve exact source-pixel
+rectangles without scaling or reconstruction. The gallery-only by-example setup keeps
 the complete operation dialog and both mappings' values and outputs; its real 12-row JSON textarea remains
 scrollable, so the README links to that scene instead of presenting it as a fully expanded form. The README
 preview keeps the complete draft status, Apply / Discard controls, and all ten rows.

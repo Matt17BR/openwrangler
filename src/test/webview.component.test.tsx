@@ -130,6 +130,50 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
   });
 
+  it("hides floating-point noise in grid text while preserving the exact value on hover", () => {
+    const noisyValue = 4201.559999999995;
+    const noisyPage: GridPage = {
+      ...page,
+      limit: 1,
+      totalRows: 1,
+      rows: [
+        {
+          id: "r:noisy-float",
+          rowNumber: 0,
+          values: [
+            { kind: "string", raw: "DACH", display: "DACH", isNull: false, isNaN: false },
+            {
+              kind: "number",
+              raw: noisyValue,
+              display: String(noisyValue),
+              isNull: false,
+              isNaN: false
+            }
+          ]
+        }
+      ]
+    };
+
+    render(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 1, columns: 2 }, filteredShape: { rows: 1, columns: 2 } }}
+        page={noisyPage}
+        summaries={[]}
+        pageSize={1}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const rendered = screen.getByText("4201.56");
+    expect(rendered).toHaveAttribute("title", String(noisyValue));
+    expect(screen.queryByText(String(noisyValue))).toBeNull();
+  });
+
   it("keeps block navigation and the exact live range in a status bar after the scroller", () => {
     const onPage = vi.fn();
     render(

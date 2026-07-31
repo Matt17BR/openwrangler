@@ -10,9 +10,10 @@ shows the workflows behind the feature claims, and keeps the README compact enou
 - Data: deterministic, license-clean fixtures only. No user or private data is read.
 - Chrome: preserve the native Activity Bar, sidebar, editor tabs, notebook chrome, and bottom panel where they
   explain integration.
-- Fidelity: omit only the native test-host title strip from the two 1440 × 870 file-workbench captures. README
-  notebook details may select one documented, pixel-exact rectangle from their complete accepted scenes; do not
-  scale, mask, add device frames, or reconstruct editor UI.
+- Fidelity: packaged-editor capture viewports are 1440 × 900 or 1280 × 900. The native workbench chrome is then
+  trimmed to accepted 1440 × 870/874 or 1280 × 600/874 assets where the runner owns deterministic outer pixels.
+  README details may select one documented, pixel-exact rectangle from a complete accepted scene; do not scale,
+  mask, add device frames, or reconstruct editor UI.
 - Portability: full-scene README copies preserve every accepted source pixel and add only a standard sRGB PNG
   chunk when the native capture lacks one. Focused entry-point crops preserve the exact selected source pixels
   without scaling, masking, reconstruction, or annotation.
@@ -24,7 +25,8 @@ shows the workflows behind the feature claims, and keeps the README compact enou
 
 ## README sequence
 
-The README uses thirteen assets in ten compact visual blocks instead of one uninterrupted screenshot wall:
+The README uses compact visual blocks instead of one uninterrupted screenshot wall. The generated inventory is
+authoritative; do not maintain a handwritten asset count.
 
 1. `explore.png`: full-width 1440 × 870 workbench with the selected Open Wrangler Activity Bar item, all four
    populated native views, virtualized Polars grid, header summaries, and exact `revenue` profile.
@@ -32,20 +34,23 @@ The README uses thirteen assets in ten compact visual blocks instead of one unin
    displayed side-by-side, that make the native Activity Bar views legible without repeating another full editor
    scene. The first shows Operations and Summary; the second shows ordered Filters / Sorts and separate Cleaning
    Steps.
-3. `gallery/column-search-wide.png`: one full-width 1440 × 865 schema-navigation scene that reaches item 417 of
+3. `gallery/operation-configuration-detail.png` and `gallery/applied-step-inspection-detail.png`: two pixel-exact
+   details displayed side-by-side and linked to their complete packaged-editor scenes. They keep the full
+   `revenue + 500 → projected_revenue` form and latest-step inspection controls legible at README width.
+4. `gallery/column-search-wide.png`: one full-width 1440 × 865 schema-navigation scene that reaches item 417 of
    417 with type icons and complete names. The fixture proves the list is uncapped; it is not a column limit.
-4. `workflow.png`: full-width 1440 × 870 workbench with two ordered viewing sorts, applied market normalization,
+5. `workflow.png`: full-width 1440 × 870 workbench with two ordered viewing sorts, applied market normalization,
    a separate projected-revenue formula draft, data diff, Apply / Discard, and executable Polars code.
-5. `gallery/histogram-hover.png` and `gallery/sort-priority.png`: two linked 448 × 480 pixel-exact details showing
+6. `gallery/histogram-hover.png` and `gallery/sort-priority.png`: two linked 448 × 480 pixel-exact details showing
    a sparse histogram bin's full-height interaction target and the native sidebar controls for reordering or
    removing compound sort keys.
-6. `gallery/export-script.png` and `gallery/export-data.png`: two linked 1440 × 870 packaged outcomes displayed
-   side-by-side. The first opens the generated `.clean.py`; the second opens the separately exported cleaned file.
-   The harness proves both were written through the real product path and that the source bytes never changed.
-7. `gallery/notebook-variable-picker.png`: full-width 1280 × 600 native notebook Quick Pick showing live DuckDB,
-   Pandas, and Polars candidates with their actual engine and dataframe types before launch.
-8. `notebook-pandas.png`: 1280 × 600 inline Pandas preview with honest captured/total row labels and the live
-   **Open in Open Wrangler** action.
+7. `gallery/export-script-detail.png` and `gallery/export-data-detail.png`: two pixel-exact details linked to the
+   complete 1440 × 870 packaged outcomes. The first opens the generated `.clean.py`; the second opens the
+   separately exported cleaned file. The harness proves both were written through the real product path and that
+   the source bytes never changed.
+8. `gallery/notebook-variable-picker-detail.png` and `gallery/notebook-pandas-detail.png`: two pixel-exact details
+   linked to the complete 1280 × 600 notebook scenes. The first labels live variables by engine/type; the second
+   shows the portable inline Pandas table.
 9. `gallery/notebook-polars-detail.png`: a linked pixel-exact detail at full README content width. It keeps the
    engine badge, formula draft, added values, and generated code legible.
 10. `gallery/notebook-duckdb-detail.png`: a linked pixel-exact detail at full README content width. It keeps the
@@ -67,6 +72,8 @@ Fixture sizes visible in these scenes are evidence, never product limits.
   540 × 570 tab-menu view;
 - pixel-exact sidebar details cropped from the accepted Explore and Workflow scenes, showing the operation catalog,
   dataframe summary, ordered viewing state, and separate cleaning history at a readable size;
+- a full native-sidebar overview with all four views populated, the complete catalog and configured Formula
+  operation, and an applied-step inspection with its history controls visible;
 - pixel-exact by-example details cropped from accepted production-webview scenes: a 1080 × 760 complete operation
   dialog whose real scrollable editor shows both mapping values and outputs, followed by the complete ten-row
   draft and its Apply / Discard controls;
@@ -89,7 +96,7 @@ experimental viewing-only surfaces.
 Capture these from the final packaged v1.2 candidate before publication:
 
 - an Explorer-row context screenshot that complements the editor-title and tab entry points;
-- applied-step edit/undo and notebook code insertion against realistic data; and
+- executed applied-step edit/undo and notebook code insertion against realistic data; and
 - a realistic high-contrast workbench scene that exercises the same populated product layout rather than a toy
   four-row harness fixture.
 
@@ -113,6 +120,15 @@ workflow named above.
 - The projected-revenue draft's added column and changed values are visible beside Apply and Discard.
 - Code Preview starts with `import polars as pl`, contains the market normalization and revenue projection, and
   contains no unused import.
+
+### Operation catalog and history
+
+- The catalog shows grouped operations and leaves the dataframe and plan unchanged.
+- Formula configuration shows `revenue`, `add`, `500`, `projected_revenue`, and Preview changes without overflow.
+- Applied-step inspection selects the latest Formula column step, pauses viewing filters, and settles before
+  capture.
+- Show confirmed data, Edit latest, and Undo remain visible while the confirmed dataframe and filters are
+  unchanged.
 
 ### Notebook engines
 

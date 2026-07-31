@@ -127,7 +127,7 @@ textarea {
 }
 
 .toolbarIdentity {
-  min-width: 0;
+  min-width: 15ch;
   display: grid;
   gap: 2px;
 }
@@ -378,9 +378,9 @@ textarea {
 .columnSearchResults {
   list-style: none;
   margin: 0;
-  max-height: min(var(--column-search-viewport-height, 360px), 55vh);
+  max-height: min(var(--column-search-viewport-height, 352px), 55vh);
   overflow: auto;
-  padding: 3px;
+  padding: 0 3px;
   position: relative;
 }
 
