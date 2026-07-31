@@ -443,13 +443,16 @@ class PySparkEngine(DataFrameEngine):
             }
             valid_count = total_count - null_count - nan_count
             if column_type in {"integer", "float", "decimal"}:
-                numeric = {
+                numeric: dict[str, Any] = {
                     "min": _finite_float(metrics["__ow_min"]),
                     "max": _finite_float(metrics["__ow_max"]),
                     "mean": _finite_float(metrics["__ow_mean"]),
                     "median": _finite_float(metrics["__ow_median"]),
                     "std": _finite_float(metrics["__ow_std"]),
                 }
+                if column_type in {"integer", "decimal"} and metrics["__ow_min"] is not None:
+                    numeric["exactMin"] = normalize_cell(_spark_python_value(metrics["__ow_min"]))
+                    numeric["exactMax"] = normalize_cell(_spark_python_value(metrics["__ow_max"]))
                 summary["numeric"] = {key: value for key, value in numeric.items() if value is not None}
                 summary["visualization"] = _numeric_visualization(
                     functions,

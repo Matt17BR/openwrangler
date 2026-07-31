@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from decimal import Decimal, localcontext
+from decimal import MAX_EMAX, Decimal, localcontext
 from pathlib import Path
 from typing import Any, Literal
 
@@ -190,6 +190,110 @@ def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
         {"column": "duplicate", "count": 1},
         {"column": "7", "count": 0},
     ]
+
+
+def test_pandas_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema() -> None:
+    wide_values = [
+        -(10**30) + 2,
+        10**30 + 3,
+        10**30 + 1,
+    ]
+    decimal_values = [
+        Decimal("-12345678901234567890.123456789012345678"),
+        Decimal("98765432109876543210.987654321098765432"),
+    ]
+    frame = pd.DataFrame(
+        {
+            "wide": pd.Series(wide_values, dtype=object),
+            "amount": pd.Series([*decimal_values, None], dtype=object),
+        }
+    )
+
+    summaries = PandasEngine().summaries(frame)
+
+    assert summaries[0]["numeric"]["exactMin"] == {
+        "kind": "integer",
+        "raw": str(min(wide_values)),
+        "display": str(min(wide_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert summaries[0]["numeric"]["exactMax"] == {
+        "kind": "integer",
+        "raw": str(max(wide_values)),
+        "display": str(max(wide_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert summaries[1]["numeric"]["exactMin"] == {
+        "kind": "decimal",
+        "raw": str(min(decimal_values)),
+        "display": str(min(decimal_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert summaries[1]["numeric"]["exactMax"] == {
+        "kind": "decimal",
+        "raw": str(max(decimal_values)),
+        "display": str(max(decimal_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert isinstance(summaries[0]["numeric"]["min"], float)
+    assert isinstance(summaries[1]["numeric"]["max"], float)
+
+
+def test_pandas_decimal_summaries_keep_native_aggregate_precision_before_approximation() -> None:
+    values = [Decimal("1e30"), Decimal("1"), Decimal("-1e30")]
+
+    numeric = PandasEngine().summaries(pd.DataFrame({"value": pd.Series(values, dtype=object)}))[0]["numeric"]
+
+    assert numeric["mean"] == pytest.approx(1 / 3)
+    assert numeric["median"] == 1.0
+    assert numeric["std"] == pytest.approx(1e30)
+    assert numeric["exactMin"]["raw"] == "-1E+30"
+    assert numeric["exactMax"]["raw"] == "1E+30"
+
+
+def test_pandas_decimal_summaries_omit_non_finite_exact_pairs_and_survive_decimal_overflow() -> None:
+    frame = pd.DataFrame(
+        {
+            "positive": pd.Series([Decimal("1"), Decimal("Infinity")], dtype=object),
+            "negative": pd.Series([Decimal("-Infinity"), Decimal("1")], dtype=object),
+            "mixed": pd.Series([Decimal("-Infinity"), Decimal("1"), Decimal("Infinity")], dtype=object),
+            "float_overflow": pd.Series([Decimal("-1e309"), Decimal("1e309")], dtype=object),
+            "decimal_overflow": pd.Series(
+                [Decimal(f"9e{MAX_EMAX}"), Decimal(f"9e{MAX_EMAX}")],
+                dtype=object,
+            ),
+        }
+    )
+
+    summaries = {summary["column"]: summary for summary in PandasEngine().summaries(frame)}
+
+    assert summaries["positive"]["numeric"] == {"min": 1.0}
+    assert summaries["negative"]["numeric"] == {"max": 1.0}
+    assert summaries["mixed"]["numeric"] == {"median": 1.0}
+    for column in ("positive", "negative", "mixed"):
+        assert "exactMin" not in summaries[column]["numeric"]
+        assert "exactMax" not in summaries[column]["numeric"]
+    assert summaries["positive"]["visualization"] == {
+        "kind": "numeric",
+        "bins": [{"min": 1.0, "max": 1.0, "count": 1}],
+    }
+    assert summaries["mixed"]["visualization"] == {
+        "kind": "numeric",
+        "bins": [{"min": 1.0, "max": 1.0, "count": 1}],
+    }
+
+    assert summaries["float_overflow"]["numeric"]["mean"] == 0.0
+    assert summaries["float_overflow"]["numeric"]["median"] == 0.0
+    assert summaries["float_overflow"]["numeric"]["exactMin"]["raw"] == "-1E+309"
+    assert summaries["float_overflow"]["numeric"]["exactMax"]["raw"] == "1E+309"
+    decimal_overflow = summaries["decimal_overflow"]["numeric"]
+    assert set(decimal_overflow) == {"exactMin", "exactMax"}
+    assert decimal_overflow["exactMin"]["raw"] == f"9E+{MAX_EMAX}"
+    assert decimal_overflow["exactMax"]["raw"] == f"9E+{MAX_EMAX}"
 
 
 @pytest.mark.parametrize(

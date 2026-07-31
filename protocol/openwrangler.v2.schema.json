@@ -309,12 +309,18 @@
     "NumericSummary": {
       "type": "object",
       "additionalProperties": false,
+      "dependencies": {
+        "exactMin": ["exactMax"],
+        "exactMax": ["exactMin"]
+      },
       "properties": {
         "min": { "type": "number" },
         "max": { "type": "number" },
         "mean": { "type": "number" },
         "median": { "type": "number" },
-        "std": { "type": "number" }
+        "std": { "type": "number" },
+        "exactMin": { "$ref": "#/definitions/CellValue" },
+        "exactMax": { "$ref": "#/definitions/CellValue" }
       }
     },
     "TextSummary": {
@@ -485,8 +491,8 @@
             "isNotNaN"
           ]
         },
-        "value": {},
-        "secondValue": {}
+        "value": { "maxLength": 65536, "tsType": "unknown" },
+        "secondValue": { "maxLength": 65536, "tsType": "unknown" }
       }
     },
     "ColumnFilter": {
@@ -503,7 +509,7 @@
           "required": ["kind", "selectedValues", "includeNulls", "includeNaN"],
           "properties": {
             "kind": { "const": "values" },
-            "selectedValues": { "type": "array", "items": {} },
+            "selectedValues": { "type": "array", "items": { "maxLength": 65536, "tsType": "unknown" } },
             "includeNulls": { "type": "boolean" },
             "includeNaN": { "type": "boolean" },
             "search": { "type": "string" }
@@ -561,7 +567,7 @@
           "required": ["kind", "selectedValues", "includeNulls", "includeNaN"],
           "properties": {
             "kind": { "const": "values" },
-            "selectedValues": { "type": "array", "items": {} },
+            "selectedValues": { "type": "array", "items": { "maxLength": 65536, "tsType": "unknown" } },
             "includeNulls": { "type": "boolean" },
             "includeNaN": { "type": "boolean" },
             "search": { "type": "string" }

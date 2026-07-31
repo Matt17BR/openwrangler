@@ -1,4 +1,6 @@
+import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
+import transportSchema from "../../protocol/openwrangler.v2.schema.json";
 import type {
   GridPage,
   OpenWranglerRequest,
@@ -14,6 +16,13 @@ import {
   isRuntimeResponseEnvelope,
   isTransformStep
 } from "../shared/protocolValidation";
+import {
+  hasAtMostViewValueTextCodePoints,
+  MAX_VIEW_VALUE_TEXT_CHARACTERS,
+  truncateViewValueTextToCodePoints
+} from "../shared/viewValueLimits";
+
+const validateTransportSchema = new Ajv({ strict: false }).compile(transportSchema);
 
 const capabilities = {
   editable: true,
@@ -482,6 +491,181 @@ describe("protocol-v2 response validation", () => {
     }
   });
 
+  it("accepts paired lossless integer and decimal extrema and rejects incompatible or malformed pairs", () => {
+    const response = (summary: unknown): unknown => ({
+      kind: "summary",
+      revision: 3,
+      viewRequestId: "view-exact-extrema",
+      summaries: [summary]
+    });
+    const integerCell = (value: string) => ({
+      kind: "integer",
+      raw: value,
+      display: value,
+      isNull: false,
+      isNaN: false
+    });
+    const decimalCell = (value: string) => ({
+      kind: "decimal",
+      raw: value,
+      display: value,
+      isNull: false,
+      isNaN: false
+    });
+    const integerSummary = {
+      ...summaries[0],
+      numeric: {
+        ...summaries[0].numeric,
+        exactMin: integerCell("-900719925474099312345678901"),
+        exactMax: integerCell("900719925474099312345678902")
+      }
+    };
+    const decimalSummary = {
+      ...integerSummary,
+      type: "decimal" as const,
+      rawType: "Decimal(38,18)",
+      numeric: {
+        min: -1.2345678901234567,
+        max: 9.876543210987654,
+        exactMin: decimalCell("-1.234567890123456789"),
+        exactMax: decimalCell("9.876543210987654321")
+      }
+    };
+
+    expect(isOpenWranglerResponse(response(integerSummary))).toBe(true);
+    expect(isOpenWranglerResponse(response(decimalSummary))).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            exactMin: decimalCell("-9E+999999999999999999"),
+            exactMax: decimalCell("9E+999999999999999999")
+          }
+        })
+      )
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: { min: 1 }
+        })
+      )
+    ).toBe(true);
+
+    const malformedPairs = [
+      { ...integerSummary.numeric, exactMax: undefined },
+      { ...integerSummary.numeric, exactMin: undefined },
+      {
+        ...integerSummary.numeric,
+        exactMin: { ...integerSummary.numeric.exactMin, isNull: true, kind: "null", raw: null, display: "" }
+      },
+      {
+        ...integerSummary.numeric,
+        exactMin: { ...integerSummary.numeric.exactMin, isNaN: true, kind: "nan", raw: null, display: "NaN" }
+      },
+      {
+        ...integerSummary.numeric,
+        exactMin: { ...integerSummary.numeric.exactMin, raw: 9_007_199_254_740_992, display: "9007199254740992" }
+      },
+      {
+        ...integerSummary.numeric,
+        exactMin: integerCell("900719925474099312345678903"),
+        exactMax: integerCell("900719925474099312345678902")
+      },
+      {
+        ...integerSummary.numeric,
+        exactMin: { ...integerSummary.numeric.exactMin, unexpected: true }
+      }
+    ];
+    for (const numeric of malformedPairs) {
+      expect(isOpenWranglerResponse(response({ ...integerSummary, numeric }))).toBe(false);
+    }
+
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...integerSummary,
+          type: "float",
+          rawType: "Float64"
+        })
+      )
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            ...decimalSummary.numeric,
+            exactMin: decimalCell("2.000000000000000000"),
+            exactMax: decimalCell("1.999999999999999999")
+          }
+        })
+      )
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            ...decimalSummary.numeric,
+            exactMin: decimalCell("not-a-decimal")
+          }
+        })
+      )
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            exactMin: decimalCell("10e9007199254740991"),
+            exactMax: decimalCell("1e9007199254740991")
+          }
+        })
+      )
+    ).toBe(false);
+    for (const [exactMin, exactMax] of [
+      [decimalCell("-Infinity"), decimalCell("1")],
+      [decimalCell("1"), decimalCell("Infinity")],
+      [decimalCell("-Infinity"), decimalCell("Infinity")]
+    ]) {
+      expect(
+        isOpenWranglerResponse(
+          response({
+            ...decimalSummary,
+            numeric: { exactMin, exactMax }
+          })
+        )
+      ).toBe(false);
+    }
+
+    const maximumLengthDecimal = "9".repeat(65_536);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            exactMin: decimalCell(`-${"9".repeat(65_535)}`),
+            exactMax: decimalCell(maximumLengthDecimal)
+          }
+        })
+      )
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            exactMin: decimalCell("0"),
+            exactMax: decimalCell(`${maximumLengthDecimal}9`)
+          }
+        })
+      )
+    ).toBe(false);
+  });
+
   it("accepts backward-compatible and exact text summaries while rejecting malformed metrics", () => {
     const response = (summary: unknown): unknown => ({
       kind: "summary",
@@ -642,7 +826,23 @@ describe("protocol-v2 response validation", () => {
       values: [{ value: "1", count: 4, selectionValue: token }],
       hasMore: false
     };
+    const astralAtLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
     expect(isOpenWranglerResponse(response)).toBe(true);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [
+          {
+            value: "astral",
+            count: 1,
+            selectionValue: {
+              ...token,
+              cell: { kind: "string", raw: astralAtLimit, display: astralAtLimit, isNull: false, isNaN: false }
+            }
+          }
+        ]
+      })
+    ).toBe(true);
     expect(
       isOpenWranglerResponse({
         ...response,
@@ -668,6 +868,27 @@ describe("protocol-v2 response validation", () => {
       isOpenWranglerResponse({
         ...response,
         values: [{ value: "1", count: 4, selectionValue: { ...token, version: 2 } }]
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [
+          {
+            value: "astral",
+            count: 1,
+            selectionValue: {
+              ...token,
+              cell: {
+                kind: "string",
+                raw: `${astralAtLimit}😀`,
+                display: `${astralAtLimit}😀`,
+                isNull: false,
+                isNaN: false
+              }
+            }
+          }
+        ]
       })
     ).toBe(false);
     expect(
@@ -939,6 +1160,139 @@ describe("protocol-v2 request validation", () => {
       ).toBe(false);
     }
   );
+
+  it("bounds viewing and transform scalar text by Unicode code points across TypeScript and JSON Schema", () => {
+    const request = requests.find((candidate) => candidate.kind === "getPage");
+    expect(request?.kind).toBe("getPage");
+    if (request?.kind !== "getPage") return;
+
+    const filterModel = (value: string, secondValue: string, selectedValue: string) => ({
+      filters: [
+        {
+          column: "value",
+          type: "decimal" as const,
+          valueFilter: {
+            kind: "values" as const,
+            selectedValues: [selectedValue],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: [{ kind: "predicate" as const, operator: "between" as const, value, secondValue }]
+        }
+      ],
+      sort: []
+    });
+
+    const transformStep = (value: string, secondValue: string, selectedValue: string) => ({
+      id: "filter-bounded",
+      kind: "filterRows",
+      params: {
+        filterModel: {
+          filters: [
+            {
+              column: valueReference,
+              type: "decimal",
+              valueFilter: {
+                kind: "values",
+                selectedValues: [selectedValue],
+                includeNulls: false,
+                includeNaN: false
+              },
+              predicates: [{ kind: "predicate", operator: "between", value, secondValue }]
+            }
+          ],
+          sort: []
+        }
+      }
+    });
+    const transportEnvelope = (requestValue: unknown) => ({
+      protocolVersion: 2,
+      requestId: "bounded-filter",
+      priority: "interactive",
+      request: requestValue
+    });
+    const previewRequest = (value: string, secondValue: string, selectedValue: string) => ({
+      kind: "previewStep",
+      sessionId: "session-1",
+      revision: 0,
+      step: transformStep(value, secondValue, selectedValue),
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 64
+    });
+    const cases = [
+      {
+        label: "BMP",
+        atLimit: `1e${"9".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS - 2)}`,
+        overLimit: `1e${"9".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS - 1)}`
+      },
+      {
+        label: "non-BMP",
+        atLimit: "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS),
+        overLimit: "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)
+      }
+    ];
+
+    for (const { label, atLimit, overLimit } of cases) {
+      const validModel = filterModel(atLimit, atLimit, atLimit);
+      expect(isOpenWranglerRequest({ ...request, filterModel: validModel }), label).toBe(true);
+      expect(validateTransportSchema(transportEnvelope({ ...request, filterModel: validModel })), label).toBe(true);
+      expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(overLimit, atLimit, atLimit) }), label).toBe(
+        false
+      );
+      expect(
+        validateTransportSchema(
+          transportEnvelope({ ...request, filterModel: filterModel(overLimit, atLimit, atLimit) })
+        ),
+        label
+      ).toBe(false);
+      expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, overLimit, atLimit) }), label).toBe(
+        false
+      );
+      expect(
+        validateTransportSchema(
+          transportEnvelope({ ...request, filterModel: filterModel(atLimit, overLimit, atLimit) })
+        ),
+        label
+      ).toBe(false);
+      expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, atLimit, overLimit) }), label).toBe(
+        false
+      );
+      expect(
+        validateTransportSchema(
+          transportEnvelope({ ...request, filterModel: filterModel(atLimit, atLimit, overLimit) })
+        ),
+        label
+      ).toBe(false);
+
+      const validStep = transformStep(atLimit, atLimit, atLimit);
+      expect(isTransformStep(validStep), label).toBe(true);
+      expect(validateTransportSchema(transportEnvelope(previewRequest(atLimit, atLimit, atLimit))), label).toBe(true);
+      for (const invalidValues of [
+        [overLimit, atLimit, atLimit],
+        [atLimit, overLimit, atLimit],
+        [atLimit, atLimit, overLimit]
+      ] as const) {
+        expect(isTransformStep(transformStep(...invalidValues)), label).toBe(false);
+        expect(validateTransportSchema(transportEnvelope(previewRequest(...invalidValues))), label).toBe(false);
+      }
+    }
+  });
+
+  it("counts and truncates view-value limits without splitting Unicode code points", () => {
+    const astralAtLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    const astralOverLimit = `${astralAtLimit}😀`;
+    const bmpAtLimit = "x".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    const bmpOverLimit = `${bmpAtLimit}x`;
+
+    expect(hasAtMostViewValueTextCodePoints(bmpAtLimit)).toBe(true);
+    expect(hasAtMostViewValueTextCodePoints(bmpOverLimit)).toBe(false);
+    expect(hasAtMostViewValueTextCodePoints(astralAtLimit)).toBe(true);
+    expect(hasAtMostViewValueTextCodePoints(astralOverLimit)).toBe(false);
+    expect(truncateViewValueTextToCodePoints(bmpOverLimit)).toBe(bmpAtLimit);
+    expect(truncateViewValueTextToCodePoints(astralOverLimit)).toBe(astralAtLimit);
+  });
 
   it("accepts exact import options with one-code-point Unicode delimiters and explicit Excel selectors", () => {
     const requestWithOptions = (importOptions: unknown, fileName = "fixture.csv"): unknown => ({

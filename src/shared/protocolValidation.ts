@@ -1,4 +1,5 @@
 import type {
+  CellValue,
   ColumnReference,
   ColumnSchema,
   ColumnSummary,
@@ -12,7 +13,10 @@ import type {
   TransformSortRule,
   TransformStep
 } from "./protocol.generated";
+import { isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { PROTOCOL_VERSION } from "./protocol";
+import { compareTypedCells } from "./snapshotModel";
+import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
 
 type UnknownRecord = Record<string, unknown>;
 type ValueGuard = (value: unknown) => boolean;
@@ -49,7 +53,6 @@ const CELL_KINDS = new Set([
   "unknown"
 ]);
 const DATA_BACKENDS = ["polars", "duckdb", "pandas", "pyspark"] as const;
-const MAX_TYPED_SELECTION_TEXT_CHARACTERS = 65_536;
 const OPERATION_KINDS = new Set([
   "sortRows",
   "filterRows",
@@ -701,7 +704,7 @@ function isValueFilter(value: unknown): boolean {
   return (
     candidate !== undefined &&
     candidate.kind === "values" &&
-    isArrayOf(candidate.selectedValues, isJsonValue) &&
+    isArrayOf(candidate.selectedValues, isBoundedViewValue) &&
     isBoolean(candidate.includeNulls) &&
     isBoolean(candidate.includeNaN) &&
     optional(candidate, "search", isString)
@@ -717,8 +720,8 @@ function isPredicateFilter(value: unknown): boolean {
   ) {
     return false;
   }
-  if (Object.prototype.hasOwnProperty.call(candidate, "value") && !isJsonValue(candidate.value)) return false;
-  if (Object.prototype.hasOwnProperty.call(candidate, "secondValue") && !isJsonValue(candidate.secondValue))
+  if (Object.prototype.hasOwnProperty.call(candidate, "value") && !isBoundedViewValue(candidate.value)) return false;
+  if (Object.prototype.hasOwnProperty.call(candidate, "secondValue") && !isBoundedViewValue(candidate.secondValue))
     return false;
   const nullary = new Set(["isNull", "isNotNull", "isNaN", "isNotNaN"]);
   if (!nullary.has(candidate.operator) && !Object.prototype.hasOwnProperty.call(candidate, "value")) return false;
@@ -1309,7 +1312,7 @@ function isColumnSummary(value: unknown): boolean {
     isNonNegativeInteger(candidate.nullCount) &&
     isNonNegativeInteger(candidate.nanCount) &&
     optional(candidate, "distinctCount", isNonNegativeInteger) &&
-    optional(candidate, "numeric", isNumericSummary) &&
+    optional(candidate, "numeric", (numeric) => isNumericSummary(numeric, candidate.type)) &&
     optional(candidate, "visualization", isColumnVisualization) &&
     isArrayOf(candidate.topValues, isValueCount)
   )) {
@@ -1342,16 +1345,39 @@ function isColumnSummaryArray(value: unknown, schema?: readonly ColumnSchema[]):
   });
 }
 
-function isNumericSummary(value: unknown): boolean {
-  const candidate = exactRecord(value, [], ["min", "max", "mean", "median", "std"]);
-  return (
-    candidate !== undefined &&
-    optional(candidate, "min", isFiniteNumber) &&
-    optional(candidate, "max", isFiniteNumber) &&
-    optional(candidate, "mean", isFiniteNumber) &&
-    optional(candidate, "median", isFiniteNumber) &&
-    optional(candidate, "std", isFiniteNumber)
-  );
+function isNumericSummary(value: unknown, columnType: unknown): boolean {
+  const candidate = exactRecord(value, [], ["min", "max", "mean", "median", "std", "exactMin", "exactMax"]);
+  if (
+    candidate === undefined ||
+    !optional(candidate, "min", isFiniteNumber) ||
+    !optional(candidate, "max", isFiniteNumber) ||
+    !optional(candidate, "mean", isFiniteNumber) ||
+    !optional(candidate, "median", isFiniteNumber) ||
+    !optional(candidate, "std", isFiniteNumber)
+  ) {
+    return false;
+  }
+
+  const hasExactMin = Object.prototype.hasOwnProperty.call(candidate, "exactMin");
+  const hasExactMax = Object.prototype.hasOwnProperty.call(candidate, "exactMax");
+  if (!hasExactMin && !hasExactMax) return true;
+  if (!hasExactMin || !hasExactMax || (columnType !== "integer" && columnType !== "decimal")) return false;
+  if (
+    !isExactNumericExtremum(candidate.exactMin, columnType) ||
+    !isExactNumericExtremum(candidate.exactMax, columnType)
+  ) {
+    return false;
+  }
+
+  try {
+    return compareTypedCells(candidate.exactMin, candidate.exactMax, columnType) <= 0;
+  } catch {
+    return false;
+  }
+}
+
+function isExactNumericExtremum(value: unknown, columnType: "integer" | "decimal"): value is CellValue {
+  return isExactNumericExtremumCell(value, columnType);
 }
 
 function isTextSummary(value: unknown, valueCount: number): boolean {
@@ -1475,13 +1501,13 @@ function isCompatibleTypedSelectionCell(columnType: string, value: unknown): boo
     cell.isNull !== false ||
     cell.isNaN !== false ||
     typeof cell.display !== "string" ||
-    cell.display.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS ||
+    !hasAtMostViewValueTextCodePoints(cell.display) ||
     !Object.prototype.hasOwnProperty.call(cell, "raw") ||
     !isJsonValue(cell.raw)
   ) {
     return false;
   }
-  if (typeof cell.raw === "string" && cell.raw.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS) return false;
+  if (typeof cell.raw === "string" && !hasAtMostViewValueTextCodePoints(cell.raw)) return false;
 
   const compatibleKinds: Readonly<Record<string, readonly string[]>> = {
     string: ["string", "integer", "number", "infinity", "boolean", "decimal", "datetime", "date", "duration"],
@@ -1679,6 +1705,10 @@ function isArrayOf(value: unknown, guard: ValueGuard): boolean {
 
 function isJsonScalar(value: unknown): value is string | number | boolean | null {
   return value === null || isString(value) || isBoolean(value) || isFiniteNumber(value);
+}
+
+function isBoundedViewValue(value: unknown): boolean {
+  return isJsonValue(value) && (typeof value !== "string" || hasAtMostViewValueTextCodePoints(value));
 }
 
 function isSafeJsonNumber(value: unknown): value is number {

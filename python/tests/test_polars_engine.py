@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -389,6 +390,20 @@ def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monk
         "mean": pytest.approx(eager.mean()),
         "median": pytest.approx(eager.median()),
         "std": pytest.approx(eager.std()),
+        "exactMin": {
+            "kind": "integer",
+            "raw": 0,
+            "display": "0",
+            "isNull": False,
+            "isNaN": False,
+        },
+        "exactMax": {
+            "kind": "integer",
+            "raw": 1_000_000,
+            "display": "1000000",
+            "isNull": False,
+            "isNaN": False,
+        },
     }
     visualization = summary["visualization"]
     assert "sampled" not in visualization
@@ -397,6 +412,50 @@ def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monk
     assert visualization["bins"][-1]["max"] == summary["numeric"]["max"]
     assert visualization["bins"][-1]["count"] == 1
     assert sum(bin_["count"] for bin_ in visualization["bins"]) == row_count
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema(
+    lazy: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_conversion(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Polars summaries must remain native.")
+
+    monkeypatch.setattr(pl.DataFrame, "to_pandas", reject_conversion, raising=False)
+    wide_values = [-(10**30) + 2, 10**30 + 3, 10**30 + 1]
+    decimal_values = [
+        Decimal("-12345678901234567890.123456789012345678"),
+        Decimal("98765432109876543210.987654321098765432"),
+        None,
+    ]
+    frame = pl.DataFrame(
+        {
+            "wide": pl.Series(wide_values, dtype=pl.Int128),
+            "amount": pl.Series(decimal_values, dtype=pl.Decimal(38, 18)),
+        }
+    )
+
+    summaries = PolarsEngine().summaries(frame.lazy() if lazy else frame)
+
+    assert summaries[0]["numeric"]["exactMin"] == {
+        "kind": "integer",
+        "raw": str(min(wide_values)),
+        "display": str(min(wide_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert summaries[0]["numeric"]["exactMax"] == {
+        "kind": "integer",
+        "raw": str(max(wide_values)),
+        "display": str(max(wide_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert summaries[1]["numeric"]["exactMin"]["display"] == str(decimal_values[0])
+    assert summaries[1]["numeric"]["exactMax"]["display"] == str(decimal_values[1])
+    assert summaries[1]["numeric"]["exactMin"]["kind"] == "decimal"
+    assert summaries[1]["numeric"]["exactMax"]["kind"] == "decimal"
 
 
 @pytest.mark.parametrize("lazy", [False, True])

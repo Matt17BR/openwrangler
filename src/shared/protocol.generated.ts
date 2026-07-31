@@ -1059,6 +1059,8 @@ export interface NumericSummary {
   mean?: number;
   median?: number;
   std?: number;
+  exactMin?: CellValue;
+  exactMax?: CellValue;
 }
 export interface TextSummary {
   emptyCount: number;

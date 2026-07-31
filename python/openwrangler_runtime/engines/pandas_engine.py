@@ -46,6 +46,7 @@ _ASCII_TO_UPPER = str.maketrans(_ASCII_LOWER, _ASCII_UPPER)
 _INT64_MIN = -(2**63)
 _INT64_MAX = (2**63) - 1
 _PORTABLE_INTEGER_LIMIT = 10**38
+_MAX_EXACT_NUMERIC_EXTREMUM_CHARACTERS = 65_536
 
 
 class PandasEngine(DataFrameEngine):
@@ -283,13 +284,18 @@ class PandasEngine(DataFrameEngine):
             }
             if semantic_type in {"integer", "float", "decimal"}:
                 numeric = series.dropna()
-                numeric_summary = {
-                    "min": _maybe_float(numeric.min()),
-                    "max": _maybe_float(numeric.max()),
-                    "mean": _maybe_float(numeric.mean()),
-                    "median": _maybe_float(numeric.median()),
-                    "std": _maybe_float(numeric.std()),
+                minimum = numeric.min()
+                maximum = numeric.max()
+                statistics = _pandas_decimal_profile_statistics(numeric) if semantic_type == "decimal" else None
+                numeric_summary: dict[str, Any] = {
+                    "min": _maybe_float(minimum),
+                    "max": _maybe_float(maximum),
+                    "mean": _maybe_float(statistics["mean"] if statistics is not None else numeric.mean()),
+                    "median": _maybe_float(statistics["median"] if statistics is not None else numeric.median()),
+                    "std": _maybe_float(statistics["std"] if statistics is not None else numeric.std()),
                 }
+                if semantic_type in {"integer", "decimal"} and not numeric.empty:
+                    numeric_summary.update(_pandas_exact_numeric_extrema(minimum, maximum, semantic_type))
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                 summary["visualization"] = numeric_visualization(numeric.tolist())
             elif semantic_type == "boolean":
@@ -2152,6 +2158,88 @@ def _pandas_predicate_expression(series: str, predicate: Mapping[str, Any], colu
         f"(({result}) & ~_open_wrangler_mask({series}, _open_wrangler_is_null) "
         f"& ~_open_wrangler_mask({series}, _open_wrangler_is_nan))"
     )
+
+
+def _pandas_exact_numeric_extrema(minimum: Any, maximum: Any, semantic_type: str) -> dict[str, Any]:
+    if semantic_type == "decimal" and (
+        not isinstance(minimum, Decimal)
+        or not isinstance(maximum, Decimal)
+        or not minimum.is_finite()
+        or not maximum.is_finite()
+    ):
+        return {}
+    minimum_cell = normalize_cell(minimum)
+    maximum_cell = normalize_cell(maximum)
+    expected_kind = "integer" if semantic_type == "integer" else "decimal"
+    if any(
+        cell["kind"] != expected_kind
+        or cell["isNull"]
+        or cell["isNaN"]
+        or not isinstance(cell.get("display"), str)
+        or not cell["display"]
+        or len(cell["display"]) > _MAX_EXACT_NUMERIC_EXTREMUM_CHARACTERS
+        or (isinstance(cell.get("raw"), str) and len(cell["raw"]) > _MAX_EXACT_NUMERIC_EXTREMUM_CHARACTERS)
+        for cell in (minimum_cell, maximum_cell)
+    ):
+        return {}
+    try:
+        if minimum > maximum:
+            return {}
+    except (ArithmeticError, TypeError, ValueError):
+        return {}
+    return {"exactMin": minimum_cell, "exactMax": maximum_cell}
+
+
+def _pandas_decimal_profile_statistics(series: Any) -> dict[str, Decimal | None]:
+    values = [item for item in series.array if not _pandas_is_missing_scalar(item)]
+    if not values:
+        return {"mean": None, "median": None, "std": None}
+    if not all(isinstance(item, Decimal) for item in values):
+        raise EngineError("Pandas decimal profiling received a non-decimal value.")
+
+    def aggregate(operation: Callable[[], Decimal | None]) -> Decimal | None:
+        try:
+            with localcontext() as context:
+                context.prec = 38
+                context.Emax = MAX_EMAX
+                context.Emin = MIN_EMIN
+                return operation()
+        except (ArithmeticError, TypeError, ValueError):
+            return None
+
+    def compensated_sum(items: Iterable[Decimal]) -> Decimal:
+        # Retain Decimal residuals across cancellation instead of rounding every
+        # input through float64 before the final approximate scalar conversion.
+        total = Decimal(0)
+        compensation = Decimal(0)
+        for item in items:
+            next_total = total + item
+            compensation += (total - next_total) + item if abs(total) >= abs(item) else (item - next_total) + total
+            total = next_total
+        return total + compensation
+
+    def mean() -> Decimal:
+        return compensated_sum(values) / Decimal(len(values))
+
+    def median() -> Decimal:
+        ordered = sorted(values)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[middle]
+        return (ordered[middle - 1] + ordered[middle]) / Decimal(2)
+
+    def standard_deviation() -> Decimal | None:
+        if len(values) < 2:
+            return None
+        average = mean()
+        squared_difference_total = compensated_sum((item - average) ** 2 for item in values)
+        return (squared_difference_total / Decimal(len(values) - 1)).sqrt()
+
+    return {
+        "mean": aggregate(mean),
+        "median": aggregate(median),
+        "std": aggregate(standard_deviation),
+    }
 
 
 def _maybe_float(value: Any) -> float | None:

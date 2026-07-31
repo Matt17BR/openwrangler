@@ -617,7 +617,38 @@ async function verifyInsightsDrawerWorkflow(browser) {
   }
   await textPage.close();
 
-  console.log("Column profiles drawer focus, duplicate labels, and numeric/text summary-family semantics verified.");
+  const extremaPage = await browser.newPage({ viewport: { width: 800, height: 760 } });
+  const extremaHarness = "summary-extrema-limit.html";
+  await extremaPage.goto(pathToFileURL(resolve(harnessDir, extremaHarness)).href, { waitUntil: "load" });
+  const extremaPanel = extremaPage.getByRole("complementary", { name: "Column profiles and filters" });
+  await extremaPanel.getByRole("heading", { name: "wide_contract_value" }).waitFor();
+  const expectedExtrema = [
+    ["Min", "Minimum", `-${"9".repeat(65_535)}`],
+    ["Max", "Maximum", "9".repeat(65_536)]
+  ];
+  for (const [termLabel, accessibleLabel, fullValue] of expectedExtrema) {
+    const term = extremaPanel.locator("dt", { hasText: new RegExp(`^${termLabel}$`, "u") });
+    const value = term.locator("xpath=following-sibling::dd[1]");
+    const visibleText = (await value.textContent()) ?? "";
+    const bounds = await value.boundingBox();
+    if (
+      visibleText.length !== 96 ||
+      !visibleText.includes("…") ||
+      (await value.getAttribute("title")) !== `${accessibleLabel}: ${fullValue}` ||
+      (await value.getAttribute("aria-label")) !== `${accessibleLabel} ${fullValue}` ||
+      !bounds ||
+      bounds.height > 120
+    ) {
+      throw new Error(`${extremaHarness} did not bound visible ${termLabel} text while preserving its full semantics.`);
+    }
+  }
+  await extremaPage.addScriptTag({ path: axePath });
+  await scanPageAccessibility(extremaPage, `${extremaHarness} (protocol-limit exact extrema)`);
+  await extremaPage.close();
+
+  console.log(
+    "Column profiles drawer focus, duplicate labels, numeric/text summary-family semantics, and bounded exact extrema verified."
+  );
 }
 
 async function verifyGridStatusBar(browser) {

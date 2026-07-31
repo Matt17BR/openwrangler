@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 from .operations import OperationError, validate_step
 
 PROTOCOL_VERSION = 2
@@ -149,6 +150,7 @@ def decode_request(value: Any) -> dict[str, Any]:
         model = _mapping(request["filterModel"], "filterModel")
         if not isinstance(model.get("filters"), list) or not isinstance(model.get("sort"), list):
             raise ProtocolError("filterModel must contain filters and sort arrays.")
+        _validate_view_filter_text(model)
         sort_columns: set[str] = set()
         for index, value in enumerate(model["sort"]):
             rule = _mapping(value, f"filterModel.sort[{index}]")
@@ -266,6 +268,38 @@ def _mapping(value: Any, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ProtocolError(f"{label} must be a JSON object.")
     return value
+
+
+def _validate_view_filter_text(model: Mapping[str, Any]) -> None:
+    for filter_index, filter_value in enumerate(model["filters"]):
+        if not isinstance(filter_value, Mapping):
+            continue
+        predicates = filter_value.get("predicates")
+        if isinstance(predicates, list):
+            for predicate_index, predicate_value in enumerate(predicates):
+                if not isinstance(predicate_value, Mapping):
+                    continue
+                for key in ("value", "secondValue"):
+                    if key in predicate_value:
+                        _validate_view_value_text(
+                            predicate_value[key],
+                            f"filterModel.filters[{filter_index}].predicates[{predicate_index}].{key}",
+                        )
+        value_filter = filter_value.get("valueFilter")
+        if not isinstance(value_filter, Mapping):
+            continue
+        selected_values = value_filter.get("selectedValues")
+        if isinstance(selected_values, list):
+            for value_index, selected_value in enumerate(selected_values):
+                _validate_view_value_text(
+                    selected_value,
+                    f"filterModel.filters[{filter_index}].valueFilter.selectedValues[{value_index}]",
+                )
+
+
+def _validate_view_value_text(value: Any, label: str) -> None:
+    if isinstance(value, str) and len(value) > MAX_VIEW_VALUE_TEXT_CHARACTERS:
+        raise ProtocolError(f"{label} must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points.")
 
 
 def _is_non_negative_integer(value: Any) -> bool:

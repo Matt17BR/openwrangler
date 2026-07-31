@@ -45,6 +45,7 @@ const payloads = JSON.parse(
       String.raw`
 import json
 import __main__
+from decimal import Decimal
 from pathlib import Path
 import duckdb
 import nbformat
@@ -266,6 +267,49 @@ summary_families["metadata"]["stats"] = manager.get_dataset_stats(
     {"logic": "and", "filters": [], "sort": []},
 )["stats"]
 
+summary_extrema_frame = pd.DataFrame(
+    {
+        "wide_contract_value": pd.Series(
+            [
+                -900719925474099312345678901,
+                900719925474099312345678902,
+                900719925474099312345678901,
+            ],
+            dtype=object,
+        ),
+        "precise_amount": pd.Series(
+            [
+                Decimal("-12345678901234567890.123456789012345678"),
+                Decimal("98765432109876543210.987654321098765432"),
+                Decimal("1.000000000000000001"),
+            ],
+            dtype=object,
+        ),
+    }
+)
+setattr(__main__, "openwrangler_summary_extrema", summary_extrema_frame)
+summary_extrema = manager.open_session(
+    {
+        "kind": "notebookVariable",
+        "label": "Exact numeric extrema",
+        "variableName": "openwrangler_summary_extrema",
+    },
+    backend="pandas",
+    page_size=3,
+    mode="viewing",
+)
+summary_extrema_id = summary_extrema["metadata"]["sessionId"]
+summary_extrema["harnessSummaries"] = manager.get_summary(
+    summary_extrema_id,
+    0,
+    {"logic": "and", "filters": [], "sort": []},
+)["summaries"]
+summary_extrema["metadata"]["stats"] = manager.get_dataset_stats(
+    summary_extrema_id,
+    0,
+    {"logic": "and", "filters": [], "sort": []},
+)["stats"]
+
 duckdb_path = root / "tmp" / "screenshots" / "regional-orders-rich.parquet"
 duckdb_connection = duckdb.connect()
 try:
@@ -381,6 +425,7 @@ print(json.dumps({
     "empty": empty,
     "unicode": unicode,
     "summaryFamilies": summary_families,
+    "summaryExtrema": summary_extrema,
     "duckdbRich": duckdb_rich,
     "notebook": mime_payload,
 }))
@@ -600,6 +645,74 @@ writeWebviewHarness(
       state: {
         columnWidths: {},
         selectedColumnId: textSummaryColumnId,
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    }
+  }
+);
+const exactExtremaColumnId = payloads.summaryExtrema.metadata.schema[0]?.id;
+if (!exactExtremaColumnId) {
+  throw new Error("The exact-extrema fixture did not expose its wide integer column.");
+}
+writeWebviewHarness(
+  "summary-extrema-dark-800.html",
+  payloads.summaryExtrema,
+  {},
+  "acceptance/summary-extrema-dark-800.png",
+  {},
+  {
+    width: 800,
+    defaultColumnWidth: 220,
+    openInsights: true,
+    followupMessage: {
+      kind: "viewState",
+      state: {
+        columnWidths: {},
+        selectedColumnId: exactExtremaColumnId,
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    }
+  }
+);
+const maximumProtocolExtremum = "9".repeat(65_536);
+const minimumProtocolExtremum = `-${"9".repeat(65_535)}`;
+const protocolLimitExtremaPayload = structuredClone(payloads.summaryExtrema);
+const protocolLimitSummary = protocolLimitExtremaPayload.harnessSummaries.find(
+  (summary) => summary.columnId === exactExtremaColumnId
+);
+if (!protocolLimitSummary?.numeric) {
+  throw new Error("The exact-extrema fixture did not expose its numeric summary.");
+}
+protocolLimitSummary.numeric.exactMin = {
+  kind: "integer",
+  raw: minimumProtocolExtremum,
+  display: minimumProtocolExtremum,
+  isNull: false,
+  isNaN: false
+};
+protocolLimitSummary.numeric.exactMax = {
+  kind: "integer",
+  raw: maximumProtocolExtremum,
+  display: maximumProtocolExtremum,
+  isNull: false,
+  isNaN: false
+};
+writeWebviewHarness(
+  "summary-extrema-limit.html",
+  protocolLimitExtremaPayload,
+  {},
+  "acceptance/summary-extrema-limit-unused.png",
+  {},
+  {
+    width: 800,
+    defaultColumnWidth: 220,
+    openInsights: true,
+    capture: false,
+    followupMessage: {
+      kind: "viewState",
+      state: {
+        columnWidths: {},
+        selectedColumnId: exactExtremaColumnId,
         viewport: { firstVisibleRow: 0, scrollLeft: 0 }
       }
     }
@@ -831,7 +944,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
 </body>
 </html>`;
   writeFileSync(htmlPath, html);
-  screenshot(htmlPath, outputPath, width, height);
+  if (appearance.capture !== false) screenshot(htmlPath, outputPath, width, height);
 }
 
 function writeNotebookHarness(fileName, payload, outputName) {

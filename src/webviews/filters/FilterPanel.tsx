@@ -8,6 +8,7 @@ import type {
   PredicateOperator,
   SortDirection
 } from "../../shared/filterModel";
+import { MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS, truncateViewValueTextToCodePoints } from "../../shared/viewValueLimits";
 import {
   ambiguousViewColumnMessage,
   compactColumnFilter,
@@ -447,18 +448,20 @@ export function FilterPanel({
             <input
               aria-label={`${activePredicateOperator} predicate value`}
               value={predicateValue}
+              maxLength={MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS}
               placeholder="Value"
               disabled={viewQueryControlsDisabled || !hasActiveColumn}
-              onChange={(event) => setPredicateValue(event.target.value)}
+              onChange={(event) => setPredicateValue(truncateViewValueTextToCodePoints(event.target.value))}
             />
           )}
           {activePredicateOperator === "between" && (
             <input
               aria-label="Between predicate upper bound"
               value={secondPredicateValue}
+              maxLength={MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS}
               placeholder="And"
               disabled={viewQueryControlsDisabled || !hasActiveColumn}
-              onChange={(event) => setSecondPredicateValue(event.target.value)}
+              onChange={(event) => setSecondPredicateValue(truncateViewValueTextToCodePoints(event.target.value))}
             />
           )}
           <button

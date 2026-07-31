@@ -10526,7 +10526,15 @@ async function exercisePackagedLinkedRendererLiveOpen(
           { value: "7", count: 1 },
           { value: "5", count: 1 }
         ],
-        numeric: { min: 5, max: 7, mean: 6, median: 6, std: Math.SQRT2 },
+        numeric: {
+          min: 5,
+          max: 7,
+          mean: 6,
+          median: 6,
+          std: Math.SQRT2,
+          exactMin: { kind: "integer", raw: 5, display: "5", isNull: false, isNaN: false },
+          exactMax: { kind: "integer", raw: 7, display: "7", isNull: false, isNaN: false }
+        },
         visualization: {
           kind: "numeric",
           bins: [

@@ -10,6 +10,7 @@ import {
   snapshotPage,
   snapshotSummaries
 } from "../shared/snapshotModel";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
 
 interface ViewLiteralCase {
   type: SessionMetadata["schema"][number]["type"];
@@ -146,6 +147,86 @@ describe("saved notebook snapshot model", () => {
         sort: []
       })
     ).toThrow("unsupported version");
+  });
+
+  it("bounds decimal predicate text before arbitrary-precision exponent parsing", () => {
+    const decimalMetadata = singleColumnMetadata("decimal", "Decimal", 0);
+    const atLimit = `1e${"9".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS - 2)}`;
+    const overLimit = `${atLimit}9`;
+    const model = (value: string, secondValue: string): FilterModel => ({
+      filters: [
+        {
+          column: "value",
+          type: "decimal",
+          predicates: [{ kind: "predicate", operator: "between", value, secondValue }]
+        }
+      ],
+      sort: []
+    });
+
+    expect(() => applySnapshotFilters(decimalMetadata, [], model(atLimit, atLimit))).not.toThrow();
+    expect(() => applySnapshotFilters(decimalMetadata, [], model(overLimit, atLimit))).toThrow(
+      "cannot exceed 65,536 Unicode code points"
+    );
+    expect(() => applySnapshotFilters(decimalMetadata, [], model(atLimit, overLimit))).toThrow(
+      "cannot exceed 65,536 Unicode code points"
+    );
+  });
+
+  it("accepts exactly 65,536 BMP or non-BMP predicate code points and rejects one more", () => {
+    const stringMetadata = singleColumnMetadata("string", "String", 0);
+    const model = (value: string): FilterModel => ({
+      filters: [
+        {
+          column: "value",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "contains", value }]
+        }
+      ],
+      sort: []
+    });
+    const cases = [
+      ["x".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS), "x".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)],
+      ["😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS), "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)]
+    ];
+
+    for (const [atLimit, overLimit] of cases) {
+      expect(() => applySnapshotFilters(stringMetadata, [], model(atLimit))).not.toThrow();
+      expect(() => applySnapshotFilters(stringMetadata, [], model(overLimit))).toThrow(
+        "cannot exceed 65,536 Unicode code points"
+      );
+    }
+  });
+
+  it("bounds typed snapshot-selection text by Unicode code points", () => {
+    const stringMetadata = singleColumnMetadata("string", "String", 1);
+    const atLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    const overLimit = `${atLimit}😀`;
+    const token = (text: string) => ({
+      kind: "typedSelection" as const,
+      version: 1 as const,
+      columnType: "string" as const,
+      cell: stringCell(text)
+    });
+    const model = (text: string): FilterModel => ({
+      filters: [
+        {
+          column: "value",
+          type: "string",
+          valueFilter: {
+            kind: "values",
+            selectedValues: [token(text)],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: []
+        }
+      ],
+      sort: []
+    });
+
+    expect(applySnapshotFilters(stringMetadata, [row(0, stringCell(atLimit))], model(atLimit))).toHaveLength(1);
+    expect(() => applySnapshotFilters(stringMetadata, [], model(overLimit))).toThrow("unbounded");
   });
 
   it.each<[PredicateOperator, unknown, unknown, number]>([
@@ -588,6 +669,10 @@ describe("saved notebook snapshot model", () => {
     expect(filtered("gt", "900719925474099312345.0000000000000000001")).toEqual([3]);
     expect(snapshotSummaries(decimalMetadata, decimalRows)[0]).toMatchObject({
       distinctCount: 3,
+      numeric: {
+        exactMin: decimalCell("1.0"),
+        exactMax: decimalCell("900719925474099312345.0000000000000000002")
+      },
       topValues: [
         { value: "1.0", count: 2 },
         { value: "900719925474099312345.0000000000000000001", count: 1 },
@@ -618,6 +703,45 @@ describe("saved notebook snapshot model", () => {
       }).map((item) => item.rowNumber)
     ).toEqual([0, 1]);
     expect(snapshotDatasetStats(decimalMetadata, decimalRows).duplicateRows).toBe(1);
+  });
+
+  it("orders and profiles Decimal extrema beyond JavaScript's safe exponent range", () => {
+    const decimalMetadata = singleColumnMetadata("decimal", "Decimal", 4);
+    const decimalRows = [
+      row(0, decimalCell("-9E+999999999999999999")),
+      row(1, decimalCell("1E-999999999999999999")),
+      row(2, decimalCell("1E+999999999999999999")),
+      row(3, decimalCell("9E+999999999999999999"))
+    ];
+
+    expect(snapshotSummaries(decimalMetadata, decimalRows)[0]?.numeric).toEqual({
+      exactMin: decimalCell("-9E+999999999999999999"),
+      exactMax: decimalCell("9E+999999999999999999")
+    });
+    expect(
+      applySnapshotFilters(decimalMetadata, decimalRows, {
+        filters: [],
+        sort: [{ column: "value", direction: "asc", nulls: "last" }]
+      }).map((item) => item.rowNumber)
+    ).toEqual([0, 1, 2, 3]);
+    expect(snapshotDatasetStats(decimalMetadata, decimalRows).duplicateRows).toBe(0);
+  });
+
+  it("keeps wide integer snapshot extrema lossless while retaining legacy numeric statistics", () => {
+    const integerMetadata = singleColumnMetadata("integer", "Int128", 3);
+    const integerRows = [
+      row(0, integerCell("-900719925474099312345678901")),
+      row(1, integerCell("900719925474099312345678902")),
+      row(2, integerCell("900719925474099312345678901"))
+    ];
+
+    const summary = snapshotSummaries(integerMetadata, integerRows)[0];
+    expect(summary?.numeric).toMatchObject({
+      min: Number("-900719925474099312345678901"),
+      max: Number("900719925474099312345678902"),
+      exactMin: integerCell("-900719925474099312345678901"),
+      exactMax: integerCell("900719925474099312345678902")
+    });
   });
 
   it("returns an exact bounded two-dimensional page without changing captured rows", () => {
@@ -879,6 +1003,34 @@ describe("saved notebook snapshot model", () => {
       kind: "numeric",
       bins: [{ min: 1, max: 1, count: 1 }]
     });
+  });
+
+  it("keeps saved Decimal infinities in approximate profiles without publishing an invalid exact pair", () => {
+    const positiveMetadata = singleColumnMetadata("decimal", "Decimal", 2);
+    const [positive] = snapshotSummaries(positiveMetadata, [row(0, decimalCell("1")), row(1, decimalCell("Infinity"))]);
+    expect(positive?.numeric).toEqual({ min: 1 });
+    expect(positive?.numeric).not.toHaveProperty("exactMin");
+    expect(positive?.numeric).not.toHaveProperty("exactMax");
+
+    const decimalMetadata = singleColumnMetadata("decimal", "Decimal", 3);
+    const decimalRows = [row(0, decimalCell("-Infinity")), row(1, decimalCell("1")), row(2, decimalCell("Infinity"))];
+
+    const [summary] = snapshotSummaries(decimalMetadata, decimalRows);
+
+    expect(summary?.numeric).toEqual({ median: 1 });
+    expect(summary?.numeric).not.toHaveProperty("exactMin");
+    expect(summary?.numeric).not.toHaveProperty("exactMax");
+    expect(summary?.distinctCount).toBe(3);
+    expect(summary?.visualization).toEqual({
+      kind: "numeric",
+      bins: [{ min: 1, max: 1, count: 1 }]
+    });
+    expect(
+      applySnapshotFilters(decimalMetadata, decimalRows, {
+        filters: [],
+        sort: [{ column: "value", direction: "asc", nulls: "last" }]
+      }).map((item) => item.rowNumber)
+    ).toEqual([0, 1, 2]);
   });
 
   it("uses canonical temporal instants for values, distinct counts, and duplicate rows", () => {

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS, MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS } from "../shared/viewValueLimits";
 import { FilterPanel } from "../webviews/filters/FilterPanel";
 import { SummaryPanel } from "../webviews/summary/SummaryPanel";
 
@@ -139,6 +140,14 @@ describe("FilterPanel", () => {
 
     fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
     fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "between" } });
+    expect(screen.getByPlaceholderText("Value")).toHaveAttribute(
+      "maxLength",
+      String(MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS)
+    );
+    expect(screen.getByPlaceholderText("And")).toHaveAttribute(
+      "maxLength",
+      String(MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS)
+    );
     fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "10" } });
     fireEvent.change(screen.getByPlaceholderText("And"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
@@ -169,6 +178,35 @@ describe("FilterPanel", () => {
     expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
     fireEvent.click(screen.getByRole("button", { name: "Use basic filters" }));
     expect(screen.getByRole("button", { name: "Use advanced filters" })).toBeInTheDocument();
+  });
+
+  it("preserves exactly 65,536 predicate code points and truncates BMP or non-BMP overflow", () => {
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={values}
+        onApply={() => undefined}
+        onRequestValues={() => undefined}
+      />
+    );
+    const input = screen.getByPlaceholderText("Value");
+    const bmpAtLimit = "x".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    const astralAtLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+
+    expect(input).toHaveAttribute("maxLength", String(MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS));
+    fireEvent.change(input, { target: { value: `${bmpAtLimit}x` } });
+    expect(input).toHaveValue(bmpAtLimit);
+    fireEvent.change(input, { target: { value: astralAtLimit } });
+    expect(input).toHaveValue(astralAtLimit);
+    fireEvent.change(input, { target: { value: `${astralAtLimit}😀` } });
+    expect(input).toHaveValue(astralAtLimit);
+
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "between" } });
+    const upperBound = screen.getByPlaceholderText("And");
+    fireEvent.change(upperBound, { target: { value: `${astralAtLimit}😀` } });
+    expect(upperBound).toHaveValue(astralAtLimit);
   });
 
   it("keeps deliberate multi-sort ordered, editable, individually removable, and separate from filters", () => {
@@ -1058,6 +1096,116 @@ describe("SummaryPanel", () => {
       "11-12: 2 rows"
     ]);
     expect(screen.queryByRole("heading", { name: "Top values" })).not.toBeInTheDocument();
+  });
+
+  it("shows full typed extrema in Column profiles with exact titles and accessible names", () => {
+    const minimum = "-12345678901234567890.123456789012345678";
+    const maximum = "98765432109876543210.987654321098765432";
+    const decimalMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 2, columns: 1 },
+      filteredShape: { rows: 2, columns: 1 },
+      schema: [
+        {
+          id: "c:amount",
+          name: "amount",
+          position: 0,
+          rawType: "Decimal(38,18)",
+          type: "decimal",
+          nullable: false
+        }
+      ]
+    };
+    const decimalSummary: ColumnSummary = {
+      columnId: "c:amount",
+      column: "amount",
+      type: "decimal",
+      rawType: "Decimal(38,18)",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 2,
+      numeric: {
+        min: Number(minimum),
+        max: Number(maximum),
+        exactMin: { kind: "decimal", raw: minimum, display: minimum, isNull: false, isNaN: false },
+        exactMax: { kind: "decimal", raw: maximum, display: maximum, isNull: false, isNaN: false }
+      },
+      visualization: {
+        kind: "numeric",
+        bins: [{ min: Number(minimum), max: Number(maximum), count: 2 }]
+      },
+      topValues: []
+    };
+
+    renderSummary({
+      metadataValue: decimalMetadata,
+      summaries: [decimalSummary],
+      selectedColumnId: "c:amount"
+    });
+
+    const minimumValue = screen.getByText("Min").nextElementSibling;
+    const maximumValue = screen.getByText("Max").nextElementSibling;
+    expect(minimumValue).toHaveTextContent(minimum);
+    expect(maximumValue).toHaveTextContent(maximum);
+    expect(minimumValue).toHaveAttribute("title", `Minimum: ${minimum}`);
+    expect(maximumValue).toHaveAttribute("title", `Maximum: ${maximum}`);
+    expect(minimumValue).toHaveAccessibleName(`Minimum ${minimum}`);
+    expect(maximumValue).toHaveAccessibleName(`Maximum ${maximum}`);
+    expect(minimumValue).toHaveClass("exactNumericExtremum");
+  });
+
+  it("bounds protocol-maximum exact extrema visually while preserving their full accessible values", () => {
+    const minimum = `-${"9".repeat(65_535)}`;
+    const maximum = "9".repeat(65_536);
+    const decimalMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 2, columns: 1 },
+      filteredShape: { rows: 2, columns: 1 },
+      schema: [
+        {
+          id: "c:amount",
+          name: "amount",
+          position: 0,
+          rawType: "Decimal",
+          type: "decimal",
+          nullable: false
+        }
+      ]
+    };
+    const decimalSummary: ColumnSummary = {
+      columnId: "c:amount",
+      column: "amount",
+      type: "decimal",
+      rawType: "Decimal",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 2,
+      numeric: {
+        exactMin: { kind: "decimal", raw: minimum, display: minimum, isNull: false, isNaN: false },
+        exactMax: { kind: "decimal", raw: maximum, display: maximum, isNull: false, isNaN: false }
+      },
+      visualization: { kind: "numeric", bins: [] },
+      topValues: []
+    };
+
+    renderSummary({
+      metadataValue: decimalMetadata,
+      summaries: [decimalSummary],
+      selectedColumnId: "c:amount"
+    });
+
+    const minimumValue = screen.getByText("Min").nextElementSibling;
+    const maximumValue = screen.getByText("Max").nextElementSibling;
+    expect(minimumValue?.textContent).toHaveLength(96);
+    expect(maximumValue?.textContent).toHaveLength(96);
+    expect(minimumValue).toHaveTextContent("…");
+    expect(maximumValue).toHaveTextContent("…");
+    expect(minimumValue).toHaveAttribute("title", `Minimum: ${minimum}`);
+    expect(maximumValue).toHaveAttribute("title", `Maximum: ${maximum}`);
+    expect(minimumValue).toHaveAccessibleName(`Minimum ${minimum}`);
+    expect(maximumValue).toHaveAccessibleName(`Maximum ${maximum}`);
   });
 
   it("falls back to the first schema column and labels categorical values and the remainder", () => {

@@ -10,7 +10,9 @@ import type {
   ValuesResponse
 } from "./protocol";
 import type { ColumnFilter, FilterModel, PredicateFilter } from "./filterModel";
+import { isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { supportsTypedViewComparison, supportsViewPredicate } from "./filterModel";
+import { hasAtMostViewValueTextCodePoints, MAX_VIEW_VALUE_TEXT_CHARACTERS } from "./viewValueLimits";
 
 const MAX_PAGE_LIMIT = 10_000;
 const MAX_COLUMN_LIMIT = 256;
@@ -23,7 +25,6 @@ const DATE_VIEW_TEXT = /^\d{4}-\d{2}-\d{2}$/;
 const DATETIME_VIEW_TEXT = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:?\d{2})?$/;
 const DURATION_SECONDS_TEXT = /^[+-]?(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$/;
 const DURATION_CLOCK_TEXT = /^(?:(-?\d+) days?, )?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/;
-const MAX_TYPED_SELECTION_TEXT_CHARACTERS = 65_536;
 const MICROSECONDS_PER_DAY = 86_400_000_000n;
 const MIN_PORTABLE_DURATION_MICROSECONDS = -999_999_999n * MICROSECONDS_PER_DAY;
 const MAX_PORTABLE_DURATION_MICROSECONDS = 999_999_999n * MICROSECONDS_PER_DAY + 86_399_999_999n;
@@ -193,16 +194,21 @@ export function snapshotSummaries(
       .map(({ value, count }) => ({ value, count }));
 
     const standardDeviation = sampleStandardDeviation(numericValues);
+    const exactExtrema =
+      schema.type === "integer" || schema.type === "decimal" ? exactNumericExtrema(values, schema.type) : undefined;
     const numeric =
       numericValues.length === 0
         ? undefined
-        : finiteNumericSummary({
-            min: Math.min(...numericValues),
-            max: Math.max(...numericValues),
-            mean: numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length,
-            median: median(numericValues),
-            std: standardDeviation
-          });
+        : {
+            ...finiteNumericSummary({
+              min: Math.min(...numericValues),
+              max: Math.max(...numericValues),
+              mean: numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length,
+              median: median(numericValues),
+              std: standardDeviation
+            }),
+            ...exactExtrema
+          };
     const text =
       schema.type === "string"
         ? (() => {
@@ -531,11 +537,11 @@ function assertSelectionCell(
     cell.isNull !== false ||
     cell.isNaN !== false ||
     typeof cell.display !== "string" ||
-    cell.display.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS
+    !hasAtMostViewValueTextCodePoints(cell.display)
   ) {
     throw new TypeError("A typed selection token cannot represent null, NaN, or unbounded text.");
   }
-  if (typeof cell.raw === "string" && cell.raw.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS) {
+  if (typeof cell.raw === "string" && !hasAtMostViewValueTextCodePoints(cell.raw)) {
     throw new TypeError("A typed selection token contains unbounded raw text.");
   }
 
@@ -620,6 +626,11 @@ function snapshotSelectionValue(
 }
 
 function canonicalViewValue(value: unknown, type: SessionMetadata["schema"][number]["type"]): unknown {
+  if (typeof value === "string" && !hasAtMostViewValueTextCodePoints(value)) {
+    throw new TypeError(
+      `A snapshot predicate value cannot exceed ${MAX_VIEW_VALUE_TEXT_CHARACTERS.toLocaleString("en-US")} Unicode code points.`
+    );
+  }
   if (type === "string") return String(value);
   if (type === "integer") {
     if (typeof value === "number") {
@@ -720,7 +731,11 @@ function assertPortableDuration(text: string): void {
   }
 }
 
-function compareTypedCells(left: CellValue, right: CellValue, type: SessionMetadata["schema"][number]["type"]): number {
+export function compareTypedCells(
+  left: CellValue,
+  right: CellValue,
+  type: SessionMetadata["schema"][number]["type"]
+): number {
   switch (type) {
     case "integer":
       return compareBigInts(integerValue(left), integerValue(right));
@@ -763,8 +778,9 @@ function numberValue(cell: CellValue): number {
 
 interface DecimalValue {
   sign: -1 | 0 | 1;
-  magnitude: number;
+  magnitude: bigint;
   digits: string;
+  infinite: boolean;
 }
 
 function decimalValue(cell: CellValue): DecimalValue {
@@ -797,27 +813,39 @@ function durationValue(cell: CellValue): DecimalValue {
 
 function parseDecimal(value: unknown): DecimalValue {
   const text = String(value);
+  const infinity = /^([+-]?)Infinity$/.exec(text);
+  if (infinity) {
+    return {
+      sign: infinity[1] === "-" ? -1 : 1,
+      magnitude: 0n,
+      digits: "",
+      infinite: true
+    };
+  }
   const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(text);
   if (!match) throw new TypeError("A snapshot decimal cell must contain an exact decimal.");
-  const exponent = Number(match[5] ?? "0");
-  if (!Number.isSafeInteger(exponent))
-    throw new TypeError("A snapshot decimal exponent is outside the supported range.");
+  const exponent = BigInt(match[5] ?? "0");
   const whole = match[2] ?? "";
   const fraction = match[3] ?? match[4] ?? "";
   const combined = whole + fraction;
   const firstNonZero = combined.search(/[1-9]/);
-  if (firstNonZero < 0) return { sign: 0, magnitude: 0, digits: "" };
+  if (firstNonZero < 0) return { sign: 0, magnitude: 0n, digits: "", infinite: false };
   return {
     sign: match[1] === "-" ? -1 : 1,
-    magnitude: whole.length + exponent - firstNonZero,
-    digits: combined.slice(firstNonZero).replace(/0+$/, "")
+    magnitude: BigInt(whole.length - firstNonZero) + exponent,
+    digits: combined.slice(firstNonZero).replace(/0+$/, ""),
+    infinite: false
   };
 }
 
 function compareDecimals(left: DecimalValue, right: DecimalValue): number {
   if (left.sign !== right.sign) return left.sign < right.sign ? -1 : 1;
   if (left.sign === 0) return 0;
-  let magnitudeComparison = compareNumbers(left.magnitude, right.magnitude);
+  if (left.infinite || right.infinite) {
+    if (left.infinite && right.infinite) return 0;
+    return left.infinite ? left.sign : -right.sign;
+  }
+  let magnitudeComparison = compareBigInts(left.magnitude, right.magnitude);
   if (magnitudeComparison === 0) {
     const length = Math.max(left.digits.length, right.digits.length);
     for (let index = 0; index < length; index += 1) {
@@ -1002,11 +1030,12 @@ function stableCellValue(cell: CellValue | undefined, type?: SessionMetadata["sc
   if (cell.isNaN) return ["nan"];
   if (type === "decimal") {
     const decimal = decimalValue(cell);
-    return ["decimal", decimal.sign, decimal.magnitude, decimal.digits];
+    if (decimal.infinite) return ["decimal", decimal.sign, "infinity"];
+    return ["decimal", decimal.sign, decimal.magnitude.toString(), decimal.digits];
   }
   if (type === "duration") {
     const duration = durationValue(cell);
-    return ["duration", duration.sign, duration.magnitude, duration.digits];
+    return ["duration", duration.sign, duration.magnitude.toString(), duration.digits];
   }
   if (type === "date" || type === "datetime") {
     return [type, temporalValue(cell, type).toString()];
@@ -1043,7 +1072,11 @@ function pandasObjectNumericIdentity(cell: CellValue): unknown[] | undefined {
       value = factoredDecimalValue(parseDecimal(cell.raw ?? cell.display));
       break;
     case "decimal":
-      value = factoredDecimalValue(decimalValue(cell));
+      {
+        const decimal = decimalValue(cell);
+        if (decimal.infinite) return ["string", "numeric", decimal.sign < 0 ? "-infinity" : "infinity"];
+        value = factoredDecimalValue(decimal);
+      }
       break;
     case "number": {
       const numeric = numberValue(cell);
@@ -1060,32 +1093,33 @@ function pandasObjectNumericIdentity(cell: CellValue): unknown[] | undefined {
 interface FactoredNumericValue {
   sign: -1 | 0 | 1;
   coefficient: string;
-  power2: number;
-  power5: number;
+  power2: string;
+  power5: string;
 }
 
 function factoredNumericValue(value: number): FactoredNumericValue {
-  return normalizeFactoredNumeric(value < 0 ? -1 : value > 0 ? 1 : 0, BigInt(Math.abs(value)), 0, 0);
+  return normalizeFactoredNumeric(value < 0 ? -1 : value > 0 ? 1 : 0, BigInt(Math.abs(value)), 0n, 0n);
 }
 
 function factoredDecimalValue(value: DecimalValue): FactoredNumericValue {
-  if (value.sign === 0) return normalizeFactoredNumeric(0, 0n, 0, 0);
+  if (value.infinite) throw new TypeError("A non-finite decimal cannot be factored.");
+  if (value.sign === 0) return normalizeFactoredNumeric(0, 0n, 0n, 0n);
   // Cross-kind equality is bounded to prevent a hostile captured object from
   // turning value counting into thousands of arbitrary-precision divisions.
   if (value.digits.length > 1_024) {
     return {
       sign: value.sign,
       coefficient: value.digits,
-      power2: value.magnitude - value.digits.length,
-      power5: value.magnitude - value.digits.length
+      power2: (value.magnitude - BigInt(value.digits.length)).toString(),
+      power5: (value.magnitude - BigInt(value.digits.length)).toString()
     };
   }
-  const decimalPower = value.magnitude - value.digits.length;
+  const decimalPower = value.magnitude - BigInt(value.digits.length);
   return normalizeFactoredNumeric(value.sign, BigInt(value.digits), decimalPower, decimalPower);
 }
 
 function factoredNumberValue(value: number): FactoredNumericValue {
-  if (Object.is(value, -0) || value === 0) return normalizeFactoredNumeric(0, 0n, 0, 0);
+  if (Object.is(value, -0) || value === 0) return normalizeFactoredNumeric(0, 0n, 0n, 0n);
   const view = new DataView(new ArrayBuffer(8));
   view.setFloat64(0, value, false);
   const bits = view.getBigUint64(0, false);
@@ -1094,28 +1128,30 @@ function factoredNumberValue(value: number): FactoredNumericValue {
   const fraction = bits & 0x000f_ffff_ffff_ffffn;
   const coefficient = exponentBits === 0 ? fraction : (1n << 52n) + fraction;
   const power2 = exponentBits === 0 ? -1_074 : exponentBits - 1_023 - 52;
-  return normalizeFactoredNumeric(sign, coefficient, power2, 0);
+  return normalizeFactoredNumeric(sign, coefficient, BigInt(power2), 0n);
 }
 
 function normalizeFactoredNumeric(
   sign: -1 | 0 | 1,
   initialCoefficient: bigint,
-  initialPower2: number,
-  initialPower5: number
+  initialPower2: bigint,
+  initialPower5: bigint
 ): FactoredNumericValue {
-  if (sign === 0 || initialCoefficient === 0n) return { sign: 0, coefficient: "0", power2: 0, power5: 0 };
+  if (sign === 0 || initialCoefficient === 0n) {
+    return { sign: 0, coefficient: "0", power2: "0", power5: "0" };
+  }
   let coefficient = initialCoefficient;
   let power2 = initialPower2;
   let power5 = initialPower5;
   while (coefficient % 2n === 0n) {
     coefficient /= 2n;
-    power2 += 1;
+    power2 += 1n;
   }
   while (coefficient % 5n === 0n) {
     coefficient /= 5n;
-    power5 += 1;
+    power5 += 1n;
   }
-  return { sign, coefficient: coefficient.toString(), power2, power5 };
+  return { sign, coefficient: coefficient.toString(), power2: power2.toString(), power5: power5.toString() };
 }
 
 function stableJsonValue(value: unknown): unknown {
@@ -1205,6 +1241,31 @@ function sampleStandardDeviation(values: number[]): number | undefined {
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
   const squaredDifferenceTotal = values.reduce((sum, value) => sum + (value - mean) ** 2, 0);
   return Math.sqrt(squaredDifferenceTotal / (values.length - 1));
+}
+
+function exactNumericExtrema(
+  values: CellValue[],
+  type: "integer" | "decimal"
+): Pick<NonNullable<ColumnSummary["numeric"]>, "exactMin" | "exactMax"> | undefined {
+  const [first, ...remaining] = values;
+  if (!first) return undefined;
+  let exactMin = first;
+  let exactMax = first;
+  for (const cell of remaining) {
+    try {
+      if (compareTypedCells(cell, exactMin, type) < 0) exactMin = cell;
+      if (compareTypedCells(cell, exactMax, type) > 0) exactMax = cell;
+    } catch {
+      return undefined;
+    }
+  }
+  if (
+    !isExactNumericExtremumCell(exactMin, type) ||
+    !isExactNumericExtremumCell(exactMax, type) ||
+    compareTypedCells(exactMin, exactMax, type) > 0
+  )
+    return undefined;
+  return { exactMin, exactMax };
 }
 
 function finiteNumericSummary(

@@ -1,5 +1,6 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ColumnSchema, ColumnSummary, SessionMetadata, ValueCount } from "../../shared/protocol";
+import { formatNumericSummaryNumber, numericExtremumDisplay } from "../numericSummary";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
 
 export type SummaryPanelView = "column" | "dataset" | "filters";
@@ -14,6 +15,7 @@ interface SummaryPanelProps {
 }
 
 const summaryViews: readonly SummaryPanelView[] = ["column", "dataset", "filters"];
+const MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS = 96;
 
 export function SummaryPanel({
   metadata,
@@ -187,12 +189,14 @@ function TypeSpecificStats({ summary }: { summary: ColumnSummary }) {
   }
 
   if (summary.numeric) {
+    const minimum = numericExtremumDisplay(summary.numeric, "min");
+    const maximum = numericExtremumDisplay(summary.numeric, "max");
     return (
       <>
         <dt>Min</dt>
-        <dd>{formatNumber(summary.numeric.min)}</dd>
+        <NumericExtremumValue label="Minimum" value={minimum} />
         <dt>Max</dt>
-        <dd>{formatNumber(summary.numeric.max)}</dd>
+        <NumericExtremumValue label="Maximum" value={maximum} />
         <dt>Mean</dt>
         <dd>{formatNumber(summary.numeric.mean)}</dd>
         <dt>Median</dt>
@@ -235,6 +239,33 @@ function TypeSpecificStats({ summary }: { summary: ColumnSummary }) {
   }
 
   return null;
+}
+
+function NumericExtremumValue({
+  label,
+  value
+}: {
+  label: "Minimum" | "Maximum";
+  value: ReturnType<typeof numericExtremumDisplay>;
+}) {
+  if (!value) return <dd>n/a</dd>;
+  const visibleValue = value.exact ? boundedExactExtremumText(value.display) : value.display;
+  return (
+    <dd
+      className={value.exact ? "exactNumericExtremum" : undefined}
+      title={value.exact ? `${label}: ${value.display}` : undefined}
+      aria-label={`${label} ${value.display}`}
+    >
+      {visibleValue}
+    </dd>
+  );
+}
+
+function boundedExactExtremumText(value: string): string {
+  if (value.length <= MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS) return value;
+  const leadingCharacters = Math.ceil((MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS - 1) / 2);
+  const trailingCharacters = MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS - leadingCharacters - 1;
+  return `${value.slice(0, leadingCharacters)}…${value.slice(-trailingCharacters)}`;
 }
 
 function TopValues({ summary }: { summary: ColumnSummary }) {
@@ -370,7 +401,4 @@ function viewLabel(view: SummaryPanelView): string {
   return "Filters";
 }
 
-const formatNumber = (value: number | undefined): string => {
-  if (value === undefined || Number.isNaN(value)) return "n/a";
-  return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
-};
+const formatNumber = formatNumericSummaryNumber;

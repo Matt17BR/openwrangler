@@ -1011,6 +1011,80 @@ describe("DataGrid", () => {
     );
   });
 
+  it("prefers lossless typed extrema in compact headers without hiding the full value from assistive text", async () => {
+    const minimum = "-900719925474099312345678901";
+    const maximum = "900719925474099312345678902";
+    const schema: SessionMetadata["schema"] = [
+      { id: "c:wide", name: "wide_value", position: 0, rawType: "Int128", type: "integer", nullable: false }
+    ];
+    render(
+      <DataGrid
+        metadata={{
+          ...metadata,
+          shape: { rows: 2, columns: 1 },
+          filteredShape: { rows: 2, columns: 1 },
+          schema
+        }}
+        page={{
+          offset: 0,
+          limit: 1,
+          totalRows: 2,
+          columnIds: ["c:wide"],
+          rows: [
+            {
+              id: "r:wide",
+              rowNumber: 0,
+              values: [{ kind: "integer", raw: minimum, display: minimum, isNull: false, isNaN: false }]
+            }
+          ]
+        }}
+        summaries={[
+          {
+            columnId: "c:wide",
+            column: "wide_value",
+            type: "integer",
+            rawType: "Int128",
+            totalCount: 2,
+            nullCount: 0,
+            nanCount: 0,
+            distinctCount: 2,
+            numeric: {
+              min: Number(minimum),
+              max: Number(maximum),
+              exactMin: { kind: "integer", raw: minimum, display: minimum, isNull: false, isNaN: false },
+              exactMax: { kind: "integer", raw: maximum, display: maximum, isNull: false, isNaN: false }
+            },
+            visualization: {
+              kind: "numeric",
+              bins: [{ min: Number(minimum), max: Number(maximum), count: 2 }]
+            },
+            topValues: []
+          }
+        ]}
+        pageSize={1}
+        defaultColumnWidth={140}
+        insightsOnOpen={true}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 400 });
+    fireEvent(window, new Event("resize"));
+
+    const header = document.querySelector<HTMLElement>('th[data-column="wide_value"]');
+    if (!header) throw new Error("Expected the wide integer header.");
+    const minimumStat = within(header).getByTitle(`Minimum ${minimum}`);
+    const maximumStat = within(header).getByTitle(`Maximum ${maximum}`);
+    expect(minimumStat).toHaveAccessibleName(`Minimum ${minimum}`);
+    expect(maximumStat).toHaveAccessibleName(`Maximum ${maximum}`);
+    expect(minimumStat).toHaveTextContent(`Min ${minimum}`);
+    expect(maximumStat).toHaveTextContent(`Max ${maximum}`);
+    expect(minimumStat).toHaveClass("exactNumericExtremum");
+  });
+
   it("keeps huge-grid Next and Previous block requests stable across correlated scroll events", async () => {
     const initialOffset = 1_506_000;
     const nextOffset = initialOffset + largeGridPageSize;
