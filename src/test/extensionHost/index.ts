@@ -4315,6 +4315,14 @@ async function captureReleasedJupyterCodeInsertion(
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the generated Open Wrangler notebook cell to become fully visible"
     );
+    const commands = new Set(await vscode.commands.getCommands(true));
+    assert.equal(
+      commands.has("notebook.cell.edit"),
+      true,
+      "Generated-code insertion media requires VS Code's built-in notebook cell edit command."
+    );
+    await vscode.commands.executeCommand("notebook.cell.edit");
+    assertExactVisibleReleasedNotebookEditor(notebook, editor, "after entering the generated notebook cell editor");
     await workbench.waitForTimeout(600);
     const notebookSurface = workbench.locator(".notebook-editor:visible").first();
     await notebookSurface.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });

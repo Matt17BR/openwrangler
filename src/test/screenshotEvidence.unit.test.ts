@@ -315,6 +315,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(notebookInsertion).toContain('newColumn: "value_plus_10"');
     expect(notebookInsertion).toContain("const code = insertionActive?.code;");
     expect(notebookInsertion).not.toContain("setCodeForExport");
+    expect(extensionHost).toContain('await vscode.commands.executeCommand("notebook.cell.edit");');
     expect(mediaSpec).toContain("### Explorer, edit, undo, and high contrast");
     expect(mediaSpec).toContain("Generated-code insertion uses the live Pandas session's engine-generated code");
     expect(mediaSpec).not.toContain("## Remaining capture backlog");
