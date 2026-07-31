@@ -11743,7 +11743,7 @@ async function capturePackagedEditAndUndoScenes(
   );
   assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Undoing the latest step must preserve the source.");
   assert.equal(await testing.synchronizePanel(sessionId), true);
-  await revealPackagedProductSceneColumn(testing, workbench, sessionId, "market_upper");
+  await fitPackagedUppercasePlanGrid(testing, workbench, sessionId);
   codePreview = await waitForCodePreview(workbench, "market_upper");
   sidebar = await arrangePackagedProductSidebar(workbench, "workflow");
   target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
@@ -12338,6 +12338,128 @@ async function revealPackagedProductSceneColumn(
     10_000,
     `column search to reveal ${columnName} for the packaged product scene`
   );
+}
+
+async function fitPackagedUppercasePlanGrid(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  await revealPackagedProductSceneColumn(testing, workbench, sessionId, "market_upper");
+  let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  let app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The uppercase-plan grid fit requires the exact production renderer.");
+  const dimensions = await app.locator('[data-testid="data-grid-scroller"]').evaluate((scroller) => {
+    const rowHeader = scroller.querySelector("th.rowHeader");
+    if (!rowHeader) throw new Error("The uppercase-plan row header is unavailable.");
+    return {
+      clientWidth: scroller.clientWidth,
+      rowHeaderWidth: rowHeader.getBoundingClientRect().width
+    };
+  });
+  const available = Math.floor(dimensions.clientWidth - dimensions.rowHeaderWidth);
+  assert.ok(available >= 840, "The uppercase-plan viewport must fit five complete comparison columns.");
+  const names = ["gross_margin", "priority", "renewal_date", "account_note", "market_upper"] as const;
+  const widths = [
+    Math.floor(available * 0.16),
+    Math.floor(available * 0.16),
+    Math.floor(available * 0.19),
+    Math.floor(available * 0.27)
+  ];
+  widths.push(available - widths.reduce((sum, width) => sum + width, 0));
+  assert.ok(
+    widths.every((width) => width >= 140),
+    "Every uppercase-plan comparison column must remain readable."
+  );
+  const current = testing.activeSession();
+  assert.equal(current?.sessionId, sessionId);
+  assert.ok(current, "The uppercase-plan grid fit requires one active dataframe session.");
+  const marketUpper = columnReference(current.metadata, "market_upper");
+  let columnWidths = {
+    ...current.viewState.columnWidths,
+    ...Object.fromEntries(names.map((name, index) => [columnReference(current.metadata, name).id, widths[index]!]))
+  };
+  await testing.updateViewState(sessionId, {
+    ...current.viewState,
+    columnWidths,
+    selectedColumnId: marketUpper.id
+  });
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The fitted uppercase-plan grid must synchronize with its exact renderer."
+  );
+  target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The uppercase-plan viewport alignment requires the exact production renderer.");
+  const alignment = await app.evaluate((root, firstColumnName) => {
+    type UppercaseSceneRect = { left: number };
+    type UppercaseSceneElement = {
+      readonly scrollLeft: number;
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): UppercaseSceneRect & { width: number };
+      querySelector(selector: string): UppercaseSceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<UppercaseSceneElement>;
+    };
+    const appRoot = root as unknown as UppercaseSceneElement;
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    const rowHeader = scroller?.querySelector("th.rowHeader");
+    const firstHeader = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
+      (candidate) => candidate.getAttribute("data-column") === firstColumnName
+    );
+    if (!scroller || !rowHeader || !firstHeader) {
+      throw new Error("The uppercase-plan viewport-alignment geometry is incomplete.");
+    }
+    const scrollerBounds = scroller.getBoundingClientRect();
+    return {
+      currentScrollLeft: scroller.scrollLeft,
+      offset: firstHeader.getBoundingClientRect().left - (scrollerBounds.left + rowHeader.getBoundingClientRect().width)
+    };
+  }, names[0]);
+  const alignedScrollLeft = Math.max(0, Math.round(alignment.currentScrollLeft + alignment.offset));
+  await testing.updateViewState(sessionId, {
+    ...testing.activeSession()!.viewState,
+    columnWidths,
+    selectedColumnId: marketUpper.id,
+    viewport: {
+      ...testing.activeSession()!.viewState.viewport,
+      scrollLeft: alignedScrollLeft
+    }
+  });
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The aligned uppercase-plan viewport must synchronize with its exact renderer."
+  );
+  target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The final uppercase-plan width adjustment requires the exact production renderer.");
+  const trailingGap = await app.evaluate((root, columnName) => {
+    type UppercaseSceneElement = {
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): { right: number };
+      querySelector(selector: string): UppercaseSceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<UppercaseSceneElement>;
+    };
+    const appRoot = root as unknown as UppercaseSceneElement;
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    const header = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
+      (candidate) => candidate.getAttribute("data-column") === columnName
+    );
+    if (!scroller || !header) throw new Error("The uppercase-plan fit geometry is incomplete.");
+    return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
+  }, marketUpper.name);
+  if (Math.abs(trailingGap) > 1) {
+    const adjusted = (columnWidths[marketUpper.id] ?? widths.at(-1)!) + Math.floor(trailingGap);
+    assert.ok(adjusted >= 140 && adjusted <= 640, "The fitted uppercase output column must remain readable.");
+    columnWidths = { ...columnWidths, [marketUpper.id]: adjusted };
+    await testing.updateViewState(sessionId, {
+      ...testing.activeSession()!.viewState,
+      columnWidths,
+      selectedColumnId: marketUpper.id
+    });
+    assert.equal(
+      await testing.synchronizePanel(sessionId),
+      true,
+      "The final uppercase output-column width adjustment must synchronize with its exact renderer."
+    );
+  }
 }
 
 async function addPackagedProductSceneSorts(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
