@@ -4,6 +4,16 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- Established the first Open Wrangler 2.0 native-R boundary: a base-R, versioned typed-page contract for base
+  `data.frame`, tibble, grouped/rowwise tibble, and `data.table`, with independent frame flavor and generated-code
+  dialect, typed `NA`/`NaN`/infinity handling, native list semantics, factor/date/time-zone/row-name metadata,
+  exact `integer64` transport, source-immutability tests, a schema-aware strict TypeScript decoder, and an exact
+  R-to-JSON-to-TypeScript gate. The architecture keeps live Quarto/R Markdown attachment behind a supported
+  correlated session API instead of a Python conversion layer and makes Workspace Trust mandatory for every future
+  R bootstrap, execution, dependency mutation, generated/custom code path, and source insertion.
+
 ### Changed
 
 - Simplified column labels throughout the cleaning-step builder: unique names now appear without redundant

@@ -1,5 +1,11 @@
 # Testing
 
+## Native R contract spike
+
+`npm run test:r-contract` runs the base-R frame contract directly with `Rscript --vanilla`, then serializes a representative producer result with `jsonlite` and requires the TypeScript decoder to accept that exact JSON. The native test is source-immutability-sensitive and covers base `data.frame`, list and temporal special values, strict UTF-8, duplicate names, and bounded pages; it adds tibble, grouped/rowwise tibble, `data.table`, and `bit64::integer64` assertions when those packages are installed. The matching `src/test/rRuntimeContract.unit.test.ts` suite rejects unversioned, Python-shaped, schema/cell contradictions, frame-class mismatches, ambiguous metadata references, projection drift, typed-missing inconsistencies, invalid UTF-8, and oversized text payloads at the TypeScript boundary.
+
+This spike is not a product support claim and is not part of the 1.x release matrix. Before its branch can merge as an R-capable release, CI must provision an explicit supported R version and make `npm run test:r-contract` required rather than relying on a developer workstation. R-backed `.ipynb` editor acceptance and exact-source `.Rmd`/`.qmd` insertion remain separate later gates described in [ADR 0001](adr/0001-native-r-runtime.md).
+
 ## Automated layers
 
 - `npm run typecheck` checks the extension and webview projects independently.

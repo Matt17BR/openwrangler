@@ -147,7 +147,8 @@ function releaseVsixEntries(packageJson = stablePackage) {
     ["extension/media/icon-128.png", "icon"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
-    ["extension/python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n']
+    ["extension/python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n'],
+    ["extension/r/openwrangler_runtime/frame_contract.R", "OW_R_FRAME_CONTRACT_VERSION <- 1L\n"]
   ]);
 }
 

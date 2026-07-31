@@ -1,6 +1,6 @@
 # Open Wrangler agent guide
 
-This repository builds the open-source Open Wrangler extension and its bundled Python runtime. Read this file before changing code. The product is a clean-room implementation: use public documentation and black-box behavior as references, but never copy Microsoft Data Wrangler code or assets.
+This repository builds the open-source Open Wrangler extension, its bundled Python runtime, and the native R runtime under development for Open Wrangler 2.0. Read this file before changing code. The product is a clean-room implementation: use public documentation and black-box behavior as references, but never copy Microsoft Data Wrangler code or assets.
 
 ## Architecture map
 
@@ -8,6 +8,7 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 - `src/shared/` owns the versioned messages and behavior shared by extension and webviews.
 - `src/webviews/` owns the React UI. It must remain themeable, keyboard accessible, and independent of Node APIs.
 - `python/openwrangler_runtime/` owns dataframe engines, queries, transformations, profiling, code generation, and exports.
+- `r/openwrangler_runtime/` owns native R dataframe inspection and, as v2 work lands, R queries, transformations, and code generation. It must never route an R frame through Python.
 - `docs/architecture.md` records boundaries and invariants.
 - `docs/feature-parity.md` is the release gate for user-visible parity.
 - `docs/reference.md` is generated from public interface registries; never edit it by hand.
@@ -19,7 +20,7 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 1. Pandas, Polars, DuckDB, and PySpark paths remain engine-native. Polars code must never call `to_pandas()`; DuckDB code must never convert through Pandas, Polars, or Arrow. PySpark is a live-notebook, viewing-only preview: it must never call `toPandas()`, `toArrow()`, convert through a local dataframe engine, or perform an unbounded `collect()`/iterator. Projection, filtering, sorting, counting, and aggregation stay in Spark. Container profiles use canonical orderable native keys. A page must pass its Spark-side transport-byte preflight before value collection and then remain within its cell, strict-protocol-byte, complex-node, and nesting-depth limits; only that bounded page/value sample or a fixed-size aggregate result may cross into the kernel process.
 2. Viewing filters/sorts are separate from committed cleaning steps and never alter the source.
 3. User data is not overwritten. Exports target a separate destination and use atomic replacement.
-4. Python execution, dependency installation, custom code, and exports require a trusted workspace.
+4. All dataframe runtime execution (Python or R), runtime bootstrap, dependency installation or mutation, custom/generated code, source insertion, and exports require a trusted workspace.
 5. Every runtime request is versioned, validated, correlated, cancellable where possible, and safe to ignore when stale.
 6. Disposing a panel closes its runtime session. A runtime crash rejects pending work and offers replay/recovery.
 7. Webviews use VS Code theme tokens, a restrictive CSP, same-origin validated messages, accessible labels, and keyboard navigation. User-derived keys belong in `Map`/`Set`, never dynamic object properties.
@@ -71,6 +72,8 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 
 51. Optional protocol-v2 text summaries belong only to semantic string columns and always include an exact non-negative empty-string count. Length statistics are either all present or all absent, exclude null and NaN values, count Unicode code points without trimming, and remain bounded by their exact minimum and maximum. A zero-length minimum is equivalent to a positive empty count; an all-empty column has only zero length statistics; and all-null text reports `emptyCount: 0` with no invented lengths. Pandas, eager/lazy Polars, DuckDB, and PySpark compute these values without dataframe-engine conversion. Lazy Polars, DuckDB, and PySpark return only fixed-size aggregate results; Pandas mixed-object and non-string categorical values use the exact normalized grid display as a native-frame fallback. Saved notebook snapshots use the same semantics over captured truth, and older v2 payloads may omit the block. A semantic string with a positive `nanCount` must still expose that count in Insights.
 
+52. R support is native. Runtime language, R frame flavor, and generated-code dialect remain independent; no R dataframe may cross through Python, Pandas, Polars, DuckDB, Arrow, or `reticulate` as its semantic compatibility layer. R-backed `.ipynb` sessions may use only the stable Jupyter kernel API with exact notebook provenance. `.Rmd`/`.qmd` source insertion must retain exact document identity, while live-session attachment must wait for a supported correlated public API rather than scraping terminals or private Quarto/vscode-R transports. R kernel bootstrap/execution, an owned `Rscript` process, R dependency mutation, generated/custom R code, and source insertion all fail closed before dispatch when Workspace Trust is absent. `data.table` drafts and transformations require `data.table::copy()` isolation plus original-object assertions.
+
 ## Required checks
 
 Run the narrowest relevant tests while iterating, then run all of these before a milestone PR:
@@ -78,6 +81,7 @@ Run the narrowest relevant tests while iterating, then run all of these before a
 ```bash
 npm run check
 npm test
+npm run test:r-contract # required for native R runtime/contract changes
 npm run test:extension-host
 npm run test:webview-acceptance
 npm run test:coverage

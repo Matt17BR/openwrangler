@@ -6,6 +6,7 @@ src/**
 python/tests/**
 python/benchmarks/**
 python/build/**
+r/tests/**
 protocol/**
 fixtures/**
 tmp/**
