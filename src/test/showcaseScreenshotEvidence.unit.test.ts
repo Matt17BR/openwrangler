@@ -50,6 +50,12 @@ describe("wide-schema showcase evidence", () => {
     expect(extensionHost).toContain('"notebook-pyspark-picker"');
     expect(extensionHost).toContain("Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x");
     expect(extensionHost).toContain("The notebook-variable capture must show only complete rows.");
+    expect(extensionHost.indexOf("await captureReleasedJupyterPySparkPicker(")).toBeLessThan(
+      extensionHost.indexOf(
+        'await vscode.commands.executeCommand("jupyter.openVariableView");',
+        extensionHost.indexOf("async function exerciseReleasedPySparkJupyterExtension(")
+      )
+    );
     expect(extensionHost).not.toContain("`${editor}-copy-code-dark.png`");
     expect(extensionHost).not.toContain("The documentation capture must cancel without writing a script.");
     expect(extensionHost).toContain('operator: "add"');

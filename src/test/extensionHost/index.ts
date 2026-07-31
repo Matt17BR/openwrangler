@@ -2197,9 +2197,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     assertReleasedJupyterKernelIdentity(warmKernel, kernelTarget, testPython);
     assert.equal(warmKernel.runtime, false, "The PySpark kernel must start without Open Wrangler preloaded.");
 
-    recordAcceptanceProgress(`${phase}:classic-variables`);
-    await showExactReleasedNotebook(notebook);
-    await vscode.commands.executeCommand("jupyter.openVariableView");
+    recordAcceptanceProgress(`${phase}:classic-setup`);
     const classicEditor = await showExactReleasedNotebook(notebook);
     await executeReleasedNotebookCell(
       notebook,
@@ -2227,6 +2225,9 @@ async function exerciseReleasedPySparkJupyterExtension(
       await captureReleasedJupyterPySparkPicker(workbench, notebook, classicEditor, screenshotOutput);
     }
 
+    recordAcceptanceProgress(`${phase}:classic-variables`);
+    await showExactReleasedNotebook(notebook);
+    await vscode.commands.executeCommand("jupyter.openVariableView");
     await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_classic_frame", `${phase}:classic-action`);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
     await consent.allow.click();
