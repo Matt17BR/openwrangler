@@ -229,30 +229,30 @@ async function verifyCompactDraftReview(browser) {
       harness: "by-example-preview.html",
       width: 1280,
       operation: "Transform by example",
-      diff: ["+1 column", "2 values added in this block"],
-      warnings: true,
+      diff: ["+1 column", "10 values added in this block"],
+      warnings: false,
       expectSingleRowToolbar: true
     },
     {
       harness: "by-example-preview.html",
       width: 620,
       operation: "Transform by example",
-      diff: ["+1 column", "2 values added in this block"],
-      warnings: true
+      diff: ["+1 column", "10 values added in this block"],
+      warnings: false
     },
     {
       harness: "by-example-preview.html",
       width: 320,
       operation: "Transform by example",
-      diff: ["+1 column", "2 values added in this block"],
-      warnings: true
+      diff: ["+1 column", "10 values added in this block"],
+      warnings: false
     },
     {
       harness: "by-example-preview-dark-zoom-200.html",
       width: 1280,
       operation: "Transform by example",
-      diff: ["+1 column", "2 values added in this block"],
-      warnings: true
+      diff: ["+1 column", "10 values added in this block"],
+      warnings: false
     }
   ];
 

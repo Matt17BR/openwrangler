@@ -992,8 +992,8 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
       ? JSON.stringify(params.examples, null, 2)
       : JSON.stringify(
           [
-            { inputs: ["example one"], output: "EXAMPLE ONE" },
-            { inputs: ["example two"], output: "EXAMPLE TWO" }
+            { inputs: ["DACH-DE-00482"], output: "DE" },
+            { inputs: ["NORDICS-SE-01940"], output: "SE" }
           ],
           null,
           2

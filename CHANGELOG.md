@@ -6,6 +6,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Rebuilt the README and product gallery around exact packaged-editor scenes: native Activity Bar views, the
+  filter/sort and cleaning workflow, file entry points, Pandas inline output, native Polars and DuckDB notebook
+  sessions, experimental PySpark, focused operation flows, and accessibility states. Captions now explain the
+  demonstrated capability without presenting fixture sizes as dataframe limits.
+- Replaced the generic uppercase by-example placeholder and gallery fixture with a structured account-code
+  extraction, so the first example demonstrates deterministic split synthesis instead of duplicating a basic
+  casing operation.
 - Replaced the verbose workbench shape subtitle with the compact, standard `rows × columns` form while preserving
   its full accessible description and hover text. Column profiles now scroll vertically without exposing a
   misleading empty horizontal scrollbar.
@@ -31,6 +38,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Removed unused `Counter` imports from ordinary Pandas, Polars, and DuckDB generated plans while retaining the
+  import for one-hot encoding and multi-label binarization collision checks.
 - Preserved compatible viewing filters, selected values, predicates, searches, and ordered multi-sorts through
   cleaning-step preview, apply, latest-step edit, discard, reload, and undo. Structural or semantic-type-changing
   steps prune only rules that no longer resolve safely. An explicit in-draft edit remains authoritative through

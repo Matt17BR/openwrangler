@@ -1154,6 +1154,16 @@ describe("OperationBuilder", () => {
       />
     );
 
+    expect(screen.getByLabelText(/Examples \(JSON\)/)).toHaveValue(
+      JSON.stringify(
+        [
+          { inputs: ["DACH-DE-00482"], output: "DE" },
+          { inputs: ["NORDICS-SE-01940"], output: "SE" }
+        ],
+        null,
+        2
+      )
+    );
     fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: "not json" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Examples must be valid JSON");

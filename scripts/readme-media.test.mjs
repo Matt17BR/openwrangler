@@ -6,7 +6,28 @@ import { PNG } from "pngjs";
 
 const root = resolve(import.meta.dirname, "..");
 
-test("README media is compact, portable, and composition-verified", () => {
+const nativeAssets = [
+  nativeAsset("explore.png", "vscode-explore-dark.png", 1_440, 870),
+  nativeAsset("workflow.png", "vscode-workflow-dark.png", 1_440, 870),
+  nativeAsset("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600),
+  nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
+  nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
+  nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
+  nativeCrop("gallery/file-title-action.png", "vscode-file-title-action.png", 1_440, 865, {
+    x: 0,
+    y: 0,
+    width: 1_440,
+    height: 120
+  }),
+  nativeCrop("gallery/tab-context-menu.png", "vscode-tab-context-menu.png", 1_440, 865, {
+    x: 0,
+    y: 0,
+    width: 540,
+    height: 570
+  })
+];
+
+test("v1.2 README media preserves exact packaged-editor scenes and tells the complete product story", () => {
   const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   const compositor = readFileSync(resolve(root, "scripts", "compose-readme-media.mjs"), "utf8");
   const captureScript = readFileSync(resolve(root, "scripts", "capture-screenshots.mjs"), "utf8");
@@ -14,7 +35,8 @@ test("README media is compact, portable, and composition-verified", () => {
   const buildWebviews = readFileSync(resolve(root, "scripts", "build-webviews.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
   const gallery = readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8");
-  const mediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.1.md"), "utf8");
+  const mediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.2.md"), "utf8");
+  const testing = readFileSync(resolve(root, "docs", "testing.md"), "utf8");
   const extensionHost = readFileSync(resolve(root, "src", "test", "extensionHost", "index.ts"), "utf8");
   const screenshotEvidence = readFileSync(
     resolve(root, "src", "test", "extensionHost", "screenshotEvidence.ts"),
@@ -37,22 +59,30 @@ test("README media is compact, portable, and composition-verified", () => {
     assert.ok(buildWebviews.includes(`"${asset}"`), `The production build must verify ${asset}.`);
   }
   assert.match(buildWebviews, /packaged\.equals\(source\)/u);
-  assert.match(compositor, /vscode-hero-dark\.png/u);
-  assert.match(compositor, /vscode-hero-light\.png/u);
-  assert.match(compositor, /vscode-notebook-pandas-dark\.png/u);
-  assert.match(compositor, /vscode-notebook-polars-dark\.png/u);
-  assert.match(compositor, /vscode-notebook-pyspark-dark\.png/u);
+
+  assert.match(compositor, /docs", "images", "readme", "v1\.2"/u);
   assert.match(compositor, /pixelmatch/u);
-  assert.match(compositor, /sRGB/u);
-  assert.doesNotMatch(compositor, /rotate\(|clip-path:\s*polygon|transform:\s*scale\(/u);
-  assert.match(
-    compositor,
-    /name: "pyspark-live-notebook",[\s\S]{0,180}width: 1_920,[\s\S]{0,80}height: 640,[\s\S]{0,300}nativeSource: "pyspark"/u
-  );
-  assert.doesNotMatch(
-    compositor,
-    /pysparkCard|pysparkHeader|pysparkStage|pysparkFooter|engineBadge|statusBadge|radial-gradient/u
-  );
+  assert.match(compositor, /addSrgbChunk/u);
+  assert.doesNotMatch(compositor, /v1\.1|rotate\(|clip-path|transform:\s*scale\(/u);
+  for (const asset of nativeAssets) {
+    assert.ok(compositor.includes(`${asset.factory}("${asset.destination}", "${asset.source}"`));
+  }
+  assert.match(compositor, /function cropPng\(/u);
+  assert.match(compositor, /source\.data\.copy\(result\.data/u);
+
+  assert.match(captureScript, /regional-orders-rich\.parquet/u);
+  assert.match(captureScript, /backend="duckdb"/u);
+  assert.match(captureScript, /FROM range\(100000\) AS rows\(row_id\)/u);
+  assert.match(captureScript, /DECIMAL\(14, 2\)/u);
+  assert.match(captureScript, /TIMESTAMPTZ/u);
+  assert.match(captureScript, /STRUCT\(label VARCHAR, score INTEGER\)/u);
+  assert.match(captureScript, /duckdb_rich = duckdb_manager\.open_session[\s\S]{0,300}page_size=200/u);
+  assert.doesNotMatch(captureScript, /duckdbRich[\s\S]{0,500}notebookVariable/u);
+  assert.match(captureScript, /readme\/v1\.2\/gallery\/duckdb-rich-parquet\.png/u);
+  assert.doesNotMatch(captureScript, /readme\/v1\.1/u);
+
+  assert.match(packagedEditorRunner, /resolve\(profile, "orders-analysis"\)/u);
+  assert.doesNotMatch(packagedEditorRunner, /Open Wrangler Jupyter Allow/u);
   assert.doesNotMatch(packagedEditorRunner, /acceptanceMode === "full" && jupyterExtensionInstallTarget/u);
   assert.match(packagedEditorRunner, /if \(jupyterExtensionInstallTarget\) \{/u);
   assert.match(packagedEditorRunner, /"jupyter-pyspark"/u);
@@ -69,66 +99,53 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.match(extensionHost, /packagedScreenshotFileName\([\s\S]{0,180}"notebook-duckdb", "dark"\)/u);
   assert.match(extensionHost, /async function captureNotebookWorkbenchScreenshot\(/u);
   assert.match(extensionHost, /A notebook workbench media scene requires the standard 1440 by 900 editor viewport/u);
-  assert.match(
-    mediaSpec,
-    /v1\.2 native notebook capture refresh[\s\S]{0,900}vscode-notebook-polars-dark\.png[\s\S]{0,600}vscode-notebook-duckdb-dark\.png[\s\S]{0,600}vscode-notebook-pyspark-dark\.png/u
-  );
-  assert.match(mediaSpec, /README[\s\S]{0,120}screenshot wall/u);
-  assert.match(captureScript, /regional-orders-rich\.parquet/u);
-  assert.match(captureScript, /backend="duckdb"/u);
-  assert.match(captureScript, /FROM range\(100000\) AS rows\(row_id\)/u);
-  assert.match(captureScript, /duckdb_rich = duckdb_manager\.open_session[\s\S]{0,300}page_size=200/u);
-  assert.match(captureScript, /DECIMAL\(14, 2\)/u);
-  assert.match(captureScript, /TIMESTAMPTZ/u);
-  assert.match(captureScript, /STRUCT\(label VARCHAR, score INTEGER\)/u);
-  assert.doesNotMatch(captureScript, /duckdbRich[\s\S]{0,500}notebookVariable/u);
 
-  for (const [name, width, height] of [
-    ["workbench.png", 1_920, 830],
-    ["notebooks.png", 1_280, 600]
-  ]) {
-    const path = resolve(root, "docs", "images", "readme", "v1.1", name);
-    const png = readFileSync(path);
-    assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-    assert.equal(png.readUInt32BE(16), width);
-    assert.equal(png.readUInt32BE(20), height);
-    assert.ok(png.byteLength < 300 * 1_024, `${name} should remain compact at README display size.`);
-    assert.ok(pngChunkTypes(png).includes("sRGB"), `${name} should declare the standard sRGB color space.`);
-    assert.ok(readme.includes(`docs/images/readme/v1.1/${name}`));
+  for (const asset of nativeAssets) {
+    const acceptedPath = resolve(root, "docs", "images", "editor-acceptance", asset.source);
+    const readmePath = resolve(root, "docs", "images", "readme", "v1.2", asset.destination);
+    const accepted = readFileSync(acceptedPath);
+    const portable = readFileSync(readmePath);
+    assertPng(accepted, asset.sourceWidth, asset.sourceHeight, false);
+    assertPng(portable, asset.outputWidth, asset.outputHeight, true);
+    assert.ok(portable.byteLength < 1_024 * 1_024, `${asset.destination} should remain below 1 MiB.`);
+    const acceptedImage = PNG.sync.read(accepted);
+    const expectedPixels = asset.crop ? cropPixels(acceptedImage, asset.crop) : acceptedImage.data;
+    assert.deepEqual(
+      PNG.sync.read(portable).data,
+      expectedPixels,
+      `${asset.destination} must preserve its exact accepted source pixels.`
+    );
   }
 
-  assert.equal(readme.match(/docs\/images\/readme\/v1\.1\/(?:workbench|notebooks)\.png/gu)?.length, 4);
-  assert.equal(
-    readme.match(
-      /<a href="https:\/\/raw\.githubusercontent\.com\/Matt17BR\/openwrangler\/main\/docs\/images\/readme\/v1\.1\/(?:workbench|notebooks)\.png"><img /gu
-    )?.length,
-    2
-  );
-  assert.doesNotMatch(readme, /docs\/images\/editor-acceptance\/vscode-(?:hero|notebook)/u);
-  assert.doesNotMatch(readme, /The image automatically follows your GitHub theme\./u);
-  assert.match(readme, /assets\/icon\.png" width="128" height="128"/u);
-  assert.doesNotMatch(readme, /<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/u);
+  for (const image of [
+    "explore.png",
+    "workflow.png",
+    "notebook-pandas.png",
+    "gallery/notebook-polars.png",
+    "gallery/notebook-duckdb.png"
+  ]) {
+    assert.ok(readme.includes(`docs/images/readme/v1.2/${image}`), `README must show ${image}.`);
+  }
+  assert.doesNotMatch(readme, /docs\/images\/readme\/v1\.1|docs\/images\/editor-acceptance/u);
+  assert.match(readme, /Operations, Summary, Filters \/ Sorts, Cleaning Steps/u);
+  assert.match(readme, /reorderable sort priorities, applied history, a draft diff/u);
   assert.match(
     readme,
-    /inline table is a lightweight preview stored with the notebook[\s\S]{0,180}may show only part of a very large\s+dataframe[\s\S]{0,180}\*\*Open in Open Wrangler\*\* action loads the complete, current variable/u
+    /portable Pandas table stays inside the notebook[\s\S]{0,140}reconnects to the complete,\s+current live variable/u
   );
-  assert.match(
-    readme,
-    /never substitutes the saved preview[\s\S]{0,180}run the cell again instead of opening a partial workbench[\s\S]{0,220}notebook toolbar's branded \*\*Open in Open Wrangler\*\* action[\s\S]{0,220}Preview portability limits apply only to the table\s+stored inside the notebook/u
-  );
+  assert.match(readme, /portable table keeps every captured column available/u);
+  assert.match(readme, /Polars editing\./u);
+  assert.match(readme, /DuckDB exploration\./u);
+  assert.match(readme, /without converting it to Pandas, Polars, or Arrow/u);
+  assert.match(readme, /fixture sizes are evidence points, not row limits/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
-  assert.match(
-    readme,
-    /If Microsoft Data Wrangler is installed too, Open Wrangler\s+asks once which extension should own automatic previews/u
-  );
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
-  assert.match(readme, /engine gallery/u);
-  assert.match(
-    readme,
-    /DuckDB relations open as native, viewing-only notebook sessions:[\s\S]{0,220}exact originating relation without converting it to\s+Pandas, Polars, or Arrow/u
-  );
+  assert.match(readme, /Inspired by <a href="https:\/\/github\.com\/microsoft\/vscode-data-wrangler"/u);
+  assert.match(readme, /If Microsoft\s+Data Wrangler is installed too[\s\S]{0,180}Choose\s+Notebook Preview Provider/u);
+  assert.match(readme, /\| Other VS Code desktop forks \| Experimental/u);
+  assert.match(readme, /\| DuckDB\s+\|/u);
+  assert.doesNotMatch(readme, /\| DuckDB, preview/u);
   assert.match(readme, /loading a pickle can execute arbitrary code/u);
-  assert.match(readme, /real packaged PySpark notebook capture/u);
   assert.match(
     readme,
     /PySpark 4\.2 DataFrames can open as experimental, viewing-only live notebook sessions\.[\s\S]{0,220}requested profiles stay in Spark; only bounded results return/u
@@ -137,59 +154,98 @@ test("README media is compact, portable, and composition-verified", () => {
     readme,
     /File sessions,\s+cleaning, exports, code insertion, and saved inline snapshots are not supported\./u
   );
-  assert.match(readme, /indexes and\s+counts the complete frame[\s\S]{0,100}not dataframe row limits/u);
-  assert.match(
-    readme,
-    /\| v1\.2\s+\| Finish the real-user interaction and visual polish[\s\S]{0,700}#88[\s\S]{0,700}#36/u
-  );
+  assert.match(readme, /\| v1\.2\s+\| Finish real-user interaction polish[\s\S]{0,500}#36/u);
   assert.match(readme, /\| v2\s+\| Native R data frames[\s\S]{0,200}#87/u);
   assert.match(readme, /The next public package is one coherent v1\.2 release/u);
   assert.match(readme, /Development commits are not published as a stream of patch releases/u);
-  assert.doesNotMatch(readme, /complex-value nodes, and nesting depth/u);
 
-  const galleryImage = readFileSync(
-    resolve(root, "docs", "images", "readme", "v1.1", "gallery", "duckdb-rich-parquet.png")
-  );
-  assert.equal(galleryImage.readUInt32BE(16), 1_920);
-  assert.equal(galleryImage.readUInt32BE(20), 640);
-  assert.ok(galleryImage.byteLength < 300 * 1_024);
-  assert.match(gallery, /file-backed DuckDB Parquet source/u);
+  for (const image of [
+    "images/readme/v1.2/explore.png",
+    "images/readme/v1.2/workflow.png",
+    "images/readme/v1.2/gallery/file-title-action.png",
+    "images/readme/v1.2/gallery/tab-context-menu.png",
+    "images/readme/v1.2/notebook-pandas.png",
+    "images/readme/v1.2/gallery/notebook-polars.png",
+    "images/readme/v1.2/gallery/notebook-duckdb.png",
+    "images/readme/v1.2/gallery/notebook-pyspark.png",
+    "images/readme/v1.2/gallery/duckdb-rich-parquet.png",
+    "images/acceptance/by-example-dialog-dark-1280.png",
+    "images/acceptance/operation-dialog-dark-1280.png",
+    "images/acceptance/by-example-preview-dark-1280.png",
+    "images/acceptance/step-inspection-dark-1280.png",
+    "images/acceptance/grid-high-contrast-1280.png"
+  ]) {
+    assert.ok(gallery.includes(image), `Gallery must include ${image}.`);
+  }
+  assert.match(gallery, /Fixture dimensions show\s+the captured scenario, not product row or column limits/u);
+  assert.match(gallery, /does not convert through Pandas,\s+Polars, or Arrow/u);
+  assert.match(gallery, /experimental and viewing-only/u);
+  assert.match(gallery, /Operation picker/u);
+  assert.match(gallery, /Transform by example/u);
+  assert.match(gallery, /Confirm the synthesized split across unseen account IDs/u);
+  assert.match(gallery, /High contrast/u);
+  assert.match(gallery, /## Open files where you already work[\s\S]{0,120}### Editor title action/u);
+  assert.match(gallery, /### Tab context menu/u);
   assert.match(
     gallery,
-    /DuckDB notebook relations also open as native, viewing-only live sessions against the exact originating\s+relation; they do not convert through Pandas, Polars, or Arrow\./u
+    /href="images\/acceptance\/by-example-dialog-dark-1280\.png"[\s\S]{0,500}href="images\/acceptance\/by-example-preview-dark-1280\.png"/u
   );
-  assert.match(gallery, /images\/readme\/v1\.1\/gallery\/duckdb-rich-parquet\.png/u);
+  assert.doesNotMatch(gallery, /images\/readme\/v1\.1/u);
 
-  const polarsImage = readFileSync(resolve(root, "docs", "images", "readme", "v1.1", "gallery", "notebook-polars.png"));
-  assert.equal(polarsImage.readUInt32BE(16), 1_920);
-  assert.equal(polarsImage.readUInt32BE(20), 760);
-  assert.ok(polarsImage.byteLength < 300 * 1_024);
-  assert.ok(pngChunkTypes(polarsImage).includes("sRGB"));
-  assert.match(gallery, /(?:Polars live|live native Polars) notebook/u);
-  assert.match(gallery, /images\/readme\/v1\.1\/gallery\/notebook-polars\.png/u);
+  const richDuckDb = readFileSync(
+    resolve(root, "docs", "images", "readme", "v1.2", "gallery", "duckdb-rich-parquet.png")
+  );
+  assertPng(richDuckDb, 1_920, 640, true);
+  assert.ok(richDuckDb.byteLength < 300 * 1_024);
 
-  const pysparkImage = readFileSync(
-    resolve(root, "docs", "images", "readme", "v1.1", "gallery", "pyspark-live-notebook.png")
-  );
-  const nativePysparkImage = readFileSync(
-    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-pyspark-dark.png")
-  );
-  assert.equal(nativePysparkImage.readUInt32BE(16), 1_920);
-  assert.equal(nativePysparkImage.readUInt32BE(20), 640);
-  assert.equal(pysparkImage.readUInt32BE(16), 1_920);
-  assert.equal(pysparkImage.readUInt32BE(20), 640);
-  assert.ok(pysparkImage.byteLength < 300 * 1_024);
-  assert.ok(pngChunkTypes(pysparkImage).includes("sRGB"));
-  assert.deepEqual(
-    PNG.sync.read(pysparkImage).data,
-    PNG.sync.read(nativePysparkImage).data,
-    "The PySpark gallery image must preserve every pixel from the native packaged-editor capture."
-  );
-  assert.match(gallery, /real packaged VS Code and Jupyter path/u);
-  assert.match(gallery, /experimental, viewing-only live notebook session/u);
-  assert.match(gallery, /No PySpark file opening, cleaning, data export, code insertion, or saved inline snapshot/u);
-  assert.match(gallery, /images\/readme\/v1\.1\/gallery\/pyspark-live-notebook\.png/u);
+  assert.match(mediaSpec, /canonical v1\.2 README and gallery contract/u);
+  assert.match(mediaSpec, /five images in three moments/u);
+  assert.match(mediaSpec, /preserve the exact selected source pixels/u);
+  assert.match(mediaSpec, /contains no unused import/u);
+  assert.match(testing, /derives eight assets from accepted packaged-editor sources/u);
+  assert.match(testing, /pixel-exact decoded output/u);
 });
+
+function nativeAsset(destination, source, width, height) {
+  return {
+    factory: "nativeAsset",
+    destination,
+    source,
+    sourceWidth: width,
+    sourceHeight: height,
+    outputWidth: width,
+    outputHeight: height
+  };
+}
+
+function nativeCrop(destination, source, sourceWidth, sourceHeight, crop) {
+  return {
+    factory: "nativeCrop",
+    destination,
+    source,
+    sourceWidth,
+    sourceHeight,
+    outputWidth: crop.width,
+    outputHeight: crop.height,
+    crop
+  };
+}
+
+function cropPixels(source, crop) {
+  const result = Buffer.alloc(crop.width * crop.height * 4);
+  for (let row = 0; row < crop.height; row += 1) {
+    const sourceStart = ((crop.y + row) * source.width + crop.x) * 4;
+    source.data.copy(result, row * crop.width * 4, sourceStart, sourceStart + crop.width * 4);
+  }
+  return result;
+}
+
+function assertPng(png, width, height, requireSrgb) {
+  assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(png.readUInt32BE(16), width);
+  assert.equal(png.readUInt32BE(20), height);
+  if (requireSrgb) assert.ok(pngChunkTypes(png).includes("sRGB"));
+}
 
 function pngChunkTypes(png) {
   const types = [];

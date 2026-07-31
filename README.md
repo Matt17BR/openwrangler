@@ -33,7 +33,7 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 | Other VS Code desktop forks | Experimental   |
 | Browser-hosted `vscode.dev` | Unsupported    |
 
-Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
+Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
 
 <!-- open-wrangler-release-status:end -->
 
@@ -49,9 +49,10 @@ Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python 
 - **Navigate large and wide tables efficiently.** The grid fetches bounded row and column blocks, while
   file-backed Polars sessions stay lazy where the format permits.
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"><img alt="The same Open Wrangler regional-orders session split between the default light and dark VS Code themes, with the virtualized grid and exact Revenue column profiles visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"></a>
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its Activity Bar views, virtualized dataframe grid, header summaries, and exact revenue column profile" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/explore.png"></a>
 
-_The same packaged session in VS Code's default light and dark themes._
+_Explore a real packaged Polars file session with Operations, Summary, Filters / Sorts, Cleaning Steps, and exact
+column profiles beside the grid._
 
 ## Quick start
 
@@ -65,38 +66,49 @@ _The same packaged session in VS Code's default light and dark themes._
 Ordinary CSV and TSV opens infer the delimiter, encoding, quote style, and header automatically. Use **Import
 options** only when a file needs an explicit override.
 
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars cleaning draft with ordered viewing sorts, cleaning history, a data diff, Apply and Discard controls, and executable generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/workflow.png"></a>
+
+_Viewing state and cleaning stay separate: reorderable sort priorities, applied history, a draft diff, and
+executable Polars code remain reviewable before **Apply step**._
+
 ## Notebook workflows
 
-When a trusted Python kernel becomes available, Open Wrangler prepares its Pandas, Polars, and DuckDB inline preview
-without requiring an earlier Open Wrangler command. If Microsoft Data Wrangler is installed too, Open Wrangler
-asks once which extension should own automatic previews; change that choice later with **Open Wrangler: Choose
-Notebook Preview Provider**.
+In a trusted Python notebook, Open Wrangler renders lightweight Pandas, Polars, and DuckDB previews automatically.
+The portable table keeps every captured column available and may store only part of a very large dataframe;
+**Open in Open Wrangler** connects to the complete, current variable in the live kernel and pages it as you
+navigate.
 
-The inline table is a lightweight preview stored with the notebook, so it may show only part of a very large
-dataframe. Its **Open in Open Wrangler** action loads the complete, current variable from that notebook's live
-kernel and pages it as you navigate; it never substitutes the saved preview. If an older saved output has no
-live-variable link, Open Wrangler asks you to run the cell again instead of opening a partial workbench.
+The notebook toolbar can also discover supported variables and shows each engine and dataframe type. If Microsoft
+Data Wrangler is installed too, choose which extension owns automatic previews with **Open Wrangler: Choose
+Notebook Preview Provider**. An older saved output without a live-variable link remains readable and asks you to
+run its cell again rather than opening a partial workbench.
 
-The notebook toolbar's branded **Open in Open Wrangler** action can also discover supported variables from the
-selected kernel and shows each engine and dataframe type. Preview portability limits apply only to the table
-stored inside the notebook, not to live dataframes or CSV, TSV, Excel, Parquet, and JSONL files.
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/notebook-pandas.png"><img alt="A Pandas dataframe rendered by Open Wrangler inside a real packaged VS Code Jupyter notebook, with paging and an Open in Open Wrangler action" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/notebook-pandas.png"></a>
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"><img alt="A Pandas dataframe rendered by Open Wrangler inside a real packaged VS Code Jupyter notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"></a>
+_The portable Pandas table stays inside the notebook; **Open in Open Wrangler** reconnects to the complete,
+current live variable._
 
-_A real packaged VS Code notebook with a lightweight Pandas inline preview._
+<table>
+  <tr>
+    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A live native Polars notebook session in Open Wrangler with a formula-column draft and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-polars.png"></a></td>
+    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A live native DuckDB relation in Open Wrangler with an exact filter, two ordered sorts, paging, and column profiles" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-duckdb.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Polars editing.</strong> Preview a formula column and inspect executable native Polars code before applying it.</td>
+    <td><strong>DuckDB exploration.</strong> Filter, profile, page, and reorder multi-column sorts against the originating relation.</td>
+  </tr>
+</table>
 
-The [engine gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) also shows a live
-native Polars notebook draft with generated Polars code, a native DuckDB rich-Parquet file session, and the
-experimental PySpark notebook viewer. DuckDB relations open as native, viewing-only notebook sessions: paging,
-filtering, sorting, and requested profiles run against the exact originating relation without converting it to
-Pandas, Polars, or Arrow. Cleaning, code insertion, and data export remain unavailable for DuckDB notebook
-relations.
+DuckDB relations open as native, viewing-only notebook sessions: paging, filtering, sorting, and requested
+profiles run against the exact originating relation without converting it to Pandas, Polars, or Arrow. Cleaning,
+code insertion, and data export remain unavailable for DuckDB notebook relations.
 
 PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting, paging,
 and requested profiles stay in Spark; only bounded results return to the notebook runtime. File sessions,
 cleaning, exports, code insertion, and saved inline snapshots are not supported. Opening currently indexes and
 counts the complete frame, while per-page transfer safeguards are not dataframe row limits. See the
-[real packaged PySpark notebook capture](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#pyspark-classic-live-notebook).
+[full product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) for file entry
+points, focused operation flows, accessibility states, and the real packaged PySpark notebook capture.
 
 ## Engines and formats
 
@@ -104,7 +116,7 @@ counts the complete frame, while per-page transfer safeguards are not dataframe 
 | ------------------------- | -------------------------------------- | ---------------------------- | --------------------------------------------------------------------- |
 | Polars                    | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; text and Parquet formats use lazy scans. Excel loads eagerly. |
 | Pandas                    | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series            | Native, including duplicate column labels                             |
-| DuckDB, preview           | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only                           |
+| DuckDB                    | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only                           |
 | PySpark 4.2, experimental | Not currently supported                | DataFrame                    | Viewing-only Spark queries with bounded returned results              |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
@@ -129,8 +141,10 @@ cleaned CSV and Parquet data without overwriting the source.
 Each open dataframe owns its view, cleaning plan, runtime session, and export target, so simultaneous tabs do
 not share state.
 
-See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md)
-for the complete surface.
+See the [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) for by-example,
+operation, history, accessibility, and engine-specific views, or the
+[operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) for the
+complete surface.
 
 ## Performance, with evidence
 
@@ -147,10 +161,10 @@ universally faster.
 
 ## Roadmap
 
-| Target | Focus                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v1.2   | Finish the real-user interaction and visual polish in [#88](https://github.com/Matt17BR/openwrangler/issues/88), publish a reproducible comparison in [#91](https://github.com/Matt17BR/openwrangler/issues/91), run bounded validation in another VS Code-based desktop IDE through [#86](https://github.com/Matt17BR/openwrangler/issues/86), and graduate PySpark only after the supported-scope gates in [#36](https://github.com/Matt17BR/openwrangler/issues/36) are green |
-| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87)                                                                                                                                                                                                                                                                                                                             |
+| Target | Focus                                                                                                                                                                                                                                                                                                                                                            |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v1.2   | Finish real-user interaction polish, publish a reproducible Data Wrangler performance comparison [#91](https://github.com/Matt17BR/openwrangler/issues/91), validate another desktop VS Code fork [#86](https://github.com/Matt17BR/openwrangler/issues/86), and complete the supported PySpark scope [#36](https://github.com/Matt17BR/openwrangler/issues/36). |
+| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87).                                                                                                                                                                                                            |
 
 The next public package is one coherent v1.2 release after its realistic editor journeys and exact-artifact
 release gates pass. Development commits are not published as a stream of patch releases.
