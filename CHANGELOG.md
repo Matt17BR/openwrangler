@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-07-31
+
 ### Changed
 
 - Replaced the tall inline draft pane with a compact **Draft review** strip that keeps the operation, exact
