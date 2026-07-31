@@ -496,6 +496,53 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
         call. = FALSE
       )
     }
+    .ow_validate_column_contract(column, index)
+  }
+  invisible(NULL)
+}
+
+.ow_validate_column_contract <- function(column, index) {
+  classes <- class(column)
+  if (
+    length(classes) == 0L ||
+      anyNA(classes) ||
+      any(nchar(classes, type = "chars") == 0L) ||
+      any(nchar(classes, type = "chars") > .ow_r_max_text_characters) ||
+      any(!grepl("^[A-Za-z][A-Za-z0-9._]*$", classes, perl = TRUE))
+  ) {
+    .ow_stop_provider(
+      paste0("R column ", index, " has a class that cannot be represented exactly in the provider schema."),
+      code = "invalid_schema",
+      recoverable = FALSE
+    )
+  }
+
+  storage <- typeof(column)
+  semantic_type <- .ow_column_type(column)
+  valid <- switch(
+    semantic_type,
+    boolean = identical(storage, "logical"),
+    integer =
+      (identical(storage, "integer") && !inherits(column, "factor")) ||
+        (identical(storage, "double") && inherits(column, "integer64")),
+    float =
+      identical(storage, "double") &&
+        !inherits(column, "integer64") &&
+        !inherits(column, "Date") &&
+        !inherits(column, "POSIXt") &&
+        !inherits(column, "difftime"),
+    string = identical(storage, "character") || (identical(storage, "integer") && inherits(column, "factor")),
+    date = identical(storage, "double") && inherits(column, "Date"),
+    datetime = identical(storage, "double") && inherits(column, "POSIXt"),
+    duration = identical(storage, "double") && inherits(column, "difftime"),
+    FALSE
+  )
+  if (!isTRUE(valid)) {
+    .ow_stop_provider(
+      paste0("R column ", index, " has a storage and semantic type combination that cannot be represented exactly."),
+      code = "invalid_schema",
+      recoverable = FALSE
+    )
   }
   invisible(NULL)
 }
@@ -632,7 +679,14 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
 
 .ow_column_name <- function(value, index) {
   name <- names(value)[[index]]
-  if (is.na(name)) "" else .ow_exact_text(name, paste0("R column ", index, " name"))
+  if (is.na(name)) {
+    .ow_stop_provider(
+      paste0("R column ", index, " has an NA name that cannot be represented exactly."),
+      code = "invalid_schema",
+      recoverable = FALSE
+    )
+  }
+  .ow_exact_text(name, paste0("R column ", index, " name"))
 }
 
 .ow_timezone <- function(value) {

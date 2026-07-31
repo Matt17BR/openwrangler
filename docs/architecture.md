@@ -24,7 +24,11 @@ forged, cross-document, or replacement-instance receipts fail closed. The host
 checks raw response bytes before JSON parsing and then mirrors the provider's
 shape, schema, page, cell-count, estimated-byte, and text ceilings. R names and
 string values cross exactly or produce a structured resource diagnostic. There
-is no truncating compatibility path.
+is no truncating compatibility path. Provider schema identities are exactly
+`r:c:<position>`; native storage/class signatures must be producer-emittable and
+map to the declared semantic type even when a dataframe has no rows. `NA` column
+names fail closed before session publication rather than collapsing into an
+ordinary empty name.
 
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
 

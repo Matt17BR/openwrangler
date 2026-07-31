@@ -72,6 +72,13 @@ target_env$oversized_page_bytes_frame <- data.frame(
   value = rep(strrep("p", 65536L), 22L),
   check.names = FALSE
 )
+target_env$zero_frame <- data.frame(value = character(), check.names = FALSE)
+target_env$empty_name_frame <- setNames(data.frame(value = 1L, check.names = FALSE), "")
+target_env$na_name_frame <- setNames(data.frame(value = 1L, check.names = FALSE), NA_character_)
+target_env$invalid_class_frame <- data.frame(value = character(), check.names = FALSE)
+class(target_env$invalid_class_frame$value) <- c("bad,class", "character")
+target_env$invalid_storage_frame <- data.frame(value = integer(), check.names = FALSE)
+class(target_env$invalid_storage_frame$value) <- "Date"
 original_bytes <- serialize(target_env$base_frame, NULL, version = 3L)
 provider <- create_open_wrangler_r_provider(target_env)
 
@@ -273,6 +280,82 @@ stopifnot(
   !grepl("\u2026$", exact_name_open$response$metadata$schema[[1L]]$name)
 )
 
+zero_open <- request("zero-open", list(
+  kind = "openSession",
+  source = list(kind = "notebookVariable", label = "zero_frame", variableName = "zero_frame"),
+  requestedSessionId = "r-zero-smoke",
+  pageSize = 1L,
+  columnOffset = 0L,
+  columnLimit = 1L
+))
+stopifnot(
+  identical(zero_open$response$kind, "sessionOpened"),
+  identical(zero_open$response$metadata$shape$rows, 0L),
+  identical(zero_open$response$metadata$schema[[1L]]$id, "r:c:0"),
+  identical(zero_open$response$metadata$schema[[1L]]$type, "string"),
+  identical(zero_open$response$metadata$schema[[1L]]$rawType, "character<character>"),
+  identical(zero_open$response$page$columnIds, list("r:c:0")),
+  length(zero_open$response$page$rows) == 0L
+)
+
+empty_name_open <- request("empty-name-open", list(
+  kind = "openSession",
+  source = list(
+    kind = "notebookVariable",
+    label = "empty_name_frame",
+    variableName = "empty_name_frame"
+  ),
+  requestedSessionId = "r-empty-name-smoke",
+  pageSize = 1L,
+  columnOffset = 0L,
+  columnLimit = 1L
+))
+stopifnot(
+  identical(empty_name_open$response$kind, "sessionOpened"),
+  identical(empty_name_open$response$metadata$schema[[1L]]$name, "")
+)
+
+for (case in list(
+  list(variable = "na_name_frame", session = "r-na-name-smoke", message = "NA name"),
+  list(
+    variable = "invalid_class_frame",
+    session = "r-invalid-class-smoke",
+    message = "cannot be represented exactly"
+  ),
+  list(
+    variable = "invalid_storage_frame",
+    session = "r-invalid-storage-smoke",
+    message = "storage and semantic type"
+  )
+)) {
+  rejected <- request(paste0(case$variable, "-open"), list(
+    kind = "openSession",
+    source = list(
+      kind = "notebookVariable",
+      label = case$variable,
+      variableName = case$variable
+    ),
+    requestedSessionId = case$session,
+    pageSize = 1L,
+    columnOffset = 0L,
+    columnLimit = 1L
+  ))
+  stopifnot(
+    identical(rejected$response$kind, "error"),
+    identical(rejected$response$code, "invalid_schema"),
+    identical(rejected$response$recoverable, FALSE),
+    grepl(case$message, rejected$response$message, fixed = TRUE)
+  )
+  rejected_close <- request(
+    paste0(case$variable, "-close"),
+    list(kind = "closeSession", sessionId = case$session, revision = 0L)
+  )
+  stopifnot(
+    identical(rejected_close$response$kind, "error"),
+    grepl("Unknown R provider session", rejected_close$response$message, fixed = TRUE)
+  )
+}
+
 for (case in list(
   list(
     variable = "oversized_text_frame",
@@ -402,7 +485,8 @@ unsupported_frames <- list(
     value
   }),
   list_frame = I(data.frame(unsupported = I(list(1L, 2L)))),
-  raw_frame = data.frame(unsupported = as.raw(c(1L, 2L)))
+  raw_frame = data.frame(unsupported = as.raw(c(1L, 2L))),
+  zero_raw_frame = data.frame(unsupported = raw(0L), check.names = FALSE)
 )
 for (name in names(unsupported_frames)) {
   target_env[[name]] <- unsupported_frames[[name]]

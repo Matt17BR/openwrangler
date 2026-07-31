@@ -236,6 +236,105 @@ describe("native R provider protocol guard", () => {
     ).toBe(true);
   });
 
+  it("accepts only canonical producer-emittable schemas for correlated zero-row opens", () => {
+    const zeroSchema = [
+      {
+        id: "r:c:0",
+        name: "",
+        position: 0,
+        rawType: "character<character>",
+        type: "string",
+        nullable: false
+      }
+    ] as const;
+    const zeroMetadata = {
+      ...metadata,
+      sourceClass: "data.frame" as const,
+      shape: { rows: 0, columns: 1 },
+      schema: zeroSchema
+    };
+    const zeroPage = {
+      offset: 0,
+      limit: 20,
+      totalRows: 0,
+      columnIds: ["r:c:0"],
+      rows: []
+    };
+    const zeroRequest = {
+      ...openRequest,
+      pageSize: 20,
+      columnOffset: 0,
+      columnLimit: 1
+    };
+    const responseFor = (candidateSchema: readonly unknown[]) => ({
+      protocolVersion: 1,
+      requestId: "zero-open",
+      response: {
+        kind: "sessionOpened",
+        metadata: { ...zeroMetadata, schema: candidateSchema },
+        page: zeroPage
+      }
+    });
+    const context = { requestId: "zero-open", request: zeroRequest } as const;
+
+    expect(isRProviderResponseEnvelopeForDispatch(responseFor(zeroSchema), context)).toBe(true);
+    for (const forgedSchema of [
+      [{ ...zeroSchema[0], id: "forged" }],
+      [{ ...zeroSchema[0], id: "r:c:1" }],
+      [{ ...zeroSchema[0], rawType: "" }],
+      [{ ...zeroSchema[0], rawType: "raw<raw>", type: "binary" }],
+      [{ ...zeroSchema[0], rawType: "list<list>", type: "list" }],
+      [{ ...zeroSchema[0], rawType: "double<numeric>" }],
+      [{ ...zeroSchema[0], rawType: "logical<Date>", type: "boolean" }],
+      [{ ...zeroSchema[0], rawType: "integer<Date>", type: "integer" }],
+      [{ ...zeroSchema[0], rawType: "character<POSIXt>", type: "string" }],
+      [{ ...zeroSchema[0], rawType: "character<character>", type: "unknown" }]
+    ]) {
+      expect(isRProviderResponseEnvelopeForDispatch(responseFor(forgedSchema), context)).toBe(false);
+    }
+  });
+
+  it.each([
+    ["boolean", "logical<logical>"],
+    ["integer", "integer<integer>"],
+    ["integer", "double<integer64>"],
+    ["float", "double<numeric>"],
+    ["string", "integer<factor>"],
+    ["date", "double<Date>"],
+    ["datetime", "double<POSIXct,POSIXt>"],
+    ["duration", "double<difftime>"]
+  ] as const)("accepts the zero-row %s schema emitted as %s", (type, rawType) => {
+    const candidateSchema = [{ id: "r:c:0", name: "value", position: 0, rawType, type, nullable: false }];
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          protocolVersion: 1,
+          requestId: "zero-open",
+          response: {
+            kind: "sessionOpened",
+            metadata: {
+              ...metadata,
+              sourceClass: "data.frame",
+              shape: { rows: 0, columns: 1 },
+              schema: candidateSchema
+            },
+            page: {
+              offset: 0,
+              limit: 20,
+              totalRows: 0,
+              columnIds: ["r:c:0"],
+              rows: []
+            }
+          }
+        },
+        {
+          requestId: "zero-open",
+          request: { ...openRequest, pageSize: 20, columnOffset: 0, columnLimit: 1 }
+        }
+      )
+    ).toBe(true);
+  });
+
   it("accepts a correlated projected page", () => {
     expect(
       isRProviderResponseEnvelope({

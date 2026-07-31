@@ -54,12 +54,6 @@ export interface QuartoExtensionApiSnapshot {
   readonly version?: string;
 }
 
-interface QuartoExtensionApi {
-  getQuartoPath(): unknown;
-  getQuartoVersion(): unknown;
-  isQuartoAvailable(): unknown;
-}
-
 interface NativeRSessionHelperOrigin {
   readonly documentIdentity: object;
   readonly processIdentity: object;
@@ -169,11 +163,23 @@ export function planNativeRLaunch(context: NativeRLaunchContext): NativeRLaunchP
  * Quarto CLI; it does not provide access to variables or execution sessions.
  */
 export function readQuartoExtensionApi(value: unknown): QuartoExtensionApiSnapshot | undefined {
-  if (!isQuartoExtensionApi(value)) return undefined;
   try {
-    const available = value.isQuartoAvailable();
-    const path = value.getQuartoPath();
-    const version = value.getQuartoVersion();
+    if (typeof value !== "object" || value === null) return undefined;
+    const candidate = value as Record<string, unknown>;
+    const getQuartoPath = candidate.getQuartoPath;
+    const getQuartoVersion = candidate.getQuartoVersion;
+    const isQuartoAvailable = candidate.isQuartoAvailable;
+    if (
+      typeof getQuartoPath !== "function" ||
+      typeof getQuartoVersion !== "function" ||
+      typeof isQuartoAvailable !== "function"
+    ) {
+      return undefined;
+    }
+
+    const available = Reflect.apply(isQuartoAvailable, value, []);
+    const path = Reflect.apply(getQuartoPath, value, []);
+    const version = Reflect.apply(getQuartoVersion, value, []);
     if (
       typeof available !== "boolean" ||
       (path !== undefined && (typeof path !== "string" || path.length === 0)) ||
@@ -190,16 +196,6 @@ export function readQuartoExtensionApi(value: unknown): QuartoExtensionApiSnapsh
   } catch {
     return undefined;
   }
-}
-
-function isQuartoExtensionApi(value: unknown): value is QuartoExtensionApi {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.getQuartoPath === "function" &&
-    typeof candidate.getQuartoVersion === "function" &&
-    typeof candidate.isQuartoAvailable === "function"
-  );
 }
 
 function extensionOf(fileName: string | undefined): string | undefined {

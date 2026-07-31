@@ -590,9 +590,10 @@ function isBoundedRProviderSchema(value: unknown): value is readonly ColumnSchem
   let estimatedBytes = 1_024;
   for (const column of value) {
     if (
-      !isRProviderTextWithinLimit(column.id) ||
+      column.id !== `r:c:${column.position}` ||
       !isRProviderTextWithinLimit(column.name) ||
-      !isRProviderTextWithinLimit(column.rawType)
+      !isNonEmptyBoundedString(column.rawType, R_PROVIDER_LIMITS.maxTextCodePoints) ||
+      !isRProviderRawTypeForColumn(column)
     ) {
       return false;
     }
@@ -600,6 +601,37 @@ function isBoundedRProviderSchema(value: unknown): value is readonly ColumnSchem
     if (!isRProviderSchemaEstimatedBytesWithinLimit(estimatedBytes)) return false;
   }
   return true;
+}
+
+const R_PROVIDER_RAW_TYPE_PATTERN =
+  /^(logical|integer|double|character)<([A-Za-z][A-Za-z0-9._]*(?:,[A-Za-z][A-Za-z0-9._]*)*)>$/u;
+
+function isRProviderRawTypeForColumn(column: ColumnSchema): boolean {
+  const match = R_PROVIDER_RAW_TYPE_PATTERN.exec(column.rawType);
+  if (match === null) return false;
+  const storage = match[1];
+  const classes = new Set((match[2] ?? "").split(","));
+  let emittedType: ColumnSchema["type"] | undefined;
+  if (classes.has("POSIXt")) {
+    emittedType = storage === "double" ? "datetime" : undefined;
+  } else if (classes.has("Date")) {
+    emittedType = storage === "double" ? "date" : undefined;
+  } else if (classes.has("difftime")) {
+    emittedType = storage === "double" ? "duration" : undefined;
+  } else if (classes.has("factor")) {
+    emittedType = storage === "character" || storage === "integer" ? "string" : undefined;
+  } else if (storage === "character") {
+    emittedType = "string";
+  } else if (storage === "logical") {
+    emittedType = "boolean";
+  } else if (storage === "integer") {
+    emittedType = "integer";
+  } else if (classes.has("integer64") && storage === "double") {
+    emittedType = "integer";
+  } else if (storage === "double") {
+    emittedType = "float";
+  }
+  return emittedType === column.type;
 }
 
 function isBoundedGridPage(value: unknown, schema?: readonly ColumnSchema[]): value is GridPage {

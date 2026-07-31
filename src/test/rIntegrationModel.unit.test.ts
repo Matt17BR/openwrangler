@@ -177,4 +177,27 @@ describe("Quarto public API guard", () => {
       })
     ).toBeUndefined();
   });
+
+  it("fails closed when documented API properties are hostile getters or proxy traps", () => {
+    const throwingGetter = Object.defineProperty(
+      {
+        getQuartoVersion: () => "1.9.0",
+        isQuartoAvailable: () => true
+      },
+      "getQuartoPath",
+      {
+        get() {
+          throw new Error("hostile getter");
+        }
+      }
+    );
+    expect(readQuartoExtensionApi(throwingGetter)).toBeUndefined();
+
+    const throwingProxy = new Proxy(Object.create(null) as Record<string, unknown>, {
+      get() {
+        throw new Error("hostile proxy");
+      }
+    });
+    expect(readQuartoExtensionApi(throwingProxy)).toBeUndefined();
+  });
 });

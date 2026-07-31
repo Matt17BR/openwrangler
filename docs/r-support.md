@@ -74,8 +74,12 @@ typed-cell encodings exist.
 Producer and host enforce the same reviewed ceilings before data enters parsed
 coordinator state: raw request/response bytes, dataframe shape, schema estimate,
 page rows/columns/cells, page estimate, and individual text values. Pages contain
-at most 100,000 cells. Names and string values are exact or rejected with a
-structured diagnostic; they are never shortened with a silent ellipsis.
+at most 100,000 cells. Schema IDs must be canonical for their zero-based column
+position, and the native storage/class signature must map to the exact semantic
+type the R producer emits, including for zero-row dataframes. Names and string
+values are exact or rejected with a structured diagnostic; `NA` column names are
+not interchangeable with empty names, and values are never shortened with a
+silent ellipsis.
 
 The agent requires the user environment to contain `jsonlite`, and native
 `data.table` snapshots require `data.table`. Open Wrangler does not install
