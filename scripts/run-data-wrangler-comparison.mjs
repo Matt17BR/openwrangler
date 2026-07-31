@@ -1277,6 +1277,11 @@ function comparisonEditorSettings(python) {
     "extensions.autoCheckUpdates": false,
     "extensions.autoUpdate": false,
     "extensions.ignoreRecommendations": true,
+    "git.enabled": false,
+    "git.openRepositoryInParentFolders": "never",
+    "files.watcherExclude": {
+      "**": true
+    },
     "window.dialogStyle": "custom",
     "window.menuStyle": "custom",
     "files.simpleDialog.enable": true,

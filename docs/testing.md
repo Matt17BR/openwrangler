@@ -427,10 +427,14 @@ while the pure report-contract tests remain portable.
 
 The runner acquires pinned official VS Code, installs the exact locked public Marketplace extensions into separate
 disposable extension directories, and starts one zero-window headless Ozone workbench per product. It uses fixed
-Open Wrangler-then-Data Wrangler order, removes
-desktop-display and editor-IPC routes and never falls back to the current desktop or normal profiles. Each product
-gets one untimed warm-up and one resident-cache CSV and Parquet diagnostic launch through its visible Files Explorer
-context menu. Open Wrangler's primary CSV path performs automatic import detection inside the click-to-grid
+Open Wrangler-then-Data Wrangler order, removes desktop-display and editor-IPC routes, and never falls back to the
+current desktop or normal profiles. Each product
+profile disables Git repository discovery and excludes the immutable synthetic fixture tree from filesystem
+watching so unrelated first-run notifications cannot alter the readiness boundary. Grid discovery ignores
+zero-area accessibility-tree remnants and waits, without clicking or dismissing anything, for transient visible
+workbench surfaces to clear; a persistent Quick Input, dialog, or modal consumes the bounded deadline and fails.
+Each product gets one untimed warm-up and one resident-cache CSV and Parquet diagnostic launch through its visible
+Files Explorer context menu. Open Wrangler's primary CSV path performs automatic import detection inside the click-to-grid
 boundary; the smoke does not answer delimiter, encoding, header, or quote prompts. The exact visible Explorer item
 must have one unambiguous basename, and cache residency is re-proven immediately before the action click.
 

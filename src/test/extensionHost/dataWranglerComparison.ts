@@ -458,14 +458,9 @@ async function comparisonWorkbenchReadiness(
   });
 }
 
-async function assertNoVisibleComparisonWorkbenchObstruction(page: Page): Promise<void> {
+async function comparisonWorkbenchIsUnobstructed(page: Page): Promise<boolean> {
   const state = await visibleComparisonWorkbenchObstructions(page);
-  if (state.visibleQuickInputs > 0 || state.visibleDialogs > 0 || state.visibleModals > 0) {
-    throw new Error(
-      `Comparison readiness is blocked by a visible workbench surface ` +
-        `(quick inputs: ${state.visibleQuickInputs}, dialogs: ${state.visibleDialogs}, modals: ${state.visibleModals}).`
-    );
-  }
+  return state.visibleQuickInputs === 0 && state.visibleDialogs === 0 && state.visibleModals === 0;
 }
 
 async function visibleComparisonWorkbenchObstructions(page: Page): Promise<{
@@ -486,7 +481,9 @@ async function boundedVisibleLocatorCount(locator: Locator, label: string): Prom
   assert.ok(candidates.length <= 64, `Comparison workbench ${label} discovery exceeded 64 candidates.`);
   let visible = 0;
   for (const candidate of candidates) {
-    if (await candidate.isVisible().catch(() => false)) visible += 1;
+    if (!(await candidate.isVisible().catch(() => false))) continue;
+    const box = await candidate.boundingBox().catch(() => null);
+    if (box && box.width > 0 && box.height > 0) visible += 1;
   }
   return visible;
 }
@@ -547,9 +544,14 @@ async function waitForGenericGridReadiness(
   let completedNullProbes = 0;
   let rejectedProbes = 0;
   let timedOutProbes = 0;
+  let obstructedPolls = 0;
   do {
     assert.equal(workbench.isClosed(), false, "The official VS Code workbench closed during grid discovery.");
-    await assertNoVisibleComparisonWorkbenchObstruction(workbench);
+    if (!(await comparisonWorkbenchIsUnobstructed(workbench))) {
+      obstructedPolls += 1;
+      await workbench.waitForTimeout(20);
+      continue;
+    }
     const browser = workbench.context().browser();
     assert.ok(browser, "The official VS Code workbench is not attached to a browser.");
     assert.equal(browser.isConnected(), true, "The official VS Code CDP connection closed during grid discovery.");
@@ -577,7 +579,10 @@ async function waitForGenericGridReadiness(
         stalledFrames.add(frame);
       } else if (probe.status === "completed" && probe.value) {
         if (!(await frameChainIsVisibleAndPointerUsable(frame))) continue;
-        await assertNoVisibleComparisonWorkbenchObstruction(workbench);
+        if (!(await comparisonWorkbenchIsUnobstructed(workbench))) {
+          obstructedPolls += 1;
+          continue;
+        }
         return Object.freeze({
           grid: probe.value,
           rendererFramePointerUsable: true
@@ -601,6 +606,7 @@ async function waitForGenericGridReadiness(
         completedNullProbes,
         rejectedProbes,
         timedOutProbes,
+        obstructedPolls,
         quarantinedFrames: stalledFrames.size
       })}`
   );
