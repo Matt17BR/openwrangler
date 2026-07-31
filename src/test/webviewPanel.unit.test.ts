@@ -2514,6 +2514,98 @@ describe("OpenWranglerPanel retained view state", () => {
     });
   });
 
+  it("adopts a confirmed open before persisting it so an immediate import command reconfigures the same session", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "sample.csv",
+      path: "/workspace/sample.csv",
+      uri: "file:///workspace/sample.csv",
+      importOptions: {
+        delimiter: ",",
+        encoding: "utf-8",
+        quoteChar: '"',
+        hasHeader: true
+      }
+    };
+    const configuredSource: SessionSource = {
+      ...source,
+      importOptions: {
+        delimiter: ";",
+        encoding: "utf-8",
+        quoteChar: '"',
+        hasHeader: true
+      }
+    };
+    const initial = responseForSource(source);
+    const configured = responseForSource(configuredSource, 1);
+    const persistenceStarted = deferred<void>();
+    const releasePersistence = deferred<void>();
+    const workspaceState = createWorkspaceMemento();
+    workspaceState.update.mockImplementationOnce(async (key: string, value: unknown): Promise<void> => {
+      persistenceStarted.resolve(undefined);
+      await releasePersistence.promise;
+      workspaceState.values.set(key, value);
+    });
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") return initial;
+      if (candidate.kind === "closeSession") return { kind: "sessionClosed", sessionId: candidate.sessionId };
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
+    const setActiveSession = vi.fn();
+    const harness = createPanelHarness(
+      { request, reconfigureFileSession, setActiveSession },
+      { source, delegateOpen: true, workspaceState }
+    );
+    configureDelimitedPrompts({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+
+    const opening = harness.open();
+    await persistenceStarted.promise;
+    expect(setActiveSession).toHaveBeenLastCalledWith(initial.metadata.sessionId);
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(0);
+    const changing = OpenWranglerPanel.changeActiveImportOptions();
+    await Promise.resolve();
+    expect(reconfigureFileSession).not.toHaveBeenCalled();
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(0);
+    releasePersistence.resolve(undefined);
+    await expect(Promise.all([opening, changing])).resolves.toEqual([undefined, true]);
+
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(0);
+    expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    expect(reconfigureFileSession).toHaveBeenCalledWith(
+      initial.metadata.sessionId,
+      initial.metadata.revision,
+      configuredSource,
+      {
+        cancellation: expect.objectContaining({
+          isCancellationRequested: false,
+          onCancellationRequested: expect.any(Function)
+        })
+      }
+    );
+    expect(setActiveSession).toHaveBeenLastCalledWith(initial.metadata.sessionId);
+    expect(workspaceState.update).toHaveBeenCalledTimes(2);
+    expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([initial, configured]);
+    expect(workspaceState.values.get(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY)).toEqual({
+      version: 2,
+      entries: [
+        {
+          uri: source.uri,
+          backend: "polars",
+          backendPreference: "polars",
+          importOptions: configuredSource.importOptions
+        }
+      ]
+    });
+  });
+
   it("does not remember import options when the initial runtime open is rejected", async () => {
     const source: SessionSource = {
       kind: "file",

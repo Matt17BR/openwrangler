@@ -233,6 +233,23 @@ const DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE = 197;
 // row zero is its only physically possible first visible row. The 80-row
 // import-reconfiguration scenario separately proves nonzero row restoration.
 const SHORT_FIXTURE_FIRST_VISIBLE_ROW = 0;
+const PERSISTED_PANEL_STEP_ID = "packaged-visible-recovery-score";
+const PERSISTED_PANEL_OUTPUT_COLUMN = "recovery_score";
+const PERSISTED_PANEL_SELECTED_COLUMN = "gross_margin";
+const PERSISTED_PANEL_COLUMN_WIDTH = 333;
+const PERSISTED_PANEL_FIRST_VISIBLE_ROW = 400;
+const PERSISTED_PANEL_SCROLL_LEFT = 1_400;
+
+function persistedPanelFilterModel(): FilterModel {
+  return {
+    logic: "and",
+    filters: [],
+    sort: [
+      { column: "revenue", direction: "desc", nulls: "last" },
+      { column: "market", direction: "desc", nulls: "last" }
+    ]
+  };
+}
 
 function resolveAcceptanceTemporaryDirectory(directory: string): string {
   const isolatedTempRoot = path.resolve(tmpdir());
@@ -697,13 +714,18 @@ export async function run(): Promise<void> {
   }
   if (phase === "seed") {
     recordAcceptanceProgress("seed:start");
-    await seedPersistedPlan(testing, fixture);
+    await seedPersistedPlan(testing, fixture, ensurePersistedRecoveryFixture(workspace));
     recordAcceptanceProgress("seed:complete");
     console.log("Open Wrangler extension-host persistence seed passed.");
     return;
   }
 
-  if (phase === "single") await seedPersistedPlan(testing, fixture);
+  const persistedRecoveryFixture = ensurePersistedRecoveryFixture(workspace);
+  if (phase === "single") await seedPersistedPlan(testing, fixture, persistedRecoveryFixture);
+  if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+    recordAcceptanceProgress("verify:visible-replay-recovery");
+    await verifyVisiblePersistedReplayAndRecovery(testing, persistedRecoveryFixture);
+  }
   recordAcceptanceProgress("verify:replay-recovery");
   await verifyPersistedReplayAndRecovery(testing, workspace, fixture);
   recordAcceptanceProgress("verify:custom-editor");
@@ -784,7 +806,15 @@ export async function run(): Promise<void> {
 }
 
 function ensurePackagedFirstUseFixture(workspace: vscode.Uri): vscode.Uri {
-  const fixture = vscode.Uri.joinPath(workspace, "fixtures", "[Live] regional orders 2024-2025.csv");
+  return ensureDeterministicFirstUseFixture(workspace, "[Live] regional orders 2024-2025.csv");
+}
+
+function ensurePersistedRecoveryFixture(workspace: vscode.Uri): vscode.Uri {
+  return ensureDeterministicFirstUseFixture(workspace, "[Recovery] persisted panel state.csv");
+}
+
+function ensureDeterministicFirstUseFixture(workspace: vscode.Uri, fileName: string): vscode.Uri {
+  const fixture = vscode.Uri.joinPath(workspace, "fixtures", fileName);
   const expected = packagedFirstUseFixtureCsv();
   try {
     writeFileSync(fixture.fsPath, expected, { encoding: "utf8", flag: "wx" });
@@ -6579,6 +6609,20 @@ async function waitForLocatorText(
   throw new Error(`Timed out waiting for ${expectation}.`);
 }
 
+async function waitForLocatorCount(
+  locator: Locator,
+  expectedCount: number,
+  timeoutMs: number,
+  expectation: string
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if ((await locator.count()) === expectedCount) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  throw new Error(`Timed out waiting for ${expectation}; found ${await locator.count()}.`);
+}
+
 async function waitForSettledViewState(testing: TestApi, expectation: string): Promise<void> {
   const started = Date.now();
   // The coordinator snapshot can become active before the newly mounted Electron
@@ -6651,6 +6695,92 @@ async function exercisePackagedFileLaunchSurfaces(
   if (availableCommands.has("notifications.hideList")) {
     await vscode.commands.executeCommand("notifications.hideList");
   }
+
+  recordAcceptanceProgress("verify:file-launch:explorer-context:source");
+  await vscode.commands.executeCommand("vscode.open", fixture, {
+    preview: false,
+    viewColumn: vscode.ViewColumn.One
+  });
+  await waitFor(
+    () => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
+    },
+    10_000,
+    "the exact source text editor before revealing its Explorer row"
+  );
+  assert.ok(
+    availableCommands.has("workbench.files.action.showActiveFileInExplorer"),
+    "The installed editor must expose its native active-file Explorer reveal command."
+  );
+  await vscode.commands.executeCommand("workbench.files.action.showActiveFileInExplorer");
+  await page.bringToFront();
+  const explorer = page.locator(".part.sidebar .explorer-folders-view:visible").first();
+  await explorer.waitFor({ state: "visible", timeout: 10_000 });
+  const explorerRows = explorer
+    .locator('.monaco-list-row[role="treeitem"]:visible')
+    .filter({ hasText: path.basename(fixture.fsPath) });
+  await waitForLocatorCount(explorerRows, 1, 10_000, "one exact deterministic fixture row in Explorer");
+  const explorerRow = explorerRows.first();
+  assert.equal(
+    (await explorerRow.innerText()).replace(/\s+/gu, " ").trim(),
+    path.basename(fixture.fsPath),
+    "The Explorer context journey must target the exact copied fixture row."
+  );
+  recordAcceptanceProgress("verify:file-launch:explorer-context:menu");
+  const { menu: explorerContextMenu, action: explorerMenuAction } = await openWorkbenchContextMenu(
+    page,
+    explorerRow,
+    "Open in Open Wrangler",
+    "Explorer row"
+  );
+  assert.ok(explorerMenuAction, "The Explorer row must expose Open in Open Wrangler.");
+  assert.equal(
+    await explorerContextMenu.getByRole("menuitem", { name: "Open in Open Wrangler", exact: true }).count(),
+    1,
+    "The Explorer context menu must expose exactly one canonical Open in Open Wrangler action."
+  );
+  assert.equal((await explorerMenuAction.innerText()).trim(), "Open in Open Wrangler");
+  recordAcceptanceProgress("verify:file-launch:explorer-context:open");
+  await explorerMenuAction.click();
+  await waitForAutomaticDelimitedImport(page, testing, fixture, "verify:file-launch:explorer-context:import");
+  await waitFor(
+    () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the physical Explorer context action to open its exact copied fixture"
+  );
+  const explorerSession = testing.activeSession();
+  assert.ok(explorerSession);
+  assert.deepEqual(explorerSession.metadata.shape, {
+    rows: PACKAGED_FIRST_USE_ROW_COUNT,
+    columns: PACKAGED_SCREENSHOT_COLUMNS.length
+  });
+  assert.deepEqual(explorerSession.metadata.source.importOptions, {
+    delimiter: ";",
+    encoding: "utf-8",
+    quoteChar: '"',
+    hasHeader: true
+  });
+  await waitFor(
+    () => testing.panelHydrated(explorerSession.sessionId),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the Explorer-launched dataframe renderer to acknowledge its exact session"
+  );
+  assert.equal(await testing.synchronizePanel(explorerSession.sessionId), true);
+  const explorerGridTarget = await waitForOpenWranglerGridTarget(page, testing, explorerSession.sessionId);
+  const explorerGrid = explorerGridTarget.frame.getByRole("grid", {
+    name: `Data grid for ${explorerSession.metadata.source.label}`
+  });
+  await explorerGrid.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await explorerGrid.getAttribute("aria-colcount"), String(PACKAGED_SCREENSHOT_COLUMNS.length + 1));
+  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The Explorer action must not modify its source.");
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the Explorer context launch session to dispose"
+  );
+  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Explorer launch cleanup must preserve source bytes.");
 
   recordAcceptanceProgress("verify:file-launch:title-action:source");
   await vscode.commands.executeCommand("vscode.open", fixture, {
@@ -6941,6 +7071,15 @@ async function openEditorTabContextMenu(
   tab: Locator,
   requiredActionName?: string
 ): Promise<{ menu: Locator; action?: Locator }> {
+  return openWorkbenchContextMenu(page, tab, requiredActionName, "editor tab");
+}
+
+async function openWorkbenchContextMenu(
+  page: Page,
+  target: Locator,
+  requiredActionName: string | undefined,
+  surface: string
+): Promise<{ menu: Locator; action?: Locator }> {
   const diagnostics: ContextMenuDiagnostic[] = [];
   let lastError: unknown;
 
@@ -6948,7 +7087,7 @@ async function openEditorTabContextMenu(
     await page.keyboard.press("Escape");
     const visibleMenus = page.locator(".context-view.monaco-menu-container:visible");
     await visibleMenus.waitFor({ state: "hidden", timeout: 1_000 }).catch(() => {});
-    await tab.click({ button: "right" });
+    await target.click({ button: "right" });
 
     const menu = visibleMenus.last();
     const action = requiredActionName
@@ -6968,7 +7107,9 @@ async function openEditorTabContextMenu(
   }
 
   throw new Error(
-    `The editor-tab context menu did not expose ${requiredActionName ? JSON.stringify(requiredActionName) : "a visible HTML menu"} after two right-click attempts. Visible menu diagnostics: ${JSON.stringify(diagnostics)}`,
+    `The ${surface} context menu did not expose ${
+      requiredActionName ? JSON.stringify(requiredActionName) : "a visible HTML menu"
+    } after two right-click attempts. Visible menu diagnostics: ${JSON.stringify(diagnostics)}`,
     { cause: lastError }
   );
 }
@@ -11412,7 +11553,108 @@ function releasedNotebookRendererHostDiagnostics(
   };
 }
 
-async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise<void> {
+async function seedVisiblePersistedPanel(testing: TestApi, fixture: vscode.Uri): Promise<void> {
+  const sourceBytes = readFileSync(fixture.fsPath);
+  recordAcceptanceProgress("seed:visible-panel:open");
+  const opened = await testing.request({
+    kind: "openSession",
+    ...GRID_COLUMN_WINDOW,
+    source: semicolonCsvSource(fixture),
+    backend: "polars",
+    pageSize: 200,
+    mode: "editing"
+  });
+  assert.equal(opened.kind, "sessionOpened");
+  if (opened.kind !== "sessionOpened") return;
+  assert.deepEqual(opened.metadata.shape, {
+    rows: PACKAGED_FIRST_USE_ROW_COUNT,
+    columns: PACKAGED_SCREENSHOT_COLUMNS.length
+  });
+
+  recordAcceptanceProgress("seed:visible-panel:preview");
+  const preview = await testing.request({
+    kind: "previewStep",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: opened.metadata.sessionId,
+    revision: opened.metadata.revision,
+    step: {
+      id: PERSISTED_PANEL_STEP_ID,
+      kind: "formula",
+      params: {
+        leftColumn: columnReference(opened.metadata, "revenue"),
+        operator: "multiply",
+        value: 2,
+        newColumn: PERSISTED_PANEL_OUTPUT_COLUMN
+      }
+    },
+    offset: 0,
+    limit: 200
+  });
+  assert.equal(preview.kind, "stepPreview");
+  if (preview.kind !== "stepPreview") return;
+
+  recordAcceptanceProgress("seed:visible-panel:apply");
+  const applied = await testing.request({
+    kind: "applyDraft",
+    ...GRID_COLUMN_WINDOW,
+    sessionId: opened.metadata.sessionId,
+    revision: preview.revision,
+    offset: 0,
+    limit: 200
+  });
+  assert.equal(applied.kind, "planUpdated");
+  if (applied.kind !== "planUpdated") return;
+
+  recordAcceptanceProgress("seed:visible-panel:view");
+  const page = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    viewRequestId: "seed-visible-persisted-panel",
+    sessionId: opened.metadata.sessionId,
+    revision: applied.revision,
+    offset: 400,
+    limit: 200,
+    filterModel: persistedPanelFilterModel()
+  });
+  assert.equal(page.kind, "page");
+  if (page.kind !== "page") return;
+  assert.deepEqual(
+    page.metadata.steps.map((step) => step.id),
+    [PERSISTED_PANEL_STEP_ID]
+  );
+  assert.deepEqual(page.metadata.filterModel, persistedPanelFilterModel());
+  assert.equal(page.metadata.shape.columns, PACKAGED_SCREENSHOT_COLUMNS.length + 1);
+  const selected = columnReference(page.metadata, PERSISTED_PANEL_SELECTED_COLUMN);
+  await testing.updateViewState(opened.metadata.sessionId, {
+    columnWidths: { [selected.id]: PERSISTED_PANEL_COLUMN_WIDTH },
+    selectedColumnId: selected.id,
+    viewport: {
+      firstVisibleRow: PERSISTED_PANEL_FIRST_VISIBLE_ROW,
+      scrollLeft: PERSISTED_PANEL_SCROLL_LEFT
+    }
+  });
+
+  recordAcceptanceProgress("seed:visible-panel:close");
+  const closed = await testing.request({
+    kind: "closeSession",
+    sessionId: opened.metadata.sessionId,
+    revision: page.revision
+  });
+  assert.equal(closed.kind, "sessionClosed");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the visible persisted-panel seed session and runtime to close"
+  );
+  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Seeding visible state must not modify its source.");
+}
+
+async function seedPersistedPlan(
+  testing: TestApi,
+  fixture: vscode.Uri,
+  persistedPanelFixture: vscode.Uri
+): Promise<void> {
+  await seedVisiblePersistedPanel(testing, persistedPanelFixture);
   const source = csvSource(fixture);
   const filterModel: FilterModel = {
     filters: [],
@@ -11564,6 +11806,303 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     recordAcceptanceProgress(`seed:${target.backend}:complete`);
   }
   await new Promise((resolve) => setTimeout(resolve, 1_000));
+}
+
+interface VisiblePersistedPanelSnapshot {
+  readonly appliedStepText: string;
+  readonly selectedColumnWidth: number;
+  readonly selectedValues: readonly string[];
+  readonly selectedColumnId: string;
+  readonly sort: FilterModel["sort"];
+  readonly sortLabels: readonly string[];
+  readonly status: string;
+  readonly viewport: { firstVisibleRow: number; scrollLeft: number };
+}
+
+async function assertPersistedSortPriorityInNativeView(workbench: Page): Promise<readonly string[]> {
+  const sidebarWasVisible = await workbench
+    .locator(".part.sidebar")
+    .first()
+    .isVisible()
+    .catch(() => false);
+  await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+  const sidebar = workbench.locator(".part.sidebar:visible");
+  const filtersTree = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
+  if (!(await filtersTree.isVisible().catch(() => false))) {
+    const filtersHeader = sidebar.getByText("Filters / Sorts", { exact: true }).first();
+    await filtersHeader.waitFor({ state: "visible", timeout: 10_000 });
+    await filtersHeader.click();
+  }
+  await filtersTree.waitFor({ state: "visible", timeout: 10_000 });
+  const revenue = filtersTree
+    .getByRole("treeitem", { name: /^revenue, Priority 1 · Descending · nulls last/u })
+    .first();
+  const market = filtersTree.getByRole("treeitem", { name: /^market, Priority 2 · Descending · nulls last/u }).first();
+  await revenue.waitFor({ state: "visible", timeout: 10_000 });
+  await market.waitFor({ state: "visible", timeout: 10_000 });
+  const labels = [(await revenue.getAttribute("aria-label")) ?? "", (await market.getAttribute("aria-label")) ?? ""];
+  assert.match(labels[0] ?? "", /^revenue, Priority 1 · Descending · nulls last/u);
+  assert.match(labels[1] ?? "", /^market, Priority 2 · Descending · nulls last/u);
+  if (!sidebarWasVisible) {
+    await closeVisibleWorkbenchPart(workbench, ".part.sidebar", [
+      "workbench.action.closeSidebar",
+      "workbench.action.toggleSidebarVisibility"
+    ]);
+  }
+  const activeEditorTab = workbench
+    .locator(".part.editor .editor-group-container.active .tabs-container .tab.active:visible")
+    .last();
+  await activeEditorTab.waitFor({ state: "visible", timeout: 10_000 });
+  await activeEditorTab.click();
+  return labels;
+}
+
+async function visiblePersistedPanelSnapshot(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string
+): Promise<VisiblePersistedPanelSnapshot> {
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The visible persistence assertion requires the exact rendered panel.");
+  await waitForSettledViewState(testing, "the visible persisted panel to settle before physical inspection");
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId);
+  assert.ok(active, "The visible persistence assertion requires its exact active session.");
+  assert.deepEqual(
+    active.metadata.steps.map((step) => step.id),
+    [PERSISTED_PANEL_STEP_ID]
+  );
+  assert.equal(active.metadata.shape.columns, PACKAGED_SCREENSHOT_COLUMNS.length + 1);
+  assert.ok(columnReference(active.metadata, PERSISTED_PANEL_OUTPUT_COLUMN));
+  assert.match(active.code ?? "", new RegExp(PERSISTED_PANEL_OUTPUT_COLUMN, "u"));
+  assert.deepEqual(active.viewState.filterModel, persistedPanelFilterModel());
+  const selected = columnReference(active.metadata, PERSISTED_PANEL_SELECTED_COLUMN);
+  assert.equal(active.viewState.selectedColumnId, selected.id);
+  assert.equal(active.viewState.columnWidths[selected.id], PERSISTED_PANEL_COLUMN_WIDTH);
+  assert.equal(active.viewState.viewport.firstVisibleRow, PERSISTED_PANEL_FIRST_VISIBLE_ROW);
+  assert.ok(active.viewState.viewport.scrollLeft > 0, "The restored horizontal viewport must remain nonzero.");
+
+  assert.equal((await app.locator(".backendBadge").first().innerText()).trim(), "POLARS");
+  const cleaningPlan = app.getByRole("region", { name: "Cleaning plan" });
+  await cleaningPlan.waitFor({ state: "visible", timeout: 10_000 });
+  const appliedStepText = (await cleaningPlan.innerText()).replace(/\s+/gu, " ").trim();
+  assert.match(appliedStepText, /\b1 applied step\b/u);
+
+  const outputPosition = active.metadata.schema.findIndex((column) => column.name === PERSISTED_PANEL_OUTPUT_COLUMN);
+  assert.equal(
+    outputPosition,
+    PACKAGED_SCREENSHOT_COLUMNS.length,
+    "The committed recovery output must remain the final schema column."
+  );
+  const selectedPosition = active.metadata.schema.findIndex((column) => column.id === selected.id);
+  assert.notEqual(selectedPosition, -1);
+  const selectedHeader = app.locator(`th[data-grid-column="${selectedPosition}"]`).first();
+  await selectedHeader.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await selectedHeader.getAttribute("data-column"), PERSISTED_PANEL_SELECTED_COLUMN);
+  assert.equal(await selectedHeader.getAttribute("aria-selected"), "true");
+  const selectedColumnWidth = Math.round((await selectedHeader.boundingBox())?.width ?? 0);
+  assert.ok(
+    Math.abs(selectedColumnWidth - PERSISTED_PANEL_COLUMN_WIDTH) <= 1,
+    `The distinctive persisted selected-column width was not rendered: ${selectedColumnWidth}.`
+  );
+
+  const visibleRows = app.getByRole("status", { name: "Visible rows" });
+  await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
+  await waitForLocatorText(
+    visibleRows,
+    (text) => text.trim() === "Rows 401\u2013600 of 10,000",
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the persisted 401\u2013600 row block to reach the rendered grid"
+  );
+  const status = (await visibleRows.innerText()).trim();
+
+  const selectedCells = app.locator(`td[data-grid-column="${selectedPosition}"][data-grid-row]`);
+  await selectedCells.first().waitFor({ state: "visible", timeout: 10_000 });
+  const selectedValues = (await selectedCells.allInnerTexts()).slice(0, 3).map((value) => value.trim());
+  assert.equal(selectedValues.length, 3, "The selected persisted column must expose visible values.");
+  assert.ok(
+    selectedValues.every((value) => Number.isFinite(Number(value.replaceAll(",", "")))),
+    `The selected persisted numeric column must remain numeric: ${JSON.stringify(selectedValues)}.`
+  );
+  assert.equal(await selectedCells.first().getAttribute("aria-selected"), "true");
+
+  const scroller = app.getByTestId("data-grid-scroller");
+  const physicalViewport = await scroller.evaluate((element) => {
+    const target = element as {
+      scrollLeft: number;
+      scrollTop: number;
+      scrollWidth: number;
+      scrollHeight: number;
+      clientWidth: number;
+      clientHeight: number;
+    };
+    return {
+      scrollLeft: target.scrollLeft,
+      scrollTop: target.scrollTop,
+      scrollWidth: target.scrollWidth,
+      scrollHeight: target.scrollHeight,
+      clientWidth: target.clientWidth,
+      clientHeight: target.clientHeight
+    };
+  });
+  assert.ok(physicalViewport.scrollLeft > 0, "The rendered grid must retain a nonzero horizontal scroll.");
+  assert.ok(physicalViewport.scrollTop > 0, "The rendered grid must retain a nonzero vertical scroll.");
+  assert.ok(physicalViewport.scrollWidth > physicalViewport.clientWidth);
+  assert.ok(physicalViewport.scrollHeight > physicalViewport.clientHeight);
+
+  assert.equal(status, "Rows 401\u2013600 of 10,000");
+  const sortLabels = await assertPersistedSortPriorityInNativeView(workbench);
+  await waitForSettledViewState(testing, "the visible persisted panel to settle after native-view inspection");
+
+  return {
+    appliedStepText,
+    selectedColumnWidth,
+    selectedValues,
+    selectedColumnId: selected.id,
+    sort: active.viewState.filterModel.sort.map((rule) => ({ ...rule })),
+    sortLabels,
+    status,
+    viewport: { ...active.viewState.viewport }
+  };
+}
+
+async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture: vscode.Uri): Promise<void> {
+  const sourceBytes = readFileSync(fixture.fsPath);
+  const insights = vscode.workspace.getConfiguration("openWrangler", fixture);
+  const previousInsightsOnOpen = insights.inspect<boolean>("insightsOnOpen")?.globalValue;
+  await insights.update("insightsOnOpen", false, vscode.ConfigurationTarget.Global);
+  let sessionId: string | undefined;
+  try {
+    const workbench = await connectToEditorWorkbench();
+    recordAcceptanceProgress("verify:visible-replay-recovery:open");
+    await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.uri === fixture.toString() &&
+          active.metadata.backend === "polars" &&
+          active.metadata.steps.some((step) => step.id === PERSISTED_PANEL_STEP_ID)
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the fresh editor process to replay the visible persisted Polars plan"
+    );
+    const active = testing.activeSession();
+    assert.ok(active, "The fresh editor process must publish the persisted panel session.");
+    sessionId = active.sessionId;
+    await waitFor(
+      () => testing.panelHydrated(sessionId!),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the fresh persisted panel renderer to acknowledge its replay"
+    );
+    assert.equal(
+      await testing.synchronizePanel(sessionId),
+      true,
+      "The fresh persisted panel must synchronize before physical inspection."
+    );
+    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+    await workbench.bringToFront();
+    const persistedTab = workbench
+      .locator(".part.editor .editor-group-container.active .tabs-container .tab.active:visible")
+      .filter({ hasText: path.basename(fixture.fsPath) })
+      .last();
+    await persistedTab.waitFor({ state: "visible", timeout: 10_000 });
+    await persistedTab.click();
+    recordAcceptanceProgress("verify:visible-replay-recovery:initial-visible-state");
+    const initial = await visiblePersistedPanelSnapshot(testing, workbench, sessionId);
+    const initialTarget = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    const initialApp = await exactSessionApp(initialTarget.frame, sessionId);
+    assert.ok(initialApp);
+    const initialHeaderProfiles = initialApp.getByRole("button", { name: "Header profiles", exact: true });
+    await initialHeaderProfiles.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(
+      await initialHeaderProfiles.getAttribute("aria-pressed"),
+      "false",
+      "The recovery journey must defer profiles until its renderer-owned request."
+    );
+
+    const generation = testing.runtimeGeneration();
+    const runtimeId = testing.diagnostics().sessions.find((session) => session.publicId === sessionId)?.runtimeId;
+    assert.ok(runtimeId);
+    recordAcceptanceProgress("verify:visible-replay-recovery:restart");
+    testing.restartRuntime("Injected visible panel recovery test.");
+    await workbench
+      .locator(".notifications-toasts.visible .notification-list-item")
+      .first()
+      .waitFor({ state: "visible", timeout: 2_000 })
+      .catch(() => undefined);
+    const availableCommands = new Set(await vscode.commands.getCommands(true));
+    if (availableCommands.has("notifications.clearAll")) {
+      await vscode.commands.executeCommand("notifications.clearAll");
+    }
+    if (availableCommands.has("notifications.hideList")) {
+      await vscode.commands.executeCommand("notifications.hideList");
+    }
+    await workbench
+      .locator(".notifications-toasts.visible .notification-list-item")
+      .first()
+      .waitFor({ state: "hidden", timeout: 10_000 });
+    recordAcceptanceProgress("verify:visible-replay-recovery:header-profiles");
+    await initialHeaderProfiles.click();
+    await waitFor(
+      () => testing.runtimeGeneration() === generation + 1,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the renderer-originated Header profiles request to restart the runtime exactly once"
+    );
+    await waitFor(
+      () => {
+        const recovered = testing.diagnostics().sessions.find((session) => session.publicId === sessionId);
+        return Boolean(recovered && recovered.runtimeId !== runtimeId);
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the visible panel session to bind its replacement runtime"
+    );
+
+    const recoveredTarget = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    const recoveredApp = await exactSessionApp(recoveredTarget.frame, sessionId);
+    assert.ok(recoveredApp);
+    const recoveredHeaderProfiles = recoveredApp.getByRole("button", { name: "Header profiles", exact: true });
+    await recoveredHeaderProfiles.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(await recoveredHeaderProfiles.getAttribute("aria-pressed"), "true");
+    const recoveredSelectedHeader = recoveredApp
+      .locator(`th[data-column="${PERSISTED_PANEL_SELECTED_COLUMN}"]`)
+      .first();
+    await recoveredSelectedHeader.waitFor({ state: "visible", timeout: 10_000 });
+    await waitForLocatorText(
+      recoveredSelectedHeader,
+      (text) =>
+        !text.includes("Profiling\u2026") &&
+        ["Missing", "Distinct", "Min", "Max"].every((label) => text.includes(label)),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "renderer-originated Header profiles to finish on the persisted selected column"
+    );
+    assert.equal(
+      await testing.synchronizePanel(sessionId),
+      true,
+      "The recovered renderer must acknowledge its authoritative session snapshot."
+    );
+    recordAcceptanceProgress("verify:visible-replay-recovery:recovered-visible-state");
+    const recovered = await visiblePersistedPanelSnapshot(testing, workbench, sessionId);
+    assert.deepEqual(
+      recovered,
+      initial,
+      "Runtime recovery and renderer-originated profiling must preserve the complete visible dataframe state."
+    );
+    assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes);
+  } finally {
+    if (sessionId) {
+      await testing.disposePanelForSession(sessionId);
+      await waitFor(
+        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+        15_000,
+        "the visible persistence session and replacement runtime to close"
+      );
+    }
+    await insights.update("insightsOnOpen", previousInsightsOnOpen, vscode.ConfigurationTarget.Global);
+    assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes);
+  }
 }
 
 async function verifyPersistedReplayAndRecovery(
@@ -16182,6 +16721,16 @@ function csvSource(uri: vscode.Uri): SessionSource {
     path: uri.fsPath,
     uri: uri.toString(),
     importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+  };
+}
+
+function semicolonCsvSource(uri: vscode.Uri): SessionSource {
+  return {
+    kind: "file",
+    label: path.basename(uri.fsPath),
+    path: uri.fsPath,
+    uri: uri.toString(),
+    importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
   };
 }
 

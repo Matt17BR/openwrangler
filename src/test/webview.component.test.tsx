@@ -613,6 +613,80 @@ describe("DataGrid", () => {
     expect(onViewStateChange).not.toHaveBeenCalled();
   });
 
+  it("requests a restored row block when the initial page still belongs to the previous viewport", async () => {
+    const onPage = vi.fn();
+    const initialViewState = {
+      columnWidths: {},
+      selectedColumnId: "c:1",
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    };
+    const restoredViewState = {
+      columnWidths: {},
+      selectedColumnId: "c:1",
+      viewport: { firstVisibleRow: 400, scrollLeft: 95 }
+    };
+    const props = {
+      metadata: {
+        ...metadata,
+        shape: { rows: 1_000, columns: 2 },
+        filteredShape: { rows: 1_000, columns: 2 }
+      },
+      summaries: [],
+      pageSize: 200,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(
+      <DataGrid
+        {...props}
+        page={pageAt(0, 1_000)}
+        viewState={initialViewState}
+        viewStateRestoreVersion={0}
+        busy={false}
+      />
+    );
+
+    expect(onPage).not.toHaveBeenCalled();
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 58 },
+      scrollHeight: { configurable: true, value: 58 },
+      scrollTop: {
+        configurable: true,
+        get: () => 0,
+        set: () => undefined
+      }
+    });
+
+    rerender(
+      <DataGrid
+        {...props}
+        page={pageAt(0, 1_000)}
+        viewState={restoredViewState}
+        viewStateRestoreVersion={1}
+        busy={false}
+      />
+    );
+
+    await waitFor(() => expect(onPage).toHaveBeenCalledTimes(1));
+    expect(onPage).toHaveBeenCalledWith(400);
+
+    rerender(
+      <DataGrid
+        {...props}
+        page={pageAt(400, 1_000)}
+        viewState={restoredViewState}
+        viewStateRestoreVersion={1}
+        busy={false}
+      />
+    );
+    expect(onPage).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves a restored logical viewport across device-pixel scroll quantization", async () => {
     const onViewStateChange = vi.fn();
     const onPage = vi.fn();
@@ -728,7 +802,7 @@ describe("DataGrid", () => {
     expect(onPage).not.toHaveBeenCalled();
   });
 
-  it("keeps authoritative widths and selection when restored scroll emits synchronously", () => {
+  it("does not replace authoritative restored state from synchronous programmatic scroll events", () => {
     const onViewStateChange = vi.fn();
     const props = {
       metadata,
@@ -773,12 +847,83 @@ describe("DataGrid", () => {
       />
     );
 
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
+    expect(props.onPage).not.toHaveBeenCalled();
+  });
+
+  it("ignores a teardown scroll collapse but still accepts an explicit user scroll", () => {
+    const onViewStateChange = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onViewStateChange,
+      onPage: vi.fn(),
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    let physicalScrollTop = 0;
+    let physicalScrollLeft = 0;
+    let physicalScrollHeight = 232;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 58 },
+      clientWidth: { configurable: true, value: 320 },
+      scrollHeight: { configurable: true, get: () => physicalScrollHeight },
+      scrollWidth: { configurable: true, value: 900 },
+      scrollTop: {
+        configurable: true,
+        get: () => physicalScrollTop,
+        set: (value: number) => {
+          physicalScrollTop = value;
+        }
+      },
+      scrollLeft: {
+        configurable: true,
+        get: () => physicalScrollLeft,
+        set: (value: number) => {
+          physicalScrollLeft = value;
+        }
+      }
+    });
+
+    rerender(
+      <DataGrid
+        {...props}
+        viewState={{
+          columnWidths: { "c:1": 280 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+        }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    onViewStateChange.mockClear();
+
+    physicalScrollHeight = 58;
+    physicalScrollTop = 0;
+    fireEvent.scroll(scroller);
+
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
+
+    physicalScrollHeight = 232;
+    fireEvent.wheel(scroller);
+    fireEvent.scroll(scroller);
+
     expect(onViewStateChange).toHaveBeenLastCalledWith({
       columnWidths: { "c:1": 280 },
       selectedColumnId: "c:1",
-      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      viewport: { firstVisibleRow: 0, scrollLeft: 23 }
     });
-    expect(props.onPage).not.toHaveBeenCalled();
   });
 
   it("reaches the first, middle, and final rows beyond Chromium's layout ceiling", async () => {

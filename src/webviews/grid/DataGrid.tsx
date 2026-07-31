@@ -142,6 +142,7 @@ export function DataGrid({
   const focusRequested = useRef(false);
   const preserveGridFocusAfterScroll = useRef(false);
   const programmaticViewportTarget = useRef<ProgrammaticViewportTarget | undefined>(undefined);
+  const programmaticViewportWriteInProgress = useRef(false);
   const viewportUpdatesSuspended = useRef(false);
   const viewStateRef = useRef(viewState);
   const restorationRef = useRef({ viewState, metadata, page, pageSize });
@@ -193,6 +194,20 @@ export function DataGrid({
     [onViewStateChange]
   );
 
+  const writeProgrammaticViewport = useCallback(
+    (scroller: HTMLDivElement, target: ProgrammaticViewportTarget): void => {
+      programmaticViewportTarget.current = target;
+      programmaticViewportWriteInProgress.current = true;
+      try {
+        scroller.scrollTop = target.scrollTop;
+        scroller.scrollLeft = target.scrollLeft;
+      } finally {
+        programmaticViewportWriteInProgress.current = false;
+      }
+    },
+    []
+  );
+
   useLayoutEffect(() => {
     scrollInputsRef.current = {
       busy,
@@ -216,9 +231,7 @@ export function DataGrid({
     if (!scroller) return;
     const scrollTop = scrollTopForLogicalRow(createRowScrollModel(page.totalRows, scroller.clientHeight), page.offset);
     const scrollLeft = viewStateRef.current.viewport.scrollLeft;
-    programmaticViewportTarget.current = { firstVisibleRow: page.offset, scrollTop, scrollLeft };
-    scroller.scrollTop = scrollTop;
-    scroller.scrollLeft = scrollLeft;
+    writeProgrammaticViewport(scroller, { firstVisibleRow: page.offset, scrollTop, scrollLeft });
     setViewport({
       scrollLeft,
       scrollTop,
@@ -231,7 +244,15 @@ export function DataGrid({
       ...(selectedColumnId ? { selectedColumnId } : {}),
       viewport: { firstVisibleRow: page.offset, scrollLeft }
     });
-  }, [logicalViewContext, metadata.schema, page.offset, page.rows, page.totalRows, reportViewState]);
+  }, [
+    logicalViewContext,
+    metadata.schema,
+    page.offset,
+    page.rows,
+    page.totalRows,
+    reportViewState,
+    writeProgrammaticViewport
+  ]);
 
   useLayoutEffect(() => {
     const restoration = restorationRef.current;
@@ -242,7 +263,7 @@ export function DataGrid({
       Math.min(restoration.viewState.viewport.firstVisibleRow, Math.max(0, restoration.page.totalRows - 1))
     );
     const column = selectedColumnPosition(restoration.metadata.schema, restoration.viewState.selectedColumnId);
-    requestedOffset.current = Math.floor(row / restoration.pageSize) * restoration.pageSize;
+    requestedOffset.current = restoration.page.offset;
     focusRequested.current = false;
     preserveGridFocusAfterScroll.current = false;
     setFocusedCell({ row, column });
@@ -251,9 +272,7 @@ export function DataGrid({
       row
     );
     const scrollLeft = restoration.viewState.viewport.scrollLeft;
-    programmaticViewportTarget.current = { firstVisibleRow: row, scrollTop, scrollLeft };
-    scroller.scrollTop = scrollTop;
-    scroller.scrollLeft = scrollLeft;
+    writeProgrammaticViewport(scroller, { firstVisibleRow: row, scrollTop, scrollLeft });
     setViewport({
       scrollLeft,
       scrollTop,
@@ -261,7 +280,7 @@ export function DataGrid({
       width: scroller.clientWidth,
       height: scroller.clientHeight
     });
-  }, [viewStateRestoreVersion]);
+  }, [viewStateRestoreVersion, writeProgrammaticViewport]);
 
   useEffect(() => {
     requestedOffset.current = page.offset;
@@ -308,10 +327,57 @@ export function DataGrid({
     }
     const gridOwnsFocus = document.hasFocus() && scroller.contains(document.activeElement);
     preserveGridFocusAfterScroll.current = !focusRequested.current && gridOwnsFocus;
+    const requestBlockForRow = (row: number): void => {
+      const offset = Math.floor(row / blockSize) * blockSize;
+      if (scrollBusy || offset === requestedOffset.current || offset >= totalRows) return;
+      requestedOffset.current = offset;
+      preserveGridFocusAfterScroll.current = false;
+      focusRequested.current = gridOwnsFocus;
+      setFocusedCell((current) => ({ row, column: current.column }));
+      requestPage(offset);
+    };
     const targetStillQuantized =
       target !== undefined &&
       Math.abs(scroller.scrollTop - target.scrollTop) <= scrollQuantizationTolerance &&
       Math.abs(scroller.scrollLeft - target.scrollLeft) <= scrollQuantizationTolerance;
+    const verticalTargetTemporarilyUnavailable =
+      target !== undefined &&
+      target.scrollTop > 0 &&
+      Math.abs(scroller.scrollTop - target.scrollTop) > scrollQuantizationTolerance &&
+      (!scroller.isConnected || scroller.clientHeight <= 0 || scroller.scrollHeight <= scroller.clientHeight);
+    const horizontalTargetTemporarilyUnavailable =
+      target !== undefined &&
+      target.scrollLeft > 0 &&
+      Math.abs(scroller.scrollLeft - target.scrollLeft) > scrollQuantizationTolerance &&
+      (!scroller.isConnected || scroller.clientWidth <= 0 || scroller.scrollWidth <= scroller.clientWidth);
+    if (
+      target &&
+      !targetStillQuantized &&
+      (programmaticViewportWriteInProgress.current ||
+        verticalTargetTemporarilyUnavailable ||
+        horizontalTargetTemporarilyUnavailable)
+    ) {
+      if (verticalTargetTemporarilyUnavailable || horizontalTargetTemporarilyUnavailable) {
+        requestBlockForRow(target.firstVisibleRow);
+      }
+      setViewport((current) => {
+        const next = {
+          firstVisibleRow: target.firstVisibleRow,
+          scrollLeft: target.scrollLeft,
+          scrollTop: target.scrollTop,
+          width: scroller.clientWidth,
+          height: scroller.clientHeight
+        };
+        return current.firstVisibleRow === next.firstVisibleRow &&
+          current.scrollLeft === next.scrollLeft &&
+          current.scrollTop === next.scrollTop &&
+          current.width === next.width &&
+          current.height === next.height
+          ? current
+          : next;
+      });
+      return;
+    }
     if (target && !targetStillQuantized) programmaticViewportTarget.current = undefined;
     const scrollTop = targetStillQuantized ? target.scrollTop : scroller.scrollTop;
     const scrollLeft = targetStillQuantized ? target.scrollLeft : scroller.scrollLeft;
@@ -353,14 +419,7 @@ export function DataGrid({
         viewport: { firstVisibleRow: row, scrollLeft: next.scrollLeft }
       });
     }
-    const offset = Math.floor(row / blockSize) * blockSize;
-    if (!scrollBusy && offset !== requestedOffset.current && offset < totalRows) {
-      requestedOffset.current = offset;
-      preserveGridFocusAfterScroll.current = false;
-      focusRequested.current = gridOwnsFocus;
-      setFocusedCell((current) => ({ row, column: current.column }));
-      requestPage(offset);
-    }
+    requestBlockForRow(row);
   }, []);
 
   const interruptColumnReveal = useCallback(() => {
@@ -452,7 +511,7 @@ export function DataGrid({
 
   useEffect(() => {
     updateViewportFromScroller();
-  }, [busy, page.totalRows, pageSize, updateViewportFromScroller]);
+  }, [busy, page.totalRows, pageSize, updateViewportFromScroller, viewStateRestoreVersion]);
 
   const widths = useMemo(
     () => metadata.schema.map((column) => viewState.columnWidths[column.id] ?? defaultColumnWidth),
