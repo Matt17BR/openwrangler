@@ -75,10 +75,17 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 
 ## Required checks
 
-Run the narrowest relevant tests while iterating, then run all of these before a milestone PR:
+Run the narrowest relevant tests while iterating. Open or update a pull request only for a coherent, locally green
+slice, then use its exact-head hosted matrix as the authoritative broad gate. Do not repeat the complete local test,
+package, media, and editor stack merely because a pull request is about to open; that duplicates hosted evidence,
+slows the feedback loop, and can exhaust the developer machine without improving the accepted result.
 
-Run memory-intensive local test, package, media, and editor commands serially. When an execution yields with a live
-session, resume or wait for that exact session before starting another command; never launch a duplicate to poll it.
+Public memory-intensive commands acquire one shared lease across clones and worktrees. If one reports that another
+Open Wrangler command is active, wait for that command instead of bypassing the wrapper, invoking a `:run`/`:prepare`
+continuation directly, or launching a duplicate to poll it. Resume a yielded live execution through its exact session.
+Run the complete serial list below for a release candidate or when a change genuinely spans every listed boundary;
+otherwise run `npm run check`, the focused tests for the changed owner, and the relevant UI/editor scenario. Hosted CI
+still requires every blocking product, platform, accessibility, security, and packaged-editor lane before merge.
 
 ```bash
 npm run check
