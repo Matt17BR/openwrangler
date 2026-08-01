@@ -32,6 +32,9 @@ export default defineConfig(({ mode }) => {
       alias: { vscode: resolve(__dirname, "src/test/vscode.mock.ts") },
       environment: "jsdom",
       globals: true,
+      // Vitest otherwise derives its fork count from the host CPU count. Keep
+      // ordinary and coverage suites bounded on high-core developer and CI hosts.
+      maxWorkers: 4,
       // Hosted Windows runners can take more than Vitest's 5-second default to
       // initialize concurrent jsdom/React files. Keep every test bounded while
       // avoiding platform-load failures unrelated to an individual assertion.

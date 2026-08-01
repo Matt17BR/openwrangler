@@ -103,6 +103,29 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
   assert.deepEqual([...new Set(SCRIPT_TEST_GROUPS.flatMap((group) => groups[group]))].sort(), inventory);
 });
 
+test("every Vitest run has an explicit worker ceiling", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const config = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
+  const smokeConfig = readFileSync(new URL("../vite.python-environment-smoke.config.ts", import.meta.url), "utf8");
+  const configuredWorkerCaps = [...config.matchAll(/^\s*maxWorkers:\s*(\d+),?\s*$/gmu)].map((match) =>
+    Number(match[1])
+  );
+  const smokeWorkerCaps = [...smokeConfig.matchAll(/^\s*maxWorkers:\s*(\d+),?\s*$/gmu)].map((match) =>
+    Number(match[1])
+  );
+  const vitestScripts = Object.entries(manifest?.scripts ?? {})
+    .filter(([, command]) => typeof command === "string" && command.startsWith("vitest run"))
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  assert.deepEqual(vitestScripts, [
+    ["test:coverage:ts", "vitest run --coverage"],
+    ["test:python-environment-smoke", "vitest run --config vite.python-environment-smoke.config.ts"],
+    ["test:ts", "vitest run"]
+  ]);
+  assert.deepEqual(configuredWorkerCaps, [4]);
+  assert.deepEqual(smokeWorkerCaps, [1]);
+});
+
 test("manual stable evidence packages once and consumes the same canonical artifact set", () => {
   const source = readFileSync(new URL("../.github/workflows/stable-candidate.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);

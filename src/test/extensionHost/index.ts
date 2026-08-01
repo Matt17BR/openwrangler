@@ -367,7 +367,50 @@ function gridColumnDisplays(page: GridPage, columnId: string): string[] {
   return gridColumnCells(page, columnId).map((value) => value.display);
 }
 
+const EXACT_BYTE_ASSERTION_CONTEXT_LIMIT = 240;
+
+function assertExactBytes(actual: Uint8Array, expected: Uint8Array, message: string): void {
+  const context = boundedExactByteAssertionContext(message);
+  if (actual.byteLength !== expected.byteLength) {
+    assert.fail(
+      `${context} Byte length differs; expected ${expected.byteLength} bytes, received ${actual.byteLength} bytes.`
+    );
+  }
+  if (Buffer.compare(actual, expected) === 0) return;
+
+  let offset = 0;
+  while (offset < actual.byteLength && actual[offset] === expected[offset]) offset += 1;
+  assert.fail(
+    `${context} First differing byte is at offset ${offset}; expected ${expected[offset]}, received ${actual[offset]}.`
+  );
+}
+
+function boundedExactByteAssertionContext(message: string): string {
+  const normalized = message.replace(/\s+/gu, " ").trim() || "Byte sequences must match.";
+  return normalized.length <= EXACT_BYTE_ASSERTION_CONTEXT_LIMIT
+    ? normalized
+    : `${normalized.slice(0, EXACT_BYTE_ASSERTION_CONTEXT_LIMIT - 1)}…`;
+}
+
+function exerciseBoundedExactByteAssertionContract(): void {
+  const expected = Buffer.alloc(2 * 1024 * 1024);
+  const actual = Buffer.from(expected);
+  actual[actual.length - 1] = 1;
+
+  let diagnostic = "";
+  try {
+    assertExactBytes(actual, expected, "Synthetic large source preservation mismatch.");
+  } catch (error) {
+    diagnostic = String(error);
+  }
+  assert.ok(diagnostic, "The synthetic byte mismatch must fail.");
+  assert.ok(diagnostic.length < 512, "Exact-byte mismatch diagnostics must remain bounded.");
+  assert.match(diagnostic, /offset 2097151; expected 0, received 1/u);
+  assert.doesNotMatch(diagnostic, /<Buffer|actual:|expected:/u);
+}
+
 export async function run(): Promise<void> {
+  exerciseBoundedExactByteAssertionContract();
   recordAcceptanceProgress("preflight:start");
   recordAcceptanceProgress("activation:start");
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
@@ -868,9 +911,9 @@ function ensureDeterministicDelimitedFixture(
       const opened = fstatSync(descriptor, { bigint: true });
       assert.equal(opened.isFile(), true, `An existing ${description} fixture must remain a regular file.`);
       assert.equal(opened.nlink, 1n, `An existing ${description} fixture must not be hard linked.`);
-      assert.equal(
-        readFileSync(descriptor, "utf8"),
-        expected,
+      assertExactBytes(
+        readFileSync(descriptor),
+        Buffer.from(expected, "utf8"),
         `An existing ${description} fixture must retain the exact deterministic source bytes.`
       );
       const completed = fstatSync(descriptor, { bigint: true });
@@ -6056,7 +6099,11 @@ async function exercisePackagedPlatformSmoke(
   await exercisePackagedReopenAndUndoJourney(testing, page, fixture, sourceBytes, editorName);
 
   recordAcceptanceProgress("platform-smoke:cleanup");
-  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    `${editorName} platform-smoke cleanup must preserve its source bytes.`
+  );
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
@@ -6168,7 +6215,7 @@ async function exerciseRemoteWorkspace(
   assert.equal(filtered.page.rows[0]?.values[0]?.display, "Milan");
   assert.equal(filtered.page.rows[0]?.values[1]?.display, "42");
   assert.deepEqual(testing.activeSession()?.viewState.filterModel, filterModel);
-  assert.deepEqual(
+  assertExactBytes(
     await vscode.workspace.fs.readFile(fixture),
     sourceBytes,
     "A remote viewing filter must leave the source CSV bytes unchanged."
@@ -6183,7 +6230,11 @@ async function exerciseRemoteWorkspace(
   );
   assert.deepEqual(testing.diagnostics().sessions, []);
   assert.equal(testing.runtimeEnvironment(), undefined);
-  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "Remote-workspace cleanup must preserve the source CSV bytes."
+  );
 }
 
 async function waitForOpenWranglerGridTarget(
@@ -7009,7 +7060,11 @@ async function exercisePackagedFirstUseInteractionJourney(
   } finally {
     cleanupAcceptanceTemporaryDirectory(exportDirectory);
   }
-  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "The first-use export journey must preserve its source bytes."
+  );
   await clearReleasedJupyterScreenshotTransientUi(workbench);
 }
 
@@ -7223,7 +7278,11 @@ async function exercisePackagedReopenAndUndoJourney(
   assert.deepEqual(afterReplacementDiscard.metadata.steps, [originalStep]);
   assert.match(afterReplacementDiscard.code ?? "", /\bmarket_upper\b/u);
   assert.doesNotMatch(afterReplacementDiscard.code ?? "", /\bmarket_caps\b/u);
-  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "Discarding a latest-step replacement must preserve the first-use source bytes."
+  );
 
   recordAcceptanceProgress("platform-smoke:edit-latest-apply");
   reopenedApp = await previewUppercaseMarketReplacement(
@@ -7264,7 +7323,11 @@ async function exercisePackagedReopenAndUndoJourney(
   assert.equal(replaced.metadata.steps.length, 1, "Editing must replace rather than append a cleaning step.");
   assert.match(replaced.code ?? "", /\bmarket_caps\b/u);
   assert.doesNotMatch(replaced.code ?? "", /\bmarket_upper\b/u);
-  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "Applying a latest-step replacement must preserve the first-use source bytes."
+  );
 
   recordAcceptanceProgress("platform-smoke:edit-latest-export");
   const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-edited-step-export-"));
@@ -7281,7 +7344,11 @@ async function exercisePackagedReopenAndUndoJourney(
   } finally {
     cleanupAcceptanceTemporaryDirectory(exportDirectory);
   }
-  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "Exporting a replaced latest step must preserve the first-use source bytes."
+  );
 
   recordAcceptanceProgress("platform-smoke:replacement-reopen");
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
@@ -7290,7 +7357,11 @@ async function exercisePackagedReopenAndUndoJourney(
     15_000,
     `the ${editorName} edited-step session to close before its replay`
   );
-  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "Closing the edited-step session must preserve the first-use source bytes."
+  );
   await vscode.commands.executeCommand("vscode.open", fixture, {
     preview: false,
     viewColumn: vscode.ViewColumn.One
@@ -7332,7 +7403,11 @@ async function exercisePackagedReopenAndUndoJourney(
   assert.deepEqual(replayed.metadata.steps, [replacementStep]);
   assert.match(replayed.code ?? "", /\bmarket_caps\b/u);
   assert.doesNotMatch(replayed.code ?? "", /\bmarket_upper\b/u);
-  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "Replaying the edited step must preserve the first-use source bytes."
+  );
   const replayedTarget = await waitForOpenWranglerGridTarget(workbench, testing, replayed.sessionId);
   const replayedApp = await exactSessionApp(replayedTarget.frame, replayed.sessionId);
   assert.ok(replayedApp, "The replayed edited step must expose its exact Open Wrangler application.");
@@ -7364,7 +7439,11 @@ async function exercisePackagedReopenAndUndoJourney(
     0,
     "Undoing the only applied step must remove the empty cleaning-plan group."
   );
-  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "Undoing the replayed step must preserve the first-use source bytes."
+  );
 }
 
 async function previewUppercaseMarketReplacement(
@@ -7595,14 +7674,14 @@ async function exercisePackagedFileLaunchSurfaces(
   });
   await explorerGrid.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await explorerGrid.getAttribute("aria-colcount"), String(PACKAGED_SCREENSHOT_COLUMNS.length + 1));
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The Explorer action must not modify its source.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "The Explorer action must not modify its source.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
     10_000,
     "the Explorer context launch session to dispose"
   );
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Explorer launch cleanup must preserve source bytes.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Explorer launch cleanup must preserve source bytes.");
 
   recordAcceptanceProgress("verify:file-launch:title-action:source");
   await vscode.commands.executeCommand("vscode.open", fixture, {
@@ -7710,7 +7789,7 @@ async function exercisePackagedFileLaunchSurfaces(
     active.metadata.sessionId,
     "verify:file-launch:title-action:sort-journey"
   );
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-title action must not modify its source.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "The editor-title action must not modify its source.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
@@ -7767,7 +7846,7 @@ async function exercisePackagedFileLaunchSurfaces(
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the editor-tab context action to open the selected source"
   );
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-tab action must not modify its source.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "The editor-tab action must not modify its source.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
@@ -7835,7 +7914,7 @@ async function exercisePackagedFileLaunchSurfaces(
     quoteChar: '"',
     hasHeader: true
   });
-  assert.deepEqual(
+  assertExactBytes(
     readFileSync(customEditorFixture.fsPath),
     customEditorSourceBytes,
     "The third-party custom-editor title action must not modify its source."
@@ -10974,7 +11053,7 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
       outputDirectory,
       editor
     );
-    assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Product-scene capture must not modify its source.");
+    assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Product-scene capture must not modify its source.");
   } finally {
     try {
       if (sessionId && testing.diagnostics().sessionCount > 0) {
@@ -10985,7 +11064,7 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
           "the packaged product-scene session and runtime to close"
         );
       }
-      assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Product-scene cleanup must preserve its source.");
+      assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Product-scene cleanup must preserve its source.");
     } finally {
       await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
       await workbench.update("statusBar.visible", originalStatusBarVisible, vscode.ConfigurationTarget.Global);
@@ -11871,7 +11950,7 @@ async function capturePackagedExportOutcomeScenes(
     30_000,
     "the complete two-step product workflow before export"
   );
-  assert.deepEqual(
+  assertExactBytes(
     readFileSync(fixture.fsPath),
     sourceBytes,
     "Applying the product workflow must preserve the source."
@@ -11921,7 +12000,7 @@ async function capturePackagedExportOutcomeScenes(
   assert.equal(await scriptOutcome, true, "The product-media script export must complete successfully.");
   await waitFor(() => existsSync(scriptPath), 10_000, "the generated product-media Python script to appear");
   assert.equal(readFileSync(scriptPath, "utf8"), generatedCode);
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Python export must preserve the source bytes.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Python export must preserve the source bytes.");
 
   await clearPackagedProductSceneTransientUi(workbench);
   recordAcceptanceProgress("verify:screenshots:file-scenes:export-data:save");
@@ -11932,7 +12011,7 @@ async function capturePackagedExportOutcomeScenes(
   assert.equal(exportedLines.length, PACKAGED_SCREENSHOT_ROW_COUNT + 1);
   assert.match(exportedLines[0] ?? "", /(?:^|,)market_upper(?:,|$)/u);
   assert.match(exportedLines[0] ?? "", /(?:^|,)projected_revenue(?:,|$)/u);
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Cleaned-data export must preserve the source bytes.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Cleaned-data export must preserve the source bytes.");
 
   await closeVisibleWorkbenchPart(workbench, ".part.panel", [
     "workbench.action.closePanel",
@@ -11957,7 +12036,7 @@ async function capturePackagedExportOutcomeScenes(
   ]);
   await clearPackagedProductSceneTransientUi(workbench);
   await captureWorkbenchScreenshot(workbench, path.resolve(outputDirectory, `${editor}-export-code-dark.png`));
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Opening exported outcomes must preserve the source.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Opening exported outcomes must preserve the source.");
 }
 
 async function capturePackagedAppliedStepInspectionScene(
@@ -12104,7 +12183,7 @@ async function capturePackagedEditAndUndoScenes(
     30_000,
     "the edited latest step to apply without appending another plan entry"
   );
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Editing the latest step must preserve the source.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Editing the latest step must preserve the source.");
   assert.equal(await testing.synchronizePanel(sessionId), true);
   await fitPackagedWorkflowFormulaDraftGrid(testing, workbench, sessionId);
   let codePreview = await waitForCodePreview(workbench, "pl.lit(750)");
@@ -12152,7 +12231,7 @@ async function capturePackagedEditAndUndoScenes(
     30_000,
     "Undo to remove exactly the edited latest formula step"
   );
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Undoing the latest step must preserve the source.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Undoing the latest step must preserve the source.");
   assert.equal(await testing.synchronizePanel(sessionId), true);
   await fitPackagedUppercasePlanGrid(testing, workbench, sessionId);
   codePreview = await waitForCodePreview(workbench, "market_upper");
@@ -12212,7 +12291,7 @@ async function capturePackagedEditAndUndoScenes(
   await fitPackagedWorkflowFormulaDraftGrid(testing, workbench, sessionId);
   await waitForCodePreview(workbench, "pl.lit(500)");
   await arrangePackagedProductSidebar(workbench, "workflow");
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Media restoration must preserve the source.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Media restoration must preserve the source.");
 }
 
 async function assertPackagedCommittedPlanScene(
@@ -12575,7 +12654,11 @@ async function capturePackagedWideSchemaColumnSearchScene(testing: TestApi, outp
     await clearPackagedProductSceneTransientUi(page);
     await captureWorkbenchScreenshot(page, path.resolve(outputDirectory, `${editor}-column-search-wide-dark.png`));
     await search.press("Escape");
-    assert.deepEqual(readFileSync(fixture.fsPath, "utf8"), source);
+    assertExactBytes(
+      readFileSync(fixture.fsPath),
+      Buffer.from(source, "utf8"),
+      "The wide-schema showcase must preserve its source bytes."
+    );
   } finally {
     try {
       if (sessionId && testing.diagnostics().sessionCount > 0) {
@@ -16422,7 +16505,7 @@ async function seedVisiblePersistedPanel(testing: TestApi, fixture: vscode.Uri):
     10_000,
     "the visible persisted-panel seed session and runtime to close"
   );
-  assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Seeding visible state must not modify its source.");
+  assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Seeding visible state must not modify its source.");
 }
 
 async function seedPersistedPlan(
@@ -16900,7 +16983,11 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
       initial,
       "Runtime recovery and renderer-originated profiling must preserve the complete visible dataframe state."
     );
-    assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes);
+    assertExactBytes(
+      readFileSync(fixture.fsPath),
+      sourceBytes,
+      "Persisted replay and recovery must preserve the source bytes."
+    );
   } finally {
     if (sessionId) {
       await testing.disposePanelForSession(sessionId);
@@ -16911,7 +16998,11 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
       );
     }
     await insights.update("insightsOnOpen", previousInsightsOnOpen, vscode.ConfigurationTarget.Global);
-    assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes);
+    assertExactBytes(
+      readFileSync(fixture.fsPath),
+      sourceBytes,
+      "Persisted replay cleanup must preserve the source bytes."
+    );
   }
 }
 
@@ -17095,10 +17186,14 @@ async function verifyPersistedReplayAndRecovery(
       if (parquetExported.kind === "dataExported") assert.equal(parquetExported.shape.columns, target.columns);
       assert.equal(readFileSync(parquetDestination).subarray(0, 4).toString("ascii"), "PAR1");
     }
-    assert.equal(readFileSync(fixture.fsPath, "utf8"), sourceText, "Export must not modify the source fixture.");
-    assert.equal(
-      readFileSync(secondFixture.fsPath, "utf8"),
-      secondSourceText,
+    assertExactBytes(
+      readFileSync(fixture.fsPath),
+      Buffer.from(sourceText, "utf8"),
+      "Export must not modify the source fixture."
+    );
+    assertExactBytes(
+      readFileSync(secondFixture.fsPath),
+      Buffer.from(secondSourceText, "utf8"),
       "Pandas export must not modify the source fixture."
     );
   } finally {
@@ -17242,7 +17337,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         })
     );
     recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:opened");
-    assert.deepEqual(
+    assertExactBytes(
       readFileSync(parquetLaunchUri.fsPath),
       parquetSource,
       "Opening a source from an editor menu must not modify it."
@@ -17421,7 +17516,7 @@ async function verifyDuckDBRichParquetPage(testing: TestApi, source: vscode.Uri,
     () => JSON.parse(JSON.stringify(response.page.rows.map((row) => row.values))),
     "The rich DuckDB page must remain strict-JSON-safe."
   );
-  assert.deepEqual(readFileSync(source.fsPath), originalBytes, "Opening rich DuckDB Parquet data must not modify it.");
+  assertExactBytes(readFileSync(source.fsPath), originalBytes, "Opening rich DuckDB Parquet data must not modify it.");
 
   const replacement = `${source.fsPath}.replacement`;
   writeFileSync(replacement, Buffer.concat([originalBytes, Buffer.from([0])]));
@@ -17651,10 +17746,10 @@ async function exerciseConfiguredFileImportOptions(testing: TestApi, directory: 
     10_000,
     "the configured import sessions to close without retaining a runtime"
   );
-  assert.deepEqual(readFileSync(csvPath), csvBytes, "Configured CSV import must not modify its source.");
-  assert.deepEqual(readFileSync(tsvPath), tsvBytes, "Configured TSV import must not modify its source.");
-  assert.deepEqual(readFileSync(excelPath), excelBytes, "Excel sheet selection must not modify its workbook.");
-  assert.deepEqual(
+  assertExactBytes(readFileSync(csvPath), csvBytes, "Configured CSV import must not modify its source.");
+  assertExactBytes(readFileSync(tsvPath), tsvBytes, "Configured TSV import must not modify its source.");
+  assertExactBytes(readFileSync(excelPath), excelBytes, "Excel sheet selection must not modify its workbook.");
+  assertExactBytes(
     readFileSync(legacyExcelPath),
     legacyExcelBytes,
     "BIFF Excel sheet selection must not modify its workbook."
@@ -17754,7 +17849,7 @@ async function exercisePublicLegacyExcelImportOptions(
       ["first"],
       `The public ${scenario.backend} BIFF workflow must initially read the first worksheet.`
     );
-    assert.deepEqual(
+    assertExactBytes(
       readFileSync(source.fsPath),
       sourceBytes,
       `The public ${scenario.backend} automatic BIFF open must not modify its source.`
@@ -17835,7 +17930,7 @@ async function exercisePublicLegacyExcelImportOptions(
       ["second", "résumé"],
       `The public ${scenario.backend} BIFF workflow must read the selected worksheet.`
     );
-    assert.deepEqual(
+    assertExactBytes(
       readFileSync(source.fsPath),
       sourceBytes,
       `The public ${scenario.backend} BIFF workflow must not modify its source.`
@@ -17853,7 +17948,7 @@ async function exercisePublicLegacyExcelImportOptions(
       undefined,
       `Closing the public ${scenario.backend} BIFF panel must deactivate it.`
     );
-    assert.deepEqual(
+    assertExactBytes(
       readFileSync(source.fsPath),
       sourceBytes,
       `Closing the public ${scenario.backend} BIFF workflow must leave its source byte-identical.`
@@ -17883,7 +17978,7 @@ async function exerciseCorruptFileFailures(
       `${name} to fail without retaining a session or runtime`
     );
     assert.equal(testing.activeSession(), undefined, `${name} must not publish an active session.`);
-    assert.deepEqual(readFileSync(uri.fsPath), sourceBytes, `${name} must remain byte-identical after a failed open.`);
+    assertExactBytes(readFileSync(uri.fsPath), sourceBytes, `${name} must remain byte-identical after a failed open.`);
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
     await waitFor(
       () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
@@ -18379,7 +18474,7 @@ async function exerciseLiveImportReconfiguration(
     quoteChar: "'",
     hasHeader: true
   });
-  assert.deepEqual(
+  assertExactBytes(
     readFileSync(configured.fsPath),
     configuredBytes,
     "Live reconfiguration must not modify its source."
@@ -18605,7 +18700,7 @@ async function exerciseLiveImportReconfiguration(
         });
       }
     );
-    assert.deepEqual(
+    assertExactBytes(
       readFileSync(configured.fsPath),
       configuredBytes,
       "Reloading the confirmed file configuration must not modify its source."
@@ -18670,7 +18765,7 @@ async function exerciseLiveImportReconfiguration(
     quoteChar: '"',
     hasHeader: true
   });
-  assert.deepEqual(readFileSync(damaged.fsPath), damagedBytes, "Retrying a corrupt source must not modify it.");
+  assertExactBytes(readFileSync(damaged.fsPath), damagedBytes, "Retrying a corrupt source must not modify it.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
@@ -19641,7 +19736,7 @@ async function exercisePackagedExcelDependencyInstall(
     assert.equal(testing.runtimeRunning(), false, "Missing Excel support must fail before runtime startup.");
     assert.equal(existsSync(dependency.marker), false, "The fake installation marker must not exist before consent.");
     assert.equal(existsSync(dependency.invocation), false, "The private fake pip must not run before consent.");
-    assert.deepEqual(readFileSync(workbookPath), workbookBytes, "The failed XLSX open must not modify the workbook.");
+    assertExactBytes(readFileSync(workbookPath), workbookBytes, "The failed XLSX open must not modify the workbook.");
 
     const initialInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
     assert.ok(initialInput instanceof vscode.TabInputCustom, "The failed XLSX open must retain its custom-editor tab.");
@@ -19811,7 +19906,7 @@ async function exercisePackagedExcelDependencyInstall(
     assert.equal(invocation.pythonHomePresent, false);
     assert.match(path.basename(String(invocation.cwd)), /^openwrangler-pip-/u);
     assert.equal(readFileSync(dependency.marker, "utf8"), "openpyxl>=3.1.5\n");
-    assert.deepEqual(
+    assertExactBytes(
       readFileSync(workbookPath),
       workbookBytes,
       "Installing and reprobeing XLSX support must leave the source workbook byte-identical."
@@ -19825,7 +19920,7 @@ async function exercisePackagedExcelDependencyInstall(
       "the recovered XLSX session and private runtime to terminate"
     );
     assert.deepEqual(testing.diagnostics().sessions, []);
-    assert.deepEqual(
+    assertExactBytes(
       readFileSync(workbookPath),
       workbookBytes,
       "Closing the recovered XLSX grid must leave the source workbook byte-identical."
@@ -20279,7 +20374,7 @@ async function exerciseRealPythonEnvironmentSelection(
       generationA + 2,
       "Switching back must create exactly one further replacement runtime."
     );
-    assert.deepEqual(readFileSync(fixture.fsPath), originalSource, "Environment recovery must not modify the source.");
+    assertExactBytes(readFileSync(fixture.fsPath), originalSource, "Environment recovery must not modify the source.");
   } finally {
     if (sessionId) {
       await testing
@@ -21671,7 +21766,11 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
     );
   }
 
-  assert.equal(readFileSync(fixture.fsPath, "utf8"), original, "Viewing queries must not alter the source.");
+  assertExactBytes(
+    readFileSync(fixture.fsPath),
+    Buffer.from(original, "utf8"),
+    "Viewing queries must not alter the source."
+  );
 }
 
 async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
@@ -21855,7 +21954,11 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
       10_000,
       "wide projected sessions to close"
     );
-    assert.equal(readFileSync(sourcePath, "utf8"), source, "Wide projection must not mutate the source.");
+    assertExactBytes(
+      readFileSync(sourcePath),
+      Buffer.from(source, "utf8"),
+      "Wide projection must not mutate the source."
+    );
   } finally {
     cleanupAcceptanceTemporaryDirectory(directory);
   }
@@ -22059,9 +22162,9 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
       );
     }
 
-    assert.equal(
-      readFileSync(sourcePath, "utf8"),
-      original,
+    assertExactBytes(
+      readFileSync(sourcePath),
+      Buffer.from(original, "utf8"),
       "Operation previews and applies must not alter the source."
     );
   } finally {
