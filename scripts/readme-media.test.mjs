@@ -218,13 +218,27 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "utf8"
   );
 
-  assert.equal(packageJson.scripts?.["compose:readme-media"], "node scripts/compose-readme-media.mjs");
-  assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
-  assert.match(packageJson.scripts?.["test:webview-acceptance"] ?? "", /npm run verify:readme-media/u);
-  assert.doesNotMatch(packageJson.scripts?.["test:scripts:portable"] ?? "", /scripts\/readme-media\.test\.mjs/u);
-  assert.match(packageJson.scripts?.["test:scripts:portable"] ?? "", /&& npm run test:scripts:media$/u);
+  assert.equal(
+    packageJson.scripts?.["compose:readme-media"],
+    "node scripts/run-heavy-local-command.mjs compose:readme-media -- node scripts/compose-readme-media.mjs"
+  );
+  assert.equal(
+    packageJson.scripts?.["verify:readme-media"],
+    "node scripts/run-heavy-local-command.mjs verify:readme-media -- node scripts/compose-readme-media.mjs --verify"
+  );
+  assert.equal(
+    packageJson.scripts?.["test:webview-acceptance"],
+    "node scripts/run-heavy-local-command.mjs test:webview-acceptance -- npm run test:webview-acceptance:run"
+  );
+  assert.match(packageJson.scripts?.["test:webview-acceptance:run"] ?? "", /npm run verify:readme-media/u);
+  assert.doesNotMatch(packageJson.scripts?.["test:scripts:portable:run"] ?? "", /scripts\/readme-media\.test\.mjs/u);
+  assert.match(packageJson.scripts?.["test:scripts:portable:run"] ?? "", /&& npm run test:scripts:media$/u);
   assert.equal(
     packageJson.scripts?.["test:scripts:media"],
+    "node scripts/run-heavy-local-command.mjs test:scripts:media -- npm run test:scripts:media:run"
+  );
+  assert.equal(
+    packageJson.scripts?.["test:scripts:media:run"],
     "node --max-old-space-size=1024 --test --test-concurrency=1 scripts/readme-media.test.mjs"
   );
   for (const asset of [

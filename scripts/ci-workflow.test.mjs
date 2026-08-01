@@ -93,14 +93,33 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
     .map((entry) => `scripts/${entry.name}`)
     .sort();
   const groups = Object.fromEntries(
-    SCRIPT_TEST_GROUPS.map((group) => [group, nodeTestFiles(manifest?.scripts?.[`test:scripts:${group}`], group)])
+    SCRIPT_TEST_GROUPS.map((group) => [
+      group,
+      nodeTestFiles(
+        manifest?.scripts?.[`test:scripts:${group}${["portable", "media"].includes(group) ? ":run" : ""}`],
+        group
+      )
+    ])
   );
 
   assert.equal(
     manifest?.scripts?.["test:scripts"],
+    "node scripts/run-heavy-local-command.mjs test:scripts -- npm run test:scripts:run"
+  );
+  assert.equal(
+    manifest?.scripts?.["test:scripts:run"],
     "npm run test:scripts:workflow && npm run test:scripts:portable && npm run test:scripts:native"
   );
-  assert.equal(manifest?.scripts?.test, "npm run test:scripts && npm run test:ts && npm run test:python");
+  assert.equal(
+    manifest?.scripts?.["test:scripts:portable"],
+    "node scripts/run-heavy-local-command.mjs test:scripts:portable -- npm run test:scripts:portable:run"
+  );
+  assert.equal(
+    manifest?.scripts?.["test:scripts:media"],
+    "node scripts/run-heavy-local-command.mjs test:scripts:media -- npm run test:scripts:media:run"
+  );
+  assert.equal(manifest?.scripts?.test, "node scripts/run-heavy-local-command.mjs test -- npm run test:run");
+  assert.equal(manifest?.scripts?.["test:run"], "npm run test:scripts && npm run test:ts && npm run test:python");
   assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs"]);
   assert.deepEqual(groups.media, ["scripts/readme-media.test.mjs"]);
   assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
@@ -1388,6 +1407,11 @@ test("coverage provisions the exact PySpark runtime before enforcing the unchang
   assert.ok(steps.indexOf(verification) < steps.indexOf(coverage));
   assert.equal(
     manifest?.scripts?.["test:coverage"],
+    "node scripts/run-heavy-local-command.mjs test:coverage -- npm run test:coverage:run",
+    "Coverage must acquire the shared local heavy-command lease."
+  );
+  assert.equal(
+    manifest?.scripts?.["test:coverage:run"],
     "npm run test:coverage:ts && npm run test:coverage:python",
     "Coverage must continue to own both complete instrumented suites."
   );
