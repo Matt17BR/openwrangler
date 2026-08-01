@@ -42,6 +42,9 @@ export default defineConfig(({ mode }) => {
       include: ["src/test/**/*.test.ts", "src/test/**/*.test.tsx"],
       coverage: {
         provider: "v8",
+        // Coverage remapping has a separate CPU-derived concurrency default.
+        // Keep it aligned with the bounded test-file worker ceiling above.
+        processingConcurrency: 4,
         reporter: ["text", "json-summary", "html"],
         thresholds: {
           statements: 60,
