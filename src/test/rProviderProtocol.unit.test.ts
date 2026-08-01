@@ -468,6 +468,66 @@ describe("native R provider protocol guard", () => {
     ).toBe(true);
   });
 
+  it.each([
+    ["integer<integer>", "-2147483647", true],
+    ["integer<integer>", "2147483647", true],
+    ["integer<integer>", "-2147483648", false],
+    ["integer<integer>", "2147483648", false],
+    ["integer<integer>", "-0", false],
+    ["double<integer64>", "-9223372036854775807", true],
+    ["double<integer64>", "9223372036854775807", true],
+    ["double<integer64>", "-9223372036854775808", false],
+    ["double<integer64>", "9223372036854775808", false],
+    ["double<integer64>", "999999999999999999999", false]
+  ] as const)("validates %s cell %s against its native R bounds", (rawType, raw, expected) => {
+    const integerSchema = [
+      {
+        id: "r:c:0",
+        name: "value",
+        position: 0,
+        rawType,
+        type: "integer",
+        nullable: false
+      }
+    ] as const;
+    const integerPage = {
+      offset: 0,
+      limit: 20,
+      totalRows: 1,
+      columnIds: ["r:c:0"],
+      rows: [
+        {
+          id: "r:row:0",
+          rowNumber: 0,
+          values: [{ kind: "integer", raw, display: raw, isNull: false, isNaN: false }]
+        }
+      ]
+    } as const;
+
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          protocolVersion: 1,
+          requestId: "bounded-integer-open",
+          response: {
+            kind: "sessionOpened",
+            metadata: {
+              ...metadata,
+              sourceClass: "data.frame",
+              shape: { rows: 1, columns: 1 },
+              schema: integerSchema
+            },
+            page: integerPage
+          }
+        },
+        {
+          requestId: "bounded-integer-open",
+          request: { ...openRequest, pageSize: 20, columnOffset: 0, columnLimit: 1 }
+        }
+      )
+    ).toBe(expected);
+  });
+
   it("accepts only responses correlated to the exact dispatched request and confirmed session", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(

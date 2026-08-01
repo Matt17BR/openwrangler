@@ -11,7 +11,9 @@ Open Wrangler 1 has three cooperating processes:
 Open Wrangler 2 adds a separate native-R provider boundary. Its agent is sourced
 into the exact R process and does not convert through Python or share the Python
 runtime protocol by accident. The integration surface, upstream API constraints,
-and staged capability gates are defined in [Native R support](r-support.md).
+and staged capability gates are defined in [Native R support](r-support.md). The
+accepted boundary and identity decisions are recorded in
+[ADR 0001](adr/0001-native-r-runtime.md).
 The agent evaluates to a factory with private lexical state; loading it must not
 publish helper symbols in the user's R environment. R responses pass a
 request-and-confirmed-session contextual guard before coordinator state can

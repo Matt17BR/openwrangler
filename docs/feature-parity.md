@@ -60,7 +60,7 @@ above it is ready. Architecture and upstream API constraints are recorded in
 
 | Surface                                             | Status  | Required evidence                                                               |
 | --------------------------------------------------- | ------- | ------------------------------------------------------------------------------- |
-| Strict native-R provider and typed pages            | Partial | R-only smoke and exact-kernel transport contract green                          |
+| Strict native-R provider and typed pages            | Partial | R-only smoke, exact-kernel transport, and raw-type integer bounds green         |
 | IRkernel `.ipynb` variable viewer                   | Partial | Private exact-kernel discovery green; launch/recovery/editor acceptance pending |
 | Base `data.frame`, tibble, and `data.table` viewing | Planned | Native paging, filters, multi-sort, profiles, recovery                          |
 | `.R` explicit live-session helper                   | Planned | Exact-process handshake and terminal cleanup                                    |

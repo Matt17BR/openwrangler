@@ -5,6 +5,9 @@ through Python, Pandas, Polars, Arrow, or `reticulate`. This document records th
 integration boundary before the user-facing feature is enabled. It is not a claim
 that the current stable release supports R.
 
+The durable boundary decision is recorded in
+[ADR 0001: Native R provider and editor-session boundary](adr/0001-native-r-runtime.md).
+
 ## Supported host surfaces
 
 | Surface              | Initial integration                                            | Product decision                                   |
@@ -34,6 +37,11 @@ The Jupyter extension API is language-neutral and exposes the selected kernel
 language plus correlated code execution. That makes an IRkernel notebook the
 first reliable surface: the extension can retain the exact notebook and kernel
 identity using the same lifecycle rules as the existing Python notebook bridge.
+
+Every R bootstrap or execution path is code execution. The extension host must
+therefore recheck Workspace Trust immediately before bootstrap, provider dispatch,
+dependency mutation, generated or custom code, source insertion, and export. A
+provider response or webview intent cannot confer trust.
 
 ## Provider boundary
 
@@ -72,6 +80,13 @@ schema/shape. A merely well-shaped response is insufficient. Revision-zero
 preventing later `:=` mutations from changing the open session. Shaped,
 matrix/array, list, and raw columns are rejected until faithful nested or binary
 typed-cell encodings exist.
+
+Editing will extend the same isolation rule: every `data.table` draft,
+derivation, custom-code run, or generated function that could mutate by reference
+must start from `data.table::copy(source)` and prove that the original object is
+unchanged. Runtime language, frame flavor, and generated-code dialect are also
+separate identities. A tibble may generate base-R code; an object's class alone
+never authorizes dplyr/tidyr or `data.table` syntax.
 
 Producer and host enforce the same reviewed ceilings before data enters parsed
 coordinator state: raw request/response bytes, dataframe shape, schema estimate,
@@ -122,6 +137,36 @@ disabled until an R-specific notebook bridge adds exact `NotebookDocument` and
 kernel acquisition, picker wiring, cancellation-safe failed-open cleanup,
 restart recovery, coordinator mapping, and installed-editor acceptance. This
 is transport evidence, not an R support claim.
+
+The next stacked session layer is `src/extension/r/rKernelDataFrameSession.ts`.
+It owns correlated open/page/close state above `rKernelProviderTransport.ts` and
+publishes only contextually validated provider results. The `.R`, `.Rmd`, and
+`.qmd` helper remains a separate exact-session integration; it is not inferred
+from an `Rscript` process, an installed authoring extension, or a notebook URI.
+
+## Semantic acceptance inventory
+
+The following are future versioned provider gates, not capabilities claimed by
+the current read-only foundation:
+
+- factor levels must round-trip in exact order, including explicit ordered-factor
+  metadata;
+- `POSIXct` values must retain their time-zone metadata, and `difftime` values
+  must retain their declared units;
+- row names must remain stable and correctly paged rather than being regenerated
+  from the visible offset;
+- grouped and rowwise tibbles must retain stable group-column identities;
+- `data.table` keys must retain stable key-column identities without permitting
+  by-reference source mutation;
+- base integer and `bit64::integer64` cells must pass exact raw-type-specific host
+  bounds, with each type's reserved `NA` sentinel represented only as null;
+- list columns require a faithful bounded typed encoding. They remain rejected,
+  as do matrix/array and raw columns, until that encoding and its producer/host
+  acceptance matrix exist.
+
+Each gate needs producer, host-decoder, session, and R-only cross-runtime evidence.
+Arrow may later optimize compatible bounded blocks, but it cannot define R
+semantics or become the source of truth.
 
 ## Delivery slices
 

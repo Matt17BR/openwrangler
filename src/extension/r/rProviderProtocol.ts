@@ -613,7 +613,7 @@ function isRProviderCellForColumn(cell: CellValue, column: ColumnSchema): boolea
         column.type === "integer" &&
         typeof cell.raw === "string" &&
         isRProviderTextWithinLimit(cell.raw) &&
-        /^-?(?:0|[1-9][0-9]*)$/u.test(cell.raw) &&
+        isRProviderIntegerWithinRawType(cell.raw, column.rawType) &&
         cell.display === cell.raw &&
         !hasSign
       );
@@ -684,6 +684,27 @@ function isBoundedRProviderSchema(value: unknown): value is readonly ColumnSchem
 
 const R_PROVIDER_RAW_TYPE_PATTERN =
   /^(logical|integer|double|character)<([A-Za-z][A-Za-z0-9._]*(?:,[A-Za-z][A-Za-z0-9._]*)*)>$/u;
+
+const R_PROVIDER_INTEGER_LIMITS = Object.freeze({
+  "integer<integer>": Object.freeze({
+    minimum: -2_147_483_647n,
+    maximum: 2_147_483_647n,
+    maxCharacters: 11
+  }),
+  "double<integer64>": Object.freeze({
+    minimum: -9_223_372_036_854_775_807n,
+    maximum: 9_223_372_036_854_775_807n,
+    maxCharacters: 20
+  })
+});
+
+function isRProviderIntegerWithinRawType(raw: string, rawType: string): boolean {
+  if (!/^(?:0|-?[1-9][0-9]*)$/u.test(raw)) return false;
+  const limits = R_PROVIDER_INTEGER_LIMITS[rawType as keyof typeof R_PROVIDER_INTEGER_LIMITS];
+  if (limits === undefined || raw.length > limits.maxCharacters) return false;
+  const value = BigInt(raw);
+  return value >= limits.minimum && value <= limits.maximum;
+}
 
 function isRProviderRawTypeForColumn(column: ColumnSchema): boolean {
   const match = R_PROVIDER_RAW_TYPE_PATTERN.exec(column.rawType);
