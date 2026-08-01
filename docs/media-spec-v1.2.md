@@ -10,13 +10,21 @@ user, match the packaged extension, and remain readable at its rendered width.
   steal focus. Focused webview-only scenes may instead use lockfile-pinned Chromium with the same source commit's
   exact production webview bundle; they must not imply editor integration that the browser harness did not test.
 - Use deterministic, license-clean fixtures. Never read or display user or private data.
+- Capture every public README/gallery source at **2× physical density** while retaining the documented logical
+  viewport and crop coordinates. The dedicated public capture path is the only 2× path; ordinary
+  visual-regression baselines remain at 1× so this requirement cannot quadruple the routine visual-test workload.
 - Keep editor chrome when it explains integration: Activity Bar, sidebar, tabs, notebook toolbar, and code panel.
 - Reject clipped required text, partial grid rows, unrelated dialogs, notifications, temporary paths, fixture
   markers, setup cells, or acceptance-only labels.
 - Crops select exact rectangles from accepted screenshots. Do not scale, mask, annotate, recolor, or reconstruct
   editor UI. The compositor records whether each source came from packaged-editor acceptance or the production
-  webview harness, and the inventory test rejects both missing and orphaned public PNGs.
+  webview harness, converts each logical crop to physical pixels exactly once, and the inventory test rejects both
+  missing and orphaned public PNGs.
 - Add only the standard sRGB PNG chunk when preparing portable copies.
+- Every README and gallery product `<img>` declares its explicit logical `width` and `height`. Its PNG therefore
+  supplies two physical pixels per declared CSS pixel before a host applies responsive `max-width` constraints.
+- Keep the lossless inventory within 2 MiB per PNG and 32 MiB for the complete inventory. Do not satisfy either
+  budget through lossy encoding, image resizing, or a lower capture density.
 
 The packaged workbench starts at 1440 × 900 or 1280 × 900. Some grid captures trim only the measured partial
 bottom row after verifying the complete layout. Notebook crops remove empty canvas or private collapsed cells,
@@ -50,7 +58,7 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
 
 ### Explore and clean
 
-- `filter-result.png`: 1440 × 862 with one exact viewing filter and synchronized sidebar state.
+- `filter-result.png`: 1440 × 861 with one exact viewing filter and synchronized sidebar state.
 - `gallery/histogram-hover.png` and `gallery/sort-priority.png`: 448 × 480 interaction details.
 - `gallery/column-search-wide.png`: 1440 × 865; `column-search-wide-detail.png`: 540 × 420.
 - `gallery/operation-catalog.png` and `gallery/operation-configuration.png`: complete selection/configuration.
@@ -133,3 +141,11 @@ npm run verify:readme-media
 
 Then inspect every README and gallery image at its rendered width. Do not publish when an image disagrees with the
 documented capability, comes from another VSIX, contains internal setup content, or fails pixel equivalence.
+
+After GitHub and both registries have rendered a release README, install the lockfile-pinned Chromium and run
+`npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"` from the
+exact released source checkout. The SHA must be lowercase 40-hex and the version must be semantic without a leading
+`v`. The verifier byte-compares the exact source README and package version, requires both registries to show that
+version and all surfaces to show the expected content and immutable representative image URLs, then byte-compares
+every public PNG and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. The hero and representative
+detail must expose at least two natural image pixels for every rendered CSS pixel on all three surfaces.

@@ -66,6 +66,24 @@ Pull-request and tag workflows pass only that exact non-glob path to the immedia
 
 The strict runtime benchmark and Playwright cached/uncached scroll gates must pass on the Linux release reference workstation. The runtime must import Polars before timing, record an accepted per-file source-cache eviction, and keep the canonical stdio first-grid round trip below 3s for the 100k×50 CSV and 5s for the 1M×20 Parquet fixture; a warm-source median cannot substitute for this gate. The report must retain separately named direct-manager cache metrics, real stdio protocol/JSON cache-miss round trips, the same-session statistics-contention latency, active-call proof, overlap result, native-frame evidence, source/machine/package provenance, and process resource samples. An in-process timing may not be cited as product-boundary performance, and none of these numbers may be described as VS Code, Cursor, webview, or editor first paint. The isolated benchmark bootstrap must prove from `header_stats` entry/exit events that statistics remained active when the page envelope finished sending; completed-before-send or otherwise inconclusive evidence fails release. The cache-miss response gap must then prove substantial overlap against the uncontented baseline, and both ordinary and contended stdio pages must remain within 500ms. Attach the generated `tmp/performance/report.json` values to parity evidence; opt-in Pandas and DuckDB smoke reports prove native coverage but do not replace the strict Polars release gate. Scheduled CI reports provide regression history but do not replace final local acceptance.
 
+Public README/gallery PNGs are captured at 2× physical density against unchanged logical editor layouts and retain
+lossless pixels. Before tagging, `npm run verify:readme-media` must prove exact dimensions, crops, sRGB output, and
+the per-file/total byte budgets. After GitHub and both registries have ingested the release README, check out the
+exact released source and run:
+
+```bash
+RELEASE_SOURCE_SHA="0123456789abcdef0123456789abcdef01234567" # replace with the released source commit
+RELEASE_VERSION="1.2.1" # replace with the released semantic version, without v
+npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"
+```
+
+The verifier requires the remote README at that exact commit to byte-match the reviewed local README and its
+`package.json` version to match the supplied version. It then requires the two registries to show that exact version,
+all three surfaces to render the expected README content, and each representative image to use the immutable raw URL
+from that README before proving its bytes and DPR 2 density. A mutable default-branch GitHub page is never accepted.
+Registry propagation remains a post-publication observation and must not make an otherwise deterministic pull-request
+lane depend on live pages.
+
 `.github/workflows/stable-candidate.yml` owns the hosted installed-performance evidence bridge. A manual dispatch accepts exactly intended version `1.0.0` from a `release/1.0-evidence-*` branch whose exact event SHA is a clean descendant of `origin/main`, packages the production VSIX once, and publishes an atomic VSIX/checksum/provenance set in the evidence-only mode described above. The bounded provenance binds `Matt17BR.openwrangler`, the extension version, intended tag, exact source commit, and VSIX digest and size, but its distinct protocol and role make the complete set deliberately non-promotable. A matching checksum without that provenance is insufficient, and the ordinary stable intake rejects the evidence-only provenance.
 
 The benchmark job runs on GitHub-hosted `ubuntu-24.04`, downloads that run-scoped artifact by exact artifact ID, and acquires the official pinned VS Code 1.130.0 and Cursor 3.13.10 Linux x64 packages into its per-run private root. Downloaded byte counts and SHA-256 digests must match the receipts above before extraction or launch. Cursor executes under an isolated `dbus-run-session`; VS Code remains on zero-window headless Ozone and Cursor on the private-display path. Neither editor may use a preinstalled or moving channel, a normal profile, the current desktop, or an implicit local-display fallback. The temporary editor packages and extracted installations are test inputs only and never enter the candidate, report, release artifact, cache, or registry.
