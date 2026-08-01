@@ -68,17 +68,17 @@ without rebuilding them. The only additional long-lived line is the narrowly sco
 The source policy reserves a protected `release/1.x` maintenance branch for stable v1 versions and `main` for the
 `1.99.x` v2 preview line and later v2 releases. CI, CodeQL, and native cross-platform checks run for pull requests and
 pushes on both protected branches. Stable metadata, tag publication, and Marketplace recovery derive their permitted
-branch from the numeric version rather than trusting a caller-supplied ref. Until the live `release/1.x` branch and
-its matching ruleset and publishing-environment policy are created, a v1 stable release is intentionally impossible;
-an automatic Marketplace recovery run from the now-inactive `main` branch finishes as a no-op.
+branch from the numeric version rather than trusting a caller-supplied ref. The live `release/1.x` branch was cut from
+the reviewed CI migration on 2026-08-01. Its active ruleset requires pull requests, squash-only linear history,
+resolved review threads, strict `validate`, cross-platform runtime, Windows dependency guards, and both CodeQL
+analyses. The protected publishing environment accepts only `main`, `release/1.x`, and `v*` tags.
 
-Create `release/1.x` once, from the final reviewed v1 commit after shared release infrastructure has landed, before
-the first public `1.99.x` preview. A v1 fix starts from and merges into `release/1.x`. Forward-port the resulting exact
-squash commit through a separate reviewed pull request to `main`, recording the maintenance pull request in its
-description; resolve conflicts on that forward-port branch. Never merge the evolving v2 `main` line wholesale back
-into v1. Shared release-infrastructure fixes normally land on `main` first and are then backported through a reviewed
-maintenance pull request when v1 publication needs them. Marketplace pre-releases remain deliberate releases;
-scheduled and nightly runs may retain artifacts and trend reports but never publish automatically.
+A v1 fix starts from and merges into `release/1.x`. Forward-port the resulting exact squash commit through a separate
+reviewed pull request to `main`, recording the maintenance pull request in its description; resolve conflicts on that
+forward-port branch. Never merge the evolving v2 `main` line wholesale back into v1. Shared release-infrastructure
+fixes normally land on `main` first and are then backported through a reviewed maintenance pull request when v1
+publication needs them. Marketplace pre-releases remain deliberate releases; scheduled and nightly runs may retain
+artifacts and trend reports but never publish automatically.
 
 The preview promotion boundary is candidate-first rather than tag-triggered. One manual run from protected `main`
 packages a provenance-bound VSIX/checksum/provenance triple once. Complete Linux acceptance owns the full source and

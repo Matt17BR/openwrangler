@@ -6,6 +6,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
+  kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
+  serialization, nested lease inheritance, and automatic crash release.
+- Made packaged Cursor/VS Code interaction barriers follow an authoritative renderer generation when recovery
+  supersedes the test's acknowledgement marker. Exact-session hydration remains deadline-bound; the harness neither
+  sleeps nor retries a failed editor phase.
 - Made obsolete pull-request heads actually cancellable by replacing cancellation-resistant `always()` job and
   evidence-upload guards with `!cancelled()` across CI, CodeQL, and cross-platform acceptance. Failed current heads
   still aggregate and retain safe diagnostics, while superseded native editor runs stop before blocking their replacement.
