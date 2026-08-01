@@ -1,4 +1,5 @@
 import * as path from "path";
+import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import { isActiveColumnFilter, viewSortModelSignature } from "../shared/filterModel";
 import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
@@ -11,6 +12,12 @@ import { exportFileSafely } from "./files/safeFileExport";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 type ViewSortAction = "moveUp" | "moveDown" | "remove";
+export type ViewSortDispatchStatus =
+  "sent" | "invalid-target" | "stale-target" | "inspection-active" | "priority-boundary" | "panel-unavailable";
+
+const VIEW_SORT_HANDLE_KIND = "openWrangler.viewSort";
+const VIEW_SORT_TREE_ID_PREFIX = `${VIEW_SORT_HANDLE_KIND}:`;
+const VIEW_SORT_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export type NotebookInsertionDiagnosticStatus =
   | NotebookInsertionResult["status"]
   | "untrusted"
@@ -23,6 +30,9 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
   private readonly changeEmitter = new vscode.EventEmitter<ViewNode | undefined>();
   private snapshot: ActiveSessionSnapshot | undefined;
   private readonly subscription: vscode.Disposable;
+  private sortRegistryContext: string;
+  private readonly sortTargets = new Map<string, ViewSortTarget>();
+  private readonly sortTokens = new Map<string, string>();
 
   readonly onDidChangeTreeData = this.changeEmitter.event;
 
@@ -31,8 +41,16 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     coordinator: SessionCoordinator
   ) {
     this.snapshot = coordinator.activeSession();
+    this.sortRegistryContext = viewSortRegistryContext(this.snapshot);
     this.subscription = coordinator.onDidChangeActiveSession((snapshot) => {
       this.snapshot = snapshot;
+      const nextContext = viewSortRegistryContext(snapshot);
+      if (this.kind === "filters") {
+        if (nextContext === this.sortRegistryContext) return;
+        this.sortRegistryContext = nextContext;
+        this.sortTargets.clear();
+        this.sortTokens.clear();
+      }
       this.changeEmitter.fire(undefined);
     });
   }
@@ -45,13 +63,35 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     if (this.kind === "operations") return operationNodes(this.snapshot?.metadata);
     if (!this.snapshot) return [new ViewNode("No active dataframe", "Open a data file or notebook variable", "info")];
     if (this.kind === "summary") return summaryNodes(this.snapshot);
-    if (this.kind === "filters") return filterNodes(this.snapshot);
+    if (this.kind === "filters") {
+      return filterNodes(this.snapshot, (target) => this.registerViewSortTarget(target));
+    }
     return cleaningStepNodes(this.snapshot);
   }
 
+  resolveViewSortTarget(value: unknown): ViewSortTargetResolution {
+    const decoded = decodeViewSortTargetToken(value);
+    if (decoded.kind !== "token") return decoded;
+    const target = this.sortTargets.get(decoded.token);
+    return target ? { kind: "resolved", target } : { kind: "stale" };
+  }
+
   dispose(): void {
+    this.sortTargets.clear();
+    this.sortTokens.clear();
     this.subscription.dispose();
     this.changeEmitter.dispose();
+  }
+
+  private registerViewSortTarget(target: ViewSortTarget): ViewSortHandle {
+    const key = `${target.index}\u0000${target.column}`;
+    let token = this.sortTokens.get(key);
+    if (!token) {
+      token = randomUUID();
+      this.sortTokens.set(key, token);
+    }
+    this.sortTargets.set(token, target);
+    return { kind: VIEW_SORT_HANDLE_KIND, token };
   }
 }
 
@@ -63,7 +103,7 @@ class ViewNode extends vscode.TreeItem {
     command?: vscode.Command,
     contextValue?: string,
     disabledReason?: string,
-    readonly viewSortTarget?: ViewSortTarget
+    readonly viewSortHandle?: ViewSortHandle
   ) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.description = description;
@@ -73,6 +113,7 @@ class ViewNode extends vscode.TreeItem {
     const detail = disabledReason ? `${description}. ${disabledReason}` : description;
     this.tooltip = `${label}: ${detail}`;
     this.accessibilityInformation = { label: `${label}, ${detail}` };
+    if (viewSortHandle) this.id = `${VIEW_SORT_TREE_ID_PREFIX}${viewSortHandle.token}`;
   }
 }
 
@@ -81,6 +122,73 @@ interface ViewSortTarget {
   readonly column: string;
   readonly index: number;
   readonly modelSignature: string;
+}
+
+interface ViewSortHandle {
+  readonly kind: typeof VIEW_SORT_HANDLE_KIND;
+  readonly token: string;
+}
+
+type ViewSortTargetResolution =
+  | { readonly kind: "resolved"; readonly target: ViewSortTarget }
+  | { readonly kind: "stale" }
+  | { readonly kind: "invalid" };
+
+function viewSortRegistryContext(snapshot: ActiveSessionSnapshot | undefined): string {
+  if (!snapshot) return "inactive";
+  return JSON.stringify([snapshot.sessionId, isStepInspectionActive(snapshot), snapshot.viewState.filterModel]);
+}
+
+function decodeViewSortTargetToken(value: unknown):
+  | { readonly kind: "token"; readonly token: string }
+  | {
+      readonly kind: "invalid";
+    } {
+  if (typeof value === "string") return decodeViewSortToken(value);
+  if (!isOwnRecord(value)) return { kind: "invalid" };
+
+  if (Object.prototype.hasOwnProperty.call(value, "viewSortHandle")) {
+    return decodeViewSortHandle(value.viewSortHandle);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "id")) {
+    return decodeViewSortToken(value.id);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "command") && isOwnRecord(value.command)) {
+    const args = value.command.arguments;
+    if (Array.isArray(args)) {
+      for (const arg of args.slice(0, 2)) {
+        const decoded = decodeViewSortHandle(arg);
+        if (decoded.kind === "token") return decoded;
+      }
+    }
+  }
+  return { kind: "invalid" };
+}
+
+function decodeViewSortHandle(value: unknown):
+  | { readonly kind: "token"; readonly token: string }
+  | {
+      readonly kind: "invalid";
+    } {
+  if (!isOwnRecord(value)) return { kind: "invalid" };
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 2 || keys[0] !== "kind" || keys[1] !== "token") return { kind: "invalid" };
+  if (value.kind !== VIEW_SORT_HANDLE_KIND || typeof value.token !== "string") return { kind: "invalid" };
+  return decodeViewSortToken(value.token);
+}
+
+function decodeViewSortToken(value: unknown):
+  | { readonly kind: "token"; readonly token: string }
+  | {
+      readonly kind: "invalid";
+    } {
+  if (typeof value !== "string") return { kind: "invalid" };
+  const token = value.startsWith(VIEW_SORT_TREE_ID_PREFIX) ? value.slice(VIEW_SORT_TREE_ID_PREFIX.length) : value;
+  return VIEW_SORT_TOKEN_PATTERN.test(token) ? { kind: "token", token } : { kind: "invalid" };
+}
+
+function isOwnRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -166,6 +274,7 @@ export interface NativeViewsTestController {
   setCodeForExport(code: string): void;
   exportCodeTo(destination: vscode.Uri): Promise<void>;
   notebookInsertionStatus(): NotebookInsertionDiagnosticStatus | undefined;
+  viewSortDispatchStatus(): ViewSortDispatchStatus | undefined;
 }
 
 export function registerNativeViews(
@@ -180,10 +289,11 @@ export function registerNativeViews(
   };
   updatePlanContexts(coordinator.activeSession());
   const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
+  const filterProvider = new OpenWranglerTreeProvider("filters", coordinator);
   const providers = {
     "openWrangler.operations": new OpenWranglerTreeProvider("operations", coordinator),
     "openWrangler.summary": new OpenWranglerTreeProvider("summary", coordinator),
-    "openWrangler.filters": new OpenWranglerTreeProvider("filters", coordinator),
+    "openWrangler.filters": filterProvider,
     "openWrangler.cleaningSteps": new OpenWranglerTreeProvider("steps", coordinator)
   };
   for (const [id, provider] of Object.entries(providers)) {
@@ -191,32 +301,31 @@ export function registerNativeViews(
   }
   const codePreview = new CodePreviewViewProvider(context, coordinator);
   let lastNotebookInsertionStatus: NotebookInsertionDiagnosticStatus | undefined;
+  let lastViewSortDispatchStatus: ViewSortDispatchStatus | undefined;
   const exportPinnedData = (sessionId: string, revision: number) =>
     exportSessionData(coordinator, { sessionId, revision });
-  const sendViewSortAction = (node: unknown, action: ViewSortAction): boolean => {
-    const target = node instanceof ViewNode ? node.viewSortTarget : undefined;
+  const sendViewSortAction = (node: unknown, action: ViewSortAction): ViewSortDispatchStatus => {
+    const resolution = filterProvider.resolveViewSortTarget(node);
+    if (resolution.kind === "invalid") return "invalid-target";
+    if (resolution.kind === "stale") return "stale-target";
+    const target = resolution.target;
     const snapshot = target ? coordinator.sessionSnapshot(target.sessionId) : undefined;
     const active = coordinator.activeSession();
-    if (
-      !target ||
-      !snapshot ||
-      active?.sessionId !== target.sessionId ||
-      isStepInspectionActive(snapshot) ||
-      target.sessionId !== snapshot.sessionId ||
-      target.modelSignature !== viewSortModelSignature(snapshot.viewState.filterModel)
-    ) {
-      return false;
+    if (!snapshot || active?.sessionId !== target.sessionId || target.sessionId !== snapshot.sessionId) {
+      return "stale-target";
     }
+    if (isStepInspectionActive(snapshot)) return "inspection-active";
+    if (target.modelSignature !== viewSortModelSignature(snapshot.viewState.filterModel)) return "stale-target";
     const matchingIndexes = snapshot.viewState.filterModel.sort.flatMap((rule, index) =>
       rule.column === target.column ? [index] : []
     );
-    if (matchingIndexes.length !== 1 || matchingIndexes[0] !== target.index) return false;
+    if (matchingIndexes.length !== 1 || matchingIndexes[0] !== target.index) return "stale-target";
     const index = target.index;
     if (
       (action === "moveUp" && index === 0) ||
       (action === "moveDown" && index === snapshot.viewState.filterModel.sort.length - 1)
     ) {
-      return false;
+      return "priority-boundary";
     }
     return OpenWranglerPanel.sendEditorAction({
       action: "changeViewSort",
@@ -225,7 +334,31 @@ export function registerNativeViews(
       expectedSessionId: target.sessionId,
       expectedSortModelSignature: target.modelSignature,
       expectedSortIndex: target.index
-    });
+    })
+      ? "sent"
+      : "panel-unavailable";
+  };
+  const runViewSortAction = (node: unknown, action: ViewSortAction): boolean => {
+    const status = sendViewSortAction(node, action);
+    lastViewSortDispatchStatus = status;
+    if (status === "invalid-target") {
+      void vscode.window.showInformationMessage(
+        "This editor could not identify that sort action. Reopen Filters / Sorts and try again."
+      );
+    } else if (status === "stale-target") {
+      void vscode.window.showInformationMessage("The sort order changed. Use the refreshed Filters / Sorts action.");
+    } else if (status === "inspection-active") {
+      void vscode.window.showInformationMessage("Return to the current view before changing sort priority.");
+    } else if (status === "priority-boundary") {
+      void vscode.window.showInformationMessage(
+        action === "moveUp"
+          ? "This sort already has the highest priority."
+          : "This sort already has the lowest priority."
+      );
+    } else if (status === "panel-unavailable") {
+      void vscode.window.showInformationMessage("Open the active dataframe editor before changing sort order.");
+    }
+    return status === "sent";
   };
   context.subscriptions.push(
     contextSubscription,
@@ -266,13 +399,13 @@ export function registerNativeViews(
       }
     }),
     vscode.commands.registerCommand("openWrangler.moveViewSortUp", (node?: unknown) =>
-      sendViewSortAction(node, "moveUp")
+      runViewSortAction(node, "moveUp")
     ),
     vscode.commands.registerCommand("openWrangler.moveViewSortDown", (node?: unknown) =>
-      sendViewSortAction(node, "moveDown")
+      runViewSortAction(node, "moveDown")
     ),
     vscode.commands.registerCommand("openWrangler.removeViewSort", (node?: unknown) =>
-      sendViewSortAction(node, "remove")
+      runViewSortAction(node, "remove")
     ),
     vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
@@ -485,6 +618,7 @@ export function registerNativeViews(
   return {
     setCodeForExport: (code) => codePreview.setCodeForExportForTests(code),
     notebookInsertionStatus: () => lastNotebookInsertionStatus,
+    viewSortDispatchStatus: () => lastViewSortDispatchStatus,
     exportCodeTo: async (destination) => {
       if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before Open Wrangler can export code.");
       const snapshot = coordinator.activeSession();
@@ -621,7 +755,10 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   ];
 }
 
-function filterNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
+function filterNodes(
+  snapshot: ActiveSessionSnapshot,
+  registerViewSortTarget: (target: ViewSortTarget) => ViewSortHandle
+): ViewNode[] {
   const model = snapshot.viewState.filterModel;
   const modelSignature = viewSortModelSignature(model);
   const inspectionMode = isStepInspectionActive(snapshot);
@@ -642,31 +779,31 @@ function filterNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
         inspectionMode ? "Return to the current view to edit filters and sorts" : undefined
       )
   );
-  const sorts = model.sort.map(
-    (sort, index) =>
-      new ViewNode(
-        sort.column,
-        `Priority ${index + 1} · ${sort.direction === "asc" ? "Ascending" : "Descending"} · nulls ${sort.nulls}`,
-        "sort-precedence",
-        inspectionMode
-          ? undefined
-          : {
-              command: "openWrangler.openViewSort",
-              title: `Edit ${sort.column} sort`,
-              arguments: [sort.column]
-            },
-        inspectionMode ? undefined : viewSortContext(index, model.sort.length),
-        inspectionMode ? "Return to the current view to edit filters and sorts" : undefined,
-        inspectionMode
-          ? undefined
-          : {
-              sessionId: snapshot.sessionId,
-              column: sort.column,
-              index,
-              modelSignature
-            }
-      )
-  );
+  const sorts = model.sort.map((sort, index) => {
+    const handle = inspectionMode
+      ? undefined
+      : registerViewSortTarget({
+          sessionId: snapshot.sessionId,
+          column: sort.column,
+          index,
+          modelSignature
+        });
+    return new ViewNode(
+      sort.column,
+      `Priority ${index + 1} · ${sort.direction === "asc" ? "Ascending" : "Descending"} · nulls ${sort.nulls}`,
+      "sort-precedence",
+      inspectionMode
+        ? undefined
+        : {
+            command: "openWrangler.openViewSort",
+            title: `Edit ${sort.column} sort`,
+            arguments: handle ? [sort.column, handle] : [sort.column]
+          },
+      inspectionMode ? undefined : viewSortContext(index, model.sort.length),
+      inspectionMode ? "Return to the current view to edit filters and sorts" : undefined,
+      handle
+    );
+  });
   if (inspectionMode) {
     return [
       new ViewNode("Filters and sorts paused", "Inspecting an applied step", "lock", {

@@ -122,6 +122,7 @@ interface TestApi {
     request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
   ): Promise<Extract<OpenWranglerResponse, { kind: "sessionOpened" }> | undefined>;
   panelHydrated(sessionId: string): boolean;
+  panelSynchronizable(sessionId: string): boolean;
   sessionSchedulerState(sessionId: string): SessionSchedulerState | undefined;
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
@@ -148,6 +149,14 @@ interface TestApi {
     | "unsupported-source"
     | "missing-notebook"
     | "dispatching"
+    | undefined;
+  viewSortDispatchStatus():
+    | "sent"
+    | "invalid-target"
+    | "stale-target"
+    | "inspection-active"
+    | "priority-boundary"
+    | "panel-unavailable"
     | undefined;
 }
 
@@ -6473,6 +6482,7 @@ async function exercisePrimarySortJourney(
         activeSessionId: active?.sessionId,
         activeSort: active?.viewState.filterModel.sort,
         retainedSort: retained?.viewState.filterModel.sort,
+        dispatchStatus: testing.viewSortDispatchStatus(),
         panelHydrated: testing.panelHydrated(sessionId),
         coordinator: testing.diagnostics(),
         treeItems
@@ -7730,6 +7740,10 @@ async function exercisePackagedFileLaunchSurfaces(
     10_000,
     "the source tab to become active before opening its context menu"
   );
+  await closeVisibleWorkbenchPart(page, ".part.sidebar", [
+    "workbench.action.closeSidebar",
+    "workbench.action.toggleSidebarVisibility"
+  ]);
   const { menu: tabContextMenu, action: tabMenuAction } = await openEditorTabContextMenu(
     page,
     activeSourceTab,
@@ -9029,11 +9043,12 @@ async function captureReleasedJupyterPolarsDraft(
   const panel = workbench.locator(".part.panel:visible").first();
   await panel.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(
-    await panel.getByText("Code Preview", { exact: true }).count(),
+    await workbench.locator(".part.panel:visible").count(),
     1,
-    "The Polars notebook screenshot must open the Code Preview panel."
+    "The Polars notebook screenshot must open exactly one native panel."
   );
   const codePreview = await waitForCodePreview(workbench, "double_units");
+  assert.equal(await codePreview.count(), 1, "The Polars notebook screenshot must render one Code Preview editor.");
   const codeText = await codePreview.innerText();
   assert.ok(codeText.includes("import polars as pl"), "The Polars notebook screenshot must show its native import.");
   assert.ok(
@@ -9321,6 +9336,18 @@ async function captureReleasedJupyterDuckDbRelation(
       exportParquet: false,
       notebookInsert: false
     });
+    // Cursor can reload the webview when the screenshot theme changes. Require
+    // the exact session grid and a current host handshake before publishing
+    // screenshot-only presentation state; an immediate synchronization here
+    // can otherwise race the renderer's ready message.
+    const readyTarget = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    const readyApp = await exactSessionApp(readyTarget.frame, sessionId);
+    assert.ok(readyApp, "The DuckDB notebook screenshot requires the exact live Open Wrangler renderer.");
+    await waitFor(
+      () => testing.panelSynchronizable(sessionId),
+      10_000,
+      "the reloaded DuckDB notebook renderer to complete its host handshake"
+    );
     const revenue = columnReference(active.metadata, "revenue");
     await testing.updateViewState(sessionId, {
       ...active.viewState,
@@ -9333,10 +9360,9 @@ async function captureReleasedJupyterDuckDbRelation(
       true,
       "The DuckDB notebook screenshot must synchronize its native filtered relation."
     );
-
     const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
     const app = await exactSessionApp(target.frame, sessionId);
-    assert.ok(app, "The DuckDB notebook screenshot requires the exact live Open Wrangler renderer.");
+    assert.ok(app, "The synchronized DuckDB screenshot requires the exact current renderer generation.");
     const backendBadge = app.locator(".backendBadge").first();
     const modeBadge = app.locator(".modeBadge").first();
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
@@ -11759,6 +11785,38 @@ async function capturePackagedImportOptionsScene(
     (await semicolon.getAttribute("class")) ?? "",
     /(?:^|\s)focused(?:\s|$)/u,
     "The advanced override must open on the automatically inferred semicolon delimiter."
+  );
+  const notifications = workbench.locator(
+    ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+  );
+  const notificationTexts = (await notifications.allInnerTexts()).map((text) => text.replace(/\s+/gu, " ").trim());
+  const permittedNotification =
+    "Instructions Unable to watch for file changes. Please follow the instructions link to resolve this issue.";
+  assert.deepEqual(
+    notificationTexts.filter((text) => text !== permittedNotification),
+    [],
+    `The import-options scene exposed an unexpected notification: ${JSON.stringify(notificationTexts)}`
+  );
+  const commands = new Set(await vscode.commands.getCommands(true));
+  if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+  if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
+  const notificationUi = workbench.locator(
+    ".notifications-toasts .notification-toast:visible, .notifications-center:visible"
+  );
+  assert.equal(
+    await pollAcceptanceCondition(async () => (await notificationUi.count()) === 0, {
+      timeoutMs: 3_000,
+      intervalMs: 50
+    }),
+    true,
+    "The import-options scene must dismiss unrelated workbench notifications without closing its prompt."
+  );
+  await prompt.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  await waitForImportNaturalKeyboardFocus(prompt, "Delimiter import prompt", "contains");
+  assert.match(
+    (await semicolon.getAttribute("class")) ?? "",
+    /(?:^|\s)focused(?:\s|$)/u,
+    "Notification cleanup must preserve the inferred delimiter option's natural focus."
   );
   await captureWorkbenchScreenshot(workbench, path.resolve(outputDirectory, `${editor}-import-options-dark.png`));
   await workbench.keyboard.press("Escape");

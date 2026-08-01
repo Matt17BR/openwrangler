@@ -126,7 +126,12 @@ The preview release workflow calls this workflow directly after its GitHub relea
 
 The called promotion job declares `environment: publishing`; therefore its two secret-bearing steps receive that environment's `OVSX_PAT` without granting the caller blanket secret inheritance. This follows GitHub's [reusable-workflow environment-secret behavior](https://docs.github.com/en/actions/how-tos/sharing-automations/reusing-workflows#using-inputs-and-secrets-in-a-reusable-workflow). Only `ovsx verify-pat` and `ovsx publish` receive the token. The workflow revalidates the release before each publisher boundary, rejects a conflicting existing version, publishes the downloaded VSIX with lockfile-pinned `ovsx --skip-duplicate`, and then polls for up to fifteen minutes for Open VSX to expose matching channel metadata, `Matt17BR` publisher identity, checksum, downloadable bytes, and the exact packaged gallery icon. Both the reusable promotion job and the stable final job reserve additional bounded timeout room for that public propagation check.
 
-To recover the current exact GitHub Release `v1.1.3`, dispatch **Promote GitHub release to Open VSX** from protected `main` with `release_tag=v1.1.3`. Historical backfill is supported only when that release's canonical asset and provenance format remains compatible with the current verifier; incompatibility fails rather than weakening validation. Repeating the dispatch is safe only when the registry already serves identical bytes; a conflict fails without replacement. Do not dispatch from an old release tag, because historical releases intentionally do not contain the reviewed automation.
+To recover an existing exact GitHub Release, dispatch **Promote GitHub release to Open VSX** from protected `main`
+with `release_tag=v<version>`. Historical backfill is supported only when that release's canonical asset and
+provenance format remains compatible with the current verifier; incompatibility fails rather than weakening
+validation. Repeating the dispatch is safe only when the registry already serves identical bytes; a conflict fails
+without replacement. Do not dispatch from an old release tag, because historical releases intentionally do not
+contain the reviewed automation.
 
 ### Automatic Microsoft Marketplace promotion
 
@@ -196,7 +201,7 @@ release commit and still downloads only that release's existing public assets; i
 A release that predates this YAML must not be queued by checking out that old tag.
 
 Explicit recovery remains available: manually queue the pipeline from the exact protected `main` commit and set
-`existingReleaseTag` to `v1.1.3` (or the intended numeric version). Historical backfill is supported only when
+`existingReleaseTag` to `v<version>`. Historical backfill is supported only when
 that release's canonical asset and provenance format remains compatible with the current verifier;
 incompatibility fails rather than weakening validation. Intake accepts that parameter only for
 `Build.Reason=Manual` on `refs/heads/main`, requires the checkout to equal the current public main head, resolves

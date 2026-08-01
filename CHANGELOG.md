@@ -4,8 +4,18 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-01
+
 ### Changed
 
+- Bounded local and CI script-test memory: portable Node contracts now run with four-file concurrency, while the
+  PNG-heavy README media verifier runs alone under a 1 GiB V8 heap ceiling. Pixel drift reports one coordinate and
+  channel instead of constructing a multi-million-byte assertion diff, preventing a stale media capture from
+  exhausting the desktop process during packaging.
+- Native Filters / Sorts priority actions now use opaque provider-owned handles instead of JavaScript class identity.
+  Structurally cloned tree items therefore work in Cursor as well as VS Code, unrelated profiling and selection
+  updates no longer churn the native sort tree, and stale, ambiguous, or unavailable actions explain why they were
+  not applied instead of failing silently.
 - Import-option Quick Picks and input fields now explicitly reclaim workbench keyboard focus after opening. This
   preserves the existing keyboard-only flow in VS Code and fixes Cursor 3.13.21 leaving focus inside the dataframe
   webview; experimental forks that omit the standard focus command retain their native Quick Input behavior.
@@ -52,9 +62,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   filter/sort and cleaning workflow, file entry points, Pandas inline output, native Polars and DuckDB notebook
   sessions, experimental PySpark, focused operation flows, and accessibility states. Captions now explain the
   demonstrated capability without presenting fixture sizes as dataframe limits.
-- Expanded the public product tour with readable Activity Bar close-ups, complete 417-column navigation, exact
+- Added concise installed-editor performance evidence, user-facing roadmap language, and an exact media-inventory
+  gate. Public scenes now declare their truthful provenance: editor-integration views come from the verified VSIX,
+  while focused by-example and rich-type views come from the same source commit's production webview bundle.
+- Expanded the public product tour with readable Activity Bar views, complete 417-column navigation, exact
   histogram interaction, compound-sort controls, real script and cleaned-data exports, and the live notebook
-  variable picker. Every published asset is derived pixel-for-pixel from an accepted packaged-extension scene.
+  variable picker. Every published asset preserves accepted source pixels without scaling or reconstruction.
 - Added paired, pixel-exact Activity Bar details to the README and product gallery so first-time users can read the
   operation catalog, dataframe summary, ordered viewing state, and separate cleaning history without enlarging a
   full editor screenshot. The details are derived from the accepted packaged Explore and Workflow captures rather

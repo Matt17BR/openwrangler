@@ -10,13 +10,16 @@ type CommandHandler = (...args: unknown[]) => unknown;
 type NotebookInsertionStatus = "applied" | "stale" | "indeterminate" | "rejected";
 interface TestTreeNode {
   label: string;
+  id?: string;
   description?: string;
   command?: unknown;
   contextValue?: string;
   tooltip?: unknown;
+  viewSortHandle?: unknown;
 }
 interface TestTreeProvider {
   getChildren(): TestTreeNode[];
+  onDidChangeTreeData?(listener: (node: TestTreeNode | undefined) => unknown): { dispose(): void };
 }
 
 const nativeMocks = vi.hoisted(() => ({
@@ -254,11 +257,13 @@ describe("native operation commands", () => {
       column: "city"
     });
 
-    expect(nodes[1]?.command).toEqual({
-      command: "openWrangler.openViewSort",
-      title: "Edit city sort",
-      arguments: ["city"]
-    });
+    expect(nodes[1]?.command).toEqual(
+      expect.objectContaining({
+        command: "openWrangler.openViewSort",
+        title: "Edit city sort",
+        arguments: ["city", nodes[1]?.viewSortHandle]
+      })
+    );
     expect(nodes[1]?.contextValue).toBe("openWrangler.viewSortFirst");
     expect(nodes[2]?.contextValue).toBe("openWrangler.viewSortLast");
 
@@ -271,6 +276,28 @@ describe("native operation commands", () => {
 
     nativeMocks.sendEditorAction.mockClear();
     await command("openWrangler.moveViewSortUp")(nodes[2]);
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+      action: "changeViewSort",
+      column: "sales",
+      sortAction: "moveUp",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(filtered.viewState.filterModel.sort),
+      expectedSortIndex: 1
+    });
+
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.moveViewSortUp")({ id: nodes[2]?.id });
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+      action: "changeViewSort",
+      column: "sales",
+      sortAction: "moveUp",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(filtered.viewState.filterModel.sort),
+      expectedSortIndex: 1
+    });
+
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.moveViewSortUp")({ viewSortHandle: nodes[2]?.viewSortHandle });
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
       action: "changeViewSort",
       column: "sales",
@@ -350,6 +377,81 @@ describe("native operation commands", () => {
     expect(restoredNodes[0]?.command).toBeDefined();
     expect(restoredNodes[1]?.contextValue).toBe("openWrangler.viewSortFirst");
     expect(restoredNodes[2]?.contextValue).toBe("openWrangler.viewSortLast");
+  });
+
+  it("keeps cloned sort handles stable across unrelated updates and rejects an ABA-stale node", async () => {
+    const filtered = noDraftSnapshot();
+    const originalSort = [
+      { column: "city", direction: "asc" as const, nulls: "last" as const },
+      { column: "sales", direction: "desc" as const, nulls: "first" as const }
+    ];
+    filtered.viewState.filterModel = { filters: [], sort: originalSort };
+    const registered = register(filtered);
+    const provider = nativeMocks.treeDataProviders.get("openWrangler.filters");
+    expect(provider).toBeDefined();
+    const onRefresh = vi.fn();
+    const subscription = provider?.onDidChangeTreeData?.(onRefresh);
+
+    const originalNodes = treeChildren("openWrangler.filters");
+    const originalSales = originalNodes[1]!;
+    expect(originalSales.id).toMatch(/^openWrangler\.viewSort:/u);
+
+    filtered.viewState = { ...filtered.viewState, selectedColumnId: "c:unrelated" };
+    registered.setActiveSession(filtered);
+    expect(onRefresh).not.toHaveBeenCalled();
+    expect(treeChildren("openWrangler.filters")[1]?.id).toBe(originalSales.id);
+
+    filtered.viewState.filterModel = { filters: [], sort: [...originalSort].reverse() };
+    registered.setActiveSession(filtered);
+    expect(onRefresh).toHaveBeenCalledOnce();
+    treeChildren("openWrangler.filters");
+
+    filtered.viewState.filterModel = { filters: [], sort: originalSort };
+    registered.setActiveSession(filtered);
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+    const refreshedSales = treeChildren("openWrangler.filters")[1]!;
+    expect(refreshedSales.id).not.toBe(originalSales.id);
+
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.moveViewSortUp")({ id: originalSales.id });
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+    expect(registered.viewSortDispatchStatus()).toBe("stale-target");
+    expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith(
+      "The sort order changed. Use the refreshed Filters / Sorts action."
+    );
+
+    await command("openWrangler.moveViewSortUp")({ id: refreshedSales.id });
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "changeViewSort", column: "sales", sortAction: "moveUp" })
+    );
+    expect(registered.viewSortDispatchStatus()).toBe("sent");
+    subscription?.dispose();
+  });
+
+  it("rejects malformed sort payloads and surfaces an unavailable owning panel", async () => {
+    const filtered = noDraftSnapshot();
+    filtered.viewState.filterModel = {
+      filters: [],
+      sort: [
+        { column: "city", direction: "asc", nulls: "last" },
+        { column: "sales", direction: "desc", nulls: "first" }
+      ]
+    };
+    const registered = register(filtered);
+    const nodes = treeChildren("openWrangler.filters");
+
+    await command("openWrangler.moveViewSortUp")({
+      viewSortHandle: { kind: "openWrangler.viewSort", token: "not-a-token", extra: true }
+    });
+    expect(registered.viewSortDispatchStatus()).toBe("invalid-target");
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
+    nativeMocks.sendEditorAction.mockReturnValueOnce(false);
+    await command("openWrangler.moveViewSortUp")({ id: nodes[1]?.id });
+    expect(registered.viewSortDispatchStatus()).toBe("panel-unavailable");
+    expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith(
+      "Open the active dataframe editor before changing sort order."
+    );
   });
 
   it("does not forward editLatestStep while a draft is active", async () => {
@@ -819,6 +921,14 @@ function register(
     | "missing-notebook"
     | "dispatching"
     | undefined;
+  viewSortDispatchStatus():
+    | "sent"
+    | "invalid-target"
+    | "stale-target"
+    | "inspection-active"
+    | "priority-boundary"
+    | "panel-unavailable"
+    | undefined;
 } {
   let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;
   const sessions = new Map<string, ActiveSessionSnapshot>([[snapshot.sessionId, snapshot]]);
@@ -857,7 +967,8 @@ function register(
       sessions.set(nextSnapshot.sessionId, nextSnapshot);
     },
     exportData,
-    notebookInsertionStatus: () => nativeViews.notebookInsertionStatus()
+    notebookInsertionStatus: () => nativeViews.notebookInsertionStatus(),
+    viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus()
   };
 }
 

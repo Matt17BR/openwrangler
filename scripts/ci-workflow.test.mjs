@@ -36,16 +36,28 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
-const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "native"]);
+const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
 }
 
 function nodeTestFiles(command, group) {
-  const parts = normalizedCommand(command)?.split(" ") ?? [];
-  assert.deepEqual(parts.slice(0, 2), ["node", "--test"], `${group} must invoke Node's test runner directly.`);
-  const files = parts.slice(2);
+  const segments = normalizedCommand(command)?.split(" && ") ?? [];
+  const parts = segments[0]?.split(" ") ?? [];
+  assert.deepEqual(
+    segments.slice(1),
+    group === "portable" ? ["npm run test:scripts:media"] : [],
+    `${group} must not hide unrelated commands in its script contract.`
+  );
+  const prefix =
+    group === "portable"
+      ? ["node", "--test", "--test-concurrency=4"]
+      : group === "media"
+        ? ["node", "--max-old-space-size=1024", "--test", "--test-concurrency=1"]
+        : ["node", "--test"];
+  assert.deepEqual(parts.slice(0, prefix.length), prefix, `${group} must invoke Node's test runner directly.`);
+  const files = parts.slice(prefix.length);
   assert.ok(files.length > 0, `${group} must own at least one script contract.`);
   for (const file of files) assert.match(file, /^scripts\/[a-z0-9.-]+\.test\.mjs$/u);
   assert.equal(new Set(files).size, files.length, `${group} must not list a script contract twice.`);
@@ -68,10 +80,13 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
   );
   assert.equal(manifest?.scripts?.test, "npm run test:scripts && npm run test:ts && npm run test:python");
   assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs"]);
+  assert.deepEqual(groups.media, ["scripts/readme-media.test.mjs"]);
   assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
   assert.deepEqual(
     groups.portable,
-    inventory.filter((file) => !groups.workflow.includes(file) && !groups.native.includes(file))
+    inventory.filter((file) =>
+      SCRIPT_TEST_GROUPS.filter((group) => group !== "portable").every((group) => !groups[group].includes(file))
+    )
   );
 
   for (let left = 0; left < SCRIPT_TEST_GROUPS.length; left += 1) {

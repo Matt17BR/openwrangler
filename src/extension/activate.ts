@@ -6,7 +6,11 @@ import { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinat
 import { PythonBridge } from "./pythonBridge";
 import { SessionCoordinator } from "./sessionCoordinator";
 import { registerRuntimeCommands } from "./runtimeCommands";
-import { registerNativeViews, type NotebookInsertionDiagnosticStatus } from "./nativeViews";
+import {
+  registerNativeViews,
+  type NotebookInsertionDiagnosticStatus,
+  type ViewSortDispatchStatus
+} from "./nativeViews";
 import { OpenWranglerPanel } from "./webviewPanel";
 import type { GridViewState } from "../shared/viewState";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionOpenedResponse } from "../shared/protocol";
@@ -40,6 +44,7 @@ export interface OpenWranglerTestApi {
   setCodeForExport(code: string): void;
   exportCodeTo(destination: vscode.Uri): Promise<void>;
   notebookInsertionStatus(): NotebookInsertionDiagnosticStatus | undefined;
+  viewSortDispatchStatus(): ViewSortDispatchStatus | undefined;
 }
 
 export interface OpenWranglerExtensionApi {
@@ -104,7 +109,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         disposePanelForSession: (sessionId) => OpenWranglerPanel.disposePanelForSession(sessionId),
         setCodeForExport: (code) => nativeViews.setCodeForExport(code),
         exportCodeTo: (destination) => nativeViews.exportCodeTo(destination),
-        notebookInsertionStatus: () => nativeViews.notebookInsertionStatus()
+        notebookInsertionStatus: () => nativeViews.notebookInsertionStatus(),
+        viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus()
       }
     };
   }
