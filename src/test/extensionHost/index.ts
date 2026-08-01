@@ -11781,8 +11781,10 @@ async function capturePackagedImportOptionsScene(
     ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
   );
   const notificationTexts = (await notifications.allInnerTexts()).map((text) => text.replace(/\s+/gu, " ").trim());
+  const permittedNotification =
+    "Instructions Unable to watch for file changes. Please follow the instructions link to resolve this issue.";
   assert.deepEqual(
-    notificationTexts.filter((text) => !/^Unable to watch for file changes(?:\s|$)/u.test(text)),
+    notificationTexts.filter((text) => text !== permittedNotification),
     [],
     `The import-options scene exposed an unexpected notification: ${JSON.stringify(notificationTexts)}`
   );
