@@ -7731,6 +7731,10 @@ async function exercisePackagedFileLaunchSurfaces(
     10_000,
     "the source tab to become active before opening its context menu"
   );
+  await closeVisibleWorkbenchPart(page, ".part.sidebar", [
+    "workbench.action.closeSidebar",
+    "workbench.action.toggleSidebarVisibility"
+  ]);
   const { menu: tabContextMenu, action: tabMenuAction } = await openEditorTabContextMenu(
     page,
     activeSourceTab,
@@ -11769,6 +11773,21 @@ async function capturePackagedImportOptionsScene(
     /(?:^|\s)focused(?:\s|$)/u,
     "The advanced override must open on the automatically inferred semicolon delimiter."
   );
+  const commands = new Set(await vscode.commands.getCommands(true));
+  if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+  if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
+  const notifications = workbench.locator(
+    ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+  );
+  assert.equal(
+    await pollAcceptanceCondition(async () => (await notifications.count()) === 0, {
+      timeoutMs: 3_000,
+      intervalMs: 50
+    }),
+    true,
+    "The import-options scene must dismiss unrelated workbench notifications without closing its prompt."
+  );
+  await prompt.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
   await captureWorkbenchScreenshot(workbench, path.resolve(outputDirectory, `${editor}-import-options-dark.png`));
   await workbench.keyboard.press("Escape");
   await prompt.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
