@@ -39,7 +39,7 @@ jobs:
 
   runtime:
     needs: classify
-    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ always() }}
     strategy:
       fail-fast: false
       matrix:
@@ -58,25 +58,36 @@ jobs:
              needs.classify.outputs.documentation_only != 'false')
           }}
         run: exit 1
+      - name: Preserve required documentation-only context
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only == 'true' }}
+        run: echo "Runtime source is unchanged; this matrix cell preserves its required check context."
       - uses: actions/checkout@v6
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
       - uses: actions/setup-node@v6
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
         with:
           node-version: 22
           cache: npm
       - uses: actions/setup-python@v6
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: npm ci
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
       - run: python -m pip install --upgrade pip
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
       - run: python -m pip install -e "python[dev]"
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
       - run: npm run test:python-environment-smoke
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
       - run: python -m pytest python/tests -q
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
     needs: classify
-    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ always() }}
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:
@@ -92,9 +103,16 @@ jobs:
              needs.classify.outputs.documentation_only != 'false')
           }}
         run: exit 1
+      - name: Preserve required documentation-only context
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only == 'true' }}
+        run: echo "Dependency guards are unchanged; this matrix cell preserves its required check context."
       - uses: actions/checkout@v6
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
       - uses: actions/setup-python@v6
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install pytest
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
       - run: python -m pytest python/tests/test_dependency_guard.py -q
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
