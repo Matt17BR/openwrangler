@@ -86,6 +86,44 @@ matrices for labels, schedules, manual dispatch, and releases. Open Wrangler rem
 it: one checksum-bound VSIX must pass real VS Code, Cursor, notebook, performance, and registry gates before
 publication.
 
+### Post-v1.2 decision
+
+The audit does **not** justify moving the current product gates out of ready pull requests. Open Wrangler's highest-risk
+boundaries are the ones that ordinary unit tests cannot reproduce: installing the packaged VSIX, starting the bundled
+runtime, opening the grid in two editors, talking to a released Jupyter extension, rendering the production webview,
+and cleaning up native processes on three operating systems. Those checks have found user-visible defects, and the
+current split runs them in parallel rather than putting them on one serial critical path.
+
+[Pull request 189](https://github.com/Matt17BR/openwrangler/pull/189) is the first substantive exact-head sample after
+the duplicate-work and canonical-Jupyter changes. All 27 reported contexts passed without a retry. Fast feedback took
+1 minute 15 seconds, the longest affected product lane (released Jupyter) took 6 minutes 31 seconds, and the protected
+aggregate completed roughly 8 minutes after workflow creation. That is an acceptable merge delay for a release-grade
+desktop extension, even though the parallel jobs consume materially more hosted runner time.
+
+A review of the preceding 100 workflow runs also did not support the impression that current `main` is randomly red.
+The five failed CI runs were on the pre-consolidation v1.2 release branch or the two historical R draft branches. They
+included real source/document contract failures, one packaged Cursor failure, and downstream aggregate failures; the
+separate cross-platform workflow completed 24 of 24 non-cancelled runs successfully and CodeQL completed 26 of 26.
+The older standalone released-Jupyter failures duplicated packaging and source checks; that duplication was removed in
+PR 188. Historical failures remain useful evidence, but they are not a reason to retry or weaken a failing current job.
+
+The development loop should therefore optimize _when_ the complete matrix is requested rather than silently test less:
+
+1. Run the narrow tests owned by the changed boundary while iterating locally. Do not repeatedly run the full matrix,
+   package, media capture, and native editors for each small commit.
+2. Push durable checkpoints to the feature branch without opening a pull request when the work is not ready for the
+   complete exact-head matrix. An open draft currently receives the same evidence as a ready pull request.
+3. Open or update the ready pull request for one coherent slice, let superseded heads cancel, and require the complete
+   protected result once before squash merge.
+4. Run the broader scheduled ecosystem/performance checks and the complete candidate matrix again at the immutable VSIX
+   promotion boundary. Publication always consumes those accepted bytes; it never rebuilds them.
+
+This policy will be revisited after at least 20 post-consolidation substantive pull requests. A further split should be
+evidence-led, for example a repeated external-service failure rate above 5 percent or a normally queued aggregate p95
+above 12 minutes, rather than a reaction to a legitimate test exposing unfinished code. Documentation-only
+classification and draft-only fast feedback remain possible future savings, but neither should be introduced without
+proving that required contexts still fail closed when the pull request becomes mergeable.
+
 - [VS Code Python pull-request and build workflows](https://github.com/microsoft/vscode-python/tree/82940c942228f819121302657375c81b5d42d36a/.github/workflows)
 - [VS Code Jupyter build and test workflow](https://github.com/microsoft/vscode-jupyter/blob/eb3597ff0739386d99382c2f68aa6c9c15041ed1/.github/workflows/build-test.yml)
 - [GitLens continuous integration workflow](https://github.com/gitkraken/vscode-gitlens/blob/8adb9466d4d7b80b9e822924e82c4cc6710cf81c/.github/workflows/ci.yml)
