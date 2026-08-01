@@ -60,11 +60,10 @@ release lane similarly runs script contracts once and then the instrumented suit
 
 ## Branch and promotion model
 
-Open Wrangler uses a protected, always-releasable `main` rather than permanent `develop` and `staging` branches.
-Feature branches merge through the fail-closed pull-request gate. Staging is the immutable, checksum-bound VSIX that
-release acceptance installs in VS Code and Cursor; production promotion sends those exact accepted bytes to GitHub,
-Open VSX, and the Visual Studio Marketplace without rebuilding them. A second long-lived branch would add merge
-drift without making that artifact boundary safer.
+Open Wrangler does not add permanent `develop` or `staging` branches. Feature branches merge through the fail-closed
+pull-request gate. Staging is the immutable, checksum-bound VSIX that release acceptance installs in VS Code and
+Cursor; production promotion sends those exact accepted bytes to GitHub, Open VSX, and the Visual Studio Marketplace
+without rebuilding them. The only additional long-lived line is the narrowly scoped v1 maintenance branch below.
 
 The source policy reserves a protected `release/1.x` maintenance branch for stable v1 versions and `main` for the
 `1.99.x` v2 preview line and later v2 releases. CI, CodeQL, and native cross-platform checks run for pull requests and
