@@ -825,12 +825,17 @@ Primary cleaning-plan command row, 2026-07-31:
   cleaning-plan semantics.
 
 This completes the bounded command-row implementation in
-[issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The issue closed after one exact 726,757-byte
-VSIX from source `bd6733b` (SHA-256 `1d3eba830d7b57eb95ddd5d4ac1718bc58a03de7924b49155ab37e3b5ad0f709`)
-passed the isolated zero-window packaged journey in VS Code 1.130.0 and Cursor 3.13.10, including automatic import,
-keyboard navigation, multi-sort editing, exact profiles, draft/apply/discard, native code preview, export, replay,
-Undo, Activity Bar views, dependency-decline recovery, source immutability, and terminal cleanup. This evidence
-closes that bounded post-1.0 refinement; it does not claim universal feature parity or v1.2 release readiness.
+[issue #88](https://github.com/Matt17BR/openwrangler/issues/88). One exact 726,757-byte VSIX from source
+`bd6733b` (SHA-256 `1d3eba830d7b57eb95ddd5d4ac1718bc58a03de7924b49155ab37e3b5ad0f709`) passed the isolated zero-window packaged
+journey in VS Code 1.130.0 and Cursor 3.13.10, including automatic import, keyboard navigation, multi-sort editing,
+exact profiles, draft/apply/discard, native code preview, export, replay, Undo, Activity Bar views,
+dependency-decline recovery, source immutability, and terminal cleanup. The final slice was then integrated at
+protected-main commit [`704b428`](https://github.com/Matt17BR/openwrangler/commit/704b428c76a3d00b81165d7b315e9c55e2f7b418),
+whose [required CI aggregate](https://github.com/Matt17BR/openwrangler/actions/runs/30687070036),
+[cross-platform runtime](https://github.com/Matt17BR/openwrangler/actions/runs/30687070052), and
+[CodeQL](https://github.com/Matt17BR/openwrangler/actions/runs/30687070043) gates passed before the issue closed.
+This evidence closes that bounded post-1.0 refinement; it does not claim universal feature parity or v1.2 release
+readiness.
 
 ## Explicitly deferred from 1.0
 
