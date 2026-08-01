@@ -6,7 +6,8 @@ Public memory-intensive local test, package, media, benchmark, and editor comman
 including across clones and worktrees. An overlapping command fails before it allocates substantial memory: resume or
 wait for the existing command instead of starting a duplicate. Nested npm phases verify and inherit that lease, while
 `:run` and `:prepare` continuations are internal implementation details and must not be invoked directly. The lease is
-released automatically when the wrapper exits; there is no lock file to remove after an interruption.
+released automatically when the wrapper exits; there is no lock file to remove after an interruption. Windows uses a
+kernel-owned named pipe so reserved or excluded TCP port ranges cannot prevent the guard from starting.
 
 - `npm run typecheck` checks the extension and webview projects independently.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
