@@ -6413,6 +6413,16 @@ async function exercisePrimarySortJourney(
     await filtersHeader.click();
   }
   await filtersTree.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    testing.activeSession()?.sessionId,
+    sessionId,
+    "Opening the Open Wrangler Activity Bar must keep the visible dataframe session active."
+  );
+  assert.equal(
+    testing.panelHydrated(sessionId),
+    true,
+    "Native sort-priority actions require the exact visible dataframe panel to remain hydrated."
+  );
 
   const revenuePriorityOne = filtersTree
     .getByRole("treeitem", {
@@ -6430,22 +6440,43 @@ async function exercisePrimarySortJourney(
   const moveMarketUp = marketPriorityTwo.getByRole("button", { name: /Move View Sort Up$/u }).first();
   await moveMarketUp.waitFor({ state: "visible", timeout: 5_000 });
   await moveMarketUp.click();
-  await waitFor(
-    () => {
-      const sort = testing.activeSession()?.viewState.filterModel.sort;
-      return (
-        sort?.length === 2 &&
-        sort[0]?.column === "market" &&
-        sort[0].direction === "desc" &&
-        sort[0].nulls === "last" &&
-        sort[1]?.column === "revenue" &&
-        sort[1].direction === "desc" &&
-        sort[1].nulls === "last"
-      );
-    },
-    10_000,
-    "the real Filters / Sorts move-up action to make market priority 1"
-  );
+  try {
+    await waitFor(
+      () => {
+        const sort = testing.activeSession()?.viewState.filterModel.sort;
+        return (
+          sort?.length === 2 &&
+          sort[0]?.column === "market" &&
+          sort[0].direction === "desc" &&
+          sort[0].nulls === "last" &&
+          sort[1]?.column === "revenue" &&
+          sort[1].direction === "desc" &&
+          sort[1].nulls === "last"
+        );
+      },
+      10_000,
+      "the real Filters / Sorts move-up action to make market priority 1"
+    );
+  } catch (error) {
+    const active = testing.activeSession();
+    const retained = testing.sessionSnapshot(sessionId);
+    const treeItems = await filtersTree
+      .getByRole("treeitem")
+      .allTextContents()
+      .catch(() => ["<detached>"]);
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} Native sort diagnostics: ${JSON.stringify({
+        expectedSessionId: sessionId,
+        activeSessionId: active?.sessionId,
+        activeSort: active?.viewState.filterModel.sort,
+        retainedSort: retained?.viewState.filterModel.sort,
+        panelHydrated: testing.panelHydrated(sessionId),
+        coordinator: testing.diagnostics(),
+        treeItems
+      })}`,
+      { cause: error }
+    );
+  }
   await filtersTree
     .getByRole("treeitem", {
       name: /^market, Priority 1 · Descending · nulls last/u
@@ -9919,9 +9950,16 @@ async function waitForCodePreview(workbench: Page, expectedCode: string): Promis
   const deadline = Date.now() + 10_000;
   do {
     for (const frame of workbench.frames()) {
-      const content = frame.locator('[aria-label="Editable generated Python code preview"]');
-      if ((await content.count()) === 0 || !(await content.isVisible().catch(() => false))) continue;
-      if ((await content.innerText().catch(() => "")).includes(expectedCode)) return content;
+      try {
+        const content = frame.locator('[aria-label="Editable generated Python code preview"]');
+        if ((await content.count()) === 0 || !(await content.isVisible())) continue;
+        if ((await content.innerText()).includes(expectedCode)) return content;
+      } catch (error) {
+        // Code Preview is a workbench webview whose iframe can be replaced
+        // while its provider refreshes. Ignore only a proven retired child
+        // target; failures from the live workbench/frame remain fatal.
+        ignoreRetiredRendererProbeFailure(workbench, workbench.context().browser(), frame.page(), frame, error);
+      }
     }
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
