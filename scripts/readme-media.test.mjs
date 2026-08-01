@@ -105,28 +105,28 @@ const nativeAssets = [
     height: 380
   }),
   nativeCrop("gallery/notebook-pandas-detail.png", "vscode-notebook-pandas-dark.png", 1_280, 600, {
-    x: 52,
-    y: 148,
-    width: 1_205,
-    height: 370
+    x: 55,
+    y: 65,
+    width: 698,
+    height: 535
   }),
   nativeCrop("gallery/notebook-polars-detail.png", "vscode-notebook-polars-dark.png", 1_440, 900, {
     x: 48,
-    y: 32,
-    width: 1_372,
-    height: 758
+    y: 115,
+    width: 884,
+    height: 675
   }),
   nativeCrop("gallery/notebook-duckdb-detail.png", "vscode-notebook-duckdb-dark.png", 1_440, 900, {
-    x: 48,
-    y: 32,
-    width: 1_372,
-    height: 868
+    x: 548,
+    y: 63,
+    width: 872,
+    height: 700
   }),
   nativeCrop("gallery/notebook-pyspark-detail.png", "vscode-notebook-pyspark-dark.png", 1_440, 900, {
-    x: 48,
-    y: 32,
-    width: 1_372,
-    height: 820
+    x: 600,
+    y: 63,
+    width: 820,
+    height: 610
   }),
   nativeCrop("gallery/sidebar-explore.png", "vscode-explore-dark.png", 1_440, 870, {
     x: 0,
@@ -204,6 +204,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const buildWebviews = readFileSync(resolve(root, "scripts", "build-webviews.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
   const gallery = readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8");
+  const legacyMediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.1.md"), "utf8");
   const mediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.2.md"), "utf8");
   const testing = readFileSync(resolve(root, "docs", "testing.md"), "utf8");
   const extensionHost = readFileSync(resolve(root, "src", "test", "extensionHost", "index.ts"), "utf8");
@@ -342,6 +343,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.doesNotMatch(readme, /docs\/images\/readme\/v1\.1|docs\/images\/editor-acceptance/u);
   assert.match(readme, /The whole workflow stays in VS Code/u);
+  assert.match(readme, /dataframes in an open-source workbench/u);
   assert.match(readme, /Operations, dataset health, viewing state, and cleaning history remain visible/u);
   assert.match(readme, /14,285 matching rows/u);
   assert.match(readme, /automatic delimiter, encoding, quote, and header detection/u);
@@ -370,7 +372,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /loading a pickle can execute arbitrary code/u);
   assert.match(readme, /opening\s+a large or remote dataframe may be expensive/u);
   assert.match(readme, /does not install PySpark,\s+authenticate a cluster, or stop your session/u);
-  assert.match(readme, /\| v1\.2\s+\| Finish real-user interaction polish[\s\S]{0,500}#36/u);
+  assert.match(
+    readme,
+    /\| v1\.2\s+\| Finish real-user interaction polish[\s\S]{0,500}#36[\s\S]{0,500}continue the reproducible Data Wrangler comparison study[\s\S]{0,200}#91/u
+  );
+  assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   assert.match(readme, /\| v2\s+\| Native R data frames[\s\S]{0,200}#87/u);
 
   for (const image of [
@@ -452,6 +458,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(mediaSpec, /Crops select exact rectangles from accepted screenshots/u);
   assert.match(mediaSpec, /Private setup, restart-probe, and runtime-transfer cells are collapsed/u);
   assert.match(mediaSpec, /raw PySpark variable-picker capture is acceptance evidence, not public product media/u);
+  assert.match(legacyMediaSpec, /\*\*Historical record\.\*\*/u);
+  assert.match(legacyMediaSpec, /canonical v1\.2 media specification\]\(media-spec-v1\.2\.md\)/u);
+  assert.doesNotMatch(legacyMediaSpec, /^## v1\.2 native notebook capture refresh$/mu);
   assert.match(testing, /compose:readme-media[\s\S]{0,160}accepted packaged-editor and\s+production-webview sources/u);
   assert.match(testing, /pixel-exact decoded output/u);
   assert.match(testing, /Generated-code insertion is proven through the exact `NotebookDocument`/u);

@@ -1,5 +1,8 @@
 # Open Wrangler v1.1 media specification
 
+> **Historical record.** This file documents the v1.1 media contract only. Current work must follow the
+> [canonical v1.2 media specification](media-spec-v1.2.md).
+
 This specification replaces evidence-heavy README captures with two concise product views and a linked notebook
 gallery. Editor and notebook images come from the packaged extension running in an isolated profile. The DuckDB
 file gallery uses the same production webview bundle and bundled native runtime in the deterministic browser
@@ -53,26 +56,11 @@ harness so its rich Parquet fixture can be reproduced without presenting a mocke
 - Framing: the standard-width viewport shows a useful subset of the realistic 15-column dataframe while keeping
   native labels legible when the image is rendered at README width
 
-## v1.2 native notebook capture refresh
+## Later media contracts
 
-The checked-in v1.1 gallery images remain unchanged until their replacements have been captured from the exact
-packaged candidate. The v1.2 capture journey produces three unscaled 1440 x 900 workbench sources under
-`docs/images/editor-acceptance/`:
-
-- `vscode-notebook-polars-dark.png` shows the live 100,000-row native Polars frame in Editing mode, its computed
-  draft values and diff, and executable generated Polars code
-- `vscode-notebook-duckdb-dark.png` shows the live 100,000-row `DuckDBPyRelation` in Viewing mode, a real DACH
-  filter, two-key native sort, and visible native column profiles; cleaning, export, and notebook insertion
-  controls must be absent
-- `vscode-notebook-pyspark-dark.png` is produced only when the existing released-Jupyter PySpark gate runs and
-  shows the 100,000-row Classic DataFrame as Experimental and Viewing only
-
-Every scene must show its engine and mode badges at first glance, preserve complete required column titles, and
-use the same realistic synthetic order fixtures as acceptance. The 1280 x 600 Pandas inline preview remains the
-compact README notebook image. The three full workbench scenes belong in the linked product gallery so the README
-can advertise engine breadth without becoming a vertical screenshot wall. README, gallery, and compositor paths
-must change only after the corresponding exact packaged captures exist and pass their dimension and content
-assertions; an old image may not be stretched or relabeled as the new evidence.
+The v1.2 README, gallery, source captures, exact-crop derivatives, and publication gate are defined only in
+[`docs/media-spec-v1.2.md`](media-spec-v1.2.md). Do not apply this historical v1.1 layout or inventory to current
+media.
 
 ## Linked gallery
 

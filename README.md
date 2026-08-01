@@ -4,7 +4,7 @@
 
 <h1 align="center">Open Wrangler</h1>
 
-<p align="center">Explore, profile, clean, and export dataframes in VS Code-family desktop editors with native Polars, Pandas, DuckDB, and experimental PySpark workflows.</p>
+<p align="center">Explore, profile, clean, and export dataframes in an open-source workbench for VS Code-family desktop editors, with native Polars, Pandas, DuckDB, and experimental PySpark workflows.</p>
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/explore.png"></a>
 
@@ -211,10 +211,10 @@ environment, versions, and user-visible timing boundaries, Open Wrangler does no
 
 ## Roadmap
 
-| Target | Focus                                                                                                                                                                                                                                                                                                                                                            |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v1.2   | Finish real-user interaction polish, publish a reproducible Data Wrangler performance comparison [#91](https://github.com/Matt17BR/openwrangler/issues/91), validate another desktop VS Code fork [#86](https://github.com/Matt17BR/openwrangler/issues/86), and complete the supported PySpark scope [#36](https://github.com/Matt17BR/openwrangler/issues/36). |
-| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87).                                                                                                                                                                                                            |
+| Target | Focus                                                                                                                                                                                                                                                                                                                                                         |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v1.2   | Finish real-user interaction polish, complete the supported PySpark scope [#36](https://github.com/Matt17BR/openwrangler/issues/36), validate another desktop VS Code fork [#86](https://github.com/Matt17BR/openwrangler/issues/86), and continue the reproducible Data Wrangler comparison study [#91](https://github.com/Matt17BR/openwrangler/issues/91). |
+| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87).                                                                                                                                                                                                         |
 
 ## Contributing and support
 

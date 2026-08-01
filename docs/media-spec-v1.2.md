@@ -62,15 +62,20 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
 - Accepted notebook source captures use a 1440 × 900 workbench except the 1280 × 600 Pandas inline scene.
 - `gallery/notebook-variable-picker.png`: 1040 × 590; detail: 602 × 380. It shows an actual inline preview behind
   native DuckDB, Pandas, and Polars choices and contains no private setup source.
-- `notebook-pandas.png`: 1210 × 540; detail: 1205 × 370. It shows one complete ten-row inline page and the live
-  Open action.
+- `notebook-pandas.png`: 1210 × 540. Its 698 × 535 detail keeps the executed source cell, engine label, paging
+  state, and one complete ten-row inline page readable in a half-width README cell; the full source retains the
+  notebook toolbar and live Open action.
 - `gallery/notebook-code-insertion.png` and its detail: 1000 × 288. It shows the generated Pandas function inside
   the exact originating notebook without empty canvas.
-- `gallery/notebook-polars.png`: complete source; detail: 1372 × 758 with draft and generated native code.
-- `gallery/notebook-duckdb.png`: complete source; detail: 1372 × 868 with filter, paging, profiles, and ordered
-  sorts.
-- `gallery/notebook-pyspark.png`: complete source; detail: 1372 × 820 with Experimental, Viewing only, and PySpark
-  badges plus exact profiles.
+- `gallery/notebook-polars.png`: complete source; its 884 × 675 detail focuses the draft, representative grid
+  columns, and complete visible native Polars function.
+- `gallery/notebook-duckdb.png`: complete source; its 872 × 700 detail keeps complete native column boundaries and
+  focuses the Viewing / DuckDB badges, active filter, and editable two-key sort order.
+- `gallery/notebook-pyspark.png`: complete source; its 820 × 610 detail focuses the Experimental / Viewing only /
+  PySpark badges, representative native rows, exact statistics, and distribution.
+
+These four README derivatives are exact source-pixel crops, not resized workbenches. Each keeps the distinguishing
+engine behavior legible at half width and links to its complete accepted source scene.
 
 The raw PySpark variable-picker capture is acceptance evidence, not public product media, because its notebook
 setup cell is intentionally implementation-oriented. The native PySpark workbench is the truthful public scene.

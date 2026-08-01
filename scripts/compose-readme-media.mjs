@@ -114,28 +114,28 @@ const assets = [
     height: 380
   }),
   nativeCrop("gallery/notebook-pandas-detail.png", "vscode-notebook-pandas-dark.png", 1_280, 600, {
-    x: 52,
-    y: 148,
-    width: 1_205,
-    height: 370
+    x: 55,
+    y: 65,
+    width: 698,
+    height: 535
   }),
   nativeCrop("gallery/notebook-polars-detail.png", "vscode-notebook-polars-dark.png", 1_440, 900, {
     x: 48,
-    y: 32,
-    width: 1_372,
-    height: 758
+    y: 115,
+    width: 884,
+    height: 675
   }),
   nativeCrop("gallery/notebook-duckdb-detail.png", "vscode-notebook-duckdb-dark.png", 1_440, 900, {
-    x: 48,
-    y: 32,
-    width: 1_372,
-    height: 868
+    x: 548,
+    y: 63,
+    width: 872,
+    height: 700
   }),
   nativeCrop("gallery/notebook-pyspark-detail.png", "vscode-notebook-pyspark-dark.png", 1_440, 900, {
-    x: 48,
-    y: 32,
-    width: 1_372,
-    height: 820
+    x: 600,
+    y: 63,
+    width: 820,
+    height: 610
   }),
   nativeCrop("gallery/sidebar-explore.png", "vscode-explore-dark.png", 1_440, 870, {
     x: 0,
