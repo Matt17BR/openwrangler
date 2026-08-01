@@ -1255,7 +1255,7 @@ test("structurally gates the candidate-first preview workflow and exact artifact
     (workflow) => {
       workflow.jobs.release.steps.find(
         (step) => step.env?.GITHUB_IMMUTABLE_RELEASES_EXPECTED
-      ).env.GITHUB_IMMUTABLE_RELEASES_EXPECTED = "false";
+      ).env.GITHUB_IMMUTABLE_RELEASES_EXPECTED = "true";
     },
     (workflow) => {
       const releaseSteps = workflow.jobs.release.steps;

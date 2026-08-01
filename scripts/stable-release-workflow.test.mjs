@@ -94,8 +94,8 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     source.replace("      group: openwrangler-release-publication", "      group: stable-${{ inputs.release_tag }}"),
     source.replace("      queue: max", "      queue: latest"),
     source.replace(
-      '          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "true"',
-      '          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "false"'
+      '          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "false"',
+      '          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "true"'
     )
   ];
   for (const [index, candidate] of mutations.entries()) {

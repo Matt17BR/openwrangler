@@ -107,12 +107,14 @@ transaction; preview publication sets GitHub prerelease metadata and never marks
 
 This ordering follows GitHub's [immutable-release publication guidance](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases):
 create the draft, attach every asset, then publish it. The publisher uses the versioned `2026-03-10` REST contract
-and validates GitHub's `immutable` response field. Repository immutability is not enabled by source code. Both
-publication workflows require `GITHUB_IMMUTABLE_RELEASES_EXPECTED=true`; therefore the repository setting must be
-enabled before this workflow revision can merge, and no publish dispatch may run between those two administrative
-changes. A public response that omits `immutable` or reports anything other than `true` blocks completion and registry
-promotion. Validation-only `publish: false` runs are safe during that rollout because they never enter the protected
-publication jobs.
+and validates GitHub's `immutable` response field. Repository immutability is not enabled by source code. Roll it out
+in three ordered changes: first merge this draft-first migration with both workflows explicitly setting
+`GITHUB_IMMUTABLE_RELEASES_EXPECTED=false`; next enable the repository's future-only immutable-release setting; then
+merge a focused workflow change that switches both expectations to `true`. The false migration expectation accepts
+both exact `immutable: false` and exact `immutable: true` releases, so enabling the setting between the two workflow
+revisions does not interrupt publication. Once the follow-up expects true, a public response that omits `immutable`
+or reports false blocks completion and registry promotion. Do not enable immutability before the draft-first migration
+has merged: the currently deployed stable publisher is public-first and cannot safely complete an immutable release.
 
 After GitHub publication, both channels explicitly call the reusable Open VSX promotion workflow. It verifies
 `OVSX_PAT` against `Matt17BR`, derives stable versus preview from the public release source, fails closed unless an
@@ -127,7 +129,7 @@ The real lightweight-tag push starts `azure-pipelines-marketplace.yml` before Gi
 
 Do not add a draft-only skip condition to a required or release-evidence job: GitHub treats skipped jobs as successful checks. For a long-running milestone that does not need early review, push the independently tested branch first and open its pull request when the complete exact-head matrix is wanted. An intentionally opened draft PR runs the same evidence as a ready PR. When several candidates share the same base, serialize their final matrices and squash merges so strict up-to-date protection does not make a knowingly doomed parallel run stale. Dependabot checks npm, Python, and GitHub Actions on separate UTC days, groups only compatible minor/patch version updates, and leaves major plus security updates independently reviewable.
 
-Dispatch **Preview release** from protected `main` with the exact numeric manifest version, for example `v1.99.0`, and leave `publish` false for the first candidate run. The workflow builds and verifies one canonical triple and distributes those exact bytes to every acceptance lane. After that exact run is green, an authorized `publish: true` dispatch may create or verify the lightweight tag and immutable GitHub prerelease, then call Open VSX; the real tag event triggers the Marketplace pipeline. Merely creating or pushing a tag is not the preview entry point. Do not create a stable tag manually: after exact-artifact acceptance and protected approval, the stable workflow creates the tag and GitHub Release together at the accepted source commit.
+Dispatch **Preview release** from protected `main` with the exact numeric manifest version, for example `v1.99.0`, and leave `publish` false for the first candidate run. The workflow builds and verifies one canonical triple and distributes those exact bytes to every acceptance lane. After that exact run is green, an authorized `publish: true` dispatch may create or verify the lightweight tag and draft-first GitHub prerelease, then call Open VSX; the real tag event triggers the Marketplace pipeline. Merely creating or pushing a tag is not the preview entry point. Do not create a stable tag manually: after exact-artifact acceptance and protected approval, the stable workflow creates the tag and GitHub Release together at the accepted source commit.
 
 Preview candidates run macOS/Python 3.12 and Windows/Python 3.14 native acceptance beside, not before, the complete Linux owner. Cross-platform jobs keep environment smoke, extension-host, packaged VS Code, and Cursor platform coverage without rerunning the complete Python corpus. Linux owns source checks, script contracts, visual/accessibility, instrumented coverage, dependency audits, runtime benchmark, and full packaged VS Code/Cursor journeys exactly once. Installed performance, released/remote Jupyter, and Remote SSH remain independent parallel consumers of the same canonical triple.
 

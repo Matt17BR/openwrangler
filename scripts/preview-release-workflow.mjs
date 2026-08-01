@@ -329,10 +329,10 @@ export function inspectPreviewReleaseWorkflow(source) {
       "GITHUB_TOKEN",
       "RELEASE_TAG"
     ]) ||
-    github.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED !== "true" ||
+    github.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED !== "false" ||
     steps(release).indexOf(github) !== steps(release).indexOf(tag) + 1
   ) {
-    problems.push("release must push the exact tag then idempotently publish the immutable GitHub preview.");
+    problems.push("release must push the exact tag then idempotently publish the draft-first GitHub preview.");
   }
 
   const openVsx = workflow.jobs["promote-open-vsx"];

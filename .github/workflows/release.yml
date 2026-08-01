@@ -706,7 +706,7 @@ jobs:
       - name: Publish or verify the exact GitHub preview release
         env:
           EXPECTED_SHA: ${{ github.sha }}
-          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "true"
+          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "false"
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}

@@ -397,6 +397,11 @@ test("requires public immutability only after the repository contract expects it
   assert.equal((await publish(mutable.fetchImpl)).immutable, false);
   await assert.rejects(publish(mutable.fetchImpl, { expectImmutable: true }), /required immutable state/u);
 
+  const alreadyImmutable = githubFixture({
+    initialReleases: [releaseMetadata({ immutable: true, releaseAssets: exactAssets() })]
+  });
+  assert.equal((await publish(alreadyImmutable.fetchImpl, { expectImmutable: false })).immutable, true);
+
   const missingImmutable = releaseMetadata({ releaseAssets: exactAssets() });
   delete missingImmutable.immutable;
   const absentField = githubFixture({ initialReleases: [missingImmutable] });
