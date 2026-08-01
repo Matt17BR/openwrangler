@@ -6,7 +6,7 @@ from typing import Any
 
 from openwrangler_runtime import kernel_agent
 from openwrangler_runtime.engines import AmbiguousViewColumnError
-from openwrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import LiveSourceInvalidatedError, SessionCleanupError, SessionManager
 
 EMPTY_FILTER = {"filters": [], "sort": []}
 
@@ -81,6 +81,71 @@ def test_unknown_session_close_preserves_the_exact_candidate_identity(monkeypatc
             "message": "Unknown session: missing-close-candidate",
             "recoverable": True,
             "sessionId": "missing-close-candidate",
+        },
+    }
+
+
+def test_live_source_invalidation_is_a_correlated_recoverable_response(monkeypatch) -> None:
+    def fail(_manager: SessionManager, _request: dict[str, Any]) -> dict[str, Any]:
+        raise LiveSourceInvalidatedError("spark-session", "The live PySpark dataframe was replaced.")
+
+    monkeypatch.setattr(kernel_agent, "dispatch", fail)
+    result = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "getPage",
+                    "sessionId": "spark-session",
+                    "revision": 0,
+                    "viewRequestId": "view-live-source",
+                    "offset": 0,
+                    "limit": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
+                    "filterModel": EMPTY_FILTER,
+                },
+                request_id="live-source-request",
+            )
+        )
+    )
+
+    assert result == {
+        "protocolVersion": 2,
+        "requestId": "live-source-request",
+        "response": {
+            "kind": "error",
+            "code": "live_source_invalidated",
+            "message": "The live PySpark dataframe was replaced.",
+            "recoverable": True,
+            "sessionId": "spark-session",
+            "viewRequestId": "view-live-source",
+        },
+    }
+
+
+def test_terminal_cleanup_failure_preserves_the_exact_candidate_identity(monkeypatch) -> None:
+    def fail(_manager: SessionManager, _request: dict[str, Any]) -> dict[str, Any]:
+        raise SessionCleanupError("cleanup-session", "Could not release the Spark cache.")
+
+    monkeypatch.setattr(kernel_agent, "dispatch", fail)
+    result = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {"kind": "closeSession", "sessionId": "cleanup-session", "revision": 0},
+                request_id="cleanup-request",
+            )
+        )
+    )
+
+    assert result == {
+        "protocolVersion": 2,
+        "requestId": "cleanup-request",
+        "response": {
+            "kind": "error",
+            "code": "session_cleanup_failed",
+            "message": "Could not release the Spark cache.",
+            "recoverable": False,
+            "sessionId": "cleanup-session",
         },
     }
 

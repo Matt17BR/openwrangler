@@ -642,6 +642,48 @@ class PySparkEngine(DataFrameEngine):
         if owned is not None:
             owned.unpersist(blocking=False)
 
+    @staticmethod
+    def live_source_is_stopped(frame: Any) -> bool:
+        """Return only an authoritative local stopped-session signal.
+
+        Spark Connect exposes ``SparkSession.is_stopped`` without contacting
+        the server. Spark Classic has no corresponding public Python property
+        in the supported 4.2 line, but ``SparkSession.stop()`` deterministically
+        clears its SparkContext's private JVM handle. The additional JVM
+        ``isStopped`` check covers a context stopped below the Python wrapper;
+        a failed probe is deliberately not treated as a stopped session because
+        transient gateway failures must remain ordinary engine errors.
+        """
+
+        try:
+            spark_session = frame.sparkSession
+        except Exception:
+            return False
+
+        try:
+            connect_stopped = spark_session.is_stopped
+        except AttributeError:
+            connect_stopped = None
+        except Exception:
+            return False
+        if isinstance(connect_stopped, bool):
+            return connect_stopped
+
+        missing = object()
+        try:
+            spark_context = spark_session.sparkContext
+            java_context: Any = getattr(spark_context, "_jsc", missing)
+        except Exception:
+            return False
+        if java_context is missing:
+            return False
+        if java_context is None:
+            return True
+        try:
+            return bool(java_context.sc().isStopped())
+        except Exception:
+            return False
+
     def _predicate_expression(
         self,
         functions: Any,

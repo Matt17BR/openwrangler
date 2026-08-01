@@ -47,6 +47,11 @@ export interface BridgeRequestOptions {
   restartRuntimeOnTimeout?: boolean;
   /** For bounded cleanup, return an unknown-session response instead of starting or reacquiring a runtime. */
   startRuntimeIfNeeded?: boolean;
+  /**
+   * Host-only live-source recovery provenance. A notebook recovery open may
+   * dispatch only on the kernel that owns this still-mapped runtime session.
+   */
+  requiredKernelSessionId?: string;
   /** Opaque identifier for the logical view that owns a profiling request. */
   viewContextId?: string;
   /**

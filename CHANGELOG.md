@@ -6,6 +6,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Local PySpark Classic and Connect variables now invalidate cached blocks when their dataframe is replaced or
+  their Spark session stops. Recreating the same variable with the same schema lets the next current read reopen
+  it on the exact originating notebook and kernel while preserving confirmed filters, ordered sorts, selection,
+  widths, and viewport. A changed schema fails closed with reopen guidance; terminal cleanup faults retire only
+  their exact kernel mapping and remain visible as diagnostics.
+
 - Simplified column labels throughout the cleaning-step builder: unique names now appear without redundant
   positions, while duplicate and unnamed columns retain 1-based positions and stable identities so selections
   remain unambiguous and accessible.

@@ -329,6 +329,33 @@ describe("kernel retry classification", () => {
     expect(getExtension).toHaveBeenCalledTimes(2);
   });
 
+  it("never redirects a live-source recovery open to a newly selected kernel", async () => {
+    const requestsA: OpenWranglerRequest[] = [];
+    const requestsB: OpenWranglerRequest[] = [];
+    const kernelA = controlledPySparkKernel("4.2.0", requestsA);
+    const kernelB = controlledPySparkKernel("4.2.0", requestsB);
+    let currentKernel = kernelA.kernel;
+    vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel: async () => currentKernel } })
+    } as never);
+    const bridge = createKernelBridge();
+
+    await expect(bridge.request(openRequest("originating-spark-session", "pyspark"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { sessionId: "originating-spark-session" }
+    });
+    currentKernel = kernelB.kernel;
+
+    await expect(
+      bridge.request(openRequest("rebound-spark-session", "pyspark"), {
+        requiredKernelSessionId: "originating-spark-session"
+      })
+    ).rejects.toThrow("recover the live variable on its originating kernel");
+
+    expect(requestsA.map((request) => request.kind)).toEqual(["openSession"]);
+    expect(requestsB).toEqual([]);
+  });
+
   it("assigns a stable host-known identity to kernel session opens", () => {
     const request: OpenSessionRequest = {
       kind: "openSession",
@@ -1281,6 +1308,84 @@ describe("kernel retry classification", () => {
     );
 
     expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(getExtension).toHaveBeenCalledOnce();
+  });
+
+  it("retires only the exact kernel mapping after terminal session cleanup fails", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    const kernel = fakeKernel((request) => {
+      requests.push(request);
+      if (request.kind === "openSession") return openedResponse(request.requestedSessionId!);
+      if (request.kind === "closeSession") {
+        return {
+          kind: "error",
+          code: "session_cleanup_failed",
+          message: "The stopped Spark session could not unpersist its owned Open Wrangler frame.",
+          recoverable: false,
+          sessionId: request.sessionId
+        };
+      }
+      return initializedResponse;
+    });
+    const getExtension = mockKernel(kernel);
+    const bridge = createKernelBridge();
+    const opened = await bridge.request(openRequest("cleanup-failed-session"));
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the test session to open.");
+
+    await expect(bridge.request(closeRequest(opened.metadata.sessionId))).resolves.toMatchObject({
+      kind: "error",
+      code: "session_cleanup_failed",
+      recoverable: false,
+      sessionId: "cleanup-failed-session"
+    });
+    await expect(bridge.request(closeRequest(opened.metadata.sessionId))).resolves.toMatchObject({
+      kind: "error",
+      code: "unknown_session",
+      sessionId: "cleanup-failed-session"
+    });
+    await expect(bridge.request(openRequest(opened.metadata.sessionId))).rejects.toThrow(
+      "already retired kernel session cleanup-failed-session"
+    );
+
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(getExtension).toHaveBeenCalledOnce();
+  });
+
+  it("does not retire a kernel mapping for a malformed recoverable cleanup-failure response", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    const kernel = fakeKernel((request) => {
+      requests.push(request);
+      if (request.kind === "openSession") return openedResponse(request.requestedSessionId!);
+      if (request.kind === "closeSession") {
+        return {
+          kind: "error",
+          code: "session_cleanup_failed",
+          message: "Malformed cleanup response that still claims recovery is possible.",
+          recoverable: true,
+          sessionId: request.sessionId
+        };
+      }
+      return initializedResponse;
+    });
+    const getExtension = mockKernel(kernel);
+    const bridge = createKernelBridge();
+    const opened = await bridge.request(openRequest("malformed-cleanup-session"));
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the test session to open.");
+
+    await expect(bridge.request(closeRequest(opened.metadata.sessionId))).resolves.toMatchObject({
+      kind: "error",
+      code: "session_cleanup_failed",
+      recoverable: true,
+      sessionId: "malformed-cleanup-session"
+    });
+    await expect(bridge.request(closeRequest(opened.metadata.sessionId))).resolves.toMatchObject({
+      kind: "error",
+      code: "session_cleanup_failed",
+      recoverable: true,
+      sessionId: "malformed-cleanup-session"
+    });
+
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession", "closeSession"]);
     expect(getExtension).toHaveBeenCalledOnce();
   });
 });

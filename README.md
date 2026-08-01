@@ -156,7 +156,10 @@ Choose Notebook Preview Provider**.
 
 DuckDB and PySpark notebook sessions are currently viewing-only. For PySpark, you provide and retain the Spark
 session; opening a large or remote dataframe may be expensive because Open Wrangler must establish stable paging
-and an exact row count. Open Wrangler does not install PySpark, authenticate a cluster, or stop your session.
+and an exact row count. If you stop and recreate a local Classic or Connect Spark session, then recreate the
+same-named DataFrame with the same schema in that notebook kernel, the next read reconnects without losing the
+confirmed filter, sort order, column selection, or grid position. Open Wrangler does not install PySpark,
+authenticate a cluster, or stop your session.
 
 ## Keep the result
 

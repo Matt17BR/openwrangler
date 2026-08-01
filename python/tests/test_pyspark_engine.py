@@ -16,7 +16,7 @@ import __main__
 import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
-from openwrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import LiveSourceInvalidatedError, SessionManager
 
 _PYSPARK_VERSION_CONTRACT = json.loads(
     (Path(__file__).resolve().parents[2] / "fixtures" / "pyspark-version-contract.json").read_text(encoding="utf-8")
@@ -102,6 +102,67 @@ def test_capabilities_are_explicitly_read_only_and_not_file_backed() -> None:
         engine.compile_plan(())
     with pytest.raises(EngineError, match="does not export"):
         engine.export_data(object(), "cleaned.parquet", "parquet")
+
+
+def test_connect_stopped_probe_uses_the_session_local_flag() -> None:
+    class ConnectSession:
+        def __init__(self, stopped: bool) -> None:
+            self.is_stopped = stopped
+
+    class Frame:
+        def __init__(self, stopped: bool) -> None:
+            self.sparkSession = ConnectSession(stopped)
+
+    assert PySparkEngine.live_source_is_stopped(Frame(False)) is False
+    assert PySparkEngine.live_source_is_stopped(Frame(True)) is True
+
+
+def test_classic_stopped_probe_uses_the_cleared_context_handle_and_jvm_state() -> None:
+    class JavaContext:
+        def __init__(self, stopped: bool) -> None:
+            self.stopped = stopped
+
+        def sc(self) -> JavaContext:
+            return self
+
+        def isStopped(self) -> bool:
+            return self.stopped
+
+    class SparkContext:
+        def __init__(self, java_context: Any) -> None:
+            self._jsc = java_context
+
+    class ClassicSession:
+        def __init__(self, java_context: Any) -> None:
+            self.sparkContext = SparkContext(java_context)
+
+    class Frame:
+        def __init__(self, java_context: Any) -> None:
+            self.sparkSession = ClassicSession(java_context)
+
+    assert PySparkEngine.live_source_is_stopped(Frame(JavaContext(False))) is False
+    assert PySparkEngine.live_source_is_stopped(Frame(JavaContext(True))) is True
+    assert PySparkEngine.live_source_is_stopped(Frame(None)) is True
+
+
+def test_stopped_probe_does_not_misclassify_unknown_or_failed_liveness_checks() -> None:
+    class UnknownContext:
+        pass
+
+    class BrokenJavaContext:
+        def sc(self) -> Any:
+            raise RuntimeError("gateway unavailable")
+
+    class Session:
+        def __init__(self, context: Any) -> None:
+            self.sparkContext = context
+
+    class Frame:
+        def __init__(self, context: Any) -> None:
+            self.sparkSession = Session(context)
+
+    assert PySparkEngine.live_source_is_stopped(Frame(UnknownContext())) is False
+    assert PySparkEngine.live_source_is_stopped(Frame(type("Context", (), {"_jsc": BrokenJavaContext()})())) is False
 
 
 def test_detects_classic_and_connect_dataframes(spark_session: Any) -> None:
@@ -1211,3 +1272,45 @@ def test_session_manager_detects_live_variable_and_disables_mutation_capabilitie
     }
     assert manager.sessions == {}
     assert spark_session.range(1).count() == 1
+
+
+def test_replacing_classic_or_connect_variable_invalidates_cached_pages_before_read(
+    spark_session: Any,
+    sample_frame: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variable_name = "open_wrangler_replaced_spark_frame"
+    monkeypatch.setattr(__main__, variable_name, sample_frame, raising=False)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "notebookVariable",
+            "variableName": variable_name,
+            "label": variable_name,
+        },
+        backend="pyspark",
+        page_size=2,
+        column_limit=2,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    assert session.live_source_value is sample_frame
+    assert len(session.page_cache) == 1
+
+    replacement = spark_session.range(10, 13).selectExpr("id AS replacement_value")
+    monkeypatch.setattr(__main__, variable_name, replacement)
+    with pytest.raises(LiveSourceInvalidatedError, match="was replaced") as invalidated:
+        manager.get_page(
+            session_id,
+            0,
+            0,
+            2,
+            {"logic": "and", "filters": [], "sort": []},
+            column_limit=2,
+        )
+
+    assert invalidated.value.session_id == session_id
+    assert session.page_cache == {}
+    assert session.page_cache_bytes == 0
+    assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
+    assert replacement.count() == 3

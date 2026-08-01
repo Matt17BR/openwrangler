@@ -189,6 +189,38 @@ export class KernelBridge implements OpenWranglerBridge {
         Promise.resolve()
       );
     }
+    let requiredKernel: Kernel | undefined;
+    if (options.requiredKernelSessionId !== undefined) {
+      if (runtimeRequest.kind !== "openSession" || options.requiredKernelSessionId.length === 0) {
+        throw new Error("Exact-kernel recovery requires one live-session open and one mapped session identity.");
+      }
+      requiredKernel = this.sessionKernels.get(options.requiredKernelSessionId);
+      if (!requiredKernel) {
+        throw new Error("The originating notebook kernel is no longer mapped for live-source recovery.");
+      }
+    }
+    const assertRequiredKernel = (acquired: AcquiredKernel): void => {
+      if (requiredKernel && acquired.kernel !== requiredKernel) {
+        throw new SelectedKernelChangedError(
+          "The notebook kernel changed before Open Wrangler could recover the live variable on its originating kernel."
+        );
+      }
+    };
+    const assertKernelStillSelectedForRequest = async (
+      acquired: AcquiredKernel,
+      observation: KernelObservation
+    ): Promise<void> => {
+      try {
+        await this.assertKernelStillSelected(acquired, observation);
+      } catch (error) {
+        if (requiredKernel && error instanceof SelectedKernelChangedError) {
+          throw new SelectedKernelChangedError(
+            "The notebook kernel changed before Open Wrangler could recover the live variable on its originating kernel."
+          );
+        }
+        throw error;
+      }
+    };
     const isCleanup = runtimeRequest.kind === "closeSession";
     if (!isCleanup) this.assertNotebookProvenance();
     const reportsNotebookOpenProgress =
@@ -221,6 +253,7 @@ export class KernelBridge implements OpenWranglerBridge {
       if (reportsNotebookOpenProgress) reportOpenProgress(options, "acquiringKernel");
       operation = this.lifecycle.run(
         async (acquired) => {
+          assertRequiredKernel(acquired);
           const observation = this.observeKernelStatus(acquired);
           requestObservation = observation;
           try {
@@ -232,6 +265,7 @@ export class KernelBridge implements OpenWranglerBridge {
           }
         },
         async (acquired) => {
+          assertRequiredKernel(acquired);
           const observation = this.requireKernelObservation(acquired);
           requestObservation = observation;
           try {
@@ -266,6 +300,7 @@ export class KernelBridge implements OpenWranglerBridge {
           retryAfterDispatch: isIdempotentKernelReadRequest(runtimeRequest),
           shouldRetry: (error, phase) =>
             hostDetachReason === undefined &&
+            !(requiredKernel && error instanceof SelectedKernelChangedError) &&
             phase !== "acquire" &&
             (phase !== "beforeDispatch" || error instanceof SelectedKernelChangedError),
           onBootstrapPending: (settlement) => {
@@ -281,6 +316,7 @@ export class KernelBridge implements OpenWranglerBridge {
             });
           },
           beforeDispatch: async (acquired) => {
+            assertRequiredKernel(acquired);
             const observation = this.requireKernelObservation(acquired);
             requestObservation = observation;
             if (hostDetachReason) throw new KernelRequestCancelledError();
@@ -292,10 +328,10 @@ export class KernelBridge implements OpenWranglerBridge {
                 if (!variableName) {
                   throw new Error("Open Wrangler received a notebook-variable source without a variable name.");
                 }
-                await this.assertKernelStillSelected(acquired, observation);
+                await assertKernelStillSelectedForRequest(acquired, observation);
                 const preflight = await this.executePySparkNotebookPreflight(acquired.kernel, variableName);
                 this.requireKernelObservation(acquired);
-                await this.assertKernelStillSelected(acquired, observation);
+                await assertKernelStillSelectedForRequest(acquired, observation);
                 isPySpark = assertSupportedPySparkNotebookPreflight(preflight, runtimeRequest.backend);
               }
               reportOpenProgress(options, isPySpark ? "preparingSparkView" : "openingNotebookVariable");
@@ -680,7 +716,10 @@ function observeSettlement(work: Promise<unknown>): Promise<void> {
 function isCorrelatedSessionClose(response: OpenWranglerResponse, sessionId: string): boolean {
   return (
     (response.kind === "sessionClosed" && response.sessionId === sessionId) ||
-    (response.kind === "error" && response.code === "unknown_session" && response.sessionId === sessionId)
+    (response.kind === "error" &&
+      (response.code === "unknown_session" ||
+        (response.code === "session_cleanup_failed" && response.recoverable === false)) &&
+      response.sessionId === sessionId)
   );
 }
 
@@ -705,8 +744,8 @@ interface KernelObservation {
 }
 
 class SelectedKernelChangedError extends Error {
-  constructor() {
-    super("The selected notebook kernel changed before Open Wrangler could open the live variable.");
+  constructor(message = "The selected notebook kernel changed before Open Wrangler could open the live variable.") {
+    super(message);
     this.name = "SelectedKernelChangedError";
   }
 }

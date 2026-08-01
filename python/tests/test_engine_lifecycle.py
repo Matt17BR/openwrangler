@@ -13,7 +13,7 @@ import __main__
 import openwrangler_runtime.notebook as notebook
 from openwrangler_runtime.engines import EngineCapabilities, EngineError, EngineRegistry, PandasEngine
 from openwrangler_runtime.engines.base import SummaryColumnProjection
-from openwrangler_runtime.session import SessionManager, UnknownSessionError
+from openwrangler_runtime.session import SessionCleanupError, SessionManager, UnknownSessionError
 
 
 class TrackingPandasEngine(PandasEngine):
@@ -433,9 +433,10 @@ def test_explicit_close_surfaces_cleanup_failure_after_removing_session(tmp_path
     session_id = opened["metadata"]["sessionId"]
     session = manager.sessions[session_id]
 
-    with pytest.raises(EngineError, match="cleanup failure"):
+    with pytest.raises(SessionCleanupError, match="cleanup failure") as cleanup_error:
         manager.close_session(session_id, 0)
 
+    assert cleanup_error.value.session_id == session_id
     assert created[0].close_calls == 1
     assert session.disposed
     assert manager.sessions == {}

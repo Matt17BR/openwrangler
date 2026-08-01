@@ -226,6 +226,7 @@ const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
 const RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT = "__OW_RELEASED_DUCKDB_ALIVE__";
 const RELEASED_JUPYTER_SESSION_COUNT_RESULT = "__OW_RELEASED_SESSION_COUNT__";
 const RELEASED_JUPYTER_PYSPARK_SETUP_RESULT = "__OW_RELEASED_PYSPARK_SETUP__";
+const RELEASED_JUPYTER_PYSPARK_REBIND_RESULT = "__OW_RELEASED_PYSPARK_REBIND__";
 const RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT = "__OW_RELEASED_PYSPARK_CLOSE__";
 const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)";
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
@@ -2271,6 +2272,53 @@ async function exerciseReleasedPySparkJupyterExtension(
     });
     const classicPage = await assertReleasedPySparkPanelAndQueries(testing, classic, "classic");
 
+    recordAcceptanceProgress(`${phase}:classic-same-kernel-rebind`);
+    await executeReleasedNotebookCell(
+      notebook,
+      2,
+      RELEASED_JUPYTER_PYSPARK_REBIND_RESULT,
+      `${phase}:classic-same-kernel-rebind`,
+      await showExactReleasedNotebook(notebook)
+    );
+    const reboundClassicSetup = releasedNotebookJsonResult(
+      notebook.cellAt(2),
+      RELEASED_JUPYTER_PYSPARK_REBIND_RESULT,
+      "same-kernel PySpark Classic rebind"
+    );
+    assert.equal(Number(reboundClassicSetup.pid), Number(classicSetup.pid));
+    assert.notEqual(
+      reboundClassicSetup.sessionId,
+      classicSetup.sessionId,
+      "A same-kernel PySpark rebind must own a new user SparkSession."
+    );
+    const reboundClassic = await withBoundedAcceptancePromise(
+      testing.request({
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId: "released-jupyter-pyspark-classic-same-kernel-rebind",
+        sessionId: classic.sessionId,
+        revision: classicPage.revision,
+        offset: 0,
+        limit: 1,
+        filterModel: classicPage.metadata.filterModel
+      }),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the released-Jupyter PySpark Classic page after same-kernel SparkSession replacement"
+    );
+    assert.equal(reboundClassic.kind, "page");
+    if (reboundClassic.kind !== "page") {
+      throw new Error("The released-Jupyter PySpark Classic same-kernel rebind did not return a page.");
+    }
+    assert.equal(reboundClassic.metadata.sessionId, classic.sessionId);
+    assert.deepEqual(reboundClassic.metadata.filterModel, classicPage.metadata.filterModel);
+    const reboundClassicRecordId = reboundClassic.metadata.schema.find((column) => column.name === "record_id");
+    assert.ok(reboundClassicRecordId);
+    assert.deepEqual(
+      gridColumnDisplays(reboundClassic.page, reboundClassicRecordId.id),
+      ["102"],
+      "The same-kernel recovery must return the recreated variable, not a cached row from the stopped SparkSession."
+    );
+
     recordAcceptanceProgress(`${phase}:classic-restart`);
     await restartReleasedJupyterKernelAndWait(notebook);
     await executeReleasedNotebookCell(
@@ -2325,10 +2373,10 @@ async function exerciseReleasedPySparkJupyterExtension(
         ...GRID_COLUMN_WINDOW,
         viewRequestId: "released-jupyter-pyspark-classic-restart-replay",
         sessionId: classic.sessionId,
-        revision: classicPage.revision,
+        revision: reboundClassic.revision,
         offset: 0,
         limit: 1,
-        filterModel: classicPage.metadata.filterModel
+        filterModel: reboundClassic.metadata.filterModel
       }),
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the released-Jupyter PySpark Classic page after kernel replacement"
@@ -2352,13 +2400,13 @@ async function exerciseReleasedPySparkJupyterExtension(
     recordAcceptanceProgress(`${phase}:classic-owner-session`);
     await executeReleasedNotebookCell(
       notebook,
-      2,
+      3,
       RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT,
       `${phase}:classic-owner-session`,
       await showExactReleasedNotebook(notebook)
     );
     const classicClose = releasedNotebookJsonResult(
-      notebook.cellAt(2),
+      notebook.cellAt(3),
       RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT,
       "PySpark Classic close"
     );
@@ -2399,13 +2447,13 @@ async function exerciseReleasedPySparkJupyterExtension(
     const connectEditor = await showExactReleasedNotebook(notebook);
     await executeReleasedNotebookCell(
       notebook,
-      3,
+      4,
       RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
       `${phase}:connect-setup`,
       connectEditor
     );
     const connectSetup = releasedNotebookJsonResult(
-      notebook.cellAt(3),
+      notebook.cellAt(4),
       RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
       "local Spark Connect setup"
     );
@@ -2428,23 +2476,70 @@ async function exerciseReleasedPySparkJupyterExtension(
       },
       "the local Spark Connect DataFrame opened from the real Jupyter Variables view"
     );
-    await assertReleasedPySparkPanelAndQueries(testing, connect, "connect");
+    const connectPage = await assertReleasedPySparkPanelAndQueries(testing, connect, "connect");
+
+    recordAcceptanceProgress(`${phase}:connect-same-kernel-rebind`);
+    await executeReleasedNotebookCell(
+      notebook,
+      5,
+      RELEASED_JUPYTER_PYSPARK_REBIND_RESULT,
+      `${phase}:connect-same-kernel-rebind`,
+      await showExactReleasedNotebook(notebook)
+    );
+    const reboundConnectSetup = releasedNotebookJsonResult(
+      notebook.cellAt(5),
+      RELEASED_JUPYTER_PYSPARK_REBIND_RESULT,
+      "same-kernel Spark Connect rebind"
+    );
+    assert.equal(Number(reboundConnectSetup.pid), Number(connectSetup.pid));
+    assert.notEqual(
+      reboundConnectSetup.sessionId,
+      connectSetup.sessionId,
+      "A same-kernel Spark Connect rebind must own a new user SparkSession."
+    );
+    const reboundConnect = await withBoundedAcceptancePromise(
+      testing.request({
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId: "released-jupyter-pyspark-connect-same-kernel-rebind",
+        sessionId: connect.sessionId,
+        revision: connectPage.revision,
+        offset: 0,
+        limit: 1,
+        filterModel: connectPage.metadata.filterModel
+      }),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the released-Jupyter Spark Connect page after same-kernel SparkSession replacement"
+    );
+    assert.equal(reboundConnect.kind, "page");
+    if (reboundConnect.kind !== "page") {
+      throw new Error("The released-Jupyter Spark Connect same-kernel rebind did not return a page.");
+    }
+    assert.equal(reboundConnect.metadata.sessionId, connect.sessionId);
+    assert.deepEqual(reboundConnect.metadata.filterModel, connectPage.metadata.filterModel);
+    const reboundConnectRecordId = reboundConnect.metadata.schema.find((column) => column.name === "record_id");
+    assert.ok(reboundConnectRecordId);
+    assert.deepEqual(
+      gridColumnDisplays(reboundConnect.page, reboundConnectRecordId.id),
+      ["102"],
+      "Connect recovery must return the recreated variable, not a cached row from the stopped session."
+    );
     await disposePackagedSessionPanel(testing, connect.sessionId, "the released-Jupyter Spark Connect session");
 
     recordAcceptanceProgress(`${phase}:connect-owner-session`);
     await executeReleasedNotebookCell(
       notebook,
-      4,
+      6,
       RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT,
       `${phase}:connect-owner-session`,
       await showExactReleasedNotebook(notebook)
     );
     const connectClose = releasedNotebookJsonResult(
-      notebook.cellAt(4),
+      notebook.cellAt(6),
       RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT,
       "local Spark Connect close"
     );
-    assert.equal(connectClose.sessionId, connectSetup.sessionId);
+    assert.equal(connectClose.sessionId, reboundConnectSetup.sessionId);
     assert.equal(connectClose.count, 3, "Closing Open Wrangler must leave the user's Connect SparkSession usable.");
     assert.equal(testing.diagnostics().sessionCount, 0);
     assert.equal(releasedJupyterSessionTabs().length, 0);
@@ -2925,6 +3020,30 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "}, sort_keys=True))"
         ]),
         cell([
+          "spark.stop()",
+          "spark = (SparkSession.builder",
+          "    .master('local[2]')",
+          "    .appName('open-wrangler-packaged-classic-rebound')",
+          "    .config('spark.ui.enabled', 'false')",
+          "    .config('spark.driver.bindAddress', '127.0.0.1')",
+          "    .config('spark.driver.host', '127.0.0.1')",
+          "    .config('spark.sql.shuffle.partitions', '2')",
+          "    .getOrCreate())",
+          "spark.sparkContext.setLogLevel('ERROR')",
+          "spark_classic_frame = spark.createDataFrame([",
+          "    (101, 'beta', 110.0),",
+          "    (102, 'alpha', 130.0),",
+          "    (103, 'alpha', 120.0),",
+          "    (104, 'gamma', None),",
+          "], 'record_id long, category string, amount double').repartition(2)",
+          "_open_wrangler_classic_conversion_traps = _open_wrangler_arm_conversion_traps(spark_classic_frame)",
+          `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_REBIND_RESULT)} + json.dumps({`,
+          "    'module': type(spark_classic_frame).__module__,",
+          "    'pid': os.getpid(),",
+          "    'sessionId': f'{os.getpid()}:{id(spark)}',",
+          "}, sort_keys=True))"
+        ]),
+        cell([
           "import json",
           "_open_wrangler_classic_count = spark.range(3).count()",
           `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT)} + json.dumps({`,
@@ -2953,12 +3072,32 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_SETUP_RESULT)} + json.dumps({`,
           "    'sparkVersion': connect_spark.version,",
           "    'module': type(spark_connect_frame).__module__,",
+          "    'pid': os.getpid(),",
           "    'sessionId': str(id(connect_spark)),",
           "    'workerPythonPinned': (",
           "        os.environ.get('PYSPARK_PYTHON') == sys.executable",
           "        and os.environ.get('PYSPARK_DRIVER_PYTHON') == sys.executable",
           "    ),",
           "    'conversionTraps': _open_wrangler_connect_conversion_traps,",
+          "}, sort_keys=True))"
+        ]),
+        cell([
+          "connect_spark.stop()",
+          "connect_spark = (SparkSession.builder",
+          "    .remote('local[2]')",
+          "    .config('spark.sql.shuffle.partitions', '2')",
+          "    .getOrCreate())",
+          "spark_connect_frame = connect_spark.createDataFrame([",
+          "    (101, 'beta', 110.0),",
+          "    (102, 'alpha', 130.0),",
+          "    (103, 'alpha', 120.0),",
+          "    (104, 'gamma', None),",
+          "], 'record_id long, category string, amount double').repartition(2)",
+          "_open_wrangler_connect_conversion_traps = _open_wrangler_arm_conversion_traps(spark_connect_frame)",
+          `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_REBIND_RESULT)} + json.dumps({`,
+          "    'module': type(spark_connect_frame).__module__,",
+          "    'pid': os.getpid(),",
+          "    'sessionId': str(id(connect_spark)),",
           "}, sort_keys=True))"
         ]),
         cell([

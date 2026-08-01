@@ -1183,10 +1183,23 @@ export class SessionCoordinator implements vscode.Disposable {
     const canRecoverUnknownSession = (): boolean =>
       !this.disposed && !session.closing && (!isBackground || rendererBackgroundReadIsCurrent());
     const canRecoverTransport = (): boolean => canRecoverUnknownSession() && isIdempotentReadRequest(publicRequest);
+    const liveSourceRecoveryIsCurrent = (): boolean => {
+      if (requestWasCancelled()) return false;
+      if (publicRequest.kind === "getPage") return this.isCurrentPageRequest(session, publicRequest, options);
+      return isCurrentLogicalView(session, options);
+    };
     const staleBackgroundResponse = (): OpenWranglerResponse =>
       protocolError(
         "stale_response",
         "Ignored a cancelled or superseded profiling request before runtime recovery.",
+        true,
+        session.publicId,
+        requestViewId(publicRequest)
+      );
+    const staleLiveSourceResponse = (): OpenWranglerResponse =>
+      protocolError(
+        "stale_response",
+        "Ignored a cancelled or superseded read before live PySpark recovery.",
         true,
         session.publicId,
         requestViewId(publicRequest)
@@ -1269,6 +1282,47 @@ export class SessionCoordinator implements vscode.Disposable {
           }
           return staleBackgroundResponse();
         }
+        session.recoveryRequired = false;
+        requestRuntimeId = session.runtimeId;
+        requestRuntimeRevision = session.runtimeRevision;
+        response = await session.delegate.request(runtimeRequest(), options);
+      }
+    }
+
+    if (isLiveSourceInvalidated(response, requestRuntimeId)) {
+      const invalidatedValidationRequest = {
+        ...publicRequest,
+        sessionId: requestRuntimeId,
+        revision: requestRuntimeRevision
+      } as SessionBoundRequest;
+      const invalidatedMismatch = responseMismatch(
+        invalidatedValidationRequest,
+        response,
+        requestRuntimeId,
+        session.metadata.schema
+      );
+      if (invalidatedMismatch) {
+        return protocolError(
+          "invalid_runtime_response",
+          `Ignored an invalid ${publicRequest.kind} response: ${invalidatedMismatch}`,
+          true,
+          session.publicId,
+          requestViewId(publicRequest)
+        );
+      }
+      if (!liveSourceRecoveryIsCurrent()) return staleLiveSourceResponse();
+      const recovered =
+        canRecoverTransport() &&
+        liveSourceRecoveryIsCurrent() &&
+        (await this.replayAfterRuntimeLoss(
+          session,
+          requestRuntimeId,
+          automaticRecoveryOptions(options, requestRuntimeId),
+          session.metadata.schema,
+          liveSourceRecoveryIsCurrent
+        ));
+      if (recovered) {
+        if (!liveSourceRecoveryIsCurrent()) return staleLiveSourceResponse();
         session.recoveryRequired = false;
         requestRuntimeId = session.runtimeId;
         requestRuntimeRevision = session.runtimeRevision;
@@ -1512,6 +1566,14 @@ export class SessionCoordinator implements vscode.Disposable {
       if (response.kind === "sessionClosed" && response.sessionId === session.runtimeId) {
         return { ...response, sessionId: session.publicId };
       }
+      if (isTerminalSessionCleanupFailure(response, session.runtimeId)) {
+        this.reportRuntimeCleanupDiagnostic(
+          session,
+          "terminal runtime",
+          `runtime cleanup completed with an error: ${response.message}`
+        );
+        return { ...response, sessionId: session.publicId };
+      }
 
       this.reportRuntimeCleanupDiagnostic(
         session,
@@ -1722,9 +1784,14 @@ export class SessionCoordinator implements vscode.Disposable {
     pageSize: number,
     columnOffset: number,
     columnLimit: number,
-    options?: BridgeRequestOptions
+    options?: BridgeRequestOptions,
+    requireExactView = false
   ): Promise<PageResponse> {
     await this.restoreCleaningState(session, state.cleaning, columnOffset, columnLimit, options);
+    if (requireExactView) {
+      if (!state.view) throw new RuntimeStateRestoreError("Open Wrangler could not recover the confirmed view.");
+      return this.restoreOneViewingState(session, state.view, pageSize, columnOffset, columnLimit, "saved", options);
+    }
     return this.restoreViewingState(session, state.view, pageSize, columnOffset, columnLimit, options);
   }
 
@@ -1965,12 +2032,15 @@ export class SessionCoordinator implements vscode.Disposable {
   private replayAfterRuntimeLoss(
     session: CoordinatedSession,
     failedRuntimeId: string,
-    options?: BridgeRequestOptions
+    options?: BridgeRequestOptions,
+    requiredSchema?: readonly ColumnSchema[],
+    isStillCurrent?: () => boolean
   ): Promise<boolean> {
     return this.serializeSessionEstablishment(session.delegate, async () => {
       if (!this.isLiveSession(session) || session.closing) return false;
       if (session.runtimeId !== failedRuntimeId) return true;
-      return this.replayExclusive(session, options);
+      if (isStillCurrent && !isStillCurrent()) return false;
+      return this.replayExclusive(session, options, true, requiredSchema, isStillCurrent);
     });
   }
 
@@ -1991,9 +2061,12 @@ export class SessionCoordinator implements vscode.Disposable {
   private async replayExclusive(
     session: CoordinatedSession,
     options?: BridgeRequestOptions,
-    publishActive = true
+    publishActive = true,
+    requiredSchema?: readonly ColumnSchema[],
+    isStillCurrent?: () => boolean
   ): Promise<boolean> {
     if (!this.isLiveSession(session) || session.closing) return false;
+    if (isStillCurrent && !isStillCurrent()) return false;
     if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) return false;
     const persisted = persistedSessionState(
       session.metadata,
@@ -2013,6 +2086,7 @@ export class SessionCoordinator implements vscode.Disposable {
     let candidate: RuntimeSessionState | undefined;
     try {
       const response = await session.delegate.request(session.openRequest, options);
+      if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
       if (response.kind !== "sessionOpened") return false;
       candidate = {
         publicId: session.publicId,
@@ -2028,14 +2102,19 @@ export class SessionCoordinator implements vscode.Disposable {
       }
       const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response, true);
       if (openedMismatch) throw new Error(openedMismatch);
+      if (requiredSchema && !isDeepStrictEqual(response.metadata.schema, requiredSchema)) {
+        throw new Error("The recreated live dataframe schema no longer matches the confirmed Open Wrangler view.");
+      }
       await this.restoreRuntimeState(
         candidate,
         persisted,
         1,
         session.openRequest.columnOffset,
         session.openRequest.columnLimit,
-        options
+        recoveryFollowupOptions(options),
+        requiredSchema !== undefined
       );
+      if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
       if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) {
         throw new Error("The originating notebook became ambiguous while recovery was restoring its runtime session.");
       }
@@ -2044,18 +2123,25 @@ export class SessionCoordinator implements vscode.Disposable {
       return false;
     }
 
-    if (!this.isLiveSession(session) || session.closing) {
+    if (!this.isLiveSession(session) || session.closing || (isStillCurrent && !isStillCurrent())) {
       await this.closeRuntimeState(candidate, "recovery candidate");
       return false;
     }
 
+    // Grid-only presentation updates are intentionally not serialized through
+    // the runtime request queue. Preserve the latest user scroll, widths, and
+    // selection rather than overwriting them with the pre-recovery snapshot.
+    const latestGridPresentation = gridState(session.viewState);
     session.runtimeId = candidate.runtimeId;
     session.runtimeRevision = candidate.runtimeRevision;
     session.metadata = candidate.metadata;
     session.code = candidate.code;
     session.draftPresentation = candidate.draftPresentation;
     session.draftBaseFilterModel = candidate.draftBaseFilterModel;
-    session.viewState = candidate.viewState;
+    session.viewState = reconcileViewingState(
+      { ...latestGridPresentation, filterModel: candidate.metadata.filterModel },
+      candidate.metadata
+    );
     this.clearPublishedStepInspection(session);
     if (publishActive && this.activeSessionId === session.publicId)
       this.activeSessionEmitter.fire(activeSnapshot(session));
@@ -2500,8 +2586,17 @@ function runtimeRecoveryOptions(): BridgeRequestOptions {
   return { priority: "interactive" };
 }
 
-function automaticRecoveryOptions(options?: BridgeRequestOptions): BridgeRequestOptions {
-  return { ...options, priority: "interactive" };
+function automaticRecoveryOptions(
+  options?: BridgeRequestOptions,
+  requiredKernelSessionId?: string
+): BridgeRequestOptions {
+  return { ...options, priority: "interactive", ...(requiredKernelSessionId ? { requiredKernelSessionId } : {}) };
+}
+
+function recoveryFollowupOptions(options?: BridgeRequestOptions): BridgeRequestOptions | undefined {
+  if (!options?.requiredKernelSessionId) return options;
+  const { requiredKernelSessionId: _requiredKernelSessionId, ...followup } = options;
+  return followup;
 }
 
 function isConfirmedAbsentSession(response: OpenWranglerResponse, expectedSessionId: string): boolean {
@@ -2511,6 +2606,18 @@ function isConfirmedAbsentSession(response: OpenWranglerResponse, expectedSessio
     response.code === "engine_error" &&
     response.message === `Unknown session: ${expectedSessionId}` &&
     (response.sessionId === undefined || response.sessionId === expectedSessionId)
+  );
+}
+
+function isTerminalSessionCleanupFailure(
+  response: OpenWranglerResponse,
+  expectedSessionId: string
+): response is ErrorResponse & { code: "session_cleanup_failed" } {
+  return (
+    response.kind === "error" &&
+    response.code === "session_cleanup_failed" &&
+    response.recoverable === false &&
+    response.sessionId === expectedSessionId
   );
 }
 
@@ -2624,13 +2731,28 @@ function publicOpenedResponse(
   };
 }
 
-function isUnknownRuntimeSession(response: OpenWranglerResponse, expectedSessionId: string): response is ErrorResponse {
+function isUnknownRuntimeSession(
+  response: OpenWranglerResponse,
+  expectedSessionId: string
+): response is ErrorResponse & { code: "unknown_session" | "engine_error" } {
   if (response.kind !== "error") return false;
   if (response.code === "unknown_session") return response.sessionId === expectedSessionId;
   return (
     response.code === "engine_error" &&
     response.message === `Unknown session: ${expectedSessionId}` &&
     (response.sessionId === undefined || response.sessionId === expectedSessionId)
+  );
+}
+
+function isLiveSourceInvalidated(
+  response: OpenWranglerResponse,
+  expectedSessionId: string
+): response is ErrorResponse & { code: "live_source_invalidated" } {
+  return (
+    response.kind === "error" &&
+    response.code === "live_source_invalidated" &&
+    response.recoverable &&
+    response.sessionId === expectedSessionId
   );
 }
 

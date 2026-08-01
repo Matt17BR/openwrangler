@@ -8,7 +8,7 @@ from concurrent.futures import CancelledError
 from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
 from .server import dispatch
-from .session import SessionManager, UnknownSessionError
+from .session import LiveSourceInvalidatedError, SessionCleanupError, SessionManager, UnknownSessionError
 
 _manager = SessionManager()
 
@@ -31,6 +31,15 @@ def dispatch_json(payload: str) -> str:
         response = error_response(str(error), code="invalid_request", recoverable=False)
     except UnknownSessionError as error:
         response = error_response(str(error), code="unknown_session", session_id=error.session_id)
+    except LiveSourceInvalidatedError as error:
+        response = error_response(str(error), code="live_source_invalidated", session_id=error.session_id)
+    except SessionCleanupError as error:
+        response = error_response(
+            str(error),
+            code="session_cleanup_failed",
+            recoverable=False,
+            session_id=error.session_id,
+        )
     except AmbiguousViewColumnError as error:
         response = error_response(str(error), code="ambiguous_view_column")
     except EngineError as error:

@@ -54,6 +54,22 @@ class UnknownSessionError(EngineError):
         super().__init__(f"Unknown session: {session_id}")
 
 
+class LiveSourceInvalidatedError(_SourceChangedError):
+    """Raised when an exact live notebook source can no longer serve reads."""
+
+    def __init__(self, session_id: str, message: str) -> None:
+        self.session_id = session_id
+        super().__init__(message)
+
+
+class SessionCleanupError(EngineError):
+    """Terminal cleanup failure for a session already removed from the manager."""
+
+    def __init__(self, session_id: str, message: str) -> None:
+        self.session_id = session_id
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class _AppliedViewRestore:
     step_id: str
@@ -93,6 +109,7 @@ class Session:
     source_shape: dict[str, int]
     source_schema: list[dict[str, Any]]
     source_fingerprint: _SourceFingerprint | None
+    live_source_value: Any | None
     page_cache: OrderedDict[tuple[int, int, int, int, tuple[str, ...]], _CachedPage]
     page_cache_bytes: int
     view_generation: int
@@ -133,6 +150,7 @@ class Session:
         self.disposed = True
         self.view_generation += 1
         self.clear_page_cache()
+        self.live_source_value = None
         try:
             self.engine.close()
         except Exception as error:
@@ -308,6 +326,7 @@ class SessionManager:
             if source_fingerprint is not None:
                 load_source["path"] = source_fingerprint.resolved_path
             frame = self._load_source(load_source, engine)
+            live_source_value = frame if engine.name == "pyspark" and source_kind == "notebookVariable" else None
             if source.get("kind") != "file":
                 notebook_normalizer = getattr(engine, "normalize_notebook_relation", None)
                 frame = (
@@ -353,6 +372,7 @@ class SessionManager:
                 source_shape=source_shape,
                 source_schema=source_schema,
                 source_fingerprint=source_fingerprint,
+                live_source_value=live_source_value,
                 page_cache=OrderedDict(),
                 page_cache_bytes=0,
                 view_generation=0,
@@ -926,7 +946,10 @@ class SessionManager:
                 if self.sessions.get(session_id) is not session:
                     raise UnknownSessionError(session_id)
                 del self.sessions[session_id]
-            session.dispose()
+            try:
+                session.dispose()
+            except EngineError as error:
+                raise SessionCleanupError(session_id, str(error)) from error
             return {"kind": "sessionClosed", "sessionId": session_id}
 
     def close_all(self) -> None:
@@ -1521,6 +1544,7 @@ class SessionManager:
             self._assert_source_unchanged(session)
 
     def _assert_source_unchanged(self, session: Session) -> None:
+        self._assert_live_source_unchanged(session)
         expected = session.source_fingerprint
         if expected is None:
             return
@@ -1532,6 +1556,38 @@ class SessionManager:
         if current != expected:
             session.clear_page_cache()
             raise self._source_changed_error(session)
+
+    def _assert_live_source_unchanged(self, session: Session) -> None:
+        expected = session.live_source_value
+        if session.backend != "pyspark" or expected is None:
+            return
+
+        try:
+            current = self._resolve_notebook_variable(session.source)
+        except EngineError as error:
+            session.clear_page_cache()
+            raise self._live_source_invalidated_error(
+                session,
+                "is no longer available in the notebook kernel",
+            ) from error
+        if current is not expected:
+            session.clear_page_cache()
+            raise self._live_source_invalidated_error(session, "was replaced in the notebook kernel")
+
+        stopped_probe = getattr(session.engine, "live_source_is_stopped", None)
+        if callable(stopped_probe) and stopped_probe(expected) is True:
+            session.clear_page_cache()
+            raise self._live_source_invalidated_error(session, "belongs to a Spark session that has stopped")
+
+    @staticmethod
+    def _live_source_invalidated_error(session: Session, reason: str) -> LiveSourceInvalidatedError:
+        label = session.source.get("label") or session.source.get("variableName") or "PySpark dataframe"
+        return LiveSourceInvalidatedError(
+            session.session_id,
+            f"The live PySpark dataframe {label!r} {reason}. "
+            "Recreate it or run the cell that defines it, then retry in Open Wrangler. "
+            "If its columns or types changed, reopen the variable instead.",
+        )
 
     @staticmethod
     def _source_changed_error(session: Session) -> _SourceChangedError:
