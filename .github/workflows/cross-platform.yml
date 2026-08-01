@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: cross-platform-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   runtime:

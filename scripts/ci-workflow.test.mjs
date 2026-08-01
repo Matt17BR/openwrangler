@@ -7,10 +7,11 @@ import { loadConfigFromFile } from "vite";
 import { inspectStableCandidateWorkflow } from "./release-workflow.mjs";
 import { OPTIONAL_CI_JOB, REQUIRED_CI_JOBS, requireCiResults, resultEnvironmentKey } from "./require-ci-results.mjs";
 
-const replaceablePendingWorkflows = [
-  [".github/workflows/ci.yml", "ci"],
-  [".github/workflows/cross-platform.yml", "cross-platform"],
-  [".github/workflows/codeql.yml", "codeql"]
+const replaceablePullRequestWorkflows = [
+  [".github/workflows/ci.yml", "ci-${{ github.event_name }}-${{ github.ref }}"],
+  [".github/workflows/cross-platform.yml", "cross-platform-${{ github.event_name }}-${{ github.ref }}"],
+  [".github/workflows/codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"],
+  [".github/workflows/released-jupyter.yml", "released-jupyter-${{ github.ref }}"]
 ];
 
 const requiredPullRequestWorkflows = [
@@ -28,7 +29,6 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
   "linux-packaged-editor",
   "coverage",
   "python-matrix",
-  "pyspark-notebook-viewing",
   "extension-host",
   "native-script-portability",
   "native-extension-host",
@@ -432,20 +432,20 @@ test("stable evidence workflow inspector rejects source, artifact, and consumer 
   );
 });
 
-test("PR workflows replace only superseded pending runs", () => {
-  for (const [relativePath, groupPrefix] of replaceablePendingWorkflows) {
+test("PR workflows cancel only obsolete pull-request heads", () => {
+  for (const [relativePath, expectedGroup] of replaceablePullRequestWorkflows) {
     const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
-    assert.match(
-      source,
-      new RegExp(
-        String.raw`\nconcurrency:\n  group: ${groupPrefix}-\$\{\{ github\.event_name \}\}-\$\{\{ github\.ref \}\}\n  cancel-in-progress: false\n`
-      ),
-      `${relativePath} must retain running work while collapsing superseded pending runs.`
+    const workflow = parseYaml(source);
+    assert.equal(workflow?.concurrency?.group, expectedGroup, `${relativePath} must retain its ref-scoped group.`);
+    assert.equal(
+      workflow?.concurrency?.["cancel-in-progress"],
+      "${{ github.event_name == 'pull_request' }}",
+      `${relativePath} may cancel only an obsolete pull-request run.`
     );
-    assert.doesNotMatch(
-      source,
-      /cancel-in-progress:\s*true/u,
-      `${relativePath} must never interrupt an in-progress editor or analysis run.`
+    assert.ok(workflow?.on?.pull_request !== undefined, `${relativePath} must still run for pull requests.`);
+    assert.ok(
+      Object.keys(workflow?.on ?? {}).some((eventName) => eventName !== "pull_request"),
+      `${relativePath} must retain non-PR evidence that the cancellation expression leaves uninterrupted.`
     );
   }
 });
@@ -529,14 +529,19 @@ test("PR CI starts one bounded static fast-feedback lane and preserves every sta
     "npm run brand:check",
     "npm run check:remote-jupyter-lock",
     "npm run lock:remote-jupyter:check",
-    "npm run test:scripts:portable",
-    "npm run test:ts",
-    "npm run test:python"
+    "npm run test:scripts:portable"
   ]) {
     assert.equal(
       contractSteps.some((step) => step?.run === command),
       true,
       `${command} must remain an authoritative contract gate.`
+    );
+  }
+  for (const duplicate of ["npm run test:ts", "npm run test:python"]) {
+    assert.equal(
+      contractSteps.some((step) => step?.run === duplicate),
+      false,
+      `${duplicate} belongs to the stronger coverage lane and must not be repeated by contract-tests.`
     );
   }
   assert.equal(
@@ -932,6 +937,7 @@ test("required Linux Python 3.10 owns real discovery while cross-platform keeps 
 
 test("coverage provisions the exact PySpark runtime before enforcing the unchanged floor", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const workflow = parseYaml(source);
   const steps = workflow?.jobs?.coverage?.steps;
   assert.ok(Array.isArray(steps), "CI must retain the required coverage job.");
@@ -956,56 +962,13 @@ test("coverage provisions the exact PySpark runtime before enforcing the unchang
   assert.ok(steps.indexOf(java) < steps.indexOf(coverage));
   assert.ok(steps.indexOf(install) < steps.indexOf(coverage));
   assert.ok(steps.indexOf(verification) < steps.indexOf(coverage));
-});
-
-test("PySpark notebook viewing has one unconditional exact-runtime CI job", () => {
-  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const workflow = parseYaml(source);
-  const job = workflow?.jobs?.["pyspark-notebook-viewing"];
-
-  assert.equal(job?.name, "PySpark 4.2 notebook viewing (Java 17)");
-  assert.equal(job?.["runs-on"], "ubuntu-latest");
-  assert.equal(job?.["timeout-minutes"], 30);
-  assert.equal(job?.if, undefined);
-  assert.equal(job?.needs, undefined);
-  assert.equal(job?.["continue-on-error"], undefined);
-
-  const steps = job?.steps;
-  assert.ok(Array.isArray(steps), "CI must retain the focused PySpark notebook-viewing job.");
   assert.equal(
-    steps.some((step) => step?.["continue-on-error"] !== undefined),
-    false
+    manifest?.scripts?.["test:coverage"],
+    "npm run test:coverage:ts && npm run test:coverage:python",
+    "Coverage must continue to own both complete instrumented suites."
   );
-  assert.deepEqual(
-    steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-python@"))?.with,
-    {
-      "python-version": "3.12",
-      cache: "pip"
-    }
-  );
-  assert.deepEqual(
-    steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@"))?.with,
-    {
-      distribution: "temurin",
-      "java-version": "17"
-    }
-  );
-  assert.equal(
-    steps.some((step) => step?.run === 'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"'),
-    true
-  );
-
-  const runtimeVerification = steps.find((step) => step?.name === "Verify exact optional runtimes");
-  assert.match(runtimeVerification?.run ?? "", /pyspark\.__version__ == "4\.2\.0"/u);
-  assert.match(runtimeVerification?.run ?? "", /Version\("2\.2"\).*Version\("3"\)/u);
-  assert.match(runtimeVerification?.run ?? "", /java\\\.specification\\\.version = 17/u);
-
-  const focused = steps.find((step) => step?.name === "Test native PySpark notebook viewing");
-  assert.equal(
-    focused?.run,
-    "python -m pytest -q python/tests/test_pyspark_engine.py python/tests/test_engine_registry.py"
-  );
-  assert.deepEqual(focused?.env, { PYTHONPATH: "python" });
+  assert.equal(manifest?.scripts?.["test:coverage:ts"], "vitest run --coverage");
+  assert.match(manifest?.scripts?.["test:coverage:python"] ?? "", /pytest python\/tests .*--cov=openwrangler_runtime/u);
 });
 
 test("released-Jupyter PR paths include every consumed dependency manifest", () => {

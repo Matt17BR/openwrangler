@@ -40,8 +40,14 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "      - name: Fail closed unless every required job succeeded",
       "      - name: Fail closed unless every required job succeeded\n        continue-on-error: true"
     ),
-    source.replace("      - run: npm test\n", "      - run: npm test\n        continue-on-error: true\n"),
-    source.replace("      - run: npm test\n", "      - run: npm test\n        if: ${{ false }}\n"),
+    source.replace(
+      "      - run: npm run test:scripts\n",
+      "      - run: npm run test:scripts\n        continue-on-error: true\n"
+    ),
+    source.replace(
+      "      - run: npm run test:scripts\n",
+      "      - run: npm run test:scripts\n        if: ${{ false }}\n"
+    ),
     source.replace('"pyspark[connect]==4.2.0"', '"pyspark[connect]==4.1.0"'),
     source.replace("      - name: Verify exact coverage runtimes", "      - name: Skip exact coverage runtimes"),
     source.replace(

@@ -10,7 +10,6 @@ export const REQUIRED_CI_JOBS = Object.freeze([
   "linux-packaged-editor",
   "coverage",
   "python-matrix",
-  "pyspark-notebook-viewing",
   "extension-host",
   "native-script-portability",
   "native-extension-host",

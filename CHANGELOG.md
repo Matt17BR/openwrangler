@@ -4,6 +4,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Changed
+
+- Reduced CI repetition without relaxing product acceptance: obsolete pull-request heads now cancel their own
+  superseded runs, the coverage lane exclusively owns the complete TypeScript/Python and exact PySpark suites, and
+  stable Linux validation runs script contracts once before instrumented coverage instead of executing both full
+  suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
+
 ## [1.2.0] - 2026-08-01
 
 ### Changed

@@ -8,7 +8,7 @@ const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const MAX_CONTRACT_BYTES = 16 * 1024 * 1024;
 const MAX_CONTRACT_DEPTH = 128;
 const MAX_CONTRACT_NODES = 200_000;
-const AUDITED_WORKFLOW_SHA256 = "1588f5e687cb20088d81e2a962b75ef2db1696f8b034a96726c1d25d98b6c439";
+const AUDITED_WORKFLOW_SHA256 = "750a9bc60291c4a00b53917b40276ca3214cc678a10ca4cf453969809faa096c";
 const EVENT_SHA = "${{ github.sha }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
@@ -601,7 +601,7 @@ export function inspectStableReleaseWorkflow(source) {
   const linux = workflow.jobs["linux-acceptance"];
   for (const required of [
     "npm run check",
-    "npm test",
+    "npm run test:scripts",
     "npm run test:webview-acceptance",
     "npm run test:coverage",
     "npm audit --omit=dev",
