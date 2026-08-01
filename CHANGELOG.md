@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Import-option Quick Picks and input fields now explicitly reclaim workbench keyboard focus after opening. This
+  preserves the existing keyboard-only flow in VS Code and fixes Cursor 3.13.21 leaving focus inside the dataframe
+  webview; experimental forks that omit the standard focus command retain their native Quick Input behavior.
 - Hardened the optional clean-room Data Wrangler feasibility smoke against its real first-use UI: it now follows
   the post-click editor's public runtime control through VS Code's local-interpreter overlay to the exact correlated
   kernelspec, waits out transient duplicate controls without clicking, ignores only non-modal notification toasts,

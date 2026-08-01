@@ -18697,11 +18697,21 @@ async function acceptSearchableExcelSheet(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the searchable Excel worksheet field to become visible"
   );
-  await waitForImportNaturalKeyboardFocus(field, "Excel sheet", "exact");
+  await waitForImportNaturalKeyboardFocus(sheetPrompt, "Excel sheet", "contains");
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const fieldOwnsFocus = await field.evaluate((element) => element === element.ownerDocument.activeElement);
+    if (fieldOwnsFocus) break;
+    await withAcceptanceOperationDeadline(
+      page.keyboard.press("Shift+Tab"),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "keyboard traversal to the Excel worksheet search field"
+    );
+  }
+  await waitForImportNaturalKeyboardFocus(field, "Excel sheet search", "exact");
   await withAcceptanceOperationDeadline(
-    field.fill(sheetName, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    page.keyboard.type(sheetName),
     WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the Excel worksheet search ${JSON.stringify(sheetName)}`
+    `keyboard entry for the Excel worksheet search ${JSON.stringify(sheetName)}`
   );
   assert.equal(
     await field.inputValue({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
