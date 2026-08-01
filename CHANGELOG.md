@@ -91,6 +91,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Kept the notebook-toolbar action and Cursor's pinned editor-title fallback mutually exclusive, so Cursor 3.13.21
+  exposes one canonical **Open in Open Wrangler** action instead of rendering the same command on both surfaces.
 - Installed the native dataframe runtime dependencies in the split visual/accessibility CI lane, so production-scene
   generation cannot fail before rendering DuckDB, Polars, Pandas, and notebook evidence or silently substitute
   reconstructed fixture data.

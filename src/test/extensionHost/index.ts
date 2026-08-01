@@ -582,12 +582,15 @@ export async function run(): Promise<void> {
     "The argument-only Jupyter viewer command must stay out of the Command Palette."
   );
   const notebookVariableWhen = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
+  const notebookVariableToolbarWhen =
+    `${notebookVariableWhen} && config.notebook.globalToolbar == true && ` +
+    "!openWrangler.forceNotebookEditorTitleAction";
   const notebookVariableWhenCompact =
     "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && " +
     "(config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)";
   for (const [menu, when] of [
     ["editor/title", notebookVariableWhenCompact],
-    ["notebook/toolbar", notebookVariableWhen]
+    ["notebook/toolbar", notebookVariableToolbarWhen]
   ] as const) {
     assert.ok(
       contributions.menus?.[menu]?.some(
