@@ -115,6 +115,7 @@ interface TestApi {
         stepInspection?: StepInspectionResponse;
       }
     | undefined;
+  sessionSnapshot(sessionId: string): ReturnType<TestApi["activeSession"]>;
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
   previewPanelStep(
@@ -2321,8 +2322,11 @@ async function exerciseReleasedPySparkJupyterExtension(
     );
 
     recordAcceptanceProgress(`${phase}:classic-changed-schema-rebind`);
-    const confirmedClassic = testing.activeSession();
-    assert.ok(confirmedClassic, "The confirmed PySpark Classic session must remain active before schema replacement.");
+    const confirmedClassic = testing.sessionSnapshot(classic.sessionId);
+    assert.ok(
+      confirmedClassic,
+      "The confirmed PySpark Classic session must remain retained before schema replacement."
+    );
     assert.equal(confirmedClassic.sessionId, classic.sessionId);
     const confirmedClassicSnapshot = structuredClone(confirmedClassic);
     await executeReleasedNotebookCell(
@@ -2371,7 +2375,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(changedSchema.sessionId, classic.sessionId);
     assert.equal(changedSchema.viewRequestId, "released-jupyter-pyspark-classic-changed-schema-rebind");
     assert.match(changedSchema.message, /If its columns or types changed, reopen the variable instead\./u);
-    const unchangedClassic = testing.activeSession();
+    const unchangedClassic = testing.sessionSnapshot(classic.sessionId);
     assert.ok(unchangedClassic, "A rejected PySpark schema replacement must retain the confirmed public session.");
     assert.deepEqual(unchangedClassic, confirmedClassicSnapshot);
     const changedSchemaDiagnostics = testing.diagnostics();
