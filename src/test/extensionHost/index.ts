@@ -67,6 +67,7 @@ import {
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
+import { waitForFreshExactSessionPanelHydration } from "./panelHydration";
 import {
   ACCEPTANCE_PROGRESS_PROTOCOL,
   failedAcceptanceProgressCheckpoint,
@@ -118,6 +119,7 @@ interface TestApi {
   sessionSnapshot(sessionId: string): ReturnType<TestApi["activeSession"]>;
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
+  ensurePanelSynchronized(sessionId: string, deadlineMs: number): Promise<boolean>;
   previewPanelStep(
     request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
   ): Promise<Extract<OpenWranglerResponse, { kind: "sessionOpened" }> | undefined>;
@@ -6824,9 +6826,9 @@ async function exercisePackagedFirstUseInteractionJourney(
     30_000,
     "the realistic numeric filter to update the visible dataframe"
   );
-  assert.equal(
-    await testing.synchronizePanel(sessionId),
-    true,
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
     "The filtered host state must be acknowledged by its exact renderer before visible values are inspected."
   );
   // Text profiling intentionally navigated to the far-right account_note
@@ -6843,9 +6845,9 @@ async function exercisePackagedFirstUseInteractionJourney(
     10_000,
     "column search to return to the filtered numeric column"
   );
-  assert.equal(
-    await testing.synchronizePanel(sessionId),
-    true,
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
     "The revenue navigation must be acknowledged before its virtualized cell is inspected."
   );
   const visibleRevenueCell = frame.locator('td[data-grid-row="0"][data-grid-column="2"]').first();
@@ -6876,9 +6878,9 @@ async function exercisePackagedFirstUseInteractionJourney(
     30_000,
     "Clear all to restore the complete dataframe view"
   );
-  assert.equal(
-    await testing.synchronizePanel(sessionId),
-    true,
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
     "The restored host view must be acknowledged by its exact renderer before the next operation."
   );
   await drawer.getByRole("button", { name: "Close panel" }).click();
@@ -7443,6 +7445,27 @@ async function exercisePackagedReopenAndUndoJourney(
     await vscode.workspace.fs.readFile(fixture),
     sourceBytes,
     "Undoing the replayed step must preserve the first-use source bytes."
+  );
+}
+
+async function requireFreshExactSessionPanelHydration(
+  testing: TestApi,
+  sessionId: string,
+  expectation: string
+): Promise<void> {
+  const synchronized = await waitForFreshExactSessionPanelHydration(testing, sessionId, {
+    timeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS,
+    pollIntervalMs: 25
+  });
+  assert.equal(
+    synchronized,
+    true,
+    `${expectation} State: ${JSON.stringify({
+      expectedSessionId: sessionId,
+      activeSessionId: testing.activeSession()?.sessionId,
+      panelHydrated: testing.panelHydrated(sessionId),
+      panelSynchronizable: testing.panelSynchronizable(sessionId)
+    })}`
   );
 }
 
