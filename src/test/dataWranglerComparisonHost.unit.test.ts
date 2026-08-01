@@ -3,15 +3,18 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildComparisonWorkbenchReadinessEvidence,
+  comparisonDialogLabelIsNonBlockingNotification,
   comparisonExplorerItemMatches,
   comparisonRuntimeOptionNamePattern,
   comparisonRuntimeOptionMatches,
   comparisonRuntimeSelectorMatches,
   comparisonRuntimeProbeSource,
+  comparisonTabsOpenedAfter,
   comparisonWarmCacheArguments,
   dataWranglerComparisonKernelLabel,
   isPostClickComparisonSurface,
   prepareComparisonAction,
+  prioritizeDataWranglerRuntimeSelectors,
   requireUniqueComparisonMatch,
   runBoundedComparisonFrameProbe,
   runComparisonFrameProbeWithRetry,
@@ -19,6 +22,31 @@ import {
 } from "./extensionHost/dataWranglerComparison";
 
 describe("clean-room comparison host contracts", () => {
+  it("allows non-modal VS Code notification toasts without weakening real dialog checks", () => {
+    expect(
+      comparisonDialogLabelIsNonBlockingNotification(
+        "Warning: Unable to watch for file changes., notification, Inspect the response in the accessible view",
+        null
+      )
+    ).toBe(true);
+    expect(comparisonDialogLabelIsNonBlockingNotification("Select a Python runtime", null)).toBe(false);
+    expect(comparisonDialogLabelIsNonBlockingNotification("Dependency warning, notification", "true")).toBe(false);
+  });
+
+  it("identifies only the exact source and target tabs created by a comparison launch", () => {
+    const anchorSource = { id: "anchor-source" };
+    const anchorTarget = { id: "anchor-target" };
+    const source = { id: "source" };
+    const target = { id: "target" };
+    expect(
+      comparisonTabsOpenedAfter([anchorSource, anchorTarget], [anchorSource, anchorTarget, source, target])
+    ).toEqual([source, target]);
+    expect(() => comparisonTabsOpenedAfter([anchorSource, anchorTarget], [anchorSource, target])).toThrow(
+      /pre-existing comparison tab disappeared/u
+    );
+    expect(() => comparisonTabsOpenedAfter([anchorSource, anchorSource], [anchorSource])).toThrow(/identity-unique/u);
+  });
+
   it("uses the source-cache helper's warm mode and retains its resident-proof semantics", () => {
     expect(comparisonWarmCacheArguments("/private/source_cache_control.py", "/private/fixture.parquet")).toEqual([
       "/private/source_cache_control.py",
@@ -198,26 +226,84 @@ describe("clean-room comparison host contracts", () => {
     ]);
   });
 
-  it("fails closed for ambiguous or absent runtime-selection topology", async () => {
-    const callbacks = {
-      activate: async () => undefined,
+  it("follows Data Wrangler's public local-interpreter connection step before the exact runtime", async () => {
+    const selector = { id: "editor-runtime-selector" };
+    const connection = { id: "local-interpreter-connection" };
+    const option = { id: "configured-runtime-option" };
+    const events: string[] = [];
+    let optionPoll = 0;
+    const topology = await runDataWranglerRuntimeSelectionTopology({
+      discoverOptions: async () => {
+        optionPoll += 1;
+        return optionPoll < 3 ? [] : [option];
+      },
+      discoverSelectors: async () => [selector],
+      discoverLocalInterpreterConnections: async () => [connection],
+      activate: async (candidate) => {
+        events.push(candidate.id);
+      },
       waitForRetry: async () => undefined,
       isWithinDeadline: () => true
+    });
+
+    expect(topology).toBe("selector-option");
+    expect(events).toEqual(["editor-runtime-selector", "local-interpreter-connection", "configured-runtime-option"]);
+  });
+
+  it("prefers the unique post-click editor selector over the global workbench runtime control", () => {
+    const workbench = { id: "global-workbench-runtime" };
+    const editor = { id: "post-click-editor-runtime" };
+    const retained = { id: "retained-surface-runtime" };
+    expect(
+      prioritizeDataWranglerRuntimeSelectors([workbench, editor, retained], (candidate) => {
+        if (candidate === editor) return "post-click";
+        if (candidate === workbench) return "workbench-main";
+        return "other";
+      })
+    ).toEqual([editor]);
+    expect(
+      prioritizeDataWranglerRuntimeSelectors([workbench, retained], (candidate) =>
+        candidate === workbench ? "workbench-main" : "other"
+      )
+    ).toEqual([]);
+    expect(
+      prioritizeDataWranglerRuntimeSelectors(
+        [workbench, retained],
+        (candidate) => (candidate === workbench ? "workbench-main" : "other"),
+        { allowWorkbenchMainFallback: true }
+      )
+    ).toEqual([workbench]);
+    expect(
+      prioritizeDataWranglerRuntimeSelectors([editor, { id: "second-editor-runtime" }], () => "post-click")
+    ).toHaveLength(2);
+  });
+
+  it("fails closed for ambiguous or absent runtime-selection topology", async () => {
+    const activations: unknown[] = [];
+    const callbacks = {
+      activate: async (candidate: unknown) => {
+        activations.push(candidate);
+      },
+      waitForRetry: async () => undefined
     };
+    let optionDeadlineChecks = 0;
     await expect(
       runDataWranglerRuntimeSelectionTopology({
         ...callbacks,
         discoverOptions: async () => [{ id: "first" }, { id: "second" }],
-        discoverSelectors: async () => []
+        discoverSelectors: async () => [],
+        isWithinDeadline: () => optionDeadlineChecks++ < 2
       })
-    ).rejects.toThrow(/more than one matching configured runtime option/u);
+    ).rejects.toThrow(/retained an ambiguous configured runtime control set/u);
+    let selectorDeadlineChecks = 0;
     await expect(
       runDataWranglerRuntimeSelectionTopology({
         ...callbacks,
         discoverOptions: async () => [],
-        discoverSelectors: async () => [{ id: "first" }, { id: "second" }]
+        discoverSelectors: async () => [{ id: "first" }, { id: "second" }],
+        isWithinDeadline: () => selectorDeadlineChecks++ < 2
       })
-    ).rejects.toThrow(/more than one public runtime selector/u);
+    ).rejects.toThrow(/retained an ambiguous runtime selector control set/u);
 
     let deadlineChecks = 0;
     await expect(
@@ -228,6 +314,43 @@ describe("clean-room comparison host contracts", () => {
         isWithinDeadline: () => deadlineChecks++ === 0
       })
     ).rejects.toThrow(/direct configured option|public runtime selector/u);
+    expect(activations).toEqual([]);
+  });
+
+  it("rejects a malformed optional local-interpreter discovery callback before polling", async () => {
+    await expect(
+      runDataWranglerRuntimeSelectionTopology({
+        discoverOptions: async () => [],
+        discoverSelectors: async () => [],
+        discoverLocalInterpreterConnections: "not-a-callback" as never,
+        activate: async () => undefined,
+        waitForRetry: async () => undefined,
+        isWithinDeadline: () => true
+      })
+    ).rejects.toThrow(/bounded public-role discovery callbacks/u);
+  });
+
+  it("waits through transient runtime-control ambiguity without activating a candidate", async () => {
+    const selector = { id: "editor-runtime-selector" };
+    const option = { id: "configured-runtime-option" };
+    const events: string[] = [];
+    let selectorPolls = 0;
+    const topology = await runDataWranglerRuntimeSelectionTopology({
+      discoverOptions: async () => (events.includes(selector.id) ? [option] : []),
+      discoverSelectors: async () => {
+        selectorPolls += 1;
+        return selectorPolls === 1 ? [{ id: "transient-first" }, { id: "transient-second" }] : [selector];
+      },
+      activate: async (candidate) => {
+        events.push(candidate.id);
+      },
+      waitForRetry: async () => undefined,
+      isWithinDeadline: () => true
+    });
+
+    expect(topology).toBe("selector-option");
+    expect(selectorPolls).toBe(2);
+    expect(events).toEqual(["editor-runtime-selector", "configured-runtime-option"]);
   });
 
   it("accepts only a child frame or top-level Page created after the complete action-click baseline", () => {

@@ -45,11 +45,21 @@ const PACKAGE_VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u;
 const COMPARISON_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const COMPARISON_RUNTIME_SELECTOR_ACCESSIBLE_NAME =
   /(?:^(?:(?:select|choose|pick|change) (?:a )?)?(?:(?:python )?(?:runtime|kernel|interpreter)|python environment)(?: selector| picker)?$|\b(?:select|choose|pick|change|connect to)\b.{0,48}\b(?:(?:python )?(?:runtime|kernel|interpreter)|python environment)\b)/iu;
+const COMPARISON_LOCAL_INTERPRETER_CONNECTION_ACCESSIBLE_NAME = /^Connect using local Python interpreter(?:,|$)/iu;
+const COMPARISON_RUNTIME_DIAGNOSTIC_ACCESSIBLE_NAME =
+  /(?:python|kernel|runtime|interpreter|environment|jupyter|conda|venv|open wrangler comparison)/iu;
 
 type DiagnosticComparisonPhase = keyof typeof PHASES;
 type ComparisonPhase = DiagnosticComparisonPhase | typeof DATA_WRANGLER_FIRST_USE_SETUP_PHASE;
 type ProductKey = (typeof PHASES)[DiagnosticComparisonPhase];
 type FixtureFormat = "csv" | "parquet";
+type ComparisonRuntimeRole = "button" | "combobox" | "menuitem" | "option" | "radio" | "treeitem";
+
+interface ComparisonRoleMatch {
+  readonly locator: Locator;
+  readonly frame: Frame;
+  readonly role: ComparisonRuntimeRole;
+}
 
 interface ConfiguredPythonEnvironment {
   readonly pythonVersion: string;
@@ -393,6 +403,7 @@ async function openThroughVisibleExplorerAction({
   prepareCache?: () => CacheProof;
   firstUseKernelLabel?: string;
 }): Promise<ComparisonActionResult> {
+  const tabsBefore = Object.freeze([...allEditorTabs()]);
   const sourceUri = vscode.Uri.file(source);
   await vscode.commands.executeCommand("vscode.open", sourceUri, {
     preview: false,
@@ -425,8 +436,20 @@ async function openThroughVisibleExplorerAction({
   const started = performance.now();
   await action.click();
   if (firstUseKernelLabel !== undefined) {
+    await waitFor(
+      () => {
+        const target = vscode.window.tabGroups.activeTabGroup.activeTab;
+        return (
+          target !== undefined &&
+          target !== sourceTab &&
+          (target.input instanceof vscode.TabInputCustom || target.input instanceof vscode.TabInputWebview)
+        );
+      },
+      WORKBENCH_TIMEOUT_MS,
+      "the selected Data Wrangler target editor"
+    );
     recordProgress("comparison:data-wrangler-setup:runtime-selection");
-    await selectDataWranglerFirstUseRuntime(workbench.page, firstUseKernelLabel);
+    await selectDataWranglerFirstUseRuntime(workbench.page, firstUseKernelLabel, baselineFrames, baselinePages);
     recordProgress("comparison:data-wrangler-setup:runtime-selected");
   }
   const gridReadiness = await waitForGenericGridReadiness(workbench.page, baselineFrames, baselinePages);
@@ -434,6 +457,19 @@ async function openThroughVisibleExplorerAction({
     workbench.page,
     sourceTab,
     gridReadiness.rendererFramePointerUsable
+  );
+  const targetTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  assert.ok(
+    targetTab !== undefined &&
+      targetTab !== sourceTab &&
+      (targetTab.input instanceof vscode.TabInputCustom || targetTab.input instanceof vscode.TabInputWebview),
+    "Comparison readiness requires the exact active target to be a created custom or webview editor."
+  );
+  const ownedTabs = comparisonTabsOpenedAfter(tabsBefore, allEditorTabs());
+  assert.equal(ownedTabs.length, 2, "Each comparison launch must own exactly one source and one target editor tab.");
+  assert.ok(
+    ownedTabs.includes(sourceTab) && ownedTabs.includes(targetTab),
+    "Each comparison lease must own its exact source and selected target tabs."
   );
   const diagnosticDurationMs = timed ? roundMilliseconds(performance.now() - started) : 0.001;
   return Object.freeze({
@@ -446,44 +482,117 @@ async function openThroughVisibleExplorerAction({
   });
 }
 
-async function selectDataWranglerFirstUseRuntime(workbench: Page, kernelLabel: string): Promise<void> {
+async function selectDataWranglerFirstUseRuntime(
+  workbench: Page,
+  kernelLabel: string,
+  baselineFrames: ReadonlySet<Frame>,
+  baselinePages: ReadonlySet<Page>
+): Promise<void> {
   if (kernelLabel !== dataWranglerComparisonKernelLabel(requiredEnvironment("OPEN_WRANGLER_TEST_RUN_ID"))) {
     throw new Error("Data Wrangler first-use setup received a mis-correlated comparison kernel label.");
   }
   const deadline = Date.now() + FIRST_USE_RUNTIME_TIMEOUT_MS;
-  await runDataWranglerRuntimeSelectionTopology({
-    discoverOptions: () =>
-      visibleComparisonRoleMatches(
-        comparisonFrames(workbench),
-        ["option", "menuitem", "treeitem", "radio", "button"],
-        comparisonRuntimeOptionNamePattern(kernelLabel),
-        "runtime option"
-      ),
-    discoverSelectors: () =>
-      visibleComparisonRoleMatches(
-        comparisonFrames(workbench),
-        ["combobox", "button"],
-        COMPARISON_RUNTIME_SELECTOR_ACCESSIBLE_NAME,
-        "runtime selector"
-      ),
-    activate: (candidate) => candidate.click(),
-    waitForRetry: () => workbench.waitForTimeout(25),
-    isWithinDeadline: () => {
-      assert.equal(workbench.isClosed(), false, "The official VS Code workbench closed during runtime selection.");
-      return Date.now() < deadline;
-    }
-  });
+  let latestSelectorDiagnostics: readonly Record<string, unknown>[] = Object.freeze([]);
+  try {
+    await runDataWranglerRuntimeSelectionTopology({
+      discoverOptions: () =>
+        visibleComparisonRoleMatches(
+          comparisonFrames(workbench),
+          ["option", "menuitem", "treeitem", "radio", "button"],
+          comparisonRuntimeOptionNamePattern(kernelLabel),
+          "runtime option"
+        ),
+      discoverSelectors: async () => {
+        const matches = await visibleComparisonRoleMatches(
+          comparisonFrames(workbench),
+          ["combobox", "button"],
+          COMPARISON_RUNTIME_SELECTOR_ACCESSIBLE_NAME,
+          "runtime selector"
+        );
+        latestSelectorDiagnostics = Object.freeze(
+          await Promise.all(matches.map((candidate) => describeComparisonRoleMatch(candidate, workbench)))
+        );
+        return prioritizeDataWranglerRuntimeSelectors(matches, (candidate) => {
+          if (
+            isPostClickComparisonSurface(
+              candidate.frame,
+              baselineFrames,
+              candidate.frame.parentFrame(),
+              candidate.frame.page(),
+              baselinePages
+            )
+          ) {
+            return "post-click";
+          }
+          return candidate.frame === workbench.mainFrame() ? "workbench-main" : "other";
+        });
+      },
+      discoverLocalInterpreterConnections: async () => {
+        const matches = await visibleComparisonRoleMatches(
+          comparisonFrames(workbench),
+          ["option", "menuitem", "treeitem", "radio", "button"],
+          COMPARISON_LOCAL_INTERPRETER_CONNECTION_ACCESSIBLE_NAME,
+          "local Python interpreter connection"
+        );
+        return prioritizeDataWranglerRuntimeSelectors(
+          matches,
+          (candidate) =>
+            isPostClickComparisonSurface(
+              candidate.frame,
+              baselineFrames,
+              candidate.frame.parentFrame(),
+              candidate.frame.page(),
+              baselinePages
+            )
+              ? "post-click"
+              : candidate.frame === workbench.mainFrame()
+                ? "workbench-main"
+                : "other",
+          { allowWorkbenchMainFallback: true }
+        );
+      },
+      activate: (candidate) => candidate.locator.click(),
+      waitForRetry: () => workbench.waitForTimeout(25),
+      isWithinDeadline: () => {
+        assert.equal(workbench.isClosed(), false, "The official VS Code workbench closed during runtime selection.");
+        return Date.now() < deadline;
+      }
+    });
+  } catch (error) {
+    const relatedControls = await visibleComparisonRoleMatches(
+      comparisonFrames(workbench),
+      ["option", "menuitem", "treeitem", "radio", "button", "combobox"],
+      COMPARISON_RUNTIME_DIAGNOSTIC_ACCESSIBLE_NAME,
+      "runtime diagnostic control"
+    );
+    const publicLabels = [
+      ...new Set(
+        await Promise.all(
+          relatedControls.map(async (candidate) => (await comparisonLocatorAccessibility(candidate.locator)).label)
+        )
+      )
+    ]
+      .filter((label) => label.length > 0)
+      .sort()
+      .slice(0, 32);
+    const message = error instanceof Error ? error.message : "Data Wrangler runtime selection failed.";
+    throw new Error(
+      `${message} Selector diagnostics: ${JSON.stringify(latestSelectorDiagnostics)}. ` +
+        `Visible runtime-related public controls: ${JSON.stringify(publicLabels)}.`
+    );
+  }
 }
 
 async function visibleComparisonRoleMatches(
   frames: readonly Frame[],
-  roles: readonly ("button" | "combobox" | "menuitem" | "option" | "radio" | "treeitem")[],
+  roles: readonly ComparisonRuntimeRole[],
   accessibleName: RegExp,
   description: string
-): Promise<Locator[]> {
-  const result: Locator[] = [];
+): Promise<ComparisonRoleMatch[]> {
+  const result: ComparisonRoleMatch[] = [];
   for (const frame of frames) {
     if (frame.isDetached()) continue;
+    if (!(await frameChainIsVisibleAndPointerUsable(frame).catch(() => false))) continue;
     for (const role of roles) {
       const candidates = await frame
         .getByRole(role, { name: accessibleName })
@@ -494,11 +603,47 @@ async function visibleComparisonRoleMatches(
         if (!(await candidate.isVisible().catch(() => false))) continue;
         const box = await candidate.boundingBox().catch(() => null);
         if (!box || box.width <= 0 || box.height <= 0) continue;
-        result.push(candidate);
+        result.push(Object.freeze({ locator: candidate, frame, role }));
       }
     }
   }
   return result;
+}
+
+async function describeComparisonRoleMatch(
+  match: ComparisonRoleMatch,
+  workbench: Page
+): Promise<Record<string, unknown>> {
+  let frameDepth = 0;
+  let current = match.frame;
+  while (current.parentFrame()) {
+    frameDepth += 1;
+    current = current.parentFrame() as Frame;
+  }
+  const page = match.frame.page();
+  const surface =
+    page === workbench
+      ? match.frame === workbench.mainFrame()
+        ? "workbench-main"
+        : "workbench-child"
+      : match.frame.parentFrame()
+        ? "auxiliary-child"
+        : "auxiliary-top-level";
+  const box = await match.locator.boundingBox().catch(() => null);
+  return Object.freeze({
+    role: match.role,
+    label: (await comparisonLocatorAccessibility(match.locator)).label,
+    surface,
+    frameDepth,
+    box: box
+      ? Object.freeze({
+          x: Math.round(box.x),
+          y: Math.round(box.y),
+          width: Math.round(box.width),
+          height: Math.round(box.height)
+        })
+      : null
+  });
 }
 
 async function waitForVisibleExplorerItem(page: Page, fileName: string): Promise<Locator> {
@@ -582,34 +727,87 @@ async function comparisonWorkbenchReadiness(
   });
 }
 
-async function comparisonWorkbenchIsUnobstructed(page: Page): Promise<boolean> {
-  const state = await visibleComparisonWorkbenchObstructions(page);
-  return state.visibleQuickInputs === 0 && state.visibleDialogs === 0 && state.visibleModals === 0;
-}
-
 async function visibleComparisonWorkbenchObstructions(page: Page): Promise<{
   readonly visibleQuickInputs: number;
   readonly visibleDialogs: number;
   readonly visibleModals: number;
+  readonly visibleDialogLabels: readonly string[];
 }> {
-  const [visibleQuickInputs, visibleDialogs, visibleModals] = await Promise.all([
+  const [visibleQuickInputs, visibleDialogSummary, visibleModals] = await Promise.all([
     boundedVisibleLocatorCount(page.locator(".quick-input-widget"), "Quick Input"),
-    boundedVisibleLocatorCount(page.getByRole("dialog"), "dialog"),
+    boundedVisibleLocatorSummary(page.getByRole("dialog"), "dialog", { ignoreNonModalNotifications: true }),
     boundedVisibleLocatorCount(page.locator('.monaco-dialog-box, .monaco-modal-dialog, [aria-modal="true"]'), "modal")
   ]);
-  return Object.freeze({ visibleQuickInputs, visibleDialogs, visibleModals });
+  return Object.freeze({
+    visibleQuickInputs,
+    visibleDialogs: visibleDialogSummary.count,
+    visibleModals,
+    visibleDialogLabels: visibleDialogSummary.labels
+  });
 }
 
 async function boundedVisibleLocatorCount(locator: Locator, label: string): Promise<number> {
+  return (await boundedVisibleLocatorSummary(locator, label)).count;
+}
+
+async function boundedVisibleLocatorSummary(
+  locator: Locator,
+  label: string,
+  { ignoreNonModalNotifications = false }: { readonly ignoreNonModalNotifications?: boolean } = {}
+): Promise<{ readonly count: number; readonly labels: readonly string[] }> {
   const candidates = await locator.all();
   assert.ok(candidates.length <= 64, `Comparison workbench ${label} discovery exceeded 64 candidates.`);
   let visible = 0;
+  const labels = new Set<string>();
   for (const candidate of candidates) {
     if (!(await candidate.isVisible().catch(() => false))) continue;
     const box = await candidate.boundingBox().catch(() => null);
-    if (box && box.width > 0 && box.height > 0) visible += 1;
+    if (!box || box.width <= 0 || box.height <= 0) continue;
+    const accessibility = await comparisonLocatorAccessibility(candidate);
+    const normalized = accessibility.label;
+    if (
+      ignoreNonModalNotifications &&
+      comparisonDialogLabelIsNonBlockingNotification(normalized, accessibility.ariaModal)
+    ) {
+      continue;
+    }
+    visible += 1;
+    labels.add(normalized.length > 0 ? normalized : "(unnamed)");
   }
-  return visible;
+  return Object.freeze({ count: visible, labels: Object.freeze([...labels].sort()) });
+}
+
+async function comparisonLocatorAccessibility(
+  candidate: Locator
+): Promise<{ readonly label: string; readonly ariaModal: string | null }> {
+  const accessibility = await candidate
+    .evaluate((element) => {
+      const direct = element.getAttribute("aria-label") ?? element.getAttribute("title");
+      if (direct) return { label: direct, ariaModal: element.getAttribute("aria-modal") };
+      const labelledBy = element.getAttribute("aria-labelledby");
+      const labelledText = labelledBy
+        ? labelledBy
+            .split(/\s+/u)
+            .map((id: string) => element.ownerDocument.getElementById(id)?.textContent ?? "")
+            .join(" ")
+        : "";
+      return {
+        label: labelledText,
+        ariaModal: element.getAttribute("aria-modal")
+      };
+    })
+    .catch(() => ({ label: "", ariaModal: null }));
+  const ariaSnapshot =
+    accessibility.label.length === 0
+      ? await candidate
+          .ariaSnapshot({ timeout: 250 })
+          .then((snapshot) => normalizeText(snapshot))
+          .catch(() => "")
+      : "";
+  return Object.freeze({
+    label: normalizeText(accessibility.label || ariaSnapshot).slice(0, 160),
+    ariaModal: accessibility.ariaModal
+  });
 }
 
 export function buildComparisonWorkbenchReadinessEvidence({
@@ -669,9 +867,26 @@ async function waitForGenericGridReadiness(
   let rejectedProbes = 0;
   let timedOutProbes = 0;
   let obstructedPolls = 0;
+  let maximumVisibleQuickInputs = 0;
+  let maximumVisibleDialogs = 0;
+  let maximumVisibleModals = 0;
+  let lastVisibleQuickInputs = 0;
+  let lastVisibleDialogs = 0;
+  let lastVisibleModals = 0;
+  let lastVisibleDialogLabels: readonly string[] = Object.freeze([]);
+  const recordObstructions = (state: Awaited<ReturnType<typeof visibleComparisonWorkbenchObstructions>>): boolean => {
+    lastVisibleQuickInputs = state.visibleQuickInputs;
+    lastVisibleDialogs = state.visibleDialogs;
+    lastVisibleModals = state.visibleModals;
+    lastVisibleDialogLabels = state.visibleDialogLabels;
+    maximumVisibleQuickInputs = Math.max(maximumVisibleQuickInputs, state.visibleQuickInputs);
+    maximumVisibleDialogs = Math.max(maximumVisibleDialogs, state.visibleDialogs);
+    maximumVisibleModals = Math.max(maximumVisibleModals, state.visibleModals);
+    return state.visibleQuickInputs !== 0 || state.visibleDialogs !== 0 || state.visibleModals !== 0;
+  };
   do {
     assert.equal(workbench.isClosed(), false, "The official VS Code workbench closed during grid discovery.");
-    if (!(await comparisonWorkbenchIsUnobstructed(workbench))) {
+    if (recordObstructions(await visibleComparisonWorkbenchObstructions(workbench))) {
       obstructedPolls += 1;
       await workbench.waitForTimeout(20);
       continue;
@@ -703,7 +918,7 @@ async function waitForGenericGridReadiness(
         stalledFrames.add(frame);
       } else if (probe.status === "completed" && probe.value) {
         if (!(await frameChainIsVisibleAndPointerUsable(frame))) continue;
-        if (!(await comparisonWorkbenchIsUnobstructed(workbench))) {
+        if (recordObstructions(await visibleComparisonWorkbenchObstructions(workbench))) {
           obstructedPolls += 1;
           continue;
         }
@@ -719,6 +934,7 @@ async function waitForGenericGridReadiness(
     }
     await workbench.waitForTimeout(20);
   } while (Date.now() < deadline);
+  const frameDiagnostics = await comparisonFrameStructureDiagnostics(workbench, baselineFrames, baselinePages);
   throw new Error(
     "No stable visible generic ARIA grid or table exposed the deterministic comparison headers and cells. " +
       `Structural counts: ${JSON.stringify({
@@ -731,9 +947,86 @@ async function waitForGenericGridReadiness(
         rejectedProbes,
         timedOutProbes,
         obstructedPolls,
-        quarantinedFrames: stalledFrames.size
+        maximumVisibleQuickInputs,
+        maximumVisibleDialogs,
+        maximumVisibleModals,
+        lastVisibleQuickInputs,
+        lastVisibleDialogs,
+        lastVisibleModals,
+        lastVisibleDialogLabels,
+        quarantinedFrames: stalledFrames.size,
+        frameDiagnostics
       })}`
   );
+}
+
+async function comparisonFrameStructureDiagnostics(
+  workbench: Page,
+  baselineFrames: ReadonlySet<Frame>,
+  baselinePages: ReadonlySet<Page>
+): Promise<readonly Record<string, unknown>[]> {
+  const diagnostics: Record<string, unknown>[] = [];
+  const frames = comparisonFrames(workbench).slice(0, 32);
+  for (const [frameOrdinal, frame] of frames.entries()) {
+    const parent = frame.parentFrame();
+    if (!isPostClickComparisonSurface(frame, baselineFrames, parent, frame.page(), baselinePages)) continue;
+    let depth = 0;
+    let current = frame;
+    while (current.parentFrame()) {
+      depth += 1;
+      current = current.parentFrame() as Frame;
+    }
+    const documentState = await frame
+      .evaluate(() => {
+        const document_ = (
+          globalThis as unknown as {
+            readonly document: { readonly visibilityState: string; hasFocus(): boolean };
+          }
+        ).document;
+        return { visibilityState: document_.visibilityState, hasFocus: document_.hasFocus() };
+      })
+      .catch(() => ({ visibilityState: "unavailable", hasFocus: false }));
+    const roleCounts = Object.fromEntries(
+      await Promise.all(
+        (["grid", "table", "row", "columnheader", "gridcell", "cell", "alert", "status", "heading"] as const).map(
+          async (role) => [
+            role,
+            Math.min(
+              await frame
+                .getByRole(role)
+                .count()
+                .catch(() => 0),
+              512
+            )
+          ]
+        )
+      )
+    );
+    const [c00Headers, c01Headers] = await Promise.all([
+      boundedVisibleLocatorCount(frame.getByRole("columnheader", { name: "c00", exact: true }), "c00 header"),
+      boundedVisibleLocatorCount(frame.getByRole("columnheader", { name: "c01", exact: true }), "c01 header")
+    ]);
+    const publicStates = Object.fromEntries(
+      await Promise.all(
+        (["alert", "status", "heading"] as const).map(async (role) => [
+          role,
+          (await boundedVisibleLocatorSummary(frame.getByRole(role), `${role} diagnostic`)).labels.slice(0, 8)
+        ])
+      )
+    );
+    diagnostics.push(
+      Object.freeze({
+        frameOrdinal,
+        depth,
+        surface: frame.page() === workbench ? "workbench" : "auxiliary",
+        ...documentState,
+        roleCounts,
+        publicStates,
+        visibleExpectedHeaders: Object.freeze({ c00: c00Headers, c01: c01Headers })
+      })
+    );
+  }
+  return Object.freeze(diagnostics);
 }
 
 async function observeFrameReadiness(frame: Frame): Promise<ComparisonGridReadinessEvidence | null> {
@@ -1003,6 +1296,25 @@ async function waitForNoEditorTabs(): Promise<void> {
   await waitFor(() => allEditorTabs().length === 0, EDITOR_CLOSE_TIMEOUT_MS, "all comparison editor tabs to close");
 }
 
+export function comparisonTabsOpenedAfter<T>(baselineTabs: readonly T[], currentTabs: readonly T[]): readonly T[] {
+  if (
+    !Array.isArray(baselineTabs) ||
+    !Array.isArray(currentTabs) ||
+    baselineTabs.length > 64 ||
+    currentTabs.length > 64 ||
+    new Set(baselineTabs).size !== baselineTabs.length ||
+    new Set(currentTabs).size !== currentTabs.length
+  ) {
+    throw new TypeError("Comparison tab discovery requires two bounded identity-unique snapshots.");
+  }
+  const current = new Set(currentTabs);
+  if (baselineTabs.some((tab) => !current.has(tab))) {
+    throw new Error("A pre-existing comparison tab disappeared while the product launch was measured.");
+  }
+  const baseline = new Set(baselineTabs);
+  return Object.freeze(currentTabs.filter((tab) => !baseline.has(tab)));
+}
+
 function tabInputUri(input: unknown): vscode.Uri | undefined {
   if (input instanceof vscode.TabInputText) return input.uri;
   if (input instanceof vscode.TabInputCustom) return input.uri;
@@ -1098,6 +1410,13 @@ export function comparisonRuntimeSelectorMatches(accessibleName: string): boolea
   return COMPARISON_RUNTIME_SELECTOR_ACCESSIBLE_NAME.test(normalizeText(accessibleName));
 }
 
+export function comparisonDialogLabelIsNonBlockingNotification(
+  accessibleName: string,
+  ariaModal: string | null
+): boolean {
+  return ariaModal !== "true" && /(?:^|,\s*)notification(?:,|$)/iu.test(normalizeText(accessibleName));
+}
+
 export function comparisonRuntimeOptionNamePattern(expectedLabel: string): RegExp {
   const prefix = "Open Wrangler comparison runtime ";
   const runId = expectedLabel.startsWith(prefix) ? expectedLabel.slice(prefix.length) : "";
@@ -1118,12 +1437,14 @@ export function comparisonRuntimeOptionMatches(expectedLabel: string, accessible
 export async function runDataWranglerRuntimeSelectionTopology<T>({
   discoverOptions,
   discoverSelectors,
+  discoverLocalInterpreterConnections,
   activate,
   waitForRetry,
   isWithinDeadline
 }: {
   discoverOptions: () => Promise<readonly T[]>;
   discoverSelectors: () => Promise<readonly T[]>;
+  discoverLocalInterpreterConnections?: () => Promise<readonly T[]>;
   activate: (candidate: T) => Promise<void>;
   waitForRetry: () => Promise<void>;
   isWithinDeadline: () => boolean;
@@ -1131,6 +1452,7 @@ export async function runDataWranglerRuntimeSelectionTopology<T>({
   if (
     typeof discoverOptions !== "function" ||
     typeof discoverSelectors !== "function" ||
+    (discoverLocalInterpreterConnections !== undefined && typeof discoverLocalInterpreterConnections !== "function") ||
     typeof activate !== "function" ||
     typeof waitForRetry !== "function" ||
     typeof isWithinDeadline !== "function"
@@ -1138,13 +1460,17 @@ export async function runDataWranglerRuntimeSelectionTopology<T>({
     throw new TypeError("Data Wrangler runtime selection requires bounded public-role discovery callbacks.");
   }
   let selectorActivated = false;
+  let localInterpreterConnectionActivated = false;
+  let persistentAmbiguity: "configured runtime" | "runtime selector" | "local interpreter connection" | undefined;
   while (isWithinDeadline()) {
     const optionCandidates = await discoverOptions();
     if (!Array.isArray(optionCandidates) || optionCandidates.length > 128) {
       throw new Error("Data Wrangler first-use setup returned a malformed configured-runtime option set.");
     }
     if (optionCandidates.length > 1) {
-      throw new Error("Data Wrangler first-use setup exposed more than one matching configured runtime option.");
+      persistentAmbiguity = "configured runtime";
+      await waitForRetry();
+      continue;
     }
     if (optionCandidates.length === 1) {
       await activate(optionCandidates[0] as T);
@@ -1157,20 +1483,71 @@ export async function runDataWranglerRuntimeSelectionTopology<T>({
         throw new Error("Data Wrangler first-use setup returned a malformed public runtime-selector set.");
       }
       if (selectorCandidates.length > 1) {
-        throw new Error("Data Wrangler first-use setup exposed more than one public runtime selector.");
+        persistentAmbiguity = "runtime selector";
+        await waitForRetry();
+        continue;
       }
       if (selectorCandidates.length === 1) {
         await activate(selectorCandidates[0] as T);
         selectorActivated = true;
       }
+    } else if (!localInterpreterConnectionActivated && discoverLocalInterpreterConnections) {
+      const connectionCandidates = await discoverLocalInterpreterConnections();
+      if (!Array.isArray(connectionCandidates) || connectionCandidates.length > 128) {
+        throw new Error("Data Wrangler first-use setup returned a malformed local-interpreter connection set.");
+      }
+      if (connectionCandidates.length > 1) {
+        persistentAmbiguity = "local interpreter connection";
+        await waitForRetry();
+        continue;
+      }
+      if (connectionCandidates.length === 1) {
+        await activate(connectionCandidates[0] as T);
+        localInterpreterConnectionActivated = true;
+      }
     }
+    persistentAmbiguity = undefined;
     await waitForRetry();
+  }
+  if (persistentAmbiguity !== undefined) {
+    throw new Error(`Data Wrangler first-use setup retained an ambiguous ${persistentAmbiguity} control set.`);
   }
   throw new Error(
     selectorActivated
-      ? "Data Wrangler first-use setup did not expose exactly one matching configured runtime option."
+      ? localInterpreterConnectionActivated
+        ? "Data Wrangler first-use setup did not expose exactly one matching configured runtime after choosing the local Python interpreter connection."
+        : "Data Wrangler first-use setup did not expose exactly one matching configured runtime option."
       : "Data Wrangler first-use setup did not expose one direct configured option or exactly one public runtime selector."
   );
+}
+
+export function prioritizeDataWranglerRuntimeSelectors<T>(
+  candidates: readonly T[],
+  classify: (candidate: T) => "post-click" | "workbench-main" | "other",
+  { allowWorkbenchMainFallback = false }: { readonly allowWorkbenchMainFallback?: boolean } = {}
+): readonly T[] {
+  if (
+    !Array.isArray(candidates) ||
+    candidates.length > 128 ||
+    typeof classify !== "function" ||
+    typeof allowWorkbenchMainFallback !== "boolean"
+  ) {
+    throw new TypeError("Data Wrangler runtime-selector prioritization requires a bounded candidate set.");
+  }
+  const buckets = {
+    "post-click": [] as T[],
+    "workbench-main": [] as T[],
+    other: [] as T[]
+  };
+  for (const candidate of candidates) {
+    const classification = classify(candidate);
+    if (!Object.hasOwn(buckets, classification)) {
+      throw new TypeError("Data Wrangler runtime-selector prioritization received an unknown surface.");
+    }
+    buckets[classification].push(candidate);
+  }
+  if (buckets["post-click"].length > 0) return Object.freeze([...buckets["post-click"]]);
+  return Object.freeze(allowWorkbenchMainFallback ? [...buckets["workbench-main"]] : []);
 }
 
 export function requireUniqueComparisonMatch<T>(matches: readonly T[], label: string): T | undefined {

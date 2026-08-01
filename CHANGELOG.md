@@ -6,6 +6,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Hardened the optional clean-room Data Wrangler feasibility smoke against its real first-use UI: it now follows
+  the post-click editor's public runtime control through VS Code's local-interpreter overlay to the exact correlated
+  kernelspec, waits out transient duplicate controls without clicking, ignores only non-modal notification toasts,
+  and fails closed on persistent ambiguity or connection stalls. The fixed-order smoke has completed the full
+  CSV/Parquet matrix, while repeated baseline connection stalls correctly withhold a report instead of being retried.
+  Any completed run remains explicitly non-publishable diagnostic evidence, not a performance claim or grounds for
+  naming a winner.
 - Local PySpark Classic and Connect variables now invalidate cached blocks when their dataframe is replaced or
   their Spark session stops. Recreating the same variable with the same schema lets the next current read reopen
   it on the exact originating notebook and kernel while preserving confirmed filters, ordered sorts, selection,

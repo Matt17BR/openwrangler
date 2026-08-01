@@ -432,14 +432,19 @@ product profile. It uses fixed Open Wrangler-then-Data Wrangler order, removes d
 and never falls back to the current desktop or normal profiles. Each product
 profile disables Git repository discovery and excludes the immutable synthetic fixture tree from filesystem
 watching so unrelated first-run notifications cannot alter the readiness boundary. Grid discovery ignores
-zero-area accessibility-tree remnants and waits for transient visible workbench surfaces to clear; a persistent
-Quick Input, dialog, or modal consumes the bounded deadline and fails. Before Data Wrangler's ordinary warm-up, a
-separate untimed editor phase exposes one private, uniquely named Jupyter kernelspec whose `argv[0]` is the exact
-pinned comparison interpreter. The harness launches the public Explorer action and discovers candidates only through
+zero-area accessibility-tree remnants and non-modal VS Code notification toasts, while still requiring the target
+editor and renderer to be pointer-usable. It waits for transient visible workbench surfaces to clear; a persistent
+Quick Input, modal dialog, or pointer obstruction consumes the bounded deadline and fails. Before Data Wrangler's
+ordinary warm-up, a separate untimed editor phase exposes one private, uniquely named Jupyter kernelspec whose
+`argv[0]` is the exact pinned comparison interpreter. The harness launches the public Explorer action and discovers candidates only through
 public roles plus their computed accessible names. It first accepts exactly one matching kernelspec option exposed
-directly in the existing native workbench Quick Input. Otherwise it activates exactly one runtime selector on any
-existing or newly created accessible surface and then requires exactly one matching option. Missing or ambiguous
-controls fail closed; raw DOM labels, private selectors, and frame-creation assumptions are not selection evidence.
+directly by the product. Otherwise it requires exactly one runtime selector on the post-click Data Wrangler editor
+surface, activates the exact public **Connect using local Python interpreter** route that this action opens (including
+VS Code's causally triggered main-workbench overlay), and then requires exactly one matching kernelspec option.
+Transient duplicate representations are retried without activating any candidate; persistent ambiguity, a global
+workbench runtime selector without a product-owned selector, a missing route, or a persistent **Connecting to
+runtime...** state fails at the bounded deadline without retrying the Explorer action. Raw DOM labels, private
+selectors, and frame creation alone are not selection evidence.
 This setup phase must expose both the generic grid and the exact configured ipykernel process, then close cleanly. A
 second editor launch reuses the exact same isolated user-data directory and private Jupyter environment; its ordinary
 untimed warm-up must reach the grid without setup interaction before either timed diagnostic begins. The setup receipt
@@ -448,9 +453,11 @@ is therefore excluded from all recorded durations. The harness never seeds exten
 package contents.
 
 Each product then gets one untimed warm-up and one resident-cache CSV and Parquet diagnostic launch through its visible
-Files Explorer context menu. Open Wrangler's primary CSV path performs automatic import detection inside the click-to-grid
-boundary; the smoke does not answer delimiter, encoding, header, or quote prompts. The exact visible Explorer item
-must have one unambiguous basename, and cache residency is re-proven immediately before the action click.
+Files Explorer context menu. Each ready launch closes cleanly before the next begins; no cleanup enters a measured
+click-to-grid duration, and the sequence adds neither sleeps nor user-action retries. Open Wrangler's primary CSV path
+performs automatic import detection inside the click-to-grid boundary;
+the smoke does not answer delimiter, encoding, header, or quote prompts. The exact visible Explorer item must have one
+unambiguous basename, and cache residency is re-proven immediately before the action click.
 
 Readiness is product-neutral: a visible ARIA grid, ARIA table, or native table must appear on a post-click renderer
 surface, expose the deterministic `c00` and `c01` headers plus sentinel cells, report a non-busy state, and retain
