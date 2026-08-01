@@ -53,12 +53,13 @@ const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
 const FULL_CI_IF =
-  "${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}";
-const MATRIX_CONTEXT_IF = "${{ always() }}";
+  "${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}";
+const MATRIX_CONTEXT_IF = "${{ !cancelled() }}";
 const DOCUMENTATION_CONTEXT_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only == 'true' }}";
 const SUBSTANTIVE_MATRIX_STEP_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}";
+const PROTECTED_PRODUCT_BRANCHES = ["main", "release/1.x"];
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
@@ -85,6 +86,18 @@ function nodeTestFiles(command, group) {
   assert.equal(new Set(files).size, files.length, `${group} must not list a script contract twice.`);
   return files;
 }
+
+test("product CI covers both protected integration and v1 maintenance branches", () => {
+  const ci = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
+  assert.deepEqual(ci?.on?.push?.branches, PROTECTED_PRODUCT_BRANCHES);
+  assert.equal(Object.hasOwn(ci?.on ?? {}, "pull_request"), true);
+
+  for (const path of ["codeql.yml", "cross-platform.yml"]) {
+    const workflow = parseYaml(readFileSync(new URL(`../.github/workflows/${path}`, import.meta.url), "utf8"));
+    assert.deepEqual(workflow?.on?.pull_request?.branches, PROTECTED_PRODUCT_BRANCHES);
+    assert.deepEqual(workflow?.on?.push?.branches, PROTECTED_PRODUCT_BRANCHES);
+  }
+});
 
 test("script groups are pairwise-disjoint and exactly cover the filesystem inventory", () => {
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -486,6 +499,13 @@ test("PR workflows cancel only obsolete pull-request heads", () => {
       Object.keys(workflow?.on ?? {}).some((eventName) => eventName !== "pull_request"),
       `${relativePath} must retain non-PR evidence that the cancellation expression leaves uninterrupted.`
     );
+    for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
+      assert.equal(
+        String(job?.if ?? "").includes("always()"),
+        false,
+        `${relativePath}:${jobId} must not resist cancellation with always().`
+      );
+    }
   }
 });
 
@@ -604,7 +624,7 @@ test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX"
   assert.deepEqual(job?.needs, ["classify", "canonical-vsix"]);
   assert.equal(
     normalizedCommand(job?.if),
-    "${{ always() && needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.released_jupyter_required == 'true' }}"
+    "${{ !cancelled() && needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.released_jupyter_required == 'true' }}"
   );
   assert.equal(job?.["runs-on"], "ubuntu-latest");
   assert.equal(job?.["timeout-minutes"], 90);
@@ -976,7 +996,7 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
   assert.equal(aggregate?.name, undefined, "The protected validate context must keep its existing name.");
   assert.deepEqual(REQUIRED_CI_JOBS, EXPECTED_BLOCKING_CI_JOBS);
   assert.deepEqual(aggregate?.needs, [...EXPECTED_BLOCKING_CI_JOBS, CONDITIONAL_CI_JOB, OPTIONAL_CI_JOB]);
-  assert.equal(aggregate?.if, "${{ always() }}");
+  assert.equal(aggregate?.if, "${{ !cancelled() }}");
   assert.equal(aggregate?.["runs-on"], "ubuntu-latest");
   assert.equal(aggregate?.["timeout-minutes"], 5);
   assert.equal(aggregate?.["continue-on-error"], undefined);
@@ -1161,7 +1181,7 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
   assert.deepEqual(job?.needs, ["classify", "canonical-vsix"]);
   assert.equal(job?.["runs-on"], "ubuntu-24.04");
   assert.equal(job?.["timeout-minutes"], 90);
-  assert.match(job?.if ?? "", /always\(\)/u);
+  assert.match(job?.if ?? "", /!cancelled\(\)/u);
   assert.match(job?.if ?? "", /needs\.classify\.outputs\.documentation_only != 'true'/u);
   assert.match(job?.if ?? "", /github\.event_name == 'pull_request'/u);
   assert.match(job?.if ?? "", /contains\(github\.event\.pull_request\.labels\.\*\.name, 'acceptance:remote-ssh'\)/u);

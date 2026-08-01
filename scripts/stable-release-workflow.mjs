@@ -1,19 +1,21 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { load as parseYaml } from "js-yaml";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
-const MAX_CONTRACT_BYTES = 16 * 1024 * 1024;
-const MAX_CONTRACT_DEPTH = 128;
-const MAX_CONTRACT_NODES = 200_000;
-const AUDITED_WORKFLOW_SHA256 = "750a9bc60291c4a00b53917b40276ca3214cc678a10ca4cf453969809faa096c";
 const EVENT_SHA = "${{ github.sha }}";
+const EVENT_REF = "${{ github.ref }}";
+const EVENT_REF_TYPE = "${{ github.ref_type }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
+const RELEASE_SOURCE_BRANCH = "${{ steps.release_metadata.outputs.source_branch }}";
+const RELEASE_SOURCE_REF = "${{ steps.release_metadata.outputs.source_ref }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
 const PUBLISH_TAG_COMMAND = "node scripts/push-stable-release-tag.mjs";
+const STABLE_PACKAGE_COMMAND =
+  "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.candidate.vsix";
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
+const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const SETUP_JAVA_ACTION = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
@@ -33,7 +35,7 @@ const PACKAGED_EDITOR_COMMAND =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
 const PREPARED_CURSOR_XVFB = "${{ steps.prepare_cursor_xvfb.outputs.executable }}";
 const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
-const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release"];
+const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release", "promote-open-vsx"];
 const REMOTE_SSH_SYSTEM_ANCESTOR_REPAIR = [
   "system_runtime_ancestors=(",
   "  /usr",
@@ -63,6 +65,22 @@ const CANONICAL_PATHS = [
   "canonical-release/openwrangler.vsix.sha256",
   "canonical-release/openwrangler.vsix.provenance.json"
 ];
+const RECOGNIZED_RELEASE_SOURCE_RUN = `test "$EVENT_REF_TYPE" = "branch"
+case "$EVENT_REF" in
+  refs/heads/main|refs/heads/release/1.x) ;;
+  *) exit 1 ;;
+esac
+case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
+test "\${#EXPECTED_SHA}" -eq 40`;
+const EXACT_VERSION_SOURCE_RUN = `case "$EXPECTED_SOURCE_BRANCH" in
+  main|release/1.x) ;;
+  *) exit 1 ;;
+esac
+test "$EXPECTED_SOURCE_REF" = "refs/heads/$EXPECTED_SOURCE_BRANCH"
+test "$EVENT_REF" = "$EXPECTED_SOURCE_REF"
+test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
+test -z "$(git status --porcelain --untracked-files=no)"
+test "$(git rev-parse --verify refs/remotes/origin/$EXPECTED_SOURCE_BRANCH^{commit})" = "$EXPECTED_SHA"`;
 
 function command(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : "";
@@ -97,73 +115,6 @@ function exactKeys(value, expected) {
   const actual = Object.keys(value).sort();
   const sortedExpected = [...expected].sort();
   return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index]);
-}
-
-function auditedGraphSha256(value) {
-  const digest = createHash("sha256");
-  const active = new WeakSet();
-  let bytes = 0;
-  let nodes = 0;
-
-  const append = (text) => {
-    bytes += Buffer.byteLength(text, "utf8");
-    if (bytes > MAX_CONTRACT_BYTES) throw new Error("The stable release workflow exceeds its canonical byte bound.");
-    digest.update(text, "utf8");
-  };
-  const appendString = (text) => {
-    append(`s${Buffer.byteLength(text, "utf8")}:`);
-    append(text);
-  };
-  const visit = (current, depth) => {
-    nodes += 1;
-    if (nodes > MAX_CONTRACT_NODES) throw new Error("The stable release workflow exceeds its node bound.");
-    if (depth > MAX_CONTRACT_DEPTH) throw new Error("The stable release workflow exceeds its depth bound.");
-    if (current === null) {
-      append("n;");
-      return;
-    }
-    if (typeof current === "string") {
-      appendString(current);
-      return;
-    }
-    if (typeof current === "boolean") {
-      append(current ? "b1;" : "b0;");
-      return;
-    }
-    if (typeof current === "number") {
-      if (!Number.isFinite(current)) throw new Error("The stable release workflow contains a non-finite number.");
-      append(`d${Object.is(current, -0) ? "-0" : String(current)};`);
-      return;
-    }
-    if (typeof current !== "object") {
-      throw new Error("The stable release workflow contains an unsupported scalar.");
-    }
-    if (active.has(current)) throw new Error("The stable release workflow contains a cyclic YAML alias.");
-    active.add(current);
-    try {
-      if (Array.isArray(current)) {
-        append("a[");
-        for (const item of current) visit(item, depth + 1);
-        append("];");
-        return;
-      }
-      const prototype = Object.getPrototypeOf(current);
-      if (prototype !== Object.prototype && prototype !== null) {
-        throw new Error("The stable release workflow contains a non-plain object.");
-      }
-      append("o{");
-      for (const key of Object.keys(current).sort()) {
-        appendString(key);
-        visit(current[key], depth + 1);
-      }
-      append("};");
-    } finally {
-      active.delete(current);
-    }
-  };
-
-  visit(value, 0);
-  return digest.digest("hex");
 }
 
 function steps(job) {
@@ -231,6 +182,96 @@ function inspectCheckout(job, name, problems) {
     options["persist-credentials"] !== false
   ) {
     problems.push(`${name} checkout must pin github.sha, fetch history, and persist no credentials.`);
+  }
+}
+
+function inspectPackageSourceBinding(job, problems) {
+  const jobSteps = steps(job);
+  const recognizedSteps = jobSteps.filter((step) => step?.name === "Require a recognized protected release source");
+  const recognized = recognizedSteps[0];
+  if (
+    recognizedSteps.length !== 1 ||
+    !exactKeys(recognized, ["name", "env", "run"]) ||
+    !exactKeys(recognized.env, ["EVENT_REF", "EVENT_REF_TYPE", "EXPECTED_SHA"]) ||
+    recognized.env.EVENT_REF !== EVENT_REF ||
+    recognized.env.EVENT_REF_TYPE !== EVENT_REF_TYPE ||
+    recognized.env.EXPECTED_SHA !== EVENT_SHA ||
+    command(recognized.run) !== command(RECOGNIZED_RELEASE_SOURCE_RUN)
+  ) {
+    problems.push("package must reject tags and unrecognized release branches before checkout or code execution.");
+  }
+
+  const checkout = jobSteps.find((step) => step?.uses === CHECKOUT_ACTION);
+  const setupNodeSteps = jobSteps.filter((step) => step?.uses === SETUP_NODE_ACTION);
+  const setupNode = setupNodeSteps[0];
+  if (
+    setupNodeSteps.length !== 1 ||
+    !exactKeys(setupNode, ["uses", "with"]) ||
+    !exactKeys(setupNode.with, ["node-version", "cache"]) ||
+    setupNode.with["node-version"] !== 22 ||
+    setupNode.with.cache !== "npm"
+  ) {
+    problems.push("package must provision one pinned Node 22 runtime before release metadata validation.");
+  }
+
+  const metadataSteps = jobSteps.filter((step) => step?.id === "release_metadata");
+  const metadata = metadataSteps[0];
+  if (
+    metadataSteps.length !== 1 ||
+    !exactKeys(metadata, ["id", "name", "env", "run"]) ||
+    metadata.name !== "Validate stable release metadata" ||
+    !exactKeys(metadata.env, ["RELEASE_TAG"]) ||
+    metadata.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(metadata.run) !== "node scripts/release-metadata.mjs"
+  ) {
+    problems.push("package must derive the release channel and version-owned source from reviewed metadata.");
+  }
+
+  const rejectSteps = jobSteps.filter((step) => step?.name === "Reject preview metadata");
+  const reject = rejectSteps[0];
+  if (
+    rejectSteps.length !== 1 ||
+    !exactKeys(reject, ["name", "if", "run"]) ||
+    reject.if !== "${{ steps.release_metadata.outputs.prerelease != 'false' }}" ||
+    command(reject.run) !== "exit 1"
+  ) {
+    problems.push("package must reject preview metadata in the stable workflow.");
+  }
+
+  const exactSteps = jobSteps.filter(
+    (step) => step?.name === "Require the exact version-owned protected branch commit"
+  );
+  const exact = exactSteps[0];
+  if (
+    exactSteps.length !== 1 ||
+    !exactKeys(exact, ["name", "env", "run"]) ||
+    !exactKeys(exact.env, ["EVENT_REF", "EXPECTED_SHA", "EXPECTED_SOURCE_BRANCH", "EXPECTED_SOURCE_REF"]) ||
+    exact.env.EVENT_REF !== EVENT_REF ||
+    exact.env.EXPECTED_SHA !== EVENT_SHA ||
+    exact.env.EXPECTED_SOURCE_BRANCH !== RELEASE_SOURCE_BRANCH ||
+    exact.env.EXPECTED_SOURCE_REF !== RELEASE_SOURCE_REF ||
+    command(exact.run) !== command(EXACT_VERSION_SOURCE_RUN)
+  ) {
+    problems.push("package must bind the event commit to the exact protected branch owned by its numeric version.");
+  }
+
+  const remotePreflights = jobSteps.filter(
+    (step) => command(step?.run) === "node scripts/prepare-stable-candidate-tag.mjs --verify-remote"
+  );
+  const remotePreflight = remotePreflights[0];
+  if (
+    remotePreflights.length !== 1 ||
+    jobSteps.indexOf(recognized) !== 0 ||
+    jobSteps.indexOf(checkout) !== 1 ||
+    jobSteps.indexOf(setupNode) !== 2 ||
+    jobSteps.indexOf(metadata) !== 3 ||
+    jobSteps.indexOf(reject) !== 4 ||
+    jobSteps.indexOf(exact) !== 5 ||
+    jobSteps.indexOf(remotePreflight) !== 6
+  ) {
+    problems.push(
+      "package source recognition, exact checkout, metadata validation, branch binding, and tag preflight must be the first ordered boundary."
+    );
   }
 }
 
@@ -394,16 +435,6 @@ export function inspectStableReleaseWorkflow(source) {
     problems.push(`Stable release must contain exactly these jobs: ${JOBS.join(", ")}.`);
     return problems;
   }
-  try {
-    if (auditedGraphSha256(workflow) !== AUDITED_WORKFLOW_SHA256) {
-      problems.push(
-        "Stable release must match the reviewed dispatch text, runners, ordered steps, environments, commands, actions, and evidence uploads."
-      );
-    }
-  } catch {
-    problems.push("Stable release must be a bounded, acyclic graph of plain YAML values.");
-    return problems;
-  }
   for (const [jobName, job] of Object.entries(workflow.jobs)) {
     if (job?.env !== undefined || job?.defaults !== undefined) {
       problems.push(`${jobName} must not inherit job-level environment or shell defaults.`);
@@ -448,9 +479,11 @@ export function inspectStableReleaseWorkflow(source) {
   inspectPinnedActions(workflow, problems);
 
   const allRuns = Object.values(workflow.jobs).flatMap((job) => steps(job).map((step) => command(step?.run)));
-  const packageRuns = allRuns.filter((run) => /^npm run package(?:\s|$)/u.test(run));
-  if (packageRuns.length !== 1 || packageRuns[0] !== "npm run package -- --out openwrangler.candidate.vsix") {
-    problems.push("The ordinary stable VSIX must be packaged exactly once.");
+  const packageRuns = allRuns.filter((run) => run.includes("npm run package:prepared"));
+  if (packageRuns.length !== 1 || packageRuns[0] !== STABLE_PACKAGE_COMMAND) {
+    problems.push(
+      "The ordinary stable VSIX must be built and packaged exactly once without duplicating source suites."
+    );
   }
   const publicationRuns = allRuns.filter((run) => run.includes("scripts/create-canonical-release-artifact.mjs"));
   if (
@@ -461,13 +494,8 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("The producer must publish one ordinary canonical stable artifact set.");
   }
-  const openVsxPublishRuns = allRuns.filter((run) => /(?:^|\s)ovsx\s+publish(?:\s|$)/u.test(run));
-  if (
-    openVsxPublishRuns.length !== 1 ||
-    openVsxPublishRuns[0] !== "npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix" ||
-    /(?:^|\s)vsce\s+publish(?:\s|$)|ovsx\s+publish[^\n]*--pre-release|marketplace.*publish/iu.test(source)
-  ) {
-    problems.push("Stable publication must promote only the exact stable VSIX to Open VSX.");
+  if (allRuns.some((run) => /(?:^|\s)(?:ovsx|vsce)\s+publish(?:\s|$)/u.test(run))) {
+    problems.push("Stable release must delegate registry promotion instead of publishing from its GitHub job.");
   }
   if (allRuns.filter((run) => run === "node scripts/prepare-stable-candidate-tag.mjs --verify-remote").length !== 2) {
     problems.push("Stable packaging and final publication must both accept only an absent or exact remote tag.");
@@ -475,6 +503,7 @@ export function inspectStableReleaseWorkflow(source) {
 
   const packaging = workflow.jobs.package;
   inspectCheckout(packaging, "package", problems);
+  inspectPackageSourceBinding(packaging, problems);
   if (packaging.permissions !== undefined || packaging.environment !== undefined) {
     problems.push("package must inherit read-only permissions and use no protected release environment.");
   }
@@ -522,7 +551,11 @@ export function inspectStableReleaseWorkflow(source) {
     if (
       steps(consumer).some((step) => {
         const run = command(step?.run);
-        return /^npm run package(?:\s|$)/u.test(run) || run.includes("scripts/create-canonical-release-artifact.mjs");
+        return (
+          /^npm run package(?:\s|$)/u.test(run) ||
+          run.includes("npm run package:prepared") ||
+          run.includes("scripts/create-canonical-release-artifact.mjs")
+        );
       })
     ) {
       problems.push(`${consumerName} must consume the exact artifact without repackaging it.`);
@@ -853,8 +886,16 @@ export function inspectStableReleaseWorkflow(source) {
   if (release.environment !== "publishing") {
     problems.push("release must use the existing protected publishing environment.");
   }
-  if (release["runs-on"] !== "ubuntu-24.04" || release["timeout-minutes"] !== 40) {
-    problems.push("release must retain bounded Ubuntu publication time for registry propagation.");
+  if (release["runs-on"] !== "ubuntu-24.04" || release["timeout-minutes"] !== 20) {
+    problems.push("release must retain bounded Ubuntu publication time.");
+  }
+  if (
+    !exactKeys(release.concurrency, ["group", "cancel-in-progress", "queue"]) ||
+    release.concurrency.group !== "openwrangler-release-publication" ||
+    release.concurrency["cancel-in-progress"] !== false ||
+    release.concurrency.queue !== "max"
+  ) {
+    problems.push("release must use the global non-cancelling publication queue.");
   }
   if (!exactKeys(release.permissions, ["contents"]) || release.permissions.contents !== "write") {
     problems.push("release must have only contents: write.");
@@ -894,8 +935,15 @@ export function inspectStableReleaseWorkflow(source) {
   if (
     !exactKeys(githubReleaseStep, ["name", "env", "run"]) ||
     githubReleaseStep.name !== "Publish or verify the exact GitHub stable release" ||
-    !exactKeys(githubReleaseStep.env, ["EXPECTED_SHA", "GITHUB_REPOSITORY", "GITHUB_TOKEN", "RELEASE_TAG"]) ||
+    !exactKeys(githubReleaseStep.env, [
+      "EXPECTED_SHA",
+      "GITHUB_IMMUTABLE_RELEASES_EXPECTED",
+      "GITHUB_REPOSITORY",
+      "GITHUB_TOKEN",
+      "RELEASE_TAG"
+    ]) ||
     githubReleaseStep.env.EXPECTED_SHA !== EVENT_SHA ||
+    githubReleaseStep.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED !== "false" ||
     githubReleaseStep.env.GITHUB_REPOSITORY !== "${{ github.repository }}" ||
     githubReleaseStep.env.GITHUB_TOKEN !== "${{ github.token }}" ||
     githubReleaseStep.env.RELEASE_TAG !== RELEASE_TAG
@@ -905,65 +953,16 @@ export function inspectStableReleaseWorkflow(source) {
     problems.push("GitHub release publication must immediately follow the exact lightweight tag push.");
   }
 
-  const tokenStep = findRun(release, "npx --no-install ovsx verify-pat Matt17BR");
+  const openVsxPromotion = workflow.jobs["promote-open-vsx"];
   if (
-    !exactKeys(tokenStep, ["name", "env", "run"]) ||
-    tokenStep.name !== "Verify the Open VSX publisher token" ||
-    !exactKeys(tokenStep.env, ["OVSX_PAT"]) ||
-    tokenStep.env.OVSX_PAT !== "${{ secrets.OVSX_PAT }}"
+    !exactKeys(openVsxPromotion, ["needs", "if", "uses", "with"]) ||
+    openVsxPromotion.needs !== "release" ||
+    openVsxPromotion.if !== "${{ inputs.publish == true && needs.release.result == 'success' }}" ||
+    openVsxPromotion.uses !== "./.github/workflows/open-vsx-promotion.yml" ||
+    !exactKeys(openVsxPromotion.with, ["release_tag"]) ||
+    openVsxPromotion.with.release_tag !== RELEASE_TAG
   ) {
-    problems.push("release must verify the protected Open VSX token for Matt17BR without command-line exposure.");
-  }
-  const preflightStep = findRun(release, "node scripts/verify-open-vsx-release.mjs canonical-release --preflight");
-  if (
-    !exactKeys(preflightStep, ["name", "env", "run"]) ||
-    preflightStep.name !== "Reject a conflicting existing Open VSX version" ||
-    !exactKeys(preflightStep.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
-    preflightStep.env.EXPECTED_SHA !== EVENT_SHA ||
-    preflightStep.env.RELEASE_TAG !== RELEASE_TAG
-  ) {
-    problems.push("release must fail closed on a conflicting existing Open VSX version.");
-  } else {
-    inspectAdjacentCanonicalVerification(
-      releaseJobSteps,
-      preflightStep,
-      "canonical_open_vsx_preflight",
-      "Reverify the exact canonical artifact before Open VSX preflight",
-      "Open VSX preflight",
-      problems
-    );
-  }
-  const openVsxPublishStep = findRun(
-    release,
-    "npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix"
-  );
-  if (
-    !exactKeys(openVsxPublishStep, ["name", "env", "run"]) ||
-    openVsxPublishStep.name !== "Publish the exact stable VSIX to Open VSX" ||
-    !exactKeys(openVsxPublishStep.env, ["OVSX_PAT"]) ||
-    openVsxPublishStep.env.OVSX_PAT !== "${{ secrets.OVSX_PAT }}"
-  ) {
-    problems.push("release must publish the canonical stable VSIX with only the protected Open VSX token.");
-  } else {
-    inspectAdjacentCanonicalVerification(
-      releaseJobSteps,
-      openVsxPublishStep,
-      "canonical_open_vsx_publish",
-      "Reverify the exact canonical artifact before Open VSX publication",
-      "Open VSX publication",
-      problems
-    );
-  }
-  const openVsxVerifyStep = findRun(release, "node scripts/verify-open-vsx-release.mjs canonical-release --verify");
-  if (
-    !exactKeys(openVsxVerifyStep, ["name", "env", "run"]) ||
-    openVsxVerifyStep.name !== "Verify the exact public Open VSX release" ||
-    !exactKeys(openVsxVerifyStep.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
-    openVsxVerifyStep.env.EXPECTED_SHA !== EVENT_SHA ||
-    openVsxVerifyStep.env.RELEASE_TAG !== RELEASE_TAG ||
-    releaseJobSteps.indexOf(openVsxVerifyStep) !== releaseJobSteps.indexOf(openVsxPublishStep) + 1
-  ) {
-    problems.push("release must immediately verify the exact public Open VSX metadata, checksum, and VSIX.");
+    problems.push("Stable release must explicitly call the protected Open VSX promotion after GitHub publication.");
   }
 
   const writeJobs = Object.entries(workflow.jobs)

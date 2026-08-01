@@ -1,11 +1,9 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { load as parseYaml } from "js-yaml";
 
 const MAX_WORKFLOW_BYTES = 64 * 1024;
-const AUDITED_WORKFLOW_SHA256 = "1f83263a4c263fb7155c7069b7c33dc279d13755acf57bac7a4a0843527f82d1";
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const TAG_EXPRESSION = "${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}";
@@ -32,8 +30,16 @@ const EXPECTED_RUNS = Object.freeze([
   "npx --no-install ovsx verify-pat Matt17BR",
   "node scripts/verify-registry-release-artifact.mjs canonical-release",
   "node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight",
+  "node scripts/registry-release-source.mjs release-source",
   "node scripts/verify-registry-release-artifact.mjs canonical-release",
-  "npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix",
+  `if [ "$RELEASE_PRERELEASE" = "true" ]; then
+npx --no-install ovsx publish --pre-release --skip-duplicate canonical-release/openwrangler.vsix
+elif [ "$RELEASE_PRERELEASE" = "false" ]; then
+npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
+else
+exit 1
+fi
+`,
   "node scripts/verify-open-vsx-github-release.mjs canonical-release --verify",
   "node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source"
 ]);
@@ -49,6 +55,10 @@ function exactKeys(value, keys) {
 
 function runSteps(job) {
   return job.steps.filter((step) => typeof step?.run === "string").map((step) => step.run);
+}
+
+function command(value) {
+  return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : "";
 }
 
 function exactCommitEnvironment(step) {
@@ -99,11 +109,12 @@ export function inspectOpenVsxPromotionWorkflow(source) {
   if (
     !exactKeys(workflow.permissions, ["contents"]) ||
     workflow.permissions.contents !== "read" ||
-    !exactKeys(workflow.concurrency, ["group", "cancel-in-progress"]) ||
-    workflow.concurrency.group !== `open-vsx-${TAG_EXPRESSION}` ||
-    workflow.concurrency["cancel-in-progress"] !== false
+    !exactKeys(workflow.concurrency, ["group", "cancel-in-progress", "queue"]) ||
+    workflow.concurrency.group !== "openwrangler-release-publication" ||
+    workflow.concurrency["cancel-in-progress"] !== false ||
+    workflow.concurrency.queue !== "max"
   ) {
-    problems.push("Open VSX promotion must be read-only and serialize one release tag without cancellation.");
+    problems.push("Open VSX promotion must be read-only and use the global non-cancelling publication queue.");
   }
   if (!exactKeys(workflow.jobs, ["promote"])) {
     problems.push("Open VSX promotion must contain exactly one protected promotion job.");
@@ -144,12 +155,12 @@ export function inspectOpenVsxPromotionWorkflow(source) {
   const runs = runSteps(job);
   const automationSource = job.steps.find((step) => step?.id === "automation_source");
   const multilineGuard = automationSource?.run;
-  const normalized = runs.filter((run) => run !== multilineGuard);
+  const normalized = runs.filter((run) => run !== multilineGuard).map(command);
   if (
     typeof multilineGuard !== "string" ||
     !multilineGuard.includes('test "$(git rev-parse --verify HEAD^{commit})"') ||
     !multilineGuard.includes("printf 'automation_commit=%s\\n' \"$(git rev-parse --verify HEAD^{commit})\"") ||
-    JSON.stringify(normalized) !== JSON.stringify(EXPECTED_RUNS)
+    JSON.stringify(normalized) !== JSON.stringify(EXPECTED_RUNS.map(command))
   ) {
     problems.push("Open VSX promotion command order differs from the reviewed exact-artifact flow.");
   }
@@ -176,19 +187,20 @@ export function inspectOpenVsxPromotionWorkflow(source) {
     );
   }
   const secretSteps = job.steps.filter((step) => step?.env?.OVSX_PAT !== undefined);
+  const tokenStep = secretSteps.find((step) => step?.run === "npx --no-install ovsx verify-pat Matt17BR");
+  const publishStep = secretSteps.find((step) => typeof step?.run === "string" && step.run.includes("ovsx publish"));
   if (
     secretSteps.length !== 2 ||
-    secretSteps.some((step) => !exactKeys(step.env, ["OVSX_PAT"]) || step.env.OVSX_PAT !== "${{ secrets.OVSX_PAT }}")
+    !exactKeys(tokenStep?.env, ["OVSX_PAT"]) ||
+    tokenStep.env.OVSX_PAT !== "${{ secrets.OVSX_PAT }}" ||
+    !exactKeys(publishStep?.env, ["OVSX_PAT", "RELEASE_PRERELEASE"]) ||
+    publishStep.env.OVSX_PAT !== "${{ secrets.OVSX_PAT }}" ||
+    publishStep.env.RELEASE_PRERELEASE !== PRERELEASE_EXPRESSION
   ) {
-    problems.push("Only token verification and publication may receive protected OVSX_PAT.");
+    problems.push("Only token verification and channel-bound publication may receive protected OVSX_PAT.");
   }
-  if (
-    /(?:npm\s+(?:run\s+)?(?:build|package|pack|version)|vsce\s+package|git\s+(?:tag|push)|--pre-release)/u.test(source)
-  ) {
-    problems.push("Open VSX promotion must not rebuild, retag, push, or expose a channel/token override.");
-  }
-  if (createHash("sha256").update(source, "utf8").digest("hex") !== AUDITED_WORKFLOW_SHA256) {
-    problems.push("Open VSX promotion YAML differs from the explicitly reviewed workflow bytes.");
+  if (/(?:npm\s+(?:run\s+)?(?:build|package|pack|version)|vsce\s+package|git\s+(?:tag|push))/u.test(source)) {
+    problems.push("Open VSX promotion must not rebuild, retag, or push.");
   }
   return problems;
 }

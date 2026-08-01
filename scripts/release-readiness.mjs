@@ -309,6 +309,87 @@ export function inspectStableReleaseReadiness(options) {
   return inspectReleaseReadiness(options);
 }
 
+export function inspectPreviewReleaseReadiness({
+  releaseTag,
+  sourcePackageJson,
+  pythonVersionFile,
+  packagedPackageJson,
+  packagedPythonVersionFile,
+  vsixManifest
+}) {
+  const problems = [];
+  const sourceManifest = parseJsonObject(sourcePackageJson, "Source package.json", problems);
+  const packagedManifest = parseJsonObject(packagedPackageJson, "Packaged package.json", problems);
+  const sourceVersion = typeof sourceManifest?.version === "string" ? sourceManifest.version : undefined;
+  const pythonVersion = parsePythonRuntimeVersion(
+    pythonVersionFile,
+    "python/openwrangler_runtime/version.py",
+    problems
+  );
+  const packagedPythonVersion = parsePythonRuntimeVersion(
+    packagedPythonVersionFile,
+    "Packaged Python runtime version.py",
+    problems
+  );
+
+  const sourceVersionClassification = classifyNumericReleaseVersion(sourceVersion);
+  if (sourceVersionClassification === undefined) {
+    problems.push("Source package.json version must use major.minor.patch syntax.");
+  } else if (sourceVersionClassification.channel !== "preview") {
+    problems.push(`Source package.json version ${sourceVersion} is not reserved for preview releases.`);
+  }
+  for (const [field, expected] of Object.entries(STABLE_PACKAGE_IDENTITY)) {
+    if (sourceManifest?.[field] !== expected) {
+      problems.push(`Source package.json ${field} must be ${JSON.stringify(expected)} for a preview release.`);
+    }
+  }
+  if (sourceManifest?.preview !== true) {
+    problems.push("Source package.json preview must be true for a preview release.");
+  }
+  if (sourceVersion !== undefined && releaseTag !== `v${sourceVersion}`) {
+    problems.push(`Release tag ${String(releaseTag)} does not match source version v${sourceVersion}.`);
+  }
+  if (sourceVersion !== undefined && pythonVersion !== undefined && sourceVersion !== pythonVersion) {
+    problems.push(`Python runtime version ${pythonVersion} does not match source package version ${sourceVersion}.`);
+  }
+  if (sourceVersion !== undefined && packagedPythonVersion !== undefined && sourceVersion !== packagedPythonVersion) {
+    problems.push(
+      `Packaged Python runtime version ${packagedPythonVersion} does not match source package version ${sourceVersion}.`
+    );
+  }
+
+  if (packagedManifest?.preview !== true) {
+    problems.push("Packaged package.json preview must be true for a preview release.");
+  }
+  if (
+    sourceManifest !== undefined &&
+    packagedManifest !== undefined &&
+    !isDeepStrictEqual(sourceManifest, packagedManifest)
+  ) {
+    problems.push(
+      "Packaged package.json must exactly match source package.json; no packaging transformations are permitted."
+    );
+  }
+  problems.push(...inspectVsixPreReleaseMetadata(packagedPackageJson, vsixManifest));
+
+  const identity = parseVsixIdentity(vsixManifest);
+  if (identity === undefined) {
+    problems.push("VSIX manifest must contain one canonical Metadata > Identity element.");
+  } else {
+    if (identity.id !== sourceManifest?.name) {
+      problems.push("VSIX identity ID does not match source package.json name.");
+    }
+    if (identity.publisher !== sourceManifest?.publisher) {
+      problems.push("VSIX identity publisher does not match source package.json publisher.");
+    }
+    if (identity.version !== sourceVersion) {
+      problems.push("VSIX identity version does not match source package.json version.");
+    }
+  }
+
+  return [...new Set(problems)];
+}
+
 export function inspectStableSourceReadiness({ featureParity, readme, trackedEvidencePaths = new Set() }) {
   return [
     ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths),

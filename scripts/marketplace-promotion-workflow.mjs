@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "03850f86f4c587687c94fe7a60034742c1b6a840151f63ac277b3f54fe9ec28d";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "64e94a4f81aa28e354803db5490b479162f57afbc14d92129a89854fd6a870b0";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -110,12 +110,12 @@ export function inspectMarketplacePromotionPipeline(source) {
   if (
     !exactKeys(pipeline.trigger, ["batch", "branches", "tags"]) ||
     pipeline.trigger.batch !== false ||
-    JSON.stringify(pipeline.trigger.branches) !== JSON.stringify({ include: ["main"] }) ||
+    JSON.stringify(pipeline.trigger.branches) !== JSON.stringify({ include: ["main", "release/1.x"] }) ||
     JSON.stringify(pipeline.trigger.tags) !== JSON.stringify({ include: ["v*"] }) ||
     pipeline.pr !== "none"
   ) {
     problems.push(
-      "Marketplace promotion must preserve path-independent immutable-tag runs plus fail-closed protected-main recovery and disable pull-request runs."
+      "Marketplace promotion must preserve path-independent immutable-tag runs plus fail-closed protected release-branch recovery and disable pull-request runs."
     );
   }
   if (
@@ -163,7 +163,7 @@ export function inspectMarketplacePromotionPipeline(source) {
     intakeScript?.env?.EXISTING_RELEASE_TAG !== "${{ parameters.existingReleaseTag }}"
   ) {
     problems.push(
-      "Marketplace promotion intake must validate either the exact tag event or one manual historical tag selected from protected main."
+      "Marketplace promotion intake must validate either the exact tag event or one manual historical tag selected from its protected release branch."
     );
   }
   if (

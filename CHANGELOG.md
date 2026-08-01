@@ -6,6 +6,37 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Made obsolete pull-request heads actually cancellable by replacing cancellation-resistant `always()` job and
+  evidence-upload guards with `!cancelled()` across CI, CodeQL, and cross-platform acceptance. Failed current heads
+  still aggregate and retain safe diagnostics, while superseded native editor runs stop before blocking their replacement.
+- Bound packaged-editor failure-evidence workflow tests to the actual safety contract across pull-request, preview,
+  and stable publication: producer identity, immediate pinned uploader, exact emitted path and readiness gate, and
+  seven-day retention. Human-facing step labels are no longer treated as release-critical behavior.
+- Kept the stable and preview GitHub publishers on one descriptor-pinned canonical artifact triple from semantic
+  verification through remote publication. The exact VSIX, checksum, and provenance paths are revalidated before
+  every draft mutation, so sidecar replacement, symlink, hard-link, identity, metadata, or in-memory byte drift
+  fails before that mutation. The publisher now accepts the canonical 128 MiB VSIX ceiling while retaining separate
+  4 KiB provenance and 512 byte checksum bounds.
+- Rebuilt preview delivery as a manual candidate-first flow from protected `main`. One package job authors the exact
+  VSIX/checksum/provenance triple, Linux owns the complete source/full suite once, and parallel native,
+  installed-performance, released/remote Jupyter, and Remote SSH lanes consume only that immutable artifact ID.
+  `publish: false` reaches no protected environment, secret, write permission, tag, or registry mutation.
+- Unified stable and preview GitHub publication with an explicit reusable Open VSX promotion. Every public mutation
+  owner shares one non-cancelling `queue: max` group so pending releases are not displaced, and preview Open VSX
+  publication derives `--pre-release` only from verified public metadata. The branch-neutral exact-tag transaction is
+  now separate from stable and preview source-branch policy wrappers.
+- Reserved the protected `release/1.x` line for stable v1 maintenance while `main` owns `1.99.x` v2 previews and
+  later v2 releases. CI, CodeQL, cross-platform acceptance, stable tag publication, and Marketplace recovery now
+  enforce that version-derived boundary; fixes merge into v1 first and move to `main` through reviewed forward-port
+  pull requests. Marketplace intake also proves every selected tag commit is contained in its version-owned public
+  branch and is the exact public lightweight tag target instead of trusting matching package metadata or a peeled
+  annotated tag.
+- Made GitHub publication immutable-release ready for both stable and future preview channels. The publisher now
+  creates or resumes one exact draft, uploads and downloads all three canonical assets for byte verification, and
+  only then publishes. The migration workflows deliberately expect `immutable: false` while accepting an already
+  immutable exact release, so they can merge before the future-only repository setting is enabled. A follow-up
+  workflow change will require `immutable: true`; partial public releases, duplicate/conflicting drafts, tag or asset
+  drift, and post-publication changes already fail closed in either phase.
 - Bounded failure-evidence credential matching to 8 KiB logical lines, with conservative fail-closed handling for
   longer credential-shaped diagnostics. Maximum-size hostile inputs now run in a dedicated 64 MiB child heap with
   a hard deadline, preventing malformed editor output from exhausting the developer desktop during local tests.
@@ -28,7 +59,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
 - Made affected pull-request released-Jupyter acceptance consume and revalidate the same checksum-bound canonical
   VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
-  for product changes and to be skipped only for documentation-only changes or protected-main pushes; the separate
+  for product changes and to be skipped only for documentation-only changes or protected-branch pushes; the separate
   weekly/manual workflow remains non-cancelling ecosystem-drift evidence.
 - Unblocked the optional clean-room Data Wrangler comparison on current ipykernel launch syntax: the exact-runtime
   guard now accepts both separate and equals-style connection-file arguments, while bounded path-free command-shape

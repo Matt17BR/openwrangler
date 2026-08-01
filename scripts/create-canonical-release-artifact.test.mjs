@@ -21,14 +21,17 @@ import test from "node:test";
 import { ZipFile } from "yazl";
 import {
   CANONICAL_RELEASE_PUBLICATION_MODE,
+  CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
   CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
   PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
   PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
   PERFORMANCE_EVIDENCE_PUBLICATION_MODE,
+  PREVIEW_RELEASE_PUBLICATION_MODE,
   createCanonicalReleaseArtifact,
   createCanonicalReleaseDependencies,
   parseCanonicalReleaseArtifactArguments,
   validateCanonicalReleaseProvenance,
+  validatePreviewReleaseProvenance,
   validatePerformanceEvidenceCandidateProvenance
 } from "./create-canonical-release-artifact.mjs";
 import {
@@ -47,14 +50,27 @@ const stablePackage = Object.freeze({
   version: "1.0.0",
   preview: false
 });
+const previewPackage = Object.freeze({
+  ...stablePackage,
+  version: "0.3.0",
+  preview: true
+});
 const posixTest = process.platform === "win32" ? test.skip : test;
 
-test("canonical artifact CLI makes evidence-only publication explicit and stable publication the default", () => {
+test("canonical artifact CLI makes preview and evidence publication explicit while stable remains the default", () => {
   assert.deepEqual(parseCanonicalReleaseArtifactArguments(["candidate.vsix", "--out-dir", "release"]), {
     candidatePath: "candidate.vsix",
     outputDirectory: "release",
     publicationMode: CANONICAL_RELEASE_PUBLICATION_MODE
   });
+  assert.deepEqual(
+    parseCanonicalReleaseArtifactArguments(["candidate.vsix", "--out-dir", "preview", "--preview-release"]),
+    {
+      candidatePath: "candidate.vsix",
+      outputDirectory: "preview",
+      publicationMode: PREVIEW_RELEASE_PUBLICATION_MODE
+    }
+  );
   assert.deepEqual(
     parseCanonicalReleaseArtifactArguments(["candidate.vsix", "--out-dir", "evidence", "--performance-evidence"]),
     {
@@ -71,7 +87,7 @@ test("canonical artifact CLI makes evidence-only publication explicit and stable
   ]) {
     assert.throws(
       () => parseCanonicalReleaseArtifactArguments(malformed),
-      /prebuilt stable candidate and a new output directory/u
+      /prebuilt candidate and a new output directory/u
     );
   }
 });
@@ -86,12 +102,15 @@ function runGit(root, arguments_) {
   }).trim();
 }
 
-function vsixManifest() {
+function vsixManifest(manifest = stablePackage) {
+  const preReleaseProperty = manifest.preview
+    ? '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />'
+    : "";
   return `<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest xmlns="${namespace}">
   <Metadata>
-    <Identity Id="openwrangler" Publisher="Matt17BR" Version="1.0.0" />
-    <Properties></Properties>
+    <Identity Id="openwrangler" Publisher="Matt17BR" Version="${manifest.version}" />
+    <Properties>${preReleaseProperty}</Properties>
   </Metadata>
 </PackageManifest>`;
 }
@@ -115,11 +134,11 @@ ${rows}
 `;
 }
 
-function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION) {
+function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
   return new Map([
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
-    ["extension.vsixmanifest", vsixManifest()],
-    ["extension/package.json", JSON.stringify(stablePackage)],
+    ["extension.vsixmanifest", vsixManifest(manifest)],
+    ["extension/package.json", JSON.stringify(manifest)],
     ["extension/LICENSE.txt", "MIT License\n"],
     ["extension/readme.md", `# Open Wrangler\n\n${readmeSection}\n`],
     ["extension/changelog.md", "# Changelog\n"],
@@ -138,13 +157,13 @@ function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION) {
     ["extension/media/icon-128.png", "icon"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
-    ["extension/python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n']
+    ["extension/python/openwrangler_runtime/version.py", `__version__ = "${manifest.version}"\n`]
   ]);
 }
 
-function createVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION) {
+function createVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
   const zip = new ZipFile();
-  for (const [name, value] of releaseEntries(readmeSection)) {
+  for (const [name, value] of releaseEntries(readmeSection, manifest)) {
     zip.addBuffer(Buffer.from(value), name);
   }
   return new Promise((resolveBytes, rejectBytes) => {
@@ -168,36 +187,43 @@ function writeSourceFile(root, path, contents) {
 
 async function createFixture(
   context,
-  { parityStatuses = new Map(), readmeSection = STABLE_README_RELEASE_SECTION } = {}
+  {
+    manifest = stablePackage,
+    parityStatuses = new Map(),
+    readmeSection = STABLE_README_RELEASE_SECTION,
+    tag = true
+  } = {}
 ) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-canonical-artifact-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   runGit(root, ["init", "-q"]);
   runGit(root, ["config", "user.email", "canonical@example.invalid"]);
   runGit(root, ["config", "user.name", "Canonical Artifact Test"]);
-  writeSourceFile(root, "package.json", `${JSON.stringify(stablePackage, null, 2)}\n`);
-  writeSourceFile(root, "python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n');
+  writeSourceFile(root, "package.json", `${JSON.stringify(manifest, null, 2)}\n`);
+  writeSourceFile(root, "python/openwrangler_runtime/version.py", `__version__ = "${manifest.version}"\n`);
   writeSourceFile(root, "docs/feature-parity.md", parityMatrix(parityStatuses));
   writeSourceFile(
     root,
     "CHANGELOG.md",
-    "# Changelog\n\n## [1.0.0] - 2026-07-27\n\n### Added\n\n- Published the verified stable package.\n"
+    `# Changelog\n\n## [${manifest.version}] - 2026-07-27\n\n### Added\n\n- Published the verified package.\n`
   );
   writeSourceFile(root, "README.md", `# Open Wrangler\n\n${readmeSection}\n`);
   writeSourceFile(root, "scripts/evidence.test.mjs", "export {};\n");
   runGit(root, ["add", "."]);
-  runGit(root, ["commit", "-q", "-m", "stable fixture"]);
+  runGit(root, ["commit", "-q", "-m", "release fixture"]);
   const expectedCommit = runGit(root, ["rev-parse", "HEAD"]);
-  runGit(root, ["tag", "v1.0.0"]);
+  if (tag) {
+    runGit(root, ["tag", `v${manifest.version}`]);
+  }
   const candidatePath = join(root, "openwrangler.candidate.vsix");
-  const candidateBytes = await createVsixBuffer(readmeSection);
+  const candidateBytes = await createVsixBuffer(readmeSection, manifest);
   writeFileSync(candidatePath, candidateBytes, { flag: "wx", mode: 0o600 });
   return {
     candidateBytes,
     candidatePath,
     expectedCommit,
     outputDirectory: join(root, "canonical-release"),
-    releaseTag: "v1.0.0",
+    releaseTag: `v${manifest.version}`,
     root
   };
 }
@@ -335,6 +361,68 @@ test("atomically publishes exactly one source-bound stable artifact triple", asy
   );
 });
 
+test("atomically publishes a provenance-bound preview triple before its tag exists", async (context) => {
+  const fixture = await createFixture(context, {
+    manifest: previewPackage,
+    parityStatuses: new Map([["Dataset summary and quick insights", "Partial"]]),
+    readmeSection: "This preview is intentionally not a stable release.",
+    tag: false
+  });
+  const { options, state } = artifactOptions(fixture, {
+    publicationMode: PREVIEW_RELEASE_PUBLICATION_MODE
+  });
+  const receipt = await createCanonicalReleaseArtifact(options);
+
+  assert.equal(receipt.publicationMode, PREVIEW_RELEASE_PUBLICATION_MODE);
+  assert.equal(receipt.releaseTag, "v0.3.0");
+  assert.equal(receipt.sourceCommit, fixture.expectedCommit);
+  assert.equal(receipt.files.length, 3);
+  assert.deepEqual(readdirSync(fixture.outputDirectory).sort(), [
+    "openwrangler.vsix",
+    "openwrangler.vsix.provenance.json",
+    "openwrangler.vsix.sha256"
+  ]);
+  const digest = createHash("sha256").update(fixture.candidateBytes).digest("hex");
+  assert.equal(
+    readFileSync(join(fixture.outputDirectory, "openwrangler.vsix.sha256"), "utf8"),
+    `${digest}  openwrangler.vsix\n`
+  );
+  const provenance = validatePreviewReleaseProvenance(
+    parseStrictJson(readFileSync(join(fixture.outputDirectory, "openwrangler.vsix.provenance.json"), "utf8"))
+  );
+  assert.deepEqual(provenance, {
+    protocol: CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
+    extensionId: "Matt17BR.openwrangler",
+    extensionVersion: "0.3.0",
+    preview: true,
+    releaseTag: "v0.3.0",
+    sourceCommit: fixture.expectedCommit,
+    vsixSha256: digest,
+    vsixBytes: fixture.candidateBytes.length
+  });
+  assert.equal(state.inventoryChecks, 1);
+  assert.equal(state.pins, 2);
+  assert.equal(state.sourceComparisons, 1);
+});
+
+test("preview and stable artifact authors reject the opposite release channel", async (context) => {
+  const stableFixture = await createFixture(context);
+  await assert.rejects(
+    createCanonicalReleaseArtifact(
+      artifactOptions(stableFixture, { publicationMode: PREVIEW_RELEASE_PUBLICATION_MODE }).options
+    ),
+    /Canonical preview release readiness failed:.*not reserved for preview.*preview must be true/su
+  );
+  assert.equal(existsSync(stableFixture.outputDirectory), false);
+
+  const previewFixture = await createFixture(context, { manifest: previewPackage });
+  await assert.rejects(
+    createCanonicalReleaseArtifact(artifactOptions(previewFixture).options),
+    /Canonical stable release readiness failed:.*reserved for preview.*preview must be false/su
+  );
+  assert.equal(existsSync(previewFixture.outputDirectory), false);
+});
+
 test("publishes a distinctly non-promotable artifact when only performance evidence remains", async (context) => {
   const parityStatuses = new Map(PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => [surface, "Partial"]));
   const fixture = await createFixture(context, {
@@ -400,7 +488,7 @@ test("rejects unknown artifact publication modes before reading or publishing a 
         publicationMode: "evidence-ish"
       }).options
     ),
-    /publication mode must be stable-release or performance-evidence/u
+    /publication mode must be stable-release, preview-release, or performance-evidence/u
   );
   assert.equal(existsSync(fixture.outputDirectory), false);
 });
@@ -526,7 +614,7 @@ test("revalidates the candidate after atomic publication and cleans the output o
   });
   await assert.rejects(
     createCanonicalReleaseArtifact(options),
-    /stable candidate changed during canonical artifact publication/u
+    /candidate changed during canonical artifact publication/u
   );
   assert.equal(existsSync(fixture.outputDirectory), false);
 });
@@ -576,5 +664,22 @@ test("rejects noncanonical provenance fields", () => {
   assert.throws(
     () => validateCanonicalReleaseProvenance({ ...valid, preview: true }),
     /one canonical stable artifact/u
+  );
+
+  const preview = {
+    ...valid,
+    protocol: CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
+    extensionVersion: "0.3.0",
+    preview: true,
+    releaseTag: "v0.3.0"
+  };
+  assert.deepEqual(validatePreviewReleaseProvenance(preview), preview);
+  assert.throws(
+    () => validatePreviewReleaseProvenance({ ...preview, preview: false }),
+    /one canonical preview artifact/u
+  );
+  assert.throws(
+    () => validatePreviewReleaseProvenance({ ...preview, unknown: true }),
+    /exactly the canonical artifact fields/u
   );
 });

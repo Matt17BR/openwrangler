@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ZipFile } from "yazl";
+import { publishVerifiedGitHubPreviewRelease } from "./publish-github-preview-release.mjs";
+import { CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL } from "./run-installed-performance.mjs";
+import { verifyPreviewReleaseArtifactFromCheckout } from "./verify-preview-release-artifact.mjs";
 import {
   verifyRegistryReleaseArtifact,
   verifyRegistryReleaseArtifactFromCheckout
@@ -65,13 +68,37 @@ function createVsix(packageJson = sourceManifest, property = previewProperty) {
   });
 }
 
-async function fixture(context, packageJson = sourceManifest, property = previewProperty) {
+async function fixture(
+  context,
+  packageJson = sourceManifest,
+  property = previewProperty,
+  sourceCommit = expectedCommit,
+  provenanceOverrides = {}
+) {
   const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-preview-")));
   context.after(() => rmSync(directory, { force: true, recursive: true }));
   const vsix = await createVsix(packageJson, property);
   const digest = createHash("sha256").update(vsix).digest("hex");
   writeFileSync(join(directory, "openwrangler.vsix"), vsix);
   writeFileSync(join(directory, "openwrangler.vsix.sha256"), `${digest}  openwrangler.vsix\n`);
+  writeFileSync(
+    join(directory, "openwrangler.vsix.provenance.json"),
+    `${JSON.stringify(
+      {
+        protocol: CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
+        extensionId: "Matt17BR.openwrangler",
+        extensionVersion: "0.3.0",
+        preview: true,
+        releaseTag,
+        sourceCommit,
+        vsixSha256: digest,
+        vsixBytes: vsix.length,
+        ...provenanceOverrides
+      },
+      null,
+      2
+    )}\n`
+  );
   return { digest, directory, vsix };
 }
 
@@ -148,7 +175,7 @@ test("preview registry consumer rejects stable flags, source drift, extra files,
       releaseTag,
       sourcePackageJson: JSON.stringify(sourceManifest)
     }),
-    /exactly its VSIX and checksum/u
+    /exactly its VSIX, checksum, and provenance/u
   );
 
   const checksum = await fixture(context);
@@ -163,10 +190,170 @@ test("preview registry consumer rejects stable flags, source drift, extra files,
     }),
     /checksum/u
   );
+
+  const provenanceConflict = await fixture(context, sourceManifest, previewProperty, expectedCommit, {
+    sourceCommit: "b".repeat(40)
+  });
+  await assert.rejects(
+    verifyRegistryReleaseArtifact({
+      directory: provenanceConflict.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify(sourceManifest)
+    }),
+    /do not describe one exact preview artifact/u
+  );
+
+  const malformedProvenance = await fixture(context);
+  writeFileSync(join(malformedProvenance.directory, "openwrangler.vsix.provenance.json"), "{\n");
+  await assert.rejects(
+    verifyRegistryReleaseArtifact({
+      directory: malformedProvenance.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify(sourceManifest)
+    }),
+    /JSON|provenance/u
+  );
+
+  const historicalTwoFilePreview = await fixture(context);
+  unlinkSync(join(historicalTwoFilePreview.directory, "openwrangler.vsix.provenance.json"));
+  await assert.rejects(
+    verifyRegistryReleaseArtifact({
+      directory: historicalTwoFilePreview.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify(sourceManifest)
+    }),
+    /exactly its VSIX, checksum, and provenance/u
+  );
+});
+
+test("preview candidate verifier binds exact HEAD without requiring a tag", async (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-preview-candidate-head-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "tests@openwrangler.invalid");
+  git("config", "user.name", "Open Wrangler tests");
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(sourceManifest)}\n`);
+  git("add", "package.json");
+  git("commit", "-m", "preview source");
+  const candidateCommit = git("rev-parse", "HEAD");
+  const release = await fixture(context, sourceManifest, previewProperty, candidateCommit);
+
+  const receipt = await verifyPreviewReleaseArtifactFromCheckout({
+    directory: release.directory,
+    expectedCommit: candidateCommit,
+    releaseTag,
+    root
+  });
+  assert.equal(receipt.sourceCommit, candidateCommit);
+  assert.equal(git("tag", "--list", releaseTag), "");
+
+  const nestedRoot = join(root, "nested");
+  mkdirSync(nestedRoot);
+  await assert.rejects(
+    verifyPreviewReleaseArtifactFromCheckout({
+      directory: release.directory,
+      expectedCommit: candidateCommit,
+      releaseTag,
+      root: nestedRoot
+    }),
+    /exact Git repository root/u
+  );
+
+  writeFileSync(join(root, "later.txt"), "later\n");
+  git("add", "later.txt");
+  git("commit", "-m", "move head");
+  await assert.rejects(
+    verifyPreviewReleaseArtifactFromCheckout({
+      directory: release.directory,
+      expectedCommit: candidateCommit,
+      releaseTag,
+      root
+    }),
+    /exact candidate commit/u
+  );
+});
+
+test("preview publication rejects a provenance replacement before creating a GitHub draft", async (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-preview-publisher-head-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "tests@openwrangler.invalid");
+  git("config", "user.name", "Open Wrangler tests");
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(sourceManifest)}\n`);
+  git("add", "package.json");
+  git("commit", "-m", "preview source");
+  const candidateCommit = git("rev-parse", "HEAD");
+  const release = await fixture(context, sourceManifest, previewProperty, candidateCommit);
+  const provenancePath = join(release.directory, "openwrangler.vsix.provenance.json");
+  const originalProvenance = readFileSync(provenancePath);
+  const requests = [];
+  let replaced = false;
+  const fetchImpl = async (input, options = {}) => {
+    const url = String(input);
+    const method = options.method ?? "GET";
+    requests.push({ method, url });
+    if (url.endsWith(`/git/ref/tags/${encodeURIComponent(releaseTag)}`)) {
+      return new Response(
+        JSON.stringify({ object: { sha: candidateCommit, type: "commit" }, ref: `refs/tags/${releaseTag}` }),
+        { status: 200 }
+      );
+    }
+    if (url.endsWith(`/releases/tags/${encodeURIComponent(releaseTag)}`)) {
+      return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+    }
+    if (url.includes("/releases?")) {
+      if (!replaced) {
+        replaced = true;
+        unlinkSync(provenancePath);
+        writeFileSync(provenancePath, originalProvenance);
+      }
+      return new Response("[]", { status: 200 });
+    }
+    throw new Error(`Unexpected mutation request: ${method} ${url}`);
+  };
+
+  await assert.rejects(
+    publishVerifiedGitHubPreviewRelease({
+      directory: release.directory,
+      expectImmutable: false,
+      expectedCommit: candidateCommit,
+      fetchImpl,
+      releaseTag,
+      repository: "Matt17BR/openwrangler",
+      root,
+      token: "test-token"
+    }),
+    /changed while the canonical release set was pinned/u
+  );
+  assert.equal(
+    requests.some(({ method }) => method !== "GET"),
+    false
+  );
 });
 
 test("historical verification keeps current automation HEAD separate from the immutable release tag", async (context) => {
-  const release = await fixture(context);
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-history-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   const git = (...arguments_) =>
@@ -184,6 +371,7 @@ test("historical verification keeps current automation HEAD separate from the im
   git("add", "package.json");
   git("commit", "-m", "release source");
   const taggedCommit = git("rev-parse", "HEAD");
+  const release = await fixture(context, sourceManifest, previewProperty, taggedCommit);
   git("tag", releaseTag);
   mkdirSync(join(root, "scripts"));
   writeFileSync(join(root, "scripts", "promotion.mjs"), "export {};\n");

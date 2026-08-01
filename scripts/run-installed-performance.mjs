@@ -93,6 +93,7 @@ const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const INSTALLED_CHECKSUM_MAX_BYTES = 512;
 const INSTALLED_PROVENANCE_MAX_BYTES = 4096;
 export const CANONICAL_RELEASE_ARTIFACT_PROTOCOL = "openwrangler-canonical-release-artifact-v1";
+export const CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL = "openwrangler-canonical-preview-release-artifact-v1";
 export const PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL = "openwrangler-performance-evidence-artifact-v1";
 export const PERFORMANCE_EVIDENCE_ARTIFACT_ROLE = "installed-performance-evidence-only";
 export const STABLE_RELEASE_ARTIFACT_KIND = "stable-release";
@@ -505,6 +506,10 @@ export function readInstalledPerformanceProvenance(provenancePath, hooks = {}) {
   return readPerformanceProvenanceWithValidator(provenancePath, hooks, validateInstalledPerformanceProvenance);
 }
 
+export function readPreviewReleaseProvenance(provenancePath, hooks = {}) {
+  return readPerformanceProvenanceWithValidator(provenancePath, hooks, validatePreviewReleaseProvenance);
+}
+
 export function readPerformanceEvidenceProvenance(provenancePath, hooks = {}) {
   return readPerformanceProvenanceWithValidator(provenancePath, hooks, validatePerformanceEvidenceProvenance);
 }
@@ -541,6 +546,50 @@ export function validateInstalledPerformanceProvenance(value) {
     value.vsixBytes > VSIX_MAX_BYTES
   ) {
     throw new Error("The installed-performance provenance does not describe one canonical stable artifact.");
+  }
+  return Object.freeze({
+    protocol: value.protocol,
+    extensionId: value.extensionId,
+    extensionVersion: value.extensionVersion,
+    preview: value.preview,
+    releaseTag: value.releaseTag,
+    sourceCommit: value.sourceCommit,
+    vsixSha256: value.vsixSha256,
+    vsixBytes: value.vsixBytes
+  });
+}
+
+export function validatePreviewReleaseProvenance(value) {
+  const expectedKeys = [
+    "extensionId",
+    "extensionVersion",
+    "preview",
+    "protocol",
+    "releaseTag",
+    "sourceCommit",
+    "vsixBytes",
+    "vsixSha256"
+  ];
+  const keys = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort() : [];
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error("Preview-release provenance must contain exactly the canonical artifact fields.");
+  }
+  if (
+    value.protocol !== CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL ||
+    value.extensionId !== "Matt17BR.openwrangler" ||
+    typeof value.extensionVersion !== "string" ||
+    classifyNumericReleaseVersion(value.extensionVersion)?.channel !== "preview" ||
+    value.preview !== true ||
+    value.releaseTag !== `v${value.extensionVersion}` ||
+    typeof value.sourceCommit !== "string" ||
+    !/^[0-9a-f]{40}$/u.test(value.sourceCommit) ||
+    typeof value.vsixSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(value.vsixSha256) ||
+    !Number.isSafeInteger(value.vsixBytes) ||
+    value.vsixBytes <= 0 ||
+    value.vsixBytes > VSIX_MAX_BYTES
+  ) {
+    throw new Error("Preview-release provenance does not describe one canonical preview artifact.");
   }
   return Object.freeze({
     protocol: value.protocol,
@@ -1053,6 +1102,28 @@ export function revalidateInstalledPerformanceProvenance(receipt) {
     !sameFileIdentityReceipt(current.fileIdentity, receipt.fileIdentity)
   ) {
     throw new Error("The installed-performance provenance receipt changed.");
+  }
+  return receipt;
+}
+
+export function revalidatePreviewReleaseProvenance(receipt) {
+  requirePreviewReleaseProvenanceReceipt(receipt);
+  const current = readPreviewReleaseProvenance(receipt.path);
+  if (
+    current.path !== receipt.path ||
+    current.protocol !== receipt.protocol ||
+    current.extensionId !== receipt.extensionId ||
+    current.extensionVersion !== receipt.extensionVersion ||
+    current.preview !== receipt.preview ||
+    current.releaseTag !== receipt.releaseTag ||
+    current.sourceCommit !== receipt.sourceCommit ||
+    current.vsixSha256 !== receipt.vsixSha256 ||
+    current.vsixBytes !== receipt.vsixBytes ||
+    current.sha256 !== receipt.sha256 ||
+    current.bytes !== receipt.bytes ||
+    !sameFileIdentityReceipt(current.fileIdentity, receipt.fileIdentity)
+  ) {
+    throw new Error("Preview-release provenance receipt changed.");
   }
   return receipt;
 }
@@ -2535,6 +2606,39 @@ function requireProvenanceReceipt(receipt) {
     receipt.fileIdentity.size !== BigInt(receipt.bytes)
   ) {
     throw new Error("The installed-performance provenance receipt is invalid.");
+  }
+}
+
+function requirePreviewReleaseProvenanceReceipt(receipt) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    typeof receipt.path !== "string" ||
+    receipt.path.length === 0 ||
+    receipt.protocol !== CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL ||
+    receipt.extensionId !== "Matt17BR.openwrangler" ||
+    typeof receipt.extensionVersion !== "string" ||
+    classifyNumericReleaseVersion(receipt.extensionVersion)?.channel !== "preview" ||
+    receipt.preview !== true ||
+    receipt.releaseTag !== `v${receipt.extensionVersion}` ||
+    typeof receipt.sourceCommit !== "string" ||
+    !/^[0-9a-f]{40}$/u.test(receipt.sourceCommit) ||
+    typeof receipt.vsixSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.vsixSha256) ||
+    !Number.isSafeInteger(receipt.vsixBytes) ||
+    receipt.vsixBytes <= 0 ||
+    receipt.vsixBytes > VSIX_MAX_BYTES ||
+    typeof receipt.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.sha256) ||
+    !Number.isSafeInteger(receipt.bytes) ||
+    receipt.bytes <= 0 ||
+    receipt.bytes > INSTALLED_PROVENANCE_MAX_BYTES ||
+    !receipt.fileIdentity ||
+    typeof receipt.fileIdentity !== "object" ||
+    !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => typeof receipt.fileIdentity[key] === "bigint") ||
+    receipt.fileIdentity.size !== BigInt(receipt.bytes)
+  ) {
+    throw new Error("Preview-release provenance receipt is invalid.");
   }
 }
 

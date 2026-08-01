@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { inspectReleaseMetadata } from "./release-metadata.mjs";
+import { inspectReleaseMetadata, releaseSourcePolicyForVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
@@ -78,9 +78,10 @@ export function readRegistryReleaseSource({ releaseTag, sourceRoot }) {
   if (!FULL_COMMIT.test(commit)) {
     throw new Error("The release source checkout did not resolve to one full lowercase Git commit.");
   }
-  const tagCommit = git(root, ["rev-parse", "--verify", "--end-of-options", `refs/tags/${releaseTag}^{commit}`]).trim();
-  if (tagCommit !== commit) {
-    throw new Error("The checked-out release tag does not resolve to the release source commit.");
+  const tagRef = git(root, ["rev-parse", "--verify", "--end-of-options", `refs/tags/${releaseTag}`]).trim();
+  const tagType = git(root, ["cat-file", "-t", `refs/tags/${releaseTag}`]).trim();
+  if (tagType !== "commit" || tagRef !== commit) {
+    throw new Error("The checked-out release tag must be one exact lightweight ref at the release source commit.");
   }
   if (git(root, ["status", "--porcelain", "--untracked-files=no"]).trim() !== "") {
     throw new Error("The release source checkout has modified tracked files.");
@@ -101,7 +102,22 @@ export function readRegistryReleaseSource({ releaseTag, sourceRoot }) {
   ) {
     throw new Error(`Registry release source validation failed:\n- ${inspected.problems.join("\n- ")}`);
   }
+  const sourcePolicy = releaseSourcePolicyForVersion(inspected.version);
+  if (sourcePolicy === undefined) {
+    throw new Error("The release source version does not have a protected source-branch policy.");
+  }
+  const remoteSourceRef = `refs/remotes/origin/${sourcePolicy.branch}`;
+  const remoteSourceCommit = git(root, ["rev-parse", "--verify", `${remoteSourceRef}^{commit}`]).trim();
+  if (!FULL_COMMIT.test(remoteSourceCommit)) {
+    throw new Error("The protected release source did not resolve to one full lowercase Git commit.");
+  }
+  try {
+    git(root, ["merge-base", "--is-ancestor", commit, remoteSourceRef]);
+  } catch {
+    throw new Error(`The release commit is not on its version-owned protected ${sourcePolicy.branch} branch.`);
+  }
   return Object.freeze({
+    branch: sourcePolicy.branch,
     channel: inspected.channel,
     commit,
     packageJson,
@@ -126,6 +142,7 @@ function runCli() {
     process.env.GITHUB_OUTPUT,
     [
       `release_channel=${receipt.channel}`,
+      `release_branch=${receipt.branch}`,
       `release_commit=${receipt.commit}`,
       `release_prerelease=${receipt.channel === "preview" ? "true" : "false"}`,
       `release_tag=${receipt.releaseTag}`,

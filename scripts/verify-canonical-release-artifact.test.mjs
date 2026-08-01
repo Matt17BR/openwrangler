@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ZipFile } from "yazl";
 import { CANONICAL_RELEASE_ARTIFACT_PROTOCOL } from "./run-installed-performance.mjs";
+import { publishVerifiedGitHubStableRelease } from "./publish-github-stable-release.mjs";
 import { verifyCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
 
 const expectedCommit = "a".repeat(40);
@@ -211,5 +212,53 @@ test("canonical consumer rejects event, tag, checksum, and provenance drift", as
       sourcePackageJson: JSON.stringify(sourceManifest)
     }),
     /one exact stable artifact/u
+  );
+});
+
+test("stable publication rejects a sidecar replacement before creating a GitHub draft", async (context) => {
+  const fixture = await createFixture(context);
+  const requests = [];
+  let replaced = false;
+  const fetchImpl = async (input, options = {}) => {
+    const url = String(input);
+    const method = options.method ?? "GET";
+    requests.push({ method, url });
+    if (url.endsWith("/git/ref/tags/v1.0.0")) {
+      return new Response(
+        JSON.stringify({ object: { sha: expectedCommit, type: "commit" }, ref: "refs/tags/v1.0.0" }),
+        { status: 200 }
+      );
+    }
+    if (url.endsWith("/releases/tags/v1.0.0")) {
+      return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+    }
+    if (url.includes("/releases?")) {
+      if (!replaced) {
+        replaced = true;
+        unlinkSync(fixture.checksumPath);
+        writeFileSync(fixture.checksumPath, `${fixture.digest}  openwrangler.vsix\n`);
+      }
+      return new Response("[]", { status: 200 });
+    }
+    throw new Error(`Unexpected mutation request: ${method} ${url}`);
+  };
+
+  await assert.rejects(
+    publishVerifiedGitHubStableRelease({
+      directory: fixture.directory,
+      expectImmutable: false,
+      expectedCommit,
+      fetchImpl,
+      releaseTag: "v1.0.0",
+      repository: "Matt17BR/openwrangler",
+      sourceCommit: expectedCommit,
+      sourcePackageJson: JSON.stringify(sourceManifest),
+      token: "test-token"
+    }),
+    /changed while the canonical release set was pinned/u
+  );
+  assert.equal(
+    requests.some(({ method }) => method !== "GET"),
+    false
   );
 });

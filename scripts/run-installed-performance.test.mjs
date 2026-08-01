@@ -27,6 +27,7 @@ import {
   installedPerformanceVsixOptions,
   installedPerformanceDisplayMode,
   installedPerformanceReportGateForOptions,
+  CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
   PERFORMANCE_EVIDENCE_ARTIFACT_KIND,
   PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
   PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
@@ -39,17 +40,20 @@ import {
   readInstalledPerformanceFragment,
   readInstalledPerformanceCandidate,
   readInstalledPerformanceProvenance,
+  readPreviewReleaseProvenance,
   readPerformanceEvidenceProvenance,
   readInstalledPerformanceSourceManifest,
   readInstalledPerformanceVsixReceipt,
   revalidateInstalledPerformanceChecksum,
   revalidateInstalledPerformanceProvenance,
+  revalidatePreviewReleaseProvenance,
   revalidatePerformanceEvidenceProvenance,
   revalidateInstalledPerformanceVsix,
   resolveInstalledPerformanceEditors,
   runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
   validateInstalledPerformanceProvenance,
+  validatePreviewReleaseProvenance,
   validateInstalledPerformanceSourceManifest,
   validatePerformanceEvidenceProvenance,
   writeInstalledPerformanceRun
@@ -1557,6 +1561,47 @@ test("canonical provenance intake pins one strict stable build receipt", async (
     );
     assert.equal(Object.isFrozen(receipt), true);
     assert.equal(revalidateInstalledPerformanceProvenance(receipt), receipt);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("canonical preview provenance intake pins its distinct pre-release receipt", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-preview-provenance-"));
+  try {
+    const provenancePath = join(directory, "openwrangler.vsix.provenance.json");
+    const value = {
+      protocol: CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
+      extensionId: "Matt17BR.openwrangler",
+      extensionVersion: "0.3.0",
+      preview: true,
+      releaseTag: "v0.3.0",
+      sourceCommit: "a".repeat(40),
+      vsixSha256: "b".repeat(64),
+      vsixBytes: 123
+    };
+    await writeFile(provenancePath, `${JSON.stringify(value)}\n`);
+
+    const receipt = readPreviewReleaseProvenance(provenancePath);
+    assert.deepEqual(
+      {
+        protocol: receipt.protocol,
+        extensionId: receipt.extensionId,
+        extensionVersion: receipt.extensionVersion,
+        preview: receipt.preview,
+        releaseTag: receipt.releaseTag,
+        sourceCommit: receipt.sourceCommit,
+        vsixSha256: receipt.vsixSha256,
+        vsixBytes: receipt.vsixBytes
+      },
+      value
+    );
+    assert.equal(revalidatePreviewReleaseProvenance(receipt), receipt);
+    assert.throws(() => validateInstalledPerformanceProvenance(value), /canonical stable artifact/u);
+    assert.deepEqual(validatePreviewReleaseProvenance(value), value);
+
+    await writeFile(provenancePath, `${JSON.stringify({ ...value, vsixBytes: 124 })}\n`);
+    assert.throws(() => revalidatePreviewReleaseProvenance(receipt), /changed|receipt/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

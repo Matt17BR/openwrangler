@@ -27,14 +27,17 @@ jobs:
     outputs:
       artifact-id: ${{ steps.canonical_artifact.outputs.artifact-id }}
     steps:
-      - name: Require protected main source
+      - name: Require a recognized protected release source
         env:
           EVENT_REF: ${{ github.ref }}
           EVENT_REF_TYPE: ${{ github.ref_type }}
           EXPECTED_SHA: ${{ github.sha }}
         run: |
           test "$EVENT_REF_TYPE" = "branch"
-          test "$EVENT_REF" = "refs/heads/main"
+          case "$EVENT_REF" in
+            refs/heads/main|refs/heads/release/1.x) ;;
+            *) exit 1 ;;
+          esac
           case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
           test "${#EXPECTED_SHA}" -eq 40
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -42,17 +45,34 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Require exact protected main commit
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
-          test -z "$(git status --porcelain --untracked-files=no)"
-          test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
           cache: npm
+      - id: release_metadata
+        name: Validate stable release metadata
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/release-metadata.mjs
+      - name: Reject preview metadata
+        if: ${{ steps.release_metadata.outputs.prerelease != 'false' }}
+        run: exit 1
+      - name: Require the exact version-owned protected branch commit
+        env:
+          EVENT_REF: ${{ github.ref }}
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SOURCE_BRANCH: ${{ steps.release_metadata.outputs.source_branch }}
+          EXPECTED_SOURCE_REF: ${{ steps.release_metadata.outputs.source_ref }}
+        run: |
+          case "$EXPECTED_SOURCE_BRANCH" in
+            main|release/1.x) ;;
+            *) exit 1 ;;
+          esac
+          test "$EXPECTED_SOURCE_REF" = "refs/heads/$EXPECTED_SOURCE_BRANCH"
+          test "$EVENT_REF" = "$EXPECTED_SOURCE_REF"
+          test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          test "$(git rev-parse --verify refs/remotes/origin/$EXPECTED_SOURCE_BRANCH^{commit})" = "$EXPECTED_SHA"
       - name: Require the remote release tag to be absent or exact
         env:
           EXPECTED_SHA: ${{ github.sha }}
@@ -62,14 +82,6 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - id: release_metadata
-        name: Validate stable release metadata
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/release-metadata.mjs
-      - name: Reject preview metadata
-        if: ${{ steps.release_metadata.outputs.prerelease != 'false' }}
-        run: exit 1
       - name: Prepare exact local release tag
         env:
           EXPECTED_SHA: ${{ github.sha }}
@@ -80,8 +92,8 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
       - run: npm run lock:remote-jupyter:check
-      - name: Package the ordinary stable VSIX once
-        run: npm run package -- --out openwrangler.candidate.vsix
+      - name: Build and package the ordinary stable VSIX once
+        run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.candidate.vsix
       - run: npm run verify:vsix -- openwrangler.candidate.vsix
       - name: Publish the canonical stable artifact set
         env:
@@ -660,12 +672,16 @@ jobs:
           test "$REMOTE_SSH_RESULT" = "success"
 
   release:
-    name: Publish GitHub/Open VSX and trigger Marketplace
+    name: Publish GitHub and trigger Marketplace
     needs: [package, acceptance-gate]
     if: ${{ inputs.publish == true }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 20
     environment: publishing
+    concurrency:
+      group: openwrangler-release-publication
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
     steps:
@@ -712,37 +728,15 @@ jobs:
       - name: Publish or verify the exact GitHub stable release
         env:
           EXPECTED_SHA: ${{ github.sha }}
+          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "false"
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/publish-github-stable-release.mjs canonical-release
-      - name: Verify the Open VSX publisher token
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx --no-install ovsx verify-pat Matt17BR
-      - id: canonical_open_vsx_preflight
-        name: Reverify the exact canonical artifact before Open VSX preflight
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Reject a conflicting existing Open VSX version
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-open-vsx-release.mjs canonical-release --preflight
-      - id: canonical_open_vsx_publish
-        name: Reverify the exact canonical artifact before Open VSX publication
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Publish the exact stable VSIX to Open VSX
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
-      - name: Verify the exact public Open VSX release
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-open-vsx-release.mjs canonical-release --verify
+
+  promote-open-vsx:
+    needs: release
+    if: ${{ inputs.publish == true && needs.release.result == 'success' }}
+    uses: ./.github/workflows/open-vsx-promotion.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
