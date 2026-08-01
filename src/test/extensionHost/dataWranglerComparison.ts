@@ -28,6 +28,7 @@ const PHASES = Object.freeze({
   "comparison-open-wrangler": "open-wrangler",
   "comparison-data-wrangler": "data-wrangler"
 } as const);
+const DATA_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-data-wrangler-setup" as const;
 const ACTIONS = Object.freeze({
   "open-wrangler": "Open in Open Wrangler",
   "data-wrangler": "Open in Data Wrangler"
@@ -35,14 +36,19 @@ const ACTIONS = Object.freeze({
 const MAX_PRIVATE_JSON_BYTES = 16 * 1024;
 const WORKBENCH_TIMEOUT_MS = 20_000;
 const GRID_TIMEOUT_MS = 120_000;
+const FIRST_USE_RUNTIME_TIMEOUT_MS = 30_000;
 const FRAME_PROBE_TIMEOUT_MS = 250;
 const FRAME_PROBE_RETRY_DELAY_MS = 50;
 const FRAME_PROBE_RETRIES = 1;
 const EDITOR_CLOSE_TIMEOUT_MS = 15_000;
 const PACKAGE_VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u;
+const COMPARISON_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const COMPARISON_RUNTIME_SELECTOR_ACCESSIBLE_NAME =
+  /(?:^(?:(?:select|choose|pick|change) (?:a )?)?(?:(?:python )?(?:runtime|kernel|interpreter)|python environment)(?: selector| picker)?$|\b(?:select|choose|pick|change|connect to)\b.{0,48}\b(?:(?:python )?(?:runtime|kernel|interpreter)|python environment)\b)/iu;
 
-type ComparisonPhase = keyof typeof PHASES;
-type ProductKey = (typeof PHASES)[ComparisonPhase];
+type DiagnosticComparisonPhase = keyof typeof PHASES;
+type ComparisonPhase = DiagnosticComparisonPhase | typeof DATA_WRANGLER_FIRST_USE_SETUP_PHASE;
+type ProductKey = (typeof PHASES)[DiagnosticComparisonPhase];
 type FixtureFormat = "csv" | "parquet";
 
 interface ConfiguredPythonEnvironment {
@@ -132,21 +138,31 @@ interface ComparisonActionResult {
   readonly cacheProof: CacheProof | null;
 }
 
-export async function run(): Promise<InstalledPerformanceArtifactReceipt> {
+export async function run(): Promise<InstalledPerformanceArtifactReceipt | undefined> {
   const phase = comparisonPhase(requiredEnvironment("OPEN_WRANGLER_TEST_PHASE"));
   const runId = requiredEnvironment("OPEN_WRANGLER_TEST_RUN_ID");
   const testPython = requiredEnvironment("OPEN_WRANGLER_TEST_PYTHON");
-  const productKey = PHASES[phase];
+  const productKey = comparisonProduct(phase);
   const workspace = soleFileWorkspace();
   const manifest = readFixtureManifest(path.join(workspace, "performance-fixtures.json"));
   assert.equal(manifest.smoke, true, "The comparison host is restricted to smoke-sized fixtures.");
   assertTelemetryDisabled();
 
-  recordProgress("comparison:configured-python-provenance");
-  const configuredPythonEnvironment = await configuredPythonEnvironmentProvenance(testPython);
   recordProgress("comparison:workbench-connect");
   const workbench = await connectToEditorWorkbench();
   await waitForWorkbenchReady(workbench.page);
+
+  if (phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE) {
+    await runDataWranglerFirstUseSetup({
+      workbench,
+      source: path.join(workspace, "warmup.csv"),
+      kernelLabel: dataWranglerComparisonKernelLabel(runId)
+    });
+    return undefined;
+  }
+
+  recordProgress("comparison:configured-python-provenance");
+  const configuredPythonEnvironment = await configuredPythonEnvironmentProvenance(testPython);
 
   let samples: readonly ComparisonSample[] | undefined;
   let diagnosticError: unknown;
@@ -218,11 +234,13 @@ export async function run(): Promise<InstalledPerformanceArtifactReceipt> {
 async function runWarmup({
   productKey,
   workbench,
-  source
+  source,
+  firstUseKernelLabel
 }: {
   productKey: ProductKey;
   workbench: Workbench;
   source: string;
+  firstUseKernelLabel?: string;
 }): Promise<void> {
   const expectedBytes = Buffer.from("c00,c01\n0,1\n1,2\n", "utf8");
   assert.deepEqual(readFileSync(source), expectedBytes, "The deterministic warm-up source changed before launch.");
@@ -231,9 +249,53 @@ async function runWarmup({
     workbench,
     source,
     format: "csv",
-    timed: false
+    timed: false,
+    firstUseKernelLabel
   });
   assert.deepEqual(readFileSync(source), expectedBytes, "The deterministic warm-up source changed during launch.");
+}
+
+async function runDataWranglerFirstUseSetup({
+  workbench,
+  source,
+  kernelLabel
+}: {
+  workbench: Workbench;
+  source: string;
+  kernelLabel: string;
+}): Promise<void> {
+  let setupError: unknown;
+  let closeError: unknown;
+  try {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    await waitForNoEditorTabs();
+    recordProgress("comparison:data-wrangler-setup:start");
+    await runWarmup({
+      productKey: "data-wrangler",
+      workbench,
+      source,
+      firstUseKernelLabel: kernelLabel
+    });
+    recordProgress("comparison:data-wrangler-setup:grid-ready");
+  } catch (error) {
+    setupError = error;
+  } finally {
+    try {
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await waitForNoEditorTabs();
+    } catch (error) {
+      closeError = error;
+    }
+  }
+  if (setupError !== undefined && closeError !== undefined) {
+    throw new AggregateError(
+      [setupError, closeError],
+      "Data Wrangler first-use setup failed and its editor tabs could not close."
+    );
+  }
+  if (setupError !== undefined) throw setupError;
+  if (closeError !== undefined) throw closeError;
+  recordProgress("comparison:data-wrangler-setup:closed");
 }
 
 async function runFixtureDiagnostic({
@@ -319,7 +381,8 @@ async function openThroughVisibleExplorerAction({
   format,
   timed,
   beforeTimedAction,
-  prepareCache
+  prepareCache,
+  firstUseKernelLabel
 }: {
   productKey: ProductKey;
   workbench: Workbench;
@@ -328,6 +391,7 @@ async function openThroughVisibleExplorerAction({
   timed: boolean;
   beforeTimedAction?: () => Promise<void>;
   prepareCache?: () => CacheProof;
+  firstUseKernelLabel?: string;
 }): Promise<ComparisonActionResult> {
   const sourceUri = vscode.Uri.file(source);
   await vscode.commands.executeCommand("vscode.open", sourceUri, {
@@ -360,6 +424,11 @@ async function openThroughVisibleExplorerAction({
   const baselinePages = new Set([...baselineFrames].map((frame) => frame.page()));
   const started = performance.now();
   await action.click();
+  if (firstUseKernelLabel !== undefined) {
+    recordProgress("comparison:data-wrangler-setup:runtime-selection");
+    await selectDataWranglerFirstUseRuntime(workbench.page, firstUseKernelLabel);
+    recordProgress("comparison:data-wrangler-setup:runtime-selected");
+  }
   const gridReadiness = await waitForGenericGridReadiness(workbench.page, baselineFrames, baselinePages);
   const workbenchReadiness = await comparisonWorkbenchReadiness(
     workbench.page,
@@ -375,6 +444,61 @@ async function openThroughVisibleExplorerAction({
     }),
     cacheProof
   });
+}
+
+async function selectDataWranglerFirstUseRuntime(workbench: Page, kernelLabel: string): Promise<void> {
+  if (kernelLabel !== dataWranglerComparisonKernelLabel(requiredEnvironment("OPEN_WRANGLER_TEST_RUN_ID"))) {
+    throw new Error("Data Wrangler first-use setup received a mis-correlated comparison kernel label.");
+  }
+  const deadline = Date.now() + FIRST_USE_RUNTIME_TIMEOUT_MS;
+  await runDataWranglerRuntimeSelectionTopology({
+    discoverOptions: () =>
+      visibleComparisonRoleMatches(
+        comparisonFrames(workbench),
+        ["option", "menuitem", "treeitem", "radio", "button"],
+        comparisonRuntimeOptionNamePattern(kernelLabel),
+        "runtime option"
+      ),
+    discoverSelectors: () =>
+      visibleComparisonRoleMatches(
+        comparisonFrames(workbench),
+        ["combobox", "button"],
+        COMPARISON_RUNTIME_SELECTOR_ACCESSIBLE_NAME,
+        "runtime selector"
+      ),
+    activate: (candidate) => candidate.click(),
+    waitForRetry: () => workbench.waitForTimeout(25),
+    isWithinDeadline: () => {
+      assert.equal(workbench.isClosed(), false, "The official VS Code workbench closed during runtime selection.");
+      return Date.now() < deadline;
+    }
+  });
+}
+
+async function visibleComparisonRoleMatches(
+  frames: readonly Frame[],
+  roles: readonly ("button" | "combobox" | "menuitem" | "option" | "radio" | "treeitem")[],
+  accessibleName: RegExp,
+  description: string
+): Promise<Locator[]> {
+  const result: Locator[] = [];
+  for (const frame of frames) {
+    if (frame.isDetached()) continue;
+    for (const role of roles) {
+      const candidates = await frame
+        .getByRole(role, { name: accessibleName })
+        .all()
+        .catch(() => [] as Locator[]);
+      assert.ok(candidates.length <= 128, `Comparison ${description} discovery exceeded 128 ${role} candidates.`);
+      for (const candidate of candidates) {
+        if (!(await candidate.isVisible().catch(() => false))) continue;
+        const box = await candidate.boundingBox().catch(() => null);
+        if (!box || box.width <= 0 || box.height <= 0) continue;
+        result.push(candidate);
+      }
+    }
+  }
+  return result;
 }
 
 async function waitForVisibleExplorerItem(page: Page, fileName: string): Promise<Locator> {
@@ -887,8 +1011,15 @@ function tabInputUri(input: unknown): vscode.Uri | undefined {
 }
 
 function comparisonPhase(value: string): ComparisonPhase {
-  assert.ok(Object.hasOwn(PHASES, value), "The comparison phase must identify exactly one product.");
+  assert.ok(
+    Object.hasOwn(PHASES, value) || value === DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
+    "The comparison phase must identify exactly one product or the Data Wrangler first-use setup."
+  );
   return value as ComparisonPhase;
+}
+
+function comparisonProduct(phase: ComparisonPhase): ProductKey {
+  return phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE ? "data-wrangler" : PHASES[phase];
 }
 
 function soleFileWorkspace(): string {
@@ -954,6 +1085,92 @@ export function comparisonWarmCacheArguments(script: string, source: string): st
 
 export function comparisonExplorerItemMatches(fileName: string, text: string, label: string): boolean {
   return normalizeText(text) === fileName || normalizeText(label) === fileName;
+}
+
+export function dataWranglerComparisonKernelLabel(runId: string): string {
+  if (!COMPARISON_RUN_ID.test(runId)) {
+    throw new TypeError("Data Wrangler comparison kernel selection requires one correlated v4 run ID.");
+  }
+  return `Open Wrangler comparison runtime ${runId}`;
+}
+
+export function comparisonRuntimeSelectorMatches(accessibleName: string): boolean {
+  return COMPARISON_RUNTIME_SELECTOR_ACCESSIBLE_NAME.test(normalizeText(accessibleName));
+}
+
+export function comparisonRuntimeOptionNamePattern(expectedLabel: string): RegExp {
+  const prefix = "Open Wrangler comparison runtime ";
+  const runId = expectedLabel.startsWith(prefix) ? expectedLabel.slice(prefix.length) : "";
+  if (!COMPARISON_RUN_ID.test(runId) || expectedLabel !== dataWranglerComparisonKernelLabel(runId)) {
+    throw new TypeError("Data Wrangler runtime-option discovery requires its exact correlated kernel label.");
+  }
+  return new RegExp(expectedLabel.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u");
+}
+
+export function comparisonRuntimeOptionMatches(expectedLabel: string, accessibleName: string): boolean {
+  try {
+    return comparisonRuntimeOptionNamePattern(expectedLabel).test(normalizeText(accessibleName));
+  } catch {
+    return false;
+  }
+}
+
+export async function runDataWranglerRuntimeSelectionTopology<T>({
+  discoverOptions,
+  discoverSelectors,
+  activate,
+  waitForRetry,
+  isWithinDeadline
+}: {
+  discoverOptions: () => Promise<readonly T[]>;
+  discoverSelectors: () => Promise<readonly T[]>;
+  activate: (candidate: T) => Promise<void>;
+  waitForRetry: () => Promise<void>;
+  isWithinDeadline: () => boolean;
+}): Promise<"direct-option" | "selector-option"> {
+  if (
+    typeof discoverOptions !== "function" ||
+    typeof discoverSelectors !== "function" ||
+    typeof activate !== "function" ||
+    typeof waitForRetry !== "function" ||
+    typeof isWithinDeadline !== "function"
+  ) {
+    throw new TypeError("Data Wrangler runtime selection requires bounded public-role discovery callbacks.");
+  }
+  let selectorActivated = false;
+  while (isWithinDeadline()) {
+    const optionCandidates = await discoverOptions();
+    if (!Array.isArray(optionCandidates) || optionCandidates.length > 128) {
+      throw new Error("Data Wrangler first-use setup returned a malformed configured-runtime option set.");
+    }
+    if (optionCandidates.length > 1) {
+      throw new Error("Data Wrangler first-use setup exposed more than one matching configured runtime option.");
+    }
+    if (optionCandidates.length === 1) {
+      await activate(optionCandidates[0] as T);
+      return selectorActivated ? "selector-option" : "direct-option";
+    }
+
+    if (!selectorActivated) {
+      const selectorCandidates = await discoverSelectors();
+      if (!Array.isArray(selectorCandidates) || selectorCandidates.length > 128) {
+        throw new Error("Data Wrangler first-use setup returned a malformed public runtime-selector set.");
+      }
+      if (selectorCandidates.length > 1) {
+        throw new Error("Data Wrangler first-use setup exposed more than one public runtime selector.");
+      }
+      if (selectorCandidates.length === 1) {
+        await activate(selectorCandidates[0] as T);
+        selectorActivated = true;
+      }
+    }
+    await waitForRetry();
+  }
+  throw new Error(
+    selectorActivated
+      ? "Data Wrangler first-use setup did not expose exactly one matching configured runtime option."
+      : "Data Wrangler first-use setup did not expose one direct configured option or exactly one public runtime selector."
+  );
 }
 
 export function requireUniqueComparisonMatch<T>(matches: readonly T[], label: string): T | undefined {

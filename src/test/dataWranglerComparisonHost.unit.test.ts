@@ -4,13 +4,18 @@ import { describe, expect, it } from "vitest";
 import {
   buildComparisonWorkbenchReadinessEvidence,
   comparisonExplorerItemMatches,
+  comparisonRuntimeOptionNamePattern,
+  comparisonRuntimeOptionMatches,
+  comparisonRuntimeSelectorMatches,
   comparisonRuntimeProbeSource,
   comparisonWarmCacheArguments,
+  dataWranglerComparisonKernelLabel,
   isPostClickComparisonSurface,
   prepareComparisonAction,
   requireUniqueComparisonMatch,
   runBoundedComparisonFrameProbe,
-  runComparisonFrameProbeWithRetry
+  runComparisonFrameProbeWithRetry,
+  runDataWranglerRuntimeSelectionTopology
 } from "./extensionHost/dataWranglerComparison";
 
 describe("clean-room comparison host contracts", () => {
@@ -116,6 +121,113 @@ describe("clean-room comparison host contracts", () => {
     expect(requireUniqueComparisonMatch(["exact"], "fixture.csv")).toBe("exact");
     expect(requireUniqueComparisonMatch([], "fixture.csv")).toBeUndefined();
     expect(() => requireUniqueComparisonMatch(["first", "second"], "fixture.csv")).toThrow(/more than one match/u);
+  });
+
+  it("matches only the documented public first-use runtime roles and the correlated private kernel label", () => {
+    const runId = "12345678-1234-4234-9234-123456789abc";
+    const label = dataWranglerComparisonKernelLabel(runId);
+    expect(label).toBe(`Open Wrangler comparison runtime ${runId}`);
+    expect(comparisonRuntimeSelectorMatches("Select Python kernel")).toBe(true);
+    expect(comparisonRuntimeSelectorMatches("Choose a runtime")).toBe(true);
+    expect(comparisonRuntimeSelectorMatches("Python environment")).toBe(true);
+    expect(comparisonRuntimeSelectorMatches("Install dependencies")).toBe(false);
+    expect(comparisonRuntimeSelectorMatches("Filter columns")).toBe(false);
+    expect(comparisonRuntimeOptionNamePattern(label).test(`${label} Python 3.12`)).toBe(true);
+    expect(comparisonRuntimeOptionMatches(label, `${label} Python 3.12`)).toBe(true);
+    expect(comparisonRuntimeOptionMatches(label, "unrelated runtime")).toBe(false);
+    expect(comparisonRuntimeOptionMatches("Open Wrangler comparison runtime invalid", label)).toBe(false);
+    expect(() => dataWranglerComparisonKernelLabel("not-a-run-id")).toThrow(/correlated v4 run ID/u);
+  });
+
+  it("selects one exact configured runtime directly from an existing native Quick Input", async () => {
+    const nativeOption = { id: "native-quick-input-option" };
+    const events: string[] = [];
+    const topology = await runDataWranglerRuntimeSelectionTopology({
+      discoverOptions: async () => {
+        events.push("discover-option");
+        return [nativeOption];
+      },
+      discoverSelectors: async () => {
+        throw new Error("a direct native option must not require a selector");
+      },
+      activate: async (candidate) => {
+        events.push(`activate:${candidate.id}`);
+      },
+      waitForRetry: async () => {
+        throw new Error("a direct native option must not retry");
+      },
+      isWithinDeadline: () => true
+    });
+
+    expect(topology).toBe("direct-option");
+    expect(events).toEqual(["discover-option", "activate:native-quick-input-option"]);
+  });
+
+  it("activates one existing or webview selector before selecting its exact runtime option", async () => {
+    const selector = { id: "webview-selector" };
+    const option = { id: "webview-option" };
+    const events: string[] = [];
+    let optionPoll = 0;
+    const topology = await runDataWranglerRuntimeSelectionTopology({
+      discoverOptions: async () => {
+        optionPoll += 1;
+        events.push(`discover-option:${optionPoll}`);
+        return optionPoll === 1 ? [] : [option];
+      },
+      discoverSelectors: async () => {
+        events.push("discover-selector");
+        return [selector];
+      },
+      activate: async (candidate) => {
+        events.push(`activate:${candidate.id}`);
+      },
+      waitForRetry: async () => {
+        events.push("retry");
+      },
+      isWithinDeadline: () => true
+    });
+
+    expect(topology).toBe("selector-option");
+    expect(events).toEqual([
+      "discover-option:1",
+      "discover-selector",
+      "activate:webview-selector",
+      "retry",
+      "discover-option:2",
+      "activate:webview-option"
+    ]);
+  });
+
+  it("fails closed for ambiguous or absent runtime-selection topology", async () => {
+    const callbacks = {
+      activate: async () => undefined,
+      waitForRetry: async () => undefined,
+      isWithinDeadline: () => true
+    };
+    await expect(
+      runDataWranglerRuntimeSelectionTopology({
+        ...callbacks,
+        discoverOptions: async () => [{ id: "first" }, { id: "second" }],
+        discoverSelectors: async () => []
+      })
+    ).rejects.toThrow(/more than one matching configured runtime option/u);
+    await expect(
+      runDataWranglerRuntimeSelectionTopology({
+        ...callbacks,
+        discoverOptions: async () => [],
+        discoverSelectors: async () => [{ id: "first" }, { id: "second" }]
+      })
+    ).rejects.toThrow(/more than one public runtime selector/u);
+
+    let deadlineChecks = 0;
+    await expect(
+      runDataWranglerRuntimeSelectionTopology({
+        ...callbacks,
+        discoverOptions: async () => [],
+        discoverSelectors: async () => [],
+        isWithinDeadline: () => deadlineChecks++ === 0
+      })
+    ).rejects.toThrow(/direct configured option|public runtime selector/u);
   });
 
   it("accepts only a child frame or top-level Page created after the complete action-click baseline", () => {

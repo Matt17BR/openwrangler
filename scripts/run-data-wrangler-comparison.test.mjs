@@ -19,9 +19,12 @@ import {
   COMPARISON_PRODUCT_FRAGMENT_PROTOCOL,
   COMPARISON_COMMON_EXTENSION_LOCK,
   COMPARISON_TEST_PHASES,
+  DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
   DATA_WRANGLER_MARKETPLACE_EXTENSION,
   assertComparisonPathSeparation,
   captureComparisonInputFile,
+  createComparisonProductEditorPhasePlan,
+  dataWranglerComparisonKernelLabel,
   comparisonPythonCommandMatches,
   createComparisonPythonProcessObserver,
   installComparisonExtension,
@@ -34,7 +37,9 @@ import {
   revalidateComparisonInputFile,
   runComparisonInventoryGuard,
   runComparisonObservedEditorPhase,
+  runComparisonProductEditorPhases,
   runDataWranglerComparison,
+  writeDataWranglerComparisonJupyterEnvironment,
   writeDataWranglerComparisonReport
 } from "./run-data-wrangler-comparison.mjs";
 
@@ -101,6 +106,114 @@ test("comparison arguments expose only candidate, Python, and output paths", () 
       /Unknown comparison runner argument/u
     );
   }
+});
+
+test("Data Wrangler setup writes one uniquely correlated kernelspec for the exact pinned interpreter", async () => {
+  await withRunnerFixture(async ({ options, directory }) => {
+    const pythonReceipt = captureComparisonInputFile(options.python, {
+      label: "Comparison Python interpreter",
+      executable: true
+    });
+    const jupyterRoot = resolve(directory, "data-wrangler-jupyter");
+    const result = writeDataWranglerComparisonJupyterEnvironment(jupyterRoot, pythonReceipt, DATA_WRANGLER_RUN_ID);
+    const expectedLabel = dataWranglerComparisonKernelLabel(DATA_WRANGLER_RUN_ID);
+    assert.equal(result.label, expectedLabel);
+    assert.deepEqual(Object.keys(result.jupyterEnvironment).sort(), ["configDir", "dataDir", "path", "runtimeDir"]);
+    const kernelName = `openwrangler-comparison-${DATA_WRANGLER_RUN_ID.replaceAll("-", "")}`;
+    const kernel = JSON.parse(
+      readFileSync(resolve(result.jupyterEnvironment.dataDir, "kernels", kernelName, "kernel.json"), "utf8")
+    );
+    assert.deepEqual(kernel, {
+      argv: [options.python, "-I", "-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+      display_name: expectedLabel,
+      language: "python",
+      metadata: { debugger: false }
+    });
+    assert.equal(DATA_WRANGLER_FIRST_USE_SETUP_PHASE, "comparison-data-wrangler-setup");
+    assert.throws(
+      () => writeDataWranglerComparisonJupyterEnvironment(jupyterRoot, pythonReceipt, DATA_WRANGLER_RUN_ID),
+      /new absolute private Jupyter directory/u
+    );
+  });
+});
+
+test("Data Wrangler setup and diagnostic share launch state while only the diagnostic receipt reports", async () => {
+  const userData = "/private/profile/user";
+  const jupyterEnvironment = Object.freeze({
+    dataDir: "/private/profile/jupyter/data",
+    runtimeDir: "/private/profile/jupyter/runtime",
+    configDir: "/private/profile/jupyter/config",
+    path: "/private/profile/jupyter/path"
+  });
+  const phasePlan = createComparisonProductEditorPhasePlan({
+    productKey: "data-wrangler",
+    diagnosticPhase: COMPARISON_TEST_PHASES["data-wrangler"],
+    diagnosticResultPath: "/private/profile/comparison-data-wrangler-result.json",
+    firstUseSetupResultPath: "/private/profile/comparison-data-wrangler-setup-result.json",
+    userData,
+    jupyterEnvironment
+  });
+  assert.deepEqual(
+    phasePlan.map((phase) => ({ kind: phase.kind, phase: phase.phase, reportsFragment: phase.reportsFragment })),
+    [
+      {
+        kind: "first-use-setup",
+        phase: DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
+        reportsFragment: false
+      },
+      {
+        kind: "diagnostic",
+        phase: COMPARISON_TEST_PHASES["data-wrangler"],
+        reportsFragment: true
+      }
+    ]
+  );
+  assert.equal(phasePlan[0].userData, userData);
+  assert.equal(phasePlan[1].userData, userData);
+  assert.equal(phasePlan[0].jupyterEnvironment, jupyterEnvironment);
+  assert.equal(phasePlan[1].jupyterEnvironment, jupyterEnvironment);
+
+  const events = [];
+  const setupReceipt = { receipt: "setup-must-not-report" };
+  const diagnosticReceipt = { receipt: "diagnostic-reports" };
+  const result = await runComparisonProductEditorPhases({
+    phasePlan,
+    async runPhase(launch) {
+      events.push(launch.kind);
+      assert.equal(launch.userData, userData);
+      assert.equal(launch.jupyterEnvironment, jupyterEnvironment);
+      return launch.kind === "first-use-setup" ? setupReceipt : diagnosticReceipt;
+    }
+  });
+  assert.equal(result, diagnosticReceipt);
+  assert.deepEqual(events, ["first-use-setup", "diagnostic"]);
+
+  let diagnosticStarted = false;
+  await assert.rejects(
+    runComparisonProductEditorPhases({
+      phasePlan,
+      async runPhase(launch) {
+        if (launch.kind === "first-use-setup") throw new Error("runtime selection missing");
+        diagnosticStarted = true;
+      }
+    }),
+    /runtime selection missing/u
+  );
+  assert.equal(diagnosticStarted, false);
+  await assert.rejects(
+    runComparisonProductEditorPhases({ phasePlan: [...phasePlan], runPhase: async () => undefined }),
+    /authentic phase plan/u
+  );
+
+  const openPlan = createComparisonProductEditorPhasePlan({
+    productKey: "open-wrangler",
+    diagnosticPhase: COMPARISON_TEST_PHASES["open-wrangler"],
+    diagnosticResultPath: "/private/profile/comparison-open-wrangler-result.json",
+    firstUseSetupResultPath: null,
+    userData,
+    jupyterEnvironment: null
+  });
+  assert.equal(await runComparisonProductEditorPhases({ phasePlan: openPlan, runPhase: async () => "open" }), "open");
 });
 
 test("comparison output rejects lexical, canonical, symlink, and inode aliases of both protected inputs", async () => {

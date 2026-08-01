@@ -62,11 +62,13 @@ const NUMERIC_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][
 const SHA256 = /^[0-9a-f]{64}$/u;
 const PYTHON_VERSION = /^3\.(?:10|11|12|13|14)(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$/u;
 const PACKAGE_VERSION = /^[0-9A-Za-z](?:[0-9A-Za-z._+-]{0,126}[0-9A-Za-z])?$/u;
+const COMPARISON_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const INSTALLED_EXTENSION =
   /^([A-Za-z0-9][A-Za-z0-9-]{0,63}\.[A-Za-z0-9][A-Za-z0-9-]{0,127})@([0-9A-Za-z][0-9A-Za-z._+-]{0,127})$/u;
 const PROC_FILE_MAX_BYTES = 64 * 1024;
 const PROC_ENTRY_LIMIT = 32_768;
 const comparisonInputReceipts = new WeakSet();
+const comparisonProductEditorPhasePlans = new WeakSet();
 
 export const COMPARISON_PRODUCT_FRAGMENT_PROTOCOL = "openwrangler-comparison-product-fragment-v1";
 export const DATA_WRANGLER_MARKETPLACE_EXTENSION = `ms-toolsai.datawrangler@${DATA_WRANGLER_BASELINE_VERSION}`;
@@ -74,6 +76,7 @@ export const COMPARISON_TEST_PHASES = Object.freeze({
   "open-wrangler": "comparison-open-wrangler",
   "data-wrangler": "comparison-data-wrangler"
 });
+export const DATA_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-data-wrangler-setup";
 export const COMPARISON_COMMON_EXTENSION_LOCK = Object.freeze([
   "ms-python.debugpy@2026.6.0",
   PINNED_PYTHON_EXTENSION_ID,
@@ -520,6 +523,149 @@ export async function runDataWranglerComparison(options, environment = process.e
   return report;
 }
 
+export function dataWranglerComparisonKernelLabel(runId) {
+  if (typeof runId !== "string" || !COMPARISON_RUN_ID.test(runId)) {
+    throw new TypeError("Data Wrangler comparison kernel selection requires one correlated v4 run ID.");
+  }
+  return `Open Wrangler comparison runtime ${runId}`;
+}
+
+export function writeDataWranglerComparisonJupyterEnvironment(directory, pythonReceipt, runId) {
+  if (typeof directory !== "string" || !isAbsolute(directory) || /[\0\r\n]/u.test(directory) || existsSync(directory)) {
+    throw new Error("Data Wrangler comparison requires one new absolute private Jupyter directory.");
+  }
+  revalidateComparisonInputFile(pythonReceipt);
+  const python = pythonReceipt.path;
+  const label = dataWranglerComparisonKernelLabel(runId);
+  const dataDir = resolve(directory, "data");
+  const runtimeDir = resolve(directory, "runtime");
+  const configDir = resolve(directory, "config");
+  const pathDirectory = resolve(directory, "path");
+  const kernelName = `openwrangler-comparison-${runId.replaceAll("-", "")}`;
+  const kernelDirectory = resolve(dataDir, "kernels", kernelName);
+  for (const path of [dataDir, runtimeDir, configDir, pathDirectory, kernelDirectory]) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  }
+  writeFileSync(
+    resolve(kernelDirectory, "kernel.json"),
+    `${JSON.stringify(
+      {
+        argv: [python, "-I", "-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+        display_name: label,
+        language: "python",
+        metadata: { debugger: false }
+      },
+      null,
+      2
+    )}\n`,
+    { encoding: "utf8", flag: "wx", mode: 0o600 }
+  );
+  revalidateComparisonInputFile(pythonReceipt);
+  return Object.freeze({
+    label,
+    jupyterEnvironment: Object.freeze({ dataDir, runtimeDir, configDir, path: pathDirectory })
+  });
+}
+
+export function createComparisonProductEditorPhasePlan(input) {
+  exactKeys(
+    input,
+    [
+      "productKey",
+      "diagnosticPhase",
+      "diagnosticResultPath",
+      "firstUseSetupResultPath",
+      "userData",
+      "jupyterEnvironment"
+    ],
+    "comparison product editor phase-plan input"
+  );
+  const { productKey, diagnosticPhase, diagnosticResultPath, firstUseSetupResultPath, userData, jupyterEnvironment } =
+    input;
+  requireProductKey(productKey);
+  if (diagnosticPhase !== COMPARISON_TEST_PHASES[productKey]) {
+    throw new TypeError("Comparison product phase plan requires its exact diagnostic phase.");
+  }
+  for (const [value, label] of [
+    [userData, "user-data directory"],
+    [diagnosticResultPath, "diagnostic result"]
+  ]) {
+    if (typeof value !== "string" || !isAbsolute(value) || /[\0\r\n]/u.test(value)) {
+      throw new TypeError(`Comparison product phase plan requires one absolute ${label} path.`);
+    }
+  }
+
+  const diagnostic = Object.freeze({
+    kind: "diagnostic",
+    phase: diagnosticPhase,
+    resultPath: diagnosticResultPath,
+    userData,
+    jupyterEnvironment,
+    reportsFragment: true
+  });
+  let plan;
+  if (productKey === "data-wrangler") {
+    if (
+      typeof firstUseSetupResultPath !== "string" ||
+      !isAbsolute(firstUseSetupResultPath) ||
+      /[\0\r\n]/u.test(firstUseSetupResultPath) ||
+      firstUseSetupResultPath === diagnosticResultPath
+    ) {
+      throw new TypeError("Data Wrangler comparison phase plan requires one distinct absolute setup result path.");
+    }
+    exactKeys(
+      jupyterEnvironment,
+      ["dataDir", "runtimeDir", "configDir", "path"],
+      "Data Wrangler comparison Jupyter environment"
+    );
+    for (const value of Object.values(jupyterEnvironment)) {
+      if (typeof value !== "string" || !isAbsolute(value) || /[\0\r\n]/u.test(value)) {
+        throw new TypeError("Data Wrangler comparison phase plan requires absolute private Jupyter paths.");
+      }
+    }
+    plan = Object.freeze([
+      Object.freeze({
+        kind: "first-use-setup",
+        phase: DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
+        resultPath: firstUseSetupResultPath,
+        userData,
+        jupyterEnvironment,
+        reportsFragment: false
+      }),
+      diagnostic
+    ]);
+  } else {
+    if (firstUseSetupResultPath !== null || jupyterEnvironment !== null) {
+      throw new TypeError("Open Wrangler comparison phase plan must not include Data Wrangler setup state.");
+    }
+    plan = Object.freeze([diagnostic]);
+  }
+  comparisonProductEditorPhasePlans.add(plan);
+  return plan;
+}
+
+export async function runComparisonProductEditorPhases({ phasePlan, runPhase }) {
+  if (!comparisonProductEditorPhasePlans.has(phasePlan) || typeof runPhase !== "function") {
+    throw new TypeError("Comparison product execution requires one authentic phase plan and phase callback.");
+  }
+  let diagnosticResult;
+  let diagnosticCompleted = false;
+  for (const phase of phasePlan) {
+    const result = await runPhase(phase);
+    if (phase.reportsFragment) {
+      if (diagnosticCompleted) {
+        throw new Error("Comparison product execution encountered more than one reporting diagnostic phase.");
+      }
+      diagnosticResult = result;
+      diagnosticCompleted = true;
+    }
+  }
+  if (!diagnosticCompleted) {
+    throw new Error("Comparison product execution completed without its reporting diagnostic phase.");
+  }
+  return diagnosticResult;
+}
+
 async function runComparisonProduct({
   productKey,
   editor,
@@ -587,6 +733,10 @@ async function runComparisonProduct({
   const runId = randomUUID();
   const phase = COMPARISON_TEST_PHASES[productKey];
   const resultPath = resolve(profile, `${phase}-result.json`);
+  const dataWranglerKernel =
+    productKey === "data-wrangler"
+      ? writeDataWranglerComparisonJupyterEnvironment(resolve(profile, "jupyter"), pythonReceipt, runId)
+      : undefined;
   const inventoryInput = {
     editor: identifiedEditor,
     userData,
@@ -595,31 +745,46 @@ async function runComparisonProduct({
     environment: editorEnvironment,
     productKey
   };
+  const phasePlan = createComparisonProductEditorPhasePlan({
+    productKey,
+    diagnosticPhase: phase,
+    diagnosticResultPath: resultPath,
+    firstUseSetupResultPath:
+      productKey === "data-wrangler" ? resolve(profile, `${DATA_WRANGLER_FIRST_USE_SETUP_PHASE}-result.json`) : null,
+    userData,
+    jupyterEnvironment: dataWranglerKernel?.jupyterEnvironment ?? null
+  });
+  const runObservedPhase = (launch) =>
+    runComparisonObservedEditorPhase({
+      productKey,
+      pythonReceipt,
+      runPhase: (spawnProcess) =>
+        runEditorAcceptancePhase(
+          {
+            editor: identifiedEditor,
+            workspace,
+            userData: launch.userData,
+            extensions,
+            developmentPaths: [harnessDevelopmentPath],
+            testModule,
+            python,
+            phase: launch.phase,
+            resultPath: launch.resultPath,
+            editorProductVersion: editorVersion,
+            runId,
+            progressPath: editorAcceptanceProgressPath(launch.resultPath, runId, launch.phase),
+            requiresWorkbenchCdp: true,
+            jupyterEnvironment: launch.jupyterEnvironment ?? undefined
+          },
+          { environment, spawnProcess }
+        )
+    });
   const { installedExtensions, phaseResult: observed } = await runComparisonInventoryGuard({
     readInventory: () => readComparisonInstalledExtensions(inventoryInput),
     runPhase: () =>
-      runComparisonObservedEditorPhase({
-        productKey,
-        pythonReceipt,
-        runPhase: (spawnProcess) =>
-          runEditorAcceptancePhase(
-            {
-              editor: identifiedEditor,
-              workspace,
-              userData,
-              extensions,
-              developmentPaths: [harnessDevelopmentPath],
-              testModule,
-              python,
-              phase,
-              resultPath,
-              editorProductVersion: editorVersion,
-              runId,
-              progressPath: editorAcceptanceProgressPath(resultPath, runId, phase),
-              requiresWorkbenchCdp: true
-            },
-            { environment, spawnProcess }
-          )
+      runComparisonProductEditorPhases({
+        phasePlan,
+        runPhase: runObservedPhase
       })
   });
   const fragment = readInstalledPerformanceFragment(
