@@ -287,8 +287,13 @@ Released-Jupyter integration is a separate opt-in packaged matrix. Set `OPEN_WRA
 
 The packaged Classic and Connect PySpark fixtures arm class-level `toPandas`, `toArrow`, `mapInPandas`, and
 `mapInArrow` traps before Open Wrangler launches. Any accidental dataframe conversion must therefore fail inside
-the real selected kernel. Focused runtime cleanup tests must also observe the real owned indexed child's Spark
-storage level transition from persisted to `NONE` in both modes, then prove that the user Spark session still runs.
+the real selected kernel. Classic additionally replaces its user Spark session twice in one kernel: an identical
+schema must restore the exact confirmed view, while a renamed column must return the recoverable instruction to
+reopen the variable, leave the public metadata and view unchanged, close only the rejected runtime candidate, and
+keep the replacement user Spark session usable. The following real kernel restart recreates the original schema
+and must still recover that same public session before terminal cleanup reaches zero runtime sessions. Focused
+runtime cleanup tests must also observe the real owned indexed child's Spark storage level transition from
+persisted to `NONE` in both modes, then prove that the user Spark session still runs.
 
 Set `OPEN_WRANGLER_REAL_DATA_WRANGLER=1` together with the released-Jupyter opt-in to add a clean-room coexistence gate against the exact Marketplace baseline `ms-toolsai.datawrangler@1.24.2`. The runner installs that package into a separate private extensions directory, verifies only its public extension ID/version and activation state, and never opens or inspects its package source or assets. VS Code receives two additional disposable user-data profiles. The first selects **Use Open Wrangler** from the real conflict modal and is relaunched; the second selects **Keep Data Wrangler** and is relaunched. The four bounded phases must prove the selected global preference survives the editor restart, the modal is not repeated, and a newly started or restarted Python kernel contains Open Wrangler's MIME v2 output only for the Open Wrangler choice. The Data Wrangler choice requires the real extension to remain active beside a successful native Jupyter dataframe output while Open Wrangler's MIME and kernel-consent prompt stay absent. It may never depend on a copied implementation detail or a private MIME identifier. The proprietary extension is not launched in Cursor; the real-provider coexistence gate remains VS Code-only under its [Marketplace license](https://marketplace.visualstudio.com/items/ms-toolsai.datawrangler/license), while Open Wrangler's provider coordination remains covered independently in Cursor.
 
