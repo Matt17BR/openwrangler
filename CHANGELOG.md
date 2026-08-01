@@ -8,6 +8,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Native Filters / Sorts priority actions now use opaque provider-owned handles instead of JavaScript class identity.
+  Structurally cloned tree items therefore work in Cursor as well as VS Code, unrelated profiling and selection
+  updates no longer churn the native sort tree, and stale, ambiguous, or unavailable actions explain why they were
+  not applied instead of failing silently.
 - Import-option Quick Picks and input fields now explicitly reclaim workbench keyboard focus after opening. This
   preserves the existing keyboard-only flow in VS Code and fixes Cursor 3.13.21 leaving focus inside the dataframe
   webview; experimental forks that omit the standard focus command retain their native Quick Input behavior.

@@ -150,6 +150,14 @@ interface TestApi {
     | "missing-notebook"
     | "dispatching"
     | undefined;
+  viewSortDispatchStatus():
+    | "sent"
+    | "invalid-target"
+    | "stale-target"
+    | "inspection-active"
+    | "priority-boundary"
+    | "panel-unavailable"
+    | undefined;
 }
 
 interface ExtensionApi {
@@ -6474,6 +6482,7 @@ async function exercisePrimarySortJourney(
         activeSessionId: active?.sessionId,
         activeSort: active?.viewState.filterModel.sort,
         retainedSort: retained?.viewState.filterModel.sort,
+        dispatchStatus: testing.viewSortDispatchStatus(),
         panelHydrated: testing.panelHydrated(sessionId),
         coordinator: testing.diagnostics(),
         treeItems
