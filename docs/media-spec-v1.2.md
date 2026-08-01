@@ -5,15 +5,17 @@ user, match the packaged extension, and remain readable at its rendered width.
 
 ## Source and capture contract
 
-- Install one verified VSIX into a disposable editor profile.
+- Install one verified VSIX into a disposable editor profile for every scene that claims editor integration.
 - Run native VS Code/Cursor capture through the zero-window headless platform so no desktop window can open or
-  steal focus.
+  steal focus. Focused webview-only scenes may instead use lockfile-pinned Chromium with the same source commit's
+  exact production webview bundle; they must not imply editor integration that the browser harness did not test.
 - Use deterministic, license-clean fixtures. Never read or display user or private data.
 - Keep editor chrome when it explains integration: Activity Bar, sidebar, tabs, notebook toolbar, and code panel.
 - Reject clipped required text, partial grid rows, unrelated dialogs, notifications, temporary paths, fixture
   markers, setup cells, or acceptance-only labels.
 - Crops select exact rectangles from accepted screenshots. Do not scale, mask, annotate, recolor, or reconstruct
-  editor UI.
+  editor UI. The compositor records whether each source came from packaged-editor acceptance or the production
+  webview harness, and the inventory test rejects both missing and orphaned public PNGs.
 - Add only the standard sRGB PNG chunk when preparing portable copies.
 
 The packaged workbench starts at 1440 × 900 or 1280 × 900. Some grid captures trim only the measured partial
@@ -56,6 +58,7 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
 - `gallery/applied-step-inspection.png`: 1440 × 870; detail: 995 × 320.
 - `gallery/latest-step-edited.png` and `gallery/latest-step-undone.png`: 1440 × 865; details: 448 × 440.
 - `gallery/by-example-setup.png` and `gallery/by-example-preview.png`: complete dialogs with readable details.
+  These focused webview-only scenes come from the current production-bundle browser harness.
 
 ### Notebooks and engines
 
@@ -85,7 +88,7 @@ setup cell is intentionally implementation-oriented. The native PySpark workbenc
 - `gallery/export-script.png` / `export-script-detail.png` and `gallery/export-data.png` /
   `export-data-detail.png` show the real export outcomes.
 - `gallery/duckdb-rich-parquet.png` and `duckdb-rich-parquet-detail.png` show decimal, time-zone, list, and struct
-  values from a generated Parquet source.
+  values from a generated Parquet source in the current production-bundle browser harness.
 - `gallery/cursor-explore.png` and `gallery/high-contrast-explore.png` show the same product in Cursor and with
   high-contrast theme tokens.
 
@@ -124,7 +127,7 @@ Run:
 
 ```bash
 npm run compose:readme-media
-node --test scripts/readme-media.test.mjs
+npm run test:scripts:media
 npm run verify:readme-media
 ```
 

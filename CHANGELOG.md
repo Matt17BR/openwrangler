@@ -62,9 +62,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   filter/sort and cleaning workflow, file entry points, Pandas inline output, native Polars and DuckDB notebook
   sessions, experimental PySpark, focused operation flows, and accessibility states. Captions now explain the
   demonstrated capability without presenting fixture sizes as dataframe limits.
-- Expanded the public product tour with readable Activity Bar close-ups, complete 417-column navigation, exact
+- Added concise installed-editor performance evidence, user-facing roadmap language, and an exact media-inventory
+  gate. Public scenes now declare their truthful provenance: editor-integration views come from the verified VSIX,
+  while focused by-example and rich-type views come from the same source commit's production webview bundle.
+- Expanded the public product tour with readable Activity Bar views, complete 417-column navigation, exact
   histogram interaction, compound-sort controls, real script and cleaned-data exports, and the live notebook
-  variable picker. Every published asset is derived pixel-for-pixel from an accepted packaged-extension scene.
+  variable picker. Every published asset preserves accepted source pixels without scaling or reconstruction.
 - Added paired, pixel-exact Activity Bar details to the README and product gallery so first-time users can read the
   operation catalog, dataframe summary, ordered viewing state, and separate cleaning history without enlarging a
   full editor screenshot. The details are derived from the accepted packaged Explore and Workflow captures rather

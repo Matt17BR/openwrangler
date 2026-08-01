@@ -137,18 +137,6 @@ const assets = [
     width: 820,
     height: 610
   }),
-  nativeCrop("gallery/sidebar-explore.png", "vscode-explore-dark.png", 1_440, 870, {
-    x: 0,
-    y: 0,
-    width: 448,
-    height: 500
-  }),
-  nativeCrop("gallery/sidebar-workflow.png", "vscode-workflow-dark.png", 1_440, 870, {
-    x: 0,
-    y: 0,
-    width: 448,
-    height: 500
-  }),
   nativeCrop("gallery/histogram-hover.png", "vscode-histogram-hover-dark.png", 1_440, 870, {
     x: 992,
     y: 160,

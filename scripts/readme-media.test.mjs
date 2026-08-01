@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { PNG } from "pngjs";
@@ -127,18 +127,6 @@ const nativeAssets = [
     y: 63,
     width: 820,
     height: 610
-  }),
-  nativeCrop("gallery/sidebar-explore.png", "vscode-explore-dark.png", 1_440, 870, {
-    x: 0,
-    y: 0,
-    width: 448,
-    height: 500
-  }),
-  nativeCrop("gallery/sidebar-workflow.png", "vscode-workflow-dark.png", 1_440, 870, {
-    x: 0,
-    y: 0,
-    width: 448,
-    height: 500
   }),
   nativeCrop("gallery/histogram-hover.png", "vscode-histogram-hover-dark.png", 1_440, 870, {
     x: 992,
@@ -277,6 +265,26 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     immutableMediaReferences.length,
     "README product media must not drift with a moving branch."
   );
+  const declaredProductMedia = new Set([
+    ...nativeAssets.map((asset) => asset.destination),
+    "gallery/duckdb-rich-parquet.png"
+  ]);
+  const actualProductMedia = new Set(listRelativePngFiles(resolve(root, "docs", "images", "readme", "v1.2")));
+  assert.deepEqual(
+    [...actualProductMedia].sort(),
+    [...declaredProductMedia].sort(),
+    "The v1.2 media directory must contain exactly the declared public inventory."
+  );
+  const readmeMedia = productMediaReferences
+    .map((reference) => reference.assetPath)
+    .filter((assetPath) => assetPath.startsWith("docs/images/readme/v1.2/"))
+    .map((assetPath) => assetPath.slice("docs/images/readme/v1.2/".length));
+  const galleryMedia = [...gallery.matchAll(/images\/readme\/v1\.2\/([a-z0-9._/-]+\.png)/giu)].map((match) => match[1]);
+  assert.deepEqual(
+    [...new Set([...readmeMedia, ...galleryMedia])].sort(),
+    [...declaredProductMedia].sort(),
+    "Every declared v1.2 image must be referenced by the README or product gallery."
+  );
 
   assert.match(captureScript, /regional-orders-rich\.parquet/u);
   assert.match(captureScript, /backend="duckdb"/u);
@@ -365,7 +373,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "README must link to the gallery instead of presenting the scrollable setup editor as fully expanded."
   );
   assert.doesNotMatch(readme, /docs\/images\/readme\/v1\.1|docs\/images\/editor-acceptance/u);
-  assert.match(readme, /The whole workflow stays in VS Code/u);
+  assert.match(readme, /The whole workflow stays in your editor/u);
   assert.match(readme, /dataframes in an open-source workbench/u);
   assert.match(readme, /Operations, dataset health, viewing state, and cleaning history remain visible/u);
   assert.match(readme, /14,285 matching rows/u);
@@ -380,7 +388,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /opens the complete current live dataframe in the\s+workbench/u);
   assert.match(readme, /DuckDB, experimental\.<\/strong> Query the same live relation without converting it/u);
   assert.match(readme, /PySpark 4\.2\.x, experimental\.<\/strong> View, filter, sort, page, and profile in Spark/u);
-  assert.match(readme, /fixture sizes are evidence points, not row limits/u);
+  assert.match(readme, /These are evidence points, not row limits/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.doesNotMatch(
@@ -397,7 +405,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /does not install PySpark,\s+authenticate a cluster, or stop your session/u);
   assert.match(
     readme,
-    /\*\*v1\.2:\*\* delivers real-user interaction polish and hardened experimental PySpark 4\.2 notebook viewing[\s\S]{0,200}#36[\s\S]{0,500}bounded smoke[\s\S]{0,200}#86[\s\S]{0,300}comparison study[\s\S]{0,200}#91[\s\S]{0,100}continue/u
+    /\*\*v1\.2:\*\* adds native PySpark 4\.2 notebook viewing and interaction refinements[\s\S]{0,250}#36[\s\S]{0,500}compatibility validation[\s\S]{0,200}#86[\s\S]{0,300}comparison[\s\S]{0,200}#91/u
   );
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   assert.match(readme, /\*\*v2:\*\* add native R data frames[\s\S]{0,200}#87/u);
@@ -479,6 +487,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(mediaSpec, /canonical README and gallery contract for v1\.2/u);
   assert.match(mediaSpec, /six visual chapters/u);
   assert.match(mediaSpec, /Crops select exact rectangles from accepted screenshots/u);
+  assert.match(mediaSpec, /same source commit's\s+exact production webview bundle/u);
+  assert.match(mediaSpec, /inventory test rejects both missing and orphaned public PNGs/u);
   assert.match(mediaSpec, /Private setup, restart-probe, and runtime-transfer cells are collapsed/u);
   assert.match(mediaSpec, /raw PySpark variable-picker capture is acceptance evidence, not public product media/u);
   assert.match(legacyMediaSpec, /\*\*Historical record\.\*\*/u);
@@ -603,6 +613,15 @@ function assertExactPixels(actual, expected, width, message) {
   assert.fail(
     `${message} First difference: pixel (${pixel % width}, ${Math.floor(pixel / width)}), ${channel}; expected ${expected[offset]}, received ${actual[offset]}.`
   );
+}
+
+function listRelativePngFiles(directory, prefix = "") {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) return listRelativePngFiles(resolve(directory, entry.name), relative);
+    if (entry.isFile() && entry.name.endsWith(".png")) return [relative];
+    return [];
+  });
 }
 
 function assertPng(png, width, height, requireSrgb) {
