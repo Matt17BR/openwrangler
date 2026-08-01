@@ -6,9 +6,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const LEASE_TOKEN = "OPEN_WRANGLER_HEAVY_LEASE_TOKEN";
-const LEASE_PORT = "OPEN_WRANGLER_HEAVY_LEASE_PORT";
+const LEASE_ADDRESS = "OPEN_WRANGLER_HEAVY_LEASE_ADDRESS";
 const LEASE_SCOPE = "OPEN_WRANGLER_HEAVY_LEASE_SCOPE";
 const LOOPBACK = "127.0.0.1";
+const WINDOWS_PIPE_PREFIX = "\\\\.\\pipe\\openwrangler-heavy-";
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 
 export function parseHeavyCommandArguments(argv) {
@@ -24,6 +25,17 @@ export function parseHeavyCommandArguments(argv) {
 export function heavyCommandLeasePort(scope) {
   const digest = createHash("sha256").update(scope).digest();
   return 45_000 + (digest.readUInt16BE(0) % 10_000);
+}
+
+export function heavyCommandLeaseEndpoint(scope, platform = process.platform) {
+  if (platform === "win32") {
+    return { path: `${WINDOWS_PIPE_PREFIX}${createHash("sha256").update(scope).digest("hex")}` };
+  }
+  return { host: LOOPBACK, port: heavyCommandLeasePort(scope) };
+}
+
+function leaseAddress(endpoint) {
+  return "path" in endpoint ? `pipe:${endpoint.path}` : `tcp:${endpoint.host}:${endpoint.port}`;
 }
 
 function repositoryScope() {
@@ -43,9 +55,9 @@ function normalizedCommand(command) {
   return { executable: command[0], args: command.slice(1) };
 }
 
-async function verifyInheritedLease(port, token) {
+async function verifyInheritedLease(endpoint, token) {
   return await new Promise((resolveVerification) => {
-    const socket = createConnection({ host: LOOPBACK, port });
+    const socket = createConnection(endpoint);
     let response = "";
     const timer = setTimeout(() => socket.destroy(), 1_000);
     socket.setEncoding("utf8");
@@ -60,11 +72,11 @@ async function verifyInheritedLease(port, token) {
   });
 }
 
-async function acquireLease(port, token, label) {
+async function acquireLease(endpoint, token, label) {
   const server = createServer((socket) => socket.end(token));
   await new Promise((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
-    server.listen({ host: LOOPBACK, port, exclusive: true }, resolveListen);
+    server.listen({ ...endpoint, exclusive: true }, resolveListen);
   }).catch((error) => {
     if (error?.code === "EADDRINUSE") {
       throw new Error(
@@ -129,25 +141,25 @@ function signalChildTree(child, signal) {
 export async function runHeavyLocalCommand(argv = process.argv.slice(2)) {
   const { label, command } = parseHeavyCommandArguments(argv);
   const scope = repositoryScope();
-  const port = heavyCommandLeasePort(scope);
+  const endpoint = heavyCommandLeaseEndpoint(scope);
+  const address = leaseAddress(endpoint);
   const inheritedToken = process.env[LEASE_TOKEN];
-  const inheritedPort = Number.parseInt(process.env[LEASE_PORT] ?? "", 10);
   if (
     inheritedToken &&
     /^[0-9a-f-]{36}$/u.test(inheritedToken) &&
-    inheritedPort === port &&
-    (await verifyInheritedLease(port, inheritedToken))
+    process.env[LEASE_ADDRESS] === address &&
+    (await verifyInheritedLease(endpoint, inheritedToken))
   ) {
     return await runChild(command, process.env);
   }
 
   const token = randomUUID();
-  const server = await acquireLease(port, token, label);
+  const server = await acquireLease(endpoint, token, label);
   try {
     return await runChild(command, {
       ...process.env,
       [LEASE_TOKEN]: token,
-      [LEASE_PORT]: String(port)
+      [LEASE_ADDRESS]: address
     });
   } finally {
     await new Promise((resolveClose) => server.close(resolveClose));

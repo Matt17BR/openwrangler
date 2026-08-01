@@ -4,14 +4,18 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { heavyCommandLeasePort, parseHeavyCommandArguments } from "./run-heavy-local-command.mjs";
+import {
+  heavyCommandLeaseEndpoint,
+  heavyCommandLeasePort,
+  parseHeavyCommandArguments
+} from "./run-heavy-local-command.mjs";
 
 const guard = fileURLToPath(new URL("./run-heavy-local-command.mjs", import.meta.url));
 
 function cleanLeaseEnvironment(scope) {
   const environment = { ...process.env, OPEN_WRANGLER_HEAVY_LEASE_SCOPE: scope };
   delete environment.OPEN_WRANGLER_HEAVY_LEASE_TOKEN;
-  delete environment.OPEN_WRANGLER_HEAVY_LEASE_PORT;
+  delete environment.OPEN_WRANGLER_HEAVY_LEASE_ADDRESS;
   return environment;
 }
 
@@ -33,7 +37,7 @@ function captureChild(arguments_, environment) {
   return { child, output: () => ({ stdout, stderr }) };
 }
 
-test("heavy-command arguments and shared scope ports are deterministic", () => {
+test("heavy-command arguments and shared scope endpoints are deterministic", () => {
   assert.deepEqual(parseHeavyCommandArguments(["package", "--", "npm", "run", "package:run"]), {
     label: "package",
     command: ["npm", "run", "package:run"]
@@ -41,6 +45,17 @@ test("heavy-command arguments and shared scope ports are deterministic", () => {
   assert.throws(() => parseHeavyCommandArguments(["package", "npm"]), /Usage:/u);
   assert.equal(heavyCommandLeasePort("same-repository"), heavyCommandLeasePort("same-repository"));
   assert.notEqual(heavyCommandLeasePort("same-repository"), heavyCommandLeasePort("other-repository"));
+  assert.deepEqual(heavyCommandLeaseEndpoint("same-repository", "linux"), {
+    host: "127.0.0.1",
+    port: heavyCommandLeasePort("same-repository")
+  });
+  assert.deepEqual(heavyCommandLeaseEndpoint("same-repository", "win32"), {
+    path: "\\\\.\\pipe\\openwrangler-heavy-7080c913052f4fd872becdd1078e618a27c2868f8662124c8d3827255342af94"
+  });
+  assert.notDeepEqual(
+    heavyCommandLeaseEndpoint("same-repository", "win32"),
+    heavyCommandLeaseEndpoint("other-repository", "win32")
+  );
 });
 
 test("public heavy scripts hold the shared lease across their complete transactions", () => {
