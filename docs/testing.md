@@ -198,7 +198,7 @@ A 100,000,000-row terminal fixture additionally retains the exact
 effective 400-pixel width at 200% zoom. Its second status row must preserve **Header profiles** and both block
 controls with zero status-bar, application, or document overflow.
 
-Released notebook-action discovery resolves a unique manifest command ID before it validates the exact **Open in Open Wrangler** accessible name. Diagnostics record bounded label evidence and separate native editor-title action state from notebook-toolbar state, so a host-specific title mismatch is reported as such instead of as a missing Jupyter contribution.
+Released notebook-action discovery resolves a unique manifest command ID before it validates the exact **Open in Open Wrangler** accessible name. The standard notebook-toolbar contribution and Cursor editor-title fallback have mutually exclusive context predicates. Diagnostics require exactly one visible action across both surfaces, record bounded label evidence, and separate native editor-title action state from notebook-toolbar state, so a duplicate or host-specific title mismatch is reported directly instead of as a missing Jupyter contribution.
 
 ## First-class editor release checklist
 

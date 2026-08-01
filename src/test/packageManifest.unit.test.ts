@@ -189,7 +189,9 @@ describe("notebook launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["notebook/toolbar"]).toContainEqual({
       command: "openWrangler.openNotebookVariable",
-      when: stableJupyterContext,
+      when:
+        `${stableJupyterContext} && config.notebook.globalToolbar == true && ` +
+        "!openWrangler.forceNotebookEditorTitleAction",
       group: "navigation@50"
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
@@ -205,6 +207,30 @@ describe("notebook launch contributions", () => {
       expect(entry?.when).not.toContain("jupyter.kernel.isjupyter");
       expect(entry?.when).not.toContain("notebookKernel");
     }
+  });
+
+  it("selects exactly one notebook action surface for every supported toolbar state", () => {
+    const actionSurfaces = (globalToolbar: boolean | undefined, forceEditorTitle: boolean) => ({
+      notebookToolbar: globalToolbar === true && !forceEditorTitle,
+      editorTitle: globalToolbar !== true || forceEditorTitle
+    });
+
+    expect(actionSurfaces(true, false)).toEqual({
+      notebookToolbar: true,
+      editorTitle: false
+    });
+    expect(actionSurfaces(false, false)).toEqual({
+      notebookToolbar: false,
+      editorTitle: true
+    });
+    expect(actionSurfaces(undefined, false)).toEqual({
+      notebookToolbar: false,
+      editorTitle: true
+    });
+    expect(actionSurfaces(true, true)).toEqual({
+      notebookToolbar: false,
+      editorTitle: true
+    });
   });
 
   it("registers DuckDB and PySpark native values with the Jupyter Variables view", () => {

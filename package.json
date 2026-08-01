@@ -534,7 +534,7 @@
       "notebook/toolbar": [
         {
           "command": "openWrangler.openNotebookVariable",
-          "when": "notebookType == 'jupyter-notebook' && isWorkspaceTrusted",
+          "when": "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && config.notebook.globalToolbar == true && !openWrangler.forceNotebookEditorTitleAction",
           "group": "navigation@50"
         }
       ],
