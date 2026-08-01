@@ -1,19 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  CANONICAL_GITHUB_RELEASE_ASSETS,
-  parseGitHubImmutableReleaseExpectation,
-  publishGitHubRelease
-} from "./github-release-publisher.mjs";
-import { verifyCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
+import { withPinnedCanonicalReleaseAssets } from "./canonical-release-assets.mjs";
+import { parseGitHubImmutableReleaseExpectation, publishGitHubRelease } from "./github-release-publisher.mjs";
+import { verifyPinnedCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
 
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
-function sha256(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
-}
 
 export async function publishGitHubStableRelease(options) {
   return publishGitHubRelease({ ...options, channel: "stable" });
@@ -35,33 +28,58 @@ function exactHead(root) {
 
 export { parseGitHubImmutableReleaseExpectation } from "./github-release-publisher.mjs";
 
+export async function publishVerifiedGitHubStableRelease({
+  directory,
+  expectImmutable,
+  expectedCommit,
+  fetchImpl,
+  releaseTag,
+  repository,
+  sourceCommit,
+  sourcePackageJson,
+  token
+}) {
+  return withPinnedCanonicalReleaseAssets(directory, async (pinned) => {
+    const receipt = await verifyPinnedCanonicalReleaseArtifact({
+      directory,
+      expectedCommit,
+      pinned,
+      releaseTag,
+      sourceCommit,
+      sourcePackageJson
+    });
+    const assets = pinned.assets.map(({ bytes, contentType, name }) => ({ bytes, contentType, name }));
+    const result = await publishGitHubStableRelease({
+      assets,
+      beforeMutation: pinned.assertUnchanged,
+      expectImmutable,
+      expectedCommit: receipt.sourceCommit,
+      fetchImpl,
+      releaseTag: receipt.releaseTag,
+      repository,
+      token,
+      version: receipt.version
+    });
+    pinned.assertUnchanged();
+    return result;
+  });
+}
+
 async function runCli() {
   if (process.argv.length !== 3) {
     throw new Error("Pass exactly one downloaded canonical artifact directory.");
   }
   const root = realpathSync.native(resolve(import.meta.dirname, ".."));
   const directory = resolve(process.argv[2]);
-  const receipt = await verifyCanonicalReleaseArtifact({
+  const result = await publishVerifiedGitHubStableRelease({
     directory,
+    expectImmutable: parseGitHubImmutableReleaseExpectation(process.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED),
     expectedCommit: process.env.EXPECTED_SHA,
+    repository: process.env.GITHUB_REPOSITORY,
     releaseTag: process.env.RELEASE_TAG,
     sourceCommit: exactHead(root),
-    sourcePackageJson: readFileSync(join(root, "package.json"), "utf8")
-  });
-  const assets = CANONICAL_GITHUB_RELEASE_ASSETS.map(({ contentType, name }) =>
-    Object.freeze({ bytes: readFileSync(join(directory, name)), contentType, name })
-  );
-  if (sha256(assets[0].bytes) !== receipt.candidateSha256 || basename(receipt.candidatePath) !== assets[0].name) {
-    throw new Error("The canonical VSIX changed before GitHub publication.");
-  }
-  const result = await publishGitHubStableRelease({
-    assets,
-    expectImmutable: parseGitHubImmutableReleaseExpectation(process.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED),
-    expectedCommit: receipt.sourceCommit,
-    releaseTag: receipt.releaseTag,
-    repository: process.env.GITHUB_REPOSITORY,
-    token: process.env.GITHUB_TOKEN,
-    version: receipt.version
+    sourcePackageJson: readFileSync(join(root, "package.json"), "utf8"),
+    token: process.env.GITHUB_TOKEN
   });
   console.log(`GitHub release ${result.releaseTag} is exact and public${result.immutable ? " (immutable)" : ""}.`);
 }

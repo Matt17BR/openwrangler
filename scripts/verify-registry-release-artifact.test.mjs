@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ZipFile } from "yazl";
+import { publishVerifiedGitHubPreviewRelease } from "./publish-github-preview-release.mjs";
 import { CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL } from "./run-installed-performance.mjs";
 import { verifyPreviewReleaseArtifactFromCheckout } from "./verify-preview-release-artifact.mjs";
 import {
@@ -283,6 +284,72 @@ test("preview candidate verifier binds exact HEAD without requiring a tag", asyn
       root
     }),
     /exact candidate commit/u
+  );
+});
+
+test("preview publication rejects a provenance replacement before creating a GitHub draft", async (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-preview-publisher-head-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "tests@openwrangler.invalid");
+  git("config", "user.name", "Open Wrangler tests");
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(sourceManifest)}\n`);
+  git("add", "package.json");
+  git("commit", "-m", "preview source");
+  const candidateCommit = git("rev-parse", "HEAD");
+  const release = await fixture(context, sourceManifest, previewProperty, candidateCommit);
+  const provenancePath = join(release.directory, "openwrangler.vsix.provenance.json");
+  const originalProvenance = readFileSync(provenancePath);
+  const requests = [];
+  let replaced = false;
+  const fetchImpl = async (input, options = {}) => {
+    const url = String(input);
+    const method = options.method ?? "GET";
+    requests.push({ method, url });
+    if (url.endsWith(`/git/ref/tags/${encodeURIComponent(releaseTag)}`)) {
+      return new Response(
+        JSON.stringify({ object: { sha: candidateCommit, type: "commit" }, ref: `refs/tags/${releaseTag}` }),
+        { status: 200 }
+      );
+    }
+    if (url.endsWith(`/releases/tags/${encodeURIComponent(releaseTag)}`)) {
+      return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+    }
+    if (url.includes("/releases?")) {
+      if (!replaced) {
+        replaced = true;
+        unlinkSync(provenancePath);
+        writeFileSync(provenancePath, originalProvenance);
+      }
+      return new Response("[]", { status: 200 });
+    }
+    throw new Error(`Unexpected mutation request: ${method} ${url}`);
+  };
+
+  await assert.rejects(
+    publishVerifiedGitHubPreviewRelease({
+      directory: release.directory,
+      expectImmutable: false,
+      expectedCommit: candidateCommit,
+      fetchImpl,
+      releaseTag,
+      repository: "Matt17BR/openwrangler",
+      root,
+      token: "test-token"
+    }),
+    /changed while the canonical release set was pinned/u
+  );
+  assert.equal(
+    requests.some(({ method }) => method !== "GET"),
+    false
   );
 });
 

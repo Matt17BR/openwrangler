@@ -104,6 +104,12 @@ a moved tag, or any change observed after the publish response fails closed. Git
 must remain a bounded string, but is not canonical integrity evidence; exactness comes from the tag, target, channel,
 provenance, checksum, and downloaded asset bytes. Stable and future preview publishers share this channel-aware
 transaction; preview publication sets GitHub prerelease metadata and never marks the release latest.
+The stable and preview wrappers open all three canonical files with no-follow descriptors before semantic
+verification, retain those descriptors through publication, and publish only the verified in-memory bytes. They
+revalidate every descriptor, named single-link path, bounded size, identity, timestamp, inventory, and in-memory
+digest immediately before each draft creation, asset upload, or final publish mutation. The VSIX retains the
+canonical 128 MiB ceiling; provenance remains capped at 4 KiB and the checksum at 512 bytes, so increasing the
+package ceiling cannot widen either sidecar boundary.
 
 This ordering follows GitHub's [immutable-release publication guidance](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases):
 create the draft, attach every asset, then publish it. The publisher uses the versioned `2026-03-10` REST contract

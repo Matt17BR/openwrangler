@@ -3,17 +3,11 @@ import { createHash } from "node:crypto";
 import { appendFileSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  readInstalledPerformanceChecksum,
-  readInstalledPerformanceProvenance,
-  readInstalledPerformanceVsixReceipt,
-  revalidateInstalledPerformanceChecksum,
-  revalidateInstalledPerformanceProvenance,
-  revalidateInstalledPerformanceVsix
-} from "./run-installed-performance.mjs";
+import { requirePinnedCanonicalReleaseAssets, withPinnedCanonicalReleaseAssets } from "./canonical-release-assets.mjs";
+import { validateInstalledPerformanceProvenance } from "./run-installed-performance.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
-import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
+import { inspectVsixArchive } from "./vsix-archive.mjs";
 
 const CANONICAL_FILES = Object.freeze([
   "openwrangler.vsix",
@@ -23,6 +17,7 @@ const CANONICAL_FILES = Object.freeze([
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
 const STABLE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
+const PROVENANCE_MAX_BYTES = 4 * 1024;
 
 function canonicalArtifactDirectory(directory) {
   if (typeof directory !== "string" || directory.length === 0) {
@@ -81,9 +76,10 @@ function exactHead(root) {
   return commit;
 }
 
-export async function verifyCanonicalReleaseArtifact({
+export async function verifyPinnedCanonicalReleaseArtifact({
   directory,
   expectedCommit,
+  pinned,
   releaseTag,
   sourceCommit,
   sourcePackageJson
@@ -104,33 +100,33 @@ export async function verifyCanonicalReleaseArtifact({
 
   const artifactDirectory = canonicalArtifactDirectory(directory);
   const candidatePath = join(artifactDirectory, "openwrangler.vsix");
-  const checksumPath = join(artifactDirectory, "openwrangler.vsix.sha256");
-  const provenancePath = join(artifactDirectory, "openwrangler.vsix.provenance.json");
-  const candidate = readInstalledPerformanceVsixReceipt(candidatePath);
-  const checksum = readInstalledPerformanceChecksum(checksumPath, candidatePath);
-  const provenance = readInstalledPerformanceProvenance(provenancePath);
+  const [candidateAsset, provenanceAsset, checksumAsset] = requirePinnedCanonicalReleaseAssets(
+    pinned,
+    artifactDirectory
+  );
+  const candidateSha256 = createHash("sha256").update(candidateAsset.bytes).digest("hex");
+  const checksumMatch = /^([0-9a-f]{64}) {2}openwrangler\.vsix\n$/u.exec(checksumAsset.bytes.toString("utf8"));
+  if (checksumMatch === null || Buffer.byteLength(checksumMatch[0], "utf8") !== checksumAsset.bytes.length) {
+    throw new Error("The canonical release checksum must contain exactly one lowercase SHA-256 line.");
+  }
+  const provenance = validateInstalledPerformanceProvenance(
+    parseStrictJson(provenanceAsset.bytes.toString("utf8"), { maxBytes: PROVENANCE_MAX_BYTES })
+  );
 
   if (
-    checksum.candidateSha256 !== candidate.sha256 ||
+    checksumMatch[1] !== candidateSha256 ||
     provenance.extensionId !== source.extensionId ||
     provenance.extensionVersion !== source.version ||
     provenance.preview !== source.preview ||
     provenance.releaseTag !== releaseTag ||
     provenance.sourceCommit !== expectedCommit ||
-    provenance.vsixSha256 !== candidate.sha256 ||
-    provenance.vsixBytes !== candidate.bytes
+    provenance.vsixSha256 !== candidateSha256 ||
+    provenance.vsixBytes !== candidateAsset.bytes.length
   ) {
     throw new Error("The canonical release files do not describe one exact stable artifact.");
   }
 
-  const archiveSnapshot = readBoundedVsixFileSnapshot(candidatePath, { requireOwner: true });
-  if (
-    archiveSnapshot.bytes.length !== candidate.bytes ||
-    createHash("sha256").update(archiveSnapshot.bytes).digest("hex") !== candidate.sha256
-  ) {
-    throw new Error("The canonical release VSIX changed before packaged metadata verification.");
-  }
-  const archive = await inspectVsixArchive(archiveSnapshot.bytes);
+  const archive = await inspectVsixArchive(candidateAsset.bytes);
   const packaged = validateSourceManifest(archive.packagedPackageJson);
   if (
     packaged.extensionId !== source.extensionId ||
@@ -140,18 +136,23 @@ export async function verifyCanonicalReleaseArtifact({
     throw new Error("The packaged extension identity or stable version does not match its checked-out source.");
   }
 
-  revalidateInstalledPerformanceVsix(candidate);
-  revalidateInstalledPerformanceChecksum(checksum, candidatePath);
-  revalidateInstalledPerformanceProvenance(provenance);
+  pinned.assertUnchanged();
   return Object.freeze({
-    candidateBytes: candidate.bytes,
+    candidateBytes: candidateAsset.bytes.length,
     candidatePath,
-    candidateSha256: candidate.sha256,
+    candidateSha256,
     extensionId: source.extensionId,
     releaseTag,
     sourceCommit: expectedCommit,
     version: source.version
   });
+}
+
+export async function verifyCanonicalReleaseArtifact(options) {
+  const artifactDirectory = canonicalArtifactDirectory(options?.directory);
+  return withPinnedCanonicalReleaseAssets(artifactDirectory, (pinned) =>
+    verifyPinnedCanonicalReleaseArtifact({ ...options, directory: artifactDirectory, pinned })
+  );
 }
 
 async function runCli() {

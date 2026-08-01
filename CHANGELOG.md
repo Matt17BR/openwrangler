@@ -6,6 +6,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Kept the stable and preview GitHub publishers on one descriptor-pinned canonical artifact triple from semantic
+  verification through remote publication. The exact VSIX, checksum, and provenance paths are revalidated before
+  every draft mutation, so sidecar replacement, symlink, hard-link, identity, metadata, or in-memory byte drift
+  fails before that mutation. The publisher now accepts the canonical 128 MiB VSIX ceiling while retaining separate
+  4 KiB provenance and 512 byte checksum bounds.
 - Rebuilt preview delivery as a manual candidate-first flow from protected `main`. One package job authors the exact
   VSIX/checksum/provenance triple, Linux owns the complete source/full suite once, and parallel native,
   installed-performance, released/remote Jupyter, and Remote SSH lanes consume only that immutable artifact ID.

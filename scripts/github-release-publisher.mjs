@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { CANONICAL_RELEASE_ASSET_SPECS } from "./canonical-release-assets.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
@@ -8,17 +9,17 @@ const GITHUB_UPLOAD_BASE = "https://uploads.github.com";
 const GITHUB_API_VERSION = "2026-03-10";
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
 const RELEASE_JSON_MAX_BYTES = 4 * 1024 * 1024;
-const ASSET_MAX_BYTES = 32 * 1024 * 1024;
 const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
 const RELEASES_PER_PAGE = 100;
 const MAX_RELEASE_PAGES = 100;
 const DISCOVERY_ATTEMPTS = 3;
 const DISCOVERY_RETRY_MS = 100;
-export const CANONICAL_GITHUB_RELEASE_ASSETS = Object.freeze([
-  Object.freeze({ contentType: "application/octet-stream", name: "openwrangler.vsix" }),
-  Object.freeze({ contentType: "application/json", name: "openwrangler.vsix.provenance.json" }),
-  Object.freeze({ contentType: "text/plain; charset=utf-8", name: "openwrangler.vsix.sha256" })
-]);
+export const CANONICAL_GITHUB_RELEASE_ASSETS = Object.freeze(
+  CANONICAL_RELEASE_ASSET_SPECS.map(({ contentType, name }) => Object.freeze({ contentType, name }))
+);
+const RELEASE_ASSET_MAXIMUM_BYTES = new Map(
+  CANONICAL_RELEASE_ASSET_SPECS.map(({ maximumBytes, name }) => [name, maximumBytes])
+);
 
 export function parseGitHubImmutableReleaseExpectation(value) {
   if (value === undefined || value === "false") return false;
@@ -99,7 +100,17 @@ async function requestJson(fetchImpl, url, options, label, allowedStatuses) {
   return readJson(response, label);
 }
 
-function validateInputs({ assets, channel, expectImmutable, expectedCommit, releaseTag, repository, token, version }) {
+function validateInputs({
+  assets,
+  beforeMutation,
+  channel,
+  expectImmutable,
+  expectedCommit,
+  releaseTag,
+  repository,
+  token,
+  version
+}) {
   if (repository !== EXPECTED_REPOSITORY) {
     throw new Error(`GitHub publication is restricted to ${EXPECTED_REPOSITORY}.`);
   }
@@ -120,6 +131,9 @@ function validateInputs({ assets, channel, expectImmutable, expectedCommit, rele
   if (typeof expectImmutable !== "boolean") {
     throw new Error("expectImmutable must be an explicit boolean.");
   }
+  if (beforeMutation !== undefined && typeof beforeMutation !== "function") {
+    throw new Error("beforeMutation must be a function when canonical file revalidation is required.");
+  }
   if (
     !Array.isArray(assets) ||
     assets.length !== CANONICAL_GITHUB_RELEASE_ASSETS.length ||
@@ -129,7 +143,7 @@ function validateInputs({ assets, channel, expectImmutable, expectedCommit, rele
         assets[index]?.contentType !== CANONICAL_GITHUB_RELEASE_ASSETS[index].contentType ||
         !Buffer.isBuffer(assets[index]?.bytes) ||
         assets[index].bytes.length < 1 ||
-        assets[index].bytes.length > ASSET_MAX_BYTES
+        assets[index].bytes.length > RELEASE_ASSET_MAXIMUM_BYTES.get(name)
     )
   ) {
     throw new Error("GitHub publication requires the ordered canonical three release assets.");
@@ -324,7 +338,7 @@ async function verifyExistingAsset({ asset, expected, fetchImpl, headers }) {
   }
   const publicBytes = await readBoundedResponse(
     response,
-    Math.min(ASSET_MAX_BYTES, expected.bytes.length),
+    Math.min(RELEASE_ASSET_MAXIMUM_BYTES.get(expected.name), expected.bytes.length),
     expected.name
   );
   if (
@@ -353,6 +367,7 @@ async function verifyReleaseAssets({ assets, discovered, fetchImpl, headers, req
 
 async function createDraftRelease({
   apiRoot,
+  beforeMutation,
   expectedCommit,
   expectedName,
   fetchImpl,
@@ -360,6 +375,7 @@ async function createDraftRelease({
   prerelease,
   releaseTag
 }) {
+  await beforeMutation?.();
   const response = await fetchImpl(`${apiRoot}/releases`, {
     body: JSON.stringify({
       draft: true,
@@ -385,7 +401,8 @@ async function createDraftRelease({
   return readJson(response, "Created GitHub draft release");
 }
 
-async function uploadAsset({ expected, fetchImpl, headers, release }) {
+async function uploadAsset({ beforeMutation, expected, fetchImpl, headers, release }) {
+  await beforeMutation?.();
   const uploadUrl = release.upload_url.slice(0, -"{?name,label}".length);
   const url = new URL(uploadUrl);
   url.searchParams.set("name", expected.name);
@@ -407,7 +424,17 @@ async function uploadAsset({ expected, fetchImpl, headers, release }) {
   return true;
 }
 
-async function publishDraftRelease({ apiRoot, expectedCommit, expectedName, fetchImpl, headers, prerelease, release }) {
+async function publishDraftRelease({
+  apiRoot,
+  beforeMutation,
+  expectedCommit,
+  expectedName,
+  fetchImpl,
+  headers,
+  prerelease,
+  release
+}) {
+  await beforeMutation?.();
   const response = await fetchImpl(`${apiRoot}/releases/${release.id}`, {
     body: JSON.stringify({
       draft: false,
@@ -430,6 +457,7 @@ async function publishDraftRelease({ apiRoot, expectedCommit, expectedName, fetc
 
 export async function publishGitHubRelease({
   assets,
+  beforeMutation,
   channel,
   expectImmutable,
   expectedCommit,
@@ -441,6 +469,7 @@ export async function publishGitHubRelease({
 }) {
   const { apiRoot, expectedName, prerelease, uploadRoot } = validateInputs({
     assets,
+    beforeMutation,
     channel,
     expectImmutable,
     expectedCommit,
@@ -472,6 +501,7 @@ export async function publishGitHubRelease({
   if (state.phase === "absent") {
     const created = await createDraftRelease({
       apiRoot,
+      beforeMutation,
       expectedCommit,
       expectedName,
       fetchImpl,
@@ -503,7 +533,7 @@ export async function publishGitHubRelease({
   await verifyReleaseAssets({ assets, discovered, fetchImpl, headers, requireComplete: false });
   for (const expected of assets) {
     if (discovered.has(expected.name)) continue;
-    await uploadAsset({ expected, fetchImpl, headers, release });
+    await uploadAsset({ beforeMutation, expected, fetchImpl, headers, release });
     state = await discoverRelease({ apiRoot, fetchImpl, headers, releaseTag });
     if (state.phase === "absent") {
       throw new Error("GitHub draft release disappeared during asset publication.");
@@ -551,6 +581,7 @@ export async function publishGitHubRelease({
   try {
     patched = await publishDraftRelease({
       apiRoot,
+      beforeMutation,
       expectedCommit,
       expectedName,
       fetchImpl,

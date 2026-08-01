@@ -2,7 +2,10 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyPreviewReleaseArtifact } from "./verify-registry-release-artifact.mjs";
+import {
+  verifyPinnedPreviewReleaseArtifact,
+  verifyPreviewReleaseArtifact
+} from "./verify-registry-release-artifact.mjs";
 
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
 
@@ -43,6 +46,31 @@ export async function verifyPreviewReleaseArtifactFromCheckout({ directory, expe
   return verifyPreviewReleaseArtifact({
     directory,
     expectedCommit,
+    releaseTag,
+    sourcePackageJson
+  });
+}
+
+export async function verifyPinnedPreviewReleaseArtifactFromCheckout({
+  directory,
+  expectedCommit,
+  pinned,
+  releaseTag,
+  root
+}) {
+  if (typeof expectedCommit !== "string" || !FULL_COMMIT.test(expectedCommit)) {
+    throw new Error("EXPECTED_SHA must be one full lowercase hexadecimal Git commit ID.");
+  }
+  const canonicalRoot = canonicalRepositoryRoot(root);
+  const head = git(canonicalRoot, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
+  if (head !== expectedCommit) {
+    throw new Error("Preview release verification must run from the exact candidate commit.");
+  }
+  const sourcePackageJson = git(canonicalRoot, ["cat-file", "blob", `${expectedCommit}:package.json`], 1024 * 1024);
+  return verifyPinnedPreviewReleaseArtifact({
+    directory,
+    expectedCommit,
+    pinned,
     releaseTag,
     sourcePackageJson
   });

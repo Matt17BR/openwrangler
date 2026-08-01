@@ -318,6 +318,34 @@ test("creates a draft, verifies all three assets, and only then publishes", asyn
   assert.deepEqual(mutationMethods, ["POST", "POST", "POST", "POST", "PATCH"]);
 });
 
+test("revalidates pinned canonical files immediately before every release mutation", async () => {
+  const fixture = githubFixture();
+  let guardCalls = 0;
+  await assert.rejects(
+    publishGitHubRelease({
+      assets,
+      beforeMutation() {
+        guardCalls += 1;
+        throw new Error("canonical sidecar drifted");
+      },
+      channel: stable.channel,
+      expectImmutable: false,
+      expectedCommit,
+      fetchImpl: fixture.fetchImpl,
+      releaseTag: stable.releaseTag,
+      repository,
+      token: "test-token",
+      version: stable.version
+    }),
+    /canonical sidecar drifted/u
+  );
+  assert.equal(guardCalls, 1);
+  assert.equal(
+    fixture.requests.some((request) => request.method !== "GET"),
+    false
+  );
+});
+
 test("resumes an exact partial draft without replacing retained assets", async () => {
   const retained = releaseAsset(assets[0].name, assets[0].bytes, 1);
   const fixture = githubFixture({
@@ -560,6 +588,68 @@ test("rejects malformed release inventory and generic input ambiguity", async ()
     }),
     /canonical three release assets/u
   );
+  await assert.rejects(
+    publishGitHubRelease({
+      assets,
+      beforeMutation: true,
+      channel: "stable",
+      expectImmutable: false,
+      expectedCommit,
+      fetchImpl: githubFixture().fetchImpl,
+      releaseTag: stable.releaseTag,
+      repository,
+      token: "test-token",
+      version: stable.version
+    }),
+    /beforeMutation must be a function/u
+  );
+});
+
+test("uses the 128 MiB VSIX ceiling without widening bounded sidecars", async () => {
+  const widerVsix = assets.map((asset, index) =>
+    index === 0 ? { ...asset, bytes: Buffer.alloc(32 * 1024 * 1024 + 1) } : asset
+  );
+  let requests = 0;
+  await assert.rejects(
+    publishGitHubRelease({
+      assets: widerVsix,
+      channel: "stable",
+      expectImmutable: false,
+      expectedCommit,
+      fetchImpl: async () => {
+        requests += 1;
+        return jsonResponse({ message: "Not Found" }, 404);
+      },
+      releaseTag: stable.releaseTag,
+      repository,
+      token: "test-token",
+      version: stable.version
+    }),
+    /tag must exist/u
+  );
+  assert.equal(requests, 1);
+
+  for (const [index, bytes] of [
+    [1, Buffer.alloc(4 * 1024 + 1)],
+    [2, Buffer.alloc(513)]
+  ]) {
+    await assert.rejects(
+      publishGitHubRelease({
+        assets: assets.map((asset, assetIndex) => (assetIndex === index ? { ...asset, bytes } : asset)),
+        channel: "stable",
+        expectImmutable: false,
+        expectedCommit,
+        fetchImpl: async () => {
+          throw new Error("oversized sidecars must fail before network access");
+        },
+        releaseTag: stable.releaseTag,
+        repository,
+        token: "test-token",
+        version: stable.version
+      }),
+      /canonical three release assets/u
+    );
+  }
 });
 
 test("retains the stable compatibility export", async () => {
