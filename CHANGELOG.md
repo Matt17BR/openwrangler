@@ -6,6 +6,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Added a fail-closed pull-request fast path for non-packaged documentation. Exact `docs/**`, contributor/security
+  guides, and contribution-template changes still run formatting, lint, strict types, generated-document freshness,
+  licenses, and workflow contracts, while checksum packaging and product/editor matrices retain their check names as
+  explicit skips. Empty, mixed, unknown, shipped README/license/changelog, substantive, and non-PR changes keep the
+  complete matrix; malformed classification fails the protected aggregate and separately protected native/CodeQL
+  contexts.
 - Reduced CI repetition without relaxing product acceptance: obsolete pull-request heads now cancel their own
   superseded runs, the coverage lane exclusively owns the complete TypeScript/Python and exact PySpark suites, and
   stable Linux validation runs script contracts once before instrumented coverage instead of executing both full

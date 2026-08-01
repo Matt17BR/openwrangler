@@ -4,11 +4,17 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
 import { loadConfigFromFile } from "vite";
-import { parseChangedPathBuffer, requiresReleasedJupyter } from "./ci-path-classification.mjs";
+import {
+  isDocumentationOnlyChangeSet,
+  parseChangedPathBuffer,
+  requiresReleasedJupyter
+} from "./ci-path-classification.mjs";
 import { inspectStableCandidateWorkflow } from "./release-workflow.mjs";
 import {
+  ALWAYS_REQUIRED_CI_JOBS,
   CONDITIONAL_CI_JOB,
   OPTIONAL_CI_JOB,
+  PRODUCT_CI_JOBS,
   REQUIRED_CI_JOBS,
   parseRequiredFlag,
   requireCiResults,
@@ -27,6 +33,7 @@ const requiredPullRequestWorkflows = [
   ".github/workflows/codeql.yml"
 ];
 const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
+  "classify",
   "fast-feedback",
   "contract-tests",
   "visual-accessibility",
@@ -45,6 +52,8 @@ const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af8
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
+const FULL_CI_IF =
+  "${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}";
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
@@ -456,33 +465,37 @@ test("PR workflows cancel only obsolete pull-request heads", () => {
   }
 });
 
-test("released-Jupyter path classification skips only explicit documentation-only pull requests", () => {
-  assert.deepEqual(parseChangedPathBuffer(Buffer.from("docs/testing.md\0README.md\0docs/images/über.png\0", "utf8")), [
-    "docs/testing.md",
-    "README.md",
-    "docs/images/über.png"
-  ]);
+test("NUL-safe path classification fast-paths only explicit non-packaged documentation", () => {
+  assert.deepEqual(
+    parseChangedPathBuffer(Buffer.from("docs/testing.md\0AGENTS.md\0docs/images/über.png\0docs/a\nfile.md\0", "utf8")),
+    ["docs/testing.md", "AGENTS.md", "docs/images/über.png", "docs/a\nfile.md"]
+  );
   assert.throws(() => parseChangedPathBuffer(Buffer.from("src/extension/activate.ts", "utf8")), /NUL terminated/u);
   assert.throws(() => parseChangedPathBuffer(Buffer.from("README.md\0\0", "utf8")), /empty path/u);
   assert.throws(() => parseChangedPathBuffer(Buffer.from([0xff, 0])), /encoded data/u);
+  assert.throws(() => parseChangedPathBuffer("AGENTS.md\0"), /provided as a Buffer/u);
 
   const required = (changedPaths) => requiresReleasedJupyter({ eventName: "pull_request", changedPaths });
-  assert.equal(
-    required([
-      "AGENTS.md",
-      "CHANGELOG.md",
-      "CONTRIBUTING.md",
-      "LICENSE",
-      "README.md",
-      "SECURITY.md",
-      "SUPPORT.md",
-      "docs/testing.md",
-      ".github/ISSUE_TEMPLATE/bug.yml",
-      ".github/PULL_REQUEST_TEMPLATE/docs.md"
-    ]),
-    false
-  );
+  const documentationOnly = (eventName, changedPaths) => isDocumentationOnlyChangeSet({ eventName, changedPaths });
+  const allowed = [
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "docs/testing.md",
+    "docs/a\nfile.md",
+    ".github/ISSUE_TEMPLATE/bug.yml",
+    ".github/PULL_REQUEST_TEMPLATE/docs.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/pull_request_template.md"
+  ];
+  assert.equal(documentationOnly("pull_request", allowed), true);
+  assert.equal(required(allowed), false);
   for (const path of [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
     ".github/workflows/ci.yml",
     ".vscodeignore",
     "assets/openwrangler.png",
@@ -495,14 +508,41 @@ test("released-Jupyter path classification skips only explicit documentation-onl
     "docs/../src/extension/activate.ts",
     "/docs/testing.md",
     "docs//testing.md",
+    "docs\\testing.md",
+    "Docs/testing.md",
+    ".github/ISSUE_TEMPLATE",
+    ".github/PULL_REQUEST_TEMPLATE",
     "unknown/future-package-surface"
   ]) {
+    assert.equal(documentationOnly("pull_request", [path]), false, `${path} must require the complete PR matrix.`);
     assert.equal(required([path]), true, `${path} must require released-Jupyter acceptance.`);
   }
+  assert.equal(documentationOnly("pull_request", ["docs/testing.md", "src/shared/notebookOutput.ts"]), false);
   assert.equal(required(["docs/testing.md", "src/shared/notebookOutput.ts"]), true);
+  assert.equal(documentationOnly("pull_request", []), false, "an empty PR diff must fail closed");
   assert.equal(required([]), true, "an empty PR diff must fail closed into acceptance");
+  for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
+    assert.equal(documentationOnly(eventName, allowed), false, `${eventName} must always use the complete workflow.`);
+  }
+  assert.equal(documentationOnly("pull_request", [undefined]), false);
+  assert.equal(documentationOnly("pull_request", ["docs/testing.md", 42]), false);
+  assert.throws(() => documentationOnly("pull_request", undefined), /changedPaths must be an array/u);
   assert.equal(requiresReleasedJupyter({ eventName: "push", changedPaths: ["src/extension/activate.ts"] }), false);
   assert.throws(() => requiresReleasedJupyter({ eventName: "schedule", changedPaths: [] }), /Unsupported CI event/u);
+});
+
+test("documentation fast-path roots remain excluded from the VSIX inventory", () => {
+  const ignored = new Set(
+    readFileSync(new URL("../.vscodeignore", import.meta.url), "utf8")
+      .split(/\r?\n/gu)
+      .filter(Boolean)
+  );
+  for (const path of ["docs/**", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"]) {
+    assert.equal(ignored.has(path), true, `${path} must remain outside the packaged extension.`);
+  }
+  for (const path of ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]) {
+    assert.equal(ignored.has(path), false, `${path} changes shipped extension bytes and must keep full CI.`);
+  }
 });
 
 test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX", () => {
@@ -515,9 +555,19 @@ test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX"
   assert.deepEqual(canonicalCheckout?.with, { "fetch-depth": 0 });
   assert.equal(
     canonical?.outputs?.released_jupyter_required,
+    "${{ needs.classify.outputs.released_jupyter_required }}"
+  );
+  const classification = workflow?.jobs?.classify;
+  assert.equal(classification?.name, "CI change classification");
+  assert.equal(classification?.outputs?.documentation_only, "${{ steps.classify.outputs.documentation_only }}");
+  assert.equal(
+    classification?.outputs?.released_jupyter_required,
     "${{ steps.classify.outputs.released_jupyter_required }}"
   );
-  const classify = canonical?.steps?.find((step) => step?.id === "classify");
+  assert.deepEqual(classification?.steps?.find((step) => step?.uses === "actions/checkout@v6")?.with, {
+    "fetch-depth": 0
+  });
+  const classify = classification?.steps?.find((step) => step?.id === "classify");
   assert.equal(classify?.run, "node scripts/ci-path-classification.mjs");
   assert.deepEqual(classify?.env, {
     CI_EVENT_NAME: "${{ github.event_name }}",
@@ -527,8 +577,11 @@ test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX"
 
   const job = workflow?.jobs?.[CONDITIONAL_CI_JOB];
   assert.equal(job?.name, "VS Code with released Jupyter");
-  assert.equal(job?.needs, "canonical-vsix");
-  assert.equal(job?.if, "${{ always() && needs.canonical-vsix.outputs.released_jupyter_required == 'true' }}");
+  assert.deepEqual(job?.needs, ["classify", "canonical-vsix"]);
+  assert.equal(
+    normalizedCommand(job?.if),
+    "${{ always() && needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.released_jupyter_required == 'true' }}"
+  );
   assert.equal(job?.["runs-on"], "ubuntu-latest");
   assert.equal(job?.["timeout-minutes"], 90);
 
@@ -677,8 +730,8 @@ test("PR CI starts one bounded static fast-feedback lane and preserves every sta
   }
   assert.equal(
     workflow?.jobs?.["canonical-vsix"]?.needs,
-    undefined,
-    "Canonical packaging must remain parallel with fast feedback."
+    "classify",
+    "Canonical packaging must remain parallel with fast feedback after bounded classification."
   );
 });
 
@@ -688,7 +741,8 @@ test("authoritative CI work is independently attributable before the required ag
 
   const visual = workflow?.jobs?.["visual-accessibility"];
   assert.equal(visual?.name, "Visual and accessibility");
-  assert.equal(visual?.needs, undefined);
+  assert.equal(visual?.needs, "classify");
+  assert.equal(visual?.if, FULL_CI_IF);
   assert.equal(
     visual?.steps?.some(
       (step) => step?.uses === "actions/setup-python@v6" && step?.with?.["python-version"] === "3.12"
@@ -718,8 +772,8 @@ test("authoritative CI work is independently attributable before the required ag
   );
 
   const linuxPackaged = workflow?.jobs?.["linux-packaged-editor"];
-  assert.equal(linuxPackaged?.needs, "canonical-vsix");
-  assert.equal(linuxPackaged?.if, "${{ always() }}");
+  assert.deepEqual(linuxPackaged?.needs, ["classify", "canonical-vsix"]);
+  assert.equal(linuxPackaged?.if, FULL_CI_IF);
   assert.match(
     linuxPackaged?.steps?.find((step) => step?.name === "Require the canonical PR artifact")?.if ?? "",
     /needs\.canonical-vsix\.result != 'success'/u
@@ -739,6 +793,8 @@ test("authoritative CI work is independently attributable before the required ag
   }
   assert.deepEqual(portability, {
     name: "Native script contracts (Windows)",
+    needs: "classify",
+    if: FULL_CI_IF,
     "runs-on": "windows-latest",
     "timeout-minutes": 20,
     steps: [
@@ -748,7 +804,8 @@ test("authoritative CI work is independently attributable before the required ag
       { run: "npm run test:scripts:native" }
     ]
   });
-  assert.equal(extensionHost?.needs, undefined);
+  assert.equal(extensionHost?.needs, "classify");
+  assert.equal(extensionHost?.if, FULL_CI_IF);
   assert.equal(
     extensionHost?.steps?.some((step) => step?.run === "npm run test:extension-host"),
     true
@@ -789,6 +846,68 @@ test("authoritative CI work is independently attributable before the required ag
   assert.deepEqual(ownersByCommand.get("npm run test:scripts:native"), ["native-script-portability"]);
 });
 
+test("documentation-only PRs preserve check contexts while every non-documentation or invalid classification runs full", () => {
+  const classifierEnvironment = {
+    CI_EVENT_NAME: "${{ github.event_name }}",
+    CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
+    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+  };
+  const expectedGate =
+    "${{ needs.classify.result != 'success' || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') }}";
+  const loadWorkflow = (relativePath) =>
+    parseYaml(readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8"));
+  const assertClassifier = (workflow, name) => {
+    const job = workflow?.jobs?.classify;
+    assert.equal(job?.name, name);
+    assert.equal(job?.["runs-on"], "ubuntu-latest");
+    assert.equal(job?.["timeout-minutes"], 5);
+    assert.equal(job?.outputs?.documentation_only, "${{ steps.classify.outputs.documentation_only }}");
+    assert.deepEqual(job?.steps?.find((step) => step?.uses === "actions/checkout@v6")?.with, {
+      "fetch-depth": 0
+    });
+    const step = job?.steps?.find((candidate) => candidate?.id === "classify");
+    assert.equal(step?.run, "node scripts/ci-path-classification.mjs");
+    assert.deepEqual(step?.env, classifierEnvironment);
+  };
+
+  const ci = loadWorkflow(".github/workflows/ci.yml");
+  assertClassifier(ci, "CI change classification");
+  for (const jobId of PRODUCT_CI_JOBS) {
+    const job = ci?.jobs?.[jobId];
+    const needs = Array.isArray(job?.needs) ? job.needs : [job?.needs];
+    assert.equal(needs.includes("classify"), true, `${jobId} must consume the exact classifier result.`);
+    assert.equal(job?.if, FULL_CI_IF, `${jobId} must use one fail-closed job-level fast-path condition.`);
+    assert.equal(
+      (job?.steps ?? []).some((step) => String(step?.if ?? "").includes("documentation_only")),
+      false,
+      `${jobId} must not duplicate documentation classification across individual steps.`
+    );
+  }
+  assert.equal(ci?.jobs?.["fast-feedback"]?.needs, undefined);
+  assert.equal(ci?.jobs?.["fast-feedback"]?.if, undefined);
+
+  for (const [relativePath, classifierName, jobIds] of [
+    [
+      ".github/workflows/cross-platform.yml",
+      "Cross-platform change classification",
+      ["runtime", "dependency-guard-windows"]
+    ],
+    [".github/workflows/codeql.yml", "CodeQL change classification", ["analyze"]]
+  ]) {
+    const workflow = loadWorkflow(relativePath);
+    assertClassifier(workflow, classifierName);
+    for (const jobId of jobIds) {
+      const job = workflow?.jobs?.[jobId];
+      assert.equal(job?.needs, "classify");
+      assert.equal(job?.if, FULL_CI_IF);
+      const gate = job?.steps?.[0];
+      assert.equal(gate?.name, "Require exact change classification");
+      assert.equal(normalizedCommand(gate?.if), expectedGate);
+      assert.equal(gate?.run, "exit 1");
+    }
+  }
+});
+
 test("validate remains the fail-closed required aggregate without a skipped-success path", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
@@ -809,19 +928,32 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
     assert.equal(resultStep?.env?.[resultEnvironmentKey(jobId)], `\${{ needs.${jobId}.result }}`);
   }
   assert.equal(resultStep?.env?.[resultEnvironmentKey(CONDITIONAL_CI_JOB)], "${{ needs.released-jupyter.result }}");
-  assert.equal(
-    resultStep?.env?.RELEASED_JUPYTER_REQUIRED,
-    "${{ needs.canonical-vsix.outputs.released_jupyter_required }}"
-  );
+  assert.equal(resultStep?.env?.RELEASED_JUPYTER_REQUIRED, "${{ needs.classify.outputs.released_jupyter_required }}");
+  assert.equal(resultStep?.env?.DOCUMENTATION_ONLY, "${{ needs.classify.outputs.documentation_only }}");
   assert.equal(resultStep?.env?.[resultEnvironmentKey(OPTIONAL_CI_JOB)], "${{ needs.remote-workspace.result }}");
   assert.match(resultStep?.env?.REMOTE_WORKSPACE_REQUIRED ?? "", /acceptance:remote-ssh/u);
 });
 
 test("required CI result validation rejects every absent or non-success blocking result", () => {
   const successes = Object.fromEntries(REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]));
+  const documentationResults = Object.fromEntries([
+    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...PRODUCT_CI_JOBS.map((jobId) => [jobId, "skipped"])
+  ]);
   assert.doesNotThrow(() =>
     requireCiResults({
       requiredResults: successes,
+      documentationOnly: false,
+      releasedJupyterResult: "skipped",
+      releasedJupyterRequired: false,
+      remoteResult: "skipped",
+      remoteRequired: false
+    })
+  );
+  assert.doesNotThrow(() =>
+    requireCiResults({
+      requiredResults: documentationResults,
+      documentationOnly: true,
       releasedJupyterResult: "skipped",
       releasedJupyterRequired: false,
       remoteResult: "skipped",
@@ -831,6 +963,7 @@ test("required CI result validation rejects every absent or non-success blocking
   assert.doesNotThrow(() =>
     requireCiResults({
       requiredResults: successes,
+      documentationOnly: false,
       releasedJupyterResult: "success",
       releasedJupyterRequired: true,
       remoteResult: "success",
@@ -847,6 +980,7 @@ test("required CI result validation rejects every absent or non-success blocking
         () =>
           requireCiResults({
             requiredResults: candidate,
+            documentationOnly: false,
             releasedJupyterResult: "skipped",
             releasedJupyterRequired: false,
             remoteResult: "skipped",
@@ -857,10 +991,63 @@ test("required CI result validation rejects every absent or non-success blocking
     }
   }
 
+  for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
+    const candidate = { ...documentationResults, [jobId]: "skipped" };
+    assert.throws(
+      () =>
+        requireCiResults({
+          requiredResults: candidate,
+          documentationOnly: true,
+          releasedJupyterResult: "skipped",
+          releasedJupyterRequired: false,
+          remoteResult: "skipped",
+          remoteRequired: false
+        }),
+      new RegExp(`${jobId}=skipped`, "u")
+    );
+  }
+  for (const jobId of PRODUCT_CI_JOBS) {
+    for (const result of [undefined, "success", "failure", "cancelled"]) {
+      const candidate = { ...documentationResults };
+      if (result === undefined) delete candidate[jobId];
+      else candidate[jobId] = result;
+      assert.throws(
+        () =>
+          requireCiResults({
+            requiredResults: candidate,
+            documentationOnly: true,
+            releasedJupyterResult: "skipped",
+            releasedJupyterRequired: false,
+            remoteResult: "skipped",
+            remoteRequired: false
+          }),
+        new RegExp(`${jobId}=${result ?? "missing"} \\(expected skipped\\)`, "u")
+      );
+    }
+  }
+  for (const inconsistent of [
+    { releasedJupyterRequired: true, remoteRequired: false, message: /released-jupyter classifier is inconsistent/u },
+    { releasedJupyterRequired: false, remoteRequired: true, message: /remote-workspace classifier is inconsistent/u }
+  ]) {
+    assert.throws(
+      () =>
+        requireCiResults({
+          requiredResults: documentationResults,
+          documentationOnly: true,
+          releasedJupyterResult: "skipped",
+          releasedJupyterRequired: inconsistent.releasedJupyterRequired,
+          remoteResult: "skipped",
+          remoteRequired: inconsistent.remoteRequired
+        }),
+      inconsistent.message
+    );
+  }
+
   assert.throws(
     () =>
       requireCiResults({
         requiredResults: successes,
+        documentationOnly: false,
         releasedJupyterResult: "skipped",
         releasedJupyterRequired: false,
         remoteResult: "skipped",
@@ -872,6 +1059,7 @@ test("required CI result validation rejects every absent or non-success blocking
     () =>
       requireCiResults({
         requiredResults: successes,
+        documentationOnly: false,
         releasedJupyterResult: "skipped",
         releasedJupyterRequired: false,
         remoteResult: "success",
@@ -890,6 +1078,7 @@ test("required CI result validation rejects every absent or non-success blocking
       () =>
         requireCiResults({
           requiredResults: successes,
+          documentationOnly: false,
           releasedJupyterResult,
           releasedJupyterRequired,
           remoteResult: "skipped",
@@ -909,10 +1098,11 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
   const job = workflow?.jobs?.["remote-workspace"];
-  assert.equal(job?.needs, "canonical-vsix");
+  assert.deepEqual(job?.needs, ["classify", "canonical-vsix"]);
   assert.equal(job?.["runs-on"], "ubuntu-24.04");
   assert.equal(job?.["timeout-minutes"], 90);
   assert.match(job?.if ?? "", /always\(\)/u);
+  assert.match(job?.if ?? "", /needs\.classify\.outputs\.documentation_only != 'true'/u);
   assert.match(job?.if ?? "", /github\.event_name == 'pull_request'/u);
   assert.match(job?.if ?? "", /contains\(github\.event\.pull_request\.labels\.\*\.name, 'acceptance:remote-ssh'\)/u);
 

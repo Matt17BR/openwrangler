@@ -18,14 +18,44 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  classify:
+    name: CodeQL change classification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      documentation_only: ${{ steps.classify.outputs.documentation_only }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - id: classify
+        run: node scripts/ci-path-classification.mjs
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
   analyze:
     name: Analyze (${{ matrix.language }})
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         language: [javascript-typescript, python]
     steps:
+      - name: Require exact change classification
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            (needs.classify.outputs.documentation_only != 'true' &&
+             needs.classify.outputs.documentation_only != 'false')
+          }}
+        run: exit 1
       - uses: actions/checkout@v6
       - uses: github/codeql-action/init@v4
         with:

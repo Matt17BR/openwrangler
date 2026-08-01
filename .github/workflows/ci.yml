@@ -13,6 +13,27 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  classify:
+    name: CI change classification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      documentation_only: ${{ steps.classify.outputs.documentation_only }}
+      released_jupyter_required: ${{ steps.classify.outputs.released_jupyter_required }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - id: classify
+        run: node scripts/ci-path-classification.mjs
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
   fast-feedback:
     name: Fast feedback
     runs-on: ubuntu-latest
@@ -42,9 +63,11 @@ jobs:
         run: npm run test:scripts:workflow
 
   canonical-vsix:
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ubuntu-latest
     outputs:
-      released_jupyter_required: ${{ steps.classify.outputs.released_jupyter_required }}
+      released_jupyter_required: ${{ needs.classify.outputs.released_jupyter_required }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -53,13 +76,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - id: classify
-        name: Classify released-Jupyter acceptance
-        run: node scripts/ci-path-classification.mjs
-        env:
-          CI_EVENT_NAME: ${{ github.event_name }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       - run: npm ci
       - run: npm run clean
       - run: npm run build
@@ -97,6 +113,8 @@ jobs:
 
   contract-tests:
     name: Contract tests
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -126,6 +144,8 @@ jobs:
 
   visual-accessibility:
     name: Visual and accessibility
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -154,6 +174,8 @@ jobs:
 
   production-audits:
     name: Production dependency audits
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -174,8 +196,8 @@ jobs:
 
   linux-packaged-editor:
     name: Packaged VS Code (Linux)
-    needs: canonical-vsix
-    if: ${{ always() }}
+    needs: [classify, canonical-vsix]
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -232,8 +254,13 @@ jobs:
 
   released-jupyter:
     name: VS Code with released Jupyter
-    needs: canonical-vsix
-    if: ${{ always() && needs.canonical-vsix.outputs.released_jupyter_required == 'true' }}
+    needs: [classify, canonical-vsix]
+    if: >-
+      ${{
+        always() &&
+        needs.classify.outputs.documentation_only != 'true' &&
+        needs.classify.outputs.released_jupyter_required == 'true'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -325,6 +352,8 @@ jobs:
           include-hidden-files: false
 
   coverage:
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -365,6 +394,8 @@ jobs:
             tmp/coverage/python.xml
 
   python-matrix:
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -393,6 +424,8 @@ jobs:
       - run: python -m pytest python/tests -q
 
   extension-host:
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -416,6 +449,8 @@ jobs:
 
   native-script-portability:
     name: Native script contracts (Windows)
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -429,6 +464,8 @@ jobs:
 
   native-extension-host:
     name: Native extension host (${{ matrix.os }})
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -454,8 +491,8 @@ jobs:
 
   native-editor-matrix:
     name: Native editor (${{ matrix.os }})
-    needs: canonical-vsix
-    if: ${{ always() }}
+    needs: [classify, canonical-vsix]
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -516,8 +553,8 @@ jobs:
 
   native-cursor-smoke:
     name: Cursor smoke (${{ matrix.os }})
-    needs: canonical-vsix
-    if: ${{ always() }}
+    needs: [classify, canonical-vsix]
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -578,10 +615,11 @@ jobs:
 
   remote-workspace:
     name: Remote SSH acceptance
-    needs: canonical-vsix
+    needs: [classify, canonical-vsix]
     if: >-
       ${{
         always() &&
+        needs.classify.outputs.documentation_only != 'true' &&
         github.event_name == 'pull_request' &&
         contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
       }}
@@ -714,6 +752,7 @@ jobs:
 
   validate:
     needs:
+      - classify
       - fast-feedback
       - contract-tests
       - visual-accessibility
@@ -740,6 +779,8 @@ jobs:
       - name: Require every blocking CI result
         run: node scripts/require-ci-results.mjs
         env:
+          DOCUMENTATION_ONLY: ${{ needs.classify.outputs.documentation_only }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
           FAST_FEEDBACK_RESULT: ${{ needs.fast-feedback.result }}
           CONTRACT_TESTS_RESULT: ${{ needs.contract-tests.result }}
           VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
@@ -754,10 +795,11 @@ jobs:
           NATIVE_EDITOR_MATRIX_RESULT: ${{ needs.native-editor-matrix.result }}
           NATIVE_CURSOR_SMOKE_RESULT: ${{ needs.native-cursor-smoke.result }}
           RELEASED_JUPYTER_RESULT: ${{ needs.released-jupyter.result }}
-          RELEASED_JUPYTER_REQUIRED: ${{ needs.canonical-vsix.outputs.released_jupyter_required }}
+          RELEASED_JUPYTER_REQUIRED: ${{ needs.classify.outputs.released_jupyter_required }}
           REMOTE_WORKSPACE_RESULT: ${{ needs.remote-workspace.result }}
           REMOTE_WORKSPACE_REQUIRED: >-
             ${{
               github.event_name == 'pull_request' &&
+              needs.classify.outputs.documentation_only != 'true' &&
               contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
             }}
