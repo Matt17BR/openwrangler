@@ -206,7 +206,26 @@ Released notebook-action discovery resolves a unique manifest command ID before 
 
 ## First-class editor release checklist
 
-VS Code and Cursor run the complete release-blocking checklist below. Other VS Code-based desktop IDEs are experimental: after an editor's extension-registry discovery and install path is confirmed, a bounded isolated-profile smoke may cover installation, activation, one supported file open, and terminal cleanup without duplicating this long matrix. [Antigravity documents both its VS Code base and Open VSX extension downloads](https://antigravity.google/docs/editor?app=antigravity); its smoke must still prove discovery, installation, and function explicitly because registry presence is not compatibility evidence. The Visual Studio Marketplace is not treated as a fork-distribution channel. Record editor/version/registry evidence in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86); a passing fork smoke never substitutes for VS Code or Cursor. Browser-hosted `vscode.dev` is not a supported runtime target.
+VS Code and Cursor run the complete release-blocking checklist below. Other VS Code-based desktop IDEs are experimental: after an editor's extension-registry discovery and install path is confirmed, a bounded isolated-profile smoke may cover installation, activation, one supported file open, and terminal cleanup without duplicating this long matrix. [Antigravity documents both its VS Code base and Open VSX extension downloads](https://antigravity.google/docs/editor?app=antigravity). The Visual Studio Marketplace is not treated as a fork-distribution channel. Record editor/version/registry evidence in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86); a passing fork smoke never substitutes for VS Code or Cursor. Browser-hosted `vscode.dev` is not a supported runtime target.
+
+### Experimental Antigravity smoke
+
+On 2026-08-01, Open Wrangler 1.2.0 passed one bounded, non-release-blocking Antigravity Linux x64 smoke:
+
+- The official Linux x64 archive from `https://antigravity.google/download/linux` had SHA-256
+  `5232a4048ff4fa15685d9a981ba4fba573e297f3efc9b76f638e794baf775725`. The installed editor reported app/API
+  version 1.107.0, commit `15487b3041e65228cae24980a3f796c905ef582c`, and x64 architecture.
+- The shipped product configuration selected Open VSX. An isolated CLI installed and listed
+  `Matt17BR.openwrangler@1.2.0` from that registry.
+- The hardened editor harness used zero-window headless mode, private roots, and a synthetic 3-row by 3-column
+  semicolon CSV. The public `openWrangler.openFile` command activated the installed extension, automatically
+  detected semicolon, UTF-8, double-quote, and header settings, and opened the exact schema through native Polars.
+- The source digest was unchanged. Disposing the editor left zero Open Wrangler sessions, no running standalone
+  runtime, and no surviving editor process; the downloaded archive and private test roots were removed.
+
+This evidence covers only that Linux x64 editor/version, Open VSX installation, and one supported file journey. It
+does not cover macOS, Windows, notebooks, the complete operation/export matrix, or future Antigravity releases, and
+does not promote Antigravity to a first-class release target.
 
 Cursor 3.11 hides third-party editor-title actions by default. The packaged run therefore proves that Open Wrangler's declarative configuration default promotes its canonical file action from overflow to the primary toolbar without writing a value into the disposable profile; explicit user settings remain authoritative. A disposable third-party CSV custom editor also proves the same title action routes its tab URI correctly, matching Edit CSV-style integrations rather than testing only ordinary text editors.
 
