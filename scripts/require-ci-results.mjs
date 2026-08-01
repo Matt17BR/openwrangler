@@ -18,18 +18,32 @@ export const REQUIRED_CI_JOBS = Object.freeze([
 ]);
 
 export const OPTIONAL_CI_JOB = "remote-workspace";
+export const CONDITIONAL_CI_JOB = "released-jupyter";
 
 export function resultEnvironmentKey(jobId) {
   return `${jobId.replaceAll("-", "_").toUpperCase()}_RESULT`;
 }
 
-export function requireCiResults({ requiredResults, remoteResult, remoteRequired }) {
+export function requireCiResults({
+  requiredResults,
+  releasedJupyterResult,
+  releasedJupyterRequired,
+  remoteResult,
+  remoteRequired
+}) {
   const failures = [];
   for (const jobId of REQUIRED_CI_JOBS) {
     const result = requiredResults[jobId];
     if (result !== "success") {
       failures.push(`${jobId}=${result ?? "missing"}`);
     }
+  }
+
+  const expectedReleasedJupyterResult = releasedJupyterRequired ? "success" : "skipped";
+  if (releasedJupyterResult !== expectedReleasedJupyterResult) {
+    failures.push(
+      `${CONDITIONAL_CI_JOB}=${releasedJupyterResult ?? "missing"} (expected ${expectedReleasedJupyterResult})`
+    );
   }
 
   const expectedRemoteResult = remoteRequired ? "success" : "skipped";
@@ -42,10 +56,10 @@ export function requireCiResults({ requiredResults, remoteResult, remoteRequired
   }
 }
 
-function parseRemoteRequired(value) {
+export function parseRequiredFlag(value, environmentName) {
   if (value === "true") return true;
   if (value === "false") return false;
-  throw new Error("REMOTE_WORKSPACE_REQUIRED must be exactly true or false.");
+  throw new Error(`${environmentName} must be exactly true or false.`);
 }
 
 function main(environment) {
@@ -54,8 +68,10 @@ function main(environment) {
   );
   requireCiResults({
     requiredResults,
+    releasedJupyterResult: environment[resultEnvironmentKey(CONDITIONAL_CI_JOB)],
+    releasedJupyterRequired: parseRequiredFlag(environment.RELEASED_JUPYTER_REQUIRED, "RELEASED_JUPYTER_REQUIRED"),
     remoteResult: environment[resultEnvironmentKey(OPTIONAL_CI_JOB)],
-    remoteRequired: parseRemoteRequired(environment.REMOTE_WORKSPACE_REQUIRED)
+    remoteRequired: parseRequiredFlag(environment.REMOTE_WORKSPACE_REQUIRED, "REMOTE_WORKSPACE_REQUIRED")
   });
   process.stdout.write(`Required CI passed ${REQUIRED_CI_JOBS.length} blocking jobs.\n`);
 }

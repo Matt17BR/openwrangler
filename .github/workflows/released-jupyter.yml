@@ -1,33 +1,6 @@
 name: Released Jupyter acceptance
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/released-jupyter.yml"
-      - "package.json"
-      - "package-lock.json"
-      - "protocol/**"
-      - "fixtures/**"
-      - "python/pyproject.toml"
-      - "python/openwrangler_runtime/**"
-      - "scripts/build-webviews.mjs"
-      - "scripts/download-editor.mjs"
-      - "scripts/editor-acceptance*.mjs"
-      - "scripts/generate-protocol.mjs"
-      - "scripts/jupyter-acceptance-environment*.mjs"
-      - "scripts/packaged-editor-orchestration*.mjs"
-      - "scripts/package-current-channel*.mjs"
-      - "scripts/prepare-xvfb*.mjs"
-      - "scripts/remote-jupyter/**"
-      - "scripts/remote-jupyter-acceptance.mjs"
-      - "scripts/remote-jupyter-lock*.mjs"
-      - "scripts/run-packaged-editor-tests.mjs"
-      - "scripts/update-remote-jupyter-lock.mjs"
-      - "scripts/xvfb-packages.json"
-      - "src/extension/**"
-      - "src/shared/**"
-      - "src/test/extensionHost/**"
-      - "src/webviews/**"
   workflow_dispatch:
   schedule:
     - cron: "23 4 * * 1"
@@ -37,7 +10,7 @@ permissions:
 
 concurrency:
   group: released-jupyter-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   vscode:

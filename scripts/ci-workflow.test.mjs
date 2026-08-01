@@ -4,21 +4,27 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
 import { loadConfigFromFile } from "vite";
+import { parseChangedPathBuffer, requiresReleasedJupyter } from "./ci-path-classification.mjs";
 import { inspectStableCandidateWorkflow } from "./release-workflow.mjs";
-import { OPTIONAL_CI_JOB, REQUIRED_CI_JOBS, requireCiResults, resultEnvironmentKey } from "./require-ci-results.mjs";
+import {
+  CONDITIONAL_CI_JOB,
+  OPTIONAL_CI_JOB,
+  REQUIRED_CI_JOBS,
+  parseRequiredFlag,
+  requireCiResults,
+  resultEnvironmentKey
+} from "./require-ci-results.mjs";
 
 const replaceablePullRequestWorkflows = [
   [".github/workflows/ci.yml", "ci-${{ github.event_name }}-${{ github.ref }}"],
   [".github/workflows/cross-platform.yml", "cross-platform-${{ github.event_name }}-${{ github.ref }}"],
-  [".github/workflows/codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"],
-  [".github/workflows/released-jupyter.yml", "released-jupyter-${{ github.ref }}"]
+  [".github/workflows/codeql.yml", "codeql-${{ github.event_name }}-${{ github.ref }}"]
 ];
 
 const requiredPullRequestWorkflows = [
   ".github/workflows/ci.yml",
   ".github/workflows/cross-platform.yml",
-  ".github/workflows/codeql.yml",
-  ".github/workflows/released-jupyter.yml"
+  ".github/workflows/codeql.yml"
 ];
 const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
   "fast-feedback",
@@ -450,6 +456,131 @@ test("PR workflows cancel only obsolete pull-request heads", () => {
   }
 });
 
+test("released-Jupyter path classification skips only explicit documentation-only pull requests", () => {
+  assert.deepEqual(parseChangedPathBuffer(Buffer.from("docs/testing.md\0README.md\0docs/images/über.png\0", "utf8")), [
+    "docs/testing.md",
+    "README.md",
+    "docs/images/über.png"
+  ]);
+  assert.throws(() => parseChangedPathBuffer(Buffer.from("src/extension/activate.ts", "utf8")), /NUL terminated/u);
+  assert.throws(() => parseChangedPathBuffer(Buffer.from("README.md\0\0", "utf8")), /empty path/u);
+  assert.throws(() => parseChangedPathBuffer(Buffer.from([0xff, 0])), /encoded data/u);
+
+  const required = (changedPaths) => requiresReleasedJupyter({ eventName: "pull_request", changedPaths });
+  assert.equal(
+    required([
+      "AGENTS.md",
+      "CHANGELOG.md",
+      "CONTRIBUTING.md",
+      "LICENSE",
+      "README.md",
+      "SECURITY.md",
+      "SUPPORT.md",
+      "docs/testing.md",
+      ".github/ISSUE_TEMPLATE/bug.yml",
+      ".github/PULL_REQUEST_TEMPLATE/docs.md"
+    ]),
+    false
+  );
+  for (const path of [
+    ".github/workflows/ci.yml",
+    ".vscodeignore",
+    "assets/openwrangler.png",
+    "package.json",
+    "protocol/openwrangler.v2.schema.json",
+    "python/openwrangler_runtime/notebook.py",
+    "scripts/build-webviews.mjs",
+    "src/extension/notebooks/jupyterBridge.ts",
+    "src/webviews/notebookRenderer.ts",
+    "docs/../src/extension/activate.ts",
+    "/docs/testing.md",
+    "docs//testing.md",
+    "unknown/future-package-surface"
+  ]) {
+    assert.equal(required([path]), true, `${path} must require released-Jupyter acceptance.`);
+  }
+  assert.equal(required(["docs/testing.md", "src/shared/notebookOutput.ts"]), true);
+  assert.equal(required([]), true, "an empty PR diff must fail closed into acceptance");
+  assert.equal(requiresReleasedJupyter({ eventName: "push", changedPaths: ["src/extension/activate.ts"] }), false);
+  assert.throws(() => requiresReleasedJupyter({ eventName: "schedule", changedPaths: [] }), /Unsupported CI event/u);
+});
+
+test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX", () => {
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+  const canonical = workflow?.jobs?.["canonical-vsix"];
+  const canonicalCheckout = canonical?.steps?.find(
+    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/checkout@")
+  );
+  assert.deepEqual(canonicalCheckout?.with, { "fetch-depth": 0 });
+  assert.equal(
+    canonical?.outputs?.released_jupyter_required,
+    "${{ steps.classify.outputs.released_jupyter_required }}"
+  );
+  const classify = canonical?.steps?.find((step) => step?.id === "classify");
+  assert.equal(classify?.run, "node scripts/ci-path-classification.mjs");
+  assert.deepEqual(classify?.env, {
+    CI_EVENT_NAME: "${{ github.event_name }}",
+    CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
+    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+  });
+
+  const job = workflow?.jobs?.[CONDITIONAL_CI_JOB];
+  assert.equal(job?.name, "VS Code with released Jupyter");
+  assert.equal(job?.needs, "canonical-vsix");
+  assert.equal(job?.if, "${{ always() && needs.canonical-vsix.outputs.released_jupyter_required == 'true' }}");
+  assert.equal(job?.["runs-on"], "ubuntu-latest");
+  assert.equal(job?.["timeout-minutes"], 90);
+
+  const steps = job?.steps;
+  assert.ok(Array.isArray(steps));
+  const prerequisite = steps.find((step) => step?.name === "Require the canonical PR artifact");
+  assert.equal(prerequisite?.if, "${{ needs.canonical-vsix.result != 'success' }}");
+  assert.equal(prerequisite?.run, "exit 1");
+  const download = steps.find(
+    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/download-artifact@")
+  );
+  assert.deepEqual(download?.with, { name: "openwrangler-vsix", path: "canonical-vsix" });
+  const checksum = steps.find((step) => step?.name === "Verify canonical PR checksum");
+  assert.match(checksum?.run ?? "", /canonical-vsix\/openwrangler\.vsix\.sha256/u);
+  assert.match(checksum?.run ?? "", /canonical-vsix\/openwrangler\.vsix/u);
+  assert.equal(
+    steps.some((step) => step?.run === "npm run verify:vsix -- canonical-vsix/openwrangler.vsix"),
+    true
+  );
+  assert.equal(
+    steps.some((step) => /npm run package(?::|\s)/u.test(step?.run ?? "")),
+    false
+  );
+  assert.equal(
+    steps.some((step) => step?.run === "npm run lock:remote-jupyter:check"),
+    true
+  );
+  assert.equal(
+    steps.some((step) => step?.run === "npm run audit:remote-jupyter"),
+    true
+  );
+  assert.deepEqual(
+    steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@"))?.with,
+    { distribution: "temurin", "java-version": "17" }
+  );
+  const prepare = steps.find((step) => step?.id === "prepare_xvfb");
+  assert.match(prepare?.run ?? "", /scripts\/prepare-xvfb\.mjs/u);
+  const acceptance = steps.find((step) => step?.id === "packaged_editor");
+  assert.equal(acceptance?.run, "node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix");
+  assert.deepEqual(acceptance?.env, {
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const upload = steps.find((step) => step?.name === "Upload packaged-editor failure diagnostics");
+  assert.match(upload?.if ?? "", /steps\.packaged_editor\.outcome == 'failure'/u);
+  assert.equal(upload?.with?.path, "${{ steps.packaged_editor.outputs.evidence_path }}");
+});
+
 test("native VS Code and Cursor jobs consume the same downloaded canonical VSIX independently", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
@@ -665,7 +796,7 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
 
   assert.equal(aggregate?.name, undefined, "The protected validate context must keep its existing name.");
   assert.deepEqual(REQUIRED_CI_JOBS, EXPECTED_BLOCKING_CI_JOBS);
-  assert.deepEqual(aggregate?.needs, [...EXPECTED_BLOCKING_CI_JOBS, OPTIONAL_CI_JOB]);
+  assert.deepEqual(aggregate?.needs, [...EXPECTED_BLOCKING_CI_JOBS, CONDITIONAL_CI_JOB, OPTIONAL_CI_JOB]);
   assert.equal(aggregate?.if, "${{ always() }}");
   assert.equal(aggregate?.["runs-on"], "ubuntu-latest");
   assert.equal(aggregate?.["timeout-minutes"], 5);
@@ -677,6 +808,11 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
   for (const jobId of EXPECTED_BLOCKING_CI_JOBS) {
     assert.equal(resultStep?.env?.[resultEnvironmentKey(jobId)], `\${{ needs.${jobId}.result }}`);
   }
+  assert.equal(resultStep?.env?.[resultEnvironmentKey(CONDITIONAL_CI_JOB)], "${{ needs.released-jupyter.result }}");
+  assert.equal(
+    resultStep?.env?.RELEASED_JUPYTER_REQUIRED,
+    "${{ needs.canonical-vsix.outputs.released_jupyter_required }}"
+  );
   assert.equal(resultStep?.env?.[resultEnvironmentKey(OPTIONAL_CI_JOB)], "${{ needs.remote-workspace.result }}");
   assert.match(resultStep?.env?.REMOTE_WORKSPACE_REQUIRED ?? "", /acceptance:remote-ssh/u);
 });
@@ -684,10 +820,22 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
 test("required CI result validation rejects every absent or non-success blocking result", () => {
   const successes = Object.fromEntries(REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]));
   assert.doesNotThrow(() =>
-    requireCiResults({ requiredResults: successes, remoteResult: "skipped", remoteRequired: false })
+    requireCiResults({
+      requiredResults: successes,
+      releasedJupyterResult: "skipped",
+      releasedJupyterRequired: false,
+      remoteResult: "skipped",
+      remoteRequired: false
+    })
   );
   assert.doesNotThrow(() =>
-    requireCiResults({ requiredResults: successes, remoteResult: "success", remoteRequired: true })
+    requireCiResults({
+      requiredResults: successes,
+      releasedJupyterResult: "success",
+      releasedJupyterRequired: true,
+      remoteResult: "success",
+      remoteRequired: true
+    })
   );
 
   for (const jobId of REQUIRED_CI_JOBS) {
@@ -696,20 +844,65 @@ test("required CI result validation rejects every absent or non-success blocking
       if (result === undefined) delete candidate[jobId];
       else candidate[jobId] = result;
       assert.throws(
-        () => requireCiResults({ requiredResults: candidate, remoteResult: "skipped", remoteRequired: false }),
+        () =>
+          requireCiResults({
+            requiredResults: candidate,
+            releasedJupyterResult: "skipped",
+            releasedJupyterRequired: false,
+            remoteResult: "skipped",
+            remoteRequired: false
+          }),
         new RegExp(`${jobId}=${result ?? "missing"}`, "u")
       );
     }
   }
 
   assert.throws(
-    () => requireCiResults({ requiredResults: successes, remoteResult: "skipped", remoteRequired: true }),
+    () =>
+      requireCiResults({
+        requiredResults: successes,
+        releasedJupyterResult: "skipped",
+        releasedJupyterRequired: false,
+        remoteResult: "skipped",
+        remoteRequired: true
+      }),
     /remote-workspace=skipped \(expected success\)/u
   );
   assert.throws(
-    () => requireCiResults({ requiredResults: successes, remoteResult: "success", remoteRequired: false }),
+    () =>
+      requireCiResults({
+        requiredResults: successes,
+        releasedJupyterResult: "skipped",
+        releasedJupyterRequired: false,
+        remoteResult: "success",
+        remoteRequired: false
+      }),
     /remote-workspace=success \(expected skipped\)/u
   );
+  for (const [releasedJupyterRequired, releasedJupyterResult, expected] of [
+    [true, undefined, "missing"],
+    [true, "failure", "failure"],
+    [true, "cancelled", "cancelled"],
+    [true, "skipped", "skipped"],
+    [false, "success", "success"]
+  ]) {
+    assert.throws(
+      () =>
+        requireCiResults({
+          requiredResults: successes,
+          releasedJupyterResult,
+          releasedJupyterRequired,
+          remoteResult: "skipped",
+          remoteRequired: false
+        }),
+      new RegExp(`released-jupyter=${expected}`, "u")
+    );
+  }
+  assert.equal(parseRequiredFlag("true", "TEST_REQUIRED"), true);
+  assert.equal(parseRequiredFlag("false", "TEST_REQUIRED"), false);
+  for (const value of [undefined, "", "TRUE", "False", "0", "1"]) {
+    assert.throws(() => parseRequiredFlag(value, "TEST_REQUIRED"), /TEST_REQUIRED must be exactly true or false/u);
+  }
 });
 
 test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () => {
@@ -971,19 +1164,19 @@ test("coverage provisions the exact PySpark runtime before enforcing the unchang
   assert.match(manifest?.scripts?.["test:coverage:python"] ?? "", /pytest python\/tests .*--cov=openwrangler_runtime/u);
 });
 
-test("released-Jupyter PR paths include every consumed dependency manifest", () => {
+test("standalone released-Jupyter acceptance is schedule/manual-only and self-packages", () => {
   const source = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
-  const paths = workflow?.on?.pull_request?.paths;
-  assert.ok(Array.isArray(paths));
-  for (const manifest of ["package.json", "package-lock.json", "python/pyproject.toml"]) {
-    assert.equal(paths.includes(manifest), true, `Released Jupyter acceptance must run when ${manifest} changes.`);
-  }
-  assert.equal(paths.includes("scripts/package-current-channel*.mjs"), true);
+  assert.deepEqual(Object.keys(workflow?.on ?? {}), ["workflow_dispatch", "schedule"]);
+  assert.equal(workflow?.on?.pull_request, undefined);
+  assert.deepEqual(workflow?.concurrency, {
+    group: "released-jupyter-${{ github.ref }}",
+    "cancel-in-progress": false
+  });
   assert.equal(
     workflow?.jobs?.vscode?.steps?.some((step) => step?.run === "npm run package -- --out openwrangler.vsix"),
     true,
-    "Released Jupyter acceptance must let package.json select the VSIX channel."
+    "Standalone released-Jupyter acceptance must let package.json select its VSIX channel."
   );
   assert.doesNotMatch(source, /npm run package -- --pre-release/u);
   assert.equal(

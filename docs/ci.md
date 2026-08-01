@@ -19,10 +19,13 @@ Open Wrangler keeps correctness, security, packaging, accessibility, and native-
 | `Native extension host`             | native VS Code integration   | macOS/Windows stable extension-host integration                                                             | none                             |
 | `Native editor`                     | packaged VS Code             | macOS/Windows checksum-bound installed-editor acceptance                                                    | canonical VSIX                   |
 | `Cursor smoke`                      | packaged Cursor              | macOS/Windows install, activation, grid, icon, navigation, and cleanup                                      | canonical VSIX                   |
+| `VS Code with released Jupyter`     | notebook integration         | affected-path released Jupyter, local/remote kernels, renderer, restart, and cleanup                        | canonical VSIX                   |
 | `Remote SSH acceptance`             | remote workspace             | opt-in, label-gated packaged Remote SSH journey                                                             | canonical VSIX                   |
-| `validate`                          | required aggregate           | fails unless every blocking CI job succeeds; Remote SSH must succeed when selected and be skipped otherwise | all of the above                 |
+| `validate`                          | required aggregate           | blocking jobs must succeed; conditional Jupyter/Remote SSH results must match their classifiers             | all of the above                 |
 
-The `validate` job retains the existing protected check name. It uses `always()` only so its result step executes after failed, cancelled, or skipped dependencies; `scripts/require-ci-results.mjs` then requires every blocking result to be exactly `success`. A skipped aggregate is never used as a success path. When `acceptance:remote-ssh` is present, Remote SSH is required to succeed; without the label it is required to be skipped.
+The `validate` job retains the existing protected check name. It uses `always()` only so its result step executes after failed, cancelled, or skipped dependencies; `scripts/require-ci-results.mjs` then requires every blocking result to be exactly `success`. A skipped aggregate is never used as a success path. Released-Jupyter acceptance must succeed for every affected pull request and must be skipped for documentation-only pull requests and protected-main pushes. When `acceptance:remote-ssh` is present, Remote SSH is required to succeed; without the label it is required to be skipped.
+
+The released-Jupyter classifier compares the exact pull-request base and head commits with NUL-delimited Git paths. Only an explicit documentation and contribution-template allowlist may skip the editor journey; empty, mixed, unknown, package, build, workflow, asset, runtime, or test changes require it. The job downloads and revalidates the same run-scoped `openwrangler-vsix` artifact used by the other packaged PR consumers. The separate weekly/manual workflow remains an ecosystem-drift lane and self-packages only because it has no caller artifact.
 
 Cross-platform runtime matrices and CodeQL remain separate workflows and separately protected evidence. The CI aggregate does not claim to summarize a workflow it cannot depend on.
 
@@ -71,8 +74,9 @@ A typical substantive pull request used roughly 80 hosted runner-minutes: about 
 cross-platform runtime, 4 in CodeQL, and 10 to 14 in released-Jupyter acceptance. The distinct packaged VS Code,
 Cursor, Jupyter, accessibility, performance, and publication gates have caught user-facing failures and remain.
 The first reduction removes only same-source duplication, cancels obsolete PR heads, and preserves all externally
-protected check names. Further consolidation should make released-Jupyter consume the PR's canonical VSIX before
-moving any broad compatibility matrix away from pull requests.
+protected check names. Affected pull-request released-Jupyter acceptance now consumes the same canonical VSIX as
+the other packaged jobs; its standalone workflow remains schedule/manual-only. No broad compatibility matrix moved
+away from pull requests.
 
 The model follows proven upstream patterns rather than inventing a three-branch ceremony: VS Code Python keeps a
 main development line plus release branches and separates stable from prerelease publication; VS Code Jupyter
