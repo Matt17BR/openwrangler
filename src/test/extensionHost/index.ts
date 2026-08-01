@@ -122,6 +122,7 @@ interface TestApi {
     request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
   ): Promise<Extract<OpenWranglerResponse, { kind: "sessionOpened" }> | undefined>;
   panelHydrated(sessionId: string): boolean;
+  panelSynchronizable(sessionId: string): boolean;
   sessionSchedulerState(sessionId: string): SessionSchedulerState | undefined;
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
@@ -9321,6 +9322,18 @@ async function captureReleasedJupyterDuckDbRelation(
       exportParquet: false,
       notebookInsert: false
     });
+    // Cursor reloads the webview when the screenshot theme changes. Require
+    // the exact session grid and its fresh host handshake before publishing
+    // screenshot-only presentation state; an immediate synchronization here
+    // can otherwise race the renderer's ready message.
+    const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    const app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "The DuckDB notebook screenshot requires the exact live Open Wrangler renderer.");
+    await waitFor(
+      () => testing.panelSynchronizable(sessionId),
+      10_000,
+      "the reloaded DuckDB notebook renderer to complete its host handshake"
+    );
     const revenue = columnReference(active.metadata, "revenue");
     await testing.updateViewState(sessionId, {
       ...active.viewState,
@@ -9333,10 +9346,6 @@ async function captureReleasedJupyterDuckDbRelation(
       true,
       "The DuckDB notebook screenshot must synchronize its native filtered relation."
     );
-
-    const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-    const app = await exactSessionApp(target.frame, sessionId);
-    assert.ok(app, "The DuckDB notebook screenshot requires the exact live Open Wrangler renderer.");
     const backendBadge = app.locator(".backendBadge").first();
     const modeBadge = app.locator(".modeBadge").first();
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
