@@ -7,7 +7,7 @@
 # inside its private lexical environment.
 
 (function(direct_execution) {
-.ow_r_provider_protocol_version <- 1L
+.ow_r_provider_protocol_version <- 2L
 .ow_r_provider_runtime_version <- "0.1.0"
 .ow_r_max_page_rows <- 10000L
 .ow_r_max_page_columns <- 256L
@@ -31,6 +31,9 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   }
   .ow_require_jsonlite()
   sessions <- new.env(parent = emptyenv())
+  discoveries <- new.env(parent = emptyenv())
+  discovery_state <- new.env(parent = emptyenv())
+  discovery_state$generation <- 0L
 
   dispatch <- function(envelope) {
     .ow_assert_record(envelope, c("protocolVersion", "requestId", "request"))
@@ -54,8 +57,8 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     response <- switch(
       request$kind,
       initialize = .ow_initialize(request),
-      discoverVariables = .ow_discover_variables(request, target_env),
-      openSession = .ow_open_session(request, target_env, sessions),
+      discoverVariables = .ow_discover_variables(request, target_env, discoveries, discovery_state),
+      openSession = .ow_open_session(request, target_env, sessions, discoveries),
       getPage = .ow_get_page(request, sessions),
       closeSession = .ow_close_session(request, sessions),
       stop("Unsupported R provider request kind.", call. = FALSE)
@@ -121,6 +124,10 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     if (length(existing) > 0L) {
       rm(list = existing, envir = sessions)
     }
+    discovered <- ls(discoveries, all.names = TRUE)
+    if (length(discovered) > 0L) {
+      rm(list = discovered, envir = discoveries)
+    }
     invisible(NULL)
   }
 
@@ -147,9 +154,19 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   )
 }
 
-.ow_discover_variables <- function(request, target_env) {
+.ow_discover_variables <- function(request, target_env, discoveries, discovery_state) {
   .ow_assert_record(request, "kind")
   .ow_assert_kind(request, "discoverVariables")
+
+  previous <- ls(discoveries, all.names = TRUE)
+  if (length(previous) > 0L) {
+    rm(list = previous, envir = discoveries)
+  }
+  discovery_state$generation <- if (discovery_state$generation >= .Machine$integer.max) {
+    1L
+  } else {
+    discovery_state$generation + 1L
+  }
 
   binding_names <- ls(envir = target_env, all.names = TRUE, sorted = TRUE)
   truncated <- FALSE
@@ -191,7 +208,21 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
       truncated <- TRUE
       break
     }
+    discovery_id <- paste0(
+      "r:d:",
+      discovery_state$generation,
+      ":",
+      length(variables) + 1L
+    )
+    registration <- list(
+      name = name,
+      sourceClass = source_class,
+      shape = shape,
+      value = value
+    )
+    assign(discovery_id, registration, envir = discoveries)
     variables[[length(variables) + 1L]] <- list(
+      discoveryId = discovery_id,
       name = name,
       sourceClass = source_class,
       shape = shape
@@ -247,7 +278,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   list(rows = rows, columns = columns)
 }
 
-.ow_open_session <- function(request, target_env, sessions) {
+.ow_open_session <- function(request, target_env, sessions, discoveries) {
   .ow_assert_record(
     request,
     c("kind", "source", "requestedSessionId", "pageSize", "columnOffset", "columnLimit"),
@@ -266,22 +297,68 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   }
 
   source <- request$source
-  .ow_assert_record(source, c("kind", "label", "variableName"))
+  .ow_assert_record(source, c("kind", "label", "variableName", "discoveryId"))
   if (!identical(source$kind, "notebookVariable")) {
     stop("The native R foundation accepts only live notebook variables.", call. = FALSE)
   }
   .ow_assert_string(source$label, "source.label")
   .ow_assert_string(source$variableName, "source.variableName", max_characters = 1024L)
+  .ow_assert_string(source$discoveryId, "source.discoveryId", max_characters = 256L)
+  if (!exists(source$discoveryId, envir = discoveries, inherits = FALSE)) {
+    .ow_stop_provider(
+      "The selected R variable discovery is stale or unknown. Discover variables again.",
+      code = "source_changed",
+      recoverable = TRUE
+    )
+  }
+  registration <- discoveries[[source$discoveryId]]
+  if (!identical(registration$name, source$variableName)) {
+    .ow_stop_provider(
+      "The selected R variable does not match its discovery record. Discover variables again.",
+      code = "source_changed",
+      recoverable = TRUE
+    )
+  }
   if (!exists(source$variableName, envir = target_env, inherits = FALSE)) {
-    stop("The selected R variable no longer exists in the exact source environment.", call. = FALSE)
+    .ow_stop_provider(
+      "The selected R variable no longer exists in the exact source environment.",
+      code = "source_changed",
+      recoverable = TRUE
+    )
   }
   if (exists(request$requestedSessionId, envir = sessions, inherits = FALSE)) {
     stop("The requested R provider session already exists.", call. = FALSE)
   }
 
-  source_value <- get(source$variableName, envir = target_env, inherits = FALSE)
-  if (!is.data.frame(source_value)) {
-    stop("The selected R variable must inherit from data.frame.", call. = FALSE)
+  if (bindingIsActive(source$variableName, target_env)) {
+    .ow_stop_provider(
+      "The selected R variable became an active binding. Discover variables again.",
+      code = "source_changed",
+      recoverable = TRUE
+    )
+  }
+  source_value <- .ow_inspect_binding_without_forcing(source$variableName, target_env)
+  if (is.null(source_value) || is.language(source_value) || is.expression(source_value)) {
+    .ow_stop_provider(
+      "The selected R variable became promise-backed or unavailable. Discover variables again.",
+      code = "source_changed",
+      recoverable = TRUE
+    )
+  }
+  source_class <- .ow_discoverable_dataframe_class(source_value)
+  source_shape <- .ow_discovery_shape(source_value)
+  if (
+    is.null(source_class) ||
+      is.null(source_shape) ||
+      !identical(source_class, registration$sourceClass) ||
+      !identical(source_shape, registration$shape) ||
+      !identical(source_value, registration$value)
+  ) {
+    .ow_stop_provider(
+      "The selected R variable changed after discovery. Discover variables again.",
+      code = "source_changed",
+      recoverable = TRUE
+    )
   }
   .ow_validate_supported_dataframe(source_value)
   value <- .ow_snapshot_source(source_value)
@@ -871,7 +948,7 @@ if (direct_execution) {
   }
   provider <- create_open_wrangler_r_provider(new.env(parent = emptyenv()))
   cat(provider$dispatch_json(
-    '{"protocolVersion":1,"requestId":"probe","request":{"kind":"initialize"}}'
+    '{"protocolVersion":2,"requestId":"probe","request":{"kind":"initialize"}}'
   ))
   cat("\n")
   return(invisible(NULL))

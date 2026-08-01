@@ -46,7 +46,7 @@ provider response or webview intent cannot confer trust.
 ## Provider boundary
 
 `r/openwrangler_runtime/kernel_agent.R` is a small sourceable agent that runs
-inside the exact R process owning the dataframe. The first provider protocol is
+inside the exact R process owning the dataframe. Provider protocol v2 is
 private, versioned, correlated, strict, and read-only. It supports:
 
 - bounded discovery of picker metadata for exact base `data.frame`, tibble, and
@@ -105,17 +105,26 @@ packages, obtain confirmation, and install into the user-selected library. The
 required repository gate additionally pins and exercises `tibble` so none of the
 three advertised dataframe flavors can disappear behind an optional test skip.
 
-Discovery returns only a variable name, canonical dataframe class, and bounded
-row/column shape. It never serializes cells, profiles columns, or snapshots a
-dataframe. The producer examines at most 4,096 bindings, returns at most 256
+Discovery returns only a bounded provider-issued discovery ID, variable name,
+canonical dataframe class, and bounded row/column shape. It never serializes
+cells, profiles columns, or snapshots a dataframe. The producer examines at
+most 4,096 bindings, returns at most 256
 variables, accepts names only through the mirrored 128-code-point/512-byte
 ceiling, and emits at most 256 KiB for this request. The transport checks that
 smaller raw byte ceiling before `JSON.parse`; the parsed response must contain
-exact keys, unique names, one of the three canonical class tags, and a valid
-bounded shape. Active bindings, promise-backed bindings (including already
-forced promises, whose force state is not exposed by the public base-R API), and
-noncanonical dataframe subclasses are not evaluated or presented. An incomplete
-scan is labeled `truncated` rather than silently claimed as exhaustive.
+exact keys, unique discovery IDs, unique names, one of the three canonical class
+tags, and a valid bounded shape. Each discovery replaces the provider-private
+registry, and provider close clears it. Opening requires the selected ID and
+name, rejects missing or active bindings, and repeats public non-forcing
+substitution before comparing the exact canonical class, shape, and
+`identical()` value with the registered observation. Active bindings and
+promise-backed bindings (including already forced promises, whose force state
+is not exposed by the public base-R API) are never invoked or forced.
+Noncanonical dataframe subclasses are not presented and cannot be opened. A
+changed or stale source fails closed before session publication. A replacement
+with an `identical()` value is intentionally semantically indistinguishable; the
+provider does not inspect allocator addresses. An incomplete scan is labeled
+`truncated` rather than silently claimed as exhaustive.
 
 ## IRkernel transport foundation
 

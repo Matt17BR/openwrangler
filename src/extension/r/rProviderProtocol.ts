@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import type { CellValue, ColumnSchema, GridPage } from "../../shared/protocol";
 import { isColumnSchemaArray, isGridPage } from "../../shared/protocolValidation";
 
-export const R_PROVIDER_PROTOCOL_VERSION = 1 as const;
+export const R_PROVIDER_PROTOCOL_VERSION = 2 as const;
 export const R_PROVIDER_LIMITS = Object.freeze({
   maxRequestBytes: 1_048_576,
   maxResponseBytes: 33_554_432,
@@ -35,6 +35,7 @@ export interface RProviderOpenSessionRequest {
     readonly kind: "notebookVariable";
     readonly label: string;
     readonly variableName: string;
+    readonly discoveryId: string;
   };
   readonly requestedSessionId: string;
   readonly backend?: "r";
@@ -92,6 +93,7 @@ export interface RProviderInitialized {
 export type RProviderDataFrameClass = "data.frame" | "tbl_df" | "data.table";
 
 export interface RProviderVariableDescriptor {
+  readonly discoveryId: string;
   readonly name: string;
   readonly sourceClass: RProviderDataFrameClass;
   readonly shape: { readonly rows: number; readonly columns: number };
@@ -112,6 +114,7 @@ export interface RProviderSessionMetadata {
     readonly kind: "notebookVariable";
     readonly label: string;
     readonly variableName: string;
+    readonly discoveryId: string;
   };
   readonly sourceClass: RProviderDataFrameClass;
   readonly shape: { readonly rows: number; readonly columns: number };
@@ -397,10 +400,13 @@ function isVariablesDiscovered(value: unknown): value is RProviderVariablesDisco
   }
 
   const names = new Set<string>();
+  const discoveryIds = new Set<string>();
   for (const value of candidate.variables) {
-    const descriptor = exactRecord(value, ["name", "sourceClass", "shape"]);
+    const descriptor = exactRecord(value, ["discoveryId", "name", "sourceClass", "shape"]);
     if (
       descriptor === undefined ||
+      !isNonEmptyBoundedString(descriptor.discoveryId, 256) ||
+      discoveryIds.has(descriptor.discoveryId) ||
       !isNonEmptyBoundedString(descriptor.name, R_PROVIDER_LIMITS.maxDiscoveryNameCodePoints) ||
       Buffer.byteLength(descriptor.name, "utf8") > R_PROVIDER_LIMITS.maxDiscoveryNameBytes ||
       names.has(descriptor.name) ||
@@ -409,6 +415,7 @@ function isVariablesDiscovered(value: unknown): value is RProviderVariablesDisco
     ) {
       return false;
     }
+    discoveryIds.add(descriptor.discoveryId);
     names.add(descriptor.name);
   }
   return true;
@@ -475,12 +482,13 @@ function isSessionMetadata(value: unknown): value is RProviderSessionMetadata {
   ) {
     return false;
   }
-  const source = exactRecord(candidate.source, ["kind", "label", "variableName"]);
+  const source = exactRecord(candidate.source, ["kind", "label", "variableName", "discoveryId"]);
   return (
     source !== undefined &&
     source.kind === "notebookVariable" &&
     isNonEmptyBoundedString(source.label, R_PROVIDER_LIMITS.maxTextCodePoints) &&
     isNonEmptyBoundedString(source.variableName, 1_024) &&
+    isNonEmptyBoundedString(source.discoveryId, 256) &&
     candidate.shape.columns === candidate.schema.length
   );
 }
@@ -491,7 +499,8 @@ function isOpenedResponseForRequest(response: RProviderSessionOpened, request: R
     metadata.sessionId !== request.requestedSessionId ||
     metadata.source.kind !== request.source.kind ||
     metadata.source.label !== request.source.label ||
-    metadata.source.variableName !== request.source.variableName
+    metadata.source.variableName !== request.source.variableName ||
+    metadata.source.discoveryId !== request.source.discoveryId
   ) {
     return false;
   }

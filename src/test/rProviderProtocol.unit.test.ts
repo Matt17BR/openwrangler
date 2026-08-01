@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   R_PROVIDER_LIMITS,
+  R_PROVIDER_PROTOCOL_VERSION,
   type RProviderConfirmedSession,
   type RProviderGetPageRequest,
   type RProviderOpenSessionRequest,
@@ -55,14 +56,15 @@ const page = {
 };
 
 const metadata = {
-  providerProtocolVersion: 1,
+  providerProtocolVersion: R_PROVIDER_PROTOCOL_VERSION,
   sessionId: "r-session",
   backend: "r",
   mode: "viewing",
   source: {
     kind: "notebookVariable",
     label: "orders",
-    variableName: "orders"
+    variableName: "orders",
+    discoveryId: "r:d:1:1"
   },
   sourceClass: "tbl_df",
   shape: { rows: 1, columns: 2 },
@@ -100,8 +102,9 @@ const pageRequest: RProviderGetPageRequest = {
 };
 
 describe("native R provider protocol guard", () => {
-  it("keeps every host resource ceiling mechanically aligned with the R producer", () => {
+  it("keeps the host protocol version and resource ceilings mechanically aligned with the R producer", () => {
     const runtime = readFileSync(resolve(process.cwd(), "r", "openwrangler_runtime", "kernel_agent.R"), "utf8");
+    expect(runtime).toMatch(new RegExp(`^\\.ow_r_provider_protocol_version <- ${R_PROVIDER_PROTOCOL_VERSION}L$`, "mu"));
     const mirrored = {
       ".ow_r_max_request_bytes": R_PROVIDER_LIMITS.maxRequestBytes,
       ".ow_r_max_response_bytes": R_PROVIDER_LIMITS.maxResponseBytes,
@@ -152,7 +155,7 @@ describe("native R provider protocol guard", () => {
 
   it("checks raw response bytes before parsing and still requires exact dispatch correlation", () => {
     const response = JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
       requestId: "initialize",
       response: {
         kind: "initialized",
@@ -195,15 +198,15 @@ describe("native R provider protocol guard", () => {
   it("accepts only bounded, unambiguous picker metadata for the exact discovery request", () => {
     const context = { requestId: "discover-r", request: { kind: "discoverVariables" } } as const;
     const discovered = {
-      protocolVersion: 1,
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
       requestId: "discover-r",
       response: {
         kind: "variablesDiscovered",
         truncated: false,
         variables: [
-          { name: "base_orders", sourceClass: "data.frame", shape: { rows: 3, columns: 2 } },
-          { name: "table_orders", sourceClass: "data.table", shape: { rows: 4, columns: 3 } },
-          { name: "tibble_orders", sourceClass: "tbl_df", shape: { rows: 5, columns: 4 } }
+          { discoveryId: "r:d:1:1", name: "base_orders", sourceClass: "data.frame", shape: { rows: 3, columns: 2 } },
+          { discoveryId: "r:d:1:2", name: "table_orders", sourceClass: "data.table", shape: { rows: 4, columns: 3 } },
+          { discoveryId: "r:d:1:3", name: "tibble_orders", sourceClass: "tbl_df", shape: { rows: 5, columns: 4 } }
         ]
       }
     } as const;
@@ -227,7 +230,13 @@ describe("native R provider protocol guard", () => {
           ...discovered,
           response: {
             ...discovered.response,
-            variables: [{ name: "orders", sourceClass: "grouped_df", shape: { rows: 1, columns: 1 } }]
+            variables: [
+              discovered.response.variables[0],
+              {
+                ...discovered.response.variables[1],
+                discoveryId: discovered.response.variables[0].discoveryId
+              }
+            ]
           }
         },
         context
@@ -239,7 +248,23 @@ describe("native R provider protocol guard", () => {
           ...discovered,
           response: {
             ...discovered.response,
-            variables: [{ name: "orders", sourceClass: "data.frame", shape: { rows: -1, columns: 1 } }]
+            variables: [
+              { discoveryId: "r:d:1:4", name: "orders", sourceClass: "grouped_df", shape: { rows: 1, columns: 1 } }
+            ]
+          }
+        },
+        context
+      )
+    ).toBe(false);
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          ...discovered,
+          response: {
+            ...discovered.response,
+            variables: [
+              { discoveryId: "r:d:1:4", name: "orders", sourceClass: "data.frame", shape: { rows: -1, columns: 1 } }
+            ]
           }
         },
         context
@@ -253,6 +278,7 @@ describe("native R provider protocol guard", () => {
             ...discovered.response,
             variables: [
               {
+                discoveryId: "r:d:1:4",
                 name: "x".repeat(R_PROVIDER_LIMITS.maxDiscoveryNameCodePoints + 1),
                 sourceClass: "data.frame",
                 shape: { rows: 1, columns: 1 }
@@ -270,6 +296,7 @@ describe("native R provider protocol guard", () => {
           response: {
             ...discovered.response,
             variables: Array.from({ length: R_PROVIDER_LIMITS.maxDiscoveryVariables + 1 }, (_, index) => ({
+              discoveryId: `r:d:1:${index + 1}`,
               name: `frame_${index}`,
               sourceClass: "data.frame",
               shape: { rows: 1, columns: 1 }
@@ -303,45 +330,53 @@ describe("native R provider protocol guard", () => {
   });
 
   it("accepts the bounded native-R initialization contract", () => {
+    const initialized = {
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
+      requestId: "initialize",
+      response: {
+        kind: "initialized",
+        runtimeVersion: "0.1.0",
+        language: "r",
+        transport: "inProcessR",
+        capabilities: {
+          sourceKinds: ["notebookVariable"],
+          dataFrameClasses: ["data.frame", "tbl_df", "data.table"],
+          variableDiscovery: true,
+          paging: true,
+          filtering: false,
+          sorting: false,
+          editing: false
+        }
+      }
+    } as const;
+    expect(isRProviderResponseEnvelope(initialized)).toBe(true);
     expect(
       isRProviderResponseEnvelope({
-        protocolVersion: 1,
-        requestId: "initialize",
-        response: {
-          kind: "initialized",
-          runtimeVersion: "0.1.0",
-          language: "r",
-          transport: "inProcessR",
-          capabilities: {
-            sourceKinds: ["notebookVariable"],
-            dataFrameClasses: ["data.frame", "tbl_df", "data.table"],
-            variableDiscovery: true,
-            paging: true,
-            filtering: false,
-            sorting: false,
-            editing: false
-          }
-        }
+        ...initialized,
+        protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
+        extra: true
       })
-    ).toBe(true);
+    ).toBe(false);
+    expect(isRProviderResponseEnvelope({ ...initialized, protocolVersion: 1 })).toBe(false);
   });
 
   it("accepts a full-width schema with a projected page", () => {
     expect(
       isRProviderResponseEnvelope({
-        protocolVersion: 1,
+        protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
         requestId: "open",
         response: {
           kind: "sessionOpened",
           metadata: {
-            providerProtocolVersion: 1,
+            providerProtocolVersion: R_PROVIDER_PROTOCOL_VERSION,
             sessionId: "r-session",
             backend: "r",
             mode: "viewing",
             source: {
               kind: "notebookVariable",
               label: "orders",
-              variableName: "orders"
+              variableName: "orders",
+              discoveryId: "r:d:1:1"
             },
             sourceClass: "tbl_df",
             shape: { rows: 1, columns: 2 },
@@ -384,7 +419,7 @@ describe("native R provider protocol guard", () => {
       columnLimit: 1
     };
     const responseFor = (candidateSchema: readonly unknown[]) => ({
-      protocolVersion: 1,
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
       requestId: "zero-open",
       response: {
         kind: "sessionOpened",
@@ -425,7 +460,7 @@ describe("native R provider protocol guard", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(
         {
-          protocolVersion: 1,
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           requestId: "zero-open",
           response: {
             kind: "sessionOpened",
@@ -455,7 +490,7 @@ describe("native R provider protocol guard", () => {
   it("accepts a correlated projected page", () => {
     expect(
       isRProviderResponseEnvelope({
-        protocolVersion: 1,
+        protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
         requestId: "page",
         response: {
           kind: "page",
@@ -507,7 +542,7 @@ describe("native R provider protocol guard", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(
         {
-          protocolVersion: 1,
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           requestId: "bounded-integer-open",
           response: {
             kind: "sessionOpened",
@@ -532,7 +567,7 @@ describe("native R provider protocol guard", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(
         {
-          protocolVersion: 1,
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           requestId: "initialize",
           response: {
             kind: "initialized",
@@ -556,7 +591,7 @@ describe("native R provider protocol guard", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(
         {
-          protocolVersion: 1,
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           requestId: "open",
           response: { kind: "sessionOpened", metadata, page }
         },
@@ -566,7 +601,7 @@ describe("native R provider protocol guard", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(
         {
-          protocolVersion: 1,
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           requestId: "page",
           response: {
             kind: "page",
@@ -582,7 +617,7 @@ describe("native R provider protocol guard", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(
         {
-          protocolVersion: 1,
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           requestId: "close",
           response: { kind: "sessionClosed", sessionId: "r-session" }
         },
@@ -597,7 +632,7 @@ describe("native R provider protocol guard", () => {
 
   it("rejects stale IDs, wrong projections, range drift, and contradictory typed cells", () => {
     const response = {
-      protocolVersion: 1,
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
       requestId: "page",
       response: {
         kind: "page",
@@ -612,7 +647,7 @@ describe("native R provider protocol guard", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(
         {
-          protocolVersion: 1,
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           requestId: "open",
           response: { kind: "sessionOpened", metadata, page }
         },
@@ -628,7 +663,23 @@ describe("native R provider protocol guard", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(
         {
-          protocolVersion: 1,
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
+          requestId: "open",
+          response: { kind: "sessionOpened", metadata, page }
+        },
+        {
+          requestId: "open",
+          request: {
+            ...openRequest,
+            source: { ...openRequest.source, discoveryId: "r:d:other" }
+          }
+        }
+      )
+    ).toBe(false);
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           requestId: "open",
           response: { kind: "sessionOpened", metadata, page }
         },
@@ -718,7 +769,7 @@ describe("native R provider protocol guard", () => {
     expect(
       isRProviderResponseEnvelopeForDispatch(
         {
-          protocolVersion: 1,
+          protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           requestId: "page",
           response: {
             kind: "error",
@@ -734,21 +785,26 @@ describe("native R provider protocol guard", () => {
 
   it.each([
     {
-      protocolVersion: 2,
+      protocolVersion: 1,
       requestId: "initialize",
       response: { kind: "sessionClosed", sessionId: "r-session" }
     },
     {
-      protocolVersion: 1,
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
       requestId: "open",
       response: {
         kind: "sessionOpened",
         metadata: {
-          providerProtocolVersion: 1,
+          providerProtocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           sessionId: "r-session",
           backend: "r",
           mode: "viewing",
-          source: { kind: "notebookVariable", label: "orders", variableName: "orders" },
+          source: {
+            kind: "notebookVariable",
+            label: "orders",
+            variableName: "orders",
+            discoveryId: "r:d:1:1"
+          },
           sourceClass: "data.frame",
           shape: { rows: 1, columns: 2 },
           schema: [schema[1], schema[0]]
@@ -757,16 +813,21 @@ describe("native R provider protocol guard", () => {
       }
     },
     {
-      protocolVersion: 1,
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
       requestId: "open",
       response: {
         kind: "sessionOpened",
         metadata: {
-          providerProtocolVersion: 1,
+          providerProtocolVersion: R_PROVIDER_PROTOCOL_VERSION,
           sessionId: "r-session",
           backend: "r",
           mode: "viewing",
-          source: { kind: "notebookVariable", label: "orders", variableName: "orders" },
+          source: {
+            kind: "notebookVariable",
+            label: "orders",
+            variableName: "orders",
+            discoveryId: "r:d:1:1"
+          },
           sourceClass: "data.frame",
           shape: { rows: 1, columns: 2 },
           schema
@@ -775,7 +836,7 @@ describe("native R provider protocol guard", () => {
       }
     },
     {
-      protocolVersion: 1,
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
       requestId: "error",
       response: {
         kind: "error",
@@ -786,7 +847,7 @@ describe("native R provider protocol guard", () => {
       }
     },
     {
-      protocolVersion: 1,
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
       requestId: "page",
       response: {
         kind: "page",

@@ -31,15 +31,21 @@ path: exact `NotebookDocument` ownership, IRkernel acquisition, recovery, and UI
 coordination remain required before an R viewer can be exposed.
 
 Native variable discovery is a separate observation-only provider request on
-that exact kernel. It returns only the binding name, canonical
-base/tibble/data.table class, and bounded shape. Producer and host mirror the
-4,096-binding scan, 256-item, name, type, shape, and 256-KiB response ceilings;
-the host checks raw bytes before parsing and rejects duplicate or noncanonical
-descriptors before any picker state can exist. Active bindings are skipped
-rather than invoked. Promise-backed bindings are inspected through public
-non-forcing base-R substitution and skipped conservatively whether unforced or
-already forced. Discovery has no URI fallback and does not itself open, copy,
-profile, or serialize a dataframe.
+that exact kernel. Protocol v2 returns only a provider-issued discovery ID, the
+binding name, canonical base/tibble/data.table class, and bounded shape. The
+producer and host mirror the 4,096-binding scan, 256-item, name, type, shape, and
+256-KiB response ceilings;
+the host checks raw bytes before parsing and rejects duplicate IDs, duplicate
+names, or noncanonical descriptors before any picker state can exist. Each new
+discovery replaces the provider's bounded private registry, and close clears it.
+Open requires the matching ID and name, rejects missing or active bindings, and
+repeats the non-forcing inspection before comparing the exact canonical class,
+shape, and `identical()` value with the registered observation. Active bindings
+are never invoked, and promise-backed bindings are never forced. A changed or
+stale source fails closed before a session exists. An equal-value replacement is
+intentionally indistinguishable under base-R value identity; allocator addresses
+are neither observed nor exposed. Discovery has no URI fallback and does not
+itself copy, profile, or serialize a dataframe.
 
 Non-notebook R surfaces never become available from a boolean “connected”
 flag. The experimental helper handshake issues an opaque receipt bound to the

@@ -123,7 +123,7 @@ provider <- create_open_wrangler_r_provider(target_env)
 
 request_with <- function(provider_instance, request_id, body) {
   payload <- jsonlite::toJSON(
-    list(protocolVersion = 1L, requestId = request_id, request = body),
+    list(protocolVersion = 2L, requestId = request_id, request = body),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -137,7 +137,7 @@ request <- function(request_id, body) {
 
 initialized <- request("initialize", list(kind = "initialize"))
 stopifnot(
-  identical(initialized$protocolVersion, 1L),
+  identical(initialized$protocolVersion, 2L),
   identical(initialized$requestId, "initialize"),
   identical(initialized$response$kind, "initialized"),
   identical(initialized$response$language, "r"),
@@ -152,10 +152,39 @@ discovered_names <- vapply(
   character(1)
 )
 discovered_by_name <- setNames(discovered$response$variables, discovered_names)
+source_for <- function(name, descriptors = discovered_by_name) {
+  descriptor <- descriptors[[name]]
+  if (is.null(descriptor)) {
+    stop(paste0("No discovery descriptor for ", name, "."), call. = FALSE)
+  }
+  list(
+    kind = "notebookVariable",
+    label = name,
+    variableName = name,
+    discoveryId = descriptor$discoveryId
+  )
+}
+open_body <- function(source, session_id, page_size = 1L, column_limit = 1L) {
+  list(
+    kind = "openSession",
+    source = source,
+    requestedSessionId = session_id,
+    backend = "r",
+    mode = "viewing",
+    pageSize = page_size,
+    columnOffset = 0L,
+    columnLimit = column_limit
+  )
+}
 stopifnot(
   identical(discovered$response$kind, "variablesDiscovered"),
   identical(discovered$response$truncated, TRUE),
   length(discovered_names) == length(unique(discovered_names)),
+  length(unique(vapply(
+    discovered$response$variables,
+    function(variable) variable$discoveryId,
+    character(1)
+  ))) == length(discovered_names),
   identical(discovered_by_name$base_frame$sourceClass, "data.frame"),
   identical(discovered_by_name$base_frame$shape, list(rows = 3L, columns = 5L)),
   identical(discovered_by_name$tibble_frame$sourceClass, "tbl_df"),
@@ -165,6 +194,7 @@ stopifnot(
   identical(discovered_by_name$.hidden_frame$sourceClass, "data.frame"),
   !"ordinary_value" %in% discovered_names,
   !"custom_frame" %in% discovered_names,
+  !"oversized_shape_frame" %in% discovered_names,
   !oversized_discovery_name %in% discovered_names,
   !"active_frame" %in% discovered_names,
   !"unforced_promise_frame" %in% discovered_names,
@@ -258,9 +288,124 @@ stopifnot(
 )
 promise_provider$close()
 
+safety_env <- new.env(parent = emptyenv())
+safety_provider <- create_open_wrangler_r_provider(safety_env)
+discover_safety_variable <- function(request_id) {
+  response <- request_with(
+    safety_provider,
+    request_id,
+    list(kind = "discoverVariables")
+  )
+  stopifnot(
+    identical(response$response$kind, "variablesDiscovered"),
+    length(response$response$variables) == 1L
+  )
+  response$response$variables[[1L]]
+}
+expect_changed_source <- function(request_id, descriptor, session_id) {
+  response <- request_with(
+    safety_provider,
+    request_id,
+    open_body(
+      source_for("candidate", setNames(list(descriptor), "candidate")),
+      session_id
+    )
+  )
+  stopifnot(
+    identical(response$response$kind, "error"),
+    identical(response$response$code, "source_changed"),
+    identical(response$response$recoverable, TRUE)
+  )
+}
+
+safety_env$candidate <- data.frame(value = 1L, check.names = FALSE)
+active_descriptor <- discover_safety_variable("discover-active-replacement")
+rm("candidate", envir = safety_env)
+open_active_calls <- 0L
+makeActiveBinding(
+  "candidate",
+  function(value) {
+    open_active_calls <<- open_active_calls + 1L
+    data.frame(value = 1L, check.names = FALSE)
+  },
+  safety_env
+)
+expect_changed_source("open-active-replacement", active_descriptor, "r-active-replacement")
+stopifnot(identical(open_active_calls, 0L))
+rm("candidate", envir = safety_env)
+
+safety_env$candidate <- data.frame(value = 1L, check.names = FALSE)
+promise_descriptor <- discover_safety_variable("discover-promise-replacement")
+rm("candidate", envir = safety_env)
+open_promise_calls <- 0L
+delayedAssign(
+  "candidate",
+  {
+    open_promise_calls <<- open_promise_calls + 1L
+    data.frame(value = 1L, check.names = FALSE)
+  },
+  assign.env = safety_env
+)
+expect_changed_source("open-promise-replacement", promise_descriptor, "r-promise-replacement")
+stopifnot(identical(open_promise_calls, 0L))
+rm("candidate", envir = safety_env)
+
+safety_env$candidate <- data.frame(value = 1L, check.names = FALSE)
+custom_descriptor <- discover_safety_variable("discover-custom-replacement")
+safety_env$candidate <- structure(
+  data.frame(value = 1L, check.names = FALSE),
+  class = c("custom_frame", "data.frame")
+)
+expect_changed_source("open-custom-replacement", custom_descriptor, "r-custom-replacement")
+
+safety_env$candidate <- data.frame(value = 1L, check.names = FALSE)
+replacement_descriptor <- discover_safety_variable("discover-value-replacement")
+safety_env$candidate <- data.frame(value = 2L, check.names = FALSE)
+expect_changed_source("open-value-replacement", replacement_descriptor, "r-value-replacement")
+
+safety_env$candidate <- data.frame(value = 4L, check.names = FALSE)
+equal_value_descriptor <- discover_safety_variable("discover-equal-value-replacement")
+safety_env$candidate <- data.frame(value = 4L, check.names = FALSE)
+equal_value_open <- request_with(
+  safety_provider,
+  "open-equal-value-replacement",
+  open_body(
+    source_for("candidate", setNames(list(equal_value_descriptor), "candidate")),
+    "r-equal-value-replacement"
+  )
+)
+stopifnot(identical(equal_value_open$response$kind, "sessionOpened"))
+
+safety_env$candidate <- data.frame(value = 3L, check.names = FALSE)
+stale_descriptor <- discover_safety_variable("discover-stale-first")
+current_descriptor <- discover_safety_variable("discover-stale-second")
+expect_changed_source("open-stale-discovery", stale_descriptor, "r-stale-discovery")
+current_open <- request_with(
+  safety_provider,
+  "open-current-discovery",
+  open_body(
+    source_for("candidate", setNames(list(current_descriptor), "candidate")),
+    "r-current-discovery"
+  )
+)
+stopifnot(identical(current_open$response$kind, "sessionOpened"))
+safety_provider$close()
+closed_discovery <- request_with(
+  safety_provider,
+  "open-after-provider-close",
+  open_body(
+    source_for("candidate", setNames(list(current_descriptor), "candidate")),
+    "r-after-provider-close"
+  )
+)
+stopifnot(
+  identical(closed_discovery$response$kind, "error"),
+  identical(closed_discovery$response$code, "source_changed")
+)
+
 opened <- request("open", list(
   kind = "openSession",
-  source = list(kind = "notebookVariable", label = "base_frame", variableName = "base_frame"),
+  source = source_for("base_frame"),
   requestedSessionId = "r-session-smoke",
   backend = "r",
   mode = "viewing",
@@ -314,7 +459,7 @@ stopifnot(
 
 duplicate_field <- jsonlite::fromJSON(
   provider$dispatch_json(
-    '{"protocolVersion":1,"requestId":"duplicate","request":{"kind":"initialize","kind":"initialize"}}'
+    '{"protocolVersion":2,"requestId":"duplicate","request":{"kind":"initialize","kind":"initialize"}}'
   ),
   simplifyVector = FALSE
 )
@@ -326,7 +471,7 @@ stopifnot(
 object_instead_of_array <- jsonlite::fromJSON(
   provider$dispatch_json(
     paste0(
-      '{"protocolVersion":1,"requestId":"object-filter","request":{',
+      '{"protocolVersion":2,"requestId":"object-filter","request":{',
       '"kind":"getPage","sessionId":"r-session-smoke","revision":0,',
       '"viewRequestId":"view-object","offset":0,"limit":1,',
       '"columnOffset":0,"columnLimit":1,',
@@ -338,7 +483,7 @@ object_instead_of_array <- jsonlite::fromJSON(
 stopifnot(identical(object_instead_of_array$response$kind, "error"))
 
 bounded_request_payload <-
-  '{"protocolVersion":1,"requestId":"bounded-request","request":{"kind":"initialize"}}'
+  '{"protocolVersion":2,"requestId":"bounded-request","request":{"kind":"initialize"}}'
 bounded_request_payload <- paste0(
   bounded_request_payload,
   strrep(" ", 1048576L - nchar(bounded_request_payload, type = "bytes"))
@@ -361,11 +506,7 @@ stopifnot(
 
 exact_cell_page <- request("exact-cell-open", list(
   kind = "openSession",
-  source = list(
-    kind = "notebookVariable",
-    label = "exact_cell_frame",
-    variableName = "exact_cell_frame"
-  ),
+  source = source_for("exact_cell_frame"),
   requestedSessionId = "r-exact-cell-smoke",
   pageSize = 1000L,
   columnOffset = 0L,
@@ -379,7 +520,7 @@ stopifnot(
 
 oversized_page <- request("wide-open", list(
   kind = "openSession",
-  source = list(kind = "notebookVariable", label = "wide_frame", variableName = "wide_frame"),
+  source = source_for("wide_frame"),
   requestedSessionId = "r-wide-smoke",
   pageSize = 1000L,
   columnOffset = 0L,
@@ -402,11 +543,7 @@ stopifnot(
 
 exact_text_open <- request("exact-text-open", list(
   kind = "openSession",
-  source = list(
-    kind = "notebookVariable",
-    label = "exact_text_frame",
-    variableName = "exact_text_frame"
-  ),
+  source = source_for("exact_text_frame"),
   requestedSessionId = "r-exact-text-smoke",
   pageSize = 1L,
   columnOffset = 0L,
@@ -421,11 +558,7 @@ stopifnot(
 
 exact_name_open <- request("exact-name-open", list(
   kind = "openSession",
-  source = list(
-    kind = "notebookVariable",
-    label = "exact_name_frame",
-    variableName = "exact_name_frame"
-  ),
+  source = source_for("exact_name_frame"),
   requestedSessionId = "r-exact-name-smoke",
   pageSize = 1L,
   columnOffset = 0L,
@@ -439,7 +572,7 @@ stopifnot(
 
 zero_open <- request("zero-open", list(
   kind = "openSession",
-  source = list(kind = "notebookVariable", label = "zero_frame", variableName = "zero_frame"),
+  source = source_for("zero_frame"),
   requestedSessionId = "r-zero-smoke",
   pageSize = 1L,
   columnOffset = 0L,
@@ -457,11 +590,7 @@ stopifnot(
 
 empty_name_open <- request("empty-name-open", list(
   kind = "openSession",
-  source = list(
-    kind = "notebookVariable",
-    label = "empty_name_frame",
-    variableName = "empty_name_frame"
-  ),
+  source = source_for("empty_name_frame"),
   requestedSessionId = "r-empty-name-smoke",
   pageSize = 1L,
   columnOffset = 0L,
@@ -487,11 +616,7 @@ for (case in list(
 )) {
   rejected <- request(paste0(case$variable, "-open"), list(
     kind = "openSession",
-    source = list(
-      kind = "notebookVariable",
-      label = case$variable,
-      variableName = case$variable
-    ),
+    source = source_for(case$variable),
     requestedSessionId = case$session,
     pageSize = 1L,
     columnOffset = 0L,
@@ -525,11 +650,6 @@ for (case in list(
     message = "R column 1 name"
   ),
   list(
-    variable = "oversized_shape_frame",
-    session = "r-oversized-shape-smoke",
-    message = "dataframe shape"
-  ),
-  list(
     variable = "oversized_schema_frame",
     session = "r-oversized-schema-smoke",
     message = "schema exceeds"
@@ -537,11 +657,7 @@ for (case in list(
 )) {
   rejected <- request(paste0(case$variable, "-open"), list(
     kind = "openSession",
-    source = list(
-      kind = "notebookVariable",
-      label = case$variable,
-      variableName = case$variable
-    ),
+    source = source_for(case$variable),
     requestedSessionId = case$session,
     pageSize = 1L,
     columnOffset = 0L,
@@ -563,11 +679,7 @@ for (case in list(
 
 oversized_page_bytes <- request("oversized-page-bytes-open", list(
   kind = "openSession",
-  source = list(
-    kind = "notebookVariable",
-    label = "oversized_page_bytes_frame",
-    variableName = "oversized_page_bytes_frame"
-  ),
+  source = source_for("oversized_page_bytes_frame"),
   requestedSessionId = "r-oversized-page-bytes-smoke",
   pageSize = 22L,
   columnOffset = 0L,
@@ -586,7 +698,7 @@ stopifnot(identical(original_bytes, serialize(target_env$base_frame, NULL, versi
 
 tibble_open <- request("tibble-open", list(
   kind = "openSession",
-  source = list(kind = "notebookVariable", label = "tibble_frame", variableName = "tibble_frame"),
+  source = source_for("tibble_frame"),
   requestedSessionId = "r-tibble-smoke",
   pageSize = 2L,
   columnOffset = 0L,
@@ -599,7 +711,7 @@ stopifnot(
 
 data_table_open <- request("data-table-open", list(
   kind = "openSession",
-  source = list(kind = "notebookVariable", label = "data_table_frame", variableName = "data_table_frame"),
+  source = source_for("data_table_frame"),
   requestedSessionId = "r-data-table-smoke",
   pageSize = 2L,
   columnOffset = 0L,
@@ -639,16 +751,25 @@ unsupported_frames <- list(
     value$unsupported <- I(array(1:8, dim = c(2L, 2L, 2L)))
     value
   }),
-  list_frame = I(data.frame(unsupported = I(list(1L, 2L)))),
+  list_frame = data.frame(unsupported = I(list(1L, 2L)), check.names = FALSE),
   raw_frame = data.frame(unsupported = as.raw(c(1L, 2L))),
   zero_raw_frame = data.frame(unsupported = raw(0L), check.names = FALSE)
 )
 for (name in names(unsupported_frames)) {
   target_env[[name]] <- unsupported_frames[[name]]
+}
+unsupported_discovery <- request("discover-unsupported", list(kind = "discoverVariables"))
+unsupported_names <- vapply(
+  unsupported_discovery$response$variables,
+  function(variable) variable$name,
+  character(1)
+)
+unsupported_by_name <- setNames(unsupported_discovery$response$variables, unsupported_names)
+for (name in names(unsupported_frames)) {
   session_id <- paste0("r-unsupported-", name)
   rejected <- request(paste0(name, "-open"), list(
     kind = "openSession",
-    source = list(kind = "notebookVariable", label = name, variableName = name),
+    source = source_for(name, unsupported_by_name),
     requestedSessionId = session_id,
     pageSize = 2L,
     columnOffset = 0L,

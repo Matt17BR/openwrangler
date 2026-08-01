@@ -99,6 +99,15 @@ begin from `data.table::copy(source)` and prove that the original object did not
 change. Unsupported shaped, list, and raw columns fail closed until faithful,
 bounded encodings and their acceptance tests exist.
 
+Variable discovery issues one bounded opaque ID per canonical binding and
+replaces a provider-private registry on every scan. Open requires that ID and
+repeats non-forcing binding inspection; active bindings and promises are never
+forced. The binding name, exact canonical class, bounded shape, and base-R
+`identical()` value must still match the registered observation before the
+provider snapshots or publishes a session. Equal-value rebinding is
+intentionally indistinguishable, while allocator addresses and private runtime
+internals remain outside the protocol.
+
 ## Consequences
 
 - Native R support is a version-2 capability, never a 1.x compatibility claim.

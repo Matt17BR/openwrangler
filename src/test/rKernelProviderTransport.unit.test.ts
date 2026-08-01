@@ -11,10 +11,14 @@ import {
   readRKernelAgentSource,
   RKernelProviderTransport
 } from "../extension/r/rKernelProviderTransport";
-import { R_PROVIDER_LIMITS, type RProviderResponseEnvelope } from "../extension/r/rProviderProtocol";
+import {
+  R_PROVIDER_LIMITS,
+  R_PROVIDER_PROTOCOL_VERSION,
+  type RProviderResponseEnvelope
+} from "../extension/r/rProviderProtocol";
 
 const initializedEnvelope = (requestId: string): RProviderResponseEnvelope => ({
-  protocolVersion: 1,
+  protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
   requestId,
   response: {
     kind: "initialized",
@@ -34,14 +38,14 @@ const initializedEnvelope = (requestId: string): RProviderResponseEnvelope => ({
 });
 
 const discoveredEnvelope = (requestId: string): RProviderResponseEnvelope => ({
-  protocolVersion: 1,
+  protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
   requestId,
   response: {
     kind: "variablesDiscovered",
     truncated: false,
     variables: [
-      { name: "orders", sourceClass: "data.frame", shape: { rows: 12, columns: 4 } },
-      { name: "summary", sourceClass: "tbl_df", shape: { rows: 2, columns: 3 } }
+      { discoveryId: "r:d:1:1", name: "orders", sourceClass: "data.frame", shape: { rows: 12, columns: 4 } },
+      { discoveryId: "r:d:1:2", name: "summary", sourceClass: "tbl_df", shape: { rows: 2, columns: 3 } }
     ]
   }
 });
@@ -80,7 +84,11 @@ describe("native R kernel provider bundle", () => {
       `\n__OPEN_WRANGLER_R_END_${framed.marker}__\n`
     ].join("");
 
-    expect(JSON.parse(framed.payload)).toEqual({ protocolVersion: 1, requestId: "request-1", request });
+    expect(JSON.parse(framed.payload)).toEqual({
+      protocolVersion: R_PROVIDER_PROTOCOL_VERSION,
+      requestId: "request-1",
+      request
+    });
     expect(framed.code).not.toContain('"requestId":"request-1"');
     expect(parseRKernelResponse(output, framed)).toEqual(response);
   });

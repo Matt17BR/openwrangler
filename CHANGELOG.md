@@ -126,6 +126,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Kept an authoritative restored grid row and horizontal offset when a custom-editor snapshot and saved view hydrate
   in the same render, and through a delayed workbench layout scroll collapse, while explicit wheel, pointer, touch,
   and keyboard navigation remain user-authoritative.
+- Hardened the native-R discovery-to-open handoff with protocol-v2 discovery IDs and a provider-private bounded
+  registry. Open now repeats non-forcing inspection and rejects stale IDs, active bindings, promises,
+  noncanonical subclasses, or changed class/shape/value before session publication.
 - Removed unused `Counter` imports from ordinary Pandas, Polars, and DuckDB generated plans while retaining the
   import for one-hot encoding and multi-label binarization collision checks.
 - Preserved compatible viewing filters, selected values, predicates, searches, and ordered multi-sorts through

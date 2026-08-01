@@ -67,7 +67,7 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
     "npm run test:scripts:workflow && npm run test:scripts:portable && npm run test:scripts:native"
   );
   assert.equal(manifest?.scripts?.test, "npm run test:scripts && npm run test:ts && npm run test:python");
-  assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs"]);
+  assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs", "scripts/native-r-ci.test.mjs"]);
   assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
   assert.deepEqual(
     groups.portable,
