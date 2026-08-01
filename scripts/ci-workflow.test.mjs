@@ -54,6 +54,11 @@ const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
 const FULL_CI_IF =
   "${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}";
+const MATRIX_CONTEXT_IF = "${{ always() }}";
+const DOCUMENTATION_CONTEXT_IF =
+  "${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only == 'true' }}";
+const SUBSTANTIVE_MATRIX_STEP_IF =
+  "${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}";
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
@@ -886,24 +891,60 @@ test("documentation-only PRs preserve check contexts while every non-documentati
   assert.equal(ci?.jobs?.["fast-feedback"]?.needs, undefined);
   assert.equal(ci?.jobs?.["fast-feedback"]?.if, undefined);
 
-  for (const [relativePath, classifierName, jobIds] of [
+  for (const [relativePath, classifierName, expectedJobs] of [
     [
       ".github/workflows/cross-platform.yml",
       "Cross-platform change classification",
-      ["runtime", "dependency-guard-windows"]
+      {
+        runtime: {
+          name: undefined,
+          matrix: {
+            include: [
+              { os: "macos-latest", python: "3.12" },
+              { os: "windows-latest", python: "3.14" }
+            ]
+          }
+        },
+        "dependency-guard-windows": {
+          name: "Dependency guard (Windows, Python ${{ matrix.python }})",
+          matrix: { python: ["3.10", "3.12", "3.14"] }
+        }
+      }
     ],
-    [".github/workflows/codeql.yml", "CodeQL change classification", ["analyze"]]
+    [
+      ".github/workflows/codeql.yml",
+      "CodeQL change classification",
+      {
+        analyze: {
+          name: "Analyze (${{ matrix.language }})",
+          matrix: { language: ["javascript-typescript", "python"] }
+        }
+      }
+    ]
   ]) {
     const workflow = loadWorkflow(relativePath);
     assertClassifier(workflow, classifierName);
-    for (const jobId of jobIds) {
+    for (const [jobId, expected] of Object.entries(expectedJobs)) {
       const job = workflow?.jobs?.[jobId];
       assert.equal(job?.needs, "classify");
-      assert.equal(job?.if, FULL_CI_IF);
+      assert.equal(job?.if, MATRIX_CONTEXT_IF);
+      assert.equal(job?.name, expected.name);
+      assert.deepEqual(job?.strategy?.matrix, expected.matrix);
       const gate = job?.steps?.[0];
       assert.equal(gate?.name, "Require exact change classification");
       assert.equal(normalizedCommand(gate?.if), expectedGate);
       assert.equal(gate?.run, "exit 1");
+      const contextCarrier = job?.steps?.[1];
+      assert.equal(contextCarrier?.name, "Preserve required documentation-only context");
+      assert.equal(contextCarrier?.if, DOCUMENTATION_CONTEXT_IF);
+      assert.match(contextCarrier?.run ?? "", /preserves? (?:its|this) required check context/u);
+      for (const step of job?.steps?.slice(2) ?? []) {
+        assert.equal(
+          step?.if,
+          SUBSTANTIVE_MATRIX_STEP_IF,
+          `${relativePath}:${jobId} substantive step must stay dormant in a documentation-only carrier cell.`
+        );
+      }
     }
   }
 });
