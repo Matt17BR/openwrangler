@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Bounded failure-evidence credential matching to 8 KiB logical lines, with conservative fail-closed handling for
+  longer credential-shaped diagnostics. Maximum-size hostile inputs now run in a dedicated 64 MiB child heap with
+  a hard deadline, preventing malformed editor output from exhausting the developer desktop during local tests.
 - Added a fail-closed pull-request fast path for non-packaged documentation. Exact `docs/**`, contributor/security
   guides, and contribution-template changes still run formatting, lint, strict types, generated-document freshness,
   licenses, and workflow contracts, while checksum packaging and main-CI product/editor job IDs report explicit
