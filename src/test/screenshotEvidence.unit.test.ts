@@ -328,7 +328,10 @@ describe("packaged editor screenshot evidence", () => {
     );
     expect(extensionHost).toContain("const boundaryTolerance = 1;");
     expect(extensionHost).toContain('"notebook-code-insertion"');
-    expect(notebookInsertion).toContain('newColumn: "value_plus_10"');
+    expect(extensionHost).toContain('insertionInputColumn: "units"');
+    expect(extensionHost).toContain('insertionOutputColumn: "units_plus_10"');
+    expect(extensionHost).toContain("RELEASED_JUPYTER_VARIABLES_PANDAS.insertionOutputColumn");
+    expect(notebookInsertion).toContain("newColumn: outputColumnName");
     expect(notebookInsertion).toContain("const code = insertionActive?.code;");
     expect(notebookInsertion).not.toContain("setCodeForExport");
     expect(extensionHost).toContain('await vscode.commands.executeCommand("notebook.cell.edit");');
@@ -358,7 +361,7 @@ describe("packaged editor screenshot evidence", () => {
     const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
       ["explore.png", 1_440, 870, 50_000],
-      ["filter-result.png", 1_440, 862, 50_000],
+      ["filter-result.png", 1_440, 861, 50_000],
       ["gallery/sidebar-overview.png", 1_440, 874, 50_000],
       ["gallery/file-explorer-action.png", 1_440, 870, 50_000],
       ["gallery/file-explorer-action-detail.png", 920, 616, 20_000],
@@ -367,9 +370,9 @@ describe("packaged editor screenshot evidence", () => {
       ["workflow.png", 1_440, 870, 50_000],
       ["gallery/histogram-hover.png", 448, 480, 20_000],
       ["gallery/sort-priority.png", 448, 480, 20_000],
-      ["gallery/latest-step-edited.png", 1_440, 865, 50_000],
+      ["gallery/latest-step-edited.png", 1_440, 860, 50_000],
       ["gallery/latest-step-edited-detail.png", 448, 440, 10_000],
-      ["gallery/latest-step-undone.png", 1_440, 865, 50_000],
+      ["gallery/latest-step-undone.png", 1_440, 860, 50_000],
       ["gallery/latest-step-undone-detail.png", 448, 440, 10_000],
       ["gallery/export-script.png", 1_440, 870, 50_000],
       ["gallery/export-data.png", 1_440, 870, 50_000],
@@ -438,12 +441,12 @@ describe("packaged editor screenshot evidence", () => {
     expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');
     expect(readme).not.toContain("The image automatically follows your GitHub theme.");
     expect(readme).not.toMatch(/\b10,?000-row\b/iu);
-    for (const [name, width, height, minimumBytes] of images) {
+    for (const [name, logicalWidth, logicalHeight, minimumBytes] of images) {
       expect(readme).toContain(name);
       const png = readFileSync(resolve("docs/images/readme/v1.2", name));
       expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-      expect(png.readUInt32BE(16)).toBe(width);
-      expect(png.readUInt32BE(20)).toBe(height);
+      expect(png.readUInt32BE(16)).toBe(logicalWidth * 2);
+      expect(png.readUInt32BE(20)).toBe(logicalHeight * 2);
       expect(png.byteLength).toBeGreaterThan(minimumBytes);
     }
     for (const omitted of [
