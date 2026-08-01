@@ -8,10 +8,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
-- Bounded local and CI script-test memory: portable Node contracts now run with four-file concurrency, while the
-  PNG-heavy README media verifier runs alone under a 1 GiB V8 heap ceiling. Pixel drift reports one coordinate and
-  channel instead of constructing a multi-million-byte assertion diff, preventing a stale media capture from
-  exhausting the desktop process during packaging.
+- Terminal missing-dependency panels no longer inherit stale grid-loading state, so the confirmed dependency-install
+  action remains usable after a failed open in Cursor while still excluding an in-progress import change or install.
+  Packaged-editor failures now retain bounded button and persisted-replay state instead of an ambiguous timeout.
+- Bounded local and CI JavaScript-test memory: portable Node contracts, ordinary/V8-coverage Vitest suites, and V8
+  coverage remapping now run with at most four test files or workers, while the PNG-heavy README media verifier runs
+  alone under a 1 GiB V8 heap ceiling. Pixel drift and large editor-fixture preservation failures report only the
+  first differing coordinate or byte instead of constructing multi-million-byte assertion diffs, preventing a stale
+  capture or changed fixture from exhausting the desktop process during packaging.
 - Native Filters / Sorts priority actions now use opaque provider-owned handles instead of JavaScript class identity.
   Structurally cloned tree items therefore work in Cursor as well as VS Code, unrelated profiling and selection
   updates no longer churn the native sort tree, and stale, ambiguous, or unavailable actions explain why they were

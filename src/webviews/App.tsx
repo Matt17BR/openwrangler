@@ -1970,7 +1970,11 @@ export function App() {
   const projectionStatusId = projectionLoading ? "column-projection-status" : undefined;
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
   const importOptionsDisabled = loading || mutationPending || projectionLoading || importOptionsPending;
-  const installDependencyDisabled = loading || runtimeDependencyInstallPending;
+  // A terminal open error has already settled the host request. Generic grid
+  // loading state can outlive a replaced Cursor renderer, so it must not leave
+  // the only recovery action permanently disabled. The host revalidates the
+  // exact missing-dependency response before it offers confirmation.
+  const installDependencyDisabled = runtimeDependencyInstallPending || importOptionsPending;
   const visibleShape = metadata ? (displayMetadata ?? metadata).filteredShape : undefined;
   const visibleShapeText = visibleShape
     ? `${visibleShape.rows.toLocaleString()} × ${visibleShape.columns.toLocaleString()}`

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
+import { loadConfigFromFile } from "vite";
 import { inspectStableCandidateWorkflow } from "./release-workflow.mjs";
 import { OPTIONAL_CI_JOB, REQUIRED_CI_JOBS, requireCiResults, resultEnvironmentKey } from "./require-ci-results.mjs";
 
@@ -101,6 +103,33 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
     }
   }
   assert.deepEqual([...new Set(SCRIPT_TEST_GROUPS.flatMap((group) => groups[group]))].sort(), inventory);
+});
+
+test("every Vitest run has an effective worker ceiling", async () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const config = await loadConfigFromFile(
+    { command: "serve", mode: "test" },
+    fileURLToPath(new URL("../vite.config.ts", import.meta.url))
+  );
+  const smokeConfig = await loadConfigFromFile(
+    { command: "serve", mode: "test" },
+    fileURLToPath(new URL("../vite.python-environment-smoke.config.ts", import.meta.url))
+  );
+  const vitestScripts = Object.entries(manifest?.scripts ?? {})
+    .filter(([, command]) => typeof command === "string" && command.startsWith("vitest run"))
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  assert.deepEqual(vitestScripts, [
+    ["test:coverage:ts", "vitest run --coverage"],
+    ["test:python-environment-smoke", "vitest run --config vite.python-environment-smoke.config.ts"],
+    ["test:ts", "vitest run"]
+  ]);
+  assert.ok(config, "The ordinary Vitest configuration must load.");
+  assert.ok(smokeConfig, "The Python-environment smoke Vitest configuration must load.");
+  assert.equal(config.config.test?.maxWorkers, 4);
+  assert.equal(config.config.test?.coverage?.processingConcurrency, 4);
+  assert.equal(smokeConfig.config.test?.maxWorkers, 1);
+  assert.equal(smokeConfig.config.test?.fileParallelism, false);
 });
 
 test("manual stable evidence packages once and consumes the same canonical artifact set", () => {

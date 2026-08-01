@@ -77,6 +77,9 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 
 Run the narrowest relevant tests while iterating, then run all of these before a milestone PR:
 
+Run memory-intensive local test, package, media, and editor commands serially. When an execution yields with a live
+session, resume or wait for that exact session before starting another command; never launch a duplicate to poll it.
+
 ```bash
 npm run check
 npm test
