@@ -92,6 +92,32 @@ const SYNTHETIC_EDITOR_USER_DATA = "/__open_wrangler_fake_phase__/u";
 const progressEnvelope = (phase, checkpoint, runId = PROGRESS_RUN_ID) =>
   createAcceptanceProgressEnvelope(runId, phase, checkpoint);
 
+test("released-Jupyter Variables acceptance targets the canonical orders showcase", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  assert.match(
+    source,
+    /const RELEASED_JUPYTER_VARIABLES_PANDAS = \{\s*name: "orders_df",\s*type: "DataFrame",\s*backend: "pandas",\s*firstValue: "2400001",\s*insertionInputColumn: "units",\s*insertionOutputColumn: "units_plus_10"\s*\} as const;/u
+  );
+  assert.match(source, /dispatchReleasedJupyterVariableAction\([\s\S]*?RELEASED_JUPYTER_VARIABLES_PANDAS\.name/u);
+  assert.match(
+    source,
+    /waitForReleasedVariableSession\([\s\S]*?RELEASED_JUPYTER_VARIABLES_PANDAS,[\s\S]*?complete canonical orders_df/u
+  );
+  assert.match(
+    source,
+    /assertReleasedSessionPage\(\s*testing,\s*pandasFrame,\s*RELEASED_JUPYTER_VARIABLES_PANDAS\.firstValue,/u
+  );
+  assert.match(
+    source,
+    /assertReleasedNotebookCodeInsertion\([\s\S]*?RELEASED_JUPYTER_VARIABLES_PANDAS\.name,\s*RELEASED_JUPYTER_VARIABLES_PANDAS\.insertionInputColumn,\s*RELEASED_JUPYTER_VARIABLES_PANDAS\.insertionOutputColumn,/u
+  );
+  assert.match(
+    source,
+    /async function invokeReleasedNotebookToolbarVariable[\s\S]*?const input = picker\.locator\("\.quick-input-box input:visible"\)\.first\(\);\s*await input\.fill\(variableName\);/u
+  );
+  assert.match(source, /"orders_df = pd\.DataFrame\(\{"/u);
+});
+
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
   const zip = new ZipFile();
   const targetAttribute = targetPlatform === undefined ? "" : ` TargetPlatform="${targetPlatform}"`;
@@ -2936,6 +2962,7 @@ test("editor phases pass only runner-owned test values through the environment",
       "Trusted seed/verify phases must retain the existing workspace-trust-disabled profile behavior."
     );
     assert.equal(launchedArguments.includes("--no-sandbox"), false);
+    assert.equal(launchedArguments.includes("--force-device-scale-factor=2"), true);
     delete launchedEnvironment.OPEN_WRANGLER_EDITOR_CDP_PORT;
     assert.deepEqual(launchedEnvironment, {
       PATH: "/safe/bin",
@@ -2953,7 +2980,8 @@ test("editor phases pass only runner-owned test values through the environment",
         "seed"
       ),
       OPEN_WRANGLER_TEST_RUN_ID: launchedEnvironment.OPEN_WRANGLER_TEST_RUN_ID,
-      OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: join(directory, "screenshots")
+      OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: join(directory, "screenshots"),
+      OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO: "2"
     });
     assert.match(launchedEnvironment.OPEN_WRANGLER_TEST_RUN_ID, /^[0-9a-f-]{36}$/u);
   } finally {
@@ -3102,6 +3130,14 @@ test("editor phases reserve workbench CDP only when the phase explicitly needs i
       assert.equal(
         Object.prototype.hasOwnProperty.call(launchedEnvironment, "OPEN_WRANGLER_EDITOR_CDP_PORT"),
         testCase.expectedReservation
+      );
+      assert.equal(
+        launchedArguments.some((argument) => argument.startsWith("--force-device-scale-factor=")),
+        false
+      );
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(launchedEnvironment, "OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO"),
+        false
       );
     }
 

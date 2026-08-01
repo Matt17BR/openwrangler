@@ -37,6 +37,7 @@ import {
   createEditorAcceptancePrivateRootReceipt,
   removeEditorAcceptancePrivateRoot
 } from "./packaged-editor-orchestration.mjs";
+import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
@@ -714,6 +715,7 @@ const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
   "OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS",
   "OPEN_WRANGLER_EDITOR_CDP_PORT",
   "OPEN_WRANGLER_EXTENSION_TESTS",
+  "OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO",
   "OPEN_WRANGLER_TEST_EDITOR",
   "OPEN_WRANGLER_TEST_EDITOR_PRODUCT_VERSION",
   "OPEN_WRANGLER_TEST_MODULE",
@@ -3315,7 +3317,10 @@ export async function runEditorAcceptancePhase(
         OPEN_WRANGLER_TEST_PROGRESS: progressPath,
         OPEN_WRANGLER_TEST_RUN_ID: runId,
         OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR: remoteJupyterDescriptor,
-        OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
+        OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS,
+        OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO: environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
+          ? String(PUBLIC_MEDIA_PIXEL_RATIO)
+          : undefined
       },
       platform
     );
@@ -3338,6 +3343,9 @@ export async function runEditorAcceptancePhase(
         "--new-window",
         "--wait",
         ...(cdpPort ? [`--remote-debugging-port=${cdpPort}`] : []),
+        ...(environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
+          ? [`--force-device-scale-factor=${PUBLIC_MEDIA_PIXEL_RATIO}`]
+          : []),
         ...developmentPaths.map((value) => `--extensionDevelopmentPath=${value}`),
         ...sandboxArgs
       ],

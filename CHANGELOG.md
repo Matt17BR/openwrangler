@@ -12,6 +12,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Made packaged Cursor/VS Code interaction barriers follow an authoritative renderer generation when recovery
   supersedes the test's acknowledgement marker. Exact-session hydration remains deadline-bound; the harness neither
   sleeps nor retries a failed editor phase.
+- Upgraded public README and gallery screenshots to a dedicated lossless 2× capture path while leaving ordinary
+  visual baselines at 1×. Logical layouts and crops are converted exactly once, every product image declares its
+  intrinsic logical dimensions, bounded per-file/total budgets reject accidental bloat or downscaling, and a
+  post-publication check detects browser upscaling across GitHub, Visual Studio Marketplace, and Open VSX.
 - Made obsolete pull-request heads actually cancellable by replacing cancellation-resistant `always()` job and
   evidence-upload guards with `!cancelled()` across CI, CodeQL, and cross-platform acceptance. Failed current heads
   still aggregate and retain safe diagnostics, while superseded native editor runs stop before blocking their replacement.
