@@ -212,7 +212,7 @@ function revalidateCandidate(candidatePath, expected) {
     !current.bytes.equals(expected.bytes) ||
     !sameVsixIdentity(current.sourceIdentity, expected.sourceIdentity)
   ) {
-    throw new Error("The stable candidate changed during canonical artifact publication.");
+    throw new Error("The candidate changed during canonical artifact publication.");
   }
 }
 
@@ -554,7 +554,7 @@ function readAndValidatePublishedFiles(directory, directoryReceipt, fileReceipts
     sha256(vsix.bytes) !== expected.snapshot.sha256 ||
     !sameIdentity(vsix.identity, fileReceipts.get(CANONICAL_FILES[0])?.identity)
   ) {
-    throw new Error("Published canonical VSIX does not match the inspected stable candidate.");
+    throw new Error("Published canonical VSIX does not match the inspected candidate.");
   }
 
   for (const [name, maximumBytes, expectedBytes] of [
@@ -673,7 +673,7 @@ export async function createCanonicalReleaseArtifact({
   const destination = assertOutputDestination(outputDirectory);
   const resolvedCandidate = resolve(candidatePath);
   if (resolvedCandidate === destination.outputPath) {
-    throw new Error("The stable candidate and canonical release output directory must be distinct.");
+    throw new Error("The candidate and canonical release output directory must be distinct.");
   }
   const sourceBefore = contract.readSourceBinding({ expectedCommit, releaseTag, root });
   const packageSources = await dependencies.pinPackageSources();

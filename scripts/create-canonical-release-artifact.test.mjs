@@ -614,7 +614,7 @@ test("revalidates the candidate after atomic publication and cleans the output o
   });
   await assert.rejects(
     createCanonicalReleaseArtifact(options),
-    /stable candidate changed during canonical artifact publication/u
+    /candidate changed during canonical artifact publication/u
   );
   assert.equal(existsSync(fixture.outputDirectory), false);
 });

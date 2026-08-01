@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, realpathSync } from "node:fs";
+import { appendFileSync, lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { verifyPreviewReleaseArtifact } from "./verify-registry-release-artifact.mjs";
@@ -16,11 +16,25 @@ function git(root, arguments_, maxBuffer = 4096) {
   });
 }
 
+function canonicalRepositoryRoot(root) {
+  const requested = resolve(root);
+  const canonical = realpathSync.native(requested);
+  const metadata = lstatSync(requested);
+  if (canonical !== requested || !metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("Preview release verification requires one canonical repository directory.");
+  }
+  const topLevel = realpathSync.native(resolve(git(canonical, ["rev-parse", "--show-toplevel"]).trim()));
+  if (topLevel !== canonical) {
+    throw new Error("Preview release verification must run from the exact Git repository root.");
+  }
+  return canonical;
+}
+
 export async function verifyPreviewReleaseArtifactFromCheckout({ directory, expectedCommit, releaseTag, root }) {
   if (typeof expectedCommit !== "string" || !FULL_COMMIT.test(expectedCommit)) {
     throw new Error("EXPECTED_SHA must be one full lowercase hexadecimal Git commit ID.");
   }
-  const canonicalRoot = realpathSync.native(resolve(root));
+  const canonicalRoot = canonicalRepositoryRoot(root);
   const head = git(canonicalRoot, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
   if (head !== expectedCommit) {
     throw new Error("Preview release verification must run from the exact candidate commit.");

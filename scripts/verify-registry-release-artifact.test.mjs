@@ -260,6 +260,18 @@ test("preview candidate verifier binds exact HEAD without requiring a tag", asyn
   assert.equal(receipt.sourceCommit, candidateCommit);
   assert.equal(git("tag", "--list", releaseTag), "");
 
+  const nestedRoot = join(root, "nested");
+  mkdirSync(nestedRoot);
+  await assert.rejects(
+    verifyPreviewReleaseArtifactFromCheckout({
+      directory: release.directory,
+      expectedCommit: candidateCommit,
+      releaseTag,
+      root: nestedRoot
+    }),
+    /exact Git repository root/u
+  );
+
   writeFileSync(join(root, "later.txt"), "later\n");
   git("add", "later.txt");
   git("commit", "-m", "move head");
