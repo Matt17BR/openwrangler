@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { pushExactReleaseTag } from "./release-tag-publisher.mjs";
 
-export function pushStableReleaseTag(options) {
+export function pushReleaseTag(options) {
   return pushExactReleaseTag({
     ...options,
     sourceRef: "refs/remotes/origin/main"
@@ -11,9 +11,9 @@ export function pushStableReleaseTag(options) {
 
 function runCli() {
   if (process.argv.length !== 2) {
-    throw new Error("The stable-tag publisher accepts no command-line arguments.");
+    throw new Error("The release-tag publisher accepts no command-line arguments.");
   }
-  const receipt = pushStableReleaseTag({
+  const receipt = pushReleaseTag({
     expectedCommit: process.env.EXPECTED_SHA,
     releaseTag: process.env.RELEASE_TAG,
     repository: process.env.GITHUB_REPOSITORY,

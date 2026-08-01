@@ -6,6 +6,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Rebuilt preview delivery as a manual candidate-first flow from protected `main`. One package job authors the exact
+  VSIX/checksum/provenance triple, Linux owns the complete source/full suite once, and parallel native,
+  installed-performance, released/remote Jupyter, and Remote SSH lanes consume only that immutable artifact ID.
+  `publish: false` reaches no protected environment, secret, write permission, tag, or registry mutation.
+- Unified stable and preview GitHub publication with an explicit reusable Open VSX promotion. Every public mutation
+  owner shares one non-cancelling `queue: max` group so pending releases are not displaced, and preview Open VSX
+  publication derives `--pre-release` only from verified public metadata. The branch-neutral exact-tag transaction is
+  now separate from stable and preview source-branch policy wrappers.
 - Made GitHub publication immutable-release ready for both stable and future preview channels. The publisher now
   creates or resumes one exact draft, uploads and downloads all three canonical assets for byte verification, and
   only then publishes. Exact public releases remain idempotent; partial public releases, duplicate/conflicting

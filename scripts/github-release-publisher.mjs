@@ -20,6 +20,12 @@ export const CANONICAL_GITHUB_RELEASE_ASSETS = Object.freeze([
   Object.freeze({ contentType: "text/plain; charset=utf-8", name: "openwrangler.vsix.sha256" })
 ]);
 
+export function parseGitHubImmutableReleaseExpectation(value) {
+  if (value === undefined || value === "false") return false;
+  if (value === "true") return true;
+  throw new Error("GITHUB_IMMUTABLE_RELEASES_EXPECTED must be exactly true or false when provided.");
+}
+
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }

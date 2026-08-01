@@ -1174,268 +1174,107 @@ test("rejects symlinked and hard-linked stable VSIX candidates", async (context)
   }
 });
 
-test("structurally gates preview-only tag workflow before build, upload, and release", () => {
-  const source = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.deepEqual(inspectReleaseWorkflow(source), []);
+test("structurally gates the candidate-first preview workflow and exact artifact triple", () => {
+  const workflowSource = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.deepEqual(inspectReleaseWorkflow(workflowSource), []);
 
   const mutate = (change) => {
-    const workflow = parseYaml(source);
+    const workflow = parseYaml(workflowSource);
     change(workflow);
     return inspectReleaseWorkflow(dumpYaml(workflow));
   };
-  const buildStep = (workflow, name) => workflow.jobs.build.steps.find((step) => step.name === name);
-  const metadataStep = (workflow) =>
-    workflow.jobs["preview-metadata"].steps.find(
-      (step) => step.name === "Validate preview release tag and manifest channel"
-    );
+  const cases = [
+    (workflow) => {
+      workflow.on.workflow_dispatch.inputs.publish.default = true;
+    },
+    (workflow) => {
+      delete workflow.jobs["released-jupyter"];
+    },
+    (workflow) => {
+      workflow.jobs.package.steps.find((step) => String(step.uses ?? "").startsWith("actions/checkout@")).uses =
+        "actions/checkout@v6";
+    },
+    (workflow) => {
+      const upload = workflow.jobs.package.steps.find((step) =>
+        String(step.uses ?? "").startsWith("actions/upload-artifact@")
+      );
+      upload.with.path = upload.with.path.replace("canonical-release/openwrangler.vsix.provenance.json\n", "");
+    },
+    (workflow) => {
+      workflow.jobs.package.steps.find((step) => step.id === "canonical").run =
+        "node scripts/verify-canonical-release-artifact.mjs canonical-release";
+    },
+    (workflow) => {
+      workflow.jobs["cross-platform"].needs = "linux-acceptance";
+    },
+    (workflow) => {
+      workflow.jobs["cross-platform"].steps.push(
+        { run: "npm run check" },
+        { run: "npm run test:scripts" },
+        { run: "npm run test:webview-acceptance" },
+        { run: "npm run test:coverage" },
+        { run: "npm audit --omit=dev" },
+        { run: "npm run audit:python" },
+        { run: "npm run benchmark:runtime" }
+      );
+    },
+    (workflow) => {
+      workflow.jobs["linux-acceptance"].steps.find((step) => step.run === "npm run test:coverage").run =
+        "npm run test:coverage:partial";
+    },
+    (workflow) => {
+      workflow.jobs["cross-platform"].steps.push({ run: "python -m pytest python/tests -q" });
+    },
+    (workflow) => {
+      workflow.jobs["installed-performance"].steps.find((step) =>
+        String(step.run ?? "").includes("benchmark:installed --")
+      ).run = "echo skipped";
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find(
+        (step) => step.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "1"
+      ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "0";
+    },
+    (workflow) => {
+      workflow.jobs["remote-ssh"].steps.find((step) =>
+        String(step.run ?? "").includes("npm run test:remote-workspace --")
+      ).run = "echo skipped";
+    },
+    (workflow) => {
+      workflow.jobs["acceptance-gate"].steps[0].run = 'test "$PACKAGE_RESULT" = "success"';
+    },
+    (workflow) => {
+      workflow.jobs.release.if = "${{ inputs.publish != false }}";
+    },
+    (workflow) => {
+      workflow.jobs.release.environment = "unprotected";
+    },
+    (workflow) => {
+      workflow.jobs.release.concurrency.queue = "latest";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find(
+        (step) => step.env?.GITHUB_IMMUTABLE_RELEASES_EXPECTED
+      ).env.GITHUB_IMMUTABLE_RELEASES_EXPECTED = "false";
+    },
+    (workflow) => {
+      const releaseSteps = workflow.jobs.release.steps;
+      const tagIndex = releaseSteps.findIndex((step) => step.run === "node scripts/push-release-tag.mjs");
+      const [tag] = releaseSteps.splice(tagIndex, 1);
+      releaseSteps.push(tag);
+    },
+    (workflow) => {
+      workflow.jobs["promote-open-vsx"].uses = "./.github/workflows/unreviewed.yml";
+    },
+    (workflow) => {
+      workflow.jobs.package.environment = "publishing";
+    },
+    (workflow) => {
+      workflow.jobs.package.permissions = { contents: "write" };
+    }
+  ];
 
-  const missingMetadataGate = mutate((workflow) => {
-    delete workflow.jobs["preview-metadata"];
-  });
-  assert.ok(missingMetadataGate.includes("release.yml must contain one preview-only metadata gate job."));
-
-  const extraWriteCapableReleaseJob = mutate((workflow) => {
-    workflow.jobs["publish-decoy"] = {
-      "runs-on": "ubuntu-latest",
-      permissions: { contents: "write" },
-      steps: [
-        {
-          name: "Package hidden release",
-          run: "npm run package -- --out hidden.vsix"
-        },
-        {
-          name: "Publish hidden release",
-          uses: "softprops/action-gh-release@v2",
-          env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
-          with: { files: "hidden.vsix" }
-        }
-      ]
-    };
-  });
-  assert.ok(
-    extraWriteCapableReleaseJob.includes(
-      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, release, and promote-open-vsx."
-    )
-  );
-
-  const unpinnedMetadataCheckout = mutate((workflow) => {
-    workflow.jobs["preview-metadata"].steps[0].uses = "actions/checkout@v6";
-  });
-  assert.ok(
-    unpinnedMetadataCheckout.includes(
-      "release.yml preview-metadata job must begin with only canonical checkout and Node setup actions."
-    )
-  );
-
-  const unpinnedMetadataNode = mutate((workflow) => {
-    workflow.jobs["preview-metadata"].steps[1].uses = "actions/setup-node@v6";
-  });
-  assert.ok(
-    unpinnedMetadataNode.includes(
-      "release.yml preview-metadata job must begin with only canonical checkout and Node setup actions."
-    )
-  );
-
-  const unpinnedBuildCheckout = mutate((workflow) => {
-    workflow.jobs.build.steps[0].uses = "actions/checkout@v6";
-  });
-  assert.ok(
-    unpinnedBuildCheckout.includes(
-      "release.yml build job must retain exactly its canonical controls and ordered preview-only step/action allowlist."
-    )
-  );
-
-  const buildBeforeMetadata = mutate((workflow) => {
-    workflow.jobs["preview-metadata"].steps.splice(2, 0, {
-      name: "Build before metadata",
-      run: "npm run build"
-    });
-  });
-  assert.ok(
-    buildBeforeMetadata.includes(
-      "release.yml preview-metadata job must contain exactly checkout, Node setup, and the preview-only metadata gate."
-    )
-  );
-
-  const genericMetadataMode = mutate((workflow) => {
-    metadataStep(workflow).run = "node scripts/release-metadata.mjs";
-  });
-  assert.ok(genericMetadataMode.some((problem) => problem.includes("must run only its canonical release command")));
-
-  const ignoredMetadataFailure = mutate((workflow) => {
-    metadataStep(workflow)["continue-on-error"] = true;
-  });
-  assert.ok(ignoredMetadataFailure.some((problem) => problem.includes("must not override command execution controls")));
-
-  const detachedBuild = mutate((workflow) => {
-    delete workflow.jobs.build.needs;
-  });
-  assert.ok(
-    detachedBuild.includes(
-      "release.yml build job must depend only on the successful preview-metadata gate and publish no channel outputs."
-    )
-  );
-
-  const renamedMutablePublisher = mutate((workflow) => {
-    const packageIndex = workflow.jobs.build.steps.findIndex((step) => step.name === "Package canonical preview VSIX");
-    workflow.jobs.build.steps.splice(packageIndex, 0, {
-      name: "Restore preview cache",
-      uses: "softprops/action-gh-release@v2",
-      env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
-      with: { files: "hidden.vsix" }
-    });
-  });
-  assert.ok(
-    renamedMutablePublisher.includes(
-      "release.yml build job must retain exactly its canonical controls and ordered preview-only step/action allowlist."
-    )
-  );
-
-  const writeCapableValidatePublisher = mutate((workflow) => {
-    workflow.jobs.validate.permissions = { contents: "write" };
-    workflow.jobs.validate.steps.push({
-      name: "Publish validation decoy",
-      uses: "softprops/action-gh-release@v2",
-      env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
-      with: { files: "release/openwrangler.vsix", prerelease: false }
-    });
-  });
-  assert.ok(
-    writeCapableValidatePublisher.includes(
-      "release.yml validate job must retain exactly its canonical read-only controls, matrix, and ordered step/action allowlist."
-    )
-  );
-
-  const writeCapableAcceptancePublisher = mutate((workflow) => {
-    workflow.jobs["release-acceptance"].permissions = { contents: "write" };
-    workflow.jobs["release-acceptance"].steps.push({
-      name: "Publish acceptance decoy",
-      uses: "softprops/action-gh-release@v2",
-      env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
-      with: { files: "release/openwrangler.vsix", prerelease: false }
-    });
-  });
-  assert.ok(
-    writeCapableAcceptancePublisher.includes(
-      "release.yml release-acceptance job must retain exactly its canonical read-only controls and ordered step/action allowlist."
-    )
-  );
-
-  const restoredStableBranch = mutate((workflow) => {
-    workflow.jobs.build.steps.splice(5, 0, {
-      name: "Package stable VSIX candidate",
-      run: "npm run package -- --out openwrangler.candidate.vsix"
-    });
-  });
-  assert.ok(
-    restoredStableBranch.includes(
-      "release.yml preview build must not contain stable packaging, verification, or readiness steps."
-    )
-  );
-
-  const conditionalPreviewPackage = mutate((workflow) => {
-    buildStep(workflow, "Package canonical preview VSIX").if =
-      "${{ steps.release_metadata.outputs.prerelease == 'true' }}";
-  });
-  assert.ok(conditionalPreviewPackage.some((problem) => problem.includes("wrong release-channel condition")));
-
-  const commentedCommandDecoy = mutate((workflow) => {
-    buildStep(workflow, "Verify exact tagged source after packaging").run =
-      "# git diff-index --quiet HEAD --\necho skipped";
-  });
-  assert.ok(commentedCommandDecoy.some((problem) => problem.includes("must run only its canonical release command")));
-
-  const movedUpload = mutate((workflow) => {
-    const index = workflow.jobs.build.steps.findIndex((step) =>
-      String(step.uses ?? "").startsWith("actions/upload-artifact@")
-    );
-    const [step] = workflow.jobs.build.steps.splice(index, 1);
-    workflow.jobs.decoy = { "runs-on": "ubuntu-latest", steps: [step] };
-  });
-  assert.ok(movedUpload.includes("release.yml build job must contain exactly one canonical release upload; found 0."));
-
-  const postVerificationMutation = mutate((workflow) => {
-    const index = workflow.jobs.build.steps.findIndex((step) => step.name === "Create canonical preview checksum");
-    workflow.jobs.build.steps.splice(index, 0, { name: "Rewrite preview output", run: "node mutate.mjs" });
-  });
-  assert.ok(
-    postVerificationMutation.includes(
-      "release.yml preview verification, checksum, and canonical upload must be one exact final chain."
-    )
-  );
-
-  const postUploadMutation = mutate((workflow) => {
-    workflow.jobs.build.steps.push({ name: "Rewrite uploaded outputs", run: "node mutate.mjs" });
-  });
-  assert.ok(postUploadMutation.includes("release.yml canonical upload must be the final build step."));
-
-  const unpinnedReleaseDownload = mutate((workflow) => {
-    workflow.jobs.release.steps[0].uses = "actions/download-artifact@v8";
-  });
-  assert.ok(
-    unpinnedReleaseDownload.includes("release.yml release job must begin with the pinned canonical artifact download.")
-  );
-
-  const unpinnedReleaseAction = mutate((workflow) => {
-    workflow.jobs.release.steps[2].uses = "softprops/action-gh-release@v2";
-  });
-  assert.ok(
-    unpinnedReleaseAction.includes(
-      "release.yml final checksum verification must be followed immediately by GitHub Release creation."
-    )
-  );
-
-  const dynamicReleaseChannel = mutate((workflow) => {
-    workflow.jobs.release.steps[2].with.prerelease = "${{ needs.build.outputs.prerelease == 'true' }}";
-  });
-  assert.ok(
-    dynamicReleaseChannel.includes("release.yml GitHub Release action must publish only the validated canonical files.")
-  );
-
-  const workflowWorkingDirectory = mutate((workflow) => {
-    workflow.defaults = { run: { "working-directory": "decoy" } };
-  });
-  assert.ok(workflowWorkingDirectory.includes("release.yml must not override workflow environment or run defaults."));
-
-  const buildEnvironment = mutate((workflow) => {
-    workflow.jobs.build.env = { NODE_OPTIONS: "--require ./mutate.cjs" };
-  });
-  assert.ok(buildEnvironment.includes("release.yml build job must not override environment or run defaults."));
-
-  const releaseWorkingDirectory = mutate((workflow) => {
-    workflow.jobs.release.defaults = { run: { "working-directory": "decoy" } };
-  });
-  assert.ok(releaseWorkingDirectory.includes("release.yml release job must not override environment or run defaults."));
-
-  const escalatedBuildPermissions = mutate((workflow) => {
-    workflow.jobs.build.permissions = { contents: "write" };
-  });
-  assert.ok(
-    escalatedBuildPermissions.includes("release.yml build job must inherit the read-only workflow permissions.")
-  );
-
-  const postChecksumMutation = mutate((workflow) => {
-    workflow.jobs.release.steps.splice(2, 0, { name: "Rewrite release files", run: "node mutate.mjs" });
-  });
-  assert.ok(
-    postChecksumMutation.includes("release.yml release job must contain exactly download, checksum, and release steps.")
-  );
-
-  const missingDirectPromotion = mutate((workflow) => {
-    delete workflow.jobs["promote-open-vsx"];
-  });
-  assert.ok(
-    missingDirectPromotion.includes(
-      "release.yml must directly call the protected Open VSX promotion workflow after GitHub preview publication."
-    )
-  );
-
-  const eventOnlyPromotion = mutate((workflow) => {
-    workflow.jobs["promote-open-vsx"].uses = "./.github/workflows/not-the-reviewed-promotion.yml";
-  });
-  assert.ok(
-    eventOnlyPromotion.includes(
-      "release.yml must directly call the protected Open VSX promotion workflow after GitHub preview publication."
-    )
-  );
+  for (const [index, change] of cases.entries()) {
+    assert.notDeepEqual(mutate(change), [], `preview workflow mutation ${index + 1} must fail closed`);
+  }
 });

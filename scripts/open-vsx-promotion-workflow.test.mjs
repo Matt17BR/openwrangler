@@ -14,6 +14,8 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
     source.replace("types:\n      - published", "types:\n      - edited"),
     source.replace("  workflow_call:\n", "  not_workflow_call:\n"),
     source.replace("contents: read", "contents: write"),
+    source.replace("group: openwrangler-release-publication", "group: open-vsx-${{ inputs.release_tag }}"),
+    source.replace("queue: max", "queue: latest"),
     source.replace("environment: publishing", "environment: unprotected"),
     source.replace("timeout-minutes: 75", "timeout-minutes: 60"),
     source.replace("ref: main", "ref: ${{ github.ref }}"),
@@ -36,12 +38,9 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
     ),
     source.replace("OVSX_PAT: ${{ secrets.OVSX_PAT }}", "OVSX_PAT: literal-token"),
     source.replace("npx --no-install ovsx verify-pat Matt17BR", "npx ovsx verify-pat someone"),
-    source.replace(
-      "npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix",
-      "npx --no-install ovsx publish --pre-release canonical-release/openwrangler.vsix"
-    ),
-    source.replace("node scripts/verify-open-vsx-github-release.mjs canonical-release --verify", "echo published"),
-    `${source}\n# drift\n`
+    source.replace('if [ "$RELEASE_PRERELEASE" = "true" ]; then', 'if [ "$RELEASE_PRERELEASE" = "false" ]; then'),
+    source.replace("--pre-release --skip-duplicate", "--skip-duplicate"),
+    source.replace("node scripts/verify-open-vsx-github-release.mjs canonical-release --verify", "echo published")
   ];
   for (const [index, candidate] of mutations.entries()) {
     assert.notEqual(candidate, source, `mutation ${index + 1} must change the workflow`);

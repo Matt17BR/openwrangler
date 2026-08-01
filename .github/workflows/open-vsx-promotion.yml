@@ -21,8 +21,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: open-vsx-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+  group: openwrangler-release-publication
   cancel-in-progress: false
+  queue: max
 
 jobs:
   promote:
@@ -103,7 +104,15 @@ jobs:
       - name: Publish the exact GitHub release VSIX
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
+          RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
+        run: |
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            npx --no-install ovsx publish --pre-release --skip-duplicate canonical-release/openwrangler.vsix
+          elif [ "$RELEASE_PRERELEASE" = "false" ]; then
+            npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
+          else
+            exit 1
+          fi
       - name: Verify the exact public Open VSX release
         env:
           AUTOMATION_SHA: ${{ steps.automation_source.outputs.automation_commit }}

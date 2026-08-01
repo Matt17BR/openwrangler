@@ -73,6 +73,17 @@ pre-release versions remain deliberate releases; scheduled/nightly runs may reta
 must never publish automatically. This transition is required before the first R/Quarto preview, not for ordinary
 v1 maintenance today.
 
+The preview promotion boundary is candidate-first rather than tag-triggered. One manual run from protected `main`
+packages a provenance-bound VSIX/checksum/provenance triple once. Complete Linux acceptance owns the full source and
+instrumented suites exactly once; macOS/Windows native smoke, installed performance, released/remote Jupyter, and
+Remote SSH consume the same artifact in parallel. A fail-closed fan-in gates an optional protected publication job.
+The default `publish: false` path has no environment, secret, write permission, tag push, or registry mutation and
+must not be cited as proof of those live boundaries. Stable publication, preview publication, and reusable Open VSX
+promotion share the non-cancelling `openwrangler-release-publication` queue with `queue: max`, preventing a newer
+pending version from displacing an older one. Both channels call Open VSX explicitly after GitHub because a release
+created by `GITHUB_TOKEN` does not reliably fan out through a release event. The Microsoft Marketplace remains driven
+by the real lightweight-tag push and consumes the same public canonical triple.
+
 ## 2026-08 pipeline audit
 
 A typical substantive pull request used roughly 80 hosted runner-minutes: about 57 in the main CI workflow, 7 in

@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { pushStableReleaseTag } from "./push-stable-release-tag.mjs";
+import { pushExactReleaseTag } from "./release-tag-publisher.mjs";
 
 const repositoryName = "Matt17BR/openwrangler";
 const releaseTag = "v1.2.3";
@@ -194,6 +195,37 @@ function publish(repository, runner, overrides = {}) {
     ...overrides
   });
 }
+
+test("keeps the exact-tag transaction independent from the wrapper's source branch policy", (context) => {
+  const repository = createRepository(context);
+  git(repository.root, ["update-ref", "refs/remotes/origin/release/1.x", repository.head]);
+  const fake = createRunner({ expectedCommit: repository.head });
+  assert.deepEqual(
+    pushExactReleaseTag({
+      expectedCommit: repository.head,
+      gitRunner: fake.runner,
+      releaseTag,
+      repository: repositoryName,
+      root: repository.root,
+      sourceRef: "refs/remotes/origin/release/1.x",
+      token
+    }),
+    { created: true, releaseTag, sourceCommit: repository.head }
+  );
+  assert.throws(
+    () =>
+      pushExactReleaseTag({
+        expectedCommit: repository.head,
+        gitRunner: fake.runner,
+        releaseTag,
+        repository: repositoryName,
+        root: repository.root,
+        sourceRef: "refs/remotes/origin/release/../main",
+        token
+      }),
+    /canonical origin remote-tracking ref/u
+  );
+});
 
 test("atomically pushes one exact lightweight tag without exposing the token and cleans its credential", (context) => {
   const repository = createRepository(context);
@@ -432,7 +464,7 @@ test("requires exact repository, version, source, origin/main, token, and clean 
     "other"
   ]);
   git(repository.root, ["update-ref", "refs/remotes/origin/main", otherCommit]);
-  assert.throws(() => publish(repository, fake.runner), /checked-out origin\/main/u);
+  assert.throws(() => publish(repository, fake.runner), /equal the configured source ref/u);
   git(repository.root, ["update-ref", "refs/remotes/origin/main", repository.head]);
 
   writeFileSync(join(repository.root, "tracked.txt"), "dirty\n", "utf8");

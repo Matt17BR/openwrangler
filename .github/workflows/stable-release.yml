@@ -660,12 +660,16 @@ jobs:
           test "$REMOTE_SSH_RESULT" = "success"
 
   release:
-    name: Publish GitHub/Open VSX and trigger Marketplace
+    name: Publish GitHub and trigger Marketplace
     needs: [package, acceptance-gate]
     if: ${{ inputs.publish == true }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 20
     environment: publishing
+    concurrency:
+      group: openwrangler-release-publication
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
     steps:
@@ -712,37 +716,15 @@ jobs:
       - name: Publish or verify the exact GitHub stable release
         env:
           EXPECTED_SHA: ${{ github.sha }}
+          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "true"
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/publish-github-stable-release.mjs canonical-release
-      - name: Verify the Open VSX publisher token
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx --no-install ovsx verify-pat Matt17BR
-      - id: canonical_open_vsx_preflight
-        name: Reverify the exact canonical artifact before Open VSX preflight
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Reject a conflicting existing Open VSX version
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-open-vsx-release.mjs canonical-release --preflight
-      - id: canonical_open_vsx_publish
-        name: Reverify the exact canonical artifact before Open VSX publication
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Publish the exact stable VSIX to Open VSX
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
-      - name: Verify the exact public Open VSX release
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-open-vsx-release.mjs canonical-release --verify
+
+  promote-open-vsx:
+    needs: release
+    if: ${{ inputs.publish == true && needs.release.result == 'success' }}
+    uses: ./.github/workflows/open-vsx-promotion.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
