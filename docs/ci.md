@@ -91,10 +91,10 @@ pending version from displacing an older one. Both channels call Open VSX explic
 created by `GITHUB_TOKEN` does not reliably fan out through a release event. The Microsoft Marketplace remains driven
 by the real lightweight-tag push and consumes the same public canonical triple.
 
-Immutable GitHub Releases are a separate three-change rollout, not a prerequisite for this migration PR. Merge the
-draft-first publisher while both workflows explicitly expect `immutable: false`, enable the future-only repository
-setting, and then merge a focused workflow change that expects `immutable: true`. The false phase accepts an exact
-response in either immutable state; it does not weaken tag, metadata, inventory, checksum, or byte verification.
+GitHub's future-only immutable-release setting is enabled. Both stable and preview workflows require
+`immutable: true` before registry promotion; a missing or false response fails closed. The completed rollout first
+merged the draft-first publisher with a migration expectation, then enabled the repository setting, and only then
+made this source contract mandatory, so publication never crossed an incompatible intermediate state.
 
 ## 2026-08 pipeline audit
 

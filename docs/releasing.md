@@ -113,14 +113,12 @@ package ceiling cannot widen either sidecar boundary.
 
 This ordering follows GitHub's [immutable-release publication guidance](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases):
 create the draft, attach every asset, then publish it. The publisher uses the versioned `2026-03-10` REST contract
-and validates GitHub's `immutable` response field. Repository immutability is not enabled by source code. Roll it out
-in three ordered changes: first merge this draft-first migration with both workflows explicitly setting
-`GITHUB_IMMUTABLE_RELEASES_EXPECTED=false`; next enable the repository's future-only immutable-release setting; then
-merge a focused workflow change that switches both expectations to `true`. The false migration expectation accepts
-both exact `immutable: false` and exact `immutable: true` releases, so enabling the setting between the two workflow
-revisions does not interrupt publication. Once the follow-up expects true, a public response that omits `immutable`
-or reports false blocks completion and registry promotion. Do not enable immutability before the draft-first migration
-has merged: the currently deployed stable publisher is public-first and cannot safely complete an immutable release.
+and validates GitHub's `immutable` response field. The repository's future-only immutable-release setting was enabled
+on 2026-08-01 after the draft-first publisher merged. Stable and preview workflows now set
+`GITHUB_IMMUTABLE_RELEASES_EXPECTED=true`; a public response that omits `immutable` or reports false blocks completion
+and registry promotion. The migration preserved publication throughout by merging draft-first support with a
+temporary false expectation, enabling the repository setting, and only then requiring true. Do not reverse that order
+when recreating this setup in another repository.
 
 After GitHub publication, both channels explicitly call the reusable Open VSX promotion workflow. It verifies
 `OVSX_PAT` against `Matt17BR`, derives stable versus preview from the public release source, fails closed unless an

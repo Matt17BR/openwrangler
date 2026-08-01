@@ -505,6 +505,13 @@ test("PR workflows cancel only obsolete pull-request heads", () => {
         false,
         `${relativePath}:${jobId} must not resist cancellation with always().`
       );
+      for (const [stepIndex, step] of (job?.steps ?? []).entries()) {
+        assert.equal(
+          String(step?.if ?? "").includes("always()"),
+          false,
+          `${relativePath}:${jobId}:step-${stepIndex + 1} must not resist cancellation with always().`
+        );
+      }
     }
   }
 });

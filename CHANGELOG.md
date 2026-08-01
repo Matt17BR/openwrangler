@@ -31,12 +31,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   pull requests. Marketplace intake also proves every selected tag commit is contained in its version-owned public
   branch and is the exact public lightweight tag target instead of trusting matching package metadata or a peeled
   annotated tag.
-- Made GitHub publication immutable-release ready for both stable and future preview channels. The publisher now
+- Completed immutable GitHub publication for both stable and future preview channels. The publisher now
   creates or resumes one exact draft, uploads and downloads all three canonical assets for byte verification, and
-  only then publishes. The migration workflows deliberately expect `immutable: false` while accepting an already
-  immutable exact release, so they can merge before the future-only repository setting is enabled. A follow-up
-  workflow change will require `immutable: true`; partial public releases, duplicate/conflicting drafts, tag or asset
-  drift, and post-publication changes already fail closed in either phase.
+  only then publishes. The future-only repository setting is enabled and both workflows now require
+  `immutable: true` before registry promotion; partial public releases, duplicate/conflicting drafts, tag or asset
+  drift, missing/false immutable state, and post-publication changes fail closed.
 - Bounded failure-evidence credential matching to 8 KiB logical lines, with conservative fail-closed handling for
   longer credential-shaped diagnostics. Maximum-size hostile inputs now run in a dedicated 64 MiB child heap with
   a hard deadline, preventing malformed editor output from exhausting the developer desktop during local tests.
