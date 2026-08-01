@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-01
+
 ### Changed
 
 - Import-option Quick Picks and input fields now explicitly reclaim workbench keyboard focus after opening. This
