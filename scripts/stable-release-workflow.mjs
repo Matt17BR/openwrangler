@@ -12,6 +12,8 @@ const RELEASE_SOURCE_BRANCH = "${{ steps.release_metadata.outputs.source_branch 
 const RELEASE_SOURCE_REF = "${{ steps.release_metadata.outputs.source_ref }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
 const PUBLISH_TAG_COMMAND = "node scripts/push-stable-release-tag.mjs";
+const STABLE_PACKAGE_COMMAND =
+  "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.candidate.vsix";
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
@@ -477,9 +479,11 @@ export function inspectStableReleaseWorkflow(source) {
   inspectPinnedActions(workflow, problems);
 
   const allRuns = Object.values(workflow.jobs).flatMap((job) => steps(job).map((step) => command(step?.run)));
-  const packageRuns = allRuns.filter((run) => /^npm run package(?:\s|$)/u.test(run));
-  if (packageRuns.length !== 1 || packageRuns[0] !== "npm run package -- --out openwrangler.candidate.vsix") {
-    problems.push("The ordinary stable VSIX must be packaged exactly once.");
+  const packageRuns = allRuns.filter((run) => run.includes("npm run package:prepared"));
+  if (packageRuns.length !== 1 || packageRuns[0] !== STABLE_PACKAGE_COMMAND) {
+    problems.push(
+      "The ordinary stable VSIX must be built and packaged exactly once without duplicating source suites."
+    );
   }
   const publicationRuns = allRuns.filter((run) => run.includes("scripts/create-canonical-release-artifact.mjs"));
   if (
@@ -547,7 +551,11 @@ export function inspectStableReleaseWorkflow(source) {
     if (
       steps(consumer).some((step) => {
         const run = command(step?.run);
-        return /^npm run package(?:\s|$)/u.test(run) || run.includes("scripts/create-canonical-release-artifact.mjs");
+        return (
+          /^npm run package(?:\s|$)/u.test(run) ||
+          run.includes("npm run package:prepared") ||
+          run.includes("scripts/create-canonical-release-artifact.mjs")
+        );
       })
     ) {
       problems.push(`${consumerName} must consume the exact artifact without repackaging it.`);

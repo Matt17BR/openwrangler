@@ -84,6 +84,10 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     source.replace('test "$REMOTE_SSH_RESULT" = "success"', 'test "$REMOTE_SSH_RESULT" != "failure"'),
     source.replace("npm run check", "npm run check\n      - run: npm run package -- --out rebuilt.vsix"),
     source.replace(
+      "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.candidate.vsix",
+      "npm run package -- --out openwrangler.candidate.vsix"
+    ),
+    source.replace(
       "node scripts/prepare-stable-candidate-tag.mjs --verify-remote",
       "node scripts/prepare-stable-candidate-tag.mjs --ignore-remote"
     ),

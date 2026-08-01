@@ -1216,6 +1216,27 @@ test("structurally gates the candidate-first preview workflow and exact artifact
         "actions/checkout@v6";
     },
     (workflow) => {
+      workflow.jobs.package.steps.find((step) => step.name === "Require protected main source").run = [
+        '# test "$EVENT_REF_TYPE" = "branch"',
+        '# test "$EVENT_REF" = "refs/heads/main"',
+        '# case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac',
+        '# test "${#EXPECTED_SHA}" -eq 40'
+      ].join("\n");
+    },
+    (workflow) => {
+      workflow.jobs.package.steps.find((step) => step.name === "Require exact protected main commit").run = [
+        '# test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"',
+        '# test -z "$(git status --porcelain --untracked-files=no)"',
+        '# test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"'
+      ].join("\n");
+    },
+    (workflow) => {
+      const packageSteps = workflow.jobs.package.steps;
+      const metadataIndex = packageSteps.findIndex((step) => step.id === "release_metadata");
+      const [metadata] = packageSteps.splice(metadataIndex, 1);
+      packageSteps.push(metadata);
+    },
+    (workflow) => {
       const upload = workflow.jobs.package.steps.find((step) =>
         String(step.uses ?? "").startsWith("actions/upload-artifact@")
       );

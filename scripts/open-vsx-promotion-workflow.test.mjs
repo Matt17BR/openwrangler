@@ -36,6 +36,10 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
       "node scripts/verify-registry-release-artifact.mjs canonical-release",
       "npm run package -- --out canonical-release/openwrangler.vsix"
     ),
+    source.replace(
+      "      - name: Rebind the lightweight tag to its protected source branch before publication\n        run: node scripts/registry-release-source.mjs release-source",
+      "      - name: Skip protected source revalidation\n        run: echo skipped"
+    ),
     source.replace("OVSX_PAT: ${{ secrets.OVSX_PAT }}", "OVSX_PAT: literal-token"),
     source.replace("npx --no-install ovsx verify-pat Matt17BR", "npx ovsx verify-pat someone"),
     source.replace('if [ "$RELEASE_PRERELEASE" = "true" ]; then', 'if [ "$RELEASE_PRERELEASE" = "false" ]; then'),

@@ -30,6 +30,7 @@ const EXPECTED_RUNS = Object.freeze([
   "npx --no-install ovsx verify-pat Matt17BR",
   "node scripts/verify-registry-release-artifact.mjs canonical-release",
   "node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight",
+  "node scripts/registry-release-source.mjs release-source",
   "node scripts/verify-registry-release-artifact.mjs canonical-release",
   `if [ "$RELEASE_PRERELEASE" = "true" ]; then
 npx --no-install ovsx publish --pre-release --skip-duplicate canonical-release/openwrangler.vsix

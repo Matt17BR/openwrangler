@@ -149,7 +149,8 @@ The development loop should therefore optimize _when_ the complete matrix is req
 This policy will be revisited after at least 20 post-consolidation substantive pull requests. A further split should be
 evidence-led, for example a repeated external-service failure rate above 5 percent or a normally queued aggregate p95
 above 12 minutes, rather than a reaction to a legitimate test exposing unfinished code. Documentation-only
-classification and draft-only fast feedback remain possible future savings, but neither should be introduced without
+classification is already a bounded fast path. Draft-only fast feedback and extracting the shared stable/preview
+acceptance fan-out into a reusable workflow remain possible future savings, but neither should be introduced without
 proving that required contexts still fail closed when the pull request becomes mergeable.
 
 - [VS Code Python pull-request and build workflows](https://github.com/microsoft/vscode-python/tree/82940c942228f819121302657375c81b5d42d36a/.github/workflows)

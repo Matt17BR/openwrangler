@@ -2,9 +2,13 @@ import { load as parseYaml } from "js-yaml";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const EVENT_SHA = "${{ github.sha }}";
+const EVENT_REF = "${{ github.ref }}";
+const EVENT_REF_TYPE = "${{ github.ref_type }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
+const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
+const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
@@ -23,6 +27,13 @@ const FULL_SUITE = [
   "npm run audit:python",
   "npm run benchmark:runtime"
 ];
+const PROTECTED_MAIN_SOURCE_RUN = `test "$EVENT_REF_TYPE" = "branch"
+test "$EVENT_REF" = "refs/heads/main"
+case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
+test "\${#EXPECTED_SHA}" -eq 40`;
+const EXACT_MAIN_SOURCE_RUN = `test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
+test -z "$(git status --porcelain --untracked-files=no)"
+test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"`;
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -65,6 +76,87 @@ function inspectCheckout(job, label, problems) {
     checkout.with["persist-credentials"] !== false
   ) {
     problems.push(`${label} must check out only the exact event commit without persisted credentials.`);
+  }
+}
+
+function inspectPackageSourceBinding(job, problems) {
+  const jobSteps = steps(job);
+  const initialGuards = jobSteps.filter((step) => step?.name === "Require protected main source");
+  const initialGuard = initialGuards[0];
+  if (
+    initialGuards.length !== 1 ||
+    !exactKeys(initialGuard, ["name", "env", "run"]) ||
+    !exactKeys(initialGuard.env, ["EVENT_REF", "EVENT_REF_TYPE", "EXPECTED_SHA"]) ||
+    initialGuard.env.EVENT_REF !== EVENT_REF ||
+    initialGuard.env.EVENT_REF_TYPE !== EVENT_REF_TYPE ||
+    initialGuard.env.EXPECTED_SHA !== EVENT_SHA ||
+    command(initialGuard.run) !== command(PROTECTED_MAIN_SOURCE_RUN)
+  ) {
+    problems.push("package must reject tags and every source other than protected main before checkout.");
+  }
+
+  const checkout = jobSteps.find((step) => step?.uses === CHECKOUT_ACTION);
+  const exactGuards = jobSteps.filter((step) => step?.name === "Require exact protected main commit");
+  const exactGuard = exactGuards[0];
+  if (
+    exactGuards.length !== 1 ||
+    !exactKeys(exactGuard, ["name", "env", "run"]) ||
+    !exactKeys(exactGuard.env, ["EXPECTED_SHA"]) ||
+    exactGuard.env.EXPECTED_SHA !== EVENT_SHA ||
+    command(exactGuard.run) !== command(EXACT_MAIN_SOURCE_RUN)
+  ) {
+    problems.push("package must bind the clean checkout and protected main ref to the exact event commit.");
+  }
+
+  const setupNodeSteps = jobSteps.filter((step) => step?.uses === SETUP_NODE_ACTION);
+  const setupNode = setupNodeSteps[0];
+  const remotePreflights = jobSteps.filter(
+    (step) => command(step?.run) === "node scripts/prepare-stable-candidate-tag.mjs --verify-remote"
+  );
+  const remotePreflight = remotePreflights[0];
+  const setupPythonSteps = jobSteps.filter((step) => step?.uses === SETUP_PYTHON_ACTION);
+  const setupPython = setupPythonSteps[0];
+  const metadataSteps = jobSteps.filter((step) => step?.id === "release_metadata");
+  const metadata = metadataSteps[0];
+  const rejectSteps = jobSteps.filter((step) => step?.name === "Require preview metadata");
+  const reject = rejectSteps[0];
+  if (
+    setupNodeSteps.length !== 1 ||
+    !exactKeys(setupNode, ["uses", "with"]) ||
+    !exactKeys(setupNode.with, ["node-version", "cache"]) ||
+    setupNode.with["node-version"] !== 22 ||
+    setupNode.with.cache !== "npm" ||
+    remotePreflights.length !== 1 ||
+    setupPythonSteps.length !== 1 ||
+    !exactKeys(setupPython, ["uses", "with"]) ||
+    !exactKeys(setupPython.with, ["python-version", "cache"]) ||
+    setupPython.with["python-version"] !== "3.12" ||
+    setupPython.with.cache !== "pip" ||
+    metadataSteps.length !== 1 ||
+    !exactKeys(metadata, ["id", "name", "env", "run"]) ||
+    metadata.name !== "Validate preview release metadata" ||
+    !exactKeys(metadata.env, ["RELEASE_TAG"]) ||
+    metadata.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(metadata.run) !== "node scripts/release-metadata.mjs --preview-only" ||
+    rejectSteps.length !== 1 ||
+    !exactKeys(reject, ["name", "if", "run"]) ||
+    reject.if !== "${{ steps.release_metadata.outputs.prerelease != 'true' }}" ||
+    command(reject.run) !== "exit 1"
+  ) {
+    problems.push("package must validate exact preview metadata with the pinned release toolchains.");
+  }
+
+  if (
+    jobSteps.indexOf(initialGuard) !== 0 ||
+    jobSteps.indexOf(checkout) !== 1 ||
+    jobSteps.indexOf(exactGuard) !== 2 ||
+    jobSteps.indexOf(setupNode) !== 3 ||
+    jobSteps.indexOf(remotePreflight) !== 4 ||
+    jobSteps.indexOf(setupPython) !== 5 ||
+    jobSteps.indexOf(metadata) !== 6 ||
+    jobSteps.indexOf(reject) !== 7
+  ) {
+    problems.push("package source, checkout, tag, and metadata guards must be the exact ordered prefix.");
   }
 }
 
@@ -171,6 +263,7 @@ export function inspectPreviewReleaseWorkflow(source) {
 
   const packaging = workflow.jobs.package;
   inspectCheckout(packaging, "package", problems);
+  inspectPackageSourceBinding(packaging, problems);
   if (
     packaging["runs-on"] !== "ubuntu-24.04" ||
     packaging.environment !== undefined ||
@@ -215,15 +308,6 @@ export function inspectPreviewReleaseWorkflow(source) {
   ) {
     problems.push("package must verify and upload only the canonical preview triple.");
   }
-  const sourceGuards = packageRuns.join(" ");
-  if (
-    !sourceGuards.includes('test "$EVENT_REF" = "refs/heads/main"') ||
-    !sourceGuards.includes('test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"') ||
-    !packageRuns.includes("node scripts/release-metadata.mjs --preview-only")
-  ) {
-    problems.push("package must bind preview metadata and the candidate to the exact protected main commit.");
-  }
-
   for (const consumerName of CONSUMERS) {
     const consumer = workflow.jobs[consumerName];
     if (
