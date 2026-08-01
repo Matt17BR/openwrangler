@@ -46,7 +46,7 @@ Opening data or running Python requires a trusted workspace. Open Wrangler stays
 ## Why Open Wrangler
 
 - **Work in the engine you chose.** Polars remains Polars, DuckDB remains DuckDB, Pandas remains Pandas, and
-  supported PySpark viewing stays in Spark.
+  experimental PySpark viewing stays in Spark.
 - **Preview before applying.** Every cleaning step shows highlighted before-and-after values and executable
   engine-specific code before it changes the plan.
 - **Explore without changing the source.** Filters and ordered multi-column sorts affect only the current view.
@@ -211,10 +211,12 @@ environment, versions, and user-visible timing boundaries, Open Wrangler does no
 
 ## Roadmap
 
-| Target | Focus                                                                                                                                                                                                                                                                                                                                                         |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v1.2   | Finish real-user interaction polish, complete the supported PySpark scope [#36](https://github.com/Matt17BR/openwrangler/issues/36), validate another desktop VS Code fork [#86](https://github.com/Matt17BR/openwrangler/issues/86), and continue the reproducible Data Wrangler comparison study [#91](https://github.com/Matt17BR/openwrangler/issues/91). |
-| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87).                                                                                                                                                                                                         |
+- **v1.2:** finish real-user interaction polish and harden experimental PySpark 4.2 notebook viewing
+  [#36](https://github.com/Matt17BR/openwrangler/issues/36). Other desktop forks remain experimental while their
+  bounded smoke [#86](https://github.com/Matt17BR/openwrangler/issues/86) and the reproducible Data Wrangler
+  comparison study [#91](https://github.com/Matt17BR/openwrangler/issues/91) continue.
+- **v2:** add native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows
+  [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 
 ## Contributing and support
 
