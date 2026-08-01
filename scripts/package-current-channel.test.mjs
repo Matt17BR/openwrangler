@@ -24,7 +24,21 @@ test("derives preview and stable VSCE arguments from validated package metadata"
   assert.deepEqual(
     resolveCurrentChannelPackageArguments({
       arguments_: ["--out", "openwrangler.vsix"],
+      packageJson: manifest("1.99.0", true)
+    }),
+    ["package", "--no-gitHubIssueLinking", "--pre-release", "--out", "openwrangler.vsix"]
+  );
+  assert.deepEqual(
+    resolveCurrentChannelPackageArguments({
+      arguments_: ["--out", "openwrangler.vsix"],
       packageJson: manifest("1.0.0", false)
+    }),
+    ["package", "--no-gitHubIssueLinking", "--out", "openwrangler.vsix"]
+  );
+  assert.deepEqual(
+    resolveCurrentChannelPackageArguments({
+      arguments_: ["--out", "openwrangler.vsix"],
+      packageJson: manifest("1.1.0", false)
     }),
     ["package", "--no-gitHubIssueLinking", "--out", "openwrangler.vsix"]
   );
