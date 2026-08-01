@@ -16755,7 +16755,18 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
     await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
     await waitFor(
       () => {
+        const response = testing.panelOpenResponse();
+        if (response?.kind === "error") {
+          throw new Error(`The persisted Polars panel failed to open: ${response.code}: ${response.message}`);
+        }
         const active = testing.activeSession();
+        if (
+          active?.metadata.source.uri === fixture.toString() &&
+          active.metadata.backend === "polars" &&
+          !active.metadata.steps.some((step) => step.id === PERSISTED_PANEL_STEP_ID)
+        ) {
+          throw new Error("The persisted Polars panel opened without its saved cleaning step.");
+        }
         return (
           active?.metadata.source.uri === fixture.toString() &&
           active.metadata.backend === "polars" &&
@@ -16763,7 +16774,30 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
         );
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the fresh editor process to replay the visible persisted Polars plan"
+      "the fresh editor process to replay the visible persisted Polars plan",
+      () => {
+        const response = testing.panelOpenResponse();
+        const active = testing.activeSession();
+        return JSON.stringify({
+          openResponse:
+            response === undefined
+              ? undefined
+              : response.kind === "error"
+                ? { kind: response.kind, code: response.code }
+                : { kind: response.kind },
+          active:
+            active === undefined
+              ? undefined
+              : {
+                  sourceMatches: active.metadata.source.uri === fixture.toString(),
+                  backend: active.metadata.backend,
+                  stepIds: active.metadata.steps.slice(0, 16).map((step) => step.id)
+                },
+          sessionCount: testing.diagnostics().sessionCount,
+          runtimeGeneration: testing.runtimeGeneration(),
+          runtimeRunning: testing.runtimeRunning()
+        });
+      }
     );
     const active = testing.activeSession();
     assert.ok(active, "The fresh editor process must publish the persisted panel session.");
@@ -18174,16 +18208,18 @@ async function openWranglerWebviewDiagnostics(
           }
           try {
             const button = target.frame.getByRole("button", { name, exact: true });
-            const [readyState, roots, appWorkspaces, contentSecurityPolicies, scripts, buttons, firstButtonVisible] =
-              await Promise.all([
-                target.frame.locator(":root").evaluate((root) => root.ownerDocument.readyState),
-                target.frame.locator("#root").count(),
-                target.frame.locator('[data-testid="app-workspace"]').count(),
-                target.frame.locator('meta[http-equiv="Content-Security-Policy"]').count(),
-                target.frame.locator("script").count(),
-                button.count(),
-                button.first().isVisible()
-              ]);
+            const [readyState, roots, appWorkspaces, contentSecurityPolicies, scripts, buttons] = await Promise.all([
+              target.frame.locator(":root").evaluate((root) => root.ownerDocument.readyState),
+              target.frame.locator("#root").count(),
+              target.frame.locator('[data-testid="app-workspace"]').count(),
+              target.frame.locator('meta[http-equiv="Content-Security-Policy"]').count(),
+              target.frame.locator("script").count(),
+              button.count()
+            ]);
+            const firstButton = button.first();
+            const firstButtonVisible = buttons > 0 ? await firstButton.isVisible() : false;
+            const firstButtonEnabled = buttons > 0 ? await firstButton.isEnabled() : false;
+            const firstButtonAriaBusy = buttons > 0 ? ((await firstButton.getAttribute("aria-busy")) ?? "") : "";
             return rendererTargetDiagnostic(target, {
               readyState:
                 readyState === "loading" || readyState === "interactive" || readyState === "complete"
@@ -18194,7 +18230,9 @@ async function openWranglerWebviewDiagnostics(
               contentSecurityPolicies,
               scripts,
               buttons,
-              firstButtonVisible
+              firstButtonVisible,
+              firstButtonEnabled,
+              firstButtonAriaBusy
             });
           } catch (error) {
             ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);

@@ -2577,6 +2577,12 @@ describe("App file import options", () => {
     });
 
     const action = await screen.findByRole("button", { name: "Install required dependency" });
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    expect(action).toBeDisabled();
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(action).toBeEnabled();
     webviewPostMessage.mockClear();
     fireEvent.click(action);
 

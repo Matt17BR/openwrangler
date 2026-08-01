@@ -8,6 +8,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Terminal missing-dependency panels no longer inherit stale grid-loading state, so the confirmed dependency-install
+  action remains usable after a failed open in Cursor while still excluding an in-progress import change or install.
+  Packaged-editor failures now retain bounded button and persisted-replay state instead of an ambiguous timeout.
 - Bounded local and CI script-test memory: portable Node contracts now run with four-file concurrency, while the
   PNG-heavy README media verifier runs alone under a 1 GiB V8 heap ceiling. Pixel drift reports one coordinate and
   channel instead of constructing a multi-million-byte assertion diff, preventing a stale media capture from
