@@ -6,6 +6,7 @@ import pixelmatch from "pixelmatch";
 import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
+import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmpDir = resolve(root, "tmp", "screenshots");
@@ -526,6 +527,26 @@ writeWebviewHarness(
   "acceptance/by-example-preview-dark-1280.png"
 );
 writeWebviewHarness(
+  "public-by-example-dialog.html",
+  payloads.exampleOpened,
+  {},
+  "public-media-source/v1.2/browser/by-example-dialog.png",
+  {},
+  {
+    height: 960,
+    pixelRatio: PUBLIC_MEDIA_PIXEL_RATIO,
+    editorAction: { kind: "editorAction", action: "openOperation", operationKind: "byExample" }
+  }
+);
+writeWebviewHarness(
+  "public-by-example-preview.html",
+  payloads.exampleDraft,
+  {},
+  "public-media-source/v1.2/browser/by-example-preview.png",
+  {},
+  { pixelRatio: PUBLIC_MEDIA_PIXEL_RATIO }
+);
+writeWebviewHarness(
   "by-example-preview-dark-zoom-200.html",
   payloads.exampleDraft,
   {},
@@ -764,9 +785,9 @@ writeWebviewHarness(
   "duckdb-rich-parquet.html",
   payloads.duckdbRich,
   {},
-  "readme/v1.2/gallery/duckdb-rich-parquet.png",
+  "public-media-source/v1.2/browser/duckdb-rich-parquet.png",
   {},
-  { width: 1920, height: 640, defaultColumnWidth: 240 }
+  { width: 1920, height: 640, defaultColumnWidth: 240, pixelRatio: PUBLIC_MEDIA_PIXEL_RATIO }
 );
 for (const zoom of [0.8, 1.5, 2]) {
   writeWebviewHarness(
@@ -793,6 +814,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const stepInspections = appearance.stepInspections ?? {};
   const fetchColumnBlockSize = appearance.fetchColumnBlockSize ?? 16;
   const defaultColumnWidth = appearance.defaultColumnWidth ?? 190;
+  const pixelRatio = appearance.pixelRatio ?? 1;
   const strictProjectedPages = appearance.strictProjectedPages === true;
   const zoomViewportStyles =
     zoom === 1
@@ -961,7 +983,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
 </body>
 </html>`;
   writeFileSync(htmlPath, html);
-  if (appearance.capture !== false) screenshot(htmlPath, outputPath, width, height);
+  if (appearance.capture !== false) screenshot(htmlPath, outputPath, width, height, pixelRatio);
 }
 
 function writeNotebookHarness(fileName, payload, outputName) {
@@ -1054,7 +1076,10 @@ function writeCodePreviewHarness(fileName, code, outputName) {
   screenshot(htmlPath, outputPath, 1280, 420);
 }
 
-function screenshot(htmlPath, outputPath, width = 1280, height = 760) {
+function screenshot(htmlPath, outputPath, width = 1280, height = 760, pixelRatio = 1) {
+  if (!Number.isSafeInteger(pixelRatio) || (pixelRatio !== 1 && pixelRatio !== PUBLIC_MEDIA_PIXEL_RATIO)) {
+    throw new TypeError("A browser screenshot pixel ratio must be ordinary 1x or the shared public-media ratio.");
+  }
   mkdirSync(dirname(outputPath), { recursive: true });
   const result = spawnSync(
     chrome,
@@ -1064,6 +1089,7 @@ function screenshot(htmlPath, outputPath, width = 1280, height = 760) {
       "--no-sandbox",
       "--allow-file-access-from-files",
       `--window-size=${width},${height}`,
+      ...(pixelRatio === 1 ? [] : [`--force-device-scale-factor=${pixelRatio}`]),
       "--virtual-time-budget=2500",
       `--screenshot=${outputPath}`,
       pathToFileURL(htmlPath).href
@@ -1075,6 +1101,12 @@ function screenshot(htmlPath, outputPath, width = 1280, height = 760) {
     throw new Error(`Chrome screenshot failed for ${htmlPath}\n${result.stderr}\n${result.stdout}`);
   }
   const portable = addSrgbChunk(readFileSync(outputPath));
+  const image = PNG.sync.read(portable);
+  if (image.width !== width * pixelRatio || image.height !== height * pixelRatio) {
+    throw new Error(
+      `Chrome screenshot produced ${image.width}x${image.height}; expected ${width * pixelRatio}x${height * pixelRatio}.`
+    );
+  }
   writeFileSync(outputPath, portable);
   const size = portable.byteLength;
   console.log(`Captured ${outputPath} (${size} bytes)`);
