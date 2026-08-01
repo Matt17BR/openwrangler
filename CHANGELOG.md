@@ -10,6 +10,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   superseded runs, the coverage lane exclusively owns the complete TypeScript/Python and exact PySpark suites, and
   stable Linux validation runs script contracts once before instrumented coverage instead of executing both full
   suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
+- Made affected pull-request released-Jupyter acceptance consume and revalidate the same checksum-bound canonical
+  VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
+  for product changes and to be skipped only for documentation-only changes or protected-main pushes; the separate
+  weekly/manual workflow remains non-cancelling ecosystem-drift evidence.
 
 ## [1.2.0] - 2026-08-01
 
