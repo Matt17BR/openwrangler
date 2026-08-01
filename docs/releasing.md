@@ -92,7 +92,35 @@ The stable workflow is manual and defaults to validation-only. It rejects any so
 
 `publish: true` only makes the final job eligible for the branch-and-tag-restricted `publishing` environment. That job alone receives `contents: write`, re-downloads the immutable artifact ID, and revalidates it before each publisher boundary. Immediately after the final canonical verification, `scripts/push-stable-release-tag.mjs` requires clean `HEAD == origin/main == github.sha`, requires `RELEASE_TAG == v<package version>`, and performs at most one non-force atomic Git push from that exact commit to that exact lightweight tag. A private mode-`0600` credential-store file carries the ephemeral `GITHUB_TOKEN`; the token never enters Git arguments or output. Git may atomically replace that file while approving or rejecting the credential, so cleanup accepts only an exact, single-link, mode-`0600` helper rewrite under the still-owned private directory. An approval must reproduce the exact credential and a rejection must produce an empty file. Cleanup scrubs the accepted replacement through a no-follow descriptor, revalidates its identity, and removes it. Any other replacement fails closed. An exact existing lightweight tag is an idempotent success; annotated, conflicting, ambiguous, wildcard, force, or delete forms fail. A second remote query must see the exact lightweight ref before GitHub Release creation begins.
 
-GitHub publication is then resumable: an absent release is created, an exact partial release receives only its missing canonical assets, and an already exact release succeeds without mutation. A tag, release field, extra asset, size, digest, or downloaded byte conflict fails without overwrite. The same job verifies `OVSX_PAT` against `Matt17BR`, fails closed unless an existing Open VSX version is absent or byte-identical, publishes only `canonical-release/openwrangler.vsix` with the lockfile-pinned `ovsx` CLI, and then polls for up to fifteen minutes for exact stable metadata, publisher identity, checksum, downloadable VSIX bytes, and an extracted gallery icon byte-identical to the packaged 512 pixel master. `--skip-duplicate` is safe only because the public preflight and postflight detect a conflicting existing version. GitHub publication happens before Open VSX, so an Open VSX outage leaves an exact GitHub release that a later recovery dispatch can resume without rebuilding or replacing anything.
+GitHub publication is then resumable at a draft boundary. The exact lightweight tag must already resolve to the
+accepted commit. An absent release becomes a draft; an exact partial draft receives only its missing canonical
+assets; and every retained or newly uploaded asset is downloaded and byte-verified before the draft can be
+published. An already exact public release succeeds without mutation, but a partial public release is terminal:
+the publisher never edits, deletes, or repairs a public release. Duplicate releases for one tag, a conflicting
+identity, target, channel, publication-state, or canonical-asset field, an unexpected asset, size/digest/byte drift,
+a moved tag, or any change observed after the publish response fails closed. GitHub-generated release-note Markdown
+must remain a bounded string, but is not canonical integrity evidence; exactness comes from the tag, target, channel,
+provenance, checksum, and downloaded asset bytes. Stable and future preview publishers share this channel-aware
+transaction; preview publication sets GitHub prerelease metadata and never marks the release latest.
+
+This ordering follows GitHub's [immutable-release publication guidance](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases):
+create the draft, attach every asset, then publish it. The publisher uses the versioned `2026-03-10` REST contract
+and validates GitHub's `immutable` response field. Repository immutability is not enabled by source code. Until the
+repository setting is deliberately enabled, the stable CLI treats `GITHUB_IMMUTABLE_RELEASES_EXPECTED` as `false`
+when it is absent. Enabling the setting requires a reviewed workflow change that passes the exact value `true`;
+from that point, a public response that omits `immutable` or reports anything other than `true` blocks publication
+completion and registry promotion. Enable the repository setting first, then change the workflow expectation to
+`true`, and dispatch no release candidate between those actions. The temporary `false` expectation still accepts
+an immutable public response. Do not reverse that order: a run expecting immutability before the setting exists may
+publish an otherwise exact mutable release and only then fail its post-publication proof.
+
+The same job verifies `OVSX_PAT` against `Matt17BR`, fails closed unless an existing Open VSX version is absent or
+byte-identical, publishes only `canonical-release/openwrangler.vsix` with the lockfile-pinned `ovsx` CLI, and then
+polls for up to fifteen minutes for exact stable metadata, publisher identity, checksum, downloadable VSIX bytes,
+and an extracted gallery icon byte-identical to the packaged 512 pixel master. `--skip-duplicate` is safe only
+because the public preflight and postflight detect a conflicting existing version. GitHub publication happens
+before Open VSX, so an Open VSX outage leaves an exact GitHub release that a later recovery dispatch can resume
+without rebuilding or replacing anything.
 
 The real lightweight-tag push starts `azure-pipelines-marketplace.yml` before GitHub Release creation. The Azure pipeline waits for that release to become public, downloads the same three assets, and may publish only the accepted VSIX to Microsoft Marketplace. Creating only a GitHub Release through the API is not accepted as a substitute for this Git protocol event.
 

@@ -6,6 +6,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Made GitHub publication immutable-release ready for both stable and future preview channels. The publisher now
+  creates or resumes one exact draft, uploads and downloads all three canonical assets for byte verification, and
+  only then publishes. Exact public releases remain idempotent; partial public releases, duplicate/conflicting
+  drafts, tag or asset drift, post-publication changes, and missing required `immutable: true` evidence fail closed.
 - Bounded failure-evidence credential matching to 8 KiB logical lines, with conservative fail-closed handling for
   longer credential-shaped diagnostics. Maximum-size hostile inputs now run in a dedicated 64 MiB child heap with
   a hard deadline, preventing malformed editor output from exhausting the developer desktop during local tests.
