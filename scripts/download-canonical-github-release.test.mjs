@@ -76,7 +76,7 @@ test("downloads exactly the three canonical public GitHub release assets", async
   }
 });
 
-test("downloads the exact two-asset canonical pre-release without inventing provenance", async (context) => {
+test("downloads the exact provenance-bound canonical pre-release triple", async (context) => {
   const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-preview-")));
   context.after(() => rmSync(parent, { force: true, recursive: true }));
   const output = join(parent, "preview-release");
@@ -93,6 +93,26 @@ test("downloads the exact two-asset canonical pre-release without inventing prov
   });
   assert.deepEqual(receipt.files, PREVIEW_RELEASE_FILES);
   assert.deepEqual(readdirSync(output).sort(), [...PREVIEW_RELEASE_FILES].sort());
+});
+
+test("rejects a historical two-file preview release without provenance", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-preview-two-file-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  const preview = release({
+    prerelease: true,
+    assets: release().assets.filter((asset) => asset.name !== "openwrangler.vsix.provenance.json")
+  });
+  await assert.rejects(
+    downloadCanonicalGithubRelease({
+      attempts: 1,
+      fetchImpl: successfulFetch(preview),
+      outputDirectory: join(parent, "preview-release"),
+      prerelease: true,
+      releaseTag
+    }),
+    (error) => error instanceof GithubReleasePendingError && /complete canonical asset set/u.test(error.message)
+  );
+  assert.deepEqual(readdirSync(parent), []);
 });
 
 test("retries an anonymous API 403 and still requires complete release metadata before downloading", async (context) => {

@@ -7,8 +7,10 @@ import { pathToFileURL } from "node:url";
 import { inspectReleaseMetadata } from "./release-metadata.mjs";
 import {
   readInstalledPerformanceChecksum,
+  readPreviewReleaseProvenance,
   readInstalledPerformanceVsixReceipt,
   revalidateInstalledPerformanceChecksum,
+  revalidatePreviewReleaseProvenance,
   revalidateInstalledPerformanceVsix
 } from "./run-installed-performance.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
@@ -18,7 +20,11 @@ import { inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
 const RELEASE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
-const PREVIEW_FILES = Object.freeze(["openwrangler.vsix", "openwrangler.vsix.sha256"]);
+const PREVIEW_FILES = Object.freeze([
+  "openwrangler.vsix",
+  "openwrangler.vsix.provenance.json",
+  "openwrangler.vsix.sha256"
+]);
 
 function exactHead(root) {
   const commit = execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
@@ -109,19 +115,37 @@ function previewDirectory(directory) {
   }
   const entries = readdirSync(requested).sort();
   if (JSON.stringify(entries) !== JSON.stringify([...PREVIEW_FILES].sort())) {
-    throw new Error("A canonical pre-release directory must contain exactly its VSIX and checksum.");
+    throw new Error("A canonical pre-release directory must contain exactly its VSIX, checksum, and provenance.");
   }
   return requested;
 }
 
-async function verifyPreviewReleaseArtifact({ directory, expectedCommit, releaseTag, sourcePackageJson }) {
+export async function verifyPreviewReleaseArtifact({ directory, expectedCommit, releaseTag, sourcePackageJson }) {
+  if (typeof expectedCommit !== "string" || !FULL_COMMIT.test(expectedCommit)) {
+    throw new Error("Preview release verification requires one full lowercase release commit.");
+  }
+  if (typeof releaseTag !== "string" || !RELEASE_TAG.test(releaseTag)) {
+    throw new Error("Preview release verification requires one canonical numeric release tag.");
+  }
   const source = releaseSource(sourcePackageJson, releaseTag, true);
   const artifactDirectory = previewDirectory(directory);
   const candidatePath = join(artifactDirectory, "openwrangler.vsix");
   const candidate = readInstalledPerformanceVsixReceipt(candidatePath);
   const checksum = readInstalledPerformanceChecksum(join(artifactDirectory, "openwrangler.vsix.sha256"), candidatePath);
+  const provenance = readPreviewReleaseProvenance(join(artifactDirectory, "openwrangler.vsix.provenance.json"));
   if (checksum.candidateSha256 !== candidate.sha256) {
     throw new Error("The canonical pre-release checksum does not match its VSIX.");
+  }
+  if (
+    provenance.extensionId !== source.extensionId ||
+    provenance.extensionVersion !== source.version ||
+    provenance.preview !== true ||
+    provenance.releaseTag !== releaseTag ||
+    provenance.sourceCommit !== expectedCommit ||
+    provenance.vsixSha256 !== candidate.sha256 ||
+    provenance.vsixBytes !== candidate.bytes
+  ) {
+    throw new Error("The canonical pre-release files do not describe one exact preview artifact.");
   }
   const snapshot = readBoundedVsixFileSnapshot(candidatePath, { requireOwner: true });
   if (
@@ -145,6 +169,7 @@ async function verifyPreviewReleaseArtifact({ directory, expectedCommit, release
   }
   revalidateInstalledPerformanceVsix(candidate);
   revalidateInstalledPerformanceChecksum(checksum, candidatePath);
+  revalidatePreviewReleaseProvenance(provenance);
   return Object.freeze({
     candidateBytes: candidate.bytes,
     candidatePath,

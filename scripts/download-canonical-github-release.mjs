@@ -21,7 +21,7 @@ export const CANONICAL_RELEASE_FILES = Object.freeze([
   "openwrangler.vsix.provenance.json",
   "openwrangler.vsix.sha256"
 ]);
-export const PREVIEW_RELEASE_FILES = Object.freeze(["openwrangler.vsix", "openwrangler.vsix.sha256"]);
+export const PREVIEW_RELEASE_FILES = Object.freeze([...CANONICAL_RELEASE_FILES]);
 const STABLE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const RELEASE_JSON_MAX_BYTES = 1024 * 1024;
 const MAX_RELEASE_POLL_ATTEMPTS = 240;
