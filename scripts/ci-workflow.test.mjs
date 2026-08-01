@@ -134,7 +134,7 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
   assert.equal(manifest?.scripts?.test, "node scripts/run-heavy-local-command.mjs test -- npm run test:run");
   assert.equal(manifest?.scripts?.["test:run"], "npm run test:scripts && npm run test:ts && npm run test:python");
   assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs"]);
-  assert.deepEqual(groups.media, ["scripts/readme-media.test.mjs"]);
+  assert.deepEqual(groups.media, ["scripts/public-media-surfaces.test.mjs", "scripts/readme-media.test.mjs"]);
   assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
   assert.deepEqual(
     groups.portable,

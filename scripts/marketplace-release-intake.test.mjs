@@ -110,6 +110,7 @@ test("Marketplace recovery runs only for an exact single-parent reviewed infrast
     "scripts/marketplace-release-intake.mjs",
     "scripts/packaged-editor-orchestration.mjs",
     "scripts/prepare-xvfb.mjs",
+    "scripts/public-media-contract.mjs",
     "scripts/release-metadata.mjs",
     "scripts/remote-workspace-acquisition.mjs",
     "scripts/remote-workspace-contract.mjs",
