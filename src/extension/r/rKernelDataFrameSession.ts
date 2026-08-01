@@ -40,6 +40,7 @@ export interface RKernelProviderDispatcher {
 export interface RKernelDataFrameOpenOptions {
   readonly label: string;
   readonly variableName: string;
+  readonly discoveryId: string;
   readonly pageSize: number;
   readonly columnOffset: number;
   readonly columnLimit: number;
@@ -116,7 +117,12 @@ export class RKernelDataFrameSession {
     const requestedSessionId = createSessionId();
     const request: RProviderOpenSessionRequest = {
       kind: "openSession",
-      source: { kind: "notebookVariable", label: options.label, variableName: options.variableName },
+      source: {
+        kind: "notebookVariable",
+        label: options.label,
+        variableName: options.variableName,
+        discoveryId: options.discoveryId
+      },
       requestedSessionId,
       backend: "r",
       mode: "viewing",

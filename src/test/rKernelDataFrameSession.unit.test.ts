@@ -15,11 +15,11 @@ import type {
 } from "../extension/r/rProviderProtocol";
 
 const metadata: RProviderSessionMetadata = {
-  providerProtocolVersion: 1,
+  providerProtocolVersion: 2,
   sessionId: "r-session",
   backend: "r",
   mode: "viewing",
-  source: { kind: "notebookVariable", label: "orders", variableName: "orders" },
+  source: { kind: "notebookVariable", label: "orders", variableName: "orders", discoveryId: "d:1:1" },
   sourceClass: "data.frame",
   shape: { rows: 2, columns: 1 },
   schema: [{ id: "r:c:0", name: "count", position: 0, rawType: "integer<integer>", type: "integer", nullable: false }]
@@ -78,7 +78,7 @@ describe("native R exact-kernel dataframe session", () => {
     const tokenSource = new vscode.CancellationTokenSource();
     const opened = await RKernelDataFrameSession.open(
       transport,
-      { label: "orders", variableName: "orders", pageSize: 1, columnOffset: 0, columnLimit: 1 },
+      { label: "orders", variableName: "orders", discoveryId: "d:1:1", pageSize: 1, columnOffset: 0, columnLimit: 1 },
       tokenSource.token,
       () => "r-session"
     );
@@ -107,6 +107,14 @@ describe("native R exact-kernel dataframe session", () => {
     ).rejects.toThrow("closing or already closed");
 
     expect(calls.map(({ request }) => request.kind)).toEqual(["openSession", "getPage", "closeSession"]);
+    expect(calls[0]?.request).toMatchObject({
+      kind: "openSession",
+      source: {
+        kind: "notebookVariable",
+        variableName: "orders",
+        discoveryId: "d:1:1"
+      }
+    });
     expect(calls[1]?.session).toMatchObject({
       sessionId: "r-session",
       revision: 0,
@@ -130,7 +138,7 @@ describe("native R exact-kernel dataframe session", () => {
     const tokenSource = new vscode.CancellationTokenSource();
     const { session } = await RKernelDataFrameSession.open(
       transport,
-      { label: "orders", variableName: "orders", pageSize: 1, columnOffset: 0, columnLimit: 1 },
+      { label: "orders", variableName: "orders", discoveryId: "d:1:1", pageSize: 1, columnOffset: 0, columnLimit: 1 },
       tokenSource.token,
       () => "r-session"
     );
@@ -171,7 +179,7 @@ describe("native R exact-kernel dataframe session", () => {
       const tokenSource = new vscode.CancellationTokenSource();
       const opening = RKernelDataFrameSession.open(
         transport,
-        { label: "orders", variableName: "orders", pageSize: 1, columnOffset: 0, columnLimit: 1 },
+        { label: "orders", variableName: "orders", discoveryId: "d:1:1", pageSize: 1, columnOffset: 0, columnLimit: 1 },
         tokenSource.token,
         () => "candidate",
         { openMs: 10, failedOpenCleanupMs: 10 }
@@ -214,7 +222,7 @@ describe("native R exact-kernel dataframe session", () => {
       const tokenSource = new vscode.CancellationTokenSource();
       const { session } = await RKernelDataFrameSession.open(
         transport,
-        { label: "orders", variableName: "orders", pageSize: 1, columnOffset: 0, columnLimit: 1 },
+        { label: "orders", variableName: "orders", discoveryId: "d:1:1", pageSize: 1, columnOffset: 0, columnLimit: 1 },
         tokenSource.token,
         () => "r-session",
         { pageMs: 10, closeMs: 10 }
@@ -271,7 +279,7 @@ describe("native R exact-kernel dataframe session", () => {
     const tokenSource = new vscode.CancellationTokenSource();
     const { session } = await RKernelDataFrameSession.open(
       transport,
-      { label: "orders", variableName: "orders", pageSize: 1, columnOffset: 0, columnLimit: 1 },
+      { label: "orders", variableName: "orders", discoveryId: "d:1:1", pageSize: 1, columnOffset: 0, columnLimit: 1 },
       tokenSource.token,
       () => "r-session"
     );
@@ -305,7 +313,7 @@ describe("native R exact-kernel dataframe session", () => {
     const tokenSource = new vscode.CancellationTokenSource();
     const { session } = await RKernelDataFrameSession.open(
       transport,
-      { label: "orders", variableName: "orders", pageSize: 1, columnOffset: 0, columnLimit: 1 },
+      { label: "orders", variableName: "orders", discoveryId: "d:1:1", pageSize: 1, columnOffset: 0, columnLimit: 1 },
       tokenSource.token,
       () => "r-session"
     );
@@ -337,7 +345,7 @@ describe("native R exact-kernel dataframe session", () => {
       const tokenSource = new vscode.CancellationTokenSource();
       const { session } = await RKernelDataFrameSession.open(
         transport,
-        { label: "orders", variableName: "orders", pageSize: 1, columnOffset: 0, columnLimit: 1 },
+        { label: "orders", variableName: "orders", discoveryId: "d:1:1", pageSize: 1, columnOffset: 0, columnLimit: 1 },
         tokenSource.token,
         () => "r-session",
         { closeMs: 10 }
@@ -381,7 +389,7 @@ describe("native R exact-kernel dataframe session", () => {
 
     const opening = RKernelDataFrameSession.open(
       transport,
-      { label: "orders", variableName: "orders", pageSize: 1, columnOffset: 0, columnLimit: 1 },
+      { label: "orders", variableName: "orders", discoveryId: "d:1:1", pageSize: 1, columnOffset: 0, columnLimit: 1 },
       originalTokenSource.token,
       () => "candidate"
     );
@@ -408,7 +416,7 @@ describe("native R exact-kernel dataframe session", () => {
     await expect(
       RKernelDataFrameSession.open(
         transport,
-        { label: "orders", variableName: "orders", pageSize: 1, columnOffset: 0, columnLimit: 1 },
+        { label: "orders", variableName: "orders", discoveryId: "d:1:1", pageSize: 1, columnOffset: 0, columnLimit: 1 },
         tokenSource.token,
         () => "candidate",
         { failedOpenCleanupMs: 10 }
@@ -419,5 +427,5 @@ describe("native R exact-kernel dataframe session", () => {
 });
 
 function envelope(response: RProviderResponseEnvelope["response"]): RProviderResponseEnvelope {
-  return { protocolVersion: 1, requestId: "validated-by-transport", response };
+  return { protocolVersion: 2, requestId: "validated-by-transport", response };
 }
