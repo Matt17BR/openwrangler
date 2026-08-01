@@ -1,11 +1,22 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { pushExactReleaseTag } from "./release-tag-publisher.mjs";
+import { classifyNumericReleaseVersion, releaseSourcePolicyForVersion } from "./release-metadata.mjs";
+
+function stableSourceRef(releaseTag) {
+  const version = typeof releaseTag === "string" && releaseTag.startsWith("v") ? releaseTag.slice(1) : undefined;
+  const classification = classifyNumericReleaseVersion(version);
+  const policy = releaseSourcePolicyForVersion(version);
+  if (classification?.channel !== "stable" || policy === undefined) {
+    throw new Error("The stable-tag publisher requires one canonical stable release version.");
+  }
+  return `refs/remotes/origin/${policy.branch}`;
+}
 
 export function pushStableReleaseTag(options) {
   return pushExactReleaseTag({
     ...options,
-    sourceRef: "refs/remotes/origin/main"
+    sourceRef: stableSourceRef(options?.releaseTag)
   });
 }
 

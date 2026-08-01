@@ -59,6 +59,7 @@ const DOCUMENTATION_CONTEXT_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only == 'true' }}";
 const SUBSTANTIVE_MATRIX_STEP_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}";
+const PROTECTED_PRODUCT_BRANCHES = ["main", "release/1.x"];
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
@@ -85,6 +86,18 @@ function nodeTestFiles(command, group) {
   assert.equal(new Set(files).size, files.length, `${group} must not list a script contract twice.`);
   return files;
 }
+
+test("product CI covers both protected integration and v1 maintenance branches", () => {
+  const ci = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
+  assert.deepEqual(ci?.on?.push?.branches, PROTECTED_PRODUCT_BRANCHES);
+  assert.equal(Object.hasOwn(ci?.on ?? {}, "pull_request"), true);
+
+  for (const path of ["codeql.yml", "cross-platform.yml"]) {
+    const workflow = parseYaml(readFileSync(new URL(`../.github/workflows/${path}`, import.meta.url), "utf8"));
+    assert.deepEqual(workflow?.on?.pull_request?.branches, PROTECTED_PRODUCT_BRANCHES);
+    assert.deepEqual(workflow?.on?.push?.branches, PROTECTED_PRODUCT_BRANCHES);
+  }
+});
 
 test("script groups are pairwise-disjoint and exactly cover the filesystem inventory", () => {
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));

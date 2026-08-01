@@ -24,7 +24,7 @@ Open Wrangler keeps correctness, security, packaging, accessibility, and native-
 | `Remote SSH acceptance`             | remote workspace             | opt-in, label-gated packaged Remote SSH journey                                                               | canonical VSIX                   |
 | `validate`                          | required aggregate           | blocking jobs must succeed; conditional Jupyter/Remote SSH results must match their classifiers               | all of the above                 |
 
-The `validate` job retains the existing protected check name. It uses `always()` only so its result step executes after failed, cancelled, or skipped dependencies. `scripts/require-ci-results.mjs` requires classification and `Fast feedback` to succeed on every pull request. For an exact documentation-only pull request it then requires every product lane to be `skipped`; for every other pull request and every protected-main push it requires those same lanes to be `success`. Missing, malformed, contradictory, cancelled, or unexpectedly successful/skipped results fail the aggregate. Released-Jupyter acceptance must succeed for every affected substantive pull request and must be skipped for documentation-only pull requests and protected-main pushes. When `acceptance:remote-ssh` is present on a substantive pull request, Remote SSH is required to succeed; otherwise it is required to be skipped.
+The `validate` job retains the existing protected check name. It uses `always()` only so its result step executes after failed, cancelled, or skipped dependencies. `scripts/require-ci-results.mjs` requires classification and `Fast feedback` to succeed on every pull request. For an exact documentation-only pull request it then requires every product lane to be `skipped`; for every other pull request and every protected-branch push it requires those same lanes to be `success`. Missing, malformed, contradictory, cancelled, or unexpectedly successful/skipped results fail the aggregate. Released-Jupyter acceptance must succeed for every affected substantive pull request and must be skipped for documentation-only pull requests and protected-branch pushes. When `acceptance:remote-ssh` is present on a substantive pull request, Remote SSH is required to succeed; otherwise it is required to be skipped.
 
 The shared classifier compares exact lowercase pull-request base and head commits using a NUL-delimited, rename-disabled Git diff and fatal UTF-8 decoding. The fast path is deliberately limited to non-packaged `docs/**`, root contributor/security/agent guides already excluded by `.vscodeignore`, and issue or pull-request templates. An empty diff, a mixed diff, an unknown path, or any package, build, workflow, asset, runtime, or test change selects the full matrix. `README.md`, `CHANGELOG.md`, `LICENSE`, and `THIRD_PARTY_NOTICES.md` remain substantive because they alter shipped VSIX bytes. Pushes, schedules, and manual runs always select the full workflow.
 
@@ -66,12 +66,20 @@ release acceptance installs in VS Code and Cursor; production promotion sends th
 Open VSX, and the Visual Studio Marketplace without rebuilding them. A second long-lived branch would add merge
 drift without making that artifact boundary safer.
 
-Before public v2 previews begin, create a protected `release/1.x` maintenance branch from the last supported v1
-commit and let `main` become the v2 integration line. The preview workflow must then accept only reviewed preview
-tags from `main`, while a provenance-bound maintenance workflow may ship v1 fixes from `release/1.x`. Marketplace
-pre-release versions remain deliberate releases; scheduled/nightly runs may retain artifacts and trend reports but
-must never publish automatically. This transition is required before the first R/Quarto preview, not for ordinary
-v1 maintenance today.
+The source policy reserves a protected `release/1.x` maintenance branch for stable v1 versions and `main` for the
+`1.99.x` v2 preview line and later v2 releases. CI, CodeQL, and native cross-platform checks run for pull requests and
+pushes on both protected branches. Stable metadata, tag publication, and Marketplace recovery derive their permitted
+branch from the numeric version rather than trusting a caller-supplied ref. Until the live `release/1.x` branch and
+its matching ruleset and publishing-environment policy are created, a v1 stable release is intentionally impossible;
+an automatic Marketplace recovery run from the now-inactive `main` branch finishes as a no-op.
+
+Create `release/1.x` once, from the final reviewed v1 commit after shared release infrastructure has landed, before
+the first public `1.99.x` preview. A v1 fix starts from and merges into `release/1.x`. Forward-port the resulting exact
+squash commit through a separate reviewed pull request to `main`, recording the maintenance pull request in its
+description; resolve conflicts on that forward-port branch. Never merge the evolving v2 `main` line wholesale back
+into v1. Shared release-infrastructure fixes normally land on `main` first and are then backported through a reviewed
+maintenance pull request when v1 publication needs them. Marketplace pre-releases remain deliberate releases;
+scheduled and nightly runs may retain artifacts and trend reports but never publish automatically.
 
 The preview promotion boundary is candidate-first rather than tag-triggered. One manual run from protected `main`
 packages a provenance-bound VSIX/checksum/provenance triple once. Complete Linux acceptance owns the full source and

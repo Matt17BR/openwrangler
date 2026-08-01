@@ -62,7 +62,7 @@ function createRepository(context) {
   git(root, ["add", "package.json", "tracked.txt"]);
   git(root, ["commit", "--quiet", "-m", "release"]);
   const head = git(root, ["rev-parse", "HEAD"]);
-  git(root, ["update-ref", "refs/remotes/origin/main", head]);
+  git(root, ["update-ref", "refs/remotes/origin/release/1.x", head]);
   return { head, root };
 }
 
@@ -84,6 +84,7 @@ function systemGitRunner(options) {
 
 function createRunner({
   expectedCommit,
+  expectedReleaseTag = releaseTag,
   expectedToken = token,
   eraseCredential = false,
   initialRemote = "",
@@ -103,7 +104,7 @@ function createRunner({
     });
     if (options.args[0] === "ls-remote") {
       return successfulResult(
-        pushed ? (postPushRemote ?? `${expectedCommit}\trefs/tags/${releaseTag}\n`) : initialRemote
+        pushed ? (postPushRemote ?? `${expectedCommit}\trefs/tags/${expectedReleaseTag}\n`) : initialRemote
       );
     }
     if (options.args.includes("push")) {
@@ -173,7 +174,7 @@ function createRunner({
         "--atomic",
         "--porcelain",
         "https://github.com/Matt17BR/openwrangler.git",
-        `${expectedCommit}:refs/tags/${releaseTag}`
+        `${expectedCommit}:refs/tags/${expectedReleaseTag}`
       ]);
       const result = pushResult ?? successfulResult("To https://github.com/Matt17BR/openwrangler.git\n");
       pushed = result.status === 0;
@@ -446,7 +447,7 @@ test("cleans Git credential-store's exact erase rewrite after a rejected push", 
   assert.equal(fake.credentialRewrites[0].after.size, 0);
 });
 
-test("requires exact repository, version, source, origin/main, token, and clean tracked state", (context) => {
+test("requires exact repository, version, protected source branch, token, and clean tracked state", (context) => {
   const repository = createRepository(context);
   const fake = createRunner({ expectedCommit: repository.head });
 
@@ -463,12 +464,39 @@ test("requires exact repository, version, source, origin/main, token, and clean 
     "-m",
     "other"
   ]);
-  git(repository.root, ["update-ref", "refs/remotes/origin/main", otherCommit]);
+  git(repository.root, ["update-ref", "refs/remotes/origin/release/1.x", otherCommit]);
   assert.throws(() => publish(repository, fake.runner), /equal the configured source ref/u);
-  git(repository.root, ["update-ref", "refs/remotes/origin/main", repository.head]);
+  git(repository.root, ["update-ref", "refs/remotes/origin/release/1.x", repository.head]);
 
   writeFileSync(join(repository.root, "tracked.txt"), "dirty\n", "utf8");
   assert.throws(() => publish(repository, fake.runner), /clean tracked worktree/u);
+});
+
+test("uses main for post-v1 stable tags and rejects a v1 tag sourced from main", (context) => {
+  const repository = createRepository(context);
+  const fake = createRunner({ expectedCommit: repository.head });
+  git(repository.root, ["update-ref", "-d", "refs/remotes/origin/release/1.x"]);
+  git(repository.root, ["update-ref", "refs/remotes/origin/main", repository.head]);
+
+  assert.throws(() => publish(repository, fake.runner), /configured release source/u);
+
+  writeFileSync(join(repository.root, "package.json"), '{"name":"openwrangler","version":"2.0.0"}\n', "utf8");
+  git(repository.root, ["add", "package.json"]);
+  git(repository.root, ["commit", "--quiet", "-m", "v2"]);
+  const v2Head = git(repository.root, ["rev-parse", "HEAD"]);
+  git(repository.root, ["update-ref", "refs/remotes/origin/main", v2Head]);
+  const v2Runner = createRunner({ expectedCommit: v2Head, expectedReleaseTag: "v2.0.0" });
+  assert.deepEqual(
+    pushStableReleaseTag({
+      expectedCommit: v2Head,
+      gitRunner: v2Runner.runner,
+      releaseTag: "v2.0.0",
+      repository: repositoryName,
+      root: repository.root,
+      token
+    }),
+    { created: true, releaseTag: "v2.0.0", sourceCommit: v2Head }
+  );
 });
 
 test("strictly rejects duplicate or non-stable package versions before remote access", (context) => {

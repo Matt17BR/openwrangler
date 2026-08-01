@@ -5,6 +5,7 @@ trigger:
   branches:
     include:
       - main
+      - release/1.x
   tags:
     include:
       - "v*"
@@ -19,7 +20,7 @@ parameters:
     values:
       - openwrangler-marketplace-publishing
   - name: existingReleaseTag
-    displayName: Existing GitHub release tag (manual protected-main runs only)
+    displayName: Existing GitHub release tag (manual protected release-branch runs only)
     type: string
     default: ""
 

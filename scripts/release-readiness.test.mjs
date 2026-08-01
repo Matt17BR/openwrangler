@@ -24,7 +24,8 @@ import { parseStrictJson } from "./strict-json.mjs";
 import {
   inspectPreviewReleaseMetadata,
   inspectReleaseMetadata,
-  inspectWorkflowReleaseMetadata
+  inspectWorkflowReleaseMetadata,
+  releaseSourcePolicyForVersion
 } from "./release-metadata.mjs";
 import { inspectReleaseWorkflow } from "./release-workflow.mjs";
 import {
@@ -405,6 +406,26 @@ test("binds numeric release versions to their channel before workflow branching"
         `Version ${version} is not a permitted preview-channel number and requires package.json "preview" to be false.`
       )
     );
+  }
+});
+
+test("binds v1 maintenance and v2 development to distinct protected branches", () => {
+  for (const version of ["1.0.0", "1.2.1", "1.98.999", "1.100.0"]) {
+    assert.deepEqual(releaseSourcePolicyForVersion(version), {
+      branch: "release/1.x",
+      ref: "refs/heads/release/1.x",
+      version
+    });
+  }
+  for (const version of ["0.3.0", "0.4.0", "1.99.0", "1.99.999", "2.0.0", "3.4.5"]) {
+    assert.deepEqual(releaseSourcePolicyForVersion(version), {
+      branch: "main",
+      ref: "refs/heads/main",
+      version
+    });
+  }
+  for (const version of [undefined, "1", "01.2.3", "1.2.3-beta.1"]) {
+    assert.equal(releaseSourcePolicyForVersion(version), undefined);
   }
 });
 

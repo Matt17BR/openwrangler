@@ -16,6 +16,9 @@ Set `OPEN_WRANGLER_PYTHON` when the development interpreter is not `.venv/bin/py
 
 ## Pull requests
 
+- Target `release/1.x` only for v1 maintenance fixes. Target `main` for v2 work and shared development. After a v1
+  fix merges, forward-port its exact squash commit to `main` through a separate reviewed pull request; do not merge
+  `main` back into the maintenance branch.
 - Keep a pull request limited to one documented milestone or issue.
 - Add or update tests with every behavior change.
 - Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable generated-code coverage for every editing-capable engine.

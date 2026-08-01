@@ -4,6 +4,20 @@ import { pathToFileURL } from "node:url";
 import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 
 export const NUMERIC_RELEASE_VERSION = /^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)$/u;
+export const MAIN_RELEASE_BRANCH = "main";
+export const V1_MAINTENANCE_BRANCH = "release/1.x";
+
+export function releaseSourcePolicyForVersion(version) {
+  const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
+  if (match === null) {
+    return undefined;
+  }
+  const major = BigInt(match.groups?.major ?? "");
+  const minor = BigInt(match.groups?.minor ?? "");
+  const v1Preview = major === 1n && minor === 99n;
+  const branch = major === 1n && !v1Preview ? V1_MAINTENANCE_BRANCH : MAIN_RELEASE_BRANCH;
+  return Object.freeze({ branch, ref: `refs/heads/${branch}`, version });
+}
 
 export function classifyNumericReleaseVersion(version) {
   const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
@@ -118,10 +132,14 @@ function runCli() {
   if (!process.env.GITHUB_OUTPUT) {
     throw new Error("GITHUB_OUTPUT is required to publish validated release metadata.");
   }
+  const sourcePolicy = releaseSourcePolicyForVersion(result.version);
+  if (sourcePolicy === undefined) {
+    throw new Error("Release metadata does not have a protected source-branch policy.");
+  }
 
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    `version=${result.version}\nprerelease=${String(result.prerelease)}\n`,
+    `version=${result.version}\nprerelease=${String(result.prerelease)}\nsource_branch=${sourcePolicy.branch}\nsource_ref=${sourcePolicy.ref}\n`,
     "utf8"
   );
 }

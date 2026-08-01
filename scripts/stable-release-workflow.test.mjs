@@ -91,11 +91,23 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "  promote-open-vsx:\n    needs: release\n    if: ${{ inputs.publish == true && needs.release.result == 'success' }}\n    uses: ./.github/workflows/open-vsx-promotion.yml\n    with:\n      release_tag: ${{ inputs.release_tag }}",
       "  promote-open-vsx:\n    needs: acceptance-gate\n    uses: attacker/workflow.yml@main"
     ),
+    source.replace(
+      '          test "$EVENT_REF_TYPE" = "branch"\n          case "$EVENT_REF" in\n            refs/heads/main|refs/heads/release/1.x) ;;',
+      '          true\n          case "$EVENT_REF" in\n            refs/heads/main|refs/heads/release/1.x) ;;'
+    ),
+    source.replace(
+      '          test "$EXPECTED_SOURCE_REF" = "refs/heads/$EXPECTED_SOURCE_BRANCH"\n          test "$EVENT_REF" = "$EXPECTED_SOURCE_REF"',
+      "          true\n          true"
+    ),
     source.replace("      group: openwrangler-release-publication", "      group: stable-${{ inputs.release_tag }}"),
     source.replace("      queue: max", "      queue: latest"),
     source.replace(
       '          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "false"',
       '          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "true"'
+    ),
+    source.replace(
+      "          EXPECTED_SOURCE_BRANCH: ${{ steps.release_metadata.outputs.source_branch }}",
+      "          EXPECTED_SOURCE_BRANCH: main"
     )
   ];
   for (const [index, candidate] of mutations.entries()) {

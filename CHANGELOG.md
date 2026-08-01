@@ -14,6 +14,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   owner shares one non-cancelling `queue: max` group so pending releases are not displaced, and preview Open VSX
   publication derives `--pre-release` only from verified public metadata. The branch-neutral exact-tag transaction is
   now separate from stable and preview source-branch policy wrappers.
+- Reserved the protected `release/1.x` line for stable v1 maintenance while `main` owns `1.99.x` v2 previews and
+  later v2 releases. CI, CodeQL, cross-platform acceptance, stable tag publication, and Marketplace recovery now
+  enforce that version-derived boundary; fixes merge into v1 first and move to `main` through reviewed forward-port
+  pull requests.
 - Made GitHub publication immutable-release ready for both stable and future preview channels. The publisher now
   creates or resumes one exact draft, uploads and downloads all three canonical assets for byte verification, and
   only then publishes. The migration workflows deliberately expect `immutable: false` while accepting an already
@@ -42,7 +46,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
 - Made affected pull-request released-Jupyter acceptance consume and revalidate the same checksum-bound canonical
   VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
-  for product changes and to be skipped only for documentation-only changes or protected-main pushes; the separate
+  for product changes and to be skipped only for documentation-only changes or protected-branch pushes; the separate
   weekly/manual workflow remains non-cancelling ecosystem-drift evidence.
 - Unblocked the optional clean-room Data Wrangler comparison on current ipykernel launch syntax: the exact-runtime
   guard now accepts both separate and equals-style connection-file arguments, while bounded path-free command-shape

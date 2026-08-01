@@ -5,10 +5,15 @@ import { load as parseYaml } from "js-yaml";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const EVENT_SHA = "${{ github.sha }}";
+const EVENT_REF = "${{ github.ref }}";
+const EVENT_REF_TYPE = "${{ github.ref_type }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
+const RELEASE_SOURCE_BRANCH = "${{ steps.release_metadata.outputs.source_branch }}";
+const RELEASE_SOURCE_REF = "${{ steps.release_metadata.outputs.source_ref }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
 const PUBLISH_TAG_COMMAND = "node scripts/push-stable-release-tag.mjs";
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
+const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const SETUP_JAVA_ACTION = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
@@ -58,6 +63,22 @@ const CANONICAL_PATHS = [
   "canonical-release/openwrangler.vsix.sha256",
   "canonical-release/openwrangler.vsix.provenance.json"
 ];
+const RECOGNIZED_RELEASE_SOURCE_RUN = `test "$EVENT_REF_TYPE" = "branch"
+case "$EVENT_REF" in
+  refs/heads/main|refs/heads/release/1.x) ;;
+  *) exit 1 ;;
+esac
+case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
+test "\${#EXPECTED_SHA}" -eq 40`;
+const EXACT_VERSION_SOURCE_RUN = `case "$EXPECTED_SOURCE_BRANCH" in
+  main|release/1.x) ;;
+  *) exit 1 ;;
+esac
+test "$EXPECTED_SOURCE_REF" = "refs/heads/$EXPECTED_SOURCE_BRANCH"
+test "$EVENT_REF" = "$EXPECTED_SOURCE_REF"
+test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
+test -z "$(git status --porcelain --untracked-files=no)"
+test "$(git rev-parse --verify refs/remotes/origin/$EXPECTED_SOURCE_BRANCH^{commit})" = "$EXPECTED_SHA"`;
 
 function command(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : "";
@@ -159,6 +180,96 @@ function inspectCheckout(job, name, problems) {
     options["persist-credentials"] !== false
   ) {
     problems.push(`${name} checkout must pin github.sha, fetch history, and persist no credentials.`);
+  }
+}
+
+function inspectPackageSourceBinding(job, problems) {
+  const jobSteps = steps(job);
+  const recognizedSteps = jobSteps.filter((step) => step?.name === "Require a recognized protected release source");
+  const recognized = recognizedSteps[0];
+  if (
+    recognizedSteps.length !== 1 ||
+    !exactKeys(recognized, ["name", "env", "run"]) ||
+    !exactKeys(recognized.env, ["EVENT_REF", "EVENT_REF_TYPE", "EXPECTED_SHA"]) ||
+    recognized.env.EVENT_REF !== EVENT_REF ||
+    recognized.env.EVENT_REF_TYPE !== EVENT_REF_TYPE ||
+    recognized.env.EXPECTED_SHA !== EVENT_SHA ||
+    command(recognized.run) !== command(RECOGNIZED_RELEASE_SOURCE_RUN)
+  ) {
+    problems.push("package must reject tags and unrecognized release branches before checkout or code execution.");
+  }
+
+  const checkout = jobSteps.find((step) => step?.uses === CHECKOUT_ACTION);
+  const setupNodeSteps = jobSteps.filter((step) => step?.uses === SETUP_NODE_ACTION);
+  const setupNode = setupNodeSteps[0];
+  if (
+    setupNodeSteps.length !== 1 ||
+    !exactKeys(setupNode, ["uses", "with"]) ||
+    !exactKeys(setupNode.with, ["node-version", "cache"]) ||
+    setupNode.with["node-version"] !== 22 ||
+    setupNode.with.cache !== "npm"
+  ) {
+    problems.push("package must provision one pinned Node 22 runtime before release metadata validation.");
+  }
+
+  const metadataSteps = jobSteps.filter((step) => step?.id === "release_metadata");
+  const metadata = metadataSteps[0];
+  if (
+    metadataSteps.length !== 1 ||
+    !exactKeys(metadata, ["id", "name", "env", "run"]) ||
+    metadata.name !== "Validate stable release metadata" ||
+    !exactKeys(metadata.env, ["RELEASE_TAG"]) ||
+    metadata.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(metadata.run) !== "node scripts/release-metadata.mjs"
+  ) {
+    problems.push("package must derive the release channel and version-owned source from reviewed metadata.");
+  }
+
+  const rejectSteps = jobSteps.filter((step) => step?.name === "Reject preview metadata");
+  const reject = rejectSteps[0];
+  if (
+    rejectSteps.length !== 1 ||
+    !exactKeys(reject, ["name", "if", "run"]) ||
+    reject.if !== "${{ steps.release_metadata.outputs.prerelease != 'false' }}" ||
+    command(reject.run) !== "exit 1"
+  ) {
+    problems.push("package must reject preview metadata in the stable workflow.");
+  }
+
+  const exactSteps = jobSteps.filter(
+    (step) => step?.name === "Require the exact version-owned protected branch commit"
+  );
+  const exact = exactSteps[0];
+  if (
+    exactSteps.length !== 1 ||
+    !exactKeys(exact, ["name", "env", "run"]) ||
+    !exactKeys(exact.env, ["EVENT_REF", "EXPECTED_SHA", "EXPECTED_SOURCE_BRANCH", "EXPECTED_SOURCE_REF"]) ||
+    exact.env.EVENT_REF !== EVENT_REF ||
+    exact.env.EXPECTED_SHA !== EVENT_SHA ||
+    exact.env.EXPECTED_SOURCE_BRANCH !== RELEASE_SOURCE_BRANCH ||
+    exact.env.EXPECTED_SOURCE_REF !== RELEASE_SOURCE_REF ||
+    command(exact.run) !== command(EXACT_VERSION_SOURCE_RUN)
+  ) {
+    problems.push("package must bind the event commit to the exact protected branch owned by its numeric version.");
+  }
+
+  const remotePreflights = jobSteps.filter(
+    (step) => command(step?.run) === "node scripts/prepare-stable-candidate-tag.mjs --verify-remote"
+  );
+  const remotePreflight = remotePreflights[0];
+  if (
+    remotePreflights.length !== 1 ||
+    jobSteps.indexOf(recognized) !== 0 ||
+    jobSteps.indexOf(checkout) !== 1 ||
+    jobSteps.indexOf(setupNode) !== 2 ||
+    jobSteps.indexOf(metadata) !== 3 ||
+    jobSteps.indexOf(reject) !== 4 ||
+    jobSteps.indexOf(exact) !== 5 ||
+    jobSteps.indexOf(remotePreflight) !== 6
+  ) {
+    problems.push(
+      "package source recognition, exact checkout, metadata validation, branch binding, and tag preflight must be the first ordered boundary."
+    );
   }
 }
 
@@ -388,6 +499,7 @@ export function inspectStableReleaseWorkflow(source) {
 
   const packaging = workflow.jobs.package;
   inspectCheckout(packaging, "package", problems);
+  inspectPackageSourceBinding(packaging, problems);
   if (packaging.permissions !== undefined || packaging.environment !== undefined) {
     problems.push("package must inherit read-only permissions and use no protected release environment.");
   }
