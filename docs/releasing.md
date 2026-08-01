@@ -222,10 +222,15 @@ that tag does not exist in either place, recovery completes as a clean no-op. If
 moved, the source identity/version/channel differs, or the public protected branch advanced, intake fails closed.
 
 For both paths, intake binds `Build.SourceBranch`, `Build.SourceVersion`, the checked-out automation commit, the
-selected tag commit, and that tag's `package.json`. Every valid GitHub release channel enters one sequential
-deployment in the protected `openwrangler-marketplace-publishing` environment. Stable packages publish normally;
-preview packages publish with VSCE's required `--pre-release` marker and must retain the matching
-`Microsoft.VisualStudio.Code.PreRelease` package and public-gallery metadata.
+selected tag commit, and that tag's `package.json`. It derives the version-owned branch from that immutable
+manifest and requires the exact public tag object ID to equal the resolved commit, which rejects annotated or moved
+tags. It then fetches the exact public branch head without blobs under fixed process bounds, rechecks that the public
+ref did not move, and requires Git to prove the tag commit is its ancestor. This preserves historical v1 releases
+after `release/1.x` advances while rejecting an unrelated commit that merely carries matching package metadata.
+Every valid GitHub release channel enters one sequential deployment in the protected
+`openwrangler-marketplace-publishing` environment. Stable packages publish normally; preview packages publish with
+VSCE's required `--pre-release` marker and must retain the matching `Microsoft.VisualStudio.Code.PreRelease` package
+and public-gallery metadata.
 
 The deployment polls the public GitHub Release for up to 210 minutes inside a 240-minute job and downloads its exact channel-specific inventory from canonical `Matt17BR/openwrangler` asset URLs with bounded declared sizes. The anonymous GitHub metadata API is the sole source of release metadata, channel, and asset inventory. Shared hosted-runner addresses can receive HTTP 403 after exhausting GitHub's anonymous quota, so that response joins the existing bounded pending-release retry path alongside not-yet-public HTTP 404 and rate-limited HTTP 429 responses. The downloader does not bypass the API or request release assets until a successful metadata response has passed the exact tag, draft, prerelease, inventory, declared-size, and canonical-URL checks. Repeated HTTP 403 responses exhaust the same fixed poll bound and fail visibly; other 4xx responses remain immediately fatal.
 

@@ -128,6 +128,63 @@ function currentProtectedBranchCommit(sourceRef) {
   return match.groups.commit;
 }
 
+function releaseBranchEvidence(root, sourceRef, releaseCommit) {
+  if (!PROTECTED_RELEASE_REFS.has(sourceRef) || !FULL_COMMIT.test(releaseCommit)) {
+    throw new Error("Marketplace release containment requires one recognized branch and full release commit.");
+  }
+  execFileSync(
+    "git",
+    [
+      "fetch",
+      "--no-tags",
+      "--quiet",
+      "--force",
+      "--filter=blob:none",
+      "--no-recurse-submodules",
+      CANONICAL_REPOSITORY,
+      sourceRef
+    ],
+    {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 60_000,
+      windowsHide: true
+    }
+  );
+  const branchCommit = execFileSync("git", ["rev-parse", "--verify", "FETCH_HEAD^{commit}"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 4096,
+    timeout: 10_000,
+    windowsHide: true
+  }).trim();
+  if (!FULL_COMMIT.test(branchCommit)) {
+    throw new Error("The fetched protected release branch did not resolve to one full commit.");
+  }
+  let contained;
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", releaseCommit, branchCommit], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 4096,
+      timeout: 30_000,
+      windowsHide: true
+    });
+    contained = true;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && error.status === 1) {
+      contained = false;
+    } else {
+      throw error;
+    }
+  }
+  if (currentProtectedBranchCommit(sourceRef) !== branchCommit) {
+    throw new Error("The fetched protected release branch changed before containment could be accepted.");
+  }
+  return Object.freeze({ branchCommit, contained, sourceRef });
+}
+
 function currentTagCommit(releaseTag) {
   const ref = `refs/tags/${releaseTag}`;
   const output = execFileSync("git", ["ls-remote", "--refs", CANONICAL_REPOSITORY, ref], {
@@ -302,6 +359,8 @@ export function inspectMarketplaceReleaseIntake({
   existingReleaseTag,
   recoveryChange,
   releasePackageJson,
+  releaseContainedInProtectedBranch,
+  releaseProtectedBranchRef,
   remoteTagCommit,
   resolvedTagCommit,
   sourceBranch,
@@ -415,10 +474,10 @@ export function inspectMarketplaceReleaseIntake({
     problems.push("The selected release tag must resolve to the exact automatic tag commit.");
   }
   if (
-    releaseMayPrecedeAutomation &&
+    typeof resolvedTagCommit === "string" &&
     (typeof remoteTagCommit !== "string" || !FULL_COMMIT.test(remoteTagCommit) || remoteTagCommit !== resolvedTagCommit)
   ) {
-    problems.push("The selected existing release must remain one exact public lightweight tag commit.");
+    problems.push("The selected release must remain one exact public lightweight tag commit.");
   }
   let releaseManifest;
   try {
@@ -440,6 +499,15 @@ export function inspectMarketplaceReleaseIntake({
   const sourcePolicy = releaseSourcePolicyForVersion(metadata.version);
   if (historical && sourcePolicy?.ref !== sourceBranch) {
     problems.push("Manual Marketplace recovery must run from the protected branch that owns the selected version.");
+  }
+  if (
+    typeof resolvedTagCommit === "string" &&
+    (releaseContainedInProtectedBranch !== true ||
+      releaseProtectedBranchRef !== sourcePolicy?.ref ||
+      typeof resolvedProtectedBranchCommit !== "string" ||
+      !FULL_COMMIT.test(resolvedProtectedBranchCommit))
+  ) {
+    problems.push("The selected release commit must be contained in its current version-owned protected branch.");
   }
   const eligible =
     problems.length === 0 &&
@@ -537,19 +605,33 @@ function runCli() {
     !inactiveAutomaticProtectedBranch && typeof releaseTag === "string" && RELEASE_TAG.test(releaseTag)
       ? resolveTagCommit(root, releaseTag, { optional: activeAutomaticProtectedBranch })
       : undefined;
+  const releasePackageJson =
+    releaseCommit === undefined ? currentPackageJson : packageJsonAtCommit(root, releaseCommit);
+  const selectedMetadata =
+    releaseCommit !== undefined && releaseTag !== undefined
+      ? inspectReleaseMetadata({ packageJson: releasePackageJson, releaseTag })
+      : undefined;
+  const selectedPolicy =
+    selectedMetadata?.problems.length === 0 ? releaseSourcePolicyForVersion(selectedMetadata.version) : undefined;
+  const branchEvidence =
+    releaseCommit !== undefined && selectedPolicy !== undefined
+      ? releaseBranchEvidence(root, selectedPolicy.ref, releaseCommit)
+      : undefined;
   const result = inspectMarketplaceReleaseIntake({
     buildReason,
     checkedOutCommit,
     currentProtectedBranchCommit:
-      existingReleaseTag !== "" || activeAutomaticProtectedBranch
-        ? currentProtectedBranchCommit(sourceBranch)
-        : undefined,
+      branchEvidence?.branchCommit ??
+      (activeAutomaticProtectedBranch ? currentProtectedBranchCommit(sourceBranch) : undefined),
     currentPackageJson,
     existingReleaseTag,
     recoveryChange,
-    releasePackageJson: releaseCommit === undefined ? currentPackageJson : packageJsonAtCommit(root, releaseCommit),
+    releaseContainedInProtectedBranch: branchEvidence?.contained,
+    releasePackageJson,
+    releaseProtectedBranchRef: branchEvidence?.sourceRef,
     remoteTagCommit:
-      (existingReleaseTag !== "" || activeAutomaticProtectedBranch) && releaseTag !== undefined
+      (releaseCommit !== undefined || existingReleaseTag !== "" || activeAutomaticProtectedBranch) &&
+      releaseTag !== undefined
         ? currentTagCommit(releaseTag)
         : undefined,
     resolvedTagCommit: releaseCommit,

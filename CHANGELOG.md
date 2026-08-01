@@ -17,7 +17,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Reserved the protected `release/1.x` line for stable v1 maintenance while `main` owns `1.99.x` v2 previews and
   later v2 releases. CI, CodeQL, cross-platform acceptance, stable tag publication, and Marketplace recovery now
   enforce that version-derived boundary; fixes merge into v1 first and move to `main` through reviewed forward-port
-  pull requests.
+  pull requests. Marketplace intake also proves every selected tag commit is contained in its version-owned public
+  branch and is the exact public lightweight tag target instead of trusting matching package metadata or a peeled
+  annotated tag.
 - Made GitHub publication immutable-release ready for both stable and future preview channels. The publisher now
   creates or resumes one exact draft, uploads and downloads all three canonical assets for byte verification, and
   only then publishes. The migration workflows deliberately expect `immutable: false` while accepting an already
