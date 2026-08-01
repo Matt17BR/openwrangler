@@ -30,9 +30,9 @@ test("native R setup pins and verifies the complete advertised read-only toolcha
         {
           uses: SETUP_R_DEPENDENCIES_ACTION,
           with: {
-            packages: "any::jsonlite@2.0.0\nany::tibble@3.3.1\nany::data.table@1.18.2.1\n",
+            packages: "cran::jsonlite@2.0.0\ncran::tibble@3.3.1\ncran::data.table@1.18.2.1\n",
             dependencies: '"hard"',
-            "cache-version": "r-4.5.2-jsonlite-2.0.0-tibble-3.3.1-data-table-1.18.2.1",
+            "cache-version": "r-4.5.2-cran-jsonlite-2.0.0-tibble-3.3.1-data-table-1.18.2.1",
             "install-quarto": false
           }
         },
@@ -44,6 +44,13 @@ test("native R setup pins and verifies the complete advertised read-only toolcha
       ]
     }
   });
+
+  const packages = action.runs.steps[1].with.packages.trim().split("\n");
+  assert.deepEqual(packages, ["cran::jsonlite@2.0.0", "cran::tibble@3.3.1", "cran::data.table@1.18.2.1"]);
+  assert.ok(
+    packages.every((reference) => /^cran::[A-Za-z][A-Za-z0-9.]*@[0-9]+(?:[.-][0-9]+)*$/u.test(reference)),
+    "Every advertised R dependency must constrain both the CRAN source and exact version."
+  );
 
   const verification = readRepositoryFile("r/tests/verify_ci_toolchain.R");
   assert.match(verification, /expected_r_version <- "4\.5\.2"/u);

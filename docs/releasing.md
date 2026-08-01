@@ -37,7 +37,9 @@ The release coverage gate requires a Java 17 runtime on `PATH`. Required PR cove
 Native R packaging requires R plus `jsonlite`, `tibble`, and `data.table`.
 Required CI and every CI package producer use the reviewed local setup action,
 which pins R 4.5.2, `jsonlite` 2.0.0, `tibble` 3.3.1, and `data.table`
-1.18.2.1 and verifies the installed versions before `npm run test:r`.
+1.18.2.1 through exact CRAN package references and verifies the installed
+versions before `npm run test:r`. The cache family includes the source policy,
+so a prior permissive package resolution cannot satisfy this gate.
 Ordinary `npm run package` also invokes that smoke command through
 `prepackage`; the CI-internal `package:prepared` producer runs it explicitly.
 Missing flavors are failures, not skipped evidence.

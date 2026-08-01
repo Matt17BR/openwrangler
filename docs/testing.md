@@ -18,7 +18,10 @@ npm run test:r
 The smoke test requires `jsonlite`, `tibble`, and `data.table`; none is optional
 or installed by the test. Required CI and every CI package producer use R 4.5.2
 with exact `jsonlite` 2.0.0, `tibble` 3.3.1, and `data.table` 1.18.2.1, verify
-that toolchain, and then run the same command. User-facing R support additionally
+that toolchain, and then run the same command. Those dependencies use
+source-constraining `cran::package@version` references; permissive `any::`
+references are not version pins and are rejected by the workflow contract.
+User-facing R support additionally
 requires the staged editor acceptance in
 [`docs/r-support.md`](r-support.md); these foundation checks are not sufficient
 to advertise R compatibility.

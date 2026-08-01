@@ -129,6 +129,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Hardened the native-R discovery-to-open handoff with protocol-v2 discovery IDs and a provider-private bounded
   registry. Open now repeats non-forcing inspection and rejects stale IDs, active bindings, promises,
   noncanonical subclasses, or changed class/shape/value before session publication.
+- Corrected the native-R CI dependency contract to use exact CRAN package
+  references. The previous permissive `any::` reference allowed Pak to resolve
+  a newer `data.table` despite the apparent version suffix; workflow tests now
+  reject that source-policy regression before packaging.
 - Removed unused `Counter` imports from ordinary Pandas, Polars, and DuckDB generated plans while retaining the
   import for one-hot encoding and multi-label binarization collision checks.
 - Preserved compatible viewing filters, selected values, predicates, searches, and ordered multi-sorts through
