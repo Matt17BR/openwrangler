@@ -4,15 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/u;
-const ROOT_DOCUMENTATION = new Set([
-  "AGENTS.md",
-  "CHANGELOG.md",
-  "CONTRIBUTING.md",
-  "LICENSE",
-  "README.md",
-  "SECURITY.md",
-  "SUPPORT.md"
-]);
+const ROOT_NON_PACKAGED_DOCUMENTATION = new Set(["AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"]);
 
 function isDocumentationOnlyPath(path) {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) return false;
@@ -20,13 +12,19 @@ function isDocumentationOnlyPath(path) {
   if (path.startsWith("/") || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
     return false;
   }
-  if (ROOT_DOCUMENTATION.has(path) || path.startsWith("docs/")) return true;
+  if (ROOT_NON_PACKAGED_DOCUMENTATION.has(path) || path.startsWith("docs/")) return true;
   return (
     path.startsWith(".github/ISSUE_TEMPLATE/") ||
     path.startsWith(".github/PULL_REQUEST_TEMPLATE/") ||
     path === ".github/PULL_REQUEST_TEMPLATE.md" ||
     path === ".github/pull_request_template.md"
   );
+}
+
+export function isDocumentationOnlyChangeSet({ eventName, changedPaths }) {
+  if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
+  if (eventName !== "pull_request") return false;
+  return changedPaths.length > 0 && changedPaths.every((path) => isDocumentationOnlyPath(path));
 }
 
 export function parseChangedPathBuffer(buffer) {
@@ -49,9 +47,7 @@ export function parseChangedPathBuffer(buffer) {
 export function requiresReleasedJupyter({ eventName, changedPaths }) {
   if (eventName === "push") return false;
   if (eventName !== "pull_request") throw new Error(`Unsupported CI event: ${eventName || "missing"}.`);
-  if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
-  if (changedPaths.length === 0) return true;
-  return changedPaths.some((path) => !isDocumentationOnlyPath(path));
+  return !isDocumentationOnlyChangeSet({ eventName, changedPaths });
 }
 
 function readPullRequestPaths({ baseSha, headSha }) {
@@ -73,14 +69,22 @@ function readPullRequestPaths({ baseSha, headSha }) {
 
 function main(environment) {
   const eventName = environment.CI_EVENT_NAME;
+  if (!["pull_request", "push", "schedule", "workflow_dispatch"].includes(eventName)) {
+    throw new Error(`Unsupported CI event: ${eventName || "missing"}.`);
+  }
   const changedPaths =
     eventName === "pull_request"
       ? readPullRequestPaths({ baseSha: environment.CI_BASE_SHA, headSha: environment.CI_HEAD_SHA })
       : [];
-  const required = requiresReleasedJupyter({ eventName, changedPaths });
+  const documentationOnly = isDocumentationOnlyChangeSet({ eventName, changedPaths });
+  const releasedJupyterRequired = eventName === "pull_request" && !documentationOnly;
   const outputPath = environment.GITHUB_OUTPUT;
   if (!outputPath) throw new Error("GITHUB_OUTPUT is required.");
-  appendFileSync(outputPath, `released_jupyter_required=${required}\n`, "utf8");
+  appendFileSync(
+    outputPath,
+    `documentation_only=${documentationOnly}\nreleased_jupyter_required=${releasedJupyterRequired}\n`,
+    "utf8"
+  );
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;

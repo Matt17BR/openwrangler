@@ -17,7 +17,29 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  classify:
+    name: Cross-platform change classification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      documentation_only: ${{ steps.classify.outputs.documentation_only }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - id: classify
+        run: node scripts/ci-path-classification.mjs
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
   runtime:
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,6 +50,14 @@ jobs:
             python: "3.14"
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Require exact change classification
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            (needs.classify.outputs.documentation_only != 'true' &&
+             needs.classify.outputs.documentation_only != 'false')
+          }}
+        run: exit 1
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
@@ -45,6 +75,8 @@ jobs:
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
+    needs: classify
+    if: ${{ always() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:
@@ -52,6 +84,14 @@ jobs:
       matrix:
         python: ["3.10", "3.12", "3.14"]
     steps:
+      - name: Require exact change classification
+        if: >-
+          ${{
+            needs.classify.result != 'success' ||
+            (needs.classify.outputs.documentation_only != 'true' &&
+             needs.classify.outputs.documentation_only != 'false')
+          }}
+        run: exit 1
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:

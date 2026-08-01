@@ -1,8 +1,9 @@
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
-export const REQUIRED_CI_JOBS = Object.freeze([
-  "fast-feedback",
+export const ALWAYS_REQUIRED_CI_JOBS = Object.freeze(["classify", "fast-feedback"]);
+
+export const PRODUCT_CI_JOBS = Object.freeze([
   "contract-tests",
   "visual-accessibility",
   "production-audits",
@@ -17,6 +18,8 @@ export const REQUIRED_CI_JOBS = Object.freeze([
   "native-cursor-smoke"
 ]);
 
+export const REQUIRED_CI_JOBS = Object.freeze([...ALWAYS_REQUIRED_CI_JOBS, ...PRODUCT_CI_JOBS]);
+
 export const OPTIONAL_CI_JOB = "remote-workspace";
 export const CONDITIONAL_CI_JOB = "released-jupyter";
 
@@ -26,27 +29,42 @@ export function resultEnvironmentKey(jobId) {
 
 export function requireCiResults({
   requiredResults,
+  documentationOnly,
   releasedJupyterResult,
   releasedJupyterRequired,
   remoteResult,
   remoteRequired
 }) {
   const failures = [];
-  for (const jobId of REQUIRED_CI_JOBS) {
+  for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
     const result = requiredResults[jobId];
     if (result !== "success") {
       failures.push(`${jobId}=${result ?? "missing"}`);
     }
   }
 
-  const expectedReleasedJupyterResult = releasedJupyterRequired ? "success" : "skipped";
+  const expectedProductResult = documentationOnly ? "skipped" : "success";
+  for (const jobId of PRODUCT_CI_JOBS) {
+    const result = requiredResults[jobId];
+    if (result !== expectedProductResult) {
+      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedProductResult})`);
+    }
+  }
+
+  const expectedReleasedJupyterResult = !documentationOnly && releasedJupyterRequired ? "success" : "skipped";
+  if (documentationOnly && releasedJupyterRequired) {
+    failures.push("released-jupyter classifier is inconsistent with documentation-only mode");
+  }
   if (releasedJupyterResult !== expectedReleasedJupyterResult) {
     failures.push(
       `${CONDITIONAL_CI_JOB}=${releasedJupyterResult ?? "missing"} (expected ${expectedReleasedJupyterResult})`
     );
   }
 
-  const expectedRemoteResult = remoteRequired ? "success" : "skipped";
+  const expectedRemoteResult = !documentationOnly && remoteRequired ? "success" : "skipped";
+  if (documentationOnly && remoteRequired) {
+    failures.push("remote-workspace classifier is inconsistent with documentation-only mode");
+  }
   if (remoteResult !== expectedRemoteResult) {
     failures.push(`${OPTIONAL_CI_JOB}=${remoteResult ?? "missing"} (expected ${expectedRemoteResult})`);
   }
@@ -68,6 +86,7 @@ function main(environment) {
   );
   requireCiResults({
     requiredResults,
+    documentationOnly: parseRequiredFlag(environment.DOCUMENTATION_ONLY, "DOCUMENTATION_ONLY"),
     releasedJupyterResult: environment[resultEnvironmentKey(CONDITIONAL_CI_JOB)],
     releasedJupyterRequired: parseRequiredFlag(environment.RELEASED_JUPYTER_REQUIRED, "RELEASED_JUPYTER_REQUIRED"),
     remoteResult: environment[resultEnvironmentKey(OPTIONAL_CI_JOB)],
