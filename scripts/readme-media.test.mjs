@@ -196,6 +196,23 @@ const nativeAssets = [
   })
 ];
 
+test("pixel-exact media failures keep diagnostics bounded", () => {
+  const actual = Buffer.alloc(1_000_000);
+  const expected = Buffer.from(actual);
+  expected[expected.length - 1] = 1;
+
+  assert.throws(
+    () => assertExactPixels(actual, expected, 500, "Synthetic media mismatch."),
+    (error) => {
+      const diagnostic = String(error);
+      assert.ok(diagnostic.length < 512);
+      assert.match(diagnostic, /pixel \(499, 499\), alpha; expected 1, received 0/u);
+      assert.doesNotMatch(diagnostic, /<Buffer|actual:|expected:/u);
+      return true;
+    }
+  );
+});
+
 test("v1.2 README media preserves exact packaged-editor scenes and tells the complete product story", () => {
   const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   const compositor = readFileSync(resolve(root, "scripts", "compose-readme-media.mjs"), "utf8");
@@ -216,7 +233,12 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.equal(packageJson.scripts?.["compose:readme-media"], "node scripts/compose-readme-media.mjs");
   assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
   assert.match(packageJson.scripts?.["test:webview-acceptance"] ?? "", /npm run verify:readme-media/u);
-  assert.match(packageJson.scripts?.["test:scripts:portable"] ?? "", /scripts\/readme-media\.test\.mjs/u);
+  assert.doesNotMatch(packageJson.scripts?.["test:scripts:portable"] ?? "", /scripts\/readme-media\.test\.mjs/u);
+  assert.match(packageJson.scripts?.["test:scripts:portable"] ?? "", /&& npm run test:scripts:media$/u);
+  assert.equal(
+    packageJson.scripts?.["test:scripts:media"],
+    "node --max-old-space-size=1024 --test --test-concurrency=1 scripts/readme-media.test.mjs"
+  );
   for (const asset of [
     "action-icon-dark.svg",
     "action-icon-light.svg",
@@ -296,9 +318,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     assert.ok(portable.byteLength < 1_024 * 1_024, `${asset.destination} should remain below 1 MiB.`);
     const acceptedImage = PNG.sync.read(accepted);
     const expectedPixels = asset.crop ? cropPixels(acceptedImage, asset.crop) : acceptedImage.data;
-    assert.deepEqual(
+    assertExactPixels(
       PNG.sync.read(portable).data,
       expectedPixels,
+      asset.outputWidth,
       `${asset.destination} must preserve its exact accepted source pixels.`
     );
   }
@@ -567,6 +590,19 @@ function cropPixels(source, crop) {
     source.data.copy(result, row * crop.width * 4, sourceStart, sourceStart + crop.width * 4);
   }
   return result;
+}
+
+function assertExactPixels(actual, expected, width, message) {
+  assert.equal(actual.length, expected.length, `${message} Pixel-buffer lengths differ.`);
+  if (actual.equals(expected)) return;
+
+  let offset = 0;
+  while (offset < actual.length && actual[offset] === expected[offset]) offset += 1;
+  const pixel = Math.floor(offset / 4);
+  const channel = ["red", "green", "blue", "alpha"][offset % 4];
+  assert.fail(
+    `${message} First difference: pixel (${pixel % width}, ${Math.floor(pixel / width)}), ${channel}; expected ${expected[offset]}, received ${actual[offset]}.`
+  );
 }
 
 function assertPng(png, width, height, requireSrgb) {

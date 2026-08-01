@@ -8,6 +8,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Bounded local and CI script-test memory: portable Node contracts now run with four-file concurrency, while the
+  PNG-heavy README media verifier runs alone under a 1 GiB V8 heap ceiling. Pixel drift reports one coordinate and
+  channel instead of constructing a multi-million-byte assertion diff, preventing a stale media capture from
+  exhausting the desktop process during packaging.
 - Native Filters / Sorts priority actions now use opaque provider-owned handles instead of JavaScript class identity.
   Structurally cloned tree items therefore work in Cursor as well as VS Code, unrelated profiling and selection
   updates no longer churn the native sort tree, and stale, ambiguous, or unavailable actions explain why they were
