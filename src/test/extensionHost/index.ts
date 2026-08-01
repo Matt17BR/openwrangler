@@ -232,6 +232,15 @@ const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN = /^Open in Open Wra
 const RELEASED_JUPYTER_EXPORT_COMMAND = "jupyter.notebookeditor.export";
 const NOTEBOOK_TOOLBAR_MORE_COMMAND = "toolbar.toggle.more";
 const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE = "Open Wrangler: Open Notebook Variable";
+const PACKAGED_FILE_ACTION_MEDIA_HEIGHT = 865;
+const RELEASED_JUPYTER_VARIABLES_PANDAS = {
+  name: "orders_df",
+  type: "DataFrame",
+  backend: "pandas",
+  firstValue: "2400001",
+  insertionInputColumn: "units",
+  insertionOutputColumn: "units_plus_10"
+} as const;
 const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
@@ -1593,28 +1602,49 @@ async function exerciseReleasedJupyterExtension(
       "after opening the real Jupyter Variables view"
     );
 
-    assertExactOpenNotebookDocument(notebook, "before resolving the pandas_frame action from Jupyter Variables");
+    assertExactOpenNotebookDocument(
+      notebook,
+      `before resolving the ${RELEASED_JUPYTER_VARIABLES_PANDAS.name} action from Jupyter Variables`
+    );
 
     recordAcceptanceProgress(`${phase}:variables-action`);
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
-    await dispatchReleasedJupyterVariableAction(workbench, notebook, "pandas_frame", `${phase}:variables`);
+    await dispatchReleasedJupyterVariableAction(
+      workbench,
+      notebook,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.name,
+      `${phase}:variables`
+    );
     recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
     recordAcceptanceProgress(`${phase}:variables-panel-created`);
     const pandasFrame = await waitForReleasedVariableSession(
       workbench,
       testing,
       notebook,
-      { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
-      "the Pandas DataFrame opened from the real Jupyter Variables view"
+      RELEASED_JUPYTER_VARIABLES_PANDAS,
+      "the complete canonical orders_df opened from the real Jupyter Variables view"
     );
     assert.equal(pandasFrame.metadata.mode, "editing");
 
     recordAcceptanceProgress(`${phase}:pandas-dataframe`);
-    await assertReleasedSessionPage(testing, pandasFrame, "1", "released-jupyter-pandas-dataframe");
+    await assertReleasedSessionPage(
+      testing,
+      pandasFrame,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.firstValue,
+      "released-jupyter-pandas-dataframe"
+    );
     if (kernelTarget.remote) {
       await assertReleasedRemoteRuntimeTransfer(notebook, kernelTarget, extension.extensionPath, phase);
     }
-    await assertReleasedNotebookCodeInsertion(testing, notebook, pandasFrame, "pandas_frame", phase);
+    await assertReleasedNotebookCodeInsertion(
+      testing,
+      notebook,
+      pandasFrame,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.name,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.insertionInputColumn,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.insertionOutputColumn,
+      phase
+    );
     await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
     await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
 
@@ -4443,6 +4473,8 @@ async function assertReleasedNotebookCodeInsertion(
   notebook: vscode.NotebookDocument,
   active: NonNullable<ReturnType<TestApi["activeSession"]>>,
   variableName: string,
+  inputColumnName: string,
+  outputColumnName: string,
   phase: ReleasedJupyterPhase
 ): Promise<void> {
   assert.equal(active.metadata.source.kind, "notebookVariable");
@@ -4457,10 +4489,10 @@ async function assertReleasedNotebookCodeInsertion(
       id: "released-jupyter-insertion-formula",
       kind: "formula",
       params: {
-        leftColumn: columnReference(active.metadata, "value"),
+        leftColumn: columnReference(active.metadata, inputColumnName),
         operator: "add",
         value: 10,
-        newColumn: "value_plus_10"
+        newColumn: outputColumnName
       }
     },
     offset: 0,
@@ -4487,14 +4519,14 @@ async function assertReleasedNotebookCodeInsertion(
   assert.equal(insertionActive?.metadata.steps.length, 1);
   assert.equal(insertionActive?.metadata.steps[0]?.kind, "formula");
   assert.equal(
-    insertionActive?.metadata.schema.some((column) => column.name === "value_plus_10"),
+    insertionActive?.metadata.schema.some((column) => column.name === outputColumnName),
     true
   );
   const code = insertionActive?.code;
   assert.ok(code, "Released-Jupyter insertion requires the engine's real generated cleaning code.");
   assert.match(code, /import pandas as pd/u);
   assert.match(code, /def clean_data\(df\):/u);
-  assert.match(code, /value_plus_10/u);
+  assert.equal(code.includes(outputColumnName), true);
   const before = Array.from({ length: notebook.cellCount }, (_, index) => notebook.cellAt(index).document.getText());
   const decoyPath = path.join(path.dirname(notebook.uri.fsPath), "released-jupyter-insertion-decoy.ipynb");
   writeFileSync(
@@ -4713,6 +4745,8 @@ async function invokeReleasedNotebookToolbarVariable(
     notebook,
     "The exact released-Jupyter notebook tab must remain active after its toolbar action opens the variable picker."
   );
+  const input = picker.locator(".quick-input-box input:visible").first();
+  await input.fill(variableName);
   const deadline = Date.now() + 10_000;
   let row: Locator | undefined;
   do {
@@ -7582,6 +7616,18 @@ async function exercisePackagedFileLaunchSurfaces(
   const activeEditorGroup = page.locator(".part.editor .editor-group-container.active");
   const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible');
 
+  if (outputDirectory) {
+    await page.setViewportSize(PACKAGED_PRODUCT_VIEWPORT);
+    assert.deepEqual(
+      await page.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_PRODUCT_VIEWPORT,
+      "File-action public media requires the dedicated 1440 by 900 logical editor viewport."
+    );
+  }
+
   if (editor === "cursor") {
     const pinnedTitleActions = vscode.workspace
       .getConfiguration("cursor.general")
@@ -7749,7 +7795,11 @@ async function exercisePackagedFileLaunchSurfaces(
       .filter({ hasText: "Open in Open Wrangler" })
       .waitFor({ state: "visible", timeout: 2_000 })
       .catch(() => {});
-    await captureWorkbenchScreenshot(page, path.resolve(outputDirectory, `${editor}-file-title-action.png`));
+    await captureWorkbenchScreenshot(
+      page,
+      path.resolve(outputDirectory, `${editor}-file-title-action.png`),
+      PACKAGED_FILE_ACTION_MEDIA_HEIGHT
+    );
     await page.keyboard.press("Escape");
   }
 
@@ -7857,13 +7907,61 @@ async function exercisePackagedFileLaunchSurfaces(
     "Open in Open Wrangler",
     "The editor-tab context action must use the compact product label."
   );
+  let liveTabContextMenu = tabContextMenu;
+  let liveTabMenuAction = tabMenuAction;
   if (outputDirectory) {
     recordAcceptanceProgress("verify:file-launch:tab-context:screenshot");
     await tabContextMenu.waitFor({ state: "visible", timeout: 1_000 });
-    await captureWorkbenchScreenshot(page, path.resolve(outputDirectory, `${editor}-tab-context-menu.png`));
+    const menuGeometry = await tabContextMenu.evaluate((element) => {
+      type MenuElement = {
+        readonly clientWidth: number;
+        readonly ownerDocument: {
+          readonly defaultView?: { readonly innerHeight: number; readonly innerWidth: number };
+        };
+        readonly scrollWidth: number;
+        readonly textContent: string | null;
+        getBoundingClientRect(): { bottom: number; left: number; right: number; top: number };
+        querySelectorAll(selector: string): ArrayLike<MenuElement>;
+      };
+      const root = element as unknown as MenuElement;
+      const bounds = root.getBoundingClientRect();
+      const viewport = root.ownerDocument.defaultView;
+      const items = Array.from(root.querySelectorAll('[role="menuitem"]'));
+      return {
+        bottom: bounds.bottom,
+        clippedItems: items
+          .filter((item) => item.scrollWidth > item.clientWidth + 1)
+          .map((item) => item.textContent?.replace(/\s+/gu, " ").trim() ?? ""),
+        insideViewport:
+          bounds.left >= -1 &&
+          bounds.top >= -1 &&
+          bounds.right <= (viewport?.innerWidth ?? 0) + 1 &&
+          bounds.bottom <= (viewport?.innerHeight ?? 0) + 1
+      };
+    });
+    assert.equal(menuGeometry.insideViewport, true, "The complete editor-tab menu must fit inside the media viewport.");
+    assert.ok(
+      menuGeometry.bottom <= PACKAGED_FILE_ACTION_MEDIA_HEIGHT,
+      "The complete editor-tab menu must fit inside the retained 1440 by 865 media frame."
+    );
+    assert.deepEqual(menuGeometry.clippedItems, [], "The editor-tab media menu must not clip any visible item text.");
+    await captureWorkbenchScreenshot(
+      page,
+      path.resolve(outputDirectory, `${editor}-tab-context-menu.png`),
+      PACKAGED_FILE_ACTION_MEDIA_HEIGHT
+    );
+    if (await tabContextMenu.isVisible().catch(() => false)) {
+      await page.keyboard.press("Escape");
+      await tabContextMenu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    }
+    const reopened = await openEditorTabContextMenu(page, activeSourceTab, "Open in Open Wrangler");
+    assert.ok(reopened.action, "The live editor-tab menu must still expose Open in Open Wrangler after capture.");
+    liveTabContextMenu = reopened.menu;
+    liveTabMenuAction = reopened.action;
   }
   recordAcceptanceProgress("verify:file-launch:tab-context:open");
-  await tabMenuAction.click();
+  await liveTabMenuAction.click();
+  await liveTabContextMenu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
@@ -8466,11 +8564,12 @@ async function waitForVisibleEditorDialog(workbench: Page, text: string): Promis
 async function captureWorkbenchScreenshot(page: Page, destination: string, maximumHeight?: number): Promise<void> {
   if (
     maximumHeight !== undefined &&
-    (!Number.isSafeInteger(maximumHeight) || maximumHeight < 1 || maximumHeight > PACKAGED_SCREENSHOT_VIEWPORT.height)
+    (!Number.isSafeInteger(maximumHeight) || maximumHeight < 1 || maximumHeight > PACKAGED_PRODUCT_VIEWPORT.height)
   ) {
     throw new TypeError("A workbench screenshot maximum height must be one bounded positive integer.");
   }
   await page.bringToFront();
+  const expectedPixelRatio = publicMediaPixelRatio();
   const viewport = await page.evaluate(() => {
     const pageWindow = globalThis as unknown as {
       innerWidth: number;
@@ -8490,69 +8589,195 @@ async function captureWorkbenchScreenshot(page: Page, destination: string, maxim
     const bounds = await locator.boundingBox({ timeout: 2_000 }).catch(() => null);
     if (bounds && bounds.y > 0) workbenchOffsets.push(bounds.y);
   }
-  const screenshotWidth = Math.ceil(viewport.width * viewport.scale);
-  const screenshotHeight = Math.ceil(viewport.height * viewport.scale);
-  const titleBarHeight = Math.ceil(Math.min(...workbenchOffsets, Number.POSITIVE_INFINITY) * viewport.scale);
-  const screenshotOptions = {
-    path: destination,
-    animations: "disabled" as const,
-    timeout: 60_000,
-    ...(Number.isFinite(titleBarHeight) && titleBarHeight > 0 && titleBarHeight < viewport.height
-      ? {
-          clip: {
-            x: 0,
-            y: titleBarHeight,
-            width: screenshotWidth,
-            height: Math.min(screenshotHeight - titleBarHeight, maximumHeight ?? Number.POSITIVE_INFINITY)
-          }
-        }
-      : {})
-  };
+  const titleBarHeight = Math.ceil(Math.min(...workbenchOffsets, Number.POSITIVE_INFINITY));
+  const logicalCaptureY =
+    Number.isFinite(titleBarHeight) && titleBarHeight > 0 && titleBarHeight < viewport.height ? titleBarHeight : 0;
+  const logicalCaptureWidth = viewport.width;
+  const logicalCaptureHeight = Math.min(viewport.height - logicalCaptureY, maximumHeight ?? Number.POSITIVE_INFINITY);
+  const requiresClip = logicalCaptureY > 0 || logicalCaptureHeight < viewport.height;
+  const clip = requiresClip
+    ? {
+        x: 0,
+        y: logicalCaptureY,
+        width: logicalCaptureWidth,
+        height: logicalCaptureHeight
+      }
+    : undefined;
   try {
-    await page.screenshot(screenshotOptions);
+    await capturePublicEditorPixels(page, destination, expectedPixelRatio, clip);
   } catch (error) {
     await page.bringToFront();
     await page.waitForTimeout(500);
     try {
-      await page.screenshot(screenshotOptions);
+      await capturePublicEditorPixels(page, destination, expectedPixelRatio, clip);
     } catch {
       throw error;
     }
   }
   const image = readFileSync(destination);
   assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(
+    image.readUInt32BE(16),
+    logicalCaptureWidth * expectedPixelRatio,
+    "Public workbench media must retain twice its logical capture width."
+  );
+  assert.equal(
+    image.readUInt32BE(20),
+    logicalCaptureHeight * expectedPixelRatio,
+    "Public workbench media must retain twice its logical capture height."
+  );
 }
 
 async function captureNotebookWorkbenchScreenshot(page: Page, destination: string): Promise<void> {
   await page.bringToFront();
+  const expectedPixelRatio = publicMediaPixelRatio();
   const viewport = await page.evaluate(() => {
-    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
-    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+    const pageWindow = globalThis as unknown as {
+      innerHeight: number;
+      innerWidth: number;
+      devicePixelRatio: number;
+    };
+    return {
+      width: pageWindow.innerWidth,
+      height: pageWindow.innerHeight,
+      scale: Math.max(1, pageWindow.devicePixelRatio)
+    };
   });
   assert.deepEqual(
-    viewport,
+    { width: viewport.width, height: viewport.height },
     PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
     "A notebook workbench media scene requires the standard 1440 by 900 editor viewport."
   );
-  await page.screenshot({
-    path: destination,
-    animations: "disabled",
-    caret: "hide",
-    scale: "css",
-    timeout: 60_000
-  });
+  assert.equal(viewport.scale >= 1, true, "The notebook workbench must expose one valid initial device-pixel ratio.");
+  await capturePublicEditorPixels(page, destination, expectedPixelRatio);
   const image = readFileSync(destination);
   assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
   assert.equal(
     image.readUInt32BE(16),
-    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.width,
-    "A notebook workbench media scene must retain the exact 1440-pixel editor width."
+    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.width * expectedPixelRatio,
+    "A notebook workbench media scene must retain twice its logical editor width."
   );
   assert.equal(
     image.readUInt32BE(20),
-    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.height,
-    "A notebook workbench media scene must retain the exact 900-pixel editor height."
+    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.height * expectedPixelRatio,
+    "A notebook workbench media scene must retain twice its logical editor height."
   );
+}
+
+function publicMediaPixelRatio(): number {
+  const raw = process.env.OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO;
+  if (raw !== "2") {
+    throw new Error("Public media capture requires the shared 2× device-pixel ratio.");
+  }
+  return 2;
+}
+
+async function capturePublicEditorPixels(
+  page: Page,
+  destination: string,
+  expectedPixelRatio: number,
+  clip?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+): Promise<void> {
+  const viewport = await page.evaluate(() => {
+    const pageWindow = globalThis as unknown as {
+      devicePixelRatio: number;
+      innerHeight: number;
+      innerWidth: number;
+    };
+    return {
+      width: pageWindow.innerWidth,
+      height: pageWindow.innerHeight,
+      scale: pageWindow.devicePixelRatio
+    };
+  });
+  const session = await page.context().newCDPSession(page);
+  let metricsOverridden = false;
+  let renderedPixelRatio = expectedPixelRatio;
+  try {
+    await session.send("Emulation.setDeviceMetricsOverride", {
+      width: viewport.width,
+      height: viewport.height,
+      screenWidth: viewport.width,
+      screenHeight: viewport.height,
+      deviceScaleFactor: expectedPixelRatio,
+      mobile: false
+    });
+    metricsOverridden = true;
+    renderedPixelRatio = await page.evaluate(
+      () => (globalThis as unknown as { readonly devicePixelRatio: number }).devicePixelRatio
+    );
+    assert.ok(
+      renderedPixelRatio >= expectedPixelRatio,
+      "Public editor media must render at no less than the runner-owned device-pixel ratio."
+    );
+    await page.evaluate(async () => {
+      const pageGlobal = globalThis as unknown as {
+        readonly document: { readonly fonts: { readonly ready: Promise<unknown> } };
+        requestAnimationFrame(callback: () => void): number;
+      };
+      await pageGlobal.document.fonts.ready;
+      await new Promise<void>((resolveFrame) => {
+        pageGlobal.requestAnimationFrame(() => pageGlobal.requestAnimationFrame(() => resolveFrame()));
+      });
+    });
+    const result = (await session.send("Page.captureScreenshot", {
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: false,
+      clip: {
+        x: clip?.x ?? 0,
+        y: clip?.y ?? 0,
+        width: clip?.width ?? viewport.width,
+        height: clip?.height ?? viewport.height,
+        scale: 1
+      }
+    })) as { data: string };
+    writeFileSync(destination, Buffer.from(result.data, "base64"));
+  } finally {
+    try {
+      if (metricsOverridden) {
+        const applicationZoomFactor = renderedPixelRatio / expectedPixelRatio;
+        const restoreDeviceScaleFactor = viewport.scale / applicationZoomFactor;
+        const restoreMetricsWidth = Math.ceil(viewport.width * applicationZoomFactor);
+        const restoreMetricsHeight = Math.ceil(viewport.height * applicationZoomFactor);
+        assert.ok(
+          Number.isFinite(restoreDeviceScaleFactor) && restoreDeviceScaleFactor > 0,
+          "Public media capture must derive one valid prior device scale."
+        );
+        await session.send("Emulation.setDeviceMetricsOverride", {
+          width: restoreMetricsWidth,
+          height: restoreMetricsHeight,
+          screenWidth: restoreMetricsWidth,
+          screenHeight: restoreMetricsHeight,
+          deviceScaleFactor: restoreDeviceScaleFactor,
+          mobile: false
+        });
+        const restoredViewport = await page.evaluate(() => {
+          const pageWindow = globalThis as unknown as {
+            devicePixelRatio: number;
+            innerHeight: number;
+            innerWidth: number;
+          };
+          return {
+            width: pageWindow.innerWidth,
+            height: pageWindow.innerHeight,
+            scale: pageWindow.devicePixelRatio
+          };
+        });
+        assert.deepEqual(
+          { width: restoredViewport.width, height: restoredViewport.height },
+          { width: viewport.width, height: viewport.height },
+          "Public media capture must restore the exact logical editor viewport."
+        );
+        assert.ok(
+          Math.abs(restoredViewport.scale - viewport.scale) < 0.01,
+          "Public media capture must restore the editor's prior device-pixel ratio."
+        );
+      }
+    } finally {
+      await session.detach().catch(() => {});
+    }
+  }
 }
 
 async function prepareReleasedJupyterScreenshotWorkbench(
@@ -8847,12 +9072,12 @@ async function captureReleasedJupyterPandasPreview(
   const screenshot = readFileSync(destination);
   assert.equal(
     screenshot.readUInt32BE(16),
-    PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width,
+    PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width * publicMediaPixelRatio(),
     "The Pandas README screenshot must retain its dedicated readable width."
   );
   assert.equal(
     screenshot.readUInt32BE(20),
-    PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height,
+    PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height * publicMediaPixelRatio(),
     "The Pandas README screenshot must retain its dedicated readable height."
   );
 }
@@ -11211,8 +11436,19 @@ async function openPackagedProductFixtureThroughExplorer(
   );
 
   recordAcceptanceProgress("verify:screenshots:file-scenes:explorer-action:open");
-  await action.click();
-  await menu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  if (await menu.isVisible().catch(() => false)) {
+    await workbench.keyboard.press("Escape");
+    await menu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  }
+  const { menu: liveMenu, action: liveAction } = await openWorkbenchContextMenu(
+    workbench,
+    rows.first(),
+    "Open in Open Wrangler",
+    "realistic Explorer row after public media capture"
+  );
+  assert.ok(liveAction, "The live Explorer row must still expose Open in Open Wrangler after capture.");
+  await liveAction.click();
+  await liveMenu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
 }
 
 async function capturePackagedHighContrastExploreScene(

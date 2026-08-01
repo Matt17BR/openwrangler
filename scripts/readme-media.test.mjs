@@ -3,12 +3,19 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { PNG } from "pngjs";
+import {
+  PUBLIC_MEDIA_MAX_FILE_BYTES,
+  PUBLIC_MEDIA_MAX_TOTAL_BYTES,
+  PUBLIC_MEDIA_PIXEL_RATIO,
+  publicMediaPhysicalLength,
+  publicMediaPhysicalRect
+} from "./public-media-contract.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 
 const nativeAssets = [
   nativeAsset("explore.png", "vscode-explore-dark.png", 1_440, 870),
-  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 862),
+  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 861),
   nativeAsset("workflow.png", "vscode-workflow-dark.png", 1_440, 870),
   nativeCrop("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600, {
     x: 45,
@@ -18,7 +25,7 @@ const nativeAssets = [
   }),
   nativeAsset("gallery/column-search-wide.png", "vscode-column-search-wide-dark.png", 1_440, 865),
   nativeAsset("gallery/file-explorer-action.png", "vscode-file-explorer-action-dark.png", 1_440, 870),
-  nativeAsset("gallery/high-contrast-explore.png", "vscode-high-contrast-explore-high-contrast.png", 1_440, 846),
+  nativeAsset("gallery/high-contrast-explore.png", "vscode-high-contrast-explore-high-contrast.png", 1_440, 845),
   nativeAsset("gallery/import-options.png", "vscode-import-options-dark.png", 1_440, 870),
   nativeAsset("gallery/export-script.png", "vscode-export-code-dark.png", 1_440, 870),
   nativeAsset("gallery/export-data.png", "vscode-export-data-dark.png", 1_440, 870),
@@ -42,8 +49,8 @@ const nativeAssets = [
   nativeAsset("gallery/operation-catalog.png", "vscode-operation-catalog-dark.png", 1_280, 874),
   nativeAsset("gallery/operation-configuration.png", "vscode-operation-configuration-dark.png", 1_280, 874),
   nativeAsset("gallery/applied-step-inspection.png", "vscode-applied-step-inspection-dark.png", 1_440, 870),
-  nativeAsset("gallery/latest-step-edited.png", "vscode-latest-step-edited-dark.png", 1_440, 865),
-  nativeAsset("gallery/latest-step-undone.png", "vscode-latest-step-undone-dark.png", 1_440, 865),
+  nativeAsset("gallery/latest-step-edited.png", "vscode-latest-step-edited-dark.png", 1_440, 860),
+  nativeAsset("gallery/latest-step-undone.png", "vscode-latest-step-undone-dark.png", 1_440, 860),
   nativeCrop("gallery/file-explorer-action-detail.png", "vscode-file-explorer-action-dark.png", 1_440, 870, {
     x: 48,
     y: 0,
@@ -56,13 +63,13 @@ const nativeAssets = [
     width: 540,
     height: 420
   }),
-  nativeCrop("gallery/latest-step-edited-detail.png", "vscode-latest-step-edited-dark.png", 1_440, 865, {
+  nativeCrop("gallery/latest-step-edited-detail.png", "vscode-latest-step-edited-dark.png", 1_440, 860, {
     x: 0,
     y: 0,
     width: 448,
     height: 440
   }),
-  nativeCrop("gallery/latest-step-undone-detail.png", "vscode-latest-step-undone-dark.png", 1_440, 865, {
+  nativeCrop("gallery/latest-step-undone-detail.png", "vscode-latest-step-undone-dark.png", 1_440, 860, {
     x: 0,
     y: 0,
     width: 448,
@@ -140,25 +147,25 @@ const nativeAssets = [
     width: 448,
     height: 480
   }),
-  acceptanceCrop("gallery/by-example-setup.png", "by-example-dialog-dark-1280.png", 1_280, 960, {
+  browserCrop("gallery/by-example-setup.png", "by-example-dialog.png", 1_280, 960, {
     x: 100,
     y: 100,
     width: 1_080,
     height: 760
   }),
-  acceptanceCrop("gallery/by-example-setup-detail.png", "by-example-dialog-dark-1280.png", 1_280, 960, {
+  browserCrop("gallery/by-example-setup-detail.png", "by-example-dialog.png", 1_280, 960, {
     x: 520,
     y: 100,
     width: 660,
     height: 760
   }),
-  acceptanceCrop("gallery/by-example-preview.png", "by-example-preview-dark-1280.png", 1_280, 760, {
+  browserCrop("gallery/by-example-preview.png", "by-example-preview.png", 1_280, 760, {
     x: 0,
     y: 0,
     width: 1_280,
     height: 760
   }),
-  acceptanceCrop("gallery/by-example-preview-detail.png", "by-example-preview-dark-1280.png", 1_280, 760, {
+  browserCrop("gallery/by-example-preview-detail.png", "by-example-preview.png", 1_280, 760, {
     x: 0,
     y: 55,
     width: 700,
@@ -176,6 +183,7 @@ const nativeAssets = [
     width: 540,
     height: 570
   }),
+  browserAsset("gallery/duckdb-rich-parquet.png", "duckdb-rich-parquet.png", 1_920, 640),
   readmeCrop("gallery/duckdb-rich-parquet-detail.png", "gallery/duckdb-rich-parquet.png", 1_920, 640, {
     x: 0,
     y: 45,
@@ -201,10 +209,26 @@ test("pixel-exact media failures keep diagnostics bounded", () => {
   );
 });
 
+test("public media converts logical dimensions to the shared physical density exactly once", () => {
+  assert.equal(PUBLIC_MEDIA_PIXEL_RATIO, 2);
+  assert.equal(publicMediaPhysicalLength(720), 1_440);
+  assert.deepEqual(publicMediaPhysicalRect({ x: 11, y: 17, width: 320, height: 180 }), {
+    x: 22,
+    y: 34,
+    width: 640,
+    height: 360
+  });
+  assert.throws(() => publicMediaPhysicalLength(0), /positive safe integer/u);
+  assert.throws(() => publicMediaPhysicalLength(1.5), /positive safe integer/u);
+  assert.throws(() => publicMediaPhysicalRect({ x: -1, y: 0, width: 1, height: 1 }), /bounded logical integer/u);
+});
+
 test("v1.2 README media preserves exact packaged-editor scenes and tells the complete product story", () => {
   const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   const compositor = readFileSync(resolve(root, "scripts", "compose-readme-media.mjs"), "utf8");
   const captureScript = readFileSync(resolve(root, "scripts", "capture-screenshots.mjs"), "utf8");
+  const editorAcceptance = readFileSync(resolve(root, "scripts", "editor-acceptance.mjs"), "utf8");
+  const publicSurfaceVerifier = readFileSync(resolve(root, "scripts", "verify-public-media-surfaces.mjs"), "utf8");
   const packagedEditorRunner = readFileSync(resolve(root, "scripts", "run-packaged-editor-tests.mjs"), "utf8");
   const buildWebviews = readFileSync(resolve(root, "scripts", "build-webviews.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
@@ -225,6 +249,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.equal(
     packageJson.scripts?.["verify:readme-media"],
     "node scripts/run-heavy-local-command.mjs verify:readme-media -- node scripts/compose-readme-media.mjs --verify"
+  );
+  assert.equal(
+    packageJson.scripts?.["verify:public-media-surfaces"],
+    "node scripts/run-heavy-local-command.mjs verify:public-media-surfaces -- node scripts/verify-public-media-surfaces.mjs"
   );
   assert.equal(
     packageJson.scripts?.["test:webview-acceptance"],
@@ -257,7 +285,43 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(compositor, /docs", "images", "readme", "v1\.2"/u);
   assert.match(compositor, /pixelmatch/u);
   assert.match(compositor, /addSrgbChunk/u);
-  assert.doesNotMatch(compositor, /v1\.1|rotate\(|clip-path|transform:\s*scale\(/u);
+  assert.match(compositor, /publicMediaPhysicalRect/u);
+  assert.doesNotMatch(
+    compositor,
+    /v1\.1|rotate\(|clip-path|transform:\s*scale\(|\bresize\s*\(|\bsharp\s*\(|pngquant|imagemagick/iu
+  );
+  assert.equal(PUBLIC_MEDIA_PIXEL_RATIO, 2);
+  assert.match(editorAcceptance, /--force-device-scale-factor=\$\{PUBLIC_MEDIA_PIXEL_RATIO\}/u);
+  assert.match(editorAcceptance, /OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO/u);
+  assert.match(captureScript, /pixelRatio = appearance\.pixelRatio \?\? 1/u);
+  assert.match(captureScript, /--force-device-scale-factor=\$\{pixelRatio\}/u);
+  assert.match(captureScript, /public-media-source\/v1\.2\/browser\/by-example-dialog\.png/u);
+  assert.match(captureScript, /public-media-source\/v1\.2\/browser\/by-example-preview\.png/u);
+  assert.match(captureScript, /public-media-source\/v1\.2\/browser\/duckdb-rich-parquet\.png/u);
+  assert.match(extensionHost, /Emulation\.setDeviceMetricsOverride/u);
+  assert.match(extensionHost, /const applicationZoomFactor = renderedPixelRatio \/ expectedPixelRatio/u);
+  assert.match(extensionHost, /const restoreMetricsWidth = Math\.ceil\(viewport\.width \* applicationZoomFactor\)/u);
+  assert.match(extensionHost, /const restoreMetricsHeight = Math\.ceil\(viewport\.height \* applicationZoomFactor\)/u);
+  assert.match(extensionHost, /restore the exact logical editor viewport/u);
+  assert.match(extensionHost, /restore the editor's prior device-pixel ratio/u);
+  assert.match(extensionHost, /realistic Explorer row after public media capture/u);
+  assert.match(extensionHost, /live editor-tab menu must still expose Open in Open Wrangler after capture/u);
+  assert.match(extensionHost, /const PACKAGED_FILE_ACTION_MEDIA_HEIGHT = 865/u);
+  assert.match(extensionHost, /maximumHeight > PACKAGED_PRODUCT_VIEWPORT\.height/u);
+  assert.match(extensionHost, /dedicated 1440 by 900 logical editor viewport/u);
+  assert.match(extensionHost, /complete editor-tab menu must fit inside the retained 1440 by 865 media frame/u);
+  assert.match(extensionHost, /deviceScaleFactor: expectedPixelRatio/u);
+  assert.match(extensionHost, /Page\.captureScreenshot/u);
+  assert.match(extensionHost, /fromSurface: true/u);
+  assert.doesNotMatch(extensionHost, /scale: "css"/u);
+  assert.match(extensionHost, /y: logicalCaptureY,[\s\S]{0,100}width: logicalCaptureWidth/u);
+  assert.match(publicSurfaceVerifier, /deviceScaleFactor: PUBLIC_MEDIA_PIXEL_RATIO/u);
+  assert.match(publicSurfaceVerifier, /naturalWidth < minimumWidth/u);
+  assert.match(publicSurfaceVerifier, /naturalHeight < minimumHeight/u);
+  assert.match(publicSurfaceVerifier, /remote\.equals\(local\)/u);
+  assert.match(publicSurfaceVerifier, /GitHub/u);
+  assert.match(publicSurfaceVerifier, /Visual Studio Marketplace/u);
+  assert.match(publicSurfaceVerifier, /Open VSX/u);
   for (const asset of nativeAssets) {
     assert.ok(compositor.includes(`${asset.factory}("${asset.destination}", "${asset.source}"`));
   }
@@ -279,10 +343,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     immutableMediaReferences.length,
     "README product media must not drift with a moving branch."
   );
-  const declaredProductMedia = new Set([
-    ...nativeAssets.map((asset) => asset.destination),
-    "gallery/duckdb-rich-parquet.png"
-  ]);
+  const declaredProductMedia = new Set(nativeAssets.map((asset) => asset.destination));
   const actualProductMedia = new Set(listRelativePngFiles(resolve(root, "docs", "images", "readme", "v1.2")));
   assert.deepEqual(
     [...actualProductMedia].sort(),
@@ -299,6 +360,14 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     [...declaredProductMedia].sort(),
     "Every declared v1.2 image must be referenced by the README or product gallery."
   );
+  const declaredProductDimensions = new Map(
+    nativeAssets.map((asset) => [
+      `docs/images/readme/v1.2/${asset.destination}`,
+      { width: asset.outputWidth, height: asset.outputHeight }
+    ])
+  );
+  assertProductImageDimensions(readme, "README", declaredProductDimensions);
+  assertProductImageDimensions(gallery, "product gallery", declaredProductDimensions);
 
   assert.match(captureScript, /regional-orders-rich\.parquet/u);
   assert.match(captureScript, /backend="duckdb"/u);
@@ -308,7 +377,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(captureScript, /STRUCT\(label VARCHAR, score INTEGER\)/u);
   assert.match(captureScript, /duckdb_rich = duckdb_manager\.open_session[\s\S]{0,300}page_size=200/u);
   assert.doesNotMatch(captureScript, /duckdbRich[\s\S]{0,500}notebookVariable/u);
-  assert.match(captureScript, /readme\/v1\.2\/gallery\/duckdb-rich-parquet\.png/u);
+  assert.match(captureScript, /public-media-source\/v1\.2\/browser\/duckdb-rich-parquet\.png/u);
   assert.doesNotMatch(captureScript, /readme\/v1\.1/u);
 
   assert.match(packagedEditorRunner, /resolve\(profile, "orders-analysis"\)/u);
@@ -330,23 +399,44 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(extensionHost, /async function captureNotebookWorkbenchScreenshot\(/u);
   assert.match(extensionHost, /A notebook workbench media scene requires the standard 1440 by 900 editor viewport/u);
 
+  let totalPublicMediaBytes = 0;
   for (const asset of nativeAssets) {
     const acceptedPath = resolve(root, "docs", "images", asset.sourceDirectory, asset.source);
     const readmePath = resolve(root, "docs", "images", "readme", "v1.2", asset.destination);
     const accepted = readFileSync(acceptedPath);
     const portable = readFileSync(readmePath);
-    assertPng(accepted, asset.sourceWidth, asset.sourceHeight, false);
-    assertPng(portable, asset.outputWidth, asset.outputHeight, true);
-    assert.ok(portable.byteLength < 1_024 * 1_024, `${asset.destination} should remain below 1 MiB.`);
+    assertPng(
+      accepted,
+      publicMediaPhysicalLength(asset.sourceWidth),
+      publicMediaPhysicalLength(asset.sourceHeight),
+      false
+    );
+    assertPng(
+      portable,
+      publicMediaPhysicalLength(asset.outputWidth),
+      publicMediaPhysicalLength(asset.outputHeight),
+      true
+    );
+    assert.ok(
+      portable.byteLength <= PUBLIC_MEDIA_MAX_FILE_BYTES,
+      `${asset.destination} must remain within the lossless public-media file budget.`
+    );
+    totalPublicMediaBytes += portable.byteLength;
     const acceptedImage = PNG.sync.read(accepted);
-    const expectedPixels = asset.crop ? cropPixels(acceptedImage, asset.crop) : acceptedImage.data;
+    const expectedPixels = asset.crop
+      ? cropPixels(acceptedImage, publicMediaPhysicalRect(asset.crop))
+      : acceptedImage.data;
     assertExactPixels(
       PNG.sync.read(portable).data,
       expectedPixels,
-      asset.outputWidth,
+      publicMediaPhysicalLength(asset.outputWidth),
       `${asset.destination} must preserve its exact accepted source pixels.`
     );
   }
+  assert.ok(
+    totalPublicMediaBytes <= PUBLIC_MEDIA_MAX_TOTAL_BYTES,
+    "The complete lossless public-media inventory must remain within its bounded repository budget."
+  );
 
   for (const image of [
     "explore.png",
@@ -489,20 +579,24 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const richDuckDb = readFileSync(
     resolve(root, "docs", "images", "readme", "v1.2", "gallery", "duckdb-rich-parquet.png")
   );
-  assertPng(richDuckDb, 1_920, 640, true);
-  assert.ok(richDuckDb.byteLength < 300 * 1_024);
+  assertPng(richDuckDb, publicMediaPhysicalLength(1_920), publicMediaPhysicalLength(640), true);
+  assert.ok(richDuckDb.byteLength <= PUBLIC_MEDIA_MAX_FILE_BYTES);
 
   const richDuckDbDetail = readFileSync(
     resolve(root, "docs", "images", "readme", "v1.2", "gallery", "duckdb-rich-parquet-detail.png")
   );
-  assertPng(richDuckDbDetail, 1_500, 595, true);
-  assert.ok(richDuckDbDetail.byteLength < 300 * 1_024);
+  assertPng(richDuckDbDetail, publicMediaPhysicalLength(1_500), publicMediaPhysicalLength(595), true);
+  assert.ok(richDuckDbDetail.byteLength <= PUBLIC_MEDIA_MAX_FILE_BYTES);
 
   assert.match(mediaSpec, /canonical README and gallery contract for v1\.2/u);
   assert.match(mediaSpec, /six visual chapters/u);
   assert.match(mediaSpec, /Crops select exact rectangles from accepted screenshots/u);
   assert.match(mediaSpec, /same source commit's\s+exact production webview bundle/u);
-  assert.match(mediaSpec, /inventory test rejects both missing and orphaned public PNGs/u);
+  assert.match(mediaSpec, /inventory test rejects both\s+missing and orphaned public PNGs/u);
+  assert.match(mediaSpec, /2× physical density/u);
+  assert.match(mediaSpec, /ordinary\s+visual-regression baselines remain at 1×/u);
+  assert.match(mediaSpec, /explicit logical `width` and `height`/u);
+  assert.match(mediaSpec, /2 MiB per PNG and 32 MiB for the complete inventory/u);
   assert.match(mediaSpec, /Private setup, restart-probe, and runtime-transfer cells are collapsed/u);
   assert.match(mediaSpec, /raw PySpark variable-picker capture is acceptance evidence, not public product media/u);
   assert.match(legacyMediaSpec, /\*\*Historical record\.\*\*/u);
@@ -512,7 +606,46 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(testing, /pixel-exact decoded output/u);
   assert.match(testing, /Generated-code insertion is proven through the exact `NotebookDocument`/u);
   assert.match(testing, /Private Monaco DOM structure is\s+not part of that proof/u);
+  assert.match(testing, /public product media\s+at 2× physical density/u);
+  assert.match(testing, /ordinary visual baselines remain 1×/u);
 });
+
+function assertProductImageDimensions(document, label, declaredDimensions) {
+  const productImages = [...document.matchAll(/<img\b([^>]*)>/giu)]
+    .map((match) => parseHtmlAttributes(match[1]))
+    .map((attributes) => ({ attributes, assetPath: parseProductImageAssetPath(attributes.get("src") ?? "") }))
+    .filter((entry) => entry.assetPath !== undefined);
+  assert.ok(productImages.length > 0, `${label} must contain public product images.`);
+  for (const { attributes, assetPath } of productImages) {
+    const dimensions = declaredDimensions.get(assetPath);
+    assert.ok(dimensions, `${label} references undeclared product image ${assetPath}.`);
+    assert.equal(
+      attributes.get("width"),
+      String(dimensions.width),
+      `${label} must render ${assetPath} at its logical width.`
+    );
+    assert.equal(
+      attributes.get("height"),
+      String(dimensions.height),
+      `${label} must render ${assetPath} at its logical height.`
+    );
+  }
+}
+
+function parseHtmlAttributes(source) {
+  const attributes = new Map();
+  for (const match of source.matchAll(/([a-z][a-z0-9:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/giu)) {
+    attributes.set(match[1].toLowerCase(), match[2] ?? match[3] ?? "");
+  }
+  return attributes;
+}
+
+function parseProductImageAssetPath(source) {
+  if (source.startsWith("images/readme/v1.2/")) return `docs/${source}`;
+  if (!source.startsWith("https://")) return undefined;
+  const reference = parseProductMediaReference(source);
+  return reference?.assetPath.startsWith("docs/images/readme/v1.2/") ? reference.assetPath : undefined;
+}
 
 function nativeAsset(destination, source, width, height) {
   return {
@@ -541,12 +674,25 @@ function nativeCrop(destination, source, sourceWidth, sourceHeight, crop) {
   };
 }
 
-function acceptanceCrop(destination, source, sourceWidth, sourceHeight, crop) {
+function browserAsset(destination, source, width, height) {
   return {
-    factory: "acceptanceCrop",
+    factory: "browserAsset",
     destination,
     source,
-    sourceDirectory: "acceptance",
+    sourceDirectory: "public-media-source/v1.2/browser",
+    sourceWidth: width,
+    sourceHeight: height,
+    outputWidth: width,
+    outputHeight: height
+  };
+}
+
+function browserCrop(destination, source, sourceWidth, sourceHeight, crop) {
+  return {
+    factory: "browserCrop",
+    destination,
+    source,
+    sourceDirectory: "public-media-source/v1.2/browser",
     sourceWidth,
     sourceHeight,
     outputWidth: crop.width,

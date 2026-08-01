@@ -113,6 +113,7 @@
     "capture:screenshots": "node scripts/run-heavy-local-command.mjs capture:screenshots -- node scripts/capture-screenshots.mjs",
     "compose:readme-media": "node scripts/run-heavy-local-command.mjs compose:readme-media -- node scripts/compose-readme-media.mjs",
     "verify:readme-media": "node scripts/run-heavy-local-command.mjs verify:readme-media -- node scripts/compose-readme-media.mjs --verify",
+    "verify:public-media-surfaces": "node scripts/run-heavy-local-command.mjs verify:public-media-surfaces -- node scripts/verify-public-media-surfaces.mjs",
     "test:visual": "node scripts/run-heavy-local-command.mjs test:visual -- npm run test:visual:run",
     "test:visual:run": "npm run build && node scripts/capture-screenshots.mjs --verify",
     "test:accessibility": "node scripts/run-heavy-local-command.mjs test:accessibility -- node scripts/test-webview-accessibility.mjs",

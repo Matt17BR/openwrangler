@@ -295,7 +295,9 @@ opening that variable.
 These images are release evidence for the exact VSIX supplied to that packaged-editor run. Capture them only after the candidate source is integrated and packaged; never carry an older commit's images forward as if they represented the current UI. The capture is optional and never mutates baselines automatically.
 
 `npm run compose:readme-media` derives the declared media inventory from accepted packaged-editor and
-production-webview sources under `docs/images/readme/v1.2`. Full scenes preserve every source pixel; Activity Bar,
+production-webview sources under `docs/images/readme/v1.2`. Dedicated public capture renders public product media
+at 2× physical density while retaining the unchanged logical viewport; ordinary visual baselines remain 1×. Full
+scenes preserve every source pixel; Activity Bar,
 histogram, sort-control, notebook, by-example, entry-point, and rich DuckDB details preserve exact source-pixel
 rectangles without scaling or reconstruction. The gallery-only by-example setup keeps
 the complete operation dialog and both mappings' values and outputs; its real 12-row JSON textarea remains
@@ -305,6 +307,10 @@ A standard sRGB PNG chunk is added only
 when needed. `npm run verify:readme-media` requires pixel-exact decoded output for every copy or crop; the browser
 visual lane runs that check before README media can change. The rich DuckDB Parquet image and focused UI states
 still come from the lockfile-pinned Chromium capture harness and the same production webview bundle.
+The same contract requires explicit logical image dimensions, lossless PNG plus sRGB output, no resize path, a
+2 MiB per-file ceiling, and a 32 MiB complete-inventory ceiling. After a release README reaches GitHub, Visual
+Studio Marketplace, and Open VSX, run `npm run verify:public-media-surfaces`; it verifies immutable remote bytes and
+checks the hero plus a representative detail at DPR 2 without turning registry propagation into a pull-request gate.
 
 Before any editor process starts, ordinary packaged runs probe the selected interpreter for supported Python
 3.10 through 3.14 plus Pandas, Polars, DuckDB, and OpenPyXL. Local runs should set `OPEN_WRANGLER_TEST_PYTHON` to an
