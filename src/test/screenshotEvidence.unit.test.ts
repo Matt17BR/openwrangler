@@ -327,6 +327,12 @@ describe("packaged editor screenshot evidence", () => {
       'await revealPackagedProductSceneColumn(testing, workbench, sessionId, "market_upper");'
     );
     expect(extensionHost).toContain("const boundaryTolerance = 1;");
+    const finalDraftHydration = extensionHost.indexOf(
+      "The draft preview and final Code Preview layout must be acknowledged before the generated column is inspected."
+    );
+    const generatedColumnInspection = extensionHost.indexOf("const addedHeader =");
+    expect(finalDraftHydration).toBeGreaterThan(0);
+    expect(generatedColumnInspection).toBeGreaterThan(finalDraftHydration);
     expect(extensionHost).toContain('"notebook-code-insertion"');
     expect(extensionHost).toContain('insertionInputColumn: "units"');
     expect(extensionHost).toContain('insertionOutputColumn: "units_plus_10"');

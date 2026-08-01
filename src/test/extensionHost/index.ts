@@ -6942,6 +6942,12 @@ async function exercisePackagedFirstUseInteractionJourney(
     state: "visible",
     timeout: 10_000
   });
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The draft preview and final Code Preview layout must be acknowledged before the generated column is inspected."
+  );
+  app = await rediscoverApp("Post-Code Preview renderer synchronization");
   const discardedDraft = testing.activeSession();
   assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
   assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
