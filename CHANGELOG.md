@@ -6,6 +6,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Added bounded draft-pull-request feedback without weakening ready-PR evidence. Draft updates run the existing static
+  source lane plus lightweight carriers for directly protected matrix names, while the protected `validate` context
+  deliberately remains failed until `ready_for_review` reruns the complete matrix at the same commit. Missing,
+  malformed, or contradictory path/draft classification fails closed; protected-branch pushes remain complete.
 - Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
   kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
   serialization, nested lease inheritance, and automatic crash release.
@@ -68,8 +72,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
 - Made affected pull-request released-Jupyter acceptance consume and revalidate the same checksum-bound canonical
   VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
-  for product changes and to be skipped only for documentation-only changes or protected-branch pushes; the separate
-  weekly/manual workflow remains non-cancelling ecosystem-drift evidence.
+  for ready product changes and to be skipped for documentation-only changes, draft feedback, or protected-branch
+  pushes. Draft `validate` remains deliberately failed; the separate weekly/manual workflow remains non-cancelling
+  ecosystem-drift evidence.
 - Unblocked the optional clean-room Data Wrangler comparison on current ipykernel launch syntax: the exact-runtime
   guard now accepts both separate and equals-style connection-file arguments, while bounded path-free command-shape
   diagnostics explain future mismatches without exposing interpreter or connection paths. The documented fixture
