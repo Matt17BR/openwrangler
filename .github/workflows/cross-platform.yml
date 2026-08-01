@@ -39,7 +39,7 @@ jobs:
 
   runtime:
     needs: classify
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +87,7 @@ jobs:
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
     needs: classify
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:

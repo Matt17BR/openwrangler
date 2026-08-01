@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Made obsolete pull-request heads actually cancellable by replacing cancellation-resistant `always()` job and
+  evidence-upload guards with `!cancelled()` across CI, CodeQL, and cross-platform acceptance. Failed current heads
+  still aggregate and retain safe diagnostics, while superseded native editor runs stop before blocking their replacement.
 - Bound packaged-editor failure-evidence workflow tests to the actual safety contract across pull-request, preview,
   and stable publication: producer identity, immediate pinned uploader, exact emitted path and readiness gate, and
   seven-day retention. Human-facing step labels are no longer treated as release-critical behavior.

@@ -41,7 +41,7 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     needs: classify
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
