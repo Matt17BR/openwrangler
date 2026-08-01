@@ -143,6 +143,9 @@ Then inspect every README and gallery image at its rendered width. Do not publis
 documented capability, comes from another VSIX, contains internal setup content, or fails pixel equivalence.
 
 After GitHub and both registries have rendered a release README, install the lockfile-pinned Chromium and run
-`npm run verify:public-media-surfaces`. It byte-compares every immutable raw GitHub product PNG with the reviewed
-local asset, then opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. The hero and representative detail
-must expose at least two natural image pixels for every rendered CSS pixel on all three surfaces.
+`npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"` from the
+exact released source checkout. The SHA must be lowercase 40-hex and the version must be semantic without a leading
+`v`. The verifier byte-compares the exact source README and package version, requires both registries to show that
+version and all surfaces to show the expected content and immutable representative image URLs, then byte-compares
+every public PNG and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. The hero and representative
+detail must expose at least two natural image pixels for every rendered CSS pixel on all three surfaces.

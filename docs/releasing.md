@@ -68,10 +68,21 @@ The strict runtime benchmark and Playwright cached/uncached scroll gates must pa
 
 Public README/gallery PNGs are captured at 2× physical density against unchanged logical editor layouts and retain
 lossless pixels. Before tagging, `npm run verify:readme-media` must prove exact dimensions, crops, sRGB output, and
-the per-file/total byte budgets. After GitHub and both registries have ingested the release README, run
-`npm run verify:public-media-surfaces` once: it checks immutable remote bytes and verifies that GitHub, Visual Studio
-Marketplace, and Open VSX do not upscale the hero or representative detail at DPR 2. Registry propagation remains
-a post-publication observation and must not make an otherwise deterministic pull-request lane depend on live pages.
+the per-file/total byte budgets. After GitHub and both registries have ingested the release README, check out the
+exact released source and run:
+
+```bash
+RELEASE_SOURCE_SHA="0123456789abcdef0123456789abcdef01234567" # replace with the released source commit
+RELEASE_VERSION="1.2.1" # replace with the released semantic version, without v
+npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"
+```
+
+The verifier requires the remote README at that exact commit to byte-match the reviewed local README and its
+`package.json` version to match the supplied version. It then requires the two registries to show that exact version,
+all three surfaces to render the expected README content, and each representative image to use the immutable raw URL
+from that README before proving its bytes and DPR 2 density. A mutable default-branch GitHub page is never accepted.
+Registry propagation remains a post-publication observation and must not make an otherwise deterministic pull-request
+lane depend on live pages.
 
 `.github/workflows/stable-candidate.yml` owns the hosted installed-performance evidence bridge. A manual dispatch accepts exactly intended version `1.0.0` from a `release/1.0-evidence-*` branch whose exact event SHA is a clean descendant of `origin/main`, packages the production VSIX once, and publishes an atomic VSIX/checksum/provenance set in the evidence-only mode described above. The bounded provenance binds `Matt17BR.openwrangler`, the extension version, intended tag, exact source commit, and VSIX digest and size, but its distinct protocol and role make the complete set deliberately non-promotable. A matching checksum without that provenance is insufficient, and the ordinary stable intake rejects the evidence-only provenance.
 

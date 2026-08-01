@@ -4,30 +4,48 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { PUBLIC_MEDIA_MAX_FILE_BYTES, PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
+import {
+  assertExactSourceReadmeUrl,
+  assertExpectedSurfaceContent,
+  assertExpectedSurfaceVersion,
+  assertRepresentativeImageSource,
+  assertSourcePackageVersion,
+  expectedRepresentativeReferences,
+  extractImmutableProductReferences,
+  parsePublicMediaVerifierArguments,
+  publicSurfaceDefinitions
+} from "./public-media-surface-contract.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const productImageRoot = resolve(root, "docs", "images", "readme", "v1.2");
-const surfaces = [
-  { name: "GitHub", url: "https://github.com/Matt17BR/openwrangler" },
-  {
-    name: "Visual Studio Marketplace",
-    url: "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"
-  },
-  { name: "Open VSX", url: "https://open-vsx.org/extension/Matt17BR/openwrangler" }
-];
-const representativeImages = [
-  "Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views",
-  "A numeric histogram with an easy-to-target bin and exact interval and row count"
-];
 
-await verifyImmutablePublicBytes();
-await verifyRenderedDensity();
-
-async function verifyImmutablePublicBytes() {
+async function main() {
+  const { sourceSha, version } = parsePublicMediaVerifierArguments(process.argv.slice(2));
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
-  const references = [...readme.matchAll(/<img\b[^>]*\bsrc="([^"]+)"[^>]*>/giu)]
-    .map((match) => immutableProductReference(match[1]))
-    .filter((reference) => reference !== undefined);
+  await verifyExactSource(sourceSha, version, readme);
+  await verifyImmutablePublicBytes(readme);
+  await verifyRenderedSurfaces(sourceSha, version, readme);
+}
+
+async function verifyExactSource(sourceSha, version, localReadme) {
+  const localPackage = readFileSync(resolve(root, "package.json"), "utf8");
+  assertSourcePackageVersion(localPackage, version);
+
+  const remoteReadme = await fetchBounded(
+    `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/README.md`
+  );
+  if (!remoteReadme.equals(Buffer.from(localReadme))) {
+    throw new Error("The exact source commit README does not byte-match the reviewed local README.");
+  }
+  const remotePackage = await fetchBounded(
+    `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/package.json`
+  );
+  assertSourcePackageVersion(remotePackage.toString("utf8"), version);
+  console.log(`Verified exact source ${sourceSha} at version ${version}.`);
+}
+
+async function verifyImmutablePublicBytes(readme) {
+  const references = extractImmutableProductReferences(readme);
   if (references.length === 0) throw new Error("README does not expose immutable public product-media URLs.");
 
   for (const reference of references) {
@@ -50,7 +68,8 @@ async function verifyImmutablePublicBytes() {
   console.log(`Verified ${references.length} immutable public PNG payloads byte-for-byte.`);
 }
 
-async function verifyRenderedDensity() {
+async function verifyRenderedSurfaces(sourceSha, version, readme) {
+  const representativeImages = expectedRepresentativeReferences(readme);
   const browser = await chromium.launch({ headless: true });
   try {
     const context = await browser.newContext({
@@ -58,16 +77,37 @@ async function verifyRenderedDensity() {
       deviceScaleFactor: PUBLIC_MEDIA_PIXEL_RATIO
     });
     const page = await context.newPage();
-    for (const surface of surfaces) {
+    for (const surface of publicSurfaceDefinitions(sourceSha)) {
       await page.goto(surface.url, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      for (const alt of representativeImages) {
-        const image = page.locator(`img[alt=${JSON.stringify(alt)}]`).first();
+      if (surface.versionKind === "source") {
+        assertExactSourceReadmeUrl(page.url(), sourceSha);
+      } else if (surface.versionKind === "marketplace") {
+        const renderedVersion = page.locator('td[role="definition"][aria-labelledby="version"]');
+        await renderedVersion.waitFor({ state: "attached", timeout: 30_000 });
+        assertExpectedSurfaceVersion(surface.name, (await renderedVersion.innerText()).trim(), version);
+      } else {
+        const renderedVersion = page.locator('select[aria-label="Version"]');
+        await renderedVersion.waitFor({ state: "attached", timeout: 30_000 });
+        assertExpectedSurfaceVersion(surface.name, await renderedVersion.inputValue(), version);
+      }
+      assertExpectedSurfaceContent(surface.name, await page.locator("body").innerText());
+
+      for (const expected of representativeImages) {
+        const image = page.locator(`img[alt=${JSON.stringify(expected.alt)}]`);
+        if ((await image.count()) !== 1) {
+          throw new Error(
+            `${surface.name} must render exactly one representative image with alt ${JSON.stringify(expected.alt)}.`
+          );
+        }
         await image.waitFor({ state: "attached", timeout: 30_000 });
         await image.scrollIntoViewIfNeeded();
         await image.waitFor({ state: "visible", timeout: 30_000 });
         const dimensions = await image.evaluate((element, expectedRatio) => {
           const bounds = element.getBoundingClientRect();
           return {
+            alt: element.alt,
+            sourceUrl: element.getAttribute("src"),
+            currentUrl: element.currentSrc,
             clientWidth: bounds.width,
             clientHeight: bounds.height,
             naturalWidth: element.naturalWidth,
@@ -76,6 +116,7 @@ async function verifyRenderedDensity() {
             expectedRatio
           };
         }, PUBLIC_MEDIA_PIXEL_RATIO);
+        assertRepresentativeImageSource(surface.name, dimensions, expected.url);
         if (dimensions.devicePixelRatio !== PUBLIC_MEDIA_PIXEL_RATIO) {
           throw new Error(`${surface.name} did not run at the required DPR ${PUBLIC_MEDIA_PIXEL_RATIO}.`);
         }
@@ -88,40 +129,19 @@ async function verifyRenderedDensity() {
           dimensions.naturalHeight < minimumHeight
         ) {
           throw new Error(
-            `${surface.name} would upscale ${JSON.stringify(alt)} at DPR ${PUBLIC_MEDIA_PIXEL_RATIO}: ` +
+            `${surface.name} would upscale ${JSON.stringify(expected.alt)} at DPR ${PUBLIC_MEDIA_PIXEL_RATIO}: ` +
               `${dimensions.naturalWidth}x${dimensions.naturalHeight} natural for ` +
               `${dimensions.clientWidth}x${dimensions.clientHeight} CSS pixels.`
           );
         }
       }
-      console.log(`Verified DPR ${PUBLIC_MEDIA_PIXEL_RATIO} rendering on ${surface.name}.`);
+      console.log(
+        `Verified version, content, immutable sources, and DPR ${PUBLIC_MEDIA_PIXEL_RATIO} on ${surface.name}.`
+      );
     }
   } finally {
     await browser.close();
   }
-}
-
-function immutableProductReference(source) {
-  let url;
-  try {
-    url = new URL(source);
-  } catch {
-    return undefined;
-  }
-  if (url.hostname !== "raw.githubusercontent.com") return undefined;
-  const prefix = "/Matt17BR/openwrangler/";
-  if (!url.pathname.startsWith(prefix)) return undefined;
-  const remainder = url.pathname.slice(prefix.length);
-  const separator = remainder.indexOf("/");
-  if (separator < 0 || !/^[0-9a-f]{40}$/u.test(remainder.slice(0, separator))) return undefined;
-  const assetPath = remainder.slice(separator + 1);
-  const mediaPrefix = "docs/images/readme/v1.2/";
-  if (!assetPath.startsWith(mediaPrefix) || !assetPath.endsWith(".png")) return undefined;
-  const relativePath = assetPath.slice(mediaPrefix.length);
-  if (!relativePath || relativePath.split("/").some((part) => part === "" || part === "." || part === "..")) {
-    throw new Error("README contains a malformed public-media path.");
-  }
-  return { url: url.href, relativePath };
 }
 
 function sha256(bytes) {
@@ -150,6 +170,15 @@ async function readBoundedResponse(response, source) {
   return Buffer.concat(chunks, total);
 }
 
-if (fileURLToPath(import.meta.url) !== process.argv[1]) {
-  throw new Error("The public-media surface verifier must run as a direct script.");
+async function fetchBounded(source) {
+  const response = await fetch(source, {
+    headers: { "user-agent": "Open-Wrangler-public-media-verifier" },
+    redirect: "follow"
+  });
+  if (!response.ok) throw new Error(`Could not fetch ${source}: HTTP ${response.status}.`);
+  return readBoundedResponse(response, source);
+}
+
+if (fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  await main();
 }

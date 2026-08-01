@@ -229,6 +229,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const captureScript = readFileSync(resolve(root, "scripts", "capture-screenshots.mjs"), "utf8");
   const editorAcceptance = readFileSync(resolve(root, "scripts", "editor-acceptance.mjs"), "utf8");
   const publicSurfaceVerifier = readFileSync(resolve(root, "scripts", "verify-public-media-surfaces.mjs"), "utf8");
+  const publicSurfaceContract = readFileSync(resolve(root, "scripts", "public-media-surface-contract.mjs"), "utf8");
   const packagedEditorRunner = readFileSync(resolve(root, "scripts", "run-packaged-editor-tests.mjs"), "utf8");
   const buildWebviews = readFileSync(resolve(root, "scripts", "build-webviews.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
@@ -267,7 +268,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.equal(
     packageJson.scripts?.["test:scripts:media:run"],
-    "node --max-old-space-size=1024 --test --test-concurrency=1 scripts/readme-media.test.mjs"
+    "node --max-old-space-size=1024 --test --test-concurrency=1 scripts/public-media-surfaces.test.mjs scripts/readme-media.test.mjs"
   );
   for (const asset of [
     "action-icon-dark.svg",
@@ -319,9 +320,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(publicSurfaceVerifier, /naturalWidth < minimumWidth/u);
   assert.match(publicSurfaceVerifier, /naturalHeight < minimumHeight/u);
   assert.match(publicSurfaceVerifier, /remote\.equals\(local\)/u);
-  assert.match(publicSurfaceVerifier, /GitHub/u);
-  assert.match(publicSurfaceVerifier, /Visual Studio Marketplace/u);
-  assert.match(publicSurfaceVerifier, /Open VSX/u);
+  assert.match(publicSurfaceContract, /GitHub/u);
+  assert.match(publicSurfaceContract, /Visual Studio Marketplace/u);
+  assert.match(publicSurfaceContract, /Open VSX/u);
   for (const asset of nativeAssets) {
     assert.ok(compositor.includes(`${asset.factory}("${asset.destination}", "${asset.source}"`));
   }

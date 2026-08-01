@@ -309,8 +309,18 @@ visual lane runs that check before README media can change. The rich DuckDB Parq
 still come from the lockfile-pinned Chromium capture harness and the same production webview bundle.
 The same contract requires explicit logical image dimensions, lossless PNG plus sRGB output, no resize path, a
 2 MiB per-file ceiling, and a 32 MiB complete-inventory ceiling. After a release README reaches GitHub, Visual
-Studio Marketplace, and Open VSX, run `npm run verify:public-media-surfaces`; it verifies immutable remote bytes and
-checks the hero plus a representative detail at DPR 2 without turning registry propagation into a pull-request gate.
+Studio Marketplace, and Open VSX, check out its exact source and run:
+
+```bash
+RELEASE_SOURCE_SHA="0123456789abcdef0123456789abcdef01234567" # replace with the released source commit
+RELEASE_VERSION="1.2.1" # replace with the released semantic version, without v
+npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"
+```
+
+The check rejects a mutable GitHub branch, a source/version mismatch, stale registry versions or README content, and
+representative images whose rendered `src` or `currentSrc` is not the exact immutable raw URL in the reviewed README.
+Only after those bindings hold does it verify remote bytes and the hero/detail DPR 2 density. Registry propagation
+remains a post-publication observation rather than a pull-request gate.
 
 Before any editor process starts, ordinary packaged runs probe the selected interpreter for supported Python
 3.10 through 3.14 plus Pandas, Polars, DuckDB, and OpenPyXL. Local runs should set `OPEN_WRANGLER_TEST_PYTHON` to an
