@@ -374,7 +374,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /does not install PySpark,\s+authenticate a cluster, or stop your session/u);
   assert.match(
     readme,
-    /\*\*v1\.2:\*\* finish real-user interaction polish and harden experimental PySpark 4\.2 notebook viewing[\s\S]{0,200}#36[\s\S]{0,500}bounded smoke[\s\S]{0,200}#86[\s\S]{0,300}comparison study[\s\S]{0,200}#91[\s\S]{0,100}continue/u
+    /\*\*v1\.2:\*\* delivers real-user interaction polish and hardened experimental PySpark 4\.2 notebook viewing[\s\S]{0,200}#36[\s\S]{0,500}bounded smoke[\s\S]{0,200}#86[\s\S]{0,300}comparison study[\s\S]{0,200}#91[\s\S]{0,100}continue/u
   );
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   assert.match(readme, /\*\*v2:\*\* add native R data frames[\s\S]{0,200}#87/u);
