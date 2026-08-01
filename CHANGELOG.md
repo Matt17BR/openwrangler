@@ -19,6 +19,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   names, so directly protected cross-platform and CodeQL matrices now expand lightweight context-carrier cells
   without checkout, toolchain setup, analysis, or tests. Empty, mixed, unknown, shipped README/license/changelog,
   substantive, and non-PR changes keep the complete matrix; malformed classification fails every protected context.
+- Reserved the exact numeric `1.99.x` band for Open Wrangler 2 Marketplace pre-releases while retaining legacy
+  `0.<odd-minor>.x` previews and every historical stable `1.x` classification outside that band. Release metadata
+  must still opt into the matching channel explicitly; this classifier change does not publish or trigger a release.
 - Reduced CI repetition without relaxing product acceptance: obsolete pull-request heads now cancel their own
   superseded runs, the coverage lane exclusively owns the complete TypeScript/Python and exact PySpark suites, and
   stable Linux validation runs script contracts once before instrumented coverage instead of executing both full

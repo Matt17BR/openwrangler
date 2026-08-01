@@ -12,8 +12,10 @@ export function classifyNumericReleaseVersion(version) {
   }
   const major = BigInt(match.groups?.major ?? "");
   const minor = BigInt(match.groups?.minor ?? "");
+  const isLegacyPreview = major === 0n && minor % 2n === 1n;
+  const isV2Preview = major === 1n && minor === 99n;
   return Object.freeze({
-    channel: major === 0n && minor % 2n === 1n ? "preview" : "stable",
+    channel: isLegacyPreview || isV2Preview ? "preview" : "stable",
     version
   });
 }

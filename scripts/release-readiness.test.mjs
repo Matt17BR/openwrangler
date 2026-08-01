@@ -339,15 +339,20 @@ test("limits the temporary performance-evidence narrative and workflow to 1.0.0"
 test("binds numeric release versions to their channel before workflow branching", () => {
   for (const accepted of [
     { releaseTag: "v0.3.0", version: "0.3.0", preview: true },
-    { releaseTag: "v1.0.0", version: "1.0.0", preview: false }
+    { releaseTag: "v1.0.0", version: "1.0.0", preview: false },
+    { releaseTag: "v1.1.0", version: "1.1.0", preview: false },
+    { releaseTag: "v1.98.999", version: "1.98.999", preview: false },
+    { releaseTag: "v1.99.0", version: "1.99.0", preview: true },
+    { releaseTag: "v1.99.999", version: "1.99.999", preview: true },
+    { releaseTag: "v1.100.0", version: "1.100.0", preview: false },
+    { releaseTag: "v2.0.0", version: "2.0.0", preview: false }
   ]) {
-    assert.deepEqual(
-      inspectReleaseMetadata({
-        releaseTag: accepted.releaseTag,
-        packageJson: JSON.stringify({ version: accepted.version, preview: accepted.preview })
-      }).problems,
-      []
-    );
+    const result = inspectReleaseMetadata({
+      releaseTag: accepted.releaseTag,
+      packageJson: JSON.stringify({ version: accepted.version, preview: accepted.preview })
+    });
+    assert.deepEqual(result.problems, []);
+    assert.equal(result.prerelease, accepted.preview);
   }
 
   const stableNumberMarkedPreview = inspectReleaseMetadata({
@@ -379,16 +384,40 @@ test("binds numeric release versions to their channel before workflow branching"
       'Version 0.4.0 is not a permitted preview-channel number and requires package.json "preview" to be false.'
     )
   );
+
+  const v2PreviewNumberMarkedStable = inspectReleaseMetadata({
+    releaseTag: "v1.99.0",
+    packageJson: JSON.stringify({ version: "1.99.0", preview: false })
+  });
+  assert.ok(
+    v2PreviewNumberMarkedStable.problems.includes(
+      'Preview-channel version 1.99.0 requires package.json "preview" to be true.'
+    )
+  );
+
+  for (const version of ["1.1.0", "1.98.999", "1.100.0", "2.0.0"]) {
+    const stableNumberMarkedPreview = inspectReleaseMetadata({
+      releaseTag: `v${version}`,
+      packageJson: JSON.stringify({ version, preview: true })
+    });
+    assert.ok(
+      stableNumberMarkedPreview.problems.includes(
+        `Version ${version} is not a permitted preview-channel number and requires package.json "preview" to be false.`
+      )
+    );
+  }
 });
 
 test("accepts only preview metadata in the tag-release workflow gate", () => {
-  assert.deepEqual(
-    inspectPreviewReleaseMetadata({
-      releaseTag: "v0.3.0",
-      packageJson: JSON.stringify({ version: "0.3.0", preview: true })
-    }).problems,
-    []
-  );
+  for (const version of ["0.3.0", "1.99.0"]) {
+    assert.deepEqual(
+      inspectPreviewReleaseMetadata({
+        releaseTag: `v${version}`,
+        packageJson: JSON.stringify({ version, preview: true })
+      }).problems,
+      []
+    );
+  }
 
   const stable = inspectPreviewReleaseMetadata({
     releaseTag: "v1.0.0",
@@ -599,23 +628,25 @@ test("requires explicit stable channel metadata in source, package, and VSIX", (
 });
 
 test("rejects preview-channel numbers in direct stable readiness calls", () => {
-  const previewNumberMarkedStable = { ...stablePackage, version: "0.3.0" };
-  const problems = inspectStableReleaseReadiness(
-    ready({
-      releaseTag: "v0.3.0",
-      sourcePackageJson: JSON.stringify(previewNumberMarkedStable),
-      pythonVersionFile: '__version__ = "0.3.0"\n',
-      packagedPackageJson: JSON.stringify(previewNumberMarkedStable),
-      packagedPythonVersionFile: '__version__ = "0.3.0"\n',
-      vsixManifest: manifest({ version: "0.3.0" })
-    })
-  );
+  for (const version of ["0.3.0", "1.99.0"]) {
+    const previewNumberMarkedStable = { ...stablePackage, version };
+    const problems = inspectStableReleaseReadiness(
+      ready({
+        releaseTag: `v${version}`,
+        sourcePackageJson: JSON.stringify(previewNumberMarkedStable),
+        pythonVersionFile: `__version__ = "${version}"\n`,
+        packagedPackageJson: JSON.stringify(previewNumberMarkedStable),
+        packagedPythonVersionFile: `__version__ = "${version}"\n`,
+        vsixManifest: manifest({ version })
+      })
+    );
 
-  assert.ok(
-    problems.includes(
-      "Source package.json version 0.3.0 is reserved for preview releases and cannot pass stable readiness."
-    )
-  );
+    assert.ok(
+      problems.includes(
+        `Source package.json version ${version} is reserved for preview releases and cannot pass stable readiness.`
+      )
+    );
+  }
 });
 
 test("requires one real dated changelog heading for the stable version", () => {
