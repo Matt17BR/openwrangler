@@ -14,6 +14,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
   for product changes and to be skipped only for documentation-only changes or protected-main pushes; the separate
   weekly/manual workflow remains non-cancelling ecosystem-drift evidence.
+- Unblocked the optional clean-room Data Wrangler comparison on current ipykernel launch syntax: the exact-runtime
+  guard now accepts both separate and equals-style connection-file arguments, while bounded path-free command-shape
+  diagnostics explain future mismatches without exposing interpreter or connection paths. The documented fixture
+  environment now includes Polars, and the complete feasibility sequence is verified with pinned Python 3.12.
 
 ## [1.2.0] - 2026-08-01
 

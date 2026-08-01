@@ -427,8 +427,9 @@ npm run comparison:feasibility:smoke -- \
 ```
 
 `--python` must name a current-user-owned, executable, non-empty, single-link regular file rather than the usual
-virtual-environment symlink. It must be CPython 3.10 through 3.14 with Pandas, PyArrow, Jupyter Core, and ipykernel
-installed. `--out` must be absent: the runner reserves the final path with one exclusive no-follow create, then
+virtual-environment symlink. It must be CPython 3.10 through 3.14 with Pandas, Polars, PyArrow, Jupyter Core, and
+ipykernel installed. Polars generates and validates the deterministic fixture manifest; the matched editor comparison
+still uses Pandas for both products. `--out` must be absent: the runner reserves the final path with one exclusive no-follow create, then
 writes, flushes, and validates only through that bound descriptor. It never replaces an existing file and never
 unlinks an output pathname after creation, so an ancestor or pathname rebind cannot turn failed-publication cleanup
 into deletion of the candidate or interpreter. If publication fails after creation, its partial or complete report

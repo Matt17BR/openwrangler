@@ -26,6 +26,7 @@ import {
   createComparisonProductEditorPhasePlan,
   dataWranglerComparisonKernelLabel,
   comparisonPythonCommandMatches,
+  comparisonPythonCommandShape,
   createComparisonPythonProcessObserver,
   installComparisonExtension,
   installedComparisonProductVersion,
@@ -589,6 +590,20 @@ test("candidate and Python inputs are pinned as no-follow, single-link regular f
 
 test("owned-process Python observation is product-specific and phase-authoritative", async () => {
   assert.equal(
+    comparisonPythonCommandShape(
+      ["/private/python", "-m", "ipykernel_launcher", "--f=/private/connection-secret.json"],
+      { argv0Exact: true }
+    ),
+    "argv0=exact argc=3 -m ipykernel_launcher --f=<path>"
+  );
+  assert.equal(
+    comparisonPythonCommandShape(["/private/python-alias", "--private-token", "sensitive-value"], {
+      argv0Exact: false
+    }),
+    "argv0=alias argc=2 <flag> <arg>"
+  );
+  assert.equal(comparisonPythonCommandShape([], { argv0Exact: false }), "argv0=absent argc=0");
+  assert.equal(
     comparisonPythonCommandMatches("open-wrangler", ["/python", "-s", "-m", "openwrangler_runtime.server"]),
     true
   );
@@ -606,6 +621,21 @@ test("owned-process Python observation is product-specific and phase-authoritati
       "-f",
       "connection.json"
     ]),
+    true
+  );
+  assert.equal(
+    comparisonPythonCommandMatches("data-wrangler", [
+      "/python",
+      "-I",
+      "-Xfrozen_modules=off",
+      "-m",
+      "ipykernel_launcher",
+      "--f=/private/connection.json"
+    ]),
+    true
+  );
+  assert.equal(
+    comparisonPythonCommandMatches("data-wrangler", ["/python", "-m", "ipykernel_launcher", "--f", "connection.json"]),
     true
   );
   assert.equal(
@@ -635,6 +665,17 @@ test("owned-process Python observation is product-specific and phase-authoritati
       "ipykernel_launcher",
       "-f",
       "connection.json"
+    ]),
+    false
+  );
+  assert.equal(
+    comparisonPythonCommandMatches("data-wrangler", [
+      "/python",
+      "-I",
+      "-m",
+      "ipykernel_launcher",
+      "--f=/private/connection.json",
+      "unexpected"
     ]),
     false
   );
@@ -777,6 +818,43 @@ test("Python observer retains only a boolean after seeing the exact signature", 
   });
 });
 
+test("Python observer reports only bounded safe command shapes when matching fails", async () => {
+  await withRunnerFixture(async ({ options }) => {
+    const pythonReceipt = captureComparisonInputFile(options.python, {
+      label: "Comparison Python interpreter",
+      executable: true
+    });
+    let tick;
+    const observer = createComparisonPythonProcessObserver({
+      productKey: "data-wrangler",
+      pythonReceipt,
+      inspect(_processGroupId, input) {
+        input.recordCandidateShape(
+          comparisonPythonCommandShape([options.python, "--secret-token", "/private/connection-secret.json"], {
+            argv0Exact: true
+          })
+        );
+        return false;
+      },
+      setTimer(callback) {
+        tick = callback;
+        return { unref() {} };
+      },
+      clearTimer() {}
+    });
+    observer.begin(992);
+    tick();
+    assert.throws(
+      () => observer.end(),
+      (error) =>
+        /Safe command shapes: argv0=exact argc=2 <flag> <arg>/u.test(error.message) &&
+        !error.message.includes("secret-token") &&
+        !error.message.includes("connection-secret") &&
+        !error.message.includes(options.python)
+    );
+  });
+});
+
 test("procfs observation requires matching group, executable, and product signature", async () => {
   await withRunnerFixture(async ({ options, directory }) => {
     const pythonReceipt = captureComparisonInputFile(options.python, {
@@ -819,6 +897,21 @@ test("procfs observation requires matching group, executable, and product signat
       }),
       false
     );
+
+    writeFileSync(resolve(processRoot, "cmdline"), `${options.python}\0-m\0unknown_private_module\0--token\0secret\0`);
+    const shapes = [];
+    assert.equal(
+      observeComparisonPythonProcessGroup(777, {
+        productKey: "data-wrangler",
+        pythonReceipt,
+        procRoot,
+        recordCandidateShape(shape) {
+          shapes.push(shape);
+        }
+      }),
+      false
+    );
+    assert.deepEqual(shapes, ["argv0=exact argc=4 -m <arg> <flag> <arg>"]);
   });
 });
 

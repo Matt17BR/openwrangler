@@ -67,6 +67,8 @@ const INSTALLED_EXTENSION =
   /^([A-Za-z0-9][A-Za-z0-9-]{0,63}\.[A-Za-z0-9][A-Za-z0-9-]{0,127})@([0-9A-Za-z][0-9A-Za-z._+-]{0,127})$/u;
 const PROC_FILE_MAX_BYTES = 64 * 1024;
 const PROC_ENTRY_LIMIT = 32_768;
+const PROCESS_SHAPE_LIMIT = 8;
+const PROCESS_SHAPE_ARGUMENT_LIMIT = 12;
 const comparisonInputReceipts = new WeakSet();
 const comparisonProductEditorPhasePlans = new WeakSet();
 
@@ -895,12 +897,23 @@ export function createComparisonPythonProcessObserver({
   let timer;
   let observed = false;
   let failure;
+  const candidateShapes = new Set();
   const sample = () => {
     if (activeProcessGroup === undefined || observed || failure) return;
     try {
       observed = inspect(activeProcessGroup, {
         productKey,
-        pythonReceipt
+        pythonReceipt,
+        recordCandidateShape(shape) {
+          if (
+            candidateShapes.size < PROCESS_SHAPE_LIMIT &&
+            typeof shape === "string" &&
+            shape.length > 0 &&
+            Buffer.byteLength(shape, "utf8") <= 512
+          ) {
+            candidateShapes.add(shape);
+          }
+        }
       });
     } catch (error) {
       failure = error;
@@ -927,8 +940,12 @@ export function createComparisonPythonProcessObserver({
       revalidateComparisonInputFile(pythonReceipt);
       if (failure) throw failure;
       if (!observed) {
+        const diagnostic =
+          candidateShapes.size === 0
+            ? " No exact-executable Python candidate was observed."
+            : ` Safe command shapes: ${[...candidateShapes].sort().join("; ")}.`;
         throw new Error(
-          `${productKey} never executed the exact configured Python runtime with its product-specific signature.`
+          `${productKey} never executed the exact configured Python runtime with its product-specific signature.${diagnostic}`
         );
       }
       return true;
@@ -936,7 +953,10 @@ export function createComparisonPythonProcessObserver({
   });
 }
 
-export function observeComparisonPythonProcessGroup(processGroupId, { productKey, pythonReceipt, procRoot = "/proc" }) {
+export function observeComparisonPythonProcessGroup(
+  processGroupId,
+  { productKey, pythonReceipt, procRoot = "/proc", recordCandidateShape }
+) {
   requireProductKey(productKey);
   revalidateComparisonInputFile(pythonReceipt);
   if (
@@ -963,13 +983,15 @@ export function observeComparisonPythonProcessGroup(processGroupId, { productKey
       const before = parseComparisonProcessStat(readBoundedComparisonProcFile(join(processRoot, "stat")));
       if (!before || before.processGroupId !== processGroupId) continue;
       const command = readBoundedComparisonProcFile(join(processRoot, "cmdline")).split("\0").filter(Boolean);
-      if (
-        command[0] !== pythonReceipt.path ||
-        realpathSync(join(processRoot, "exe")) !== pythonReceipt.canonicalPath ||
-        !comparisonPythonCommandMatches(productKey, command)
-      ) {
+      if (realpathSync(join(processRoot, "exe")) !== pythonReceipt.canonicalPath) {
         continue;
       }
+      recordCandidateShape?.(
+        comparisonPythonCommandShape(command, {
+          argv0Exact: command[0] === pythonReceipt.path
+        })
+      );
+      if (command[0] !== pythonReceipt.path || !comparisonPythonCommandMatches(productKey, command)) continue;
       const after = parseComparisonProcessStat(readBoundedComparisonProcFile(join(processRoot, "stat")));
       if (
         after &&
@@ -984,6 +1006,35 @@ export function observeComparisonPythonProcessGroup(processGroupId, { productKey
     }
   }
   return false;
+}
+
+export function comparisonPythonCommandShape(command, { argv0Exact } = {}) {
+  if (
+    !Array.isArray(command) ||
+    typeof argv0Exact !== "boolean" ||
+    command.some((entry) => typeof entry !== "string" || Buffer.byteLength(entry, "utf8") > PROC_FILE_MAX_BYTES)
+  ) {
+    throw new TypeError("Comparison Python command shape requires bounded command arguments and argv0 identity.");
+  }
+  if (command.length === 0) return "argv0=absent argc=0";
+  const known = new Set([
+    "-I",
+    "-Xfrozen_modules=off",
+    "-s",
+    "-m",
+    "-f",
+    "--f",
+    "ipykernel_launcher",
+    "openwrangler_runtime.server"
+  ]);
+  const safeArguments = command.slice(1, PROCESS_SHAPE_ARGUMENT_LIMIT + 1).map((argument) => {
+    if (known.has(argument)) return argument;
+    if (/^(?:--?f)=/u.test(argument)) return `${argument.slice(0, argument.indexOf("=") + 1)}<path>`;
+    if (argument.startsWith("-")) return "<flag>";
+    return "<arg>";
+  });
+  const truncated = command.length - 1 > PROCESS_SHAPE_ARGUMENT_LIMIT ? " …" : "";
+  return `argv0=${argv0Exact ? "exact" : "alias"} argc=${command.length - 1} ${safeArguments.join(" ")}${truncated}`.trim();
 }
 
 export function comparisonPythonCommandMatches(productKey, command) {
@@ -1002,18 +1053,15 @@ export function comparisonPythonCommandMatches(productKey, command) {
   }
 
   const allowedPrefixes = [[], ["-I"], ["-Xfrozen_modules=off"], ["-I", "-Xfrozen_modules=off"]];
-  const prefix = command.slice(1, -4);
-  const prefixAllowed = allowedPrefixes.some(
-    (candidate) => candidate.length === prefix.length && candidate.every((entry, index) => entry === prefix[index])
-  );
-  const moduleIndex = command.length - 4;
-  return (
-    prefixAllowed &&
-    command[moduleIndex] === "-m" &&
-    command[moduleIndex + 1] === "ipykernel_launcher" &&
-    command[moduleIndex + 2] === "-f" &&
-    command[moduleIndex + 3].length > 0
-  );
+  return allowedPrefixes.some((prefix) => {
+    if (!prefix.every((entry, index) => command[index + 1] === entry)) return false;
+    const kernelArguments = command.slice(prefix.length + 1);
+    if (kernelArguments[0] !== "-m" || kernelArguments[1] !== "ipykernel_launcher") return false;
+    return (
+      (kernelArguments.length === 4 && ["-f", "--f"].includes(kernelArguments[2]) && kernelArguments[3].length > 0) ||
+      (kernelArguments.length === 3 && /^(?:--?f)=.+/u.test(kernelArguments[2]))
+    );
+  });
 }
 
 export async function runComparisonInventoryGuard({ readInventory, runPhase }) {
