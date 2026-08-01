@@ -174,6 +174,16 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
             "priority": "interactive",
             "request": {"kind": "initialize"},
         },
+        {
+            "protocolVersion": 2,
+            "requestId": "missing-close",
+            "priority": "interactive",
+            "request": {
+                "kind": "closeSession",
+                "sessionId": "missing-close-candidate",
+                "revision": 0,
+            },
+        },
     ]
     process = subprocess.Popen(
         [sys.executable, "-m", "openwrangler_runtime.server"],
@@ -206,8 +216,21 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
     assert responses["initialize"]["protocolVersion"] == 2
     assert responses["initialize"]["response"]["kind"] == "initialized"
     assert responses["invalid"]["response"]["code"] == "invalid_request"
-    assert responses["missing-session"]["response"]["kind"] == "error"
-    assert responses["missing-session"]["response"]["viewRequestId"] == "view-missing"
+    assert responses["missing-session"]["response"] == {
+        "kind": "error",
+        "code": "unknown_session",
+        "message": "Unknown session: missing",
+        "recoverable": True,
+        "sessionId": "missing",
+        "viewRequestId": "view-missing",
+    }
+    assert responses["missing-close"]["response"] == {
+        "kind": "error",
+        "code": "unknown_session",
+        "message": "Unknown session: missing-close-candidate",
+        "recoverable": True,
+        "sessionId": "missing-close-candidate",
+    }
 
 
 def test_stdio_server_opens_polars_then_pandas_in_one_process(tmp_path: Path) -> None:
@@ -497,6 +520,95 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
             "recoverable": True,
             "viewRequestId": "view-ambiguous",
         },
+    }
+
+
+@pytest.mark.parametrize(
+    ("request_payload", "error", "expected_response"),
+    [
+        (
+            {
+                "kind": "getPage",
+                "sessionId": "spark-session",
+                "revision": 0,
+                "viewRequestId": "view-live-source",
+                "offset": 0,
+                "limit": 20,
+                "columnOffset": 0,
+                "columnLimit": 64,
+                "filterModel": {"filters": [], "sort": []},
+            },
+            server.LiveSourceInvalidatedError("spark-session", "The live PySpark dataframe was replaced."),
+            {
+                "kind": "error",
+                "code": "live_source_invalidated",
+                "message": "The live PySpark dataframe was replaced.",
+                "recoverable": True,
+                "sessionId": "spark-session",
+                "viewRequestId": "view-live-source",
+            },
+        ),
+        (
+            {"kind": "closeSession", "sessionId": "cleanup-session", "revision": 0},
+            server.SessionCleanupError("cleanup-session", "Could not release the Spark cache."),
+            {
+                "kind": "error",
+                "code": "session_cleanup_failed",
+                "message": "Could not release the Spark cache.",
+                "recoverable": False,
+                "sessionId": "cleanup-session",
+            },
+        ),
+    ],
+    ids=("live-source", "terminal-cleanup"),
+)
+def test_stdio_server_preserves_correlated_live_session_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    request_payload: dict[str, Any],
+    error: Exception,
+    expected_response: dict[str, Any],
+) -> None:
+    class FailingManager:
+        def get_page(self, *_args: Any) -> dict[str, Any]:
+            raise error
+
+        def close_session(self, *_args: Any) -> dict[str, Any]:
+            raise error
+
+        def close_all(self) -> None:
+            return None
+
+    response_written = threading.Event()
+
+    class SignallingOutput(StringIO):
+        def write(self, value: str) -> int:
+            result = super().write(value)
+            if value.endswith("\n"):
+                response_written.set()
+            return result
+
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "correlated-live-session-error",
+        "priority": "interactive",
+        "request": request_payload,
+    }
+
+    def input_lines():
+        yield f"{json.dumps(envelope)}\n"
+        assert response_written.wait(5)
+
+    output = SignallingOutput()
+    monkeypatch.setattr(server, "SessionManager", FailingManager)
+    monkeypatch.setattr(server.sys, "stdin", input_lines())
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    server.main()
+
+    assert json.loads(output.getvalue()) == {
+        "protocolVersion": 2,
+        "requestId": "correlated-live-session-error",
+        "response": expected_response,
     }
 
 

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { load as parseYaml } from "js-yaml";
 import { inspectStableCandidateWorkflow } from "./release-workflow.mjs";
+import { OPTIONAL_CI_JOB, REQUIRED_CI_JOBS, requireCiResults, resultEnvironmentKey } from "./require-ci-results.mjs";
 
 const replaceablePendingWorkflows = [
   [".github/workflows/ci.yml", "ci"],
@@ -16,13 +17,76 @@ const requiredPullRequestWorkflows = [
   ".github/workflows/codeql.yml",
   ".github/workflows/released-jupyter.yml"
 ];
+const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
+  "fast-feedback",
+  "contract-tests",
+  "visual-accessibility",
+  "production-audits",
+  "canonical-vsix",
+  "linux-packaged-editor",
+  "coverage",
+  "python-matrix",
+  "pyspark-notebook-viewing",
+  "extension-host",
+  "native-script-portability",
+  "native-extension-host",
+  "native-editor-matrix",
+  "native-cursor-smoke"
+]);
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "native"]);
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
 }
+
+function nodeTestFiles(command, group) {
+  const parts = normalizedCommand(command)?.split(" ") ?? [];
+  assert.deepEqual(parts.slice(0, 2), ["node", "--test"], `${group} must invoke Node's test runner directly.`);
+  const files = parts.slice(2);
+  assert.ok(files.length > 0, `${group} must own at least one script contract.`);
+  for (const file of files) assert.match(file, /^scripts\/[a-z0-9.-]+\.test\.mjs$/u);
+  assert.equal(new Set(files).size, files.length, `${group} must not list a script contract twice.`);
+  return files;
+}
+
+test("script groups are pairwise-disjoint and exactly cover the filesystem inventory", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const inventory = readdirSync(new URL(".", import.meta.url), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".test.mjs"))
+    .map((entry) => `scripts/${entry.name}`)
+    .sort();
+  const groups = Object.fromEntries(
+    SCRIPT_TEST_GROUPS.map((group) => [group, nodeTestFiles(manifest?.scripts?.[`test:scripts:${group}`], group)])
+  );
+
+  assert.equal(
+    manifest?.scripts?.["test:scripts"],
+    "npm run test:scripts:workflow && npm run test:scripts:portable && npm run test:scripts:native"
+  );
+  assert.equal(manifest?.scripts?.test, "npm run test:scripts && npm run test:ts && npm run test:python");
+  assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs"]);
+  assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
+  assert.deepEqual(
+    groups.portable,
+    inventory.filter((file) => !groups.workflow.includes(file) && !groups.native.includes(file))
+  );
+
+  for (let left = 0; left < SCRIPT_TEST_GROUPS.length; left += 1) {
+    for (let right = left + 1; right < SCRIPT_TEST_GROUPS.length; right += 1) {
+      const leftGroup = SCRIPT_TEST_GROUPS[left];
+      const rightGroup = SCRIPT_TEST_GROUPS[right];
+      assert.deepEqual(
+        groups[leftGroup].filter((file) => groups[rightGroup].includes(file)),
+        [],
+        `${leftGroup} and ${rightGroup} script ownership must remain disjoint.`
+      );
+    }
+  }
+  assert.deepEqual([...new Set(SCRIPT_TEST_GROUPS.flatMap((group) => groups[group]))].sort(), inventory);
+});
 
 test("manual stable evidence packages once and consumes the same canonical artifact set", () => {
   const source = readFileSync(new URL("../.github/workflows/stable-candidate.yml", import.meta.url), "utf8");
@@ -342,7 +406,7 @@ test("PR workflows replace only superseded pending runs", () => {
   }
 });
 
-test("native VS Code and Cursor smoke consume the same downloaded canonical VSIX", () => {
+test("native VS Code and Cursor jobs consume the same downloaded canonical VSIX independently", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
   assert.equal(
@@ -353,21 +417,37 @@ test("native VS Code and Cursor smoke consume the same downloaded canonical VSIX
     "CI must let package.json select the canonical VSIX channel."
   );
   assert.doesNotMatch(source, /package:prepared -- --pre-release/u);
-  const steps = workflow?.jobs?.["native-editor-matrix"]?.steps;
-  assert.ok(Array.isArray(steps), "CI must retain the native editor matrix.");
+  const vscodeSteps = workflow?.jobs?.["native-editor-matrix"]?.steps;
+  const cursorSteps = workflow?.jobs?.["native-cursor-smoke"]?.steps;
+  assert.ok(Array.isArray(vscodeSteps), "CI must retain the native VS Code matrix.");
+  assert.ok(Array.isArray(cursorSteps), "CI must retain the independent native Cursor matrix.");
 
-  const download = steps.find(
-    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/download-artifact@")
-  );
-  assert.equal(download?.with?.name, "openwrangler-vsix");
-  assert.equal(download?.with?.path, "canonical-vsix");
+  for (const steps of [vscodeSteps, cursorSteps]) {
+    const download = steps.find(
+      (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/download-artifact@")
+    );
+    assert.equal(download?.with?.name, "openwrangler-vsix");
+    assert.equal(download?.with?.path, "canonical-vsix");
+    assert.equal(
+      steps.some((step) => step?.run === "npm run build:test-extension"),
+      true
+    );
+  }
 
   const expectedCommand = "node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix";
-  assert.equal(steps.find((step) => step?.id === "packaged_editor")?.run, expectedCommand);
-  assert.equal(steps.find((step) => step?.id === "cursor_smoke")?.run, expectedCommand);
+  assert.equal(vscodeSteps.find((step) => step?.id === "packaged_editor")?.run, expectedCommand);
+  assert.equal(
+    vscodeSteps.some((step) => step?.id === "cursor_smoke"),
+    false
+  );
+  assert.equal(cursorSteps.find((step) => step?.id === "cursor_smoke")?.run, expectedCommand);
+  assert.equal(
+    cursorSteps.some((step) => step?.id === "packaged_editor"),
+    false
+  );
 });
 
-test("PR CI starts one bounded static fast-feedback lane without weakening validate", () => {
+test("PR CI starts one bounded static fast-feedback lane and preserves every static gate", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
   const fastFeedback = workflow?.jobs?.["fast-feedback"];
@@ -393,21 +473,193 @@ test("PR CI starts one bounded static fast-feedback lane without weakening valid
       { name: "Reference freshness", run: "npm run reference:check" },
       { name: "Documentation freshness", run: "npm run docs:check" },
       { name: "Production license inventory", run: "npm run license:check" },
-      { name: "Workflow contracts", run: "node --test scripts/ci-workflow.test.mjs" }
+      { name: "Workflow contracts", run: "npm run test:scripts:workflow" }
     ],
     "The early lane must remain source-only, named, and independently attributable."
   );
 
-  const validate = workflow?.jobs?.validate;
-  assert.equal(
-    validate?.steps?.some((step) => step?.run === "npm run check"),
-    true,
-    "The existing authoritative quality gate must remain intact."
-  );
+  const contractSteps = workflow?.jobs?.["contract-tests"]?.steps;
+  assert.ok(Array.isArray(contractSteps));
+  for (const command of [
+    "npm run lint:python",
+    "npm run brand:check",
+    "npm run check:remote-jupyter-lock",
+    "npm run lock:remote-jupyter:check",
+    "npm run test:scripts:portable",
+    "npm run test:ts",
+    "npm run test:python"
+  ]) {
+    assert.equal(
+      contractSteps.some((step) => step?.run === command),
+      true,
+      `${command} must remain an authoritative contract gate.`
+    );
+  }
   assert.equal(
     workflow?.jobs?.["canonical-vsix"]?.needs,
     undefined,
     "Canonical packaging must remain parallel with fast feedback."
+  );
+});
+
+test("authoritative CI work is independently attributable before the required aggregate", () => {
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+
+  const visual = workflow?.jobs?.["visual-accessibility"];
+  assert.equal(visual?.name, "Visual and accessibility");
+  assert.equal(visual?.needs, undefined);
+  assert.equal(
+    visual?.steps?.some(
+      (step) => step?.uses === "actions/setup-python@v6" && step?.with?.["python-version"] === "3.12"
+    ),
+    true,
+    "Runtime-backed production screenshot fixtures need the exact Python test environment."
+  );
+  assert.equal(
+    visual?.steps?.some((step) => step?.run === 'python -m pip install -e "python[dev]"'),
+    true,
+    "Visual acceptance must install the Pandas, Polars, DuckDB, and notebook fixture dependencies."
+  );
+  assert.equal(
+    visual?.steps?.some((step) => step?.run === "npm run test:webview-acceptance"),
+    true
+  );
+
+  const audits = workflow?.jobs?.["production-audits"];
+  assert.equal(audits?.name, "Production dependency audits");
+  assert.equal(
+    audits?.steps?.some((step) => step?.run === "npm audit --omit=dev"),
+    true
+  );
+  assert.equal(
+    audits?.steps?.some((step) => step?.run === "npm run audit:python"),
+    true
+  );
+
+  const linuxPackaged = workflow?.jobs?.["linux-packaged-editor"];
+  assert.equal(linuxPackaged?.needs, "canonical-vsix");
+  assert.equal(linuxPackaged?.if, "${{ always() }}");
+  assert.match(
+    linuxPackaged?.steps?.find((step) => step?.name === "Require the canonical PR artifact")?.if ?? "",
+    /needs\.canonical-vsix\.result != 'success'/u
+  );
+  assert.equal(
+    linuxPackaged?.steps?.some((step) => step?.id === "packaged_editor"),
+    true
+  );
+
+  const portability = workflow?.jobs?.["native-script-portability"];
+  const extensionHost = workflow?.jobs?.["native-extension-host"];
+  const vscode = workflow?.jobs?.["native-editor-matrix"];
+  const cursor = workflow?.jobs?.["native-cursor-smoke"];
+  for (const job of [extensionHost, vscode, cursor]) {
+    assert.deepEqual(job?.strategy?.matrix?.os, ["macos-latest", "windows-latest"]);
+    assert.equal(job?.strategy?.["fail-fast"], false);
+  }
+  assert.deepEqual(portability, {
+    name: "Native script contracts (Windows)",
+    "runs-on": "windows-latest",
+    "timeout-minutes": 20,
+    steps: [
+      { uses: "actions/checkout@v6" },
+      { uses: "actions/setup-node@v6", with: { "node-version": 22, cache: "npm" } },
+      { run: "npm ci" },
+      { run: "npm run test:scripts:native" }
+    ]
+  });
+  assert.equal(extensionHost?.needs, undefined);
+  assert.equal(
+    extensionHost?.steps?.some((step) => step?.run === "npm run test:extension-host"),
+    true
+  );
+  assert.equal(
+    vscode?.steps?.some((step) => step?.run?.startsWith("npm run test:scripts")),
+    false
+  );
+  assert.equal(
+    vscode?.steps?.some((step) => step?.run === "npm run test:extension-host"),
+    false
+  );
+  assert.equal(
+    cursor?.steps?.some((step) => step?.run?.startsWith("npm run test:scripts")),
+    false
+  );
+  assert.equal(
+    cursor?.steps?.some((step) => step?.run === "npm run test:extension-host"),
+    false
+  );
+
+  const ownersByCommand = new Map();
+  for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
+    for (const step of job?.steps ?? []) {
+      if (
+        step?.run === "npm run test:scripts:workflow" ||
+        step?.run === "npm run test:scripts:portable" ||
+        step?.run === "npm run test:scripts:native"
+      ) {
+        const owners = ownersByCommand.get(step.run) ?? [];
+        owners.push(jobId);
+        ownersByCommand.set(step.run, owners);
+      }
+    }
+  }
+  assert.deepEqual(ownersByCommand.get("npm run test:scripts:workflow"), ["fast-feedback"]);
+  assert.deepEqual(ownersByCommand.get("npm run test:scripts:portable"), ["contract-tests"]);
+  assert.deepEqual(ownersByCommand.get("npm run test:scripts:native"), ["native-script-portability"]);
+});
+
+test("validate remains the fail-closed required aggregate without a skipped-success path", () => {
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+  const aggregate = workflow?.jobs?.validate;
+
+  assert.equal(aggregate?.name, undefined, "The protected validate context must keep its existing name.");
+  assert.deepEqual(REQUIRED_CI_JOBS, EXPECTED_BLOCKING_CI_JOBS);
+  assert.deepEqual(aggregate?.needs, [...EXPECTED_BLOCKING_CI_JOBS, OPTIONAL_CI_JOB]);
+  assert.equal(aggregate?.if, "${{ always() }}");
+  assert.equal(aggregate?.["runs-on"], "ubuntu-latest");
+  assert.equal(aggregate?.["timeout-minutes"], 5);
+  assert.equal(aggregate?.["continue-on-error"], undefined);
+
+  const resultStep = aggregate?.steps?.find((step) => step?.run === "node scripts/require-ci-results.mjs");
+  assert.ok(resultStep);
+  assert.equal(resultStep?.["continue-on-error"], undefined);
+  for (const jobId of EXPECTED_BLOCKING_CI_JOBS) {
+    assert.equal(resultStep?.env?.[resultEnvironmentKey(jobId)], `\${{ needs.${jobId}.result }}`);
+  }
+  assert.equal(resultStep?.env?.[resultEnvironmentKey(OPTIONAL_CI_JOB)], "${{ needs.remote-workspace.result }}");
+  assert.match(resultStep?.env?.REMOTE_WORKSPACE_REQUIRED ?? "", /acceptance:remote-ssh/u);
+});
+
+test("required CI result validation rejects every absent or non-success blocking result", () => {
+  const successes = Object.fromEntries(REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]));
+  assert.doesNotThrow(() =>
+    requireCiResults({ requiredResults: successes, remoteResult: "skipped", remoteRequired: false })
+  );
+  assert.doesNotThrow(() =>
+    requireCiResults({ requiredResults: successes, remoteResult: "success", remoteRequired: true })
+  );
+
+  for (const jobId of REQUIRED_CI_JOBS) {
+    for (const result of [undefined, "failure", "cancelled", "skipped"]) {
+      const candidate = { ...successes };
+      if (result === undefined) delete candidate[jobId];
+      else candidate[jobId] = result;
+      assert.throws(
+        () => requireCiResults({ requiredResults: candidate, remoteResult: "skipped", remoteRequired: false }),
+        new RegExp(`${jobId}=${result ?? "missing"}`, "u")
+      );
+    }
+  }
+
+  assert.throws(
+    () => requireCiResults({ requiredResults: successes, remoteResult: "skipped", remoteRequired: true }),
+    /remote-workspace=skipped \(expected success\)/u
+  );
+  assert.throws(
+    () => requireCiResults({ requiredResults: successes, remoteResult: "success", remoteRequired: false }),
+    /remote-workspace=success \(expected skipped\)/u
   );
 });
 

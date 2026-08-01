@@ -1,6 +1,11 @@
 import * as vscode from "vscode";
 import { updateSetting } from "../configuration";
-import { KernelBridge, type NotebookPreviewProvider, shouldRegisterNotebookFormatters } from "./kernelBridge";
+import {
+  KernelBridge,
+  NotebookFormatterPreparationPendingError,
+  type NotebookPreviewProvider,
+  shouldRegisterNotebookFormatters
+} from "./kernelBridge";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 
 const DATA_WRANGLER_EXTENSION_ID = "ms-toolsai.datawrangler";
@@ -99,7 +104,20 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
       await entry.bridge.prepareNotebookFormatter();
       entry.prepared = true;
       entry.retryIndex = 0;
-    } catch {
+    } catch (error) {
+      if (error instanceof NotebookFormatterPreparationPendingError) {
+        const settlement = await error.settlement;
+        if (!this.canPrepare(notebook) || this.disposed || this.entries.get(notebook) !== entry) {
+          this.remove(notebook);
+          return;
+        }
+        if (settlement.kind === "prepared") {
+          entry.prepared = true;
+          entry.retryIndex = 0;
+          return;
+        }
+        if (settlement.kind === "generationChanged") entry.retryIndex = 0;
+      }
       if (!this.canPrepare(notebook) || this.disposed) {
         this.remove(notebook);
         return;

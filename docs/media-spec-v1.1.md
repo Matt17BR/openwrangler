@@ -1,5 +1,8 @@
 # Open Wrangler v1.1 media specification
 
+> **Historical record.** This file documents the v1.1 media contract only. Current work must follow the
+> [canonical v1.2 media specification](media-spec-v1.2.md).
+
 This specification replaces evidence-heavy README captures with two concise product views and a linked notebook
 gallery. Editor and notebook images come from the packaged extension running in an isolated profile. The DuckDB
 file gallery uses the same production webview bundle and bundled native runtime in the deterministic browser
@@ -52,6 +55,12 @@ harness so its rich Parquet fixture can be reproduced without presenting a mocke
   frame, or decorative background
 - Framing: the standard-width viewport shows a useful subset of the realistic 15-column dataframe while keeping
   native labels legible when the image is rendered at README width
+
+## Later media contracts
+
+The v1.2 README, gallery, source captures, exact-crop derivatives, and publication gate are defined only in
+[`docs/media-spec-v1.2.md`](media-spec-v1.2.md). Do not apply this historical v1.1 layout or inventory to current
+media.
 
 ## Linked gallery
 

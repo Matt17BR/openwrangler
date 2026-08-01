@@ -5,13 +5,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import polars as pl
 import pytest
 
 import openwrangler_runtime.session as session_runtime
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PandasEngine, PolarsEngine
-from openwrangler_runtime.engines.base import SummaryColumnProjection
-from openwrangler_runtime.session import PAGE_CACHE_LIMIT, SessionManager
+from openwrangler_runtime.engines.base import EngineCapabilities, SummaryColumnProjection
+from openwrangler_runtime.session import PAGE_CACHE_LIMIT, LiveSourceInvalidatedError, SessionManager
 
 
 class CountingPandasEngine(PandasEngine):
@@ -63,6 +64,24 @@ class CountingPandasEngine(PandasEngine):
         return super().summaries(frame, column_projection)
 
 
+class LiveNotebookPandasEngine(CountingPandasEngine):
+    """A cheap dataframe adapter for exercising live-source session ownership."""
+
+    name = "pyspark"
+    capabilities = EngineCapabilities(
+        source_kinds=frozenset({"notebookVariable"}),
+        supports_editing=False,
+        lazy_file_extensions=frozenset(),
+        export_formats=frozenset(),
+        supports_shutdown_interrupt=False,
+        supports_request_cancellation=False,
+    )
+
+    @staticmethod
+    def live_source_is_stopped(frame: Any) -> bool:
+        return bool(frame.attrs.get("sparkStopped", False))
+
+
 class CorruptSummaryPandasEngine(PandasEngine):
     def __init__(self, corruption: str) -> None:
         self.corruption = corruption
@@ -101,6 +120,17 @@ def counting_manager() -> tuple[SessionManager, list[CountingPandasEngine]]:
         return engine
 
     return SessionManager(EngineRegistry((("pandas", create),))), created
+
+
+def live_notebook_manager() -> tuple[SessionManager, list[LiveNotebookPandasEngine]]:
+    created: list[LiveNotebookPandasEngine] = []
+
+    def create() -> LiveNotebookPandasEngine:
+        engine = LiveNotebookPandasEngine()
+        created.append(engine)
+        return engine
+
+    return SessionManager(EngineRegistry((("pyspark", create),))), created
 
 
 def write_values(tmp_path, count: int = 12):
@@ -440,6 +470,95 @@ def test_page_cache_never_retains_a_single_oversized_block(tmp_path, monkeypatch
     assert session.page_cache_bytes == 0
 
 
+@pytest.mark.parametrize("invalidation", ["replaced", "missing", "stopped"])
+def test_live_pyspark_source_invalidation_precedes_cached_page_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    invalidation: str,
+) -> None:
+    import __main__
+
+    variable_name = "open_wrangler_live_cache_frame"
+    original = pd.DataFrame({"value": [1, 2, 3]})
+    monkeypatch.setattr(__main__, variable_name, original, raising=False)
+    manager, created = live_notebook_manager()
+    opened = manager.open_session(
+        {"kind": "notebookVariable", "label": variable_name, "variableName": variable_name},
+        backend="pyspark",
+        page_size=2,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    assert session.live_source_value is original
+    assert len(session.page_cache) == 1
+    assert created[0].page_calls == [(0, 2, 3)]
+
+    if invalidation == "replaced":
+        monkeypatch.setattr(__main__, variable_name, pd.DataFrame({"value": [10, 20, 30]}))
+        message = "was replaced"
+    elif invalidation == "missing":
+        monkeypatch.delattr(__main__, variable_name)
+        message = "no longer available"
+    else:
+        original.attrs["sparkStopped"] = True
+        message = "Spark session that has stopped"
+
+    with pytest.raises(LiveSourceInvalidatedError, match=message) as invalidated:
+        manager.get_page(session_id, 0, 0, 2, {"filters": [], "sort": []})
+
+    assert invalidated.value.session_id == session_id
+    assert "If its columns or types changed, reopen the variable instead." in str(invalidated.value)
+    assert created[0].page_calls == [(0, 2, 3)]
+    assert not session.page_cache
+    assert session.page_cache_bytes == 0
+    assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
+    assert session.live_source_value is None
+
+
+def test_live_pyspark_source_is_revalidated_after_an_uncached_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    import __main__
+
+    variable_name = "open_wrangler_live_postread_frame"
+    original = pd.DataFrame({"value": [1, 2, 3]})
+    replacement = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(__main__, variable_name, original, raising=False)
+
+    class ReplacingLiveEngine(LiveNotebookPandasEngine):
+        replace_after_next_page = False
+
+        def page(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            page = super().page(*args, **kwargs)
+            if self.replace_after_next_page:
+                self.replace_after_next_page = False
+                monkeypatch.setattr(__main__, variable_name, replacement)
+            return page
+
+    created: list[ReplacingLiveEngine] = []
+
+    def create() -> ReplacingLiveEngine:
+        engine = ReplacingLiveEngine()
+        created.append(engine)
+        return engine
+
+    manager = SessionManager(EngineRegistry((("pyspark", create),)))
+    opened = manager.open_session(
+        {"kind": "notebookVariable", "label": variable_name, "variableName": variable_name},
+        backend="pyspark",
+        page_size=1,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    created[0].replace_after_next_page = True
+
+    with pytest.raises(LiveSourceInvalidatedError, match="was replaced") as invalidated:
+        manager.get_page(session_id, 0, 1, 1, {"filters": [], "sort": []})
+
+    assert invalidated.value.session_id == session_id
+    assert created[0].page_calls == [(0, 1, 3), (1, 1, 3)]
+    assert not session.page_cache
+    assert session.page_cache_bytes == 0
+    manager.close_session(session_id, 0)
+
+
 def test_filter_and_sort_changes_invalidate_pages_but_keep_total_rows_exact(tmp_path) -> None:
     manager, created = counting_manager()
     opened = manager.open_session(source(write_values(tmp_path, 5)), backend="pandas", page_size=2)
@@ -559,7 +678,7 @@ def test_draft_plan_and_close_invalidate_cache_without_rebuilding_an_unchanged_d
     assert session.view_generation == 6
     assert session.committed_shape == session.source_shape == {"rows": 4, "columns": 2}
     assert session.committed_schema == session.source_schema
-    assert engine.filter_calls == 4
+    assert engine.filter_calls == 5
     assert session.page_cache
 
     manager.close_session(session_id, 5)

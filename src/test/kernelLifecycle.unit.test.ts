@@ -55,6 +55,25 @@ describe("RestartableKernel", () => {
     expect(execute).toHaveBeenCalledTimes(2);
   });
 
+  it("awaits pre-dispatch work on the exact acquired kernel", async () => {
+    const kernel = { generation: 1 };
+    const preflight = deferred<void>();
+    const execute = vi.fn(async (value: typeof kernel) => value.generation);
+    const beforeDispatch = vi.fn((value: typeof kernel) => {
+      expect(value).toBe(kernel);
+      return preflight.promise;
+    });
+    const lifecycle = new RestartableKernel(async () => kernel);
+
+    const result = lifecycle.run(async () => undefined, execute, { beforeDispatch });
+    await vi.waitFor(() => expect(beforeDispatch).toHaveBeenCalledOnce());
+    expect(execute).not.toHaveBeenCalled();
+
+    preflight.resolve();
+    await expect(result).resolves.toBe(1);
+    expect(execute).toHaveBeenCalledWith(kernel);
+  });
+
   it("reacquires and retries an explicitly idempotent dispatched request once", async () => {
     const kernels = [{ generation: 1 }, { generation: 2 }];
     const acquire = vi.fn(async () => kernels.shift()!);

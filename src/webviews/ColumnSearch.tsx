@@ -19,7 +19,7 @@ interface ColumnSearchProps {
 }
 
 const resultHeight = 32;
-const maximumResultViewportHeight = 360;
+const maximumResultViewportHeight = resultHeight * 11;
 const resultOverscan = 4;
 
 export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSearchProps) {

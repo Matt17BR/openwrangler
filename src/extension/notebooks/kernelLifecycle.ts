@@ -1,6 +1,6 @@
 export type KernelLifecyclePhase = "acquire" | "bootstrap" | "beforeDispatch" | "execute";
 
-export interface RestartableKernelRunOptions {
+export interface RestartableKernelRunOptions<TKernel = unknown> {
   /**
    * Execution may have reached the kernel before it failed. Retrying that phase
    * is therefore opt-in and is reserved for requests that are explicitly
@@ -8,8 +8,10 @@ export interface RestartableKernelRunOptions {
    */
   retryAfterDispatch?: boolean;
   shouldRetry?: (error: unknown, phase: KernelLifecyclePhase) => boolean;
-  /** Runs immediately before user code is handed to the kernel. */
-  beforeDispatch?: () => void;
+  /** Receives the exact shared bootstrap settlement for both its owner and joiners. */
+  onBootstrapPending?: (settlement: Promise<void>) => void;
+  /** Runs immediately before the authoritative request is handed to the exact acquired kernel. */
+  beforeDispatch?: (kernel: TKernel) => void | Promise<void>;
 }
 
 interface KernelGeneration<TKernel> {
@@ -50,7 +52,7 @@ export class RestartableKernel<TKernel> {
   async run<TResult>(
     bootstrap: (kernel: TKernel) => Promise<void>,
     execute: (kernel: TKernel) => Promise<TResult>,
-    options: RestartableKernelRunOptions = {}
+    options: RestartableKernelRunOptions<TKernel> = {}
   ): Promise<TResult> {
     for (let attempt = 0; ; attempt += 1) {
       let generation: KernelGeneration<TKernel> | undefined;
@@ -60,10 +62,11 @@ export class RestartableKernel<TKernel> {
         generation = await this.current();
         phase = "bootstrap";
         this.assertCurrent(generation);
-        await this.ensureBootstrapped(generation, bootstrap);
+        await this.ensureBootstrapped(generation, bootstrap, options.onBootstrapPending);
         this.assertCurrent(generation);
         phase = "beforeDispatch";
-        options.beforeDispatch?.();
+        await options.beforeDispatch?.(generation.kernel);
+        this.assertCurrent(generation);
         dispatched = true;
         phase = "execute";
         const result = await execute(generation.kernel);
@@ -124,7 +127,8 @@ export class RestartableKernel<TKernel> {
 
   private async ensureBootstrapped(
     generation: KernelGeneration<TKernel>,
-    bootstrap: (kernel: TKernel) => Promise<void>
+    bootstrap: (kernel: TKernel) => Promise<void>,
+    onPending?: (settlement: Promise<void>) => void
   ): Promise<void> {
     this.assertCurrent(generation);
     if (generation.bootstrapped) return;
@@ -135,6 +139,7 @@ export class RestartableKernel<TKernel> {
     })();
 
     const bootstrapPromise = generation.bootstrapPromise;
+    onPending?.(bootstrapPromise);
     try {
       await bootstrapPromise;
     } catch (error) {

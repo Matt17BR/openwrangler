@@ -4,8 +4,11 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
+  PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+  PACKAGED_OPERATION_DIALOG_VIEWPORT,
   PACKAGED_PANDAS_NOTEBOOK_OUTPUT,
   PACKAGED_PANDAS_NOTEBOOK_VIEWPORT,
+  PACKAGED_PRODUCT_VIEWPORT,
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_DATA_PROVENANCE,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
@@ -16,8 +19,10 @@ import {
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
+  packagedViewportHeightWithoutPartialBottomRow,
   packagedFirstUseAccountNoteKind,
   packagedFirstUseFixtureCsv,
+  packagedProductFixtureCsv,
   packagedScreenshotFixtureCsv,
   packagedScreenshotRow
 } from "./extensionHost/screenshotEvidence";
@@ -49,6 +54,18 @@ describe("packaged editor screenshot evidence", () => {
     expect(lines[(explicitEmptyIndex ?? -1) + 1]).toMatch(/;""$/u);
     expect(lines[(nullIndex ?? -1) + 1]).toMatch(/;$/u);
     expect(csv).toContain("Zürich and São Paulo");
+  });
+
+  it("keeps final product scenes on a separate full-size automatically inferred dialect", () => {
+    const csv = packagedProductFixtureCsv();
+    const lines = csv.trimEnd().split("\n");
+
+    expect(lines).toHaveLength(PACKAGED_SCREENSHOT_ROW_COUNT + 1);
+    expect(lines[0]).toBe(`\uFEFF${PACKAGED_SCREENSHOT_COLUMNS.join(";")}`);
+    expect(parseDelimitedRecord(lines[1] ?? "", ";")).toEqual(packagedScreenshotRow(0));
+    expect(parseDelimitedRecord(lines.at(-1) ?? "", ";")).toEqual(
+      packagedScreenshotRow(PACKAGED_SCREENSHOT_ROW_COUNT - 1)
+    );
   });
 
   it("generates one deterministic, realistic business fixture without private data", () => {
@@ -171,6 +188,9 @@ describe("packaged editor screenshot evidence", () => {
 
   it("uses a readable notebook README viewport without changing the full workbench capture", () => {
     expect(PACKAGED_SCREENSHOT_VIEWPORT).toEqual({ width: 1_920, height: 860 });
+    expect(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT).toEqual({ width: 1_440, height: 900 });
+    expect(PACKAGED_PRODUCT_VIEWPORT).toEqual({ width: 1_440, height: 900 });
+    expect(PACKAGED_OPERATION_DIALOG_VIEWPORT).toEqual({ width: 1_280, height: 900 });
     expect(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT).toEqual({ width: 1_280, height: 700 });
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT).toEqual({ width: 1_280, height: 600 });
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width).toBe(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT.width);
@@ -178,13 +198,68 @@ describe("packaged editor screenshot evidence", () => {
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width / PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height).toBeLessThan(2.2);
   });
 
+  it("aligns a screenshot viewport to the measured bottom-row boundary", () => {
+    expect(packagedViewportHeightWithoutPartialBottomRow(900, 13.2, 28)).toBe(886);
+    expect(packagedViewportHeightWithoutPartialBottomRow(886, 2, 28)).toBe(884);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(0, 2, 28)).toThrow(TypeError);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(900, Number.NaN, 28)).toThrow(TypeError);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(900, 0, 28)).toThrow(RangeError);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(900, 28, 28)).toThrow(RangeError);
+    expect(() => packagedViewportHeightWithoutPartialBottomRow(1, 0.5, 28)).toThrow(RangeError);
+  });
+
   it("keeps README scene names explicit across file and notebook workflows", () => {
-    expect(PACKAGED_SCREENSHOT_SCENES).toEqual(["hero", "notebook-pandas", "notebook-polars", "notebook-pyspark"]);
+    expect(PACKAGED_SCREENSHOT_SCENES).toEqual([
+      "hero",
+      "file-explorer-action",
+      "explore",
+      "high-contrast-explore",
+      "filter-result",
+      "workflow",
+      "sidebar-overview",
+      "operation-catalog",
+      "operation-configuration",
+      "applied-step-inspection",
+      "latest-step-edited",
+      "latest-step-undone",
+      "notebook-pandas",
+      "notebook-code-insertion",
+      "notebook-variable-picker",
+      "notebook-pyspark-picker",
+      "notebook-polars",
+      "notebook-duckdb",
+      "notebook-pyspark"
+    ]);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
+    expect(packagedScreenshotFileName("vscode", "explore", "dark")).toBe("vscode-explore-dark.png");
+    expect(packagedScreenshotFileName("vscode", "file-explorer-action", "dark")).toBe(
+      "vscode-file-explorer-action-dark.png"
+    );
+    expect(packagedScreenshotFileName("vscode", "high-contrast-explore", "high-contrast")).toBe(
+      "vscode-high-contrast-explore-high-contrast.png"
+    );
+    expect(packagedScreenshotFileName("vscode", "filter-result", "dark")).toBe("vscode-filter-result-dark.png");
+    expect(packagedScreenshotFileName("vscode", "workflow", "dark")).toBe("vscode-workflow-dark.png");
+    expect(packagedScreenshotFileName("vscode", "latest-step-edited", "dark")).toBe(
+      "vscode-latest-step-edited-dark.png"
+    );
+    expect(packagedScreenshotFileName("vscode", "latest-step-undone", "dark")).toBe(
+      "vscode-latest-step-undone-dark.png"
+    );
+    expect(packagedScreenshotFileName("vscode", "notebook-code-insertion", "dark")).toBe(
+      "vscode-notebook-code-insertion-dark.png"
+    );
     expect(packagedScreenshotFileName("vscode", "notebook-pandas", "dark")).toBe("vscode-notebook-pandas-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-polars", "dark")).toBe("vscode-notebook-polars-dark.png");
+    expect(packagedScreenshotFileName("vscode", "notebook-duckdb", "dark")).toBe("vscode-notebook-duckdb-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-pyspark", "dark")).toBe("vscode-notebook-pyspark-dark.png");
+    expect(packagedScreenshotFileName("vscode", "notebook-variable-picker", "dark")).toBe(
+      "vscode-notebook-variable-picker-dark.png"
+    );
+    expect(packagedScreenshotFileName("vscode", "notebook-pyspark-picker", "dark")).toBe(
+      "vscode-notebook-pyspark-picker-dark.png"
+    );
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
   });
 
@@ -193,17 +268,80 @@ describe("packaged editor screenshot evidence", () => {
     const jupyterEnvironment = readFileSync(resolve("scripts/jupyter-acceptance-environment.mjs"), "utf8");
     const deprecatedKernelLabel = ["Open Wrangler", "Acceptance"].join(" ");
     const deprecatedVariableName = ["notebook", "showcase"].join("_");
+    const pickerCapture = extensionHost.slice(
+      extensionHost.indexOf("async function captureReleasedJupyterVariablePicker"),
+      extensionHost.indexOf("async function assertReleasedJupyterCaptureInternalMarkerHidden")
+    );
 
     expect(extensionHost).toContain('const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)"');
     expect(extensionHost).toContain('"orders_df = pd.DataFrame({"');
+    expect(extensionHost).toContain('"orders_preview_df = orders_df.loc[:, showcase_preview_columns].copy()"');
     expect(extensionHost).toContain('"# Explore recent orders in Open Wrangler\\n"');
+    expect(extensionHost).not.toContain('"notebook.cell.collapseAllCellInputs"');
+    expect(extensionHost).not.toContain('"notebook.cell.collapseAllCellOutputs"');
+    expect(extensionHost).toContain('"notebook.cell.collapseCellInput"');
+    expect(extensionHost).toContain('"notebook.cell.collapseCellOutput"');
+    expect(extensionHost).toContain("for (const internalIndex of [0, 3, 4])");
+    expect(extensionHost).toContain(
+      "the private notebook cell ${internalIndex} to become visible before it is collapsed"
+    );
+    expect(extensionHost).toContain(
+      "The public notebook showcase cell must be visible before its media journey begins."
+    );
+    expect(pickerCapture).toContain(
+      'waitForNotebookRendererButton(workbench, "orders_preview_df", "Open in Open Wrangler")'
+    );
+    expect(pickerCapture).toContain('scrollIntoView({ block: "center" })');
+    expect(extensionHost).toContain("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)");
+    expect(extensionHost).not.toContain("Public notebook screenshots must retain the readable showcase source cell.");
+    expect(extensionHost).toContain('const internalMarkerVisible = await workbench.locator("body").evaluate');
+    expect(extensionHost).toContain("bounds.top < page.innerHeight");
+    expect(extensionHost).toContain('pageSize.value = "10"');
+    expect(extensionHost).toContain("scrollerBounds.top + scroller.clientTop + scroller.clientHeight");
+    expect(pickerCapture.indexOf("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)")).toBeGreaterThan(0);
+    expect(pickerCapture.indexOf("captureNotebookWorkbenchScreenshot(workbench, destination)")).toBeGreaterThan(
+      pickerCapture.indexOf("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)")
+    );
     expect(jupyterEnvironment).toContain('display_name: "Python 3.12 (Open Wrangler)"');
     expect(extensionHost).not.toContain(deprecatedKernelLabel);
     expect(extensionHost).not.toContain(deprecatedVariableName);
     expect(jupyterEnvironment).not.toContain(deprecatedKernelLabel);
   });
 
-  it("keeps the README to two concise portable product views", () => {
+  it("captures the real Explorer, plan-history, insertion, and high-contrast journeys", () => {
+    const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
+    const mediaSpec = readFileSync(resolve("docs/media-spec-v1.2.md"), "utf8");
+    const testing = readFileSync(resolve("docs/testing.md"), "utf8");
+    const notebookInsertion = extensionHost.slice(
+      extensionHost.indexOf("async function assertReleasedNotebookCodeInsertion"),
+      extensionHost.indexOf("async function captureReleasedJupyterCodeInsertion")
+    );
+
+    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "file-explorer-action", "dark")');
+    expect(extensionHost).toContain("await action.click();");
+    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "high-contrast-explore", "high-contrast")');
+    expect(extensionHost).toContain("draft.params.value === 750");
+    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "latest-step-edited", "dark")');
+    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "latest-step-undone", "dark")');
+    expect(extensionHost).toContain(
+      'await revealPackagedProductSceneColumn(testing, workbench, sessionId, "market_upper");'
+    );
+    expect(extensionHost).toContain("const boundaryTolerance = 1;");
+    expect(extensionHost).toContain('"notebook-code-insertion"');
+    expect(notebookInsertion).toContain('newColumn: "value_plus_10"');
+    expect(notebookInsertion).toContain("const code = insertionActive?.code;");
+    expect(notebookInsertion).not.toContain("setCodeForExport");
+    expect(extensionHost).toContain('await vscode.commands.executeCommand("notebook.cell.edit");');
+    expect(extensionHost).not.toContain('.filter({ hasText: "def clean_data(df):" })');
+    expect(extensionHost).not.toContain(".monaco-list-row.code-cell-row");
+    expect(extensionHost).toContain("editor.visibleRanges.some");
+    expect(mediaSpec).toContain("### Workbench and files");
+    expect(mediaSpec).toContain("Generated-code insertion is verified through the public `NotebookDocument`");
+    expect(mediaSpec).not.toContain("## Remaining capture backlog");
+    expect(testing).toMatch(/Private Monaco DOM structure is\s+not part of that proof\./u);
+  });
+
+  it("keeps the README to a concise portable v1.2 product story", () => {
     const readme = readFileSync(resolve("README.md"), "utf8");
     const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
       icon?: string;
@@ -219,8 +357,36 @@ describe("packaged editor screenshot evidence", () => {
     const activityIconSvg = readFileSync(resolve("assets/activity-icon.svg"), "utf8");
     const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
-      ["workbench.png", 1_920, 830],
-      ["notebooks.png", 1_280, 600]
+      ["explore.png", 1_440, 870, 50_000],
+      ["filter-result.png", 1_440, 862, 50_000],
+      ["gallery/sidebar-overview.png", 1_440, 874, 50_000],
+      ["gallery/file-explorer-action.png", 1_440, 870, 50_000],
+      ["gallery/file-explorer-action-detail.png", 920, 616, 20_000],
+      ["gallery/column-search-wide.png", 1_440, 865, 50_000],
+      ["gallery/column-search-wide-detail.png", 540, 420, 10_000],
+      ["workflow.png", 1_440, 870, 50_000],
+      ["gallery/histogram-hover.png", 448, 480, 20_000],
+      ["gallery/sort-priority.png", 448, 480, 20_000],
+      ["gallery/latest-step-edited.png", 1_440, 865, 50_000],
+      ["gallery/latest-step-edited-detail.png", 448, 440, 10_000],
+      ["gallery/latest-step-undone.png", 1_440, 865, 50_000],
+      ["gallery/latest-step-undone-detail.png", 448, 440, 10_000],
+      ["gallery/export-script.png", 1_440, 870, 50_000],
+      ["gallery/export-data.png", 1_440, 870, 50_000],
+      ["gallery/export-script-detail.png", 995, 230, 20_000],
+      ["gallery/export-data-detail.png", 995, 344, 20_000],
+      ["gallery/notebook-variable-picker.png", 1_040, 590, 50_000],
+      ["gallery/notebook-variable-picker-detail.png", 602, 380, 20_000],
+      ["gallery/notebook-code-insertion.png", 1_000, 288, 10_000],
+      ["gallery/notebook-code-insertion-detail.png", 1_000, 288, 10_000],
+      ["notebook-pandas.png", 1_210, 540, 50_000],
+      ["gallery/notebook-pandas-detail.png", 698, 535, 20_000],
+      ["gallery/notebook-polars.png", 1_440, 900, 50_000],
+      ["gallery/notebook-polars-detail.png", 884, 675, 50_000],
+      ["gallery/notebook-duckdb.png", 1_440, 900, 50_000],
+      ["gallery/notebook-duckdb-detail.png", 872, 700, 50_000],
+      ["gallery/notebook-pyspark.png", 1_440, 900, 50_000],
+      ["gallery/notebook-pyspark-detail.png", 820, 610, 50_000]
     ] as const;
 
     expect(icon.readUInt32BE(16)).toBe(512);
@@ -262,20 +428,20 @@ describe("packaged editor screenshot evidence", () => {
     expect(buildWebviews).toContain('readFileSync(resolve("media", asset))');
     expect(buildWebviews).toContain("packaged.equals(source)");
     expect(readme).not.toMatch(/<(?:picture|source)\b/iu);
-    expect(readme).toContain(
-      '<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png" width="128" height="128"'
+    expect(readme).toMatch(
+      /<img src="https:\/\/raw\.githubusercontent\.com\/Matt17BR\/openwrangler\/[0-9a-f]{40}\/assets\/icon\.png" width="128" height="128"/u
     );
     expect(readme).not.toMatch(/<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/iu);
     expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');
     expect(readme).not.toContain("The image automatically follows your GitHub theme.");
     expect(readme).not.toMatch(/\b10,?000-row\b/iu);
-    for (const [name, width, height] of images) {
+    for (const [name, width, height, minimumBytes] of images) {
       expect(readme).toContain(name);
-      const png = readFileSync(resolve("docs/images/readme/v1.1", name));
+      const png = readFileSync(resolve("docs/images/readme/v1.2", name));
       expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
       expect(png.readUInt32BE(16)).toBe(width);
       expect(png.readUInt32BE(20)).toBe(height);
-      expect(png.byteLength).toBeGreaterThan(50_000);
+      expect(png.byteLength).toBeGreaterThan(minimumBytes);
     }
     for (const omitted of [
       "vscode-hero-light.png",

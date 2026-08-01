@@ -736,6 +736,9 @@ test("keeps the same compact editor support tiers in every README channel", () =
     assert.doesNotMatch(section, /Other VS Code desktop forks may work, but support is experimental\./u);
     assert.doesNotMatch(section, /Antigravity|release gate|parity matrix/iu);
   }
+  for (const section of [PREVIEW_README_RELEASE_SECTION, STABLE_README_RELEASE_SECTION]) {
+    assert.match(section, /Open Wrangler stays inactive in Restricted Mode\./u);
+  }
   const stableLinks = new Map(
     [...STABLE_README_RELEASE_SECTION.matchAll(/\[([^\]]+)\]\(([^)]+)\)/gu)].map((match) => [match[1], match[2]])
   );
@@ -801,7 +804,7 @@ test("rejects duplicate JSON keys including escaped and nested aliases", () => {
 });
 
 test("requires the complete packaged manifest to equal the source manifest", () => {
-  const source = { ...stablePackage, main: "./dist/extension/activate.js", engines: { vscode: "^1.105.0" } };
+  const source = { ...stablePackage, main: "./dist/extension/activate.js", engines: { vscode: "^1.106.0" } };
   const packaged = { ...source, main: "./dist/extension/other.js", engines: { vscode: "*" } };
   const problems = inspectStableReleaseReadiness(
     ready({

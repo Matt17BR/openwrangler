@@ -29,6 +29,194 @@ const WINDOWS_AUTHENTICODE_TIMEOUT_MS = 2 * 60_000;
 const CURSOR_MACOS_TEAM_IDENTIFIER = "VDXQ22DGB9";
 const CURSOR_WINDOWS_SIGNER_NAME = "Anysphere, Inc.";
 const CURSOR_WINDOWS_SIGNER_CERTIFICATE_SHA256 = "A64BA881C8D4EEAA0E9556856B750CB3C658E0C9765BABFDCEAB3A2797B905AB";
+const CURSOR_WINDOWS_AUTHENTICODE_SOURCE = String.raw`using System;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+
+public static class OpenWranglerCursorAuthenticode
+{
+    private const uint WTD_UI_NONE = 2;
+    private const uint WTD_REVOKE_NONE = 0;
+    private const uint WTD_CHOICE_FILE = 1;
+    private const uint WTD_STATEACTION_VERIFY = 1;
+    private const uint WTD_STATEACTION_CLOSE = 2;
+    private const uint WTD_REVOCATION_CHECK_NONE = 0x10;
+    private const uint WTD_CACHE_ONLY_URL_RETRIEVAL = 0x1000;
+    private const uint WTD_DISABLE_MD2_MD4 = 0x2000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINTRUST_FILE_INFO
+    {
+        internal uint cbStruct;
+        internal IntPtr pcwszFilePath;
+        internal IntPtr hFile;
+        internal IntPtr pgKnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINTRUST_DATA
+    {
+        internal uint cbStruct;
+        internal IntPtr pPolicyCallbackData;
+        internal IntPtr pSIPClientData;
+        internal uint dwUIChoice;
+        internal uint fdwRevocationChecks;
+        internal uint dwUnionChoice;
+        internal IntPtr pFile;
+        internal uint dwStateAction;
+        internal IntPtr hWVTStateData;
+        internal IntPtr pwszURLReference;
+        internal uint dwProvFlags;
+        internal uint dwUIContext;
+        internal IntPtr pSignatureSettings;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CRYPT_PROVIDER_SGNR_PREFIX
+    {
+        internal uint cbStruct;
+        internal System.Runtime.InteropServices.ComTypes.FILETIME sftVerifyAsOf;
+        internal uint csCertChain;
+        internal IntPtr pasCertChain;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CRYPT_PROVIDER_CERT_PREFIX
+    {
+        internal uint cbStruct;
+        internal IntPtr pCert;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CERT_CONTEXT_PREFIX
+    {
+        internal uint dwCertEncodingType;
+        internal IntPtr pbCertEncoded;
+        internal uint cbCertEncoded;
+    }
+
+    [DllImport("wintrust.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int WinVerifyTrust(
+        IntPtr hwnd,
+        [In] ref Guid pgActionID,
+        [In, Out] ref WINTRUST_DATA pWinTrustData);
+
+    [DllImport("wintrust.dll", ExactSpelling = true)]
+    private static extern IntPtr WTHelperProvDataFromStateData(IntPtr hStateData);
+
+    [DllImport("wintrust.dll", ExactSpelling = true)]
+    private static extern IntPtr WTHelperGetProvSignerFromChain(
+        IntPtr pProvData,
+        uint idxSigner,
+        [MarshalAs(UnmanagedType.Bool)] bool fCounterSigner,
+        uint idxCounterSigner);
+
+    public static X509Certificate2 VerifyAndGetSigner(string path)
+    {
+        if (String.IsNullOrEmpty(path))
+        {
+            throw new ArgumentException("A signed file path is required.", "path");
+        }
+
+        IntPtr pathPointer = IntPtr.Zero;
+        IntPtr fileInfoPointer = IntPtr.Zero;
+        WINTRUST_DATA trustData = new WINTRUST_DATA();
+        Guid action = new Guid("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
+        try
+        {
+            pathPointer = Marshal.StringToCoTaskMemUni(path);
+            WINTRUST_FILE_INFO fileInfo = new WINTRUST_FILE_INFO();
+            fileInfo.cbStruct = (uint)Marshal.SizeOf(typeof(WINTRUST_FILE_INFO));
+            fileInfo.pcwszFilePath = pathPointer;
+            fileInfo.hFile = IntPtr.Zero;
+            fileInfo.pgKnownSubject = IntPtr.Zero;
+            fileInfoPointer = Marshal.AllocCoTaskMem(Marshal.SizeOf(typeof(WINTRUST_FILE_INFO)));
+            Marshal.StructureToPtr(fileInfo, fileInfoPointer, false);
+
+            trustData.cbStruct = (uint)Marshal.SizeOf(typeof(WINTRUST_DATA));
+            trustData.pPolicyCallbackData = IntPtr.Zero;
+            trustData.pSIPClientData = IntPtr.Zero;
+            trustData.dwUIChoice = WTD_UI_NONE;
+            trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+            trustData.dwUnionChoice = WTD_CHOICE_FILE;
+            trustData.pFile = fileInfoPointer;
+            trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+            trustData.hWVTStateData = IntPtr.Zero;
+            trustData.pwszURLReference = IntPtr.Zero;
+            trustData.dwProvFlags = WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_DISABLE_MD2_MD4;
+            trustData.dwUIContext = 0;
+            trustData.pSignatureSettings = IntPtr.Zero;
+
+            int status = WinVerifyTrust(new IntPtr(-1), ref action, ref trustData);
+            if (status != 0)
+            {
+                throw new CryptographicException(
+                    String.Format("WinVerifyTrust rejected the pinned artifact with status 0x{0:X8}.", unchecked((uint)status)));
+            }
+            if (trustData.hWVTStateData == IntPtr.Zero)
+            {
+                throw new CryptographicException("WinVerifyTrust returned no provider state.");
+            }
+
+            IntPtr providerData = WTHelperProvDataFromStateData(trustData.hWVTStateData);
+            if (providerData == IntPtr.Zero)
+            {
+                throw new CryptographicException("WinVerifyTrust returned no provider data.");
+            }
+            IntPtr signerPointer = WTHelperGetProvSignerFromChain(providerData, 0, false, 0);
+            if (signerPointer == IntPtr.Zero)
+            {
+                throw new CryptographicException("WinVerifyTrust returned no primary signer.");
+            }
+            CRYPT_PROVIDER_SGNR_PREFIX signer = (CRYPT_PROVIDER_SGNR_PREFIX)Marshal.PtrToStructure(
+                signerPointer,
+                typeof(CRYPT_PROVIDER_SGNR_PREFIX));
+            if (signer.csCertChain == 0 || signer.pasCertChain == IntPtr.Zero)
+            {
+                throw new CryptographicException("WinVerifyTrust returned an empty signer chain.");
+            }
+            CRYPT_PROVIDER_CERT_PREFIX providerCertificate =
+                (CRYPT_PROVIDER_CERT_PREFIX)Marshal.PtrToStructure(
+                    signer.pasCertChain,
+                    typeof(CRYPT_PROVIDER_CERT_PREFIX));
+            if (providerCertificate.pCert == IntPtr.Zero)
+            {
+                throw new CryptographicException("WinVerifyTrust returned no leaf certificate context.");
+            }
+            CERT_CONTEXT_PREFIX certificateContext = (CERT_CONTEXT_PREFIX)Marshal.PtrToStructure(
+                providerCertificate.pCert,
+                typeof(CERT_CONTEXT_PREFIX));
+            if (
+                certificateContext.pbCertEncoded == IntPtr.Zero ||
+                certificateContext.cbCertEncoded == 0 ||
+                certificateContext.cbCertEncoded > 1024 * 1024)
+            {
+                throw new CryptographicException("WinVerifyTrust returned a malformed leaf certificate.");
+            }
+            int certificateLength = checked((int)certificateContext.cbCertEncoded);
+            byte[] rawCertificate = new byte[certificateLength];
+            Marshal.Copy(certificateContext.pbCertEncoded, rawCertificate, 0, rawCertificate.Length);
+            return new X509Certificate2(rawCertificate);
+        }
+        finally
+        {
+            if (trustData.hWVTStateData != IntPtr.Zero)
+            {
+                trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+                WinVerifyTrust(new IntPtr(-1), ref action, ref trustData);
+            }
+            if (fileInfoPointer != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(fileInfoPointer);
+            }
+            if (pathPointer != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(pathPointer);
+            }
+        }
+    }
+}`;
 const TARGET_KEYS = new Set([
   "architecture",
   "artifactName",
@@ -579,16 +767,18 @@ async function extractWindowsTarget(
   const encodedArtifactPath = Buffer.from(artifact.path, "utf16le").toString("base64");
   const authenticodeScript = [
     "$ErrorActionPreference = 'Stop'",
+    "$nativeSource = @'",
+    CURSOR_WINDOWS_AUTHENTICODE_SOURCE,
+    "'@",
     `$literalPath = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedArtifactPath}'))`,
-    "$signature = Get-AuthenticodeSignature -LiteralPath $literalPath",
-    "$certificate = $signature.SignerCertificate",
+    "try { $null = Add-Type -TypeDefinition $nativeSource -Language CSharp; $certificate = [OpenWranglerCursorAuthenticode]::VerifyAndGetSigner($literalPath) } catch { exit 42 }",
     "if ($null -eq $certificate) { exit 41 }",
-    "if ($signature.Status -ne 'Valid') { exit 42 }",
-    `$simpleName = $certificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false); if ($simpleName -cne '${CURSOR_WINDOWS_SIGNER_NAME}') { exit 43 }`,
+    `$simpleName = $certificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)`,
     "$sha256 = [System.Security.Cryptography.SHA256]::Create()",
-    "try { $leafSha256 = [BitConverter]::ToString($sha256.ComputeHash($certificate.RawData)).Replace('-', '') } finally { $sha256.Dispose() }",
+    "try { $leafSha256 = [BitConverter]::ToString($sha256.ComputeHash($certificate.RawData)).Replace('-', '') } finally { $sha256.Dispose(); $certificate.Dispose() }",
+    `if ($simpleName -cne '${CURSOR_WINDOWS_SIGNER_NAME}') { exit 43 }`,
     `if ($leafSha256 -cne '${CURSOR_WINDOWS_SIGNER_CERTIFICATE_SHA256}') { exit 44 }`
-  ].join("; ");
+  ].join("\n");
   await runCommand(
     {
       executable: join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),

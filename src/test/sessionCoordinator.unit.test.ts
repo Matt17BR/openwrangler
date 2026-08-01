@@ -327,6 +327,436 @@ describe("SessionCoordinator", () => {
     expect(coordinator.diagnostics().sessionCount).toBe(0);
   });
 
+  it("rebinds an invalidated PySpark variable without losing the confirmed compound view", async () => {
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "spark_frame",
+      variableName: "spark_frame",
+      uri: "file:///workspace/spark-recovery.ipynb"
+    };
+    const schema = [
+      { id: "c:region", name: "region", position: 0, rawType: "string", type: "string" as const, nullable: true },
+      { id: "c:sales", name: "sales", position: 1, rawType: "bigint", type: "integer" as const, nullable: false }
+    ];
+    const filterModel: FilterModel = {
+      logic: "and",
+      filters: [
+        {
+          column: "region",
+          type: "string",
+          logic: "and",
+          predicates: [{ kind: "predicate", operator: "contains", value: "north" }]
+        }
+      ],
+      sort: [
+        { column: "sales", direction: "desc", nulls: "last" },
+        { column: "region", direction: "asc", nulls: "first" }
+      ]
+    };
+    const sparkOpened = (runtimeId: string): SessionOpenedResponse => {
+      const response = openedResponse(runtimeId, "pyspark");
+      response.metadata = {
+        ...response.metadata,
+        source,
+        mode: "viewing",
+        capabilities: {
+          editable: false,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false
+        },
+        shape: { rows: 500, columns: 2 },
+        filteredShape: { rows: 500, columns: 2 },
+        schema,
+        steps: []
+      };
+      response.page = {
+        offset: 0,
+        limit: 100,
+        totalRows: 500,
+        columnIds: schema.map((column) => column.id),
+        rows: []
+      };
+      return response;
+    };
+    let openCount = 0;
+    let invalidated = false;
+    const reboundOpen = deferred<SessionOpenedResponse>();
+    const delegateRequest = vi.fn(
+      async (request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+        if (request.kind !== "openSession" && options?.requiredKernelSessionId !== undefined) {
+          throw new Error("Exact-kernel recovery provenance leaked past the replacement open.");
+        }
+        if (request.kind === "openSession") {
+          openCount += 1;
+          return openCount === 1 ? sparkOpened("spark-runtime-1") : reboundOpen.promise;
+        }
+        if (request.kind === "getPage") {
+          if (request.viewRequestId === "pyspark-rebind" && request.sessionId === "spark-runtime-1" && !invalidated) {
+            invalidated = true;
+            return {
+              kind: "error",
+              code: "live_source_invalidated",
+              message: "The live PySpark variable was replaced. Rerun its defining cell, then retry.",
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          }
+          return pageResponseForMetadata(request, sparkOpened(request.sessionId).metadata);
+        }
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected PySpark recovery request: ${request.kind}`);
+      }
+    );
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request({
+      ...openRequest,
+      source,
+      backend: "pyspark",
+      mode: "viewing"
+    });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the PySpark variable to open.");
+
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "pyspark-confirm-view",
+        offset: 200,
+        limit: 100,
+        ...columnWindow,
+        filterModel
+      })
+    ).resolves.toMatchObject({ kind: "page", metadata: { filterModel } });
+    await bridge.updateViewState?.(opened.metadata.sessionId, {
+      selectedColumnId: "c:sales",
+      columnWidths: { "c:region": 210, "c:sales": 180 },
+      viewport: { firstVisibleRow: 240, scrollLeft: 160 }
+    });
+    const confirmedView = coordinator.activeSession()?.viewState;
+
+    const recovery = bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "pyspark-rebind",
+      offset: 200,
+      limit: 100,
+      ...columnWindow,
+      filterModel
+    });
+    await vi.waitFor(() => expect(openCount).toBe(2));
+    await bridge.updateViewState?.(opened.metadata.sessionId, {
+      selectedColumnId: "c:region",
+      columnWidths: { "c:region": 260, "c:sales": 150 },
+      viewport: { firstVisibleRow: 310, scrollLeft: 240 }
+    });
+    const latestView = coordinator.activeSession()?.viewState;
+    expect(latestView).not.toEqual(confirmedView);
+    reboundOpen.resolve(sparkOpened("spark-runtime-2"));
+    const recovered = await recovery;
+
+    expect(recovered).toMatchObject({
+      kind: "page",
+      metadata: {
+        sessionId: opened.metadata.sessionId,
+        backend: "pyspark",
+        filterModel
+      }
+    });
+    expect(openCount).toBe(2);
+    expect(coordinator.activeSession()?.viewState).toEqual(latestView);
+    expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "openSession")[1]?.[1]).toMatchObject({
+      requiredKernelSessionId: "spark-runtime-1"
+    });
+    expect(
+      delegateRequest.mock.calls
+        .map(([request]) => request)
+        .filter((request): request is Extract<OpenWranglerRequest, { kind: "getPage" }> => request.kind === "getPage")
+        .filter((request) => request.sessionId === "spark-runtime-2")
+        .map((request) => request.filterModel)
+    ).toEqual([filterModel, filterModel]);
+    await vi.waitFor(() => {
+      expect(delegateRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "closeSession", sessionId: "spark-runtime-1" }),
+        expect.any(Object)
+      );
+    });
+  });
+
+  it("keeps an invalidated PySpark session retryable when the rebound schema changed", async () => {
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "spark_frame",
+      variableName: "spark_frame",
+      uri: "file:///workspace/spark-schema.ipynb"
+    };
+    const original = openedResponse("spark-runtime-1", "pyspark");
+    original.metadata = {
+      ...original.metadata,
+      source,
+      mode: "viewing",
+      schema: [{ id: "c:value", name: "value", position: 0, rawType: "bigint", type: "integer", nullable: false }],
+      shape: { rows: 1, columns: 1 },
+      filteredShape: { rows: 1, columns: 1 }
+    };
+    original.page = { ...original.page, totalRows: 1, columnIds: ["c:value"] };
+    const changed = openedResponse("spark-runtime-2", "pyspark");
+    changed.metadata = {
+      ...original.metadata,
+      sessionId: "spark-runtime-2",
+      schema: [{ id: "c:value", name: "renamed", position: 0, rawType: "bigint", type: "integer", nullable: false }]
+    };
+    changed.page = { ...original.page, columnIds: ["c:value"] };
+    let openCount = 0;
+    const closed: string[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return ++openCount === 1 ? original : changed;
+      if (request.kind === "getPage") {
+        return {
+          kind: "error",
+          code: "live_source_invalidated",
+          message: "The live PySpark variable changed. Rerun it, then retry or reopen after a schema change.",
+          recoverable: true,
+          sessionId: request.sessionId,
+          viewRequestId: request.viewRequestId
+        };
+      }
+      if (request.kind === "closeSession") {
+        closed.push(request.sessionId);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected PySpark schema recovery request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request({ ...openRequest, source, backend: "pyspark", mode: "viewing" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the PySpark variable to open.");
+
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "pyspark-schema-change",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "live_source_invalidated",
+      sessionId: opened.metadata.sessionId,
+      recoverable: true,
+      message: expect.stringContaining("reopen after a schema change")
+    });
+    expect(openCount).toBe(2);
+    expect(coordinator.activeSession()?.metadata.schema).toEqual(original.metadata.schema);
+    expect(closed).toEqual(["spark-runtime-2"]);
+  });
+
+  it("rejects a same-schema PySpark rebound when the exact confirmed view cannot be restored", async () => {
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "spark_frame",
+      variableName: "spark_frame",
+      uri: "file:///workspace/spark-view-recovery.ipynb"
+    };
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc", nulls: "last" }]
+    };
+    const openedFor = (sessionId: string): SessionOpenedResponse => {
+      const response = openedResponse(sessionId, "pyspark");
+      response.metadata = {
+        ...response.metadata,
+        source,
+        mode: "viewing",
+        shape: { rows: 10, columns: 1 },
+        filteredShape: { rows: 10, columns: 1 },
+        schema: [{ id: "c:value", name: "value", position: 0, rawType: "bigint", type: "integer", nullable: false }]
+      };
+      response.page = { ...response.page, totalRows: 10, columnIds: ["c:value"] };
+      return response;
+    };
+    let openCount = 0;
+    let restoreAttempts = 0;
+    const closed: string[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedFor(`spark-runtime-${++openCount}`);
+      if (request.kind === "getPage") {
+        if (request.sessionId === "spark-runtime-1" && request.viewRequestId === "strict-spark-rebind") {
+          return {
+            kind: "error",
+            code: "live_source_invalidated",
+            message: "The live PySpark dataframe was replaced. Recreate it, then retry.",
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
+        if (request.sessionId === "spark-runtime-2" && request.viewRequestId.startsWith("restore:")) {
+          restoreAttempts += 1;
+          if (restoreAttempts === 1) {
+            return {
+              kind: "error",
+              code: "engine_error",
+              message: "Transient Spark read failure while restoring the saved view.",
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          }
+        }
+        return pageResponseForMetadata(request, openedFor(request.sessionId).metadata);
+      }
+      if (request.kind === "closeSession") {
+        closed.push(request.sessionId);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected strict PySpark recovery request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request({ ...openRequest, source, backend: "pyspark", mode: "viewing" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the PySpark variable to open.");
+
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "confirm-strict-spark-view",
+        offset: 0,
+        limit: 10,
+        ...columnWindow,
+        filterModel
+      })
+    ).resolves.toMatchObject({ kind: "page", metadata: { filterModel } });
+
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "strict-spark-rebind",
+        offset: 0,
+        limit: 10,
+        ...columnWindow,
+        filterModel
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "live_source_invalidated",
+      sessionId: opened.metadata.sessionId
+    });
+    expect(restoreAttempts).toBe(1);
+    expect(coordinator.activeSession()?.metadata.filterModel).toEqual(filterModel);
+    expect(closed).toEqual(["spark-runtime-2"]);
+  });
+
+  it("does not recover an invalidated PySpark page after a newer page supersedes it", async () => {
+    const invalidated = deferred<OpenWranglerResponse>();
+    let openCount = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse(`spark-runtime-${++openCount}`, "pyspark");
+      if (request.kind === "getPage" && request.viewRequestId === "obsolete-spark-page") {
+        return invalidated.promise;
+      }
+      if (request.kind === "getPage") return pageResponse(request, request.sessionId);
+      throw new Error(`Unexpected superseded PySpark request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request({ ...openRequest, backend: "pyspark", mode: "viewing" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the PySpark variable to open.");
+
+    const obsolete = bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "obsolete-spark-page",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    await vi.waitFor(() => expect(delegateRequest).toHaveBeenCalledTimes(2));
+    const latest = bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "latest-spark-page",
+      offset: 100,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    invalidated.resolve({
+      kind: "error",
+      code: "live_source_invalidated",
+      message: "The live PySpark dataframe was replaced.",
+      recoverable: true,
+      sessionId: "spark-runtime-1",
+      viewRequestId: "obsolete-spark-page"
+    });
+
+    await expect(obsolete).resolves.toMatchObject({
+      kind: "error",
+      code: "stale_response",
+      viewRequestId: "obsolete-spark-page"
+    });
+    await expect(latest).resolves.toMatchObject({ kind: "page", viewRequestId: "latest-spark-page" });
+    expect(openCount).toBe(1);
+  });
+
+  it("does not recover an invalidated PySpark values request after it is cancelled", async () => {
+    const invalidated = deferred<OpenWranglerResponse>();
+    let openCount = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse(`spark-runtime-${++openCount}`, "pyspark");
+      if (request.kind === "getColumnValues") return invalidated.promise;
+      throw new Error(`Unexpected cancelled PySpark request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request({ ...openRequest, backend: "pyspark", mode: "viewing" });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the PySpark variable to open.");
+
+    const values = bridge.request({
+      kind: "getColumnValues",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "cancelled-spark-values",
+      column: "sales",
+      filterModel: opened.metadata.filterModel,
+      limit: 100
+    });
+    await vi.waitFor(() => expect(delegateRequest).toHaveBeenCalledTimes(2));
+    bridge.cancelViewRequests?.(opened.metadata.sessionId, ["cancelled-spark-values"]);
+    invalidated.resolve({
+      kind: "error",
+      code: "live_source_invalidated",
+      message: "The live PySpark dataframe was replaced.",
+      recoverable: true,
+      sessionId: "spark-runtime-1",
+      viewRequestId: "cancelled-spark-values"
+    });
+
+    await expect(values).resolves.toMatchObject({
+      kind: "error",
+      code: "stale_response",
+      viewRequestId: "cancelled-spark-values"
+    });
+    expect(openCount).toBe(1);
+  });
+
   it("retains notebook provenance only in host session state", async () => {
     const notebook = {
       uri: vscode.Uri.parse("file:///workspace/origin.ipynb"),
@@ -1410,7 +1840,8 @@ describe("SessionCoordinator", () => {
           columnWidths: { "c:removed": 260 },
           selectedColumnId: "c:removed",
           viewport: { firstVisibleRow: 40, scrollLeft: 120 }
-        }
+        },
+        staleFilterModel
       )
     };
     const workspaceState = {
@@ -1524,11 +1955,176 @@ describe("SessionCoordinator", () => {
       "open",
       `preview-${appliedStep.id}`,
       "apply",
+      "page-saved",
       `preview-${draftStep.id}`,
       "page-saved",
       "page-empty"
     ]);
     expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "openSession")).toHaveLength(1);
+  });
+
+  it.each([
+    { action: "discardDraft" as const, expectedAction: "discard" as const },
+    { action: "applyDraft" as const, expectedAction: "apply" as const }
+  ])("restores a persisted draft base before $expectedAction and preserves its view contract", async ({ action }) => {
+    const baseSchema: SessionMetadata["schema"] = [
+      { id: "c:market", name: "market", position: 0, rawType: "String", type: "string", nullable: false },
+      { id: "c:revenue", name: "revenue", position: 1, rawType: "Int64", type: "integer", nullable: false }
+    ];
+    const draftSchema: SessionMetadata["schema"] = [
+      { id: "c:revenue", name: "revenue", position: 0, rawType: "Int64", type: "integer", nullable: false }
+    ];
+    const step: TransformStep = {
+      id: "drop-market",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:market", name: "market" }] }
+    };
+    const draftBaseFilterModel: FilterModel = {
+      filters: [
+        {
+          column: "market",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "equals", value: "DACH" }]
+        }
+      ],
+      sort: [
+        { column: "market", direction: "asc", nulls: "last" },
+        { column: "revenue", direction: "desc", nulls: "last" }
+      ]
+    };
+    const reconciledFilterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "revenue", direction: "desc", nulls: "last" }]
+    };
+    const runtimeOpened = openedResponse("draft-receipt-runtime");
+    runtimeOpened.metadata = {
+      ...runtimeOpened.metadata,
+      shape: { rows: 5, columns: 2 },
+      filteredShape: { rows: 5, columns: 2 },
+      schema: baseSchema
+    };
+    runtimeOpened.page = { ...runtimeOpened.page, totalRows: 5, columnIds: baseSchema.map((column) => column.id) };
+    const persistedMetadata: SessionMetadata = {
+      ...runtimeOpened.metadata,
+      revision: 1,
+      shape: { rows: 5, columns: 1 },
+      filteredShape: { rows: 5, columns: 1 },
+      schema: draftSchema,
+      filterModel: reconciledFilterModel,
+      draftStep: step
+    };
+    const key = persistenceKey(openRequest.source, "polars");
+    let stored: Record<string, unknown> = {
+      [key]: persistedSessionState(
+        persistedMetadata,
+        { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } },
+        draftBaseFilterModel
+      )
+    };
+    const workspaceState = {
+      get: vi.fn((storageKey: string, fallback?: unknown) => (storageKey === SESSION_STORAGE_KEY ? stored : fallback)),
+      update: vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    let draftOpen = false;
+    const viewRequests: FilterModel[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "getPage") {
+        viewRequests.push(request.filterModel);
+        const metadata = {
+          ...(draftOpen ? persistedMetadata : runtimeOpened.metadata),
+          revision: request.revision,
+          filterModel: request.filterModel
+        };
+        return {
+          kind: "page",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "previewStep") {
+        draftOpen = true;
+        const metadata = { ...persistedMetadata, revision: 1 };
+        return {
+          ...stepPreviewResponse(1, step, "draft-receipt-runtime"),
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "discardDraft") {
+        draftOpen = false;
+        const metadata = {
+          ...runtimeOpened.metadata,
+          revision: 2,
+          filterModel: draftBaseFilterModel
+        };
+        return {
+          ...planUpdatedResponse(2, [], "draft-receipt-runtime"),
+          action: "discard",
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "applyDraft") {
+        draftOpen = false;
+        const metadata = {
+          ...persistedMetadata,
+          revision: 2,
+          filterModel: reconciledFilterModel,
+          steps: [step],
+          draftStep: undefined
+        };
+        return {
+          ...planUpdatedResponse(2, [step], "draft-receipt-runtime"),
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "closeSession") {
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected draft-receipt request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    const restored = await bridge.request(openRequest);
+    if (restored.kind !== "sessionOpened") throw new Error("Expected the persisted draft to restore.");
+    expect(viewRequests).toEqual([draftBaseFilterModel, reconciledFilterModel]);
+
+    const result = await bridge.request({
+      kind: action,
+      sessionId: restored.metadata.sessionId,
+      revision: restored.metadata.revision,
+      offset: 0,
+      limit: 10,
+      ...columnWindow
+    });
+    const expectedFilterModel = action === "discardDraft" ? draftBaseFilterModel : reconciledFilterModel;
+    expect(result).toMatchObject({ kind: "planUpdated", metadata: { filterModel: expectedFilterModel } });
+    expect(stored[key]).toMatchObject({
+      cleaning: {
+        steps: action === "applyDraft" ? [step] : []
+      },
+      view: { filterModel: expectedFilterModel }
+    });
+    const savedCleaning = (stored[key] as { cleaning: { draftStep?: unknown; draftBaseFilterModel?: unknown } })
+      .cleaning;
+    expect(savedCleaning.draftStep).toBeUndefined();
+    expect(savedCleaning).not.toHaveProperty("draftBaseFilterModel");
+
+    if (result.kind === "planUpdated") {
+      await bridge.request({
+        kind: "closeSession",
+        sessionId: restored.metadata.sessionId,
+        revision: result.revision
+      });
+    }
   });
 
   it("reopens original data with an empty plan only when saved cleaning replay fails", async () => {
@@ -4524,6 +5120,163 @@ describe("SessionCoordinator", () => {
     });
   });
 
+  it("publishes and persists a reconciled viewing query across preview, apply, and undo", async () => {
+    let stored: Record<string, unknown> = {};
+    const workspaceState = {
+      get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const schema: SessionMetadata["schema"] = [
+      { id: "c:sales", name: "sales", position: 0, rawType: "Int64", type: "integer", nullable: false },
+      { id: "c:market", name: "market", position: 1, rawType: "String", type: "string", nullable: false }
+    ];
+    const filterModel: FilterModel = {
+      logic: "and",
+      filters: [
+        {
+          column: "market",
+          type: "string",
+          valueFilter: {
+            kind: "values",
+            selectedValues: ["DACH"],
+            includeNulls: false,
+            includeNaN: false,
+            search: "da"
+          },
+          predicates: [{ kind: "predicate", operator: "contains", value: "a" }]
+        }
+      ],
+      sort: [
+        { column: "sales", direction: "desc", nulls: "last" },
+        { column: "market", direction: "asc", nulls: "first" }
+      ]
+    };
+    const metadataAt = (revision: number, steps: TransformStep[], draftStep?: TransformStep): SessionMetadata => ({
+      ...openedResponse().metadata,
+      revision,
+      shape: { rows: 20, columns: 2 },
+      filteredShape: { rows: 7, columns: 2 },
+      schema,
+      filterModel,
+      steps,
+      ...(draftStep ? { draftStep } : {})
+    });
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        const metadata = { ...metadataAt(0, []), filterModel: { filters: [], sort: [] } };
+        return {
+          kind: "sessionOpened",
+          metadata,
+          page: projectedPage(
+            {
+              ...request,
+              kind: "getPage",
+              sessionId: "runtime-session",
+              revision: 0,
+              viewRequestId: "open",
+              offset: 0,
+              limit: request.pageSize,
+              filterModel: metadata.filterModel
+            },
+            metadata
+          ),
+          summaries: []
+        };
+      }
+      if (request.kind === "getPage") {
+        const metadata = metadataAt(request.revision, []);
+        return {
+          kind: "page",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "previewStep") {
+        const metadata = metadataAt(1, [], inspectionStep);
+        return {
+          ...stepPreviewResponse(1, inspectionStep),
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "applyDraft") {
+        const metadata = metadataAt(2, [inspectionStep]);
+        return {
+          ...planUpdatedResponse(2, [inspectionStep]),
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "undoStep") {
+        const metadata = metadataAt(3, []);
+        return {
+          ...planUpdatedResponse(3, []),
+          action: "undo",
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      throw new Error(`Unexpected reconciled-view request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+
+    await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: 0,
+      viewRequestId: "confirmed-view",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel
+    });
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId: opened.metadata.sessionId,
+      revision: 0,
+      step: inspectionStep,
+      offset: 0,
+      limit: 100,
+      ...columnWindow
+    });
+    const key = persistenceKey(openRequest.source, "polars");
+    expect(stored[key]).toMatchObject({
+      cleaning: { draftStep: inspectionStep, draftBaseFilterModel: filterModel },
+      view: { filterModel }
+    });
+    const applied = await bridge.request({
+      kind: "applyDraft",
+      sessionId: opened.metadata.sessionId,
+      revision: 1,
+      offset: 0,
+      limit: 100,
+      ...columnWindow
+    });
+    const undone = await bridge.request({
+      kind: "undoStep",
+      sessionId: opened.metadata.sessionId,
+      revision: 2,
+      offset: 0,
+      limit: 100,
+      ...columnWindow
+    });
+
+    for (const response of [preview, applied, undone]) {
+      expect(response).toMatchObject({ metadata: { filterModel } });
+    }
+    expect(coordinator.activeSession()?.viewState.filterModel).toEqual(filterModel);
+    expect(stored[key]).toMatchObject({ view: { filterModel } });
+    expect((stored[key] as { cleaning: Record<string, unknown> }).cleaning).not.toHaveProperty("draftBaseFilterModel");
+  });
+
   it("retires a session after terminal close failure without replaying or reviving it", async () => {
     const onIdle = vi.fn();
     let finishClose!: (response: OpenWranglerResponse) => void;
@@ -4593,6 +5346,85 @@ describe("SessionCoordinator", () => {
     expect(delegateRequest).toHaveBeenCalledTimes(3);
     expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "closeSession")).toHaveLength(2);
     expect(onIdle).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry a terminal cleanup failure after the runtime removed the session", async () => {
+    const diagnostics = vi.fn();
+    const onIdle = vi.fn();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "closeSession") {
+        return {
+          kind: "error",
+          code: "session_cleanup_failed",
+          message: "The stopped Spark session could not unpersist its owned Open Wrangler frame.",
+          recoverable: false,
+          sessionId: request.sessionId
+        };
+      }
+      throw new Error(`Unexpected terminal cleanup request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(undefined, diagnostics);
+    const bridge = coordinator.createBridge({ request: delegateRequest, onIdle });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+
+    await expect(
+      bridge.request({
+        kind: "closeSession",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "session_cleanup_failed",
+      recoverable: false,
+      sessionId: opened.metadata.sessionId
+    });
+
+    expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "closeSession")).toHaveLength(1);
+    expect(coordinator.diagnostics().sessionCount).toBe(0);
+    expect(onIdle).toHaveBeenCalledOnce();
+    expect(diagnostics).toHaveBeenCalledWith(expect.stringContaining("runtime cleanup completed with an error"));
+  });
+
+  it("does not accept a recoverable cleanup-failure response as terminal correlation", async () => {
+    const diagnostics = vi.fn();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "closeSession") {
+        return {
+          kind: "error",
+          code: "session_cleanup_failed",
+          message: "Malformed cleanup response that still claims recovery is possible.",
+          recoverable: true,
+          sessionId: request.sessionId
+        };
+      }
+      throw new Error(`Unexpected malformed cleanup request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(undefined, diagnostics);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+
+    await expect(
+      bridge.request({
+        kind: "closeSession",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "session_cleanup_failed",
+      recoverable: true,
+      sessionId: opened.metadata.sessionId
+    });
+
+    expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "closeSession")).toHaveLength(2);
+    expect(coordinator.diagnostics().sessionCount).toBe(0);
+    expect(diagnostics).toHaveBeenCalledWith(expect.stringContaining("initial close was not authoritative"));
+    expect(diagnostics).toHaveBeenCalledWith(expect.stringContaining("could not confirm cleanup"));
   });
 
   it("treats the caller revision as advisory for terminal close", async () => {

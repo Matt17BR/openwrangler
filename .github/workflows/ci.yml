@@ -39,7 +39,7 @@ jobs:
       - name: Production license inventory
         run: npm run license:check
       - name: Workflow contracts
-        run: node --test scripts/ci-workflow.test.mjs
+        run: npm run test:scripts:workflow
 
   canonical-vsix:
     runs-on: ubuntu-latest
@@ -84,10 +84,93 @@ jobs:
           include-hidden-files: false
           overwrite: true
 
-  validate:
+  contract-tests:
+    name: Contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
+      - name: Python lint and strict types
+        run: npm run lint:python
+      - name: Brand asset freshness
+        run: npm run brand:check
+      - name: Remote Jupyter lock integrity
+        run: npm run check:remote-jupyter-lock
+      - name: Remote Jupyter lock reproducibility
+        run: npm run lock:remote-jupyter:check
+      - name: Script contracts
+        run: npm run test:scripts:portable
+      - name: TypeScript unit contracts
+        run: npm run test:ts
+      - name: Python runtime contracts
+        run: npm run test:python
+
+  visual-accessibility:
+    name: Visual and accessibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: npx playwright-core install --with-deps chromium
+      - run: npm run test:webview-acceptance
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: webview-visual-evidence
+          path: |
+            tmp/screenshots-actual/
+            tmp/screenshots-diff/
+          if-no-files-found: ignore
+
+  production-audits:
+    name: Production dependency audits
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: npm audit --omit=dev
+      - run: npm run audit:python
+
+  linux-packaged-editor:
+    name: Packaged VS Code (Linux)
     needs: canonical-vsix
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Require the canonical PR artifact
         if: ${{ needs.canonical-vsix.result != 'success' }}
@@ -102,24 +185,8 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: npm ci
-      - run: npx playwright-core install --with-deps chromium
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
-      - run: npm run lock:remote-jupyter:check
-      - run: npm run check
-      - run: npm test
-      - run: npm run test:webview-acceptance
-      - if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: webview-visual-evidence
-          path: |
-            tmp/screenshots-actual/
-            tmp/screenshots-diff/
-          if-no-files-found: ignore
-      - run: npm audit --omit=dev
-      - run: npm run audit:python
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: openwrangler-vsix
@@ -264,7 +331,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        vscode: ["1.105.0", "stable"]
+        vscode: ["1.106.0", "stable"]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -280,6 +347,44 @@ jobs:
       - run: npm run test:extension-host
         env:
           VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+
+  native-script-portability:
+    name: Native script contracts (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:scripts:native
+
+  native-extension-host:
+    name: Native extension host (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: npm run test:extension-host
+        env:
+          VSCODE_TEST_VERSION: stable
 
   native-editor-matrix:
     name: Native editor (${{ matrix.os }})
@@ -305,12 +410,8 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: npm ci
-      - run: npm run test:scripts
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - run: npm run test:extension-host
-        env:
-          VSCODE_TEST_VERSION: stable
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: openwrangler-vsix
@@ -329,6 +430,7 @@ jobs:
             .digest("hex");
           if (actual !== match[1]) throw new Error("The canonical PR VSIX checksum does not match.");
       - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
+      - run: npm run build:test-extension
       - id: packaged_editor
         name: Test packaged editor
         run: node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix
@@ -345,6 +447,52 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+
+  native-cursor-smoke:
+    name: Cursor smoke (${{ matrix.os }})
+    needs: canonical-vsix
+    if: ${{ always() }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Require the canonical PR artifact
+        if: ${{ needs.canonical-vsix.result != 'success' }}
+        run: exit 1
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: openwrangler-vsix
+          path: canonical-vsix
+      - name: Verify canonical PR checksum
+        shell: node {0}
+        run: |
+          const { createHash } = require("node:crypto");
+          const { readFileSync } = require("node:fs");
+
+          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
+          const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
+          if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
+          const actual = createHash("sha256")
+            .update(readFileSync("canonical-vsix/openwrangler.vsix"))
+            .digest("hex");
+          if (actual !== match[1]) throw new Error("The canonical PR VSIX checksum does not match.");
+      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
+      - run: npm run build:test-extension
       - id: cursor_smoke
         name: Test pinned Cursor platform smoke
         run: node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix
@@ -497,3 +645,52 @@ jobs:
         env:
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
+
+  validate:
+    needs:
+      - fast-feedback
+      - contract-tests
+      - visual-accessibility
+      - production-audits
+      - canonical-vsix
+      - linux-packaged-editor
+      - coverage
+      - python-matrix
+      - pyspark-notebook-viewing
+      - extension-host
+      - native-script-portability
+      - native-extension-host
+      - native-editor-matrix
+      - native-cursor-smoke
+      - remote-workspace
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Require every blocking CI result
+        run: node scripts/require-ci-results.mjs
+        env:
+          FAST_FEEDBACK_RESULT: ${{ needs.fast-feedback.result }}
+          CONTRACT_TESTS_RESULT: ${{ needs.contract-tests.result }}
+          VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
+          PRODUCTION_AUDITS_RESULT: ${{ needs.production-audits.result }}
+          CANONICAL_VSIX_RESULT: ${{ needs.canonical-vsix.result }}
+          LINUX_PACKAGED_EDITOR_RESULT: ${{ needs.linux-packaged-editor.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+          PYTHON_MATRIX_RESULT: ${{ needs.python-matrix.result }}
+          PYSPARK_NOTEBOOK_VIEWING_RESULT: ${{ needs.pyspark-notebook-viewing.result }}
+          EXTENSION_HOST_RESULT: ${{ needs.extension-host.result }}
+          NATIVE_SCRIPT_PORTABILITY_RESULT: ${{ needs.native-script-portability.result }}
+          NATIVE_EXTENSION_HOST_RESULT: ${{ needs.native-extension-host.result }}
+          NATIVE_EDITOR_MATRIX_RESULT: ${{ needs.native-editor-matrix.result }}
+          NATIVE_CURSOR_SMOKE_RESULT: ${{ needs.native-cursor-smoke.result }}
+          REMOTE_WORKSPACE_RESULT: ${{ needs.remote-workspace.result }}
+          REMOTE_WORKSPACE_REQUIRED: >-
+            ${{
+              github.event_name == 'pull_request' &&
+              contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
+            }}

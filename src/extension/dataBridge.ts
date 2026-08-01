@@ -7,10 +7,36 @@ import type {
   SessionSource
 } from "../shared/protocol";
 import type { GridViewState } from "../shared/viewState";
+import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 
 export interface CancellationTokenLike {
   readonly isCancellationRequested: boolean;
   onCancellationRequested(listener: () => void): { dispose(): void };
+}
+
+export type DetachedBridgeRequestReason = "timeout" | "cancellation";
+
+/**
+ * The host stopped waiting while the transport execution was deliberately
+ * left running. This is not transport loss: callers must not replay the
+ * request until `settlement` confirms that the original execution finished.
+ */
+export class DetachedBridgeRequestError extends Error {
+  readonly settlement: Promise<void>;
+
+  constructor(
+    message: string,
+    readonly reason: DetachedBridgeRequestReason,
+    readonly dispatched: boolean,
+    settlement: Promise<void>
+  ) {
+    super(message);
+    this.name = "DetachedBridgeRequestError";
+    this.settlement = settlement.then(
+      () => undefined,
+      () => undefined
+    );
+  }
 }
 
 export interface BridgeRequestOptions {
@@ -21,6 +47,11 @@ export interface BridgeRequestOptions {
   restartRuntimeOnTimeout?: boolean;
   /** For bounded cleanup, return an unknown-session response instead of starting or reacquiring a runtime. */
   startRuntimeIfNeeded?: boolean;
+  /**
+   * Host-only live-source recovery provenance. A notebook recovery open may
+   * dispatch only on the kernel that owns this still-mapped runtime session.
+   */
+  requiredKernelSessionId?: string;
   /** Opaque identifier for the logical view that owns a profiling request. */
   viewContextId?: string;
   /**
@@ -28,6 +59,8 @@ export interface BridgeRequestOptions {
    * pinned for recovery while the user's logical selection remains automatic.
    */
   backendPreference?: DataBackend | "auto";
+  /** Host-only progress for an expensive live-notebook session open. */
+  onOpenProgress?: (stage: SessionOpenProgressStage) => void;
 }
 
 export interface SessionPresentation {

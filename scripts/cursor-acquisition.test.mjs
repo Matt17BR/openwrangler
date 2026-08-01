@@ -476,22 +476,48 @@ test("Cursor Windows extraction binds the artifact and exact leaf identity insid
       join(environment.SYSTEMROOT, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     );
     assert.deepEqual(signature.args.slice(0, -1), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    assert.ok(
+      signature.args.at(-1).length <= 30_000,
+      `Encoded Authenticode command exceeded its Windows launch budget: ${signature.args.at(-1).length}`
+    );
     const decodedCommand = Buffer.from(signature.args.at(-1), "base64").toString("utf16le");
     const encodedArtifactPath = Buffer.from(artifact.path, "utf16le").toString("base64");
-    assert.match(decodedCommand, /Get-AuthenticodeSignature -LiteralPath \$literalPath/u);
+    assert.match(decodedCommand, /Add-Type -TypeDefinition \$nativeSource -Language CSharp/u);
+    assert.match(decodedCommand, /DllImport\("wintrust\.dll"[^\]]*ExactSpelling = true\)/u);
+    assert.match(decodedCommand, /private static extern int WinVerifyTrust/u);
+    assert.match(decodedCommand, /WTD_REVOKE_NONE = 0/u);
+    assert.match(decodedCommand, /WTD_REVOCATION_CHECK_NONE = 0x10/u);
+    assert.match(decodedCommand, /WTD_CACHE_ONLY_URL_RETRIEVAL = 0x1000/u);
+    assert.match(decodedCommand, /WTD_DISABLE_MD2_MD4 = 0x2000/u);
+    assert.match(decodedCommand, /fdwRevocationChecks = WTD_REVOKE_NONE/u);
+    assert.match(
+      decodedCommand,
+      /dwProvFlags = WTD_REVOCATION_CHECK_NONE \| WTD_CACHE_ONLY_URL_RETRIEVAL \| WTD_DISABLE_MD2_MD4/u
+    );
+    assert.match(decodedCommand, /WinVerifyTrust\(new IntPtr\(-1\), ref action, ref trustData\)/u);
+    assert.match(decodedCommand, /if \(status != 0\)/u);
+    assert.match(decodedCommand, /WTHelperProvDataFromStateData\(trustData\.hWVTStateData\)/u);
+    assert.match(decodedCommand, /WTHelperGetProvSignerFromChain\(providerData, 0, false, 0\)/u);
+    assert.match(decodedCommand, /return new X509Certificate2\(rawCertificate\)/u);
+    assert.match(decodedCommand, /trustData\.dwStateAction = WTD_STATEACTION_CLOSE/u);
     assert.match(decodedCommand, /\$null -eq \$certificate/u);
-    assert.match(decodedCommand, /Status -ne 'Valid'/u);
     assert.match(decodedCommand, /X509NameType\]::SimpleName/u);
     assert.match(decodedCommand, /\$simpleName -cne 'Anysphere, Inc\.'/u);
     assert.match(decodedCommand, /SHA256\]::Create\(\)/u);
     assert.match(decodedCommand, /ComputeHash\(\$certificate\.RawData\)/u);
     assert.match(decodedCommand, /A64BA881C8D4EEAA0E9556856B750CB3C658E0C9765BABFDCEAB3A2797B905AB/u);
-    assert.match(decodedCommand, /finally \{ \$sha256\.Dispose\(\) \}/u);
-    assert.deepEqual(
-      [...decodedCommand.matchAll(/\bexit (4[1-4])\b/gu)].map((match) => match[1]),
-      ["41", "42", "43", "44"]
+    assert.match(decodedCommand, /finally \{ \$sha256\.Dispose\(\); \$certificate\.Dispose\(\) \}/u);
+    assert.match(decodedCommand, /\$certificate\.Dispose\(\)/u);
+    assert.deepEqual([...decodedCommand.matchAll(/\bexit (4[1-4])\b/gu)].map((match) => match[1]).sort(), [
+      "41",
+      "42",
+      "43",
+      "44"
+    ]);
+    assert.doesNotMatch(
+      decodedCommand,
+      /Get-AuthenticodeSignature|SignerCertificate\.Subject|-notlike|Write-(?:Error|Host|Output)/u
     );
-    assert.doesNotMatch(decodedCommand, /SignerCertificate\.Subject|-notlike|Write-(?:Error|Host|Output)/u);
     assert.equal(decodedCommand.includes(encodedArtifactPath), true);
     assert.doesNotMatch(decodedCommand, /\$args/u);
     assert.equal(signature.args.includes(artifact.path), false);

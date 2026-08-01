@@ -127,7 +127,7 @@ textarea {
 }
 
 .toolbarIdentity {
-  min-width: 0;
+  min-width: 15ch;
   display: grid;
   gap: 2px;
 }
@@ -201,28 +201,31 @@ textarea {
   border: 1px solid var(--vscode-panel-border);
 }
 
-.cleaningBar {
+.toolbarPlan {
   align-items: center;
-  background: var(--vscode-editorGroupHeader-tabsBackground);
-  border-bottom: 1px solid var(--vscode-panel-border);
+  border-left: 1px solid var(--vscode-panel-border);
   display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  min-height: 34px;
-  padding: 5px 10px;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 8px;
 }
 
-.cleaningSummary,
+.toolbarPlanStatus {
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  font-size: 12px;
+  gap: 5px;
+  white-space: nowrap;
+}
+
 .cleaningActions,
 .diffStats {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-}
-
-.cleaningSummary {
-  min-width: 0;
 }
 
 .draftReview {
@@ -375,9 +378,9 @@ textarea {
 .columnSearchResults {
   list-style: none;
   margin: 0;
-  max-height: min(var(--column-search-viewport-height, 360px), 55vh);
+  max-height: min(var(--column-search-viewport-height, 352px), 55vh);
   overflow: auto;
-  padding: 3px;
+  padding: 0 3px;
   position: relative;
 }
 
@@ -474,7 +477,8 @@ textarea {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border-left: 1px solid var(--vscode-panel-border);
   background: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
 }
@@ -1180,13 +1184,27 @@ th:hover .columnResizeHandle,
   width: 100%;
 }
 
-.miniChart rect {
+.miniChart .numericHistogramBar {
   fill: var(--vscode-charts-blue, #3794ff);
+  pointer-events: none;
 }
 
-.miniChart rect:focus {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
+.numericHistogramBin:hover .numericHistogramBar,
+.numericHistogramBin:focus-within .numericHistogramBar {
+  fill: var(--vscode-charts-orange, var(--vscode-editorWarning-foreground, #cca700));
+}
+
+.miniChart .numericHistogramHitTarget {
+  cursor: crosshair;
+  fill: transparent;
+  pointer-events: all;
+  stroke: transparent;
+}
+
+.miniChart .numericHistogramHitTarget:focus {
+  outline: none;
+  stroke: var(--vscode-focusBorder);
+  stroke-width: 2px;
 }
 
 .numericHistogram,
@@ -1198,6 +1216,29 @@ th:hover .columnResizeHandle,
 
 .numericHistogram:not(.compact) .miniChart {
   height: 92px;
+}
+
+.numericHistogram {
+  position: relative;
+}
+
+.numericHistogramTooltip {
+  background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border));
+  border-radius: 2px;
+  color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+  font-size: 10px;
+  left: 3px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  padding: 2px 4px;
+  pointer-events: none;
+  position: absolute;
+  right: 3px;
+  text-align: center;
+  top: 6px;
+  white-space: normal;
+  z-index: 2;
 }
 
 .miniChartCaption,
@@ -1340,7 +1381,8 @@ th.rowHeader {
 .summaryPanel {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 0;
 }
 
@@ -1572,6 +1614,22 @@ dd {
 
 .emptyState {
   padding: 24px;
+}
+
+.sessionOpenStatus {
+  display: grid;
+  gap: 8px;
+  max-width: 680px;
+}
+
+.sessionOpenStatus strong {
+  font-size: 13px;
+}
+
+.sessionOpenStatus p {
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.45;
+  margin: 0;
 }
 
 .diffStats {
@@ -1985,10 +2043,17 @@ dd {
     right: auto;
   }
 
-  .cleaningBar,
   .draftReview {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .toolbarPlan {
+    border-left: 0;
+    border-top: 1px solid var(--vscode-panel-border);
+    flex-basis: 100%;
+    padding-left: 0;
+    padding-top: 6px;
   }
 
   .draftReview {
@@ -2080,9 +2145,36 @@ dd {
   th,
   td,
   .toolbar,
+  .toolbarPlan,
   .sidebar,
   .gridStatusBar {
     border-color: CanvasText;
+  }
+
+  .toolbarPlan {
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: none;
+  }
+
+  .toolbarPlanStatus {
+    color: CanvasText;
+  }
+
+  .toolbarPlan button {
+    background: ButtonFace;
+    border: 1px solid ButtonText;
+    color: ButtonText;
+  }
+
+  .toolbarPlan button:disabled {
+    border-color: GrayText;
+    color: GrayText;
+    opacity: 1;
+  }
+
+  .toolbarPlan button:focus-visible {
+    outline-color: Highlight;
   }
 
   .gridNavigationButton,
@@ -2120,5 +2212,24 @@ dd {
   td.diffChangedCell {
     outline: 2px dashed CanvasText;
     outline-offset: -3px;
+  }
+
+  .numericHistogramTooltip {
+    background: Canvas;
+    border-color: CanvasText;
+    color: CanvasText;
+  }
+
+  .miniChart .numericHistogramBar {
+    fill: CanvasText;
+  }
+
+  .numericHistogramBin:hover .numericHistogramBar,
+  .numericHistogramBin:focus-within .numericHistogramBar {
+    fill: Highlight;
+  }
+
+  .miniChart .numericHistogramHitTarget:focus {
+    stroke: Highlight;
   }
 }

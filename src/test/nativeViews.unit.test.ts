@@ -303,6 +303,12 @@ describe("native operation commands", () => {
     });
 
     nativeMocks.sendEditorAction.mockClear();
+    registered.setActiveSession(undefined);
+    await command("openWrangler.moveViewSortUp")(nodes[2]);
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+    registered.setActiveSession(filtered);
+
+    nativeMocks.sendEditorAction.mockClear();
     await command("openWrangler.moveViewSortUp")(nodes[1]);
     await command("openWrangler.moveViewSortDown")(nodes[2]);
     await command("openWrangler.removeViewSort")("sales");

@@ -7,6 +7,7 @@ from base64 import b64encode
 from bisect import bisect_right
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -122,6 +123,78 @@ def validate_view_predicate_operator(column_type: str | None, operator: Any) -> 
     if normalized not in VIEW_PREDICATE_OPERATORS.get(str(column_type), frozenset()):
         raise EngineError(f"View predicate {normalized!r} is unavailable for {column_type or 'unknown'} columns.")
     return normalized
+
+
+def reconcile_view_filter_model(
+    model: Mapping[str, Any],
+    schema: Sequence[Mapping[str, Any]],
+    previous_schema: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Keep only viewing rules that remain safe for an exact new schema.
+
+    Viewing state is name-addressed by design, so a structural cleaning step can
+    make a previously confirmed rule unavailable or ambiguous. Filters retain
+    their declared semantic type and are kept only when both the prior and next
+    unique columns have that same type. Sorts carry no type declaration, so
+    they remain valid only when the unique column keeps the exact same
+    comparable semantic type. The relative order of every surviving rule is
+    preserved.
+
+    This is intentionally reconciliation, not validation or retry recovery:
+    explicit view requests still fail closed when they are invalid. Plan
+    mutations call this before executing the next confirmed view so a successful
+    cleaning step cannot be undone by a stale viewing reference.
+    """
+
+    def columns_by_name(columns: Sequence[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+        result: dict[str, list[Mapping[str, Any]]] = {}
+        for column in columns:
+            name = column.get("name")
+            if isinstance(name, str) and name:
+                result.setdefault(name, []).append(column)
+        return result
+
+    next_columns_by_name = columns_by_name(schema)
+    prior_columns_by_name = columns_by_name(schema if previous_schema is None else previous_schema)
+
+    filters: list[dict[str, Any]] = []
+    for column_filter in model.get("filters", []):
+        if not isinstance(column_filter, Mapping):
+            continue
+        name = column_filter.get("column")
+        next_matches = next_columns_by_name.get(name, []) if isinstance(name, str) else []
+        prior_matches = prior_columns_by_name.get(name, []) if isinstance(name, str) else []
+        declared_type = column_filter.get("type")
+        if (
+            len(prior_matches) != 1
+            or len(next_matches) != 1
+            or declared_type != prior_matches[0].get("type")
+            or declared_type != next_matches[0].get("type")
+        ):
+            continue
+        filters.append(deepcopy(dict(column_filter)))
+
+    sorts: list[dict[str, Any]] = []
+    for rule in model.get("sort", []):
+        if not isinstance(rule, Mapping):
+            continue
+        name = rule.get("column")
+        next_matches = next_columns_by_name.get(name, []) if isinstance(name, str) else []
+        prior_matches = prior_columns_by_name.get(name, []) if isinstance(name, str) else []
+        if (
+            len(prior_matches) != 1
+            or len(next_matches) != 1
+            or prior_matches[0].get("type") != next_matches[0].get("type")
+            or next_matches[0].get("type") not in VIEW_COMPARABLE_TYPES
+        ):
+            continue
+        sorts.append(deepcopy(dict(rule)))
+
+    return {
+        "logic": model.get("logic", "and"),
+        "filters": filters,
+        "sort": sorts,
+    }
 
 
 def coerce_typed_view_value(value: Any, column_type: str | None) -> Any:

@@ -1105,10 +1105,13 @@ class PolarsEngine(DataFrameEngine):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
         needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
-        lines = ["from collections import Counter"]
+        needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan)
+        lines = ["from collections import Counter"] if needs_counter else []
         if needs_filter_helpers:
             lines.extend(["from datetime import date, datetime, timedelta", "from decimal import Decimal"])
-        lines.extend(["", "import polars as pl", ""])
+        if lines:
+            lines.append("")
+        lines.extend(["import polars as pl", ""])
         if needs_filter_helpers:
             lines.extend(generated_view_value_helper_lines())
         if any(_polars_step_needs_checked_integer_helpers(step) for step in plan):

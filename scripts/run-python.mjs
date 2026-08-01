@@ -22,7 +22,10 @@ const executable =
   }) ?? "python3";
 const result = spawnSync(executable, process.argv.slice(2), {
   cwd: root,
-  env: process.env,
+  env: {
+    ...process.env,
+    PYTHONPATH: resolve(root, "python")
+  },
   stdio: "inherit"
 });
 

@@ -488,7 +488,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(screen.getByRole("checkbox", { name: "city, column 1" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "city" })).toBeChecked();
   });
 
   it("fails closed when a saved step has no recorded input schema while leaving cancel usable", () => {
@@ -644,7 +644,7 @@ describe("OperationBuilder", () => {
     }
   );
 
-  it("distinguishes duplicate labels by position and edits a structural reference by ID", () => {
+  it("keeps unique labels plain while disambiguating duplicates, empty labels, and display collisions", () => {
     const onPreview = vi.fn();
     const duplicateColumns = [
       { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
@@ -678,15 +678,15 @@ describe("OperationBuilder", () => {
       />
     );
 
-    const first = screen.getByRole("option", { name: "value, column 1" }) as HTMLOptionElement;
+    const first = screen.getByRole("option", { name: "value, source column 1" }) as HTMLOptionElement;
     const second = screen.getByRole("option", { name: "value, column 2" }) as HTMLOptionElement;
     expect(first).toHaveValue("c:0");
     expect(second).toHaveValue("c:1");
     expect(first.selected).toBe(false);
     expect(second.selected).toBe(true);
     expect(screen.getByRole("option", { name: "(empty name), column 3" })).toHaveValue("c:2");
-    expect(screen.getByRole("option", { name: "(empty name), column 4" })).toHaveValue("c:3");
-    expect(screen.getByRole("option", { name: "value, column 1, column 5" })).toHaveValue("c:4");
+    expect(screen.getByRole("option", { name: "(empty name)" })).toHaveValue("c:3");
+    expect(screen.getByRole("option", { name: "value, column 1" })).toHaveValue("c:4");
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).toHaveBeenCalledWith(
@@ -697,6 +697,42 @@ describe("OperationBuilder", () => {
       }),
       "rename-second"
     );
+  });
+
+  it("keeps every visible label unique when source names imitate positional fallbacks", () => {
+    const columns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
+      { ...metadata.schema[1], id: "c:1", name: "value", position: 1 },
+      { ...metadata.schema[0], id: "c:2", name: "other_a", position: 2 },
+      { ...metadata.schema[0], id: "c:3", name: "other_b", position: 3 },
+      { ...metadata.schema[0], id: "c:4", name: "value, column 1", position: 4 },
+      { ...metadata.schema[0], id: "c:5", name: "value, column 1, column 5", position: 5 },
+      { ...metadata.schema[0], id: "c:6", name: "value, source column 1", position: 6 },
+      { ...metadata.schema[0], id: "c:7", name: "value, source column 1 (2)", position: 7 }
+    ];
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: columns,
+          shape: { rows: 2, columns: columns.length },
+          filteredShape: { rows: 2, columns: columns.length }
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="renameColumn"
+        onClose={() => undefined}
+        onPreview={() => undefined}
+      />
+    );
+
+    const options = screen.getAllByRole("option");
+    const visibleLabels = options.map((option) => option.textContent);
+    expect(new Set(visibleLabels).size).toBe(visibleLabels.length);
+    expect(screen.getByRole("option", { name: "value, source column 1 (3)" })).toHaveValue("c:0");
+    expect(screen.getByRole("option", { name: "value, column 1" })).toHaveValue("c:4");
+    expect(screen.getByRole("option", { name: "value, column 1, column 5" })).toHaveValue("c:5");
+    expect(screen.getByRole("option", { name: "value, source column 1" })).toHaveValue("c:6");
+    expect(screen.getByRole("option", { name: "value, source column 1 (2)" })).toHaveValue("c:7");
   });
 
   it.each([
@@ -758,7 +794,26 @@ describe("OperationBuilder", () => {
       />
     );
 
+    const numericValue = screen.getByLabelText("Numeric value");
+    expect(numericValue).toHaveAttribute("step", "any");
     fireEvent.change(screen.getByLabelText("Left column"), { target: { value: "c:1" } });
+    fireEvent.change(numericValue, { target: { value: "1.1" } });
+    fireEvent.change(screen.getByLabelText("New column"), { target: { value: "projected_sales" } });
+    expect(numericValue).toBeValid();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        kind: "formula",
+        params: {
+          leftColumn: { id: "c:1", name: "sales" },
+          operator: "add",
+          value: 1.1,
+          newColumn: "projected_sales"
+        }
+      })
+    );
+
+    onPreview.mockClear();
     fireEvent.change(screen.getByLabelText("Right operand"), { target: { value: "column" } });
     fireEvent.change(screen.getByLabelText("Right column"), { target: { value: "c:0" } });
     fireEvent.change(screen.getByLabelText("New column"), { target: { value: "ratio" } });
@@ -793,8 +848,8 @@ describe("OperationBuilder", () => {
     );
 
     const structuralSelection = screen.getByRole("group", { name: label });
-    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "city, column 1" }));
-    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "sales, column 2" }));
+    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "city" }));
+    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "sales" }));
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(structuralPreview.mock.calls[0][0].params).toEqual({
       columns: [
@@ -840,7 +895,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(screen.getByText("Selected order: sales, column 2 → city, column 1")).toBeInTheDocument();
+    expect(screen.getByText("Selected order: sales → city")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Columns to keep" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0].params).toEqual({
@@ -864,9 +919,9 @@ describe("OperationBuilder", () => {
     );
 
     const selection = screen.getByRole("group", { name: "Columns to keep" });
-    fireEvent.click(within(selection).getByRole("checkbox", { name: "sales, column 2" }));
-    fireEvent.click(within(selection).getByRole("checkbox", { name: "city, column 1" }));
-    expect(screen.getByText("Selected order: sales, column 2 → city, column 1")).toBeInTheDocument();
+    fireEvent.click(within(selection).getByRole("checkbox", { name: "sales" }));
+    fireEvent.click(within(selection).getByRole("checkbox", { name: "city" }));
+    expect(screen.getByText("Selected order: sales → city")).toBeInTheDocument();
     expect(selection).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
@@ -926,7 +981,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "city, column 1" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "city" }));
     fireEvent.change(screen.getByLabelText("Prefix separator"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
@@ -1154,6 +1209,16 @@ describe("OperationBuilder", () => {
       />
     );
 
+    expect(screen.getByLabelText(/Examples \(JSON\)/)).toHaveValue(
+      JSON.stringify(
+        [
+          { inputs: ["DACH-DE-00482"], output: "DE" },
+          { inputs: ["NORDICS-SE-01940"], output: "SE" }
+        ],
+        null,
+        2
+      )
+    );
     fireEvent.change(screen.getByLabelText(/Examples \(JSON\)/), { target: { value: "not json" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Examples must be valid JSON");
@@ -1216,7 +1281,7 @@ describe("OperationBuilder", () => {
     );
 
     const keys = screen.getByRole("group", { name: "Group keys" });
-    for (const label of ["value, column 1", "value, column 2", "(empty name), column 3", "7, column 4"]) {
+    for (const label of ["value, column 1", "value, column 2", "(empty name), column 3", "7"]) {
       expect(within(keys).getByRole("checkbox", { name: label })).toBeInTheDocument();
     }
     fireEvent.click(within(keys).getByRole("checkbox", { name: "value, column 2" }));
@@ -1273,9 +1338,9 @@ describe("OperationBuilder", () => {
     );
 
     const keys = screen.getByRole("group", { name: "Group keys" });
-    expect(within(keys).getByRole("checkbox", { name: "city, column 1" })).toBeInTheDocument();
-    expect(within(keys).queryByRole("checkbox", { name: "items, column 4" })).not.toBeInTheDocument();
-    fireEvent.click(within(keys).getByRole("checkbox", { name: "city, column 1" }));
+    expect(within(keys).getByRole("checkbox", { name: "city" })).toBeInTheDocument();
+    expect(within(keys).queryByRole("checkbox", { name: "items" })).not.toBeInTheDocument();
+    fireEvent.click(within(keys).getByRole("checkbox", { name: "city" }));
 
     expect(
       Array.from((screen.getByLabelText("Value 1") as HTMLSelectElement).options, (option) => option.value)
@@ -1362,8 +1427,8 @@ describe("OperationBuilder", () => {
     const sources = screen.getByRole("group", { name: "Source columns" });
     fireEvent.click(within(sources).getByRole("checkbox", { name: "value, column 1" }));
     fireEvent.click(within(sources).getByRole("checkbox", { name: "value, column 2" }));
-    fireEvent.click(within(sources).getByRole("checkbox", { name: "7, column 4" }));
-    expect(screen.getByText("Selected order: value, column 2 → 7, column 4")).toBeInTheDocument();
+    fireEvent.click(within(sources).getByRole("checkbox", { name: "7" }));
+    expect(screen.getByText("Selected order: value, column 2 → 7")).toBeInTheDocument();
     const examples = [
       { inputs: ["a", 1], output: "a1" },
       { inputs: ["b", 2], output: "b2" }

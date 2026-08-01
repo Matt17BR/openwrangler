@@ -132,7 +132,20 @@ applied["metadata"]["stats"] = manager.get_dataset_stats(
 inspection = manager.inspect_step(session_id, applied["revision"], "adjusted-sales", 0, 4)
 
 example_path = root / "tmp" / "screenshots" / "by-example.csv"
-example_path.write_text("value\na\nb\n", encoding="utf-8")
+example_path.write_text(
+    "account_code\n"
+    "DACH-DE-00482\n"
+    "NORDICS-SE-01940\n"
+    "IBERIA-ES-00731\n"
+    "BENELUX-NL-01108\n"
+    "DACH-AT-00217\n"
+    "DACH-CH-00864\n"
+    "NORDICS-DK-00395\n"
+    "NORDICS-FI-01642\n"
+    "BENELUX-BE-00576\n"
+    "FRANCE-FR-01308\n",
+    encoding="utf-8",
+)
 example_manager = SessionManager()
 example_opened = example_manager.open_session(
     {"kind": "file", "label": "by-example.csv", "path": str(example_path)},
@@ -144,14 +157,14 @@ example_draft = example_manager.preview_step(
     example_id,
     0,
     {
-        "id": "uppercase-example",
+        "id": "extract-country-code",
         "kind": "byExample",
         "params": {
-            "sourceColumns": [{"id": "c:source:0", "name": "value"}],
-            "newColumn": "upper",
+            "sourceColumns": [{"id": "c:source:0", "name": "account_code"}],
+            "newColumn": "country_code",
             "examples": [
-                {"inputs": ["a"], "output": "A"},
-                {"inputs": ["b"], "output": "B"},
+                {"inputs": ["DACH-DE-00482"], "output": "DE"},
+                {"inputs": ["NORDICS-SE-01940"], "output": "SE"},
             ],
         },
     },
@@ -419,6 +432,7 @@ print(json.dumps({
     "draft": draft,
     "applied": applied,
     "inspection": inspection,
+    "exampleOpened": example_opened,
     "exampleDraft": example_draft,
     "wide": wide,
     "widePages": wide_pages,
@@ -496,11 +510,14 @@ writeWebviewHarness(
 );
 writeWebviewHarness(
   "by-example-dialog.html",
-  payloads.opened,
+  payloads.exampleOpened,
   {},
   "acceptance/by-example-dialog-dark-1280.png",
   {},
-  { editorAction: { kind: "editorAction", action: "openOperation", operationKind: "byExample" } }
+  {
+    height: 960,
+    editorAction: { kind: "editorAction", action: "openOperation", operationKind: "byExample" }
+  }
 );
 writeWebviewHarness(
   "by-example-preview.html",
@@ -747,7 +764,7 @@ writeWebviewHarness(
   "duckdb-rich-parquet.html",
   payloads.duckdbRich,
   {},
-  "readme/v1.1/gallery/duckdb-rich-parquet.png",
+  "readme/v1.2/gallery/duckdb-rich-parquet.png",
   {},
   { width: 1920, height: 640, defaultColumnWidth: 240 }
 );
@@ -1057,7 +1074,9 @@ function screenshot(htmlPath, outputPath, width = 1280, height = 760) {
   if (result.status !== 0) {
     throw new Error(`Chrome screenshot failed for ${htmlPath}\n${result.stderr}\n${result.stdout}`);
   }
-  const size = readFileSync(outputPath).byteLength;
+  const portable = addSrgbChunk(readFileSync(outputPath));
+  writeFileSync(outputPath, portable);
+  const size = portable.byteLength;
   console.log(`Captured ${outputPath} (${size} bytes)`);
   if (verify) compareScreenshot(outputPath);
 }
@@ -1091,6 +1110,52 @@ function compareScreenshot(actualPath) {
     );
   }
   console.log(`Verified ${relativePath} (${(ratio * 100).toFixed(3)}% changed).`);
+}
+
+function addSrgbChunk(png) {
+  const chunks = pngChunkTypes(png);
+  if (chunks.includes("sRGB")) return png;
+  if (chunks[0] !== "IHDR") throw new Error("Screenshot media must start with a PNG IHDR chunk.");
+  const ihdrLength = png.readUInt32BE(8);
+  const insertOffset = 8 + 12 + ihdrLength;
+  const type = Buffer.from("sRGB", "ascii");
+  const data = Buffer.from([0]);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([type, data])));
+  const chunk = Buffer.concat([length, type, data, crc]);
+  return Buffer.concat([png.subarray(0, insertOffset), chunk, png.subarray(insertOffset)]);
+}
+
+function pngChunkTypes(png) {
+  if (!png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    throw new Error("Screenshot media must be a PNG file.");
+  }
+  const types = [];
+  let offset = 8;
+  while (offset + 12 <= png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.toString("ascii", offset + 4, offset + 8);
+    types.push(type);
+    offset += length + 12;
+    if (type === "IEND") break;
+  }
+  if (types.at(-1) !== "IEND" || offset !== png.length) {
+    throw new Error("Screenshot media contains a malformed PNG chunk sequence.");
+  }
+  return types;
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 function themeTokens(theme) {

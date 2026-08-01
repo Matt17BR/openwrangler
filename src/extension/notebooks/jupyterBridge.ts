@@ -139,9 +139,11 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
 function notebookVariableQuickPickItem(variable: NotebookVariableDescriptor): NotebookVariableQuickPickItem {
   const presentation = notebookVariablePresentation(variable.type);
   const detail =
-    variable.backend === "duckdb" || variable.backend === "pyspark"
-      ? `${variable.type} · Live viewing-only session`
-      : `${variable.type} · Live notebook session`;
+    variable.backend === "pyspark"
+      ? "Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x"
+      : variable.backend === "duckdb"
+        ? `${variable.type} · Live viewing-only session`
+        : `${variable.type} · Live notebook session`;
   return {
     label: variable.name,
     description: `${presentation.family} · ${presentation.kind}`,

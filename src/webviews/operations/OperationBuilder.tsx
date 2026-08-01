@@ -766,7 +766,7 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
           </select>
         </label>
         {formulaOperandMode === "value" ? (
-          <TextField name="value" label="Numeric value" type="number" defaultValue={param("value", "0")} />
+          <TextField name="value" label="Numeric value" type="number" step="any" defaultValue={param("value", "0")} />
         ) : (
           <ColumnReferenceSelect
             name="rightColumn"
@@ -871,7 +871,15 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
           emptyMessage="No text columns are available. Cast a column to text first."
         />
         <TextField name="delimiter" label="Delimiter" defaultValue={param("delimiter", ",")} required />
-        <TextField name="index" label="Part index" type="number" min={0} defaultValue={param("index", "0")} required />
+        <TextField
+          name="index"
+          label="Part index"
+          type="number"
+          min={0}
+          step={1}
+          defaultValue={param("index", "0")}
+          required
+        />
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "split_value")} required />
       </>
     );
@@ -921,6 +929,7 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
           name="decimals"
           label="Decimal places"
           type="number"
+          step={1}
           defaultValue={param("decimals", "0")}
           required
         />
@@ -992,8 +1001,8 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
       ? JSON.stringify(params.examples, null, 2)
       : JSON.stringify(
           [
-            { inputs: ["example one"], output: "EXAMPLE ONE" },
-            { inputs: ["example two"], output: "EXAMPLE TWO" }
+            { inputs: ["DACH-DE-00482"], output: "DE" },
+            { inputs: ["NORDICS-SE-01940"], output: "SE" }
           ],
           null,
           2
@@ -1432,6 +1441,7 @@ function ColumnReferenceSelect({
   const fallbackValue =
     defaultValue && columns.some((column) => column.id === defaultValue) ? defaultValue : columns[0]?.id;
   const controlled = value !== undefined;
+  const optionLabels = useMemo(() => columnOptionLabels(columns), [columns]);
   return (
     <label className="formField">
       <span>{label}</span>
@@ -1446,7 +1456,7 @@ function ColumnReferenceSelect({
         {columns.length === 0 && <option value="">No compatible columns</option>}
         {columns.map((column) => (
           <option key={column.id} value={column.id}>
-            {columnOptionLabel(column)}
+            {optionLabels.get(column.id)}
           </option>
         ))}
       </select>
@@ -1474,10 +1484,10 @@ function ColumnReferencesSelect({
   const helpId = `${selectId}-help`;
   const orderId = `${selectId}-order`;
   const validColumnIds = new Set(columns.map((column) => column.id));
+  const optionLabels = useMemo(() => columnOptionLabels(columns), [columns]);
   const [selectedIds, setSelectedIds] = useState(defaultValue.filter((id) => validColumnIds.has(id)));
   const selectedLabels = selectedIds.map((id) => {
-    const column = columns.find((candidate) => candidate.id === id);
-    return column ? columnOptionLabel(column) : id;
+    return optionLabels.get(id) ?? id;
   });
   return (
     <fieldset
@@ -1506,7 +1516,7 @@ function ColumnReferencesSelect({
                 });
               }}
             />
-            <span>{columnOptionLabel(column)}</span>
+            <span>{optionLabels.get(column.id)}</span>
           </label>
         ))}
         {columns.length === 0 && <span className="mutedText">No compatible columns are available.</span>}
@@ -1526,9 +1536,39 @@ function ColumnReferencesSelect({
   );
 }
 
-function columnOptionLabel(column: ColumnSchema): string {
-  const displayName = column.name === "" ? "(empty name)" : column.name;
-  return `${displayName}, column ${column.position + 1}`;
+function columnOptionLabels(columns: readonly ColumnSchema[]): ReadonlyMap<string, string> {
+  const nameCounts = new Map<string, number>();
+  for (const column of columns) nameCounts.set(column.name, (nameCounts.get(column.name) ?? 0) + 1);
+
+  const labels = new Map<string, string>();
+  const occupiedLabels = new Set<string>();
+
+  // Preserve every ordinary unique source name exactly. Positional labels are
+  // then fitted around those names instead of making the common case verbose.
+  for (const column of columns) {
+    if (column.name === "" || nameCounts.get(column.name) !== 1) continue;
+    labels.set(column.id, column.name);
+    occupiedLabels.add(column.name);
+  }
+
+  for (const column of columns) {
+    if (labels.has(column.id)) continue;
+    const displayName = column.name === "" ? "(empty name)" : column.name;
+    const humanPosition = column.position + 1;
+    let label = `${displayName}, column ${humanPosition}`;
+    if (occupiedLabels.has(label)) {
+      const alternate = `${displayName}, source column ${humanPosition}`;
+      label = alternate;
+      let disambiguator = 2;
+      while (occupiedLabels.has(label)) {
+        label = `${alternate} (${disambiguator})`;
+        disambiguator += 1;
+      }
+    }
+    labels.set(column.id, label);
+    occupiedLabels.add(label);
+  }
+  return labels;
 }
 
 function SelectField({
@@ -1562,7 +1602,8 @@ function TextField({
   defaultValue,
   required = false,
   type = "text",
-  min
+  min,
+  step
 }: {
   name: string;
   label: string;
@@ -1570,11 +1611,12 @@ function TextField({
   required?: boolean;
   type?: string;
   min?: number;
+  step?: number | "any";
 }) {
   return (
     <label className="formField">
       <span>{label}</span>
-      <input name={name} type={type} min={min} defaultValue={defaultValue} required={required} />
+      <input name={name} type={type} min={min} step={step} defaultValue={defaultValue} required={required} />
     </label>
   );
 }

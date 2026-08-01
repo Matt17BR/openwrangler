@@ -130,6 +130,50 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
   });
 
+  it("hides floating-point noise in grid text while preserving the exact value on hover", () => {
+    const noisyValue = 4201.559999999995;
+    const noisyPage: GridPage = {
+      ...page,
+      limit: 1,
+      totalRows: 1,
+      rows: [
+        {
+          id: "r:noisy-float",
+          rowNumber: 0,
+          values: [
+            { kind: "string", raw: "DACH", display: "DACH", isNull: false, isNaN: false },
+            {
+              kind: "number",
+              raw: noisyValue,
+              display: String(noisyValue),
+              isNull: false,
+              isNaN: false
+            }
+          ]
+        }
+      ]
+    };
+
+    render(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 1, columns: 2 }, filteredShape: { rows: 1, columns: 2 } }}
+        page={noisyPage}
+        summaries={[]}
+        pageSize={1}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const rendered = screen.getByText("4201.56");
+    expect(rendered).toHaveAttribute("title", String(noisyValue));
+    expect(screen.queryByText(String(noisyValue))).toBeNull();
+  });
+
   it("keeps block navigation and the exact live range in a status bar after the scroller", () => {
     const onPage = vi.fn();
     render(
@@ -384,8 +428,8 @@ describe("DataGrid", () => {
         visualization: {
           kind: "numeric",
           bins: [
-            { min: 1, max: 2.5, count: 2 },
-            { min: 2.5, max: 4, count: 2 }
+            { min: 1, max: 2.5, count: 100 },
+            { min: 2.5, max: 4, count: 1 }
           ],
           sampled: true
         }
@@ -453,9 +497,20 @@ describe("DataGrid", () => {
     ).toBeVisible();
     const bins = within(numericHeader).getAllByRole("graphics-symbol");
     expect(bins).toHaveLength(2);
-    expect(bins[0]).toHaveAccessibleName("1-2.5: 2 rows");
-    expect(bins[1]).toHaveAccessibleName("2.5-4: 2 rows");
+    expect(bins[0]).toHaveAccessibleName("1-2.5: 100 rows");
+    expect(bins[1]).toHaveAccessibleName("2.5-4: 1 row");
     expect(bins[1]).toHaveAttribute("tabindex", "0");
+    expect(bins[1]).toHaveAttribute("height", "36");
+    expect(numericHeader.querySelectorAll(".numericHistogramBar")[1]).toHaveAttribute("height", "2");
+    fireEvent.focus(bins[0]!);
+    expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("1-2.5: 100 rows");
+    expect(bins[0]).not.toHaveAttribute("aria-describedby");
+    fireEvent.pointerEnter(bins[1]!);
+    expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("2.5-4: 1 row");
+    fireEvent.pointerLeave(bins[1]!);
+    expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("1-2.5: 100 rows");
+    fireEvent.blur(bins[0]!);
+    expect(within(numericHeader).queryByRole("tooltip")).not.toBeInTheDocument();
     expect(screen.getByRole("img", { name: "boolean distribution: true 3, false 1." })).toHaveTextContent(
       "True 3False 1"
     );
@@ -850,6 +905,122 @@ describe("DataGrid", () => {
     expect(onViewStateChange).not.toHaveBeenCalled();
     expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
     expect(props.onPage).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a stale page offset when a logical view and authoritative restore commit together", () => {
+    const onViewStateChange = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onViewStateChange,
+      onPage: vi.fn(),
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} viewContextId="initial-view" />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    onViewStateChange.mockClear();
+
+    rerender(
+      <DataGrid
+        {...props}
+        viewContextId="restored-view"
+        viewState={{
+          columnWidths: { "c:1": 280 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+        }}
+        viewStateRestoreVersion={1}
+      />
+    );
+
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(props.onPage).not.toHaveBeenCalled();
+  });
+
+  it("reapplies an authoritative viewport after an asynchronous layout scroll collapse", () => {
+    const onViewStateChange = vi.fn();
+    const onPage = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onViewStateChange,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    let physicalScrollTop = 0;
+    let physicalScrollLeft = 0;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 58 },
+      clientWidth: { configurable: true, value: 320 },
+      scrollHeight: { configurable: true, value: 232 },
+      scrollWidth: { configurable: true, value: 900 },
+      scrollTop: {
+        configurable: true,
+        get: () => physicalScrollTop,
+        set: (value: number) => {
+          physicalScrollTop = value;
+        }
+      },
+      scrollLeft: {
+        configurable: true,
+        get: () => physicalScrollLeft,
+        set: (value: number) => {
+          physicalScrollLeft = value;
+        }
+      }
+    });
+
+    rerender(
+      <DataGrid
+        {...props}
+        viewState={{
+          columnWidths: { "c:1": 280 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+        }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    onViewStateChange.mockClear();
+
+    physicalScrollTop = 0;
+    physicalScrollLeft = 0;
+    fireEvent.scroll(scroller);
+
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(onPage).not.toHaveBeenCalled();
+
+    physicalScrollTop = 0;
+    physicalScrollLeft = 0;
+    fireEvent.scroll(scroller);
+
+    expect(scroller.scrollTop).toBe(0);
+    expect(scroller.scrollLeft).toBe(0);
+    expect(onViewStateChange).toHaveBeenCalledWith(
+      expect.objectContaining({ viewport: { firstVisibleRow: 0, scrollLeft: 0 } })
+    );
+    expect(onPage).not.toHaveBeenCalled();
   });
 
   it("ignores a teardown scroll collapse but still accepts an explicit user scroll", () => {
@@ -1776,6 +1947,44 @@ describe("DataGrid", () => {
   });
 });
 
+describe("App toolbar", () => {
+  beforeAll(async () => {
+    document.body.dataset.canChangeImportOptions = "true";
+    ({ App } = await import("../webviews/App"));
+  });
+
+  it("keeps the visible dataframe shape compact while exposing its full meaning", async () => {
+    const schema = Array.from({ length: 417 }, (_, position) => ({
+      id: `c:${position}`,
+      name: `column_${position}`,
+      position,
+      rawType: "String",
+      type: "string" as const,
+      nullable: false
+    }));
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        shape: { rows: 10_000, columns: schema.length },
+        filteredShape: { rows: 10_000, columns: schema.length },
+        schema
+      },
+      page: {
+        ...page,
+        totalRows: 10_000
+      },
+      summaries: []
+    });
+
+    const shape = await screen.findByLabelText("10,000 rows by 417 columns");
+    expect(shape).toHaveTextContent("10,000 × 417");
+    expect(shape).toHaveAttribute("title", "10,000 rows × 417 columns");
+    expect(shape).not.toHaveTextContent("rows");
+  });
+});
+
 describe("App file import options", () => {
   beforeAll(async () => {
     document.body.dataset.canChangeImportOptions = "true";
@@ -1784,6 +1993,39 @@ describe("App file import options", () => {
 
   beforeEach(() => {
     webviewPostMessage.mockClear();
+  });
+
+  it("announces honest PySpark open stages without offering an unsafe kernel interrupt", async () => {
+    render(<App />);
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "acquiringKernel" });
+    const status = await screen.findByRole("status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toHaveAttribute("aria-atomic", "true");
+    expect(status).toHaveTextContent("Connecting to the notebook kernel");
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "bootstrappingRuntime" });
+    expect(status).toHaveTextContent("Preparing Open Wrangler in the kernel");
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "preparingSparkView" });
+    expect(status).toHaveTextContent("Preparing PySpark 4.2 (viewing only)");
+    expect(status).toHaveTextContent("scans, indexes, and caches the complete PySpark DataFrame");
+    expect(status).toHaveTextContent("stable row positions and an exact row total");
+    expect(status).toHaveTextContent("protect unrelated Spark jobs");
+    expect(status).toHaveTextContent("allowed to finish even if you close the view");
+    expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "untrusted-stage" });
+    expect(status).toHaveTextContent("Preparing PySpark 4.2 (viewing only)");
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: null });
+    expect(status).toHaveTextContent("Opening session");
+    expect(status).not.toHaveTextContent("PySpark");
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "openingNotebookVariable" });
+    expect(status).toHaveTextContent("Opening the live notebook variable");
+    expect(status).not.toHaveTextContent("scans, indexes, and caches");
+    expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
   });
 
   it("labels PySpark sessions as experimental and viewing-only", async () => {
@@ -1850,6 +2092,122 @@ describe("App file import options", () => {
       ],
       sort: filteredMetadata.filterModel.sort
     });
+  });
+
+  it("keeps reconciled filters, value selections, predicates, and sort priority after applying a step", async () => {
+    const step: TransformStep = {
+      id: "round-sales",
+      kind: "roundNumber",
+      params: { column: { id: "c:1", name: "sales" }, decimals: 0 }
+    };
+    const filterModel: SessionMetadata["filterModel"] = {
+      logic: "and",
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          valueFilter: {
+            kind: "values",
+            selectedValues: ["Milan"],
+            includeNulls: false,
+            includeNaN: false,
+            search: "mil"
+          },
+          predicates: [{ kind: "predicate", operator: "contains", value: "il" }]
+        }
+      ],
+      sort: [
+        { column: "sales", direction: "desc", nulls: "last" },
+        { column: "city", direction: "asc", nulls: "first" }
+      ]
+    };
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...metadata, revision: 1, filterModel, draftStep: step },
+      page,
+      summaries: []
+    });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    dispatchAppMessage({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2,
+      metadata: { ...metadata, revision: 2, filterModel, steps: [step] },
+      page,
+      code: "frame"
+    });
+
+    expect(document.querySelector<HTMLElement>('th[data-column="sales"]')).toHaveAccessibleName(
+      "sales, sorted descending, priority 1 of 2"
+    );
+    expect(document.querySelector<HTMLElement>('th[data-column="city"]')).toHaveAccessibleName(
+      "city, sorted ascending, priority 2 of 2"
+    );
+
+    dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
+    expect(await screen.findByRole("tab", { name: "Filters" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: 'Remove equals "Milan" filter from city' })).toBeVisible();
+    expect(screen.getByRole("button", { name: 'Remove contains "il" filter from city' })).toBeVisible();
+    const sortOrder = screen.getByRole("list", { name: "Active sort order" });
+    expect(
+      within(sortOrder)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent)
+    ).toEqual([expect.stringContaining("sales"), expect.stringContaining("city")]);
+  });
+
+  it("keeps a user-edited draft view when the runtime confirms discard", async () => {
+    const step: TransformStep = {
+      id: "round-sales",
+      kind: "roundNumber",
+      params: { column: { id: "c:1", name: "sales" }, decimals: 0 }
+    };
+    const editedFilterModel: SessionMetadata["filterModel"] = {
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "contains", value: "il" }]
+        }
+      ],
+      sort: [
+        { column: "city", direction: "desc", nulls: "last" },
+        { column: "sales", direction: "asc", nulls: "first" }
+      ]
+    };
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...metadata, revision: 1, filterModel: editedFilterModel, draftStep: step },
+      page,
+      summaries: []
+    });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "discardDraft" });
+    dispatchAppMessage({
+      kind: "planUpdated",
+      action: "discard",
+      revision: 2,
+      metadata: { ...metadata, revision: 2, filterModel: editedFilterModel },
+      page,
+      code: "frame"
+    });
+
+    expect(document.querySelector<HTMLElement>('th[data-column="city"]')).toHaveAccessibleName(
+      "city, sorted descending, priority 1 of 2"
+    );
+    dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
+    expect(await screen.findByRole("button", { name: 'Remove contains "il" filter from city' })).toBeVisible();
+    const sortOrder = screen.getByRole("list", { name: "Active sort order" });
+    expect(
+      within(sortOrder)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent)
+    ).toEqual([expect.stringContaining("city"), expect.stringContaining("sales")]);
   });
 
   it("opens the Filters drawer from a native sort node and applies validated priority changes", async () => {

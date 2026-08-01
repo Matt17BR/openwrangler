@@ -69,6 +69,8 @@ def session_state(session: Session) -> dict[str, Any]:
         "draftStep": deepcopy(session.draft_step),
         "draftBoundStep": deepcopy(session.draft_bound_step),
         "draftFrameId": id(session.draft_frame) if session.draft_frame is not None else None,
+        "draftBaseFilterModel": deepcopy(session.draft_base_filter_model),
+        "draftBaseViewChangeEpoch": session.draft_base_view_change_epoch,
         "draftBaseLineage": deepcopy(session.draft_base_lineage),
         "draftBaseSchema": deepcopy(session.draft_base_schema),
         "draftLineage": deepcopy(session.draft_lineage),
@@ -78,6 +80,8 @@ def session_state(session: Session) -> dict[str, Any]:
         "pageCache": [(key, deepcopy(cached.payload), cached.size_bytes) for key, cached in session.page_cache.items()],
         "pageCacheBytes": session.page_cache_bytes,
         "viewGeneration": session.view_generation,
+        "viewChangeEpoch": session.view_change_epoch,
+        "lastAppliedViewRestore": deepcopy(session.last_applied_view_restore),
         "revision": session.revision,
     }
 

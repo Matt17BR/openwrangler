@@ -1095,6 +1095,7 @@ describe("SummaryPanel", () => {
       "10-11: 1 row",
       "11-12: 2 rows"
     ]);
+    expect(screen.getAllByRole("graphics-symbol").map((bin) => bin.getAttribute("height"))).toEqual(["92", "92"]);
     expect(screen.queryByRole("heading", { name: "Top values" })).not.toBeInTheDocument();
   });
 

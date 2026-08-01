@@ -16,7 +16,11 @@ const notebookMocks = vi.hoisted(() => ({
   showQuickPick: vi.fn(async (items: readonly unknown[], _options?: unknown) => items[0]),
   createPanel: vi.fn(),
   kernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
-  executeCode: vi.fn((code: string) => discoveryOutputs(code)),
+  tokenSources: [] as Array<{
+    readonly token: { isCancellationRequested: boolean };
+    disposed: boolean;
+  }>,
+  executeCode: vi.fn((code: string) => notebookKernelOutputs(code)),
   getKernel: vi.fn(async () => ({
     language: "python",
     executeCode: notebookMocks.executeCode
@@ -105,10 +109,16 @@ vi.mock("vscode", () => {
       isCancellationRequested: false,
       onCancellationRequested: () => ({ dispose: () => undefined })
     };
+    disposed = false;
+    constructor() {
+      notebookMocks.tokenSources.push(this);
+    }
     cancel(): void {
       this.token.isCancellationRequested = true;
     }
-    dispose(): void {}
+    dispose(): void {
+      this.disposed = true;
+    }
   }
   function uriComponents(value: string): {
     scheme: string;
@@ -191,7 +201,11 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
 
 import * as vscode from "vscode";
 import { registerNotebookCommands } from "../extension/notebooks/jupyterBridge";
-import { buildNotebookVariableDiscoveryCode } from "../extension/notebooks/notebookVariableDiscovery";
+import {
+  buildNotebookVariableDiscoveryCode,
+  buildPySparkNotebookPreflightCode,
+  parsePySparkNotebookPreflightOutput
+} from "../extension/notebooks/notebookVariableDiscovery";
 
 describe("notebook command provenance", () => {
   beforeEach(() => {
@@ -206,8 +220,9 @@ describe("notebook command provenance", () => {
     notebookMocks.showQuickPick.mockImplementation(async (items) => items[0]);
     notebookMocks.createPanel.mockReset();
     notebookMocks.kernelOrigins.length = 0;
+    notebookMocks.tokenSources.length = 0;
     notebookMocks.executeCode.mockReset();
-    notebookMocks.executeCode.mockImplementation((code) => discoveryOutputs(code));
+    notebookMocks.executeCode.mockImplementation((code) => notebookKernelOutputs(code));
     notebookMocks.getKernel.mockReset();
     notebookMocks.getKernel.mockResolvedValue({
       language: "python",
@@ -268,6 +283,7 @@ describe("notebook command provenance", () => {
       },
       "pyspark"
     );
+    expect(notebookMocks.executeCode).not.toHaveBeenCalled();
   });
 
   it.each(["DuckDBPyRelation", "_duckdb.DuckDBPyRelation", "duckdb.duckdb.DuckDBPyRelation"])(
@@ -928,8 +944,10 @@ describe("notebook command provenance", () => {
         truncated: false,
         variables: [
           { name: "duck_relation", type: "_duckdb.DuckDBPyRelation", backend: "duckdb" },
-          { name: "pandas_frame", type: "pandas.core.frame.DataFrame", backend: "pandas" },
-          { name: "pandas_series", type: "pandas.core.series.Series", backend: "pandas" },
+          { name: "pandas_current_frame", type: "pandas.DataFrame", backend: "pandas" },
+          { name: "pandas_current_series", type: "pandas.Series", backend: "pandas" },
+          { name: "pandas_legacy_frame", type: "pandas.core.frame.DataFrame", backend: "pandas" },
+          { name: "pandas_legacy_series", type: "pandas.core.series.Series", backend: "pandas" },
           { name: "polars_frame", type: "polars.dataframe.frame.DataFrame", backend: "polars" },
           { name: "polars_lazy", type: "polars.lazyframe.frame.LazyFrame", backend: "polars" },
           { name: "polars_series", type: "polars.series.series.Series", backend: "polars" },
@@ -969,11 +987,17 @@ describe("notebook command provenance", () => {
         detail: "_duckdb.DuckDBPyRelation · Live viewing-only session"
       }),
       expect.objectContaining({
-        label: "pandas_frame",
+        label: "pandas_current_frame",
+        description: "Pandas · DataFrame",
+        detail: "pandas.DataFrame · Live notebook session"
+      }),
+      expect.objectContaining({ label: "pandas_current_series", description: "Pandas · Series" }),
+      expect.objectContaining({
+        label: "pandas_legacy_frame",
         description: "Pandas · DataFrame",
         detail: "pandas.core.frame.DataFrame · Live notebook session"
       }),
-      expect.objectContaining({ label: "pandas_series", description: "Pandas · Series" }),
+      expect.objectContaining({ label: "pandas_legacy_series", description: "Pandas · Series" }),
       expect.objectContaining({ label: "polars_frame", description: "Polars · DataFrame" }),
       expect.objectContaining({ label: "polars_lazy", description: "Polars · LazyFrame" }),
       expect.objectContaining({ label: "polars_series", description: "Polars · Series" }),
@@ -981,9 +1005,14 @@ describe("notebook command provenance", () => {
       expect.objectContaining({
         label: "spark_connect",
         description: "PySpark Connect · DataFrame",
-        detail: "pyspark.sql.connect.dataframe.DataFrame · Live viewing-only session"
+        detail: "Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x"
       })
     ]);
+    const sparkItems = (items as readonly { description?: string; detail?: string }[]).filter((item) =>
+      item.description?.startsWith("PySpark ")
+    );
+    expect(sparkItems).toHaveLength(2);
+    expect(sparkItems.every((item) => (item.detail?.length ?? Number.POSITIVE_INFINITY) <= 80)).toBe(true);
     expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
     expect(notebookMocks.createPanel).toHaveBeenCalledWith(
       context,
@@ -1075,13 +1104,97 @@ describe("notebook command provenance", () => {
     );
   });
 
+  it.each([
+    [
+      "malformed output",
+      { unexpected: true },
+      "Open Wrangler received a malformed notebook variable discovery response."
+    ],
+    [
+      "oversized output",
+      {
+        items: [
+          {
+            mime: "application/x.notebook.stream.stdout",
+            data: new Uint8Array(64 * 1024 + 1)
+          }
+        ]
+      },
+      "Open Wrangler rejected an oversized notebook variable discovery response."
+    ],
+    [
+      "kernel error output",
+      {
+        items: [
+          {
+            mime: "application/vnd.code.notebook.error",
+            data: Buffer.from(JSON.stringify({ name: "RuntimeError", message: "discovery failed" }), "utf8")
+          }
+        ]
+      },
+      "Open Wrangler could not inspect dataframe variables in the selected notebook kernel."
+    ]
+  ] as const)(
+    "drains a dispatched iterator after %s without cancelling or disposing its token",
+    async (_kind, failure, message) => {
+      const original = notebook(`file:///workspace/discovery-${_kind.replaceAll(" ", "-")}.ipynb`);
+      notebookMocks.notebookDocuments.push(original);
+      notebookMocks.activeNotebookEditor = editor(original);
+      const drainStarted = deferred<void>();
+      const releaseDrain = deferred<void>();
+      let drainedTail = false;
+      notebookMocks.executeCode.mockImplementationOnce((code) => {
+        const tail = discoveryOutputs(code);
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield failure;
+            drainStarted.resolve();
+            await releaseDrain.promise;
+            if (_kind === "malformed output") {
+              const replacement = notebook(original.uri.toString());
+              closeNotebook(original);
+              notebookMocks.notebookDocuments.splice(0, 1, replacement);
+              notebookMocks.activeNotebookEditor = editor(replacement);
+            }
+            for await (const output of tail) {
+              drainedTail = true;
+              yield output;
+            }
+          }
+        } as never;
+      });
+      const { coordinator } = register();
+
+      const pending = command("openWrangler.openNotebookVariable")();
+      await drainStarted.promise;
+
+      expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+      expect(coordinator.createBridge).not.toHaveBeenCalled();
+      expect(notebookMocks.tokenSources).toHaveLength(1);
+      expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: false });
+      expect(notebookMocks.tokenSources[0]?.token.isCancellationRequested).toBe(false);
+
+      releaseDrain.resolve();
+      await pending;
+
+      expect(drainedTail).toBe(true);
+      expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: true });
+      expect(notebookMocks.tokenSources[0]?.token.isCancellationRequested).toBe(false);
+      expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
+      expect(coordinator.createBridge).not.toHaveBeenCalled();
+      expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(message);
+    }
+  );
+
   it("rejects an excessive zero-byte output stream", async () => {
     const original = notebook("file:///workspace/output-flood.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
+    let emittedOutputs = 0;
     notebookMocks.executeCode.mockImplementationOnce(() => ({
       async *[Symbol.asyncIterator]() {
-        for (let index = 0; index < 129; index += 1) {
+        for (let index = 0; index < 132; index += 1) {
+          emittedOutputs += 1;
           yield {
             items: [
               {
@@ -1102,6 +1215,9 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "Open Wrangler rejected an oversized notebook variable discovery response."
     );
+    expect(emittedOutputs).toBe(132);
+    expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: true });
+    expect(notebookMocks.tokenSources[0]?.token.isCancellationRequested).toBe(false);
   });
 
   it("does not request a replacement notebook kernel after Jupyter activation", async () => {
@@ -1133,6 +1249,9 @@ describe("notebook command provenance", () => {
     const replacement = notebook("file:///workspace/discovery-output-replaced.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
+    const drainStarted = deferred<void>();
+    const releaseDrain = deferred<void>();
+    let drainedTail = false;
     notebookMocks.executeCode.mockImplementationOnce((code) => {
       const output = discoveryOutputs(code);
       return {
@@ -1142,18 +1261,37 @@ describe("notebook command provenance", () => {
           notebookMocks.notebookDocuments.splice(0, 1, replacement);
           notebookMocks.activeNotebookEditor = editor(replacement);
           if (!next.done) yield next.value;
+          drainStarted.resolve();
+          await releaseDrain.promise;
+          drainedTail = true;
+          yield { unexpected: true } as never;
         }
       };
     });
     const { coordinator } = register();
 
-    await command("openWrangler.openNotebookVariable")();
+    const pending = command("openWrangler.openNotebookVariable")();
+    await drainStarted.promise;
 
+    expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+    expect(notebookMocks.tokenSources).toHaveLength(1);
+    expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: false });
+    expect(notebookMocks.tokenSources[0]?.token.isCancellationRequested).toBe(false);
+
+    releaseDrain.resolve();
+    await pending;
+
+    expect(drainedTail).toBe(true);
     expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "The originating notebook is no longer open. Reopen it and try again."
     );
+    const discoveryToken = (
+      notebookMocks.executeCode.mock.calls[0] as unknown as [string, { readonly isCancellationRequested: boolean }]
+    )[1];
+    expect(discoveryToken.isCancellationRequested).toBe(false);
+    expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: true });
   });
 
   it("discovers types without repr, shape, count, collection, or dataframe imports", () => {
@@ -1165,6 +1303,51 @@ describe("notebook command provenance", () => {
     expect(code).not.toContain(".collect(");
     expect(code).not.toMatch(/import (pandas|polars|pyspark|duckdb)/);
     expect(code).toContain("if __ow_scanned > 4096:");
+  });
+
+  it("builds an isolated PySpark preflight without evaluating dataframe contents", () => {
+    const marker = "0123456789abcdef0123456789abcdef";
+    const code = buildPySparkNotebookPreflightCode(marker, "spark_frame");
+
+    expect(code).toContain("pyspark");
+    expect(code).not.toMatch(/import pyspark/u);
+    expect(code).not.toContain(".count(");
+    expect(code).not.toContain(".collect(");
+    expect(code).not.toContain("getattr(");
+    expect(code).toContain("__ow_module.__dict__");
+    expect(parsePySparkNotebookPreflightOutput(preflightText(marker, true, "4.2.0"), marker)).toEqual({
+      isPySpark: true,
+      version: "4.2.0"
+    });
+    expect(parsePySparkNotebookPreflightOutput(preflightText(marker, false, null), marker)).toEqual({
+      isPySpark: false,
+      version: null
+    });
+  });
+
+  it("fails closed on malformed PySpark version-probe envelopes", () => {
+    const marker = "0123456789abcdef0123456789abcdef";
+    const start = `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`;
+    const end = `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`;
+
+    expect(() =>
+      parsePySparkNotebookPreflightOutput(
+        `${start}\n${JSON.stringify({ isPySpark: true, protocolVersion: 1, version: "4.2.0", extra: true })}\n${end}`,
+        marker
+      )
+    ).toThrow("could not verify PySpark in the selected notebook kernel");
+    expect(() =>
+      parsePySparkNotebookPreflightOutput(
+        `${start}\n${JSON.stringify({ isPySpark: true, protocolVersion: 1, version: "4.2.0" })}\n${end}\n${end}`,
+        marker
+      )
+    ).toThrow("could not verify PySpark in the selected notebook kernel");
+    expect(() =>
+      parsePySparkNotebookPreflightOutput(
+        `${start}\n${JSON.stringify({ isPySpark: true, protocolVersion: 1, version: "4.2.0-β" })}\n${end}`,
+        marker
+      )
+    ).toThrow("could not verify PySpark in the selected notebook kernel");
   });
 
   it("does not retarget the interactive command after its captured document closes and reopens", async () => {
@@ -1321,7 +1504,7 @@ function discoveryOutputs(
     variables: [
       {
         name: "frame",
-        type: "pandas.core.frame.DataFrame",
+        type: "pandas.DataFrame",
         backend: "pandas"
       }
     ]
@@ -1346,4 +1529,25 @@ function discoveryOutputs(
       };
     }
   };
+}
+
+function notebookKernelOutputs(code: string): AsyncIterable<{ items: Array<{ mime: string; data: Uint8Array }> }> {
+  if (code.includes("__OPEN_WRANGLER_VARIABLES_START_")) return discoveryOutputs(code);
+  throw new Error("Expected notebook discovery code.");
+}
+
+function preflightText(marker: string, isPySpark: boolean, version: string | null): string {
+  return [
+    `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
+    JSON.stringify({ isPySpark, protocolVersion: 1, version }),
+    `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
+  ].join("\n");
+}
+
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as vscode from "vscode";
-import { commands, window, workspace } from "vscode";
+import { commands, Uri, window, workspace } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY } from "../extension/files/confirmedFileConfigurations";
 import { OpenWranglerPanel } from "../extension/webviewPanel";
@@ -109,6 +109,39 @@ describe("OpenWranglerPanel retained view state", () => {
     delete (window as unknown as { showInputBox?: unknown }).showInputBox;
   });
 
+  it("keeps native actions on the visible session after sidebar focus and clears them when hidden", async () => {
+    const setActiveSession = vi.fn();
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse), setActiveSession });
+    await harness.open();
+    harness.posted.length = 0;
+    setActiveSession.mockClear();
+    harness.deactivate();
+
+    expect(setActiveSession).not.toHaveBeenCalledWith(undefined);
+    expect(OpenWranglerPanel.sendEditorAction({ action: "openFilters", column: "city" })).toBe(true);
+    expect(harness.posted).toEqual([{ kind: "editorAction", action: "openFilters", column: "city" }]);
+    harness.posted.length = 0;
+
+    const action = {
+      action: "changeViewSort" as const,
+      column: "city",
+      sortAction: "remove" as const,
+      expectedSessionId: "session",
+      expectedSortModelSignature: "[]",
+      expectedSortIndex: 0
+    };
+    expect(OpenWranglerPanel.sendEditorAction(action)).toBe(true);
+    expect(harness.posted).toEqual([{ kind: "editorAction", ...action }]);
+
+    harness.posted.length = 0;
+    expect(OpenWranglerPanel.sendEditorAction({ ...action, expectedSessionId: "stale-session" })).toBe(false);
+    expect(harness.posted).toEqual([]);
+
+    harness.hide();
+    expect(setActiveSession).toHaveBeenLastCalledWith(undefined);
+    expect(OpenWranglerPanel.sendEditorAction({ action: "openFilters", column: "city" })).toBe(false);
+  });
+
   it("loads the production webview as an ES module under a restrictive nonce CSP", async () => {
     const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
     await harness.open();
@@ -120,6 +153,14 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.html).not.toContain("script-src 'unsafe-inline'");
     expect(script?.[2].replaceAll("\\", "/")).toBe("file:///extension/media/webview.js");
     expect(harness.html).toContain('data-fetch-column-block-size="16"');
+  });
+
+  it("brands every workbench tab with theme-specific Open Wrangler action icons", () => {
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+
+    const iconPath = harness.iconPath as { light: vscode.Uri; dark: vscode.Uri };
+    expect(iconPath.light.toString()).toBe("file:///extension/media/action-icon-light.svg");
+    expect(iconPath.dark.toString()).toBe("file:///extension/media/action-icon-dark.svg");
   });
 
   it("exposes import reconfiguration only for configurable file formats", () => {
@@ -183,7 +224,7 @@ describe("OpenWranglerPanel retained view state", () => {
     panelPromptMocks.showInputBox.mockClear();
     executeCommand.mockClear();
 
-    harness.deactivate();
+    harness.hide();
     const handled = await OpenWranglerPanel.changeActiveImportOptions();
 
     expect(handled).toBe(false);
@@ -788,6 +829,140 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(true);
     await acknowledgeLatestRendererSynchronization(harness);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+  });
+
+  it("replays attempt-scoped PySpark open progress to a late renderer and clears it at the terminal response", async () => {
+    const openResult = deferred<OpenWranglerResponse>();
+    const releaseAcquiringPublication = deferred<void>();
+    let heldAcquiringPublication = false;
+    let reportProgress: BridgeRequestOptions["onOpenProgress"];
+    const request: OpenWranglerBridge["request"] = vi.fn(async (request, options): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        reportProgress = options?.onOpenProgress;
+        return openResult.promise;
+      }
+      if (request.kind === "closeSession") {
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      return {
+        kind: "error",
+        code: "unexpected_request",
+        message: "Unexpected test request.",
+        recoverable: false
+      };
+    });
+    const bridge: OpenWranglerBridge = {
+      request
+    };
+    const harness = createPanelHarness(bridge, {
+      backend: "pyspark",
+      backendPreference: "pyspark",
+      delegateOpen: true,
+      source: { kind: "notebookVariable", label: "spark_df", variableName: "spark_df" },
+      postMessage: async (message) => {
+        if (!heldAcquiringPublication && isSessionOpenProgressMessage(message) && message.stage === "acquiringKernel") {
+          heldAcquiringPublication = true;
+          await releaseAcquiringPublication.promise;
+        }
+        return true;
+      }
+    });
+
+    const opening = harness.open();
+    await vi.waitFor(() => expect(reportProgress).toEqual(expect.any(Function)));
+    reportProgress?.("acquiringKernel");
+    expect(harness.posted).not.toContainEqual(expect.objectContaining({ kind: "sessionOpenProgress" }));
+
+    const rendererReady = harness.receive({ kind: "ready" });
+    await vi.waitFor(() =>
+      expect(harness.posted).toContainEqual({ kind: "sessionOpenProgress", stage: "acquiringKernel" })
+    );
+    reportProgress?.("bootstrappingRuntime");
+    reportProgress?.("preparingSparkView");
+    expect(harness.posted.filter(isSessionOpenProgressMessage)).toEqual([
+      { kind: "sessionOpenProgress", stage: "acquiringKernel" }
+    ]);
+    releaseAcquiringPublication.resolve(undefined);
+    await vi.waitFor(() =>
+      expect(harness.posted.filter(isSessionOpenProgressMessage)).toEqual([
+        { kind: "sessionOpenProgress", stage: "acquiringKernel" },
+        { kind: "sessionOpenProgress", stage: "bootstrappingRuntime" },
+        { kind: "sessionOpenProgress", stage: "preparingSparkView" }
+      ])
+    );
+
+    const pysparkOpened: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: {
+        ...openedResponse.metadata,
+        backend: "pyspark",
+        mode: "viewing",
+        source: { kind: "notebookVariable", label: "spark_df", variableName: "spark_df" },
+        capabilities: { ...openedResponse.metadata.capabilities, editable: false }
+      }
+    };
+    openResult.resolve(pysparkOpened);
+    await opening;
+    await rendererReady;
+
+    expect(harness.posted.filter(isSessionOpenProgressMessage)).toEqual([
+      { kind: "sessionOpenProgress", stage: "acquiringKernel" },
+      { kind: "sessionOpenProgress", stage: "bootstrappingRuntime" },
+      { kind: "sessionOpenProgress", stage: "preparingSparkView" },
+      { kind: "sessionOpenProgress", stage: null }
+    ]);
+
+    const publishedCount = harness.posted.length;
+    reportProgress?.("acquiringKernel");
+    expect(harness.posted).toHaveLength(publishedCount);
+    harness.dispose();
+    reportProgress?.("preparingSparkView");
+    expect(harness.posted).toHaveLength(publishedCount);
+  });
+
+  it("passes a host-only disposal signal and closes a late live-notebook session exactly once", async () => {
+    const openResult = deferred<OpenWranglerResponse>();
+    let reportProgress: BridgeRequestOptions["onOpenProgress"];
+    let openCancellation: BridgeRequestOptions["cancellation"];
+    const closeRequests: OpenWranglerRequest[] = [];
+    const request: OpenWranglerBridge["request"] = vi.fn((runtimeRequest, options): Promise<OpenWranglerResponse> => {
+      if (runtimeRequest.kind === "closeSession") {
+        closeRequests.push(runtimeRequest);
+        return Promise.resolve({ kind: "sessionClosed", sessionId: runtimeRequest.sessionId });
+      }
+      if (runtimeRequest.kind !== "openSession") throw new Error(`Unexpected request ${runtimeRequest.kind}`);
+      reportProgress = options?.onOpenProgress;
+      openCancellation = options?.cancellation;
+      return openResult.promise;
+    });
+    const harness = createPanelHarness(
+      { request },
+      {
+        backend: null,
+        backendPreference: "auto",
+        delegateOpen: true,
+        source: { kind: "notebookVariable", label: "auto_df", variableName: "auto_df" }
+      }
+    );
+
+    const opening = harness.open();
+    await vi.waitFor(() => expect(reportProgress).toEqual(expect.any(Function)));
+    expect(openCancellation?.isCancellationRequested).toBe(false);
+    expect(request).toHaveBeenCalledWith(
+      expect.not.objectContaining({ backend: expect.anything() }),
+      expect.any(Object)
+    );
+    reportProgress?.("acquiringKernel");
+    reportProgress?.("bootstrappingRuntime");
+    reportProgress?.("openingNotebookVariable");
+    harness.dispose();
+    expect(openCancellation?.isCancellationRequested).toBe(true);
+    openResult.resolve(openedResponse);
+    await opening;
+    expect(closeRequests).toEqual([
+      { kind: "closeSession", sessionId: openedResponse.metadata.sessionId, revision: openedResponse.metadata.revision }
+    ]);
+    expect(harness.posted).not.toContainEqual(expect.objectContaining({ kind: "sessionOpened" }));
   });
 
   it("routes screenshot-evidence drafts through the live panel snapshot", async () => {
@@ -3427,11 +3602,13 @@ describe("OpenWranglerPanel retained view state", () => {
     };
     const initialOpen = deferred<OpenWranglerResponse>();
     const closeRequests: OpenWranglerRequest[] = [];
+    let initialOpenCancellation: BridgeRequestOptions["cancellation"];
     let opens = 0;
     const request = vi.fn(
-      async (candidate: OpenWranglerRequest, _options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+      async (candidate: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
         if (candidate.kind === "openSession") {
           opens += 1;
+          if (opens === 1) initialOpenCancellation = options?.cancellation;
           return opens === 1 ? initialOpen.promise : responseForSource(candidate.source, 0);
         }
         if (candidate.kind === "closeSession") {
@@ -3452,6 +3629,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
 
     const changing = harness.receive({ kind: "changeImportOptions" });
+    await vi.waitFor(() => expect(initialOpenCancellation?.isCancellationRequested).toBe(true));
     initialOpen.resolve(responseForSource(source, 0));
     await Promise.all([opening, changing]);
 
@@ -3923,6 +4101,11 @@ interface RendererImportRequest {
   actionId: string;
 }
 
+interface SessionOpenProgressMessage {
+  kind: "sessionOpenProgress";
+  stage: "acquiringKernel" | "bootstrappingRuntime" | "openingNotebookVariable" | "preparingSparkView" | null;
+}
+
 function latestRendererSynchronization(messages: unknown[]): RendererSynchronizationMessage {
   const synchronization = [...messages].reverse().find(isRendererSynchronizationMessage);
   if (!synchronization) throw new Error("The panel did not publish a renderer synchronization marker.");
@@ -3944,6 +4127,11 @@ function isRendererImportRequest(message: unknown): message is RendererImportReq
   if (!message || typeof message !== "object") return false;
   const candidate = message as Partial<RendererImportRequest>;
   return candidate.kind === "requestImportOptionsChange" && typeof candidate.actionId === "string";
+}
+
+function isSessionOpenProgressMessage(message: unknown): message is SessionOpenProgressMessage {
+  if (!message || typeof message !== "object") return false;
+  return (message as Partial<SessionOpenProgressMessage>).kind === "sessionOpenProgress";
 }
 
 function isSessionOpenedResponse(message: unknown): message is SessionOpenedResponse {
@@ -3974,7 +4162,7 @@ function createPanelHarness(
     active?: boolean;
     activateDuringOpenRequest?: boolean;
     workspaceState?: Pick<vscode.Memento, "get" | "update">;
-    backend?: DataBackend;
+    backend?: DataBackend | null;
     backendPreference?: DataBackend | "auto";
     postMessage?: (message: unknown) => Promise<boolean>;
   }
@@ -3982,17 +4170,19 @@ function createPanelHarness(
   posted: unknown[];
   readonly html: string;
   readonly htmlAssignmentCount: number;
+  readonly iconPath: vscode.WebviewPanel["iconPath"];
   open(): Promise<void>;
   receive(message: unknown): Promise<void>;
   send(message: unknown): Promise<void>;
   reveal: ReturnType<typeof vi.fn>;
   activate(): void;
   deactivate(): void;
+  hide(): void;
   dispose(): void;
 } {
   let listener: ((message: unknown) => Promise<void>) | undefined;
   let disposeListener: (() => void) | undefined;
-  let viewStateListener: ((event: { webviewPanel: { active: boolean } }) => void) | undefined;
+  let viewStateListener: ((event: { webviewPanel: { active: boolean; visible: boolean } }) => void) | undefined;
   const posted: unknown[] = [];
   let html = "";
   let htmlAssignmentCount = 0;
@@ -4020,19 +4210,25 @@ function createPanelHarness(
   const panel = {
     webview,
     active: options?.active ?? true,
+    visible: true,
     viewColumn: 1,
+    iconPath: undefined as vscode.WebviewPanel["iconPath"],
     reveal,
     dispose: () => disposeListener?.(),
     onDidDispose: (listener: () => void) => {
       disposeListener = listener;
       return { dispose: () => undefined };
     },
-    onDidChangeViewState: (next: (event: { webviewPanel: { active: boolean } }) => void) => {
+    onDidChangeViewState: (next: (event: { webviewPanel: { active: boolean; visible: boolean } }) => void) => {
       viewStateListener = next;
       return { dispose: () => undefined };
     }
   };
-  const context = { extensionPath: "/extension", workspaceState: options?.workspaceState };
+  const context = {
+    extensionPath: "/extension",
+    extensionUri: Uri.file("/extension"),
+    workspaceState: options?.workspaceState
+  };
   const delegatedRequest: OpenWranglerBridge["request"] = options?.delegateOpen
     ? (request, requestOptions) => bridge.request(request, requestOptions)
     : (request, requestOptions) => {
@@ -4053,7 +4249,7 @@ function createPanelHarness(
     }
   };
   const source = options?.source ?? metadata.source;
-  const backend = options?.backend ?? metadata.backend;
+  const backend = options?.backend === null ? undefined : (options?.backend ?? metadata.backend);
   const backendPreference = options?.backendPreference ?? backend;
   let instance: OpenWranglerPanel;
   if (options?.createViaFactory) {
@@ -4093,6 +4289,9 @@ function createPanelHarness(
     get htmlAssignmentCount() {
       return htmlAssignmentCount;
     },
+    get iconPath() {
+      return panel.iconPath;
+    },
     open: () => instance.open(),
     async receive(message: unknown) {
       if (!listener) throw new Error("Panel message listener was not registered.");
@@ -4105,10 +4304,16 @@ function createPanelHarness(
     reveal,
     activate() {
       panel.active = true;
+      panel.visible = true;
       viewStateListener?.({ webviewPanel: panel });
     },
     deactivate() {
       panel.active = false;
+      viewStateListener?.({ webviewPanel: panel });
+    },
+    hide() {
+      panel.active = false;
+      panel.visible = false;
       viewStateListener?.({ webviewPanel: panel });
     },
     dispose() {

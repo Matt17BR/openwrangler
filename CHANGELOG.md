@@ -4,6 +4,117 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Changed
+
+- Import-option Quick Picks and input fields now explicitly reclaim workbench keyboard focus after opening. This
+  preserves the existing keyboard-only flow in VS Code and fixes Cursor 3.13.21 leaving focus inside the dataframe
+  webview; experimental forks that omit the standard focus command retain their native Quick Input behavior.
+- Hardened the optional clean-room Data Wrangler feasibility smoke against its real first-use UI: it now follows
+  the post-click editor's public runtime control through VS Code's local-interpreter overlay to the exact correlated
+  kernelspec, waits out transient duplicate controls without clicking, ignores only non-modal notification toasts,
+  and fails closed on persistent ambiguity or connection stalls. The fixed-order smoke has completed the full
+  CSV/Parquet matrix, while repeated baseline connection stalls correctly withhold a report instead of being retried.
+  Any completed run remains explicitly non-publishable diagnostic evidence, not a performance claim or grounds for
+  naming a winner.
+- Local PySpark Classic and Connect variables now invalidate cached blocks when their dataframe is replaced or
+  their Spark session stops. Recreating the same variable with the same schema lets the next current read reopen
+  it on the exact originating notebook and kernel while preserving confirmed filters, ordered sorts, selection,
+  widths, and viewport. A changed schema fails closed with reopen guidance; terminal cleanup faults retire only
+  their exact kernel mapping and remain visible as diagnostics.
+
+- Simplified column labels throughout the cleaning-step builder: unique names now appear without redundant
+  positions, while duplicate and unnamed columns retain 1-based positions and stable identities so selections
+  remain unambiguous and accessible.
+- Pinned and auto-detected PySpark notebook launches now verify strict PySpark 4.2.x inside the bridge's exact
+  selected kernel generation immediately before runtime open dispatch. Kernel switches and restarts invalidate and
+  reprobe before session publication. Picker and opening-stage copy explicitly label the session viewing-only and
+  warn that opening scans, indexes, and caches the complete DataFrame. Focused Classic and Connect tests prove real
+  owned-cache eviction without stopping the user's session, and packaged-kernel fixtures now trap Pandas/Arrow
+  conversions. External or authenticated Connect remains experimental and is not claimed by this evidence.
+- Split pull-request quality/contracts, visual/accessibility, production audits, packaged VS Code, native script,
+  native extension-host, and Cursor smoke into independently attributable jobs. The existing protected `validate`
+  context is now a fail-closed aggregate, so failed, cancelled, absent, or unexpectedly skipped evidence cannot
+  satisfy the merge gate.
+- Packaged editor acceptance now validates its prepared Python environment before starting VS Code or Cursor, so
+  unsupported Python versions and missing Pandas, Polars, DuckDB, or OpenPyXL fail during setup instead of after a
+  long workbench launch.
+- Notebook-kernel requests now use fresh never-cancel Jupyter tokens. Host deadlines and panel disposal detach and
+  stale-ignore instead of sending a kernel-wide interrupt, because PySpark's default SIGINT handler can cancel
+  unrelated Spark jobs even when Open Wrangler is opening or paging another dataframe engine. A detached live open
+  queues one bounded close on its exact originating kernel; a correlated late response still retires that mapping.
+  Kernel and standalone runtimes now produce `unknown_session` from a typed exception carrying the exact session ID
+  rather than attempting to infer absence from an error message.
+- Added honest, accessible progress while every live notebook variable connects to its kernel, prepares the
+  bundled runtime, and opens the variable, including automatic backend detection. Pinned and auto-detected
+  PySpark opens use dedicated final-stage copy explaining that their stable view scans, indexes, and caches the
+  complete frame to establish row positions and an exact total.
+- Rebuilt the README and product gallery around exact packaged-editor scenes: native Activity Bar views, the
+  filter/sort and cleaning workflow, file entry points, Pandas inline output, native Polars and DuckDB notebook
+  sessions, experimental PySpark, focused operation flows, and accessibility states. Captions now explain the
+  demonstrated capability without presenting fixture sizes as dataframe limits.
+- Expanded the public product tour with readable Activity Bar close-ups, complete 417-column navigation, exact
+  histogram interaction, compound-sort controls, real script and cleaned-data exports, and the live notebook
+  variable picker. Every published asset is derived pixel-for-pixel from an accepted packaged-extension scene.
+- Added paired, pixel-exact Activity Bar details to the README and product gallery so first-time users can read the
+  operation catalog, dataframe summary, ordered viewing state, and separate cleaning history without enlarging a
+  full editor screenshot. The details are derived from the accepted packaged Explore and Workflow captures rather
+  than reconstructed UI.
+- Reframed the native Polars and DuckDB notebook evidence as full-content-width, pixel-exact details linked to the
+  complete packaged-editor scenes, so engine badges, draft code, native filters, and ordered sorts remain legible.
+  The rich DuckDB gallery detail now removes unused canvas without altering typed decimal, time-zone, list, or
+  struct evidence.
+- Replaced the generic uppercase by-example placeholder and gallery fixture with a structured account-code
+  extraction, so the first example demonstrates deterministic split synthesis instead of duplicating a basic
+  casing operation. The README now places example setup and unseen-row draft review side by side.
+- Replaced the verbose workbench shape subtitle with the compact, standard `rows × columns` form while preserving
+  its full accessible description and hover text. Column profiles now scroll vertically without exposing a
+  misleading empty horizontal scrollbar.
+- Raised the minimum supported VS Code version from 1.105 to 1.106, the first stable release whose custom-editor
+  implementation renders an extension-supplied tab icon. This keeps the advertised branded Open Wrangler tab
+  contract testable instead of silently accepting the generic file icon shown by 1.105.
+- Made every numeric histogram bin use an equal-width, full-chart-height pointer and keyboard target while keeping
+  its visible bar proportional to the count. Hovering or focusing even a two-pixel bar now highlights it
+  immediately and shows the bin range and row count in a theme-aware tooltip.
+- Consolidated applied-plan status, **Edit latest**, and **Undo** into one named cleaning-plan group in the primary
+  toolbar, removing the permanent second cleaning bar. The group wraps as one responsive command row at narrow
+  widths, 200% zoom, and forced colors while preserving visible labels, shortcuts, disabled explanations, and tab
+  order.
+- Restored keyboard focus to **Add step** only when an activated **Undo** button removes the final applied step,
+  the webview still owns focus, and that exact button remains the focus origin; host actions, shortcuts, deliberate
+  focus moves, background tabs, and failed or cancelled mutations do not reclaim focus. The advertised Undo
+  shortcut follows the same rule when invoked from that exact button, but never when invoked elsewhere.
+- Clarified the notebook guidance that a DuckDB relation remains native, while DuckDB's explicit `.df()` result is
+  a real Pandas DataFrame and therefore opens with the Pandas backend.
+- Updated the public roadmap to batch the remaining interaction polish, reproducible performance comparison,
+  bounded VS Code-fork validation, and supported PySpark gates into one coherent v1.2 release instead of
+  promising a continuous stream of patch packages.
+
+### Fixed
+
+- Installed the native dataframe runtime dependencies in the split visual/accessibility CI lane, so production-scene
+  generation cannot fail before rendering DuckDB, Polars, Pandas, and notebook evidence or silently substitute
+  reconstructed fixture data.
+- Kept the native Activity Bar views bound to the exact visible dataframe when clicking a sidebar action moves
+  keyboard focus out of the editor. Filter, sort, operation, and cleaning-step actions now reach that visible
+  session, while hidden panels and stale sort identities still fail closed.
+- Kept an authoritative restored grid row and horizontal offset when a custom-editor snapshot and saved view hydrate
+  in the same render, and through a delayed workbench layout scroll collapse, while explicit wheel, pointer, touch,
+  and keyboard navigation remain user-authoritative.
+- Removed unused `Counter` imports from ordinary Pandas, Polars, and DuckDB generated plans while retaining the
+  import for one-hot encoding and multi-label binarization collision checks.
+- Preserved compatible viewing filters, selected values, predicates, searches, and ordered multi-sorts through
+  cleaning-step preview, apply, latest-step edit, discard, reload, and undo. Structural or semantic-type-changing
+  steps prune only rules that no longer resolve safely. An explicit in-draft edit remains authoritative through
+  Discard or Apply; otherwise Discard restores the persisted pre-draft view. Latest-step replacement retains the
+  original Undo receipt so immediate Undo returns to the pre-first-apply view when no later view edit intervened.
+- Branded Open Wrangler workbench and custom-editor tabs with the theme-specific Open Wrangler action icon instead
+  of inheriting a generic text or source-file glyph.
+- Restored Pandas 3 `DataFrame` and `Series` discovery in the notebook toolbar picker while retaining the Pandas 2
+  type aliases and rejecting classes that only spoof a Pandas module and type name.
+- Reissued a generated-column reveal with a fresh identity after the renderer synchronization barrier, so a
+  first attempt left dormant during Code Preview layout changes no longer strands the grid on the previous
+  columns.
+
 ## [1.1.9] - 2026-07-31
 
 ### Fixed

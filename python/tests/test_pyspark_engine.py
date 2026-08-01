@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from datetime import datetime
 from decimal import Decimal
 from importlib import import_module
+from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 import pytest
@@ -14,7 +16,22 @@ import __main__
 import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
-from openwrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import LiveSourceInvalidatedError, SessionManager
+
+_PYSPARK_VERSION_CONTRACT = json.loads(
+    (Path(__file__).resolve().parents[2] / "fixtures" / "pyspark-version-contract.json").read_text(encoding="utf-8")
+)
+
+
+def test_strict_pyspark_version_contract() -> None:
+    assert all(
+        pyspark_engine_module._is_supported_pyspark_version(version)
+        for version in _PYSPARK_VERSION_CONTRACT["accepted"]
+    )
+    assert not any(
+        pyspark_engine_module._is_supported_pyspark_version(version)
+        for version in _PYSPARK_VERSION_CONTRACT["rejected"]
+    )
 
 
 @pytest.fixture(scope="module", params=("classic", "connect"))
@@ -85,6 +102,67 @@ def test_capabilities_are_explicitly_read_only_and_not_file_backed() -> None:
         engine.compile_plan(())
     with pytest.raises(EngineError, match="does not export"):
         engine.export_data(object(), "cleaned.parquet", "parquet")
+
+
+def test_connect_stopped_probe_uses_the_session_local_flag() -> None:
+    class ConnectSession:
+        def __init__(self, stopped: bool) -> None:
+            self.is_stopped = stopped
+
+    class Frame:
+        def __init__(self, stopped: bool) -> None:
+            self.sparkSession = ConnectSession(stopped)
+
+    assert PySparkEngine.live_source_is_stopped(Frame(False)) is False
+    assert PySparkEngine.live_source_is_stopped(Frame(True)) is True
+
+
+def test_classic_stopped_probe_uses_the_cleared_context_handle_and_jvm_state() -> None:
+    class JavaContext:
+        def __init__(self, stopped: bool) -> None:
+            self.stopped = stopped
+
+        def sc(self) -> JavaContext:
+            return self
+
+        def isStopped(self) -> bool:
+            return self.stopped
+
+    class SparkContext:
+        def __init__(self, java_context: Any) -> None:
+            self._jsc = java_context
+
+    class ClassicSession:
+        def __init__(self, java_context: Any) -> None:
+            self.sparkContext = SparkContext(java_context)
+
+    class Frame:
+        def __init__(self, java_context: Any) -> None:
+            self.sparkSession = ClassicSession(java_context)
+
+    assert PySparkEngine.live_source_is_stopped(Frame(JavaContext(False))) is False
+    assert PySparkEngine.live_source_is_stopped(Frame(JavaContext(True))) is True
+    assert PySparkEngine.live_source_is_stopped(Frame(None)) is True
+
+
+def test_stopped_probe_does_not_misclassify_unknown_or_failed_liveness_checks() -> None:
+    class UnknownContext:
+        pass
+
+    class BrokenJavaContext:
+        def sc(self) -> Any:
+            raise RuntimeError("gateway unavailable")
+
+    class Session:
+        def __init__(self, context: Any) -> None:
+            self.sparkContext = context
+
+    class Frame:
+        def __init__(self, context: Any) -> None:
+            self.sparkSession = Session(context)
+
+    assert PySparkEngine.live_source_is_stopped(Frame(UnknownContext())) is False
+    assert PySparkEngine.live_source_is_stopped(Frame(type("Context", (), {"_jsc": BrokenJavaContext()})())) is False
 
 
 def test_detects_classic_and_connect_dataframes(spark_session: Any) -> None:
@@ -343,6 +421,23 @@ def test_index_materializes_once_and_close_unpersists_once(monkeypatch: pytest.M
     assert indexed.unpersist_calls == 1
 
 
+def test_close_unregisters_the_real_owned_cache_without_stopping_spark(
+    spark_session: Any,
+    sample_frame: Any,
+) -> None:
+    storage_level = import_module("pyspark").StorageLevel
+    engine, indexed = _open_engine(sample_frame, "cache-release")
+    assert indexed.storageLevel != storage_level.NONE
+
+    engine.close()
+    deadline = monotonic() + 10
+    while indexed.storageLevel != storage_level.NONE and monotonic() < deadline:
+        sleep(0.05)
+
+    assert indexed.storageLevel == storage_level.NONE
+    assert spark_session.range(1).count() == 1
+
+
 def test_sorted_state_uses_live_frame_identity_not_reusable_numeric_ids(
     spark_session: Any,
     sample_frame: Any,
@@ -567,6 +662,111 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
         engine.close()
 
     # The adapter owns only its indexed cached child, never the user's session.
+    assert spark_session.range(1).count() == 1
+
+
+def test_partitioned_skewed_frame_keeps_native_far_paging_multi_sort_and_cleanup(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    functions = import_module("pyspark.sql.functions")
+    row_count = 20_000
+    hot_row_count = 19_400
+    partition_count = 23
+    source = (
+        spark_session.range(row_count, numPartitions=partition_count)
+        .select(
+            functions.col("id").alias("record_id"),
+            functions.when(functions.col("id") < hot_row_count, functions.lit("hot"))
+            .otherwise(functions.concat(functions.lit("tail-"), functions.col("id").cast("string")))
+            .alias("segment"),
+            functions.when(
+                (functions.col("id") % 97) == 0,
+                functions.lit(None).cast("double"),
+            )
+            .otherwise((functions.col("id") % 1_000).cast("double"))
+            .alias("score"),
+        )
+        .repartition(partition_count, "record_id")
+    )
+    assert source.select(functions.spark_partition_id().alias("partition_id")).distinct().count() == partition_count
+
+    dataframe_type = type(source)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("Partitioned PySpark viewing must never use a dataframe conversion path.")
+
+    for method_name in ("toPandas", "toArrow", "mapInPandas", "mapInArrow"):
+        if hasattr(dataframe_type, method_name):
+            monkeypatch.setattr(dataframe_type, method_name, forbidden)
+
+    engine, indexed = _open_engine(source, "partitioned-skew")
+    try:
+        assert engine.shape(indexed) == {"rows": row_count, "columns": 3}
+        far_page = engine.page(
+            indexed,
+            row_count - 12,
+            20,
+            total_rows=row_count,
+            column_projection=[(0, "record-id"), (1, "segment-id")],
+        )
+        assert far_page["columnIds"] == ["record-id", "segment-id"]
+        assert [row["rowNumber"] for row in far_page["rows"]] == list(range(row_count - 12, row_count))
+        assert [int(row["id"].rsplit(":", 1)[1]) for row in far_page["rows"]] == list(range(row_count - 12, row_count))
+
+        model = {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "segment",
+                    "type": "string",
+                    "logic": "and",
+                    "predicates": [{"operator": "equals", "value": "hot"}],
+                }
+            ],
+            "sort": [
+                {"column": "score", "direction": "asc", "nulls": "last"},
+                {"column": "record_id", "direction": "desc", "nulls": "last"},
+            ],
+        }
+        view = engine.apply_filter_model(indexed, model)
+        assert engine.shape(view) == {"rows": hot_row_count, "columns": 3}
+
+        expected_ids = sorted(
+            range(hot_row_count),
+            key=lambda value: (
+                value % 97 == 0,
+                value % 1_000 if value % 97 != 0 else 0,
+                -value,
+            ),
+        )
+        first_page = engine.page(
+            view,
+            0,
+            5,
+            total_rows=hot_row_count,
+            column_projection=[(0, "record-id")],
+        )
+        last_page = engine.page(
+            view,
+            hot_row_count - 5,
+            5,
+            total_rows=hot_row_count,
+            column_projection=[(0, "record-id")],
+        )
+        assert [row["values"][0]["raw"] for row in first_page["rows"]] == expected_ids[:5]
+        assert [row["values"][0]["raw"] for row in last_page["rows"]] == expected_ids[-5:]
+
+        score_summary = engine.summaries(view, [(2, "score-id")])[0]
+        assert score_summary["totalCount"] == hot_row_count
+        assert score_summary["nullCount"] == 200
+        assert score_summary["numeric"]["min"] == 0.0
+        assert score_summary["numeric"]["max"] == 999.0
+    finally:
+        engine.close()
+
+    # Closing Open Wrangler releases only its indexed child, not the user's
+    # Classic or Connect Spark session.
     assert spark_session.range(1).count() == 1
 
 
@@ -1072,3 +1272,45 @@ def test_session_manager_detects_live_variable_and_disables_mutation_capabilitie
     }
     assert manager.sessions == {}
     assert spark_session.range(1).count() == 1
+
+
+def test_replacing_classic_or_connect_variable_invalidates_cached_pages_before_read(
+    spark_session: Any,
+    sample_frame: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variable_name = "open_wrangler_replaced_spark_frame"
+    monkeypatch.setattr(__main__, variable_name, sample_frame, raising=False)
+    manager = SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "notebookVariable",
+            "variableName": variable_name,
+            "label": variable_name,
+        },
+        backend="pyspark",
+        page_size=2,
+        column_limit=2,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    session = manager.sessions[session_id]
+    assert session.live_source_value is sample_frame
+    assert len(session.page_cache) == 1
+
+    replacement = spark_session.range(10, 13).selectExpr("id AS replacement_value")
+    monkeypatch.setattr(__main__, variable_name, replacement)
+    with pytest.raises(LiveSourceInvalidatedError, match="was replaced") as invalidated:
+        manager.get_page(
+            session_id,
+            0,
+            0,
+            2,
+            {"logic": "and", "filters": [], "sort": []},
+            column_limit=2,
+        )
+
+    assert invalidated.value.session_id == session_id
+    assert session.page_cache == {}
+    assert session.page_cache_bytes == 0
+    assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
+    assert replacement.count() == 3

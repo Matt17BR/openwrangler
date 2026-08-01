@@ -15,6 +15,7 @@ export interface OpenWranglerTestApi {
   request: ReturnType<SessionCoordinator["createBridge"]>["request"];
   setActiveSession(sessionId: string | undefined): void;
   activeSession: SessionCoordinator["activeSession"];
+  sessionSnapshot: SessionCoordinator["sessionSnapshot"];
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
   ensurePanelSynchronized(sessionId: string, deadlineMs: number): Promise<boolean>;
@@ -78,6 +79,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         request: (request, options) => coordinatedBridge.request(request, options),
         setActiveSession: (sessionId) => coordinator.setActive(sessionId),
         activeSession: () => coordinator.activeSession(),
+        sessionSnapshot: (sessionId) => coordinator.sessionSnapshot(sessionId),
         updateViewState: async (sessionId, state) => coordinatedBridge.updateViewState?.(sessionId, state),
         synchronizePanel: (sessionId) => OpenWranglerPanel.synchronizePanelForSession(sessionId),
         ensurePanelSynchronized: (sessionId, deadlineMs) =>

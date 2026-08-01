@@ -68,7 +68,7 @@ export async function promptImportOptions(
   }
 
   const currentDelimiter = validCharacter(currentImportOptions?.delimiter) ?? defaults.delimiter ?? ",";
-  const delimiterChoice = await vscode.window.showQuickPick(
+  const delimiterChoice = await showImportQuickPick(
     delimiterChoices(currentDelimiter),
     {
       title: "Delimiter",
@@ -81,7 +81,7 @@ export async function promptImportOptions(
   if (!delimiterChoice) throw new ImportCancelledError();
   const delimiter =
     delimiterChoice.custom === true
-      ? await vscode.window.showInputBox(
+      ? await showImportInputBox(
           {
             title: "Custom delimiter",
             prompt: "Enter exactly one character.",
@@ -97,7 +97,7 @@ export async function promptImportOptions(
   if (validateCharacter(delimiter)) throw new Error("Expected a one-character delimiter.");
 
   const currentEncoding = nonBlank(currentImportOptions?.encoding) ?? nonBlank(defaults.encoding) ?? "utf-8";
-  const encodingChoice = await vscode.window.showQuickPick(
+  const encodingChoice = await showImportQuickPick(
     valueChoices(["utf-8", "utf8-lossy", "iso-8859-1", "windows-1252"], currentEncoding, (value) => value),
     {
       title: "Text encoding",
@@ -110,7 +110,7 @@ export async function promptImportOptions(
   if (!encodingChoice) throw new ImportCancelledError();
 
   const currentHasHeader = currentImportOptions?.hasHeader ?? defaults.hasHeader ?? true;
-  const header = await vscode.window.showQuickPick(
+  const header = await showImportQuickPick(
     valueChoices(
       [
         { label: "First row contains column names", value: true },
@@ -125,7 +125,7 @@ export async function promptImportOptions(
   if (!header) throw new ImportCancelledError();
 
   const currentQuoteChar = validCharacter(currentImportOptions?.quoteChar) ?? defaults.quoteChar ?? '"';
-  const quoteChar = await vscode.window.showInputBox(
+  const quoteChar = await showImportInputBox(
     {
       title: "Quote character",
       value: currentQuoteChar,
@@ -155,7 +155,7 @@ async function promptExcelImportOptions(
       (currentSheetName !== undefined && availableSheets.includes(currentSheetName)
         ? currentSheetName
         : availableSheets[currentIndex]) ?? availableSheets[0]!;
-    const sheet = await vscode.window.showQuickPick(
+    const sheet = await showImportQuickPick(
       excelSheetChoices(availableSheets, current),
       {
         title: "Excel sheet",
@@ -172,7 +172,7 @@ async function promptExcelImportOptions(
   const currentSheetName = nonBlank(currentImportOptions?.sheetName);
   const currentSheetIndex = validSheetIndex(currentImportOptions?.sheetIndex) ? currentImportOptions.sheetIndex : 0;
   const currentMode: ExcelSheetMode = currentSheetName === undefined ? "index" : "name";
-  const mode = await vscode.window.showQuickPick(
+  const mode = await showImportQuickPick(
     excelSheetModeChoices(currentMode, currentSheetName, currentSheetIndex),
     {
       title: "Excel sheet",
@@ -185,7 +185,7 @@ async function promptExcelImportOptions(
   if (!mode) throw new ImportCancelledError();
 
   if (mode.value === "name") {
-    const sheetName = await vscode.window.showInputBox(
+    const sheetName = await showImportInputBox(
       {
         title: "Excel sheet name",
         prompt: "Enter the exact worksheet name. Numeric names remain names.",
@@ -201,7 +201,7 @@ async function promptExcelImportOptions(
     return { sheetName };
   }
 
-  const sheetIndex = await vscode.window.showInputBox(
+  const sheetIndex = await showImportInputBox(
     {
       title: "Excel sheet index",
       prompt: "Enter a zero-based worksheet index.",
@@ -215,6 +215,34 @@ async function promptExcelImportOptions(
   if (sheetIndex === undefined) throw new ImportCancelledError();
   if (validateSheetIndex(sheetIndex)) throw new Error("Expected a non-negative, zero-based Excel sheet index.");
   return { sheetIndex: Number(sheetIndex) };
+}
+
+async function showImportQuickPick<T extends vscode.QuickPickItem>(
+  items: readonly T[],
+  options: vscode.QuickPickOptions,
+  cancellation?: vscode.CancellationToken
+): Promise<T | undefined> {
+  const selection = vscode.window.showQuickPick(items, options, cancellation);
+  await focusImportQuickInput();
+  return selection;
+}
+
+async function showImportInputBox(
+  options: vscode.InputBoxOptions,
+  cancellation?: vscode.CancellationToken
+): Promise<string | undefined> {
+  const value = vscode.window.showInputBox(options, cancellation);
+  await focusImportQuickInput();
+  return value;
+}
+
+async function focusImportQuickInput(): Promise<void> {
+  try {
+    await vscode.commands.executeCommand("workbench.action.focusQuickOpen");
+  } catch {
+    // Experimental forks may not expose this workbench command. Their native
+    // Quick Input focus behavior remains the fallback.
+  }
 }
 
 function excelSheetChoices(sheetNames: readonly string[], current: string): ExcelSheetPick[] {

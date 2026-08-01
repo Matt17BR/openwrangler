@@ -43,6 +43,8 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 
 Post-1.0 viewing-filter hardening keeps the completed filter surface usable as well as semantically correct. Focused React coverage proves that removing a final selected value removes the column filter itself, changing per-column logic cannot create an empty filter, and **Filter rows** stays disabled for an effective-empty query. A two-column interaction keeps every active filter visible, removes one value or predicate without disturbing siblings, and preserves sorts on the same or another column. The native Filters tree exercises the same whole-column removal through the host/webview action boundary.
 
+Cleaning-step preview, apply, latest-step edit, discard, and undo now preserve the independent viewing query instead of resetting it. Parameterized Pandas, Polars, and DuckDB runtime coverage keeps compatible selected values, searches, predicates, and ordered multi-sorts; prunes missing, ambiguous, or semantic-type-changed references; restores the exact pre-draft query on discard when the view was untouched; and keeps an explicit in-draft edit authoritative through Discard or Apply. Immediate undo restores the pre-first-apply query only when no later view edit occurred, including across latest-step replacement. Coordinator persistence restores the validated draft-base receipt before replaying a draft and then restores the independent current view; malformed or stale receipt/view sections fall back independently. React coverage verifies that confirmed Discard retains the runtime-published filters and sort priority.
+
 Post-1.0 column navigation replaces the browser-native suggestion list with an accessible VS Code-native combobox. It exposes Codicon-based datatype symbols and text labels, searches names plus semantic and native types, disambiguates duplicate labels by position, and targets stable column IDs. Focused React coverage proves keyboard selection and duplicate-name navigation, while the packaged README capture requires the real typed popup to fit inside the workbench.
 
 The released v1.1.1 notebook UX prepares automatic Pandas/Polars MIME formatters when a trusted, visible Jupyter notebook has a user-started kernel, rather than waiting for the first Open Wrangler command. Stable Jupyter lookup never creates a kernel, API-opened background notebooks remain untouched, and a visible notebook change bypasses retry backoff so a newly available kernel is handled promptly. If Microsoft Data Wrangler is installed, the default `ask` preference requires the user to choose which extension owns automatic dataframe previews before Open Wrangler registers a formatter; the provider remains changeable and a switch applies to new or restarted kernels. The notebook-toolbar action uses a bounded, kernel-backed QuickPick populated from canonical runtime types instead of asking users to type a variable name. Every discovery and launch retains the exact originating `NotebookDocument`, rejects duplicate same-URI document objects, and never retargets after focus changes.
@@ -92,21 +94,21 @@ The real packaged-Jupyter allow path records the following behavior:
 
 ## PySpark live-notebook viewing preview matrix
 
-PySpark stays distributed and read-only in this preview. The user's Jupyter kernel and Spark session own the cluster; Open Wrangler neither installs/starts Spark nor stops that session. **Partial** combines the unconditional PySpark 4.2 and Java 17 engine contract with real packaged VS Code and Cursor released-Jupyter runs for local Classic and Connect. It does not claim external-cluster, cancellation, large-partition performance, or a broader cross-platform support matrix.
+PySpark stays distributed and read-only in this preview. The user's Jupyter kernel and Spark session own the cluster; Open Wrangler neither installs/starts Spark nor stops that session. Pinned and auto-detected PySpark opens run a bounded type-and-version check in the bridge's exact selected generation immediately before runtime open dispatch, reject missing or unsupported PySpark before session publication, and label both the viewing-only boundary and full-frame opening cost. Silent kernel switches and observed restarts invalidate and reprobe the replacement generation. Focused runtime and host tests cover a same-kernel Classic or Connect stop/rebind: cached blocks invalidate before rendering, recovery resolves only the same-named variable on the exact captured notebook and kernel, requires an identical schema, and restores the confirmed view under the same public Open Wrangler session. The checked-in packaged Classic phase also replaces the user Spark session with a renamed-column schema, requires recoverable reopen guidance and unchanged public state, proves the rejected candidate alone is cleaned up while the replacement session remains usable, and then requires the original schema to recover after a full kernel restart. Exact-head execution of that packaged phase remains a release gate. **Partial** combines the unconditional PySpark 4.2 and Java 17 engine contract with prior real packaged VS Code and Cursor released-Jupyter runs for local Classic and Connect. A bounded 20,000-row, 23-partition skew fixture proves native exact counting, far paging, filtering, multi-key sorting, summaries, and cleanup in both modes. Every live-notebook `executeCode` call deliberately uses a fresh never-cancel token: PySpark's default SIGINT handler can call `SparkContext.cancelAllJobs()` and affect unrelated user work, even when Open Wrangler is opening or paging another dataframe engine. Closing the view detaches the UI; a late successful candidate is closed once on the exact originating kernel. This is correctness evidence, not a claim about external clusters, running-request cancellation, large-partition performance, or a broader cross-platform support matrix.
 
-| Surface                                        | Availability             | Status  | Recorded evidence                                        | Remaining acceptance gate                                   |
-| ---------------------------------------------- | ------------------------ | ------- | -------------------------------------------------------- | ----------------------------------------------------------- |
-| Classic PySpark DataFrame detection            | Live notebook only       | Partial | Exact 4.2 adapter plus packaged VS Code/Cursor launch    | External-cluster and broader cross-platform evidence        |
-| Local Spark Connect DataFrame viewing          | Live notebook only       | Partial | Local Connect plus packaged VS Code/Cursor launch        | External or authenticated Connect server execution          |
-| Indexed, projected grid pages                  | Read-only                | Partial | Native projection plus byte/node/depth page bounds       | Large partitioned fixture and repeated performance evidence |
-| Basic/advanced filters and multi-column sorts  | Read-only                | Partial | Native expressions plus packaged filtered/sorted pages   | Full literal edge matrix and external-cluster evidence      |
-| Summaries, statistics, and distinct values     | Read-only                | Partial | Native aggregates and canonical nested-map profile keys  | Repeated resource and performance evidence                  |
-| Session cleanup                                | Owned indexed child only | Partial | Unpersist, kernel replay, and owner-session reuse green  | Cancellation and external-cluster recovery                  |
-| Cleaning operations and history                | No                       | Planned | Capabilities reject editing                              | Distributed transformation IR and native code generation    |
-| Script/notebook/data export                    | No                       | Planned | Capabilities reject export                               | Source-safe Spark-native export design                      |
-| Saved-output MIME formatter                    | No                       | Planned | `notebookOutput` is not advertised                       | Bounded distributed snapshot policy                         |
-| File sessions and automatic backend selection  | No                       | Planned | `file` is not advertised                                 | Explicit Spark source/session configuration design          |
-| VS Code/Cursor packaged and release acceptance | Both editors accepted    | Partial | Released Jupyter in both editors, restart, cleanup green | Broader OS matrix and external-cluster execution            |
+| Surface                                        | Availability             | Status  | Recorded evidence                                           | Remaining acceptance gate                                |
+| ---------------------------------------------- | ------------------------ | ------- | ----------------------------------------------------------- | -------------------------------------------------------- |
+| Classic PySpark DataFrame detection            | Live notebook only       | Partial | Exact bridge-generation 4.2 probe plus packaged launch      | External-cluster and broader cross-platform evidence     |
+| Local Spark Connect DataFrame viewing          | Live notebook only       | Partial | Local Connect plus packaged VS Code/Cursor launch           | External or authenticated Connect server execution       |
+| Indexed, projected grid pages                  | Read-only                | Partial | Native bounds plus a 20k-row/23-partition skew fixture      | Repeated performance and external-cluster evidence       |
+| Basic/advanced filters and multi-column sorts  | Read-only                | Partial | Native expressions plus packaged filtered/sorted pages      | Full literal edge matrix and external-cluster evidence   |
+| Summaries, statistics, and distinct values     | Read-only                | Partial | Native aggregates and canonical nested-map profile keys     | Repeated resource and performance evidence               |
+| Session recovery and non-interrupting disposal | Owned indexed child only | Partial | Kernel restart green; focused same-kernel rebind tests pass | Exact-head packaged rebind and external-cluster recovery |
+| Cleaning operations and history                | No                       | Planned | Capabilities reject editing                                 | Distributed transformation IR and native code generation |
+| Script/notebook/data export                    | No                       | Planned | Capabilities reject export                                  | Source-safe Spark-native export design                   |
+| Saved-output MIME formatter                    | No                       | Planned | `notebookOutput` is not advertised                          | Bounded distributed snapshot policy                      |
+| File sessions and automatic backend selection  | No                       | Planned | `file` is not advertised                                    | Explicit Spark source/session configuration design       |
+| VS Code/Cursor packaged and release acceptance | Both editors accepted    | Partial | Released Jupyter in both editors, restart, cleanup green    | Broader OS matrix and external-cluster execution         |
 
 ## Recorded acceptance evidence
 
@@ -207,7 +209,7 @@ This advances structural diff and typed-edge evidence but keeps the rows **Parti
 Jupyter recovery slice, 2026-07-15:
 
 - A real local IPykernel test bootstraps the bundled agent, registers automatic MIME v2 formatters, renders live Pandas and Polars dataframes, opens both engines through protocol v2, restarts the kernel, bootstraps again, and receives a valid response after restart.
-- The extension kernel lifecycle caches and bootstraps once, performs at most one reacquire/bootstrap retry after execution failure, and never retries acquisition/permission denial or cancellation. Configured timeouts actively cancel kernel execution before recovery.
+- The extension kernel lifecycle caches and bootstraps once, performs at most one reacquire/bootstrap retry after execution failure, and never retries acquisition/permission denial or logical detachment. Configured deadlines bound host reporting and stale-ignore late output without cancelling Jupyter execution.
 - All 25 TypeScript and 70 Python tests pass. The lifecycle suite covers success, restart, repeated failure, denial/cancellation, and timeout; the real-kernel test guarantees cleanup in `finally`, and the 53-entry production VSIX passes its allowlist.
 
 This advances notebook recovery and formatter evidence but keeps the notebook rows **Partial** until remote kernels and packaged VS Code/Cursor permission, restart, saved-output, and originating-notebook interaction are recorded.
@@ -328,7 +330,7 @@ Packaged notebook and remote-kernel slice, 2026-07-15:
 
 - Kernel bootstrap no longer inserts the local extension path. The extension validates and encodes only the packaged `openwrangler_runtime` sources, transfers them over `executeCode`, writes them beneath a content-addressed kernel-temporary directory, and imports the agent there. Unit tests reject incomplete/path-unsafe bundles and prove generated bootstrap code contains no local extension path.
 - A stable-Jupyter-API acceptance extension runs a persistent Python namespace with an explicitly empty `PYTHONPATH`, creating a remote-filesystem boundary while retaining real Pandas and Polars dependencies. The installed Open Wrangler package transfers its own runtime, opens live variables for both engines, resolves typed pages, and never converts Polars to Pandas.
-- A real local IPykernel test independently registers automatic Pandas/Polars MIME v2 formatters, renders both types, transports protocol v2 sessions, restarts the kernel, and bootstraps again. Lifecycle tests cover permission/acquisition denial, user cancellation, timeout cancellation, one-shot reacquisition, and repeated failure.
+- A real local IPykernel test independently registers automatic Pandas/Polars MIME v2 formatters, renders both types, transports protocol v2 sessions, restarts the kernel, and bootstraps again. Lifecycle tests cover permission/acquisition denial, host-only detachment, reporting-only deadlines, one-shot reacquisition, and repeated failure.
 - The packaged VS Code 1.128.0 and Cursor 3.11.19 flows open a real `.ipynb` containing saved MIME v2 output, verify that item survives deserialization, apply a Pandas notebook step, and invoke Insert Generated Code. The inserted tagged cell contains the edited CodeMirror buffer exactly and targets the originating notebook.
 - The acceptance kernel object is then replaced while a Polars variable session is active. The first request rejects on the stale object, the stable API is reacquired, the transferred runtime is bootstrapped again, the unknown session is replayed from the still-live variable, and the original public session returns the expected page. A separate denied-access attempt creates no coordinator session.
 - The production renderer/axe harness renders MIME v2 and clicks **Open in Open Wrangler**, asserting the full-view message contains the validated payload. Malformed versions remain accessible errors. This entire matrix runs from the allowlisted VSIX in isolated editor profiles.
@@ -800,8 +802,35 @@ Complete-schema and native live-notebook UX slice, 2026-07-30:
   connection-private `DuckDBPyRelation`: base and far pages, filtered multi-sort, progressive numeric summary,
   restored view state, explicit complete unfiltered paging, authoritative close, and post-close user-relation
   reuse all stayed native. Conversion traps made any Pandas, Polars, or Arrow route fail the phase.
-- The independent PySpark phase currently fails after its cleanup path and is not counted as evidence for this
-  slice. Its resolution remains required before the branch can become a release candidate.
+- At this 2026-07-30 checkpoint, the independent PySpark phase failed after its cleanup path and was deliberately
+  excluded from the slice's evidence. That historical failure is superseded by the later never-cancel/detach
+  correction and green packaged PySpark evidence recorded in the current experimental-backend matrix above; it is
+  not a current release blocker.
+
+Primary cleaning-plan command row, 2026-07-31:
+
+- Applied-plan status, **Edit latest**, and **Undo** now form one accessible **Cleaning plan** group inside the
+  primary toolbar. The former permanent second cleaning bar is absent, while the exact visible labels, documented
+  shortcuts, loading/projection disabled explanations, and draft ownership rules remain unchanged.
+- The group stays contiguous in DOM and keyboard order between **Add step** and **Export**, and reflows as one row
+  at narrow widths instead of displacing the grid. Production-bundle acceptance measures 1280, 620, and 320 CSS
+  pixels, effective 200% zoom, forced colors, containment, tab order, grid visibility, and axe results.
+- When a keyboard-focused **Undo** removes the final applied step, focus returns to **Add step** only if the
+  webview owned focus both when the mutation began and when the correlated response arrived, and that exact Undo
+  button remains the focus origin. The advertised shortcut follows the same restoration rule only when invoked
+  from that button. Failed, cancelled, host-originated, shortcut-originated-elsewhere, deliberately refocused, and
+  background-tab mutations do not steal focus.
+- Focused React coverage exercises the exact restoration and no-steal paths. Existing extension-host acceptance
+  locates the same named group during apply, reopen, and undo without changing runtime, protocol, persistence, or
+  cleaning-plan semantics.
+
+This completes the bounded command-row implementation in
+[issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The issue closed after one exact 726,757-byte
+VSIX from source `bd6733b` (SHA-256 `1d3eba830d7b57eb95ddd5d4ac1718bc58a03de7924b49155ab37e3b5ad0f709`)
+passed the isolated zero-window packaged journey in VS Code 1.130.0 and Cursor 3.13.10, including automatic import,
+keyboard navigation, multi-sort editing, exact profiles, draft/apply/discard, native code preview, export, replay,
+Undo, Activity Bar views, dependency-decline recovery, source immutability, and terminal cleanup. This evidence
+closes that bounded post-1.0 refinement; it does not claim universal feature parity or v1.2 release readiness.
 
 ## Explicitly deferred from 1.0
 

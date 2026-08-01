@@ -29,6 +29,7 @@ import {
   type FilterModel
 } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
+import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
@@ -77,10 +78,10 @@ export function App() {
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
+  const [sessionOpenProgress, setSessionOpenProgress] = useState<SessionOpenProgressStage | undefined>();
   const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
   const goToColumnRequestSequence = useRef(0);
   const goToColumnRequestRef = useRef<ColumnRevealRequest | undefined>(undefined);
-  const handledGoToColumnRequestId = useRef<number | undefined>(undefined);
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [summaryPanelView, setSummaryPanelView] = useState<SummaryPanelView>("column");
@@ -136,6 +137,7 @@ export function App() {
   const sidePanelCloseRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
   const operationReturnFocus = useRef<HTMLElement | null>(null);
+  const undoPlanReturnFocus = useRef<HTMLButtonElement | null>(null);
   const importOptionsReturnFocus = useRef<HTMLButtonElement | null>(null);
   const importOptionsFocusFrame = useRef<number | undefined>(undefined);
   const importOptionsDispatchFrame = useRef<number | undefined>(undefined);
@@ -262,9 +264,6 @@ export function App() {
   }, []);
 
   const storeGoToColumnRequest = useCallback((next: ColumnRevealRequest | undefined) => {
-    if (goToColumnRequestRef.current?.requestId !== next?.requestId) {
-      handledGoToColumnRequestId.current = undefined;
-    }
     goToColumnRequestRef.current = next;
     setGoToColumnRequest(next);
   }, []);
@@ -286,7 +285,6 @@ export function App() {
       const request = goToColumnRequestRef.current;
       if (!request || request.requestId !== requestId) return;
       if (outcome === "revealed" && request.retainUntilSynchronization) {
-        handledGoToColumnRequestId.current = requestId;
         return;
       }
       storeGoToColumnRequest(undefined);
@@ -839,6 +837,7 @@ export function App() {
         | RendererSynchronizationMessage
         | ImportOptionsStateMessage
         | RuntimeDependencyInstallStateMessage
+        | SessionOpenProgressMessage
         | SessionPresentationMessage
         | ViewStateMessage
         | StepInspectionResultMessage
@@ -847,6 +846,14 @@ export function App() {
     ) => {
       if (event.origin !== window.location.origin) return;
       const response = event.data;
+      if (response.kind === "sessionOpenProgress") {
+        if (response.stage === null) {
+          setSessionOpenProgress(undefined);
+        } else if (isSessionOpenProgressStage(response.stage)) {
+          setSessionOpenProgress(response.stage);
+        }
+        return;
+      }
       if (response.kind === "rendererSynchronization") {
         const current = metadataRef.current;
         const matchesSession =
@@ -859,11 +866,11 @@ export function App() {
             reveal?.retainUntilSynchronization?.sessionId === response.sessionId &&
             reveal.retainUntilSynchronization.revision === response.revision
           ) {
-            if (handledGoToColumnRequestId.current === reveal.requestId) {
-              requestColumnReveal(reveal.columnId);
-            } else {
-              storeGoToColumnRequest({ ...reveal, retainUntilSynchronization: undefined });
-            }
+            // The synchronization barrier can follow a Code Preview layout
+            // transition that left the first reveal attempt dormant. Always
+            // issue a fresh identity so DataGrid retries against the final
+            // committed geometry whether the earlier attempt completed or not.
+            requestColumnReveal(reveal.columnId);
           }
           // This marker is the host's publication barrier. Commit every
           // authoritative message that preceded it before allowing recovery
@@ -1084,6 +1091,7 @@ export function App() {
         }
         const shouldRestoreMutation = foregroundRequest.current === "mutation";
         if (shouldRestoreMutation) {
+          undoPlanReturnFocus.current = null;
           const previous = mutationSnapshot.current;
           foregroundRequest.current = undefined;
           mutationSnapshot.current = undefined;
@@ -1117,6 +1125,7 @@ export function App() {
           }
           const shouldRestoreMutation = foregroundRequest.current === "mutation";
           if (shouldRestoreMutation) {
+            undoPlanReturnFocus.current = null;
             const previous = mutationSnapshot.current;
             foregroundRequest.current = undefined;
             mutationSnapshot.current = undefined;
@@ -1169,6 +1178,7 @@ export function App() {
         if (current?.sessionId === response.metadata.sessionId && response.metadata.revision < current.revision) {
           return;
         }
+        undoPlanReturnFocus.current = null;
         pendingRendererSynchronizationRef.current = undefined;
         setPendingRendererSynchronization(undefined);
         acknowledgedRendererSynchronizationId.current = undefined;
@@ -1252,6 +1262,8 @@ export function App() {
       }
 
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
+        const undoReturnTarget = undoPlanReturnFocus.current;
+        undoPlanReturnFocus.current = null;
         pendingRendererSynchronizationRef.current = undefined;
         setPendingRendererSynchronization(undefined);
         acknowledgedRendererSynchronizationId.current = undefined;
@@ -1266,6 +1278,15 @@ export function App() {
         storeFailedPageRequest(undefined);
         resetViewProfiling();
         const nextMetadata = withoutDatasetStats(response.metadata);
+        const undoFocusOriginIsActive =
+          undoReturnTarget !== null &&
+          (document.activeElement === undoReturnTarget || document.activeElement === document.body);
+        const shouldRestoreUndoFocus =
+          response.kind === "planUpdated" &&
+          nextMetadata.steps.length === 0 &&
+          nextMetadata.draftStep === undefined &&
+          document.hasFocus() &&
+          undoFocusOriginIsActive;
         pruneSummaryOwners(nextMetadata);
         confirmView(nextMetadata, nextViewRequestId());
         storeMetadata(nextMetadata);
@@ -1306,6 +1327,11 @@ export function App() {
         setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
         if (response.kind === "stepPreview") setOperationOpen(false);
         restartProfilingForConfirmedView();
+        if (shouldRestoreUndoFocus) {
+          scheduleWebviewFocusRestoration(() => {
+            document.querySelector<HTMLButtonElement>("[data-cleaning-plan-focus-fallback]:not(:disabled)")?.focus();
+          });
+        }
         return;
       }
 
@@ -1780,8 +1806,17 @@ export function App() {
     });
   };
 
-  const sendPlanAction = (action: "applyDraft" | "discardDraft" | "undoStep") => {
+  const sendPlanAction = (action: "applyDraft" | "discardDraft" | "undoStep", undoReturnTarget?: HTMLButtonElement) => {
     if (!beginMutation()) return;
+    undoPlanReturnFocus.current =
+      action === "undoStep" &&
+      metadataRef.current?.steps.length === 1 &&
+      metadataRef.current.draftStep === undefined &&
+      undoReturnTarget !== undefined &&
+      document.hasFocus() &&
+      document.activeElement === undoReturnTarget
+        ? undoReturnTarget
+        : null;
     const columnWindow = desiredColumnWindow.current;
     vscode.postMessage({
       kind: "runtimeRequest",
@@ -1899,7 +1934,12 @@ export function App() {
       handled = true;
     } else if (!editableTarget && modifier && event.altKey && !event.shiftKey && key === "z") {
       if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
-        sendPlanAction("undoStep");
+        const activeElement = document.activeElement;
+        const undoReturnTarget =
+          activeElement instanceof HTMLButtonElement && activeElement.hasAttribute("data-cleaning-plan-undo")
+            ? activeElement
+            : undefined;
+        sendPlanAction("undoStep", undoReturnTarget);
         handled = true;
       }
     } else if (!editableTarget && modifier && event.shiftKey && !event.altKey && key === "e") {
@@ -1931,6 +1971,16 @@ export function App() {
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
   const importOptionsDisabled = loading || mutationPending || projectionLoading || importOptionsPending;
   const installDependencyDisabled = loading || runtimeDependencyInstallPending;
+  const visibleShape = metadata ? (displayMetadata ?? metadata).filteredShape : undefined;
+  const visibleShapeText = visibleShape
+    ? `${visibleShape.rows.toLocaleString()} × ${visibleShape.columns.toLocaleString()}`
+    : "Preparing session";
+  const visibleShapeTitle = visibleShape
+    ? `${visibleShape.rows.toLocaleString()} ${visibleShape.rows === 1 ? "row" : "rows"} × ${visibleShape.columns.toLocaleString()} ${visibleShape.columns === 1 ? "column" : "columns"}`
+    : undefined;
+  const visibleShapeLabel = visibleShape
+    ? `${visibleShape.rows.toLocaleString()} ${visibleShape.rows === 1 ? "row" : "rows"} by ${visibleShape.columns.toLocaleString()} ${visibleShape.columns === 1 ? "column" : "columns"}`
+    : undefined;
 
   if (foregroundError && !metadata) {
     return (
@@ -1992,10 +2042,8 @@ export function App() {
         <header className="toolbar">
           <div className="toolbarIdentity">
             <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
-            <span>
-              {metadata
-                ? `${(displayMetadata ?? metadata).filteredShape.rows.toLocaleString()} rows x ${(displayMetadata ?? metadata).filteredShape.columns.toLocaleString()} columns`
-                : "Preparing session"}
+            <span aria-label={visibleShapeLabel} title={visibleShapeTitle}>
+              {visibleShapeText}
             </span>
           </div>
           {metadata && (
@@ -2017,6 +2065,7 @@ export function App() {
                 <button
                   type="button"
                   data-operation-focus-fallback
+                  data-cleaning-plan-focus-fallback
                   disabled={loading || projectionLoading || importOptionsPending || !canStartOperation(metadata)}
                   aria-describedby={projectionStatusId}
                   title={
@@ -2027,6 +2076,39 @@ export function App() {
                 >
                   <span className="codicon codicon-add" aria-hidden="true" /> Add step
                 </button>
+              )}
+              {metadata.mode === "editing" && metadata.steps.length > 0 && !metadata.draftStep && (
+                <div className="toolbarPlan" role="group" aria-label="Cleaning plan">
+                  <span className="toolbarPlanStatus">
+                    <span className="codicon codicon-layers" aria-hidden="true" />
+                    <span>
+                      {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    className="secondaryButton"
+                    disabled={loading || projectionLoading || importOptionsPending}
+                    aria-describedby={projectionStatusId}
+                    aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
+                    title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
+                    onClick={editLatestStep}
+                  >
+                    Edit latest
+                  </button>
+                  <button
+                    type="button"
+                    className="secondaryButton"
+                    data-cleaning-plan-undo
+                    disabled={loading || projectionLoading || importOptionsPending}
+                    aria-describedby={projectionStatusId}
+                    aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
+                    title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
+                    onClick={(event) => sendPlanAction("undoStep", event.currentTarget)}
+                  >
+                    <span className="codicon codicon-discard" aria-hidden="true" /> Undo
+                  </button>
+                </div>
               )}
               {(metadata.capabilities.exportCsv || metadata.capabilities.exportParquet) && (
                 <button
@@ -2144,41 +2226,6 @@ export function App() {
           </section>
         )}
 
-        {metadata && metadata.mode === "editing" && metadata.steps.length > 0 && !metadata.draftStep && (
-          <section className="cleaningBar" aria-label="Cleaning plan">
-            <div className="cleaningSummary">
-              <span className="codicon codicon-layers" aria-hidden="true" />
-              <strong>
-                {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
-              </strong>
-            </div>
-            <div className="cleaningActions">
-              <button
-                type="button"
-                className="secondaryButton"
-                disabled={loading || projectionLoading || importOptionsPending}
-                aria-describedby={projectionStatusId}
-                aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
-                title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
-                onClick={editLatestStep}
-              >
-                Edit latest
-              </button>
-              <button
-                type="button"
-                className="secondaryButton"
-                disabled={loading || projectionLoading || importOptionsPending}
-                aria-describedby={projectionStatusId}
-                aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
-                title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
-                onClick={() => sendPlanAction("undoStep")}
-              >
-                <span className="codicon codicon-discard" aria-hidden="true" /> Undo
-              </button>
-            </div>
-          </section>
-        )}
-
         {metadata && inspectionMode && (
           <section className="inspectionPanel" aria-label="Selected applied-step inspection">
             <header>
@@ -2238,7 +2285,7 @@ export function App() {
                 Profile warning: {backgroundDiagnosticMessages.join(" ")}
               </div>
             )}
-            {loading && (
+            {loading && displayMetadata && displayPage && (
               <div className="loading" role="status" aria-live="polite">
                 Loading...
               </div>
@@ -2326,8 +2373,28 @@ export function App() {
                 onViewStateChange={inspectionMode || importOptionsPending ? () => undefined : publishGridViewState}
               />
             ) : (
-              <div className="emptyState">
-                {inspectionMode ? "Loading selected-step inspection…" : "Opening session..."}
+              <div
+                className={`emptyState${sessionOpenProgress ? " sessionOpenStatus" : ""}`}
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {inspectionMode ? (
+                  "Loading selected-step inspection…"
+                ) : sessionOpenProgress ? (
+                  <>
+                    <strong>{sessionOpenProgressHeading(sessionOpenProgress)}</strong>
+                    {sessionOpenProgress === "preparingSparkView" && (
+                      <p>
+                        Opening scans, indexes, and caches the complete PySpark DataFrame so the grid has stable row
+                        positions and an exact row total. To protect unrelated Spark jobs, this kernel operation is
+                        allowed to finish even if you close the view.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  "Opening session…"
+                )}
               </div>
             )}
           </section>
@@ -2449,6 +2516,11 @@ interface ImportOptionsStateMessage {
 interface RuntimeDependencyInstallStateMessage {
   kind: "runtimeDependencyInstallState";
   busy: boolean;
+}
+
+interface SessionOpenProgressMessage {
+  kind: "sessionOpenProgress";
+  stage: unknown;
 }
 
 interface SessionPresentationMessage {
@@ -2677,6 +2749,23 @@ function draftDiffLabels(diff: DataDiff, displayedRowCount: number): string[] {
 
 function pluralize(value: number, singular: string): string {
   return value === 1 ? singular : `${singular}s`;
+}
+
+function sessionOpenProgressHeading(stage: SessionOpenProgressStage): string {
+  switch (stage) {
+    case "acquiringKernel":
+      return "Connecting to the notebook kernel…";
+    case "bootstrappingRuntime":
+      return "Preparing Open Wrangler in the kernel…";
+    case "openingNotebookVariable":
+      return "Opening the live notebook variable…";
+    case "preparingSparkView":
+      return "Preparing PySpark 4.2 (viewing only)…";
+  }
+}
+
+function isSessionOpenProgressStage(value: unknown): value is SessionOpenProgressStage {
+  return typeof value === "string" && (SESSION_OPEN_PROGRESS_STAGES as readonly string[]).includes(value);
 }
 
 function pageCoversColumnWindow(metadata: SessionMetadata, page: GridPage, window: ColumnWindow): boolean {

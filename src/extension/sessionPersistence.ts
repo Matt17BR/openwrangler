@@ -1,4 +1,4 @@
-import type { DataBackend, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
+import type { DataBackend, FilterModel, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
 import { isFilterModel, isRetainedTransformStep } from "../shared/protocolValidation";
 import { decodeGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
 
@@ -8,6 +8,7 @@ export interface PersistedCleaningState {
   steps: TransformStep[];
   draftStep?: TransformStep;
   draftReplacesStepId?: string;
+  draftBaseFilterModel?: FilterModel;
 }
 
 export interface PersistedSessionState {
@@ -34,13 +35,18 @@ export function persistenceKey(source: SessionSource, backend: DataBackend): str
   });
 }
 
-export function persistedSessionState(metadata: SessionMetadata, gridViewState: GridViewState): PersistedSessionState {
+export function persistedSessionState(
+  metadata: SessionMetadata,
+  gridViewState: GridViewState,
+  draftBaseFilterModel?: FilterModel
+): PersistedSessionState {
   return {
     backend: metadata.backend,
     cleaning: {
       steps: metadata.steps,
       draftStep: metadata.draftStep,
-      draftReplacesStepId: metadata.draftReplacesStepId
+      draftReplacesStepId: metadata.draftReplacesStepId,
+      ...(metadata.draftStep && draftBaseFilterModel ? { draftBaseFilterModel } : {})
     },
     view: {
       ...gridViewState,
@@ -55,7 +61,7 @@ export function decodePersistedSession(value: unknown): DecodedPersistedSessionS
     !hasExactKeys(value, ["backend", "cleaning"], ["view"]) ||
     !isPersistableDataBackend(value.backend) ||
     !isRecord(value.cleaning) ||
-    !hasExactKeys(value.cleaning, ["steps"], ["draftStep", "draftReplacesStepId"]) ||
+    !hasExactKeys(value.cleaning, ["steps"], ["draftStep", "draftReplacesStepId", "draftBaseFilterModel"]) ||
     !Array.isArray(value.cleaning.steps)
   ) {
     return undefined;
@@ -68,13 +74,16 @@ export function decodePersistedSession(value: unknown): DecodedPersistedSessionS
   if (draftReplacesStepId !== undefined && (typeof draftReplacesStepId !== "string" || !draftReplacesStepId)) {
     return undefined;
   }
+  const draftBaseFilterModel =
+    draftStep && isFilterModel(value.cleaning.draftBaseFilterModel) ? value.cleaning.draftBaseFilterModel : undefined;
   const view = decodePersistedView(value.view);
   return {
     backend: value.backend,
     cleaning: {
       steps: steps as TransformStep[],
       draftStep,
-      draftReplacesStepId
+      draftReplacesStepId,
+      ...(draftBaseFilterModel ? { draftBaseFilterModel } : {})
     },
     ...(view ? { view } : {})
   };

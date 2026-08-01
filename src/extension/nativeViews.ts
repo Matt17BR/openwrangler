@@ -194,11 +194,13 @@ export function registerNativeViews(
   const exportPinnedData = (sessionId: string, revision: number) =>
     exportSessionData(coordinator, { sessionId, revision });
   const sendViewSortAction = (node: unknown, action: ViewSortAction): boolean => {
-    const snapshot = coordinator.activeSession();
     const target = node instanceof ViewNode ? node.viewSortTarget : undefined;
+    const snapshot = target ? coordinator.sessionSnapshot(target.sessionId) : undefined;
+    const active = coordinator.activeSession();
     if (
       !target ||
       !snapshot ||
+      active?.sessionId !== target.sessionId ||
       isStepInspectionActive(snapshot) ||
       target.sessionId !== snapshot.sessionId ||
       target.modelSignature !== viewSortModelSignature(snapshot.viewState.filterModel)

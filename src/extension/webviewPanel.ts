@@ -11,6 +11,7 @@ import type {
 } from "../shared/protocol";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import { decodeGridViewState, type GridViewState } from "../shared/viewState";
+import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
 import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
@@ -37,6 +38,7 @@ export class OpenWranglerPanel {
   private nativeImportCommand: Promise<boolean> | undefined;
   private runtimeDependencyInstallTask: Promise<void> | undefined;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
+  private sessionOpenCancellation: vscode.CancellationTokenSource | undefined;
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
   private rendererReady = false;
@@ -77,6 +79,14 @@ export class OpenWranglerPanel {
   private rendererStartupRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
   private rendererStartupRecoveryAttempted = false;
   private openAttemptGeneration = 0;
+  private activeSessionOpenProgressGeneration: number | undefined;
+  private sessionOpenProgress:
+    | {
+        generation: number;
+        stage: SessionOpenProgressStage;
+      }
+    | undefined;
+  private sessionOpenProgressPublication: Promise<void> = Promise.resolve();
   private closing: Promise<OpenWranglerResponse> | undefined;
   private disposed = false;
   private readonly disposables: vscode.Disposable[] = [];
@@ -90,6 +100,10 @@ export class OpenWranglerPanel {
     openImmediately = true,
     private readonly backendPreference: DataBackend | "auto" = backend ?? "auto"
   ) {
+    this.panel.iconPath = {
+      light: vscode.Uri.joinPath(this.context.extensionUri, "media", "action-icon-light.svg"),
+      dark: vscode.Uri.joinPath(this.context.extensionUri, "media", "action-icon-dark.svg")
+    };
     this.panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.file(path.join(this.context.extensionPath, "media"))]
@@ -104,7 +118,8 @@ export class OpenWranglerPanel {
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
         if (webviewPanel.active) this.activate();
-        else this.deactivate();
+        else if (!webviewPanel.visible) this.deactivate();
+        else this.clearRendererStartupRecoveryTimer();
       },
       undefined,
       this.disposables
@@ -115,13 +130,23 @@ export class OpenWranglerPanel {
   }
 
   static sendEditorAction(message: EditorActionMessage): boolean {
-    const active = OpenWranglerPanel.activePanel;
-    if (!active?.panel.active) return false;
+    const target =
+      message.action === "changeViewSort"
+        ? OpenWranglerPanel.visiblePanelForSession(message.expectedSessionId)
+        : OpenWranglerPanel.activePanel;
+    if (!target?.panel.visible) return false;
     if (message.action === "openOperation" || message.action === "editLatest" || message.action === "selectStep") {
-      active.panel.reveal(active.panel.viewColumn, false);
+      target.panel.reveal(target.panel.viewColumn, false);
     }
-    void active.panel.webview.postMessage({ kind: "editorAction", ...message });
+    void target.panel.webview.postMessage({ kind: "editorAction", ...message });
     return true;
+  }
+
+  private static visiblePanelForSession(sessionId: string): OpenWranglerPanel | undefined {
+    const matches = [...OpenWranglerPanel.panels].filter(
+      (panel) => !panel.disposed && panel.panel.visible && panel.sessionId === sessionId
+    );
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   static async disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined> {
@@ -246,10 +271,12 @@ export class OpenWranglerPanel {
             isFile ? "editing" : "viewing"
           );
     const generation = ++this.openAttemptGeneration;
+    const reportsNotebookOpenProgress = this.source.kind === "notebookVariable";
+    if (reportsNotebookOpenProgress) this.activeSessionOpenProgressGeneration = generation;
     const cancellation = new vscode.CancellationTokenSource();
-    this.importChangeCancellation?.cancel();
-    this.importChangeCancellation?.dispose();
-    this.importChangeCancellation = cancellation;
+    this.sessionOpenCancellation?.cancel();
+    this.sessionOpenCancellation?.dispose();
+    this.sessionOpenCancellation = cancellation;
     const opening = this.forward(
       {
         kind: "openSession",
@@ -261,16 +288,25 @@ export class OpenWranglerPanel {
         mode
       },
       undefined,
-      { cancellation: cancellation.token, backendPreference: this.backendPreference },
+      {
+        // KernelBridge treats this as a host-only detach signal. It never
+        // forwards cancellation to Jupyter's executeCode token.
+        cancellation: cancellation.token,
+        backendPreference: this.backendPreference,
+        ...(reportsNotebookOpenProgress
+          ? { onOpenProgress: (stage: SessionOpenProgressStage) => this.updateSessionOpenProgress(generation, stage) }
+          : {})
+      },
       generation
     );
     this.opening = opening;
     try {
       await opening;
     } finally {
+      await this.clearSessionOpenProgress(generation);
       if (this.opening === opening) this.opening = undefined;
-      if (this.importChangeCancellation === cancellation) {
-        this.importChangeCancellation = undefined;
+      if (this.sessionOpenCancellation === cancellation) {
+        this.sessionOpenCancellation = undefined;
         cancellation.dispose();
       }
     }
@@ -280,6 +316,11 @@ export class OpenWranglerPanel {
     if (this.disposed) return;
     this.disposed = true;
     this.openAttemptGeneration += 1;
+    this.activeSessionOpenProgressGeneration = undefined;
+    this.sessionOpenProgress = undefined;
+    this.sessionOpenCancellation?.cancel();
+    this.sessionOpenCancellation?.dispose();
+    this.sessionOpenCancellation = undefined;
     this.importChangeCancellation?.cancel();
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = undefined;
@@ -314,6 +355,7 @@ export class OpenWranglerPanel {
     if (decoded.kind === "ready") {
       this.clearRendererStartupRecoveryTimer();
       this.rendererReady = true;
+      await this.publishSessionOpenProgress();
       this.invalidateRendererSynchronization();
       await this.enqueueRendererSynchronization(true);
       return;
@@ -322,6 +364,7 @@ export class OpenWranglerPanel {
     if (decoded.kind === "requestSessionSnapshot") {
       this.clearRendererStartupRecoveryTimer();
       this.rendererReady = true;
+      await this.publishSessionOpenProgress();
       this.invalidateRendererSynchronization();
       await this.enqueueRendererSynchronization(false);
       return;
@@ -533,7 +576,7 @@ export class OpenWranglerPanel {
       return;
     }
     if (this.opening) {
-      this.importChangeCancellation?.cancel();
+      this.sessionOpenCancellation?.cancel();
       await this.opening.catch(() => undefined);
       if (this.disposed || generation !== this.openAttemptGeneration) return;
     }
@@ -862,6 +905,47 @@ export class OpenWranglerPanel {
   private async post(response: OpenWranglerResponse): Promise<void> {
     if (this.disposed) return;
     await this.panel.webview.postMessage(response);
+  }
+
+  private updateSessionOpenProgress(generation: number, stage: SessionOpenProgressStage): void {
+    if (
+      this.disposed ||
+      generation !== this.openAttemptGeneration ||
+      generation !== this.activeSessionOpenProgressGeneration
+    ) {
+      return;
+    }
+    this.sessionOpenProgress = { generation, stage };
+    void this.publishSessionOpenProgress();
+  }
+
+  private async clearSessionOpenProgress(generation: number): Promise<void> {
+    if (this.activeSessionOpenProgressGeneration === generation) {
+      this.activeSessionOpenProgressGeneration = undefined;
+    }
+    if (this.sessionOpenProgress?.generation !== generation) return;
+    this.sessionOpenProgress = undefined;
+    if (!this.disposed && this.rendererReady) {
+      await this.enqueueSessionOpenProgressPublication(null);
+    }
+  }
+
+  private publishSessionOpenProgress(): Promise<void> {
+    if (this.disposed || !this.rendererReady || !this.sessionOpenProgress) return Promise.resolve();
+    return this.enqueueSessionOpenProgressPublication(this.sessionOpenProgress.stage);
+  }
+
+  private enqueueSessionOpenProgressPublication(stage: SessionOpenProgressStage | null): Promise<void> {
+    this.sessionOpenProgressPublication = this.sessionOpenProgressPublication.then(async () => {
+      if (this.disposed) return;
+      try {
+        await this.panel.webview.postMessage({ kind: "sessionOpenProgress", stage });
+      } catch {
+        // A renderer may disappear between scheduling and delivery. Progress is
+        // presentational and must never change the session-open outcome.
+      }
+    });
+    return this.sessionOpenProgressPublication;
   }
 
   private async postImportResponse(response: OpenWranglerResponse): Promise<void> {

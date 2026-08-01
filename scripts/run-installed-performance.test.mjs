@@ -495,7 +495,7 @@ test("preview installed performance retains its explicit VS Code download fallba
     {
       OPEN_WRANGLER_CURSOR_EXECUTABLE: "/fixed/cursor",
       OPEN_WRANGLER_CURSOR_CLI: "/fixed/cursor-cli",
-      VSCODE_TEST_VERSION: "1.105.0"
+      VSCODE_TEST_VERSION: "1.106.0"
     },
     {
       mode: "package",
@@ -507,7 +507,7 @@ test("preview installed performance retains its explicit VS Code download fallba
       downloadedCliPath: () => "/downloaded/code-cli"
     }
   );
-  assert.deepEqual(requestedVersions, ["1.105.0"]);
+  assert.deepEqual(requestedVersions, ["1.106.0"]);
   assert.deepEqual(
     editors.map(({ key, executable, cli }) => ({ key, executable, cli })),
     [
@@ -857,7 +857,7 @@ test("VSCE excludes Python wheel-build residue before canonical source pinning",
         description: "fixture",
         version: "1.0.0",
         publisher: "audit",
-        engines: { vscode: "^1.105.0" }
+        engines: { vscode: "^1.106.0" }
       }),
       { flag: "wx", mode: 0o600 }
     );

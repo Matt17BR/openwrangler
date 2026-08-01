@@ -19,6 +19,7 @@ interface Pick {
 const importOptionMocks = vi.hoisted(() => ({
   showQuickPick: vi.fn<(items: readonly unknown[], options?: PromptOptions) => Promise<unknown>>(async () => undefined),
   showInputBox: vi.fn<(options?: PromptOptions) => Promise<string | undefined>>(async () => undefined),
+  executeCommand: vi.fn(async () => undefined),
   read: vi.fn(),
   close: vi.fn(async () => undefined),
   open: vi.fn()
@@ -42,6 +43,9 @@ vi.mock("vscode", () => ({
   window: {
     showQuickPick: importOptionMocks.showQuickPick,
     showInputBox: importOptionMocks.showInputBox
+  },
+  commands: {
+    executeCommand: importOptionMocks.executeCommand
   }
 }));
 
@@ -334,6 +338,8 @@ describe("delimited-file import prompts", () => {
       true,
       true
     ]);
+    expect(importOptionMocks.executeCommand).toHaveBeenCalledTimes(4);
+    expect(importOptionMocks.executeCommand).toHaveBeenCalledWith("workbench.action.focusQuickOpen");
   });
 
   it("prefills the custom-delimiter field from the current value", async () => {
@@ -369,6 +375,20 @@ describe("delimited-file import prompts", () => {
       title: "Quote character",
       ignoreFocusOut: true
     });
+  });
+
+  it("falls back to the editor's native focus behavior when a fork omits the focus command", async () => {
+    chooseFirstItems();
+    importOptionMocks.showInputBox.mockImplementation(async (options) => options?.value);
+    importOptionMocks.executeCommand.mockRejectedValue(new Error("Command not found"));
+
+    await expect(promptImportOptions(vscode.Uri.file("/tmp/data.csv"))).resolves.toEqual({
+      delimiter: ",",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    expect(importOptionMocks.executeCommand).toHaveBeenCalledTimes(4);
   });
 
   it.each(["delimiter", "custom delimiter", "encoding", "header", "quote"] as const)(
@@ -407,6 +427,8 @@ function resetPromptMocks(): void {
   importOptionMocks.showQuickPick.mockResolvedValue(undefined);
   importOptionMocks.showInputBox.mockReset();
   importOptionMocks.showInputBox.mockResolvedValue(undefined);
+  importOptionMocks.executeCommand.mockReset();
+  importOptionMocks.executeCommand.mockResolvedValue(undefined);
 }
 
 function chooseFirstItems(): void {

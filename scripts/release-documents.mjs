@@ -29,6 +29,8 @@ const README_EDITOR_SUPPORT = `| Editor                      | Support        |
 | Cursor                      | Release-tested |
 | Other VS Code desktop forks | Experimental   |
 | Browser-hosted \`vscode.dev\` | Unsupported    |`;
+const README_TRUST_REQUIREMENT =
+  "Opening data or running Python requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.";
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
@@ -56,7 +58,9 @@ npm run package -- --pre-release --out openwrangler.vsix
 
 On Windows, use \`py -m venv .venv\` and \`.venv\\Scripts\\python.exe\` in the equivalent commands.
 
-In the Extensions view, choose **Views and More Actions → Install from VSIX…** and select \`openwrangler.vsix\`. Open Wrangler requires Python 3.10 through 3.14. It uses your configured or selected environment and asks before installing any missing package.
+In the Extensions view, choose **Views and More Actions → Install from VSIX…** and select \`openwrangler.vsix\`. Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It uses your configured or selected environment and asks before installing any missing package.
+
+${README_TRUST_REQUIREMENT}
 
 ${README_RELEASE_SECTION_END}`;
 
@@ -74,7 +78,9 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 
 ${README_EDITOR_SUPPORT}
 
-Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
+Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
+
+${README_TRUST_REQUIREMENT}
 
 ${README_RELEASE_SECTION_END}`;
 

@@ -63,6 +63,7 @@ import {
   writeRemoteJupyterAcceptanceEnvironment
 } from "./jupyter-acceptance-environment.mjs";
 import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
+import { preflightPackagedEditorPython } from "./packaged-python-preflight.mjs";
 import {
   REAL_REMOTE_JUPYTER_ENV,
   remoteJupyterAcceptanceEnabled,
@@ -327,6 +328,10 @@ try {
               "Real Jupyter-extension acceptance requires OPEN_WRANGLER_TEST_PYTHON to resolve to an existing absolute interpreter."
             );
           }
+          if (acceptanceMode !== "data-wrangler-coexistence") {
+            writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:preflight-python");
+            preflightPackagedEditorPython(testPython);
+          }
           let jupyterKernelPython;
           if (jupyterExtensionInstallTarget) {
             writeCorrelatedProgress(
@@ -398,7 +403,7 @@ try {
             let coexistOpenEnvironment;
             let coexistDataEnvironment;
             const workspace = resolve(profile, "Open Wrangler Demo");
-            const jupyterAllowWorkspace = resolve(profile, "Open Wrangler Jupyter Allow");
+            const jupyterAllowWorkspace = resolve(profile, "orders-analysis");
             const jupyterDenyWorkspace = resolve(profile, "Open Wrangler Jupyter Deny");
             const jupyterPySparkWorkspace = resolve(profile, "Open Wrangler Jupyter PySpark");
             const jupyterRemoteWorkspace = resolve(profile, "Open Wrangler Jupyter Remote");

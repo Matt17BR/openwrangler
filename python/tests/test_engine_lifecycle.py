@@ -13,7 +13,7 @@ import __main__
 import openwrangler_runtime.notebook as notebook
 from openwrangler_runtime.engines import EngineCapabilities, EngineError, EngineRegistry, PandasEngine
 from openwrangler_runtime.engines.base import SummaryColumnProjection
-from openwrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import SessionCleanupError, SessionManager, UnknownSessionError
 
 
 class TrackingPandasEngine(PandasEngine):
@@ -156,6 +156,13 @@ class PageAndCloseFailingPandasEngine(CloseFailingPandasEngine):
         super().__init__(fail_at="page")
 
 
+class InterruptingOpenPandasEngine(TrackingPandasEngine):
+    def shape(self, frame: Any) -> dict[str, int]:
+        del frame
+        self.shape_calls += 1
+        raise KeyboardInterrupt
+
+
 def tracking_registry(
     created: list[TrackingPandasEngine],
     factory: Callable[[], TrackingPandasEngine] | None = None,
@@ -197,10 +204,12 @@ def test_sessions_receive_distinct_engines_and_close_independently(tmp_path) -> 
     assert created[1].close_calls == 0
     assert manager.get_page(second_id, 0, 0, 10, {"filters": [], "sort": []})["page"]["totalRows"] == 2
 
-    with pytest.raises(EngineError, match=f"Unknown session: {first_id}"):
+    with pytest.raises(UnknownSessionError) as close_error:
         manager.close_session(first_id, 0)
-    with pytest.raises(EngineError, match=f"Unknown session: {first_id}"):
+    assert close_error.value.session_id == first_id
+    with pytest.raises(UnknownSessionError) as page_error:
         manager.get_page(first_id, 0, 0, 10, {"filters": [], "sort": []})
+    assert page_error.value.session_id == first_id
     manager.close_all()
     assert created[1].close_calls == 1
 
@@ -245,6 +254,31 @@ def test_open_failure_closes_engine_and_never_registers_session(tmp_path, fail_a
     assert len(created) == 1
     assert created[0].close_calls == 1
     assert manager.sessions == {}
+
+
+def test_interrupted_open_closes_engine_and_releases_requested_identity(tmp_path) -> None:
+    path = write_csv(tmp_path)
+    created: list[TrackingPandasEngine] = []
+    engines: list[TrackingPandasEngine] = [InterruptingOpenPandasEngine(), TrackingPandasEngine()]
+    manager = SessionManager(tracking_registry(created, factory=lambda: engines.pop(0)))
+
+    with pytest.raises(KeyboardInterrupt):
+        manager.open_session(
+            csv_source(path),
+            backend="pandas",
+            requested_session_id="interrupted-candidate",
+        )
+
+    assert created[0].close_calls == 1
+    assert manager.sessions == {}
+    reopened = manager.open_session(
+        csv_source(path),
+        backend="pandas",
+        requested_session_id="interrupted-candidate",
+    )
+    assert reopened["metadata"]["sessionId"] == "interrupted-candidate"
+    manager.close_session("interrupted-candidate", 0)
+    assert created[1].close_calls == 1
 
 
 def test_close_all_drains_every_session_exactly_once(tmp_path) -> None:
@@ -399,9 +433,10 @@ def test_explicit_close_surfaces_cleanup_failure_after_removing_session(tmp_path
     session_id = opened["metadata"]["sessionId"]
     session = manager.sessions[session_id]
 
-    with pytest.raises(EngineError, match="cleanup failure"):
+    with pytest.raises(SessionCleanupError, match="cleanup failure") as cleanup_error:
         manager.close_session(session_id, 0)
 
+    assert cleanup_error.value.session_id == session_id
     assert created[0].close_calls == 1
     assert session.disposed
     assert manager.sessions == {}

@@ -36,7 +36,15 @@ from .base import (
 _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
-_SUPPORTED_PYSPARK_VERSION = re.compile(r"^4\.2(?:\.|$)")
+_SUPPORTED_PYSPARK_VERSION = re.compile(
+    r"^4\.2\.[0-9]+(?:(?:a|b|rc)[0-9]+|\.dev[0-9]+)?(?:\+[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?$"
+)
+
+
+def _is_supported_pyspark_version(version: str) -> bool:
+    return _SUPPORTED_PYSPARK_VERSION.fullmatch(version) is not None
+
+
 _UNSUPPORTED_PROFILE_TYPE_ROOTS = frozenset({"variant", "time", "geometry", "geography"})
 PYSPARK_PAGE_CELL_LIMIT = 100_000
 PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT = 8 * 1024 * 1024
@@ -634,6 +642,48 @@ class PySparkEngine(DataFrameEngine):
         if owned is not None:
             owned.unpersist(blocking=False)
 
+    @staticmethod
+    def live_source_is_stopped(frame: Any) -> bool:
+        """Return only an authoritative local stopped-session signal.
+
+        Spark Connect exposes ``SparkSession.is_stopped`` without contacting
+        the server. Spark Classic has no corresponding public Python property
+        in the supported 4.2 line, but ``SparkSession.stop()`` deterministically
+        clears its SparkContext's private JVM handle. The additional JVM
+        ``isStopped`` check covers a context stopped below the Python wrapper;
+        a failed probe is deliberately not treated as a stopped session because
+        transient gateway failures must remain ordinary engine errors.
+        """
+
+        try:
+            spark_session = frame.sparkSession
+        except Exception:
+            return False
+
+        try:
+            connect_stopped = spark_session.is_stopped
+        except AttributeError:
+            connect_stopped = None
+        except Exception:
+            return False
+        if isinstance(connect_stopped, bool):
+            return connect_stopped
+
+        missing = object()
+        try:
+            spark_context = spark_session.sparkContext
+            java_context: Any = getattr(spark_context, "_jsc", missing)
+        except Exception:
+            return False
+        if java_context is missing:
+            return False
+        if java_context is None:
+            return True
+        try:
+            return bool(java_context.sc().isStopped())
+        except Exception:
+            return False
+
     def _predicate_expression(
         self,
         functions: Any,
@@ -759,8 +809,10 @@ class PySparkEngine(DataFrameEngine):
     def _require_supported_frame(frame: Any) -> None:
         if bool(frame.isStreaming):
             raise EngineError("Streaming PySpark dataframes are not supported.")
-        version = str(getattr(import_module("pyspark"), "__version__", ""))
-        if _SUPPORTED_PYSPARK_VERSION.match(version) is None:
+        pyspark_module = import_module("pyspark")
+        raw_version = pyspark_module.__dict__.get("__version__")
+        version = raw_version if isinstance(raw_version, str) else ""
+        if not _is_supported_pyspark_version(version):
             raise EngineError(f"The experimental PySpark backend requires PySpark 4.2.x, not {version or 'unknown'}.")
         if not callable(getattr(frame, "zipWithIndex", None)):
             raise EngineError("This PySpark dataframe does not provide the required native zipWithIndex operation.")
