@@ -369,7 +369,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(readme, /\| DuckDB, preview/u);
   assert.match(readme, /loading a pickle can execute arbitrary code/u);
   assert.match(readme, /opening\s+a large or remote dataframe may be expensive/u);
-  assert.match(readme, /does not install PySpark, authenticate a cluster, or stop your session/u);
+  assert.match(readme, /does not install PySpark,\s+authenticate a cluster, or stop your session/u);
   assert.match(readme, /\| v1\.2\s+\| Finish real-user interaction polish[\s\S]{0,500}#36/u);
   assert.match(readme, /\| v2\s+\| Native R data frames[\s\S]{0,200}#87/u);
 
