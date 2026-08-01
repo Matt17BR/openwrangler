@@ -380,13 +380,13 @@ describe("packaged editor screenshot evidence", () => {
       ["gallery/notebook-code-insertion.png", 1_000, 288, 10_000],
       ["gallery/notebook-code-insertion-detail.png", 1_000, 288, 10_000],
       ["notebook-pandas.png", 1_210, 540, 50_000],
-      ["gallery/notebook-pandas-detail.png", 1_205, 370, 20_000],
+      ["gallery/notebook-pandas-detail.png", 698, 535, 20_000],
       ["gallery/notebook-polars.png", 1_440, 900, 50_000],
-      ["gallery/notebook-polars-detail.png", 1_372, 758, 50_000],
+      ["gallery/notebook-polars-detail.png", 884, 675, 50_000],
       ["gallery/notebook-duckdb.png", 1_440, 900, 50_000],
-      ["gallery/notebook-duckdb-detail.png", 1_372, 868, 50_000],
+      ["gallery/notebook-duckdb-detail.png", 872, 700, 50_000],
       ["gallery/notebook-pyspark.png", 1_440, 900, 50_000],
-      ["gallery/notebook-pyspark-detail.png", 1_372, 820, 50_000]
+      ["gallery/notebook-pyspark-detail.png", 820, 610, 50_000]
     ] as const;
 
     expect(icon.readUInt32BE(16)).toBe(512);
