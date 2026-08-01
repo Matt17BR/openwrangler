@@ -728,7 +728,7 @@ jobs:
       - name: Publish or verify the exact GitHub stable release
         env:
           EXPECTED_SHA: ${{ github.sha }}
-          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "false"
+          GITHUB_IMMUTABLE_RELEASES_EXPECTED: "true"
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}

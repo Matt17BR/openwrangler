@@ -943,7 +943,7 @@ export function inspectStableReleaseWorkflow(source) {
       "RELEASE_TAG"
     ]) ||
     githubReleaseStep.env.EXPECTED_SHA !== EVENT_SHA ||
-    githubReleaseStep.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED !== "false" ||
+    githubReleaseStep.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED !== "true" ||
     githubReleaseStep.env.GITHUB_REPOSITORY !== "${{ github.repository }}" ||
     githubReleaseStep.env.GITHUB_TOKEN !== "${{ github.token }}" ||
     githubReleaseStep.env.RELEASE_TAG !== RELEASE_TAG
