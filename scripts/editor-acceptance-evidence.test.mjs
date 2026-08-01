@@ -1578,6 +1578,50 @@ test("a regex-hostile bounded source is omitted without aborting failure evidenc
   }
 });
 
+test("maximum-size hostile redaction is bounded by a child heap and deadline", async () => {
+  const moduleUrl = new URL("./editor-acceptance-evidence.mjs", import.meta.url).href;
+  const program = `
+    import { redactEditorAcceptanceText } from ${JSON.stringify(moduleUrl)};
+    const sourceLimit = ${EVIDENCE_SOURCE_LIMIT};
+    const startedAt = Date.now();
+    for (const prefix of ['"', 'password="', 'password=']) {
+      const source = prefix + 'a'.repeat(sourceLimit - prefix.length);
+      if (redactEditorAcceptanceText(source) !== undefined) process.exit(2);
+    }
+    process.stdout.write(JSON.stringify({
+      elapsedMs: Date.now() - startedAt,
+      heapUsed: process.memoryUsage().heapUsed
+    }));
+  `;
+  const child = spawn(process.execPath, ["--max-old-space-size=64", "--input-type=module", "--eval", program], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout = `${stdout}${chunk}`.slice(-32 * 1024);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr = `${stderr}${chunk}`.slice(-32 * 1024);
+  });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGKILL");
+  }, 8_000);
+  const [exitCode, signal] = await once(child, "close");
+  clearTimeout(timer);
+
+  assert.equal(timedOut, false, "Hostile redaction exceeded its eight-second process deadline.");
+  assert.equal(signal, null, stderr);
+  assert.equal(exitCode, 0, stderr);
+  const metrics = JSON.parse(stdout);
+  assert.ok(metrics.elapsedMs < 5_000, `Hostile redaction took ${metrics.elapsedMs} ms.`);
+  assert.ok(metrics.heapUsed < 64 * 1024 * 1024, `Hostile redaction used ${metrics.heapUsed} heap bytes.`);
+});
+
 test("oversized allowlisted inputs are rejected before their contents are scanned", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-source-cap-"));
   try {

@@ -409,7 +409,10 @@ describe("packaged editor screenshot evidence", () => {
     expect(actionIconLightSvg).not.toContain("currentColor");
     expect(packageJson.scripts?.check).toContain("npm run brand:check");
     expect(packageJson.scripts?.["brand:render-check"]).toContain("--render-check");
-    expect(packageJson.scripts?.["test:webview-acceptance"]).toContain("npm run brand:render-check");
+    expect(packageJson.scripts?.["test:webview-acceptance"]).toBe(
+      "node scripts/run-heavy-local-command.mjs test:webview-acceptance -- npm run test:webview-acceptance:run"
+    );
+    expect(packageJson.scripts?.["test:webview-acceptance:run"]).toContain("npm run brand:render-check");
     expect(packageJson.icon).toBe("media/icon.png");
     expect(viteConfig).toContain('publicDir: notebookRendererBuild ? false : "assets"');
     expect(viteConfig).toContain('outDir: "media"');

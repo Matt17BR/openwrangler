@@ -43,6 +43,14 @@ const MAX_PATH_METADATA_BYTES = 1_024;
 // normalized, and redacted as one bounded value before its retained tail is selected. This avoids heuristic
 // cross-chunk state that nested escape encodings could otherwise defeat.
 const MAX_SECURITY_NORMALIZATION_PASSES = 16;
+// Credential redaction is intentionally conservative for unusually long logical lines. Complex
+// credential syntax is scanned only after this bound, while long lines without quotes, user-info,
+// or a credential marker bypass the credential patterns unchanged. This keeps every complex pattern
+// invocation bounded without retaining a long line that could contain an unrecognized or
+// unterminated credential value.
+const MAX_COMPLEX_REDACTION_LINE_CODE_UNITS = 8 * 1024;
+const LONG_LINE_CREDENTIAL_MARKER =
+  /(?:authorization|auth|cookie|password|passwd|pwd|passphrase|connection|api|account|private|access|refresh|signing|session|encryption|shared|sas|secret|credential|token|pat|bearer|basic|x-amz|x-goog|signature|client|gh[pousr]_|github_pat_|npm_|glpat-|xox[baprs]-|sk-(?:proj-)?|hf_|pypi-|owr_|eyj)/giu;
 const SECRET_HEADER = /((?:authorization|cookie)\s*[:=]\s*)[^\r\n]*/giu;
 const JSON_SECRET_FIELD =
   /("(?:[^"\\]|\\.)*(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token)(?:[^"\\]|\\.)*"\s*:\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,}\r\n]*)/giu;
@@ -52,8 +60,6 @@ const SECRET_ASSIGNMENT =
   /(\b[a-z0-9_.-]*(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token)[a-z0-9_.-]*\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/giu;
 const SECRET_WHITESPACE_ASSIGNMENT =
   /(\b[a-z0-9_.-]*(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token)[a-z0-9_.-]*(?:[^\S\r\n]|\\[bfnrtv])+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/giu;
-const SECRET_MULTILINE_ASSIGNMENT =
-  /(^[^\S\r\n]*(?!-)[a-z0-9_.-]*(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token)[a-z0-9_.-]*(?:[^\S\r\n]{0,256}(?:\r?\n|\r)){1,8}[^\S\r\n]{0,256})(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/gimu;
 const PAT_SECRET_FIELD =
   /("(?:pat|[a-z0-9][a-z0-9_.-]*[_.-]pat)"\s*:\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,}\r\n]*)/giu;
 const SINGLE_QUOTED_PAT_SECRET_FIELD =
@@ -466,46 +472,76 @@ export function redactEditorAcceptanceText(text, replacements = []) {
 }
 
 function redactCredentialSyntax(text, includeHumanLines) {
+  // The human-readable pass is first a fail-closed validator. Its redacted output is
+  // intentionally applied only after the precise syntax pass so URI and structured
+  // credential matchers still see the complete original line.
   if (redactHumanSecretLines(text) === undefined) return undefined;
-  const precise = text
-    .replace(JSON_SECRET_FIELD, '$1"<redacted>"')
-    .replace(SINGLE_QUOTED_SECRET_FIELD, "$1'<redacted>'")
-    .replace(PAT_SECRET_FIELD, '$1"<redacted>"')
-    .replace(SINGLE_QUOTED_PAT_SECRET_FIELD, "$1'<redacted>'")
-    .replace(SECRET_HEADER, "$1<redacted>")
-    .replace(CLI_SECRET_OPTION, "$1<redacted>")
-    .replace(PAT_SECRET_ASSIGNMENT, "$1<redacted>")
-    .replace(PAT_SECRET_WHITESPACE_ASSIGNMENT, "$1<redacted>")
-    .replace(SECRET_ASSIGNMENT, "$1<redacted>")
-    .replace(SECRET_WHITESPACE_ASSIGNMENT, "$1<redacted>")
-    .replace(SECRET_MULTILINE_ASSIGNMENT, "$1<redacted>")
-    .replace(TOKEN_VALUE, "<redacted>")
-    .replace(BEARER_VALUE, "Bearer <redacted>")
-    .replace(BASIC_VALUE, "Basic <redacted>")
-    .replace(URL_USER_INFO, "$1<redacted>@")
-    .replace(SIGNED_QUERY_PARAMETER, "$1<redacted>")
-    .replace(UNIX_DBUS_ADDRESS, "unix:<redacted>");
+  const precise = transformCredentialLines(text, (line) =>
+    line
+      .replace(JSON_SECRET_FIELD, '$1"<redacted>"')
+      .replace(SINGLE_QUOTED_SECRET_FIELD, "$1'<redacted>'")
+      .replace(PAT_SECRET_FIELD, '$1"<redacted>"')
+      .replace(SINGLE_QUOTED_PAT_SECRET_FIELD, "$1'<redacted>'")
+      .replace(SECRET_HEADER, "$1<redacted>")
+      .replace(CLI_SECRET_OPTION, "$1<redacted>")
+      .replace(PAT_SECRET_ASSIGNMENT, "$1<redacted>")
+      .replace(PAT_SECRET_WHITESPACE_ASSIGNMENT, "$1<redacted>")
+      .replace(SECRET_ASSIGNMENT, "$1<redacted>")
+      .replace(SECRET_WHITESPACE_ASSIGNMENT, "$1<redacted>")
+      .replace(TOKEN_VALUE, "<redacted>")
+      .replace(BEARER_VALUE, "Bearer <redacted>")
+      .replace(BASIC_VALUE, "Basic <redacted>")
+      .replace(URL_USER_INFO, "$1<redacted>@")
+      .replace(SIGNED_QUERY_PARAMETER, "$1<redacted>")
+      .replace(UNIX_DBUS_ADDRESS, "unix:<redacted>")
+  );
+  if (precise === undefined) return undefined;
   return includeHumanLines ? redactHumanSecretLines(precise) : precise;
 }
 
 function redactHumanSecretLines(text) {
+  return transformCredentialLines(text, (line) => {
+    const redacted = redactHumanSecretLine(line);
+    if (redacted.reject || redacted.redactNextValueLine) return undefined;
+    return redacted.text;
+  });
+}
+
+function transformCredentialLines(text, transform) {
   const output = [];
   let cursor = 0;
   while (cursor < text.length) {
     let lineEnd = cursor;
-    while (lineEnd < text.length && text[lineEnd] !== "\r" && text[lineEnd] !== "\n") lineEnd += 1;
+    let sawQuoteOrUserInfo = false;
+    while (lineEnd < text.length && text[lineEnd] !== "\r" && text[lineEnd] !== "\n") {
+      const character = text[lineEnd];
+      if (character === '"' || character === "'" || character === "@") sawQuoteOrUserInfo = true;
+      lineEnd += 1;
+      if (sawQuoteOrUserInfo && lineEnd - cursor > MAX_COMPLEX_REDACTION_LINE_CODE_UNITS) return undefined;
+    }
     const line = text.slice(cursor, lineEnd);
+    const requiresComplexScan = line.length <= MAX_COMPLEX_REDACTION_LINE_CODE_UNITS;
+    if (!requiresComplexScan && longLineContainsCredentialMarker(line)) return undefined;
     let separatorEnd = lineEnd;
     if (text[separatorEnd] === "\r") separatorEnd += 1;
     if (text[separatorEnd] === "\n") separatorEnd += 1;
-    const redacted = redactHumanSecretLine(line);
-    if (redacted.reject || redacted.redactNextValueLine) return undefined;
-    output.push(redacted.text);
+    // A long punctuation-only line cannot satisfy any credential/key/token pattern. Preserve it
+    // without invoking a regular expression whose work could otherwise depend on its full length.
+    const redacted = requiresComplexScan ? transform(line) : line;
+    if (redacted === undefined) return undefined;
+    output.push(redacted);
     output.push(text.slice(lineEnd, separatorEnd));
     cursor = separatorEnd;
   }
   if (text.length === 0) return text;
   return output.join("");
+}
+
+function longLineContainsCredentialMarker(line) {
+  LONG_LINE_CREDENTIAL_MARKER.lastIndex = 0;
+  const match = LONG_LINE_CREDENTIAL_MARKER.exec(line);
+  LONG_LINE_CREDENTIAL_MARKER.lastIndex = 0;
+  return match !== null;
 }
 
 function redactHumanSecretLine(line) {
