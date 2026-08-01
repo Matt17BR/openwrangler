@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Bound packaged-editor failure-evidence workflow tests to the actual safety contract across pull-request, preview,
+  and stable publication: producer identity, immediate pinned uploader, exact emitted path and readiness gate, and
+  seven-day retention. Human-facing step labels are no longer treated as release-critical behavior.
 - Kept the stable and preview GitHub publishers on one descriptor-pinned canonical artifact triple from semantic
   verification through remote publication. The exact VSIX, checksum, and provenance paths are revalidated before
   every draft mutation, so sidecar replacement, symlink, hard-link, identity, metadata, or in-memory byte drift

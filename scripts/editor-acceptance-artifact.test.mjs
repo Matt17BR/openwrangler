@@ -564,7 +564,8 @@ test("local packaged preflight reports one removable relative artifact path", as
 test("CI hands the exact emitted artifact path directly to the upload action", async () => {
   const workflows = new Map([
     ["ci.yml", "b7c566a772e6b6bfb58ed0dc250532a479d7789f"],
-    ["release.yml", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"]
+    ["release.yml", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"],
+    ["stable-release.yml", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"]
   ]);
   for (const [workflowName, uploadArtifactRevision] of workflows) {
     const source = await readFile(join(repositoryRoot, ".github", "workflows", workflowName), "utf8");
@@ -575,7 +576,6 @@ test("CI hands the exact emitted artifact path directly to the upload action", a
       const producerIndex = steps.indexOf(producer);
       const upload = steps[producerIndex + 1];
       assert.ok(upload, `${workflowName} must upload immediately after packaged editor acceptance`);
-      assert.match(upload, /name:\s*Upload packaged-editor failure diagnostics/u);
       assert.match(upload, new RegExp(`uses:\\s*actions/upload-artifact@${uploadArtifactRevision}\\b`, "u"));
       assert.match(upload, /path:\s*\$\{\{\s*steps\.packaged_editor\.outputs\.evidence_path\s*\}\}\s*$/mu);
       assert.match(upload, /steps\.packaged_editor\.outputs\.evidence_ready\s*==\s*'true'/u);
