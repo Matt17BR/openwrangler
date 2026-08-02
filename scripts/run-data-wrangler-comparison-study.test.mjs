@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import {
   DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
   DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
@@ -22,6 +23,7 @@ import {
   createStudyFragmentIdentity,
   digestStudyValue,
   inspectDataWranglerStudyTrialIntents,
+  loadDataWranglerStudyFragments,
   validateDataWranglerStudyFragment
 } from "./data-wrangler-comparison-study.mjs";
 import {
@@ -47,6 +49,45 @@ import {
 } from "./run-data-wrangler-comparison-study.mjs";
 
 const digest = (value) => value.repeat(64);
+
+// Keep valid started-action evidence on the same shared fixture boundary used
+// by the trial-fragment tests.
+function loadActionStartedFragmentFixture() {
+  const source = readFileSync(resolve("scripts/data-wrangler-comparison-study.test.mjs"), "utf8");
+  const start = source.indexOf("function studyFixture(");
+  assert.notEqual(start, -1);
+  const context = {
+    assert,
+    createHash,
+    createStudyFragmentIdentity,
+    digestStudyValue,
+    buildDataWranglerStudyManifest,
+    DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
+    DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
+    DATA_WRANGLER_STUDY_PRODUCTS,
+    DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
+    NEITHER_PRODUCT_CONTROL_RECEIPT_KIND,
+    PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS,
+    PUBLIC_UI_DATA_WRANGLER_ACTION_NAME,
+    PUBLIC_UI_OBSERVATION_MAX_GAP_MS,
+    PUBLIC_UI_OPEN_WRANGLER_ACTION_NAME,
+    createDataWranglerPolarsCapabilityReceipt,
+    createExpectedPublicUiExtensionInventory,
+    createNeitherProductControlReceipt,
+    createPublicUiReceiptContext
+  };
+  const fixtureSource = `const { ${Object.keys(context).join(", ")} } = globalThis.__runNextFixtureDeps;\nconst digest = (value) => value.repeat(64);\n${source.slice(start)}\n;globalThis.__runNextFixtures = { successFragment };`;
+  globalThis.__runNextFixtureDeps = context;
+  try {
+    vm.runInThisContext(fixtureSource, { filename: "run-next-study-fragment-fixtures.mjs" });
+    return globalThis.__runNextFixtures;
+  } finally {
+    delete globalThis.__runNextFixtures;
+    delete globalThis.__runNextFixtureDeps;
+  }
+}
+
+const actionStartedFragmentFixture = loadActionStartedFragmentFixture();
 
 test("study command arguments are explicit and reject missing or repeated paths", () => {
   assert.deepEqual(
@@ -537,6 +578,60 @@ test("run-next retries a pre-authorization crash and halts after a post-authoriz
       });
       assert.equal(inspection.unresolved.length, 1);
       assert.equal(inspection.unresolved[0].runId, recovery.authorization.intent.runId);
+    });
+  });
+
+  await t.test("a recovered linked authorization publishes one exact started-action fragment", async () => {
+    await withDirectory(async (directory) => {
+      const paths = planStudy(directory);
+      let authorizationCalls = 0;
+      const recorded = await runNextDataWranglerComparisonStudyTrial(paths, {
+        executeTrial: async ({
+          manifest,
+          scheduleEntry,
+          executionIndex,
+          authorizeAction,
+          reinspectActionAuthorization
+        }) => {
+          authorizationCalls += 1;
+          assert.throws(authorizeAction, /injected action-authorization link crash/u);
+          const recovery = reinspectActionAuthorization();
+          assert.equal(recovery.status, "authorized");
+          assert.equal(recovery.authorization.publication.status, "recovered");
+          return actionStartedFragmentFixture.successFragment(
+            manifest,
+            scheduleEntry,
+            scheduleEntry.attempt,
+            10,
+            executionIndex
+          );
+        },
+        publicationOptions: {
+          actionAuthorization: {
+            tokenFactory: () => "3".repeat(32),
+            faultInjector(point) {
+              if (point === "target-linked") {
+                throw new Error("injected action-authorization link crash");
+              }
+            }
+          }
+        }
+      });
+
+      assert.equal(authorizationCalls, 1);
+      assert.equal(recorded.status, "recorded");
+      assert.equal(recorded.output.outcome.actionStarted, true);
+      const fragments = loadDataWranglerStudyFragments(paths.fragmentsDirectory, paths.manifest);
+      assert.equal(fragments.length, 1);
+      assert.deepEqual(fragments[0], recorded.output);
+      const inspection = inspectDataWranglerStudyTrialIntents({
+        directory: paths.intentsDirectory,
+        manifest: paths.manifest,
+        fragments
+      });
+      assert.equal(inspection.authorizedCount, 1);
+      assert.equal(inspection.settledCount, 1);
+      assert.equal(inspection.unresolved.length, 0);
     });
   });
 
