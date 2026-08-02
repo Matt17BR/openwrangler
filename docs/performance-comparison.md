@@ -1,0 +1,242 @@
+# Open Wrangler and Data Wrangler performance study
+
+## Status
+
+This document preregisters the v1.2.1 comparison methodology. It intentionally contains no results yet. The final
+report must bind every observation to the exact candidate VSIX, editor, extension, Python environment, fixtures, and
+machine described below. Results produced with a different boundary or an unreviewed method are diagnostic only.
+
+The study is a clean-room, black-box comparison. It may use public product documentation, public UI, official editor
+APIs for neutral setup, and observable process state. It must never inspect, retain, or report Microsoft Data Wrangler
+package contents or implementation details.
+
+## Questions
+
+For Pandas and Polars notebook dataframes backed by the same deterministic CSV and Parquet sources, compare:
+
+1. time from executing the prepared dataframe expression to a stable, usable inline output and product launch action;
+2. time from the public launch-action click to a stable, pointer-usable workbench grid;
+3. time from the public profiling action to the first useful and final all-column profiles, plus elapsed time from the
+   original workbench click; and
+4. absolute and baseline-adjusted memory for the isolated editor process tree and its Python kernel/runtime.
+
+The Pandas comparison uses the same Pandas dataframe in both products. The Polars comparison keeps Open Wrangler
+native and passes the same real Polars variable to Data Wrangler. A Polars source proves the source engine, not the
+implementation of either workbench. The report may describe Data Wrangler as converting through Pandas only when a
+public conversion prompt, backend label, or generated-code surface proves it. Otherwise it records
+`sourceEngine=polars, workbenchEngine=unverified`. If the installed Data Wrangler build exposes no equivalent public
+Polars surface, that cell is unavailable rather than replaced with a different workload.
+
+## Fixed environment
+
+- Official Microsoft VS Code, one exact version and Linux x64 build for every run.
+- Open Wrangler: the exact v1.2.1 release-candidate VSIX and SHA-256.
+- Microsoft Data Wrangler: exact Marketplace version 1.24.2.
+- One current-user-owned CPython 3.12 executable with pinned Pandas, Polars, PyArrow, Jupyter Core, and ipykernel.
+- One exact common extension inventory: Python 2026.4.0, Jupyter 2025.9.1, Debugpy 2026.6.0, Pylance 2026.3.1,
+  Python Environments 1.36.0, Jupyter Keymap 1.1.2, Jupyter Renderers 1.3.0, Jupyter Cell Tags 0.1.9, and Jupyter
+  Slideshow 0.1.6, plus exactly one measured product. Inventory is verified before and after every trial.
+- Separate disposable user-data and extension directories per product. Public first-use consent and runtime selection
+  are completed in a configured-only template using tiny synthetic data; no extension storage is fabricated.
+- Telemetry, updates, repository discovery, workspace recommendations, and unrelated extensions are disabled.
+- Headless Ozone only. The harness may not fall back to the current desktop, normal profiles, or user workspaces.
+- One manifest-pinned CPU affinity, AC-power state, CPU governor set, display geometry, and zoom for the whole run.
+  A ten-second gate before each product trial must show at most 10% mean non-idle CPU, no one-second window above 25%, CPU pressure
+  `some avg10` at or below 1%, memory pressure `full avg10` equal to zero, and no swap-in/out or thermal-throttle
+  increment. The first gate runs before either product action. If the second gate cannot pass within five minutes, the
+  already-recorded first result is retained but the whole pair is marked environment-invalid; both products rerun
+  under a new block ID. The shared heavy-command lease forbids concurrent Open Wrangler build, test, capture, or
+  benchmark work.
+
+The existing feasibility smoke established that the public workflow works with CPython 3.12. Data Wrangler 1.24.2
+remained in its public connecting state under the tested Python 3.14 environment, so mixing those environments would
+not be a fair comparison.
+
+## Data and notebook setup
+
+The fixture generator creates synthetic, redistributable sources with stable sentinels and exact schemas:
+
+- a 100,000-row by 50-column CSV; and
+- a 1,000,000-row by 20-column Parquet file.
+
+Every sample validates the fixture SHA-256, dimensions, ordered column names, dtypes, and sentinel cells. A private
+notebook loads the source into one named Pandas or Polars dataframe in an untimed setup cell. The measured expression
+cell only evaluates that already-resident variable, isolating notebook preview latency from CSV/Parquet parsing. A
+separate diagnostic duration records source loading, but it is not folded into the preview comparison. Shape, exact
+Python type/module, fixture ID/hash, and three deterministic sentinels are verified in an ordinary visible notebook
+cell before timing and again after the workbench closes. No local work data, pickle, external network dataset, or
+user path is permitted.
+
+## Readiness boundaries
+
+### Inline output
+
+Start immediately before the public **Run Cell** action. Stop only when the cell has completed and its visible output
+is stable across two animation frames, exposes `c00`, `c01`, and the first two deterministic rows, is not busy or
+obstructed, and the product's public launch action is visible and pointer-usable.
+
+This boundary is deliberately described as an inline _surface_, not necessarily an extension-owned renderer. If
+Data Wrangler adds only its launch action to a host/Jupyter dataframe rendering, the report must say so; that timing
+must not be marketed as Data Wrangler rendering a custom preview. A control profile containing Python and Jupyter but
+neither product establishes the host renderer's behavior. If a Polars output has no product-owned inline path, that
+cell is unsupported/non-comparable rather than a timing of generic Polars HTML.
+
+### Workbench open
+
+Start on pointer activation of **Open in Open Wrangler** or **Open in Data Wrangler**. Stop when the newly selected
+custom/webview editor contains the expected grid/table, ordered sentinel headers and cells, a non-busy state, stable
+geometry across two animation frames, and no visible Quick Input, dialog, modal, or pointer obstruction. Merely
+creating a frame, returning from the kernel, or painting a loading shell is not readiness.
+
+The grid must show the full source shape rather than a bounded notebook snapshot. A public wheel or **Page Down**
+interaction must change the visible row window and settle before the workbench timer stops. The harness then returns to
+the first row as untimed profile preparation. Failure to open the live 100,000- or 1,000,000-row dataframe is a
+correctness failure, not a fast result.
+
+### Complete column profiles
+
+Start at the first public action that exposes the profiling or summary UI. Drive each product's public column
+navigation in canonical schema order. For every integer fixture column `cNN`, require the final type, missing count of
+zero, minimum `NN`, and maximum `rowCount - 1 + NN`; loading placeholders do not count as final. Exact distinct
+evidence is either the integer `rowCount`, an unqualified exact `100%` field, or both. A visible approximation or
+sampling label can finish the timing, but it is a correctness oracle only when its displayed confidence/error interval
+contains `rowCount`. An approximate point without such an interval is excluded from correctness while exact type,
+missing count, minimum, and maximum remain required. It is always recorded as `sampled`/`approximate`, not
+exact-equivalent. Stop after every column has supplied its final profile. Record the first useful `c00` profile and
+complete traversal relative both to profile activation and to the original workbench-open click so background work
+that began earlier cannot appear free.
+
+This is an end-to-end public-UI comparison, not a private request benchmark. The final report must disclose that
+Open Wrangler profiles progressively/on demand and whether Data Wrangler was observed to profile eagerly. Histograms
+are not a common correctness oracle because products may use different sampling and binning. If profiles are exact in
+one product and sampled or approximate in the other, retain both timings but label them semantically non-equivalent.
+If a product has no public way to establish completion for every column, report the limitation instead of inventing a
+private completion signal.
+
+## Sampling design
+
+- Cover four cells: Pandas x CSV, Polars x CSV, Pandas x Parquet, and Polars x Parquet.
+- Build one configured-only template per product after public first-use/runtime selection on tiny synthetic data. Derive
+  one warmed template from it by completing a tiny-data preview -> workbench -> profile journey. Neither template
+  contains a target variable, target-source cache, measured tab, or retained workbench session.
+- Collect ten planned paired warm blocks per cell. One natural chained trial records inline preview, workbench open,
+  first profile, and all-column completion, yielding ten observations for every required journey without resetting
+  state between dependent milestones.
+- Each measured warm trial starts a fresh official VS Code process, clone of the exact warmed template, and fresh
+  kernel. There is no per-trial warm-up. No target variable or measured workbench survives from another trial.
+- Use a fixed published seed to counterbalance product order so each product runs first exactly five times per cell.
+  Interleave cells by repetition so thermal and time drift cannot consistently favor one engine or dataset.
+- Prove the source pages resident immediately before notebook setup for the primary warm study, then load the target
+  dataframe in the untimed setup cell. Record one AB and one BA descriptive cold-source block per cell using fresh
+  clones of the configured-only template. Those cold blocks prove source-page eviction immediately before a measured
+  cell that loads and evaluates the dataframe, so their `loadAndPreviewMs` is deliberately different from the primary
+  preloaded-variable `inlinePreviewMs`. They do not enter the ten-sample warm distribution. “Cold” describes target
+  source pages, target variable, process, and kernel—not OS boot, package installation, or never-activated extensions.
+  Package installation and dependency provisioning remain outside timing.
+- Use fixed editor dimensions, zoom, theme, viewport, row-page size, and visible notebook/output layout.
+- Apply predeclared 45-second inline, 60-second workbench, and 135-second complete-profile deadlines. Their 240-second
+  total reserves 60 seconds inside the native editor phase's 300-second ceiling for setup, accepted baseline windows,
+  row restoration, source verification, result publication, and controlled cleanup. The first useful profile is a
+  milestone, not a separate timeout.
+
+Preserve every planned trial, block, order, and outcome. There is no trimming, winsorization, slow-sample deletion, or
+automatic retry after a product action. A harness failure before that action invalidates the whole pair, retains its
+audit record, and reruns both products under a new block ID. A product timeout/error after the action is a valid result
+and is never replaced. Report success-only summaries together with failure and timeout counts.
+
+The immutable schedule and provenance digest are written before the first trial. Every trial publishes one exclusive,
+atomic fragment only after cleanup and input revalidation. An interrupted study resumes only missing schedule entries;
+it cannot overwrite an outcome or mix another candidate, fixture, editor, environment, or method revision. Pair-level
+reruns append new correlated block IDs and retain the invalidated pair. This makes laptop shutdown recoverable without
+turning partial results into a complete report.
+
+Median and p95 use Hyndman-Fan type-7 interpolation; for ten ordered values p95 is
+`x9 + 0.55 * (x10 - x9)`. Publish raw JSON observations, schedule seed, cache proof, correctness status, and every
+milestone timestamp. Any invalid observation names one bounded reason class (fixture, setup, correctness, obstruction,
+timeout, cleanup, or resource sampling), never raw logs or private paths.
+
+## Memory
+
+Sample the exact isolated editor descendant tree every 200 ms before and throughout every journey. On Linux, read each
+unique owned PID's `/proc/<pid>/smaps_rollup`, pin its `/proc/<pid>/stat` start time before and after the read to reject
+PID reuse, and sum proportional set size once to avoid double-counting shared pages. Retain RSS as a diagnostic only.
+Classify every PID exactly once as editor main, renderer/GPU, extension host, configured kernel, Open Wrangler runtime,
+or other owned child; category PSS must sum to total PSS. Ownership follows the complete descendant graph from the
+isolated editor, not process-group membership alone. The exact configured kernel must be observed by pinned executable,
+kernel ID, and process start time before preview readiness; every publicly expected Open Wrangler runtime child must be
+observed or its absence explicitly proven for the live-kernel path.
+
+For every journey report:
+
+- the baseline immediately before the measured cell and each next action: the median of five consecutive 200 ms
+  samples whose range is at most the greater of 64 MiB or 5% of that median;
+- absolute peak editor-tree PSS for inline, workbench, profiling, and the complete trial;
+- peak-minus-segment-baseline PSS deltas for the same segments;
+- the same baseline, absolute peak, and peak delta for editor main, renderer/GPU, extension host, configured kernel,
+  Open Wrangler runtime, and other owned-child categories, including explicit zero-valued categories;
+- the sampling interval, missed-sample count, and process-count range.
+
+Memory sampling begins before the action and ends two seconds after profile completion. Cleanup is outside the latency
+boundary but must prove the complete owned descendant tree stopped. A missing `smaps_rollup`, process-identity
+ambiguity, surviving process, or sampling gap invalidates the resource observation; the study may not fall back
+silently to a less comparable number. A fresh delegated cgroup's `memory.peak` may be secondary evidence only; it is
+never added to PSS or used as the headline because it can include charged page cache.
+
+The inline segment starts at its accepted pre-cell baseline and ends at inline readiness. The workbench segment starts
+at the accepted five-sample baseline immediately before the launch click and ends after the required scroll settles.
+The profile segment starts at the accepted five-sample baseline immediately before profile activation and ends after
+complete traversal plus the two-second quiescence. The complete-trial segment starts at the pre-cell baseline and ends
+with that same quiescence. A baseline that cannot satisfy the range rule within ten seconds is a pre-action harness
+failure rather than a hand-picked lower value.
+
+## Predeclared regression gate
+
+For every successful warm pair and journey define `d_i = OW_i - DW_i` and `r_i = OW_i / DW_i`. The study triggers
+investigation when at least seven of ten `d_i` values are positive, `median(r_i) >= 1.20`, and `median(d_i)` reaches the
+journey's absolute threshold:
+
+- inline output: 500 ms;
+- workbench open: 750 ms;
+- first useful profile: 750 ms; or
+- complete profiling: 2,000 ms.
+
+Interpolated p95 is always reported but does not independently gate a ten-observation study. A product timeout is
+right-censored at its deadline and reported as `>= deadline`, never substituted into `d_i` or `r_i`. Any Open Wrangler
+timeout or correctness failure paired with a successful Data Wrangler trial is release-blocking. A run with fewer than
+ten successful timed pairs in a cell is retained but is not release-complete; after the root cause is resolved, that
+whole cell receives a new preregistered run ID rather than replacement samples. Memory uses the same formulas with
+`OW_i` and `DW_i` equal to complete-trial peak PSS minus the pre-cell baseline; it triggers under the same seven-of-ten
+and 1.20 rules when `median(d_i)` also exceeds 256 MiB. For any non-negative memory deltas `a=OW_i` and `b=DW_i`, the
+ratio is `1` when both are zero, positive infinity when only `b` is zero, and `a / b` otherwise. Absolute PSS,
+per-segment deltas, and per-category summaries remain reported diagnostics. These are materiality thresholds, not
+targets or permission to ignore obvious correctness, hangs, UI jank, or runaway memory.
+
+When a threshold is crossed, profile Open Wrangler using its own public candidate and internal development tools,
+land a justified fix, invalidate every affected candidate sample, and rerun the complete matrix. Microsoft package
+contents remain out of bounds. Final copy follows the evidence and must not claim universal superiority.
+
+## Clean-room boundary
+
+Allowed inputs are official documentation, the exact public Marketplace install, normal mouse/keyboard interaction,
+public accessibility roles/names and visible text/geometry/state, ordinary notebook code, synthetic fixtures, neutral
+editor setup APIs, and same-user observable process state.
+
+The harness must not open, hash, unpack, or retain Data Wrangler package contents; inspect DevTools sources or source
+maps; use private commands, context keys, messages, or implementation selectors; retain DOM dumps, proprietary assets,
+private logs, or work data; or infer an internal engine from process behavior. A separate untimed isolated Xvfb smoke
+must prove that the same public controls and rendered states exist. Timed zero-window results are reproducible relative
+evidence on the pinned reference machine, not a promise of identical desktop latency.
+
+## Publication
+
+The final checked-in evidence includes:
+
+- this reviewed methodology and its review record;
+- an immutable study manifest and exact reproduction command;
+- path-free machine/environment and extension provenance;
+- raw machine-readable observations, failure counts, and summary statistics;
+- concise tables/charts with limitations; and
+- the final Open Wrangler candidate's ordinary performance and release gates.
+
+The comparison is complete only when those artifacts land, any material Open Wrangler regressions are addressed or
+explicitly justified, and issue #91 is closed before v1.2.1 is published.

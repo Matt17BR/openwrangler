@@ -10,6 +10,7 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 - `python/openwrangler_runtime/` owns dataframe engines, queries, transformations, profiling, code generation, and exports.
 - `docs/architecture.md` records boundaries and invariants.
 - `docs/feature-parity.md` is the release gate for user-visible parity.
+- `docs/performance-comparison.md` preregisters the clean-room Data Wrangler comparison and gates v1.2.1 evidence.
 - `docs/reference.md` is generated from public interface registries; never edit it by hand.
 - `docs/testing.md` defines required checks and manual editor scenarios.
 - `docs/releasing.md` defines packaging and release rules.
