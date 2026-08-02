@@ -497,6 +497,7 @@ function validateTerminalReceipt(receipt, launchReceipt) {
     fail("malformed-receipt", "Linux study supervisor retained-process list is missing or exceeds its bound.");
   }
   const retained = new Set();
+  const retainedStartTimes = new Map();
   let includesEditorRoot = false;
   for (const identity of receipt.retainedOwnedIdentities) {
     exactKeys(identity, ["pid", "startTimeTicks", "disposition"], "Linux study retained process identity");
@@ -507,7 +508,12 @@ function validateTerminalReceipt(receipt, launchReceipt) {
     }
     const key = `${identity.pid}:${identity.startTimeTicks}`;
     if (retained.has(key)) fail("ownership-ambiguity", "Linux study terminal receipt repeats a process identity.");
+    const retainedStartTime = retainedStartTimes.get(identity.pid);
+    if (retainedStartTime !== undefined && retainedStartTime !== identity.startTimeTicks) {
+      fail("pid-reuse", "Linux study terminal receipt contains more than one identity for the same PID.");
+    }
     retained.add(key);
+    retainedStartTimes.set(identity.pid, identity.startTimeTicks);
     includesEditorRoot ||= key === `${receipt.editorRoot.pid}:${receipt.editorRoot.startTimeTicks}`;
   }
   if (!includesEditorRoot) {
@@ -634,6 +640,16 @@ export function createBoundedLinuxStudySupervisorFrameReader(
     }
   });
   stream.once("error", reject);
+  stream.once("close", () => {
+    if (!ended) {
+      reject(
+        new LinuxStudySupervisorError(
+          "missing-receipt",
+          "Linux study supervisor receipt stream closed before its complete frame pair."
+        )
+      );
+    }
+  });
   stream.once("end", () => {
     ended = true;
     if (failure !== undefined) return;

@@ -89,6 +89,25 @@ test("bounded supervisor framing rejects malformed, incomplete, oversized, and e
       await assert.rejects(reader.done, pattern);
     });
   }
+
+  await t.test("closed before any frame", async () => {
+    const stream = new PassThrough();
+    const reader = createBoundedLinuxStudySupervisorFrameReader(stream);
+    stream.destroy();
+    await assert.rejects(reader.done, /closed before its complete frame pair/u);
+    await assert.rejects(reader.nextFrame(), /closed before its complete frame pair/u);
+  });
+
+  await t.test("closed after the launch frame", async () => {
+    const stream = new PassThrough();
+    const reader = createBoundedLinuxStudySupervisorFrameReader(stream);
+    const launch = { kind: "launch" };
+    stream.write(`${canonicalLinuxStudySupervisorJson(launch)}\n`);
+    assert.deepEqual(await reader.nextFrame(), launch);
+    stream.destroy();
+    await assert.rejects(reader.done, /closed before its complete frame pair/u);
+    await assert.rejects(reader.nextFrame(), /closed before its complete frame pair/u);
+  });
 });
 
 test("the supervisor adapter seals the editor launch and returns correlated cleanup receipts", async () => {
@@ -198,6 +217,21 @@ test("terminal receipt validation rejects supervisor-reported PID reuse", () => 
   assert.throws(
     () => LINUX_STUDY_SUPERVISOR_INTERNALS.validateTerminalReceipt(terminal, launch),
     /ownership became ambiguous/u
+  );
+});
+
+test("terminal receipt validation rejects two retained identities for one PID", () => {
+  const invocation = buildLinuxStudySupervisorInvocation({
+    nonce: NONCE,
+    environment: { PATH: "/usr/bin" },
+    payloadArgv: ["/usr/bin/code"]
+  });
+  const launch = launchReceipt(invocation);
+  const terminal = terminalReceipt(launch, 0);
+  terminal.retainedOwnedIdentities.push({ pid: 71, startTimeTicks: "711", disposition: "exited" });
+  assert.throws(
+    () => LINUX_STUDY_SUPERVISOR_INTERNALS.validateTerminalReceipt(terminal, launch),
+    /more than one identity for the same PID/u
   );
 });
 
