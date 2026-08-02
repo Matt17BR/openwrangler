@@ -1849,7 +1849,7 @@ async function compileWindowsEditorProcessSupervisor(buildRoot, environment, spa
   });
 }
 
-function assertWindowsEditorProcessSupervisorReceipt(receipt) {
+export function assertWindowsEditorProcessSupervisorReceipt(receipt) {
   if (!receipt || typeof receipt !== "object") {
     throw new Error("The Windows editor Job Object supervisor has no immutable preparation receipt.");
   }

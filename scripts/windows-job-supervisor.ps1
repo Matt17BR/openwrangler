@@ -27,6 +27,21 @@ param(
 
     {"protocol":1,"command":"terminate"}
 
+  Protocol v2 keeps the target suspended after Job Object assignment. The
+  caller must observe READY before sending the one GO frame:
+
+    {"protocol":2,"command":"launch-armed","executable":"C:\\...\\tool.exe",
+     "args":["--arg"],"cwd":"C:\\...","environment":{"SYSTEMROOT":"C:\\Windows"},
+     "attestationToken":"00000000-0000-4000-8000-000000000000"}
+
+    OPEN_WRANGLER_WINDOWS_JOB_READY:00000000-0000-4000-8000-000000000000
+
+    {"protocol":2,"command":"go",
+     "attestationToken":"00000000-0000-4000-8000-000000000000"}
+
+    {"protocol":2,"command":"terminate",
+     "attestationToken":"00000000-0000-4000-8000-000000000000"}
+
   The supervisor emits no frame contents, paths, arguments, environment values,
   or exception text. The target owns stdout/stderr. After the Job Object is empty,
   the supervisor emits the caller's unforgeable attestation token on stderr and
@@ -298,6 +313,7 @@ namespace OpenWrangler.Acceptance
 
     internal sealed class LaunchRequest
     {
+        internal int ProtocolVersion;
         internal string Executable;
         internal string WorkingDirectory;
         internal List<string> Arguments;
@@ -319,8 +335,10 @@ namespace OpenWrangler.Acceptance
             RequireExactKeys(root, new string[] {
                 "protocol", "command", "executable", "args", "cwd", "environment", "attestationToken"
             });
-            RequireProtocol(root["protocol"]);
-            if (!string.Equals(RequireString(root["command"]), "launch", StringComparison.Ordinal))
+            int protocolVersion = RequireProtocolVersion(root["protocol"]);
+            string command = RequireString(root["command"]);
+            if ((protocolVersion == 1 && !string.Equals(command, "launch", StringComparison.Ordinal)) ||
+                (protocolVersion == 2 && !string.Equals(command, "launch-armed", StringComparison.Ordinal)))
                 throw new ProtocolFailure();
 
             string executable = RequireBoundedString(root["executable"]);
@@ -357,6 +375,7 @@ namespace OpenWrangler.Acceptance
             }
 
             LaunchRequest request = new LaunchRequest();
+            request.ProtocolVersion = protocolVersion;
             request.Executable = executable;
             request.WorkingDirectory = workingDirectory;
             request.Arguments = arguments;
@@ -371,8 +390,29 @@ namespace OpenWrangler.Acceptance
         {
             Dictionary<string, object> root = RequireObject(StrictJsonParser.Parse(frame));
             RequireExactKeys(root, new string[] { "protocol", "command" });
-            RequireProtocol(root["protocol"]);
+            RequireProtocol(root["protocol"], 1);
             if (!string.Equals(RequireString(root["command"]), "terminate", StringComparison.Ordinal))
+                throw new ProtocolFailure();
+        }
+
+        internal static void ParseGo(string frame, string attestationToken)
+        {
+            ParseBoundControl(frame, "go", attestationToken);
+        }
+
+        internal static void ParseArmedTerminate(string frame, string attestationToken)
+        {
+            ParseBoundControl(frame, "terminate", attestationToken);
+        }
+
+        private static void ParseBoundControl(string frame, string command, string attestationToken)
+        {
+            Dictionary<string, object> root = RequireObject(StrictJsonParser.Parse(frame));
+            RequireExactKeys(root, new string[] { "protocol", "command", "attestationToken" });
+            RequireProtocol(root["protocol"], 2);
+            if (!string.Equals(RequireString(root["command"]), command, StringComparison.Ordinal) ||
+                !string.Equals(RequireString(root["attestationToken"]), attestationToken,
+                               StringComparison.Ordinal))
                 throw new ProtocolFailure();
         }
 
@@ -434,10 +474,18 @@ namespace OpenWrangler.Acceptance
             return text;
         }
 
-        private static void RequireProtocol(object value)
+        private static int RequireProtocolVersion(object value)
         {
             JsonNumber number = value as JsonNumber;
-            if (number == null || !string.Equals(number.Text, "1", StringComparison.Ordinal))
+            if (number == null) throw new ProtocolFailure();
+            if (string.Equals(number.Text, "1", StringComparison.Ordinal)) return 1;
+            if (string.Equals(number.Text, "2", StringComparison.Ordinal)) return 2;
+            throw new ProtocolFailure();
+        }
+
+        private static void RequireProtocol(object value, int expected)
+        {
+            if (RequireProtocolVersion(value) != expected)
                 throw new ProtocolFailure();
         }
 
@@ -621,17 +669,34 @@ namespace OpenWrangler.Acceptance
 
         private IntPtr jobHandle;
         private IntPtr processHandle;
+        private IntPtr threadHandle;
         private bool disposed;
         private bool targetExitCaptured;
         private uint targetExitCode;
 
-        private NativeJob(IntPtr job, IntPtr process)
+        private NativeJob(IntPtr job, IntPtr process, IntPtr thread)
         {
             jobHandle = job;
             processHandle = process;
+            threadHandle = thread;
         }
 
         internal static NativeJob Launch(LaunchRequest request)
+        {
+            NativeJob job = Prepare(request);
+            try
+            {
+                job.Resume(false);
+                return job;
+            }
+            catch
+            {
+                job.Dispose();
+                throw;
+            }
+        }
+
+        internal static NativeJob Prepare(LaunchRequest request)
         {
             IntPtr job = IntPtr.Zero;
             IntPtr process = IntPtr.Zero;
@@ -724,12 +789,8 @@ namespace OpenWrangler.Acceptance
                 if (!AssignProcessToJobObject(job, process))
                     throw new NativeFailure("assign-job");
                 assigned = true;
-                if (ResumeThread(thread) == UInt32.MaxValue)
-                    throw new NativeFailure("resume-process");
-
-                CloseHandle(thread);
+                NativeJob result = new NativeJob(job, process, thread);
                 thread = IntPtr.Zero;
-                NativeJob result = new NativeJob(job, process);
                 job = IntPtr.Zero;
                 process = IntPtr.Zero;
                 return result;
@@ -753,6 +814,35 @@ namespace OpenWrangler.Acceptance
                 CloseIfValid(childOutput);
                 CloseIfValid(nullInput);
                 CloseIfValid(job);
+            }
+        }
+
+        internal void ResumeArmed()
+        {
+            Resume(true);
+        }
+
+        private void Resume(bool requireExactlyOneSuspend)
+        {
+            EnsureOpen();
+            if (threadHandle == IntPtr.Zero) throw new NativeFailure("resume-process");
+            uint previousSuspendCount = ResumeThread(threadHandle);
+            if (previousSuspendCount == UInt32.MaxValue ||
+                (requireExactlyOneSuspend && previousSuspendCount != 1u))
+            {
+                AbortAndWait();
+                throw new NativeFailure("resume-process");
+            }
+            CloseHandle(threadHandle);
+            threadHandle = IntPtr.Zero;
+        }
+
+        private void AbortAndWait()
+        {
+            if (jobHandle != IntPtr.Zero && processHandle != IntPtr.Zero)
+            {
+                TerminateJobObject(jobHandle, 125);
+                WaitForSingleObject(processHandle, 5000);
             }
         }
 
@@ -826,6 +916,8 @@ namespace OpenWrangler.Acceptance
             // KILL_ON_JOB_CLOSE makes this fail-closed even during stack unwinding.
             CloseIfValid(jobHandle);
             jobHandle = IntPtr.Zero;
+            CloseIfValid(threadHandle);
+            threadHandle = IntPtr.Zero;
             CloseIfValid(processHandle);
             processHandle = IntPtr.Zero;
         }
@@ -1062,91 +1154,219 @@ namespace OpenWrangler.Acceptance
                 string launchFrame = reader.ReadFrame(MaximumLaunchFrameBytes);
                 if (launchFrame == null) throw new ProtocolFailure();
                 LaunchRequest request = Protocol.ParseLaunch(launchFrame);
+                if (request.ProtocolVersion == 1) return RunLegacy(reader, request);
+                if (request.ProtocolVersion == 2) return RunArmed(reader, request);
+                throw new ProtocolFailure();
+            }
+        }
 
-                using (NativeJob job = NativeJob.Launch(request))
-                using (BlockingCollection<ControlEvent> controls =
-                       new BlockingCollection<ControlEvent>(ControlQueueCapacity))
+        private static int RunLegacy(BoundedFrameReader reader, LaunchRequest request)
+        {
+            using (NativeJob job = NativeJob.Launch(request))
+            using (BlockingCollection<ControlEvent> controls =
+                   new BlockingCollection<ControlEvent>(ControlQueueCapacity))
+            {
+                Thread controlThread = new Thread(delegate()
                 {
-                    Thread controlThread = new Thread(delegate()
+                    try
                     {
-                        try
+                        while (true)
                         {
-                            while (true)
+                            string frame = reader.ReadFrame(MaximumControlFrameBytes);
+                            if (frame == null)
                             {
-                                string frame = reader.ReadFrame(MaximumControlFrameBytes);
-                                if (frame == null)
-                                {
-                                    controls.Add(ControlEvent.Eof());
-                                    return;
-                                }
-                                controls.Add(ControlEvent.FromFrame(frame));
+                                controls.Add(ControlEvent.Eof());
+                                return;
                             }
+                            controls.Add(ControlEvent.FromFrame(frame));
                         }
-                        catch
-                        {
-                            try { controls.Add(ControlEvent.Failure()); }
-                            catch { }
-                        }
-                    });
-                    controlThread.IsBackground = true;
-                    controlThread.Name = "OpenWranglerWindowsJobControl";
-                    controlThread.Start();
+                    }
+                    catch
+                    {
+                        try { controls.Add(ControlEvent.Failure()); }
+                        catch { }
+                    }
+                });
+                controlThread.IsBackground = true;
+                controlThread.Name = "OpenWranglerWindowsJobControl";
+                controlThread.Start();
 
-                    bool terminating = false;
-                    uint terminationStarted = 0;
-                    while (true)
+                bool terminating = false;
+                uint terminationStarted = 0;
+                while (true)
+                {
+                    ControlEvent control;
+                    if (controls.TryTake(out control, PollMilliseconds))
                     {
-                        ControlEvent control;
-                        if (controls.TryTake(out control, PollMilliseconds))
+                        // The protocol permits at most one post-launch frame.
+                        // EOF, a malformed frame, or a second command after a
+                        // termination request invalidates attestation.
+                        if (terminating) throw new ProtocolFailure();
+                        if (control.Failed)
                         {
-                            // The protocol permits at most one post-launch frame.
-                            // EOF, a malformed frame, or a second command after a
-                            // termination request invalidates attestation.
-                            if (terminating) throw new ProtocolFailure();
-                            if (control.Failed)
+                            job.Terminate(LeaseLostExitCode);
+                            throw new ProtocolFailure();
+                        }
+                        if (control.EndOfFile)
+                        {
+                            job.Terminate(LeaseLostExitCode);
+                        }
+                        else
+                        {
+                            Protocol.ParseTerminate(control.Frame);
+                            job.Terminate(ExplicitTerminationExitCode);
+                        }
+                        terminating = true;
+                        // Windows PowerShell 5.1's Add-Type compiler targets
+                        // the .NET Framework reference surface, where
+                        // Environment.TickCount64 is unavailable. Unsigned
+                        // subtraction keeps the 32-bit counter wrap-safe for
+                        // this bounded ten-second interval.
+                        terminationStarted = unchecked((uint)Environment.TickCount);
+                    }
+
+                    uint active = job.ActiveProcessCount();
+                    if (active == 0)
+                    {
+                        // A frame already accepted by the reader invalidates
+                        // an otherwise empty Job. The trusted parent sends at
+                        // most one post-launch frame, so anything queued here
+                        // is either lease loss, termination, or malformed input.
+                        ControlEvent trailing;
+                        if (controls.TryTake(out trailing, 0))
+                            throw new ProtocolFailure();
+                        WriteJobEmptyAttestation(request.AttestationToken);
+                        return job.TargetExitCode();
+                    }
+
+                    if (terminating &&
+                        unchecked((uint)Environment.TickCount - terminationStarted) >
+                        (uint)TerminationDeadlineMilliseconds)
+                        throw new NativeFailure("termination-timeout");
+                }
+            }
+        }
+
+        private static int RunArmed(BoundedFrameReader reader, LaunchRequest request)
+        {
+            using (NativeJob job = NativeJob.Prepare(request))
+            using (BlockingCollection<ControlEvent> controls =
+                   new BlockingCollection<ControlEvent>(ControlQueueCapacity))
+            {
+                StartControlThread(reader, controls);
+                WriteJobReadyAttestation(request.AttestationToken);
+
+                bool resumed = false;
+                bool terminating = false;
+                uint terminationStarted = 0;
+                while (true)
+                {
+                    ControlEvent control;
+                    if (controls.TryTake(out control, PollMilliseconds))
+                    {
+                        if (terminating) throw new ProtocolFailure();
+                        if (control.Failed)
+                        {
+                            job.Terminate(LeaseLostExitCode);
+                            throw new ProtocolFailure();
+                        }
+                        if (control.EndOfFile)
+                        {
+                            job.Terminate(LeaseLostExitCode);
+                            terminating = true;
+                            terminationStarted = unchecked((uint)Environment.TickCount);
+                        }
+                        else if (!resumed)
+                        {
+                            Dictionary<string, object> controlObject =
+                                RequireArmedControlObject(control.Frame);
+                            string command = RequireArmedControlCommand(controlObject);
+                            if (string.Equals(command, "go", StringComparison.Ordinal))
                             {
-                                job.Terminate(LeaseLostExitCode);
-                                throw new ProtocolFailure();
-                            }
-                            if (control.EndOfFile)
-                            {
-                                job.Terminate(LeaseLostExitCode);
+                                Protocol.ParseGo(control.Frame, request.AttestationToken);
+                                job.ResumeArmed();
+                                resumed = true;
                             }
                             else
                             {
-                                Protocol.ParseTerminate(control.Frame);
+                                Protocol.ParseArmedTerminate(control.Frame, request.AttestationToken);
                                 job.Terminate(ExplicitTerminationExitCode);
+                                terminating = true;
+                                terminationStarted = unchecked((uint)Environment.TickCount);
                             }
+                        }
+                        else
+                        {
+                            Protocol.ParseArmedTerminate(control.Frame, request.AttestationToken);
+                            job.Terminate(ExplicitTerminationExitCode);
                             terminating = true;
-                            // Windows PowerShell 5.1's Add-Type compiler targets
-                            // the .NET Framework reference surface, where
-                            // Environment.TickCount64 is unavailable. Unsigned
-                            // subtraction keeps the 32-bit counter wrap-safe for
-                            // this bounded ten-second interval.
                             terminationStarted = unchecked((uint)Environment.TickCount);
                         }
-
-                        uint active = job.ActiveProcessCount();
-                        if (active == 0)
-                        {
-                            // A frame already accepted by the reader invalidates
-                            // an otherwise empty Job. The trusted parent sends at
-                            // most one post-launch frame, so anything queued here
-                            // is either lease loss, termination, or malformed input.
-                            ControlEvent trailing;
-                            if (controls.TryTake(out trailing, 0))
-                                throw new ProtocolFailure();
-                            WriteJobEmptyAttestation(request.AttestationToken);
-                            return job.TargetExitCode();
-                        }
-
-                        if (terminating &&
-                            unchecked((uint)Environment.TickCount - terminationStarted) >
-                            (uint)TerminationDeadlineMilliseconds)
-                            throw new NativeFailure("termination-timeout");
                     }
+
+                    uint active = job.ActiveProcessCount();
+                    if (active == 0)
+                    {
+                        ControlEvent trailing;
+                        if (controls.TryTake(out trailing, 0)) throw new ProtocolFailure();
+                        WriteJobEmptyAttestation(request.AttestationToken);
+                        return job.TargetExitCode();
+                    }
+
+                    if (terminating &&
+                        unchecked((uint)Environment.TickCount - terminationStarted) >
+                        (uint)TerminationDeadlineMilliseconds)
+                        throw new NativeFailure("termination-timeout");
                 }
             }
+        }
+
+        private static Dictionary<string, object> RequireArmedControlObject(string frame)
+        {
+            object parsed = StrictJsonParser.Parse(frame);
+            Dictionary<string, object> result = parsed as Dictionary<string, object>;
+            if (result == null) throw new ProtocolFailure();
+            return result;
+        }
+
+        private static string RequireArmedControlCommand(Dictionary<string, object> control)
+        {
+            object raw;
+            if (!control.TryGetValue("command", out raw)) throw new ProtocolFailure();
+            string command = raw as string;
+            if (!string.Equals(command, "go", StringComparison.Ordinal) &&
+                !string.Equals(command, "terminate", StringComparison.Ordinal))
+                throw new ProtocolFailure();
+            return command;
+        }
+
+        private static void StartControlThread(
+            BoundedFrameReader reader, BlockingCollection<ControlEvent> controls)
+        {
+            Thread controlThread = new Thread(delegate()
+            {
+                try
+                {
+                    while (true)
+                    {
+                        string frame = reader.ReadFrame(MaximumControlFrameBytes);
+                        if (frame == null)
+                        {
+                            controls.Add(ControlEvent.Eof());
+                            return;
+                        }
+                        controls.Add(ControlEvent.FromFrame(frame));
+                    }
+                }
+                catch
+                {
+                    try { controls.Add(ControlEvent.Failure()); }
+                    catch { }
+                }
+            });
+            controlThread.IsBackground = true;
+            controlThread.Name = "OpenWranglerWindowsJobArmedControl";
+            controlThread.Start();
         }
 
         private static bool IsKnownNativeStage(string stage)
@@ -1175,6 +1395,7 @@ namespace OpenWrangler.Acceptance
                 case "closed-job":
                 case "termination-timeout":
                 case "attestation":
+                case "ready-attestation":
                     return true;
                 default:
                     return false;
@@ -1194,6 +1415,22 @@ namespace OpenWrangler.Acceptance
             catch
             {
                 throw new NativeFailure("attestation");
+            }
+        }
+
+        private static void WriteJobReadyAttestation(string token)
+        {
+            try
+            {
+                byte[] payload = Encoding.ASCII.GetBytes(
+                    "OPEN_WRANGLER_WINDOWS_JOB_READY:" + token + "\n");
+                Stream error = Console.OpenStandardError();
+                error.Write(payload, 0, payload.Length);
+                error.Flush();
+            }
+            catch
+            {
+                throw new NativeFailure("ready-attestation");
             }
         }
 
