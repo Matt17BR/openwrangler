@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
   DATA_WRANGLER_COMPARISON_NOTEBOOK_PROTOCOL,
+  DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_MARKER,
+  DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_PROTOCOL,
   DATA_WRANGLER_COMPARISON_SOURCE_ENVIRONMENT_VARIABLE,
   buildDataWranglerComparisonNotebook,
   serializeDataWranglerComparisonNotebook,
@@ -96,10 +98,8 @@ test("cold measured cells load, assign, and return one native study_frame", () =
 });
 
 test("verification receipts retain bounded observed class, shape, columns, dtype, and sentinel facts without row data", () => {
-  const source = cellSource(
-    buildDataWranglerComparisonNotebook(options("polars", "parquet", "warm")),
-    "ow-study-setup"
-  );
+  const notebook = buildDataWranglerComparisonNotebook(options("polars", "parquet", "warm"));
+  const source = cellSource(notebook, "ow-study-setup");
   for (const check of [
     "classMatched",
     "configuredKernel",
@@ -113,7 +113,9 @@ test("verification receipts retain bounded observed class, shape, columns, dtype
     "columnsMatched",
     "integerDtypeMatched",
     "sentinelsMatched",
-    "objectTokenContinuous"
+    "objectTokenContinuous",
+    "pythonImplementation",
+    "pythonVersion"
   ]) {
     assert.match(source, new RegExp(`"${check}"`, "u"));
   }
@@ -123,6 +125,14 @@ test("verification receipts retain bounded observed class, shape, columns, dtype
   assert.match(source, /actual_dtypes = \[str\(dtype\) for dtype in frame\.dtypes\]/u);
   assert.match(source, /value_at\(row, column\) == row \+ column/u);
   assert.match(source, /"rowDataIncluded": False/u);
+  assert.match(source, /_ow_platform\.python_implementation\(\)/u);
+  assert.match(source, /_ow_python_implementation != "CPython"/u);
+  assert.match(source, /not _ow_python_version\.startswith\("3\.12\."\)/u);
+  assert.match(source, new RegExp(JSON.stringify(DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_PROTOCOL), "u"));
+  assert.match(source, new RegExp(DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_MARKER, "u"));
+  for (const tag of ["ow-study-before-timing", "ow-study-after-workbench"]) {
+    assert.match(cellSource(notebook, tag), /_ow_emit_verification/u);
+  }
   assert.doesNotMatch(source, /to_dict|to_dicts|to_json|print\(frame|display\(frame/u);
 });
 

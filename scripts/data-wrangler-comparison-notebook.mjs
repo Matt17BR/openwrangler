@@ -16,6 +16,7 @@ import { basename, dirname, resolve } from "node:path";
 export const DATA_WRANGLER_COMPARISON_NOTEBOOK_PROTOCOL = "openwrangler-data-wrangler-notebook-v1";
 export const DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_PROTOCOL =
   "openwrangler-data-wrangler-notebook-verification-v1";
+export const DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_MARKER = "OPENWRANGLER_STUDY_VERIFICATION:";
 export const DATA_WRANGLER_COMPARISON_SOURCE_ENVIRONMENT_VARIABLE = "OPEN_WRANGLER_STUDY_SOURCE";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -131,11 +132,14 @@ function setupSource({ engine, format, kind, fixture, kernel }) {
       ? ["study_frame = _ow_load_study_frame()", "_ow_study_frame_object_token = id(study_frame)"].join("\n")
       : "";
   return `import hashlib as _ow_hashlib
+import json as _ow_json
 import os as _ow_os
+import platform as _ow_platform
 import ${moduleName} as _ow_engine
 
 _OW_NOTEBOOK_PROTOCOL = ${pythonLiteral(DATA_WRANGLER_COMPARISON_NOTEBOOK_PROTOCOL)}
 _OW_VERIFICATION_PROTOCOL = ${pythonLiteral(DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_PROTOCOL)}
+_OW_VERIFICATION_MARKER = ${pythonLiteral(DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_MARKER)}
 _OW_SOURCE_ENV = ${pythonLiteral(DATA_WRANGLER_COMPARISON_SOURCE_ENVIRONMENT_VARIABLE)}
 _OW_FIXTURE_ID = ${pythonLiteral(fixture.id)}
 _OW_FIXTURE_SHA256 = ${pythonLiteral(fixture.sha256)}
@@ -149,11 +153,15 @@ _OW_SENTINEL_ROWS = (0, _OW_ROWS // 2, _OW_ROWS - 1)
 _OW_EXPECTED_MODULE = ${pythonLiteral(expectedModule)}
 _OW_EXACT_DTYPE = ${pythonLiteral(exactDtype)}
 _ow_study_source_path = _ow_os.environ.pop(_OW_SOURCE_ENV, None)
+_ow_python_implementation = _ow_platform.python_implementation()
+_ow_python_version = _ow_platform.python_version()
 
 def _ow_setup_failure():
     raise AssertionError("The registered study source did not pass notebook setup.") from None
 
 def _ow_validate_study_source():
+    if _ow_python_implementation != "CPython" or not _ow_python_version.startswith("3.12."):
+        _ow_setup_failure()
     if not isinstance(_ow_study_source_path, str) or not _ow_study_source_path:
         _ow_setup_failure()
     digest = _ow_hashlib.sha256()
@@ -221,6 +229,8 @@ def _ow_verify_study_frame(frame, phase, require_object_token):
         "fixtureSha256": _OW_FIXTURE_SHA256,
         "engine": _OW_ENGINE,
         "configuredKernel": {"name": _OW_KERNEL_NAME, "displayName": _OW_KERNEL_DISPLAY_NAME},
+        "pythonImplementation": _ow_python_implementation,
+        "pythonVersion": _ow_python_version,
         "actualClass": actual_class,
         "shape": actual_shape,
         "columns": actual_columns,
@@ -236,20 +246,24 @@ def _ow_verify_study_frame(frame, phase, require_object_token):
         "rowDataIncluded": False,
     }
 
+def _ow_emit_verification(frame, phase, require_object_token):
+    receipt = _ow_verify_study_frame(frame, phase, require_object_token)
+    print(_OW_VERIFICATION_MARKER + _ow_json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+
 _ow_validate_study_source()
 ${warmSetup}`;
 }
 
 function beforeVerificationSource(kind) {
   if (kind === "warm") {
-    return `_ow_verify_study_frame(study_frame, "before-timing", True)`;
+    return `_ow_emit_verification(study_frame, "before-timing", True)`;
   }
   return `_ow_validation_frame = _ow_read_study_source()
 try:
     _ow_before_receipt = _ow_verify_study_frame(_ow_validation_frame, "before-timing", False)
 finally:
     del _ow_validation_frame
-_ow_before_receipt`;
+print(_OW_VERIFICATION_MARKER + _ow_json.dumps(_ow_before_receipt, sort_keys=True, separators=(",", ":")))`;
 }
 
 function measuredSource(kind) {
@@ -261,7 +275,7 @@ study_frame`;
 }
 
 function afterVerificationSource(kind) {
-  return `_ow_verify_study_frame(study_frame, "after-workbench", ${kind === "warm" ? "True" : "False"})`;
+  return `_ow_emit_verification(study_frame, "after-workbench", ${kind === "warm" ? "True" : "False"})`;
 }
 
 export function buildDataWranglerComparisonNotebook(options) {

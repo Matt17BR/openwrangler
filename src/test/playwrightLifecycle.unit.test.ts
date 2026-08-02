@@ -320,17 +320,44 @@ describe("extension-host Playwright lifecycle", () => {
     expect(nonOwnerPointer.click).not.toHaveBeenCalled();
   });
 
+  it("records an action boundary only after center ownership is proven and immediately before the pointer click", async () => {
+    const events: string[] = [];
+    const target = {
+      pointer: {
+        click: vi.fn(async () => {
+          events.push("pointer-click");
+        })
+      },
+      boundingBox: vi.fn(async () => {
+        events.push("bounding-box");
+        return { x: 10, y: 20, width: 80, height: 30 };
+      }),
+      evaluate: vi.fn(async () => {
+        events.push("center-owned");
+        return true;
+      })
+    };
+
+    await activateAcceptancePointerTargetAtCurrentCenter(target, 10_000, () => {
+      events.push("action-boundary");
+    });
+
+    expect(events).toEqual(["bounding-box", "center-owned", "action-boundary", "pointer-click"]);
+  });
+
   it("does not dispatch a pointer click when the exact target no longer owns its center", async () => {
     const pointer = { click: vi.fn().mockResolvedValue(undefined) };
+    const actionBoundary = vi.fn();
     const target = {
       pointer,
       boundingBox: vi.fn().mockResolvedValue({ x: 10, y: 20, width: 80, height: 30 }),
       evaluate: vi.fn().mockResolvedValue(false)
     };
 
-    await expect(activateAcceptancePointerTargetAtCurrentCenter(target, 10_000)).rejects.toThrow(
+    await expect(activateAcceptancePointerTargetAtCurrentCenter(target, 10_000, actionBoundary)).rejects.toThrow(
       "The exact acceptance pointer target does not own its current center point."
     );
+    expect(actionBoundary).not.toHaveBeenCalled();
     expect(pointer.click).not.toHaveBeenCalled();
   });
 

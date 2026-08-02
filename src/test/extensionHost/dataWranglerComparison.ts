@@ -135,7 +135,7 @@ interface ComparisonSample {
   };
 }
 
-interface Workbench {
+export interface Workbench {
   readonly page: Page;
 }
 
@@ -707,7 +707,7 @@ function selectedComparisonSourceTab(sourceUri: vscode.Uri): vscode.Tab {
   return activeTab;
 }
 
-async function comparisonWorkbenchReadiness(
+export async function comparisonWorkbenchReadiness(
   page: Page,
   sourceTab: vscode.Tab,
   rendererFramePointerUsable: boolean
@@ -850,15 +850,21 @@ export function buildComparisonWorkbenchReadinessEvidence({
   });
 }
 
-async function waitForGenericGridReadiness(
+export async function waitForGenericGridReadiness(
   workbench: Page,
   baselineFrames: ReadonlySet<Frame>,
-  baselinePages: ReadonlySet<Page>
+  baselinePages: ReadonlySet<Page>,
+  timeoutMs = GRID_TIMEOUT_MS
 ): Promise<{
   readonly grid: ComparisonGridReadinessEvidence;
   readonly rendererFramePointerUsable: true;
+  readonly frame: Frame;
 }> {
-  const deadline = Date.now() + GRID_TIMEOUT_MS;
+  assert.ok(
+    Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= GRID_TIMEOUT_MS,
+    `Comparison grid discovery timeout must be between 1 and ${GRID_TIMEOUT_MS} ms.`
+  );
+  const deadline = Date.now() + timeoutMs;
   const stalledFrames = new Set<Frame>();
   const observedChildFrames = new Set<Frame>();
   const observedTopLevelPages = new Set<Page>();
@@ -924,7 +930,8 @@ async function waitForGenericGridReadiness(
         }
         return Object.freeze({
           grid: probe.value,
-          rendererFramePointerUsable: true
+          rendererFramePointerUsable: true,
+          frame
         });
       } else if (probe.status === "completed") {
         completedNullProbes += 1;
@@ -1034,7 +1041,7 @@ async function observeFrameReadiness(frame: Frame): Promise<ComparisonGridReadin
   return frame.evaluate(observeComparisonGridReadiness, DEFAULT_COMPARISON_GRID_READINESS_INPUT);
 }
 
-async function frameChainIsVisibleAndPointerUsable(frame: Frame): Promise<boolean> {
+export async function frameChainIsVisibleAndPointerUsable(frame: Frame): Promise<boolean> {
   let current = frame;
   while (current.parentFrame()) {
     const host = await current.frameElement();
@@ -1072,14 +1079,14 @@ async function frameChainIsVisibleAndPointerUsable(frame: Frame): Promise<boolea
   return true;
 }
 
-function comparisonFrames(workbench: Page): Frame[] {
+export function comparisonFrames(workbench: Page): Frame[] {
   const browser = workbench.context().browser();
   const discovered = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
   const pages = [workbench, ...discovered.filter((page) => page !== workbench && !page.isClosed())];
   return [...new Set(pages)].flatMap((page) => page.frames());
 }
 
-async function connectToEditorWorkbench(): Promise<Workbench> {
+export async function connectToEditorWorkbench(): Promise<Workbench> {
   const cdpPort = Number(requiredEnvironment("OPEN_WRANGLER_EDITOR_CDP_PORT"));
   assert.ok(Number.isInteger(cdpPort) && cdpPort > 0, "Comparison requires a private CDP port.");
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
@@ -1104,7 +1111,7 @@ async function connectToEditorWorkbench(): Promise<Workbench> {
   throw new Error("The private CDP endpoint did not expose the official VS Code workbench.");
 }
 
-async function waitForWorkbenchReady(page: Page): Promise<void> {
+export async function waitForWorkbenchReady(page: Page): Promise<void> {
   await waitFor(
     async () => {
       await page.bringToFront();
@@ -1288,7 +1295,7 @@ async function sha256(file: string): Promise<string> {
   return digest.digest("hex");
 }
 
-function allEditorTabs(): vscode.Tab[] {
+export function allEditorTabs(): vscode.Tab[] {
   return vscode.window.tabGroups.all.flatMap((group) => [...group.tabs]);
 }
 
@@ -1348,7 +1355,7 @@ function requiredEnvironment(key: string): string {
   return value;
 }
 
-function recordProgress(checkpoint: string): void {
+export function recordProgress(checkpoint: string): void {
   writeAcceptanceProgressCheckpoint(requiredEnvironment("OPEN_WRANGLER_TEST_PROGRESS"), {
     protocol: ACCEPTANCE_PROGRESS_PROTOCOL,
     runId: requiredEnvironment("OPEN_WRANGLER_TEST_RUN_ID"),
@@ -1357,7 +1364,11 @@ function recordProgress(checkpoint: string): void {
   });
 }
 
-async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs: number, label: string): Promise<void> {
+export async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs: number,
+  label: string
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   do {
     if (await predicate()) return;
