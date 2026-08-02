@@ -9,6 +9,7 @@ const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
 const TAG_EXPRESSION = "${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}";
 const COMMIT_EXPRESSION = "${{ steps.release_source.outputs.release_commit }}";
 const PRERELEASE_EXPRESSION = "${{ steps.release_source.outputs.release_prerelease }}";
+const VERSION_EXPRESSION = "${{ steps.release_source.outputs.release_version }}";
 const AUTOMATION_EXPRESSION = "${{ steps.automation_source.outputs.automation_commit }}";
 const CALL_INPUT = Object.freeze({
   description: "Canonical GitHub release tag to promote",
@@ -41,7 +42,12 @@ exit 1
 fi
 `,
   "node scripts/verify-open-vsx-github-release.mjs canonical-release --verify",
-  "node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source"
+  "node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source",
+  `required="$(node --input-type=module -e 'import { publicMediaVerificationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaVerificationRequired(process.env.RELEASE_VERSION)));')"
+printf 'required=%s\\n' "$required" >> "$GITHUB_OUTPUT"
+`,
+  "npx playwright-core install --with-deps chromium",
+  'node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --source-root release-source --wait-for-propagation'
 ]);
 
 function exactKeys(value, keys) {
@@ -71,6 +77,14 @@ function exactVerifierEnvironment(step) {
     step.env.AUTOMATION_SHA === AUTOMATION_EXPRESSION &&
     step.env.EXPECTED_SHA === COMMIT_EXPRESSION &&
     step.env.RELEASE_PRERELEASE === PRERELEASE_EXPRESSION
+  );
+}
+
+function exactPublicMediaEnvironment(step) {
+  return (
+    exactKeys(step?.env, ["RELEASE_SOURCE_SHA", "RELEASE_VERSION"]) &&
+    step.env.RELEASE_SOURCE_SHA === COMMIT_EXPRESSION &&
+    step.env.RELEASE_VERSION === VERSION_EXPRESSION
   );
 }
 
@@ -126,7 +140,7 @@ export function inspectOpenVsxPromotionWorkflow(source) {
     job.name !== "Promote exact public GitHub release" ||
     job.if !== "${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}" ||
     job["runs-on"] !== "ubuntu-24.04" ||
-    job["timeout-minutes"] !== 75 ||
+    job["timeout-minutes"] !== 105 ||
     job.environment !== "publishing" ||
     !exactKeys(job.env, ["RELEASE_TAG"]) ||
     job.env.RELEASE_TAG !== TAG_EXPRESSION ||
@@ -185,6 +199,23 @@ export function inspectOpenVsxPromotionWorkflow(source) {
     problems.push(
       "Every artifact, preflight, and public verification must use the exact automation and release source."
     );
+  }
+  const publicMediaStep = job.steps.find(
+    (step) => typeof step?.run === "string" && step.run.includes("verify-public-media-surfaces.mjs")
+  );
+  const publicMediaContractStep = job.steps.find((step) => step?.id === "public_media_contract");
+  const publicMediaInstallStep = job.steps.find(
+    (step) => step?.run === "npx playwright-core install --with-deps chromium"
+  );
+  const requiredCondition = "${{ steps.public_media_contract.outputs.required == 'true' }}";
+  if (
+    !exactKeys(publicMediaContractStep?.env, ["RELEASE_VERSION"]) ||
+    publicMediaContractStep.env.RELEASE_VERSION !== VERSION_EXPRESSION ||
+    publicMediaInstallStep?.if !== requiredCondition ||
+    publicMediaStep?.if !== requiredCondition ||
+    !exactPublicMediaEnvironment(publicMediaStep)
+  ) {
+    problems.push("Post-publication media verification must use the exact release source and version without secrets.");
   }
   const secretSteps = job.steps.filter((step) => step?.env?.OVSX_PAT !== undefined);
   const tokenStep = secretSteps.find((step) => step?.run === "npx --no-install ovsx verify-pat Matt17BR");

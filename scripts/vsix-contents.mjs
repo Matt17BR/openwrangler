@@ -1,5 +1,13 @@
+import { createHash } from "node:crypto";
 import { SaxesParser } from "saxes";
 import ts from "typescript";
+
+export const packagedSourceDocumentEntries = Object.freeze([
+  Object.freeze({ source: "README.md", archive: "extension/readme.md" }),
+  Object.freeze({ source: "CHANGELOG.md", archive: "extension/changelog.md" }),
+  Object.freeze({ source: "LICENSE", archive: "extension/LICENSE.txt" }),
+  Object.freeze({ source: "THIRD_PARTY_NOTICES.md", archive: "extension/THIRD_PARTY_NOTICES.md" })
+]);
 
 export const allowedVsixEntryPatterns = [
   /^\[Content_Types\]\.xml$/u,
@@ -392,4 +400,26 @@ export function inspectPackagedReadmeSource(sourceReadme, packagedReadme) {
   return sourceReadme === packagedReadme
     ? []
     : ["Packaged README must exactly match README.md; VSCE must not rewrite release-facing content."];
+}
+
+export function inspectPackagedSourceDocumentParity(sourceDocuments, archiveEntryDigests, archiveEntrySizes) {
+  if (!(sourceDocuments instanceof Map) || !Array.isArray(archiveEntryDigests) || !Array.isArray(archiveEntrySizes)) {
+    throw new TypeError("Packaged document parity requires bounded source, digest, and size inventories.");
+  }
+
+  const digests = new Map(archiveEntryDigests);
+  const sizes = new Map(archiveEntrySizes);
+  const problems = [];
+  for (const { source, archive } of packagedSourceDocumentEntries) {
+    const sourceBytes = sourceDocuments.get(source);
+    if (!Buffer.isBuffer(sourceBytes)) {
+      problems.push(`Source document ${source} must be available as bytes.`);
+      continue;
+    }
+    const sourceDigest = createHash("sha256").update(sourceBytes).digest("hex");
+    if (sizes.get(archive) !== sourceBytes.length || digests.get(archive) !== sourceDigest) {
+      problems.push(`Packaged ${archive} must exactly match ${source} bytes.`);
+    }
+  }
+  return problems;
 }

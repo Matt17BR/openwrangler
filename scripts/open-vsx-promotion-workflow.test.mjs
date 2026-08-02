@@ -17,7 +17,7 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
     source.replace("group: openwrangler-release-publication", "group: open-vsx-${{ inputs.release_tag }}"),
     source.replace("queue: max", "queue: latest"),
     source.replace("environment: publishing", "environment: unprotected"),
-    source.replace("timeout-minutes: 75", "timeout-minutes: 60"),
+    source.replace("timeout-minutes: 105", "timeout-minutes: 75"),
     source.replace("ref: main", "ref: ${{ github.ref }}"),
     source.replace("persist-credentials: false", "persist-credentials: true"),
     source.replace(
@@ -44,7 +44,23 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
     source.replace("npx --no-install ovsx verify-pat Matt17BR", "npx ovsx verify-pat someone"),
     source.replace('if [ "$RELEASE_PRERELEASE" = "true" ]; then', 'if [ "$RELEASE_PRERELEASE" = "false" ]; then'),
     source.replace("--pre-release --skip-duplicate", "--skip-duplicate"),
-    source.replace("node scripts/verify-open-vsx-github-release.mjs canonical-release --verify", "echo published")
+    source.replace("node scripts/verify-open-vsx-github-release.mjs canonical-release --verify", "echo published"),
+    source.replace("npx playwright-core install --with-deps chromium", "echo browser-skipped"),
+    source.replace("steps.public_media_contract.outputs.required == 'true'", "always()"),
+    source.replace(
+      "publicMediaVerificationRequired(process.env.RELEASE_VERSION)",
+      "publicMediaVerificationRequired('1.2.1')"
+    ),
+    source.replace(" --wait-for-propagation", ""),
+    source.replace(
+      "RELEASE_SOURCE_SHA: ${{ steps.release_source.outputs.release_commit }}",
+      "RELEASE_SOURCE_SHA: ${{ steps.automation_source.outputs.automation_commit }}"
+    ),
+    source.replace(
+      "RELEASE_VERSION: ${{ steps.release_source.outputs.release_version }}",
+      "OVSX_PAT: ${{ secrets.OVSX_PAT }}\n          RELEASE_VERSION: ${{ steps.release_source.outputs.release_version }}"
+    ),
+    source.replace("--source-root release-source", "--source-root automation-source")
   ];
   for (const [index, candidate] of mutations.entries()) {
     assert.notEqual(candidate, source, `mutation ${index + 1} must change the workflow`);

@@ -1,12 +1,15 @@
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   inspectNotebookRendererBundle,
   inspectPackagedReadmeSource,
+  inspectPackagedSourceDocumentParity,
   inspectReadmeSourceSrcsets,
   inspectVsixEntries,
   inspectVsixPreReleaseMetadata,
+  packagedSourceDocumentEntries,
   requiredVsixEntries
 } from "../../scripts/vsix-contents.mjs";
 
@@ -388,5 +391,56 @@ describe("VSIX packaged README source validation", () => {
       "README source 1 srcset candidate 1 must use an absolute HTTPS URL.",
       "README source 2 srcset candidate 2 must use an absolute HTTPS URL."
     ]);
+  });
+});
+
+describe("VSIX packaged source-document byte parity", () => {
+  const sources = new Map(
+    packagedSourceDocumentEntries.map(({ source }) => [source, Buffer.from(`${source}\r\nexact bytes\n`, "utf8")])
+  );
+  const digests = packagedSourceDocumentEntries.map(
+    ({ source, archive }) =>
+      [
+        archive,
+        createHash("sha256")
+          .update(sources.get(source) ?? Buffer.alloc(0))
+          .digest("hex")
+      ] as const
+  );
+  const sizes = packagedSourceDocumentEntries.map(
+    ({ source, archive }) => [archive, sources.get(source)?.length ?? 0] as const
+  );
+
+  it("requires all four shipped documents to match their source bytes exactly", () => {
+    expect(inspectPackagedSourceDocumentParity(sources, digests, sizes)).toEqual([]);
+
+    const changedDigests: readonly (readonly [string, string])[] = digests.map(
+      ([entry, digest]): readonly [string, string] =>
+        entry === "extension/changelog.md"
+          ? [entry, createHash("sha256").update("different").digest("hex")]
+          : [entry, digest]
+    );
+    expect(inspectPackagedSourceDocumentParity(sources, changedDigests, sizes)).toEqual([
+      "Packaged extension/changelog.md must exactly match CHANGELOG.md bytes."
+    ]);
+  });
+
+  it("rejects a missing source or a size-only drift", () => {
+    const incompleteSources = new Map(sources);
+    incompleteSources.delete("LICENSE");
+    const changedSizes: readonly (readonly [string, number])[] = sizes.map(
+      ([entry, size]): readonly [string, number] =>
+        entry === "extension/THIRD_PARTY_NOTICES.md" ? [entry, Number(size) + 1] : [entry, size]
+    );
+    expect(inspectPackagedSourceDocumentParity(incompleteSources, digests, changedSizes)).toEqual([
+      "Source document LICENSE must be available as bytes.",
+      "Packaged extension/THIRD_PARTY_NOTICES.md must exactly match THIRD_PARTY_NOTICES.md bytes."
+    ]);
+  });
+
+  it("fails closed when the bounded inventories are malformed", () => {
+    expect(() => inspectPackagedSourceDocumentParity(sources, undefined as never, sizes)).toThrow(
+      "Packaged document parity requires bounded source, digest, and size inventories."
+    );
   });
 });

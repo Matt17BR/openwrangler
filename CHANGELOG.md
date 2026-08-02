@@ -6,6 +6,17 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Added bounded draft-pull-request feedback without weakening ready-PR evidence. Draft updates run the existing static
+  source lane plus bounded carriers for directly protected matrix names, while the protected `validate` context
+  deliberately remains failed until `ready_for_review` reruns the required tier at the same commit. Missing,
+  malformed, or contradictory path/draft classification fails closed; protected-branch pushes remain complete.
+- Added an exact package-only pull-request tier for non-empty changes limited to `README.md`, `CHANGELOG.md`, `LICENSE`,
+  and `THIRD_PARTY_NOTICES.md`. Ready changes build and inspect the canonical VSIX, require all four shipped documents
+  to match their source bytes, pin the project manifest and reviewed license text to MIT, and run the focused
+  lossless-media contracts without repeating unrelated engine/editor matrices. Drafts still take precedence, mixed or
+  unknown paths fail into full CI, and public/accepted evidence under `docs/images/**`, `docs/media-gallery.md`, or
+  `docs/media-spec-*` remains full-matrix so PNG quality cannot bypass its visual checks.
+  Directly protected CodeQL and cross-platform check names remain present through classification-only carrier cells.
 - Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
   kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
   serialization, nested lease inheritance, and automatic crash release.
@@ -15,7 +26,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Upgraded public README and gallery screenshots to a dedicated lossless 2× capture path while leaving ordinary
   visual baselines at 1×. Logical layouts and crops are converted exactly once, every product image declares its
   intrinsic logical dimensions, bounded per-file/total budgets reject accidental bloat or downscaling, and a
-  post-publication check detects browser upscaling across GitHub, Visual Studio Marketplace, and Open VSX.
+  post-publication check detects browser upscaling across GitHub, Visual Studio Marketplace, and Open VSX. The
+  versioned `1.2.1+` promotion contract pre-stats a bounded inventory, validates PNG CRC/order/decode, verifies all 46
+  declared sRGB assets and all 18 rendered README images, and retries only typed stale/unavailable registry
+  observations in fresh bounded browser contexts. Historical recovery below `1.2.1` is unchanged. Main protects
+  preview promotion; stable coverage requires the same reviewed backport on `release/1.x`. Because rendering is
+  observed after publication, failure blocks workflow success but cannot retract already-public bytes.
 - Made obsolete pull-request heads actually cancellable by replacing cancellation-resistant `always()` job and
   evidence-upload guards with `!cancelled()` across CI, CodeQL, and cross-platform acceptance. Failed current heads
   still aggregate and retain safe diagnostics, while superseded native editor runs stop before blocking their replacement.
@@ -68,8 +84,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
 - Made affected pull-request released-Jupyter acceptance consume and revalidate the same checksum-bound canonical
   VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
-  for product changes and to be skipped only for documentation-only changes or protected-branch pushes; the separate
-  weekly/manual workflow remains non-cancelling ecosystem-drift evidence.
+  for ready product changes and to be skipped for documentation-only or package-only changes, draft feedback, or
+  protected-branch pushes. Draft `validate` remains deliberately failed; the separate weekly/manual workflow remains non-cancelling
+  ecosystem-drift evidence.
 - Unblocked the optional clean-room Data Wrangler comparison on current ipykernel launch syntax: the exact-runtime
   guard now accepts both separate and equals-style connection-file arguments, while bounded path-free command-shape
   diagnostics explain future mismatches without exposing interpreter or connection paths. The documented fixture

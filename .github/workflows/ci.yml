@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main, release/1.x]
 
@@ -19,6 +20,10 @@ jobs:
     timeout-minutes: 5
     outputs:
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
+      draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
+      lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
+      package_only: ${{ steps.classify.outputs.package_only }}
+      full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
       released_jupyter_required: ${{ steps.classify.outputs.released_jupyter_required }}
     steps:
       - uses: actions/checkout@v6
@@ -33,6 +38,7 @@ jobs:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_PR_DRAFT: ${{ github.event.pull_request.draft }}
 
   fast-feedback:
     name: Fast feedback
@@ -64,7 +70,7 @@ jobs:
 
   canonical-vsix:
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}
     runs-on: ubuntu-latest
     outputs:
       released_jupyter_required: ${{ needs.classify.outputs.released_jupyter_required }}
@@ -81,6 +87,9 @@ jobs:
       - run: npm run build
       - run: npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
+      - name: Packaged release-media contracts
+        if: ${{ needs.classify.outputs.package_only == 'true' }}
+        run: npm run test:scripts:media
       - name: Create canonical PR checksum
         shell: node {0}
         run: |
@@ -114,7 +123,7 @@ jobs:
   contract-tests:
     name: Contract tests
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -145,7 +154,7 @@ jobs:
   visual-accessibility:
     name: Visual and accessibility
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -175,7 +184,7 @@ jobs:
   production-audits:
     name: Production dependency audits
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -197,7 +206,7 @@ jobs:
   linux-packaged-editor:
     name: Packaged VS Code (Linux)
     needs: [classify, canonical-vsix]
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -258,7 +267,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        needs.classify.outputs.documentation_only != 'true' &&
+        needs.classify.outputs.full_matrix_required == 'true' &&
         needs.classify.outputs.released_jupyter_required == 'true'
       }}
     runs-on: ubuntu-latest
@@ -353,7 +362,7 @@ jobs:
 
   coverage:
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -395,7 +404,7 @@ jobs:
 
   python-matrix:
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -425,7 +434,7 @@ jobs:
 
   extension-host:
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -450,7 +459,7 @@ jobs:
   native-script-portability:
     name: Native script contracts (Windows)
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -465,7 +474,7 @@ jobs:
   native-extension-host:
     name: Native extension host (${{ matrix.os }})
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -492,7 +501,7 @@ jobs:
   native-editor-matrix:
     name: Native editor (${{ matrix.os }})
     needs: [classify, canonical-vsix]
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -554,7 +563,7 @@ jobs:
   native-cursor-smoke:
     name: Cursor smoke (${{ matrix.os }})
     needs: [classify, canonical-vsix]
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}
+    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -619,7 +628,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
-        needs.classify.outputs.documentation_only != 'true' &&
+        needs.classify.outputs.full_matrix_required == 'true' &&
         github.event_name == 'pull_request' &&
         contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
       }}
@@ -780,6 +789,10 @@ jobs:
         run: node scripts/require-ci-results.mjs
         env:
           DOCUMENTATION_ONLY: ${{ needs.classify.outputs.documentation_only }}
+          DRAFT_PULL_REQUEST: ${{ needs.classify.outputs.draft_pull_request }}
+          LIGHTWEIGHT_ONLY: ${{ needs.classify.outputs.lightweight_only }}
+          PACKAGE_ONLY: ${{ needs.classify.outputs.package_only }}
+          FULL_MATRIX_REQUIRED: ${{ needs.classify.outputs.full_matrix_required }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           FAST_FEEDBACK_RESULT: ${{ needs.fast-feedback.result }}
           CONTRACT_TESTS_RESULT: ${{ needs.contract-tests.result }}
@@ -800,6 +813,6 @@ jobs:
           REMOTE_WORKSPACE_REQUIRED: >-
             ${{
               github.event_name == 'pull_request' &&
-              needs.classify.outputs.documentation_only != 'true' &&
+              needs.classify.outputs.full_matrix_required == 'true' &&
               contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
             }}

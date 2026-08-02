@@ -317,9 +317,26 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(extensionHost, /scale: "css"/u);
   assert.match(extensionHost, /y: logicalCaptureY,[\s\S]{0,100}width: logicalCaptureWidth/u);
   assert.match(publicSurfaceVerifier, /deviceScaleFactor: PUBLIC_MEDIA_PIXEL_RATIO/u);
-  assert.match(publicSurfaceVerifier, /naturalWidth < minimumWidth/u);
-  assert.match(publicSurfaceVerifier, /naturalHeight < minimumHeight/u);
+  assert.match(publicSurfaceContract, /naturalWidth < minimumWidth/u);
+  assert.match(publicSurfaceContract, /naturalHeight < minimumHeight/u);
   assert.match(publicSurfaceVerifier, /remote\.equals\(local\)/u);
+  assert.match(publicSurfaceVerifier, /for \(const expected of displayedImages\)/u);
+  assert.match(publicSurfaceVerifier, /PUBLIC_MEDIA_PROPAGATION_ATTEMPTS/u);
+  assert.match(publicSurfaceVerifier, /PUBLIC_MEDIA_ASSETS/u);
+  assert.match(
+    publicSurfaceVerifier,
+    /export async function runPublicMediaPropagation[\s\S]{0,2200}instanceof RetryablePublicMediaObservationError/u
+  );
+  assert.match(
+    publicSurfaceVerifier,
+    /export async function runFreshPublicMediaContextAttempt[\s\S]{0,1800}closeContextBounded/u
+  );
+  assert.match(publicSurfaceVerifier, /opendirSync[\s\S]{0,2500}PUBLIC_MEDIA_MAX_TOTAL_BYTES/u);
+  assert.match(publicSurfaceVerifier, /AbortSignal\.timeout\(PUBLIC_MEDIA_FETCH_TIMEOUT_MS\)/u);
+  assert.match(publicSurfaceVerifier, /PNG\.sync\.read\(bytes, \{ checkCRC: true \}\)/u);
+  assert.match(publicSurfaceVerifier, /contains an invalid \$\{type\} chunk CRC/u);
+  assert.match(publicSurfaceVerifier, /realpathSync\.native/u);
+  assert.match(publicSurfaceVerifier, /context\.close\(\)/u);
   assert.match(publicSurfaceContract, /GitHub/u);
   assert.match(publicSurfaceContract, /Visual Studio Marketplace/u);
   assert.match(publicSurfaceContract, /Open VSX/u);

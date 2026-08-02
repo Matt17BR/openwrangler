@@ -30,7 +30,7 @@ jobs:
     name: Promote exact public GitHub release
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 105
     environment: publishing
     env:
       RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
@@ -125,3 +125,19 @@ jobs:
         env:
           EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
         run: node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source
+      - id: public_media_contract
+        name: Select the versioned public-media contract
+        env:
+          RELEASE_VERSION: ${{ steps.release_source.outputs.release_version }}
+        run: |
+          required="$(node --input-type=module -e 'import { publicMediaVerificationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaVerificationRequired(process.env.RELEASE_VERSION)));')"
+          printf 'required=%s\n' "$required" >> "$GITHUB_OUTPUT"
+      - name: Install the lockfile-pinned public-media browser
+        if: ${{ steps.public_media_contract.outputs.required == 'true' }}
+        run: npx playwright-core install --with-deps chromium
+      - name: Verify public README media after registry propagation
+        if: ${{ steps.public_media_contract.outputs.required == 'true' }}
+        env:
+          RELEASE_SOURCE_SHA: ${{ steps.release_source.outputs.release_commit }}
+          RELEASE_VERSION: ${{ steps.release_source.outputs.release_version }}
+        run: node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --source-root release-source --wait-for-propagation

@@ -5,11 +5,17 @@ import { pathToFileURL } from "node:url";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/u;
 const ROOT_NON_PACKAGED_DOCUMENTATION = new Set(["AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"]);
+const PACKAGED_DOCUMENT_PATHS = new Set(["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]);
 
-function isDocumentationOnlyPath(path) {
+function isCanonicalRepositoryPath(path) {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) return false;
   const segments = path.split("/");
-  if (path.startsWith("/") || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+  return !(path.startsWith("/") || segments.some((segment) => segment === "" || segment === "." || segment === ".."));
+}
+
+function isDocumentationOnlyPath(path) {
+  if (!isCanonicalRepositoryPath(path)) return false;
+  if (path.startsWith("docs/images/") || path === "docs/media-gallery.md" || path.startsWith("docs/media-spec-")) {
     return false;
   }
   if (ROOT_NON_PACKAGED_DOCUMENTATION.has(path) || path.startsWith("docs/")) return true;
@@ -25,6 +31,44 @@ export function isDocumentationOnlyChangeSet({ eventName, changedPaths }) {
   if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
   if (eventName !== "pull_request") return false;
   return changedPaths.length > 0 && changedPaths.every((path) => isDocumentationOnlyPath(path));
+}
+
+export function isPackageOnlyChangeSet({ eventName, changedPaths }) {
+  if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
+  if (eventName !== "pull_request") return false;
+  return (
+    changedPaths.length > 0 &&
+    changedPaths.every((path) => isCanonicalRepositoryPath(path) && PACKAGED_DOCUMENT_PATHS.has(path))
+  );
+}
+
+export function parsePullRequestDraft({ eventName, value }) {
+  if (eventName === "pull_request") {
+    if (value === "true") return true;
+    if (value === "false") return false;
+    throw new Error("Pull-request draft state must be exactly true or false.");
+  }
+  if (value !== undefined && value !== "") {
+    throw new Error("Non-pull-request events must not carry pull-request draft state.");
+  }
+  return false;
+}
+
+export function classifyCiChange({ eventName, changedPaths, pullRequestDraft }) {
+  if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
+  const draftPullRequest = parsePullRequestDraft({ eventName, value: pullRequestDraft });
+  const documentationOnly = isDocumentationOnlyChangeSet({ eventName, changedPaths });
+  const packageOnly = isPackageOnlyChangeSet({ eventName, changedPaths });
+  const lightweightOnly = documentationOnly || draftPullRequest;
+  const fullMatrixRequired = !documentationOnly && !packageOnly && !draftPullRequest;
+  return {
+    documentationOnly,
+    draftPullRequest,
+    lightweightOnly,
+    packageOnly,
+    fullMatrixRequired,
+    releasedJupyterRequired: eventName === "pull_request" && fullMatrixRequired
+  };
 }
 
 export function parseChangedPathBuffer(buffer) {
@@ -44,10 +88,10 @@ export function parseChangedPathBuffer(buffer) {
   return paths;
 }
 
-export function requiresReleasedJupyter({ eventName, changedPaths }) {
+export function requiresReleasedJupyter({ eventName, changedPaths, pullRequestDraft }) {
   if (eventName === "push") return false;
   if (eventName !== "pull_request") throw new Error(`Unsupported CI event: ${eventName || "missing"}.`);
-  return !isDocumentationOnlyChangeSet({ eventName, changedPaths });
+  return classifyCiChange({ eventName, changedPaths, pullRequestDraft }).releasedJupyterRequired;
 }
 
 function readPullRequestPaths({ baseSha, headSha }) {
@@ -76,13 +120,24 @@ function main(environment) {
     eventName === "pull_request"
       ? readPullRequestPaths({ baseSha: environment.CI_BASE_SHA, headSha: environment.CI_HEAD_SHA })
       : [];
-  const documentationOnly = isDocumentationOnlyChangeSet({ eventName, changedPaths });
-  const releasedJupyterRequired = eventName === "pull_request" && !documentationOnly;
+  const classification = classifyCiChange({
+    eventName,
+    changedPaths,
+    pullRequestDraft: environment.CI_PR_DRAFT
+  });
   const outputPath = environment.GITHUB_OUTPUT;
   if (!outputPath) throw new Error("GITHUB_OUTPUT is required.");
   appendFileSync(
     outputPath,
-    `documentation_only=${documentationOnly}\nreleased_jupyter_required=${releasedJupyterRequired}\n`,
+    [
+      `documentation_only=${classification.documentationOnly}`,
+      `draft_pull_request=${classification.draftPullRequest}`,
+      `lightweight_only=${classification.lightweightOnly}`,
+      `package_only=${classification.packageOnly}`,
+      `full_matrix_required=${classification.fullMatrixRequired}`,
+      `released_jupyter_required=${classification.releasedJupyterRequired}`,
+      ""
+    ].join("\n"),
     "utf8"
   );
 }

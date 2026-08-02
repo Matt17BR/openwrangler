@@ -4,8 +4,10 @@ import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.
 import {
   inspectNotebookRendererBundle,
   inspectPackagedReadmeSource,
+  inspectPackagedSourceDocumentParity,
   inspectReadmeSourceSrcsets,
-  inspectVsixPreReleaseMetadata
+  inspectVsixPreReleaseMetadata,
+  packagedSourceDocumentEntries
 } from "./vsix-contents.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -32,10 +34,14 @@ if (preReleaseProblems.length > 0) {
 
 const bundleRelativeCodicon = /url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u;
 const webviewFontPolicy = /font-src \$\{webview\.cspSource\};/u;
-const sourceReadme = readFileSync(resolve(root, "README.md"), "utf8");
-const readmeSourceProblems = [
+const sourceDocuments = new Map(
+  packagedSourceDocumentEntries.map(({ source }) => [source, readFileSync(resolve(root, source))])
+);
+const sourceReadme = sourceDocuments.get("README.md")?.toString("utf8");
+const packagedDocumentProblems = [
   ...inspectPackagedReadmeSource(sourceReadme, packagedReadme),
-  ...inspectReadmeSourceSrcsets(packagedReadme)
+  ...inspectReadmeSourceSrcsets(packagedReadme),
+  ...inspectPackagedSourceDocumentParity(sourceDocuments, payload.entryDigests, payload.entrySizes)
 ];
 const notebookRendererProblems = inspectNotebookRendererBundle(notebookRenderer);
 
@@ -45,8 +51,8 @@ if (!bundleRelativeCodicon.test(webviewCss)) {
 if (!webviewFontPolicy.test(webviewPanel)) {
   throw new Error(`Invalid ${basename(vsix)}. The main webview CSP must allow its bundled font origin.`);
 }
-if (readmeSourceProblems.length > 0) {
-  throw new Error(`Invalid ${basename(vsix)}. ${readmeSourceProblems.join(" ")}`);
+if (packagedDocumentProblems.length > 0) {
+  throw new Error(`Invalid ${basename(vsix)}. ${packagedDocumentProblems.join(" ")}`);
 }
 if (notebookRendererProblems.length > 0) {
   throw new Error(`Invalid ${basename(vsix)}. ${notebookRendererProblems.join(" ")}`);

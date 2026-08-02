@@ -3,11 +3,12 @@ import { resolve } from "node:path";
 
 export const ALWAYS_REQUIRED_CI_JOBS = Object.freeze(["classify", "fast-feedback"]);
 
-export const PRODUCT_CI_JOBS = Object.freeze([
+export const PACKAGE_CI_JOBS = Object.freeze(["canonical-vsix"]);
+
+export const FULL_MATRIX_CI_JOBS = Object.freeze([
   "contract-tests",
   "visual-accessibility",
   "production-audits",
-  "canonical-vsix",
   "linux-packaged-editor",
   "coverage",
   "python-matrix",
@@ -16,6 +17,12 @@ export const PRODUCT_CI_JOBS = Object.freeze([
   "native-extension-host",
   "native-editor-matrix",
   "native-cursor-smoke"
+]);
+
+export const PRODUCT_CI_JOBS = Object.freeze([
+  ...FULL_MATRIX_CI_JOBS.slice(0, 3),
+  ...PACKAGE_CI_JOBS,
+  ...FULL_MATRIX_CI_JOBS.slice(3)
 ]);
 
 export const REQUIRED_CI_JOBS = Object.freeze([...ALWAYS_REQUIRED_CI_JOBS, ...PRODUCT_CI_JOBS]);
@@ -30,12 +37,25 @@ export function resultEnvironmentKey(jobId) {
 export function requireCiResults({
   requiredResults,
   documentationOnly,
+  draftPullRequest,
+  lightweightOnly,
+  packageOnly,
+  fullMatrixRequired,
   releasedJupyterResult,
   releasedJupyterRequired,
   remoteResult,
   remoteRequired
 }) {
   const failures = [];
+  if (lightweightOnly !== (documentationOnly || draftPullRequest)) {
+    failures.push("lightweight classifier is inconsistent with documentation and draft state");
+  }
+  if (documentationOnly && packageOnly) {
+    failures.push("documentation-only and package-only classifiers are mutually exclusive");
+  }
+  if (fullMatrixRequired !== (!documentationOnly && !packageOnly && !draftPullRequest)) {
+    failures.push("full-matrix classifier is inconsistent with documentation, package, and draft state");
+  }
   for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
     const result = requiredResults[jobId];
     if (result !== "success") {
@@ -43,17 +63,25 @@ export function requireCiResults({
     }
   }
 
-  const expectedProductResult = documentationOnly ? "skipped" : "success";
-  for (const jobId of PRODUCT_CI_JOBS) {
+  const expectedPackageResult = !draftPullRequest && (packageOnly || fullMatrixRequired) ? "success" : "skipped";
+  for (const jobId of PACKAGE_CI_JOBS) {
     const result = requiredResults[jobId];
-    if (result !== expectedProductResult) {
-      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedProductResult})`);
+    if (result !== expectedPackageResult) {
+      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedPackageResult})`);
     }
   }
 
-  const expectedReleasedJupyterResult = !documentationOnly && releasedJupyterRequired ? "success" : "skipped";
-  if (documentationOnly && releasedJupyterRequired) {
-    failures.push("released-jupyter classifier is inconsistent with documentation-only mode");
+  const expectedFullMatrixResult = fullMatrixRequired ? "success" : "skipped";
+  for (const jobId of FULL_MATRIX_CI_JOBS) {
+    const result = requiredResults[jobId];
+    if (result !== expectedFullMatrixResult) {
+      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedFullMatrixResult})`);
+    }
+  }
+
+  const expectedReleasedJupyterResult = fullMatrixRequired && releasedJupyterRequired ? "success" : "skipped";
+  if (!fullMatrixRequired && releasedJupyterRequired) {
+    failures.push("released-jupyter classifier is inconsistent with full-matrix mode");
   }
   if (releasedJupyterResult !== expectedReleasedJupyterResult) {
     failures.push(
@@ -61,9 +89,9 @@ export function requireCiResults({
     );
   }
 
-  const expectedRemoteResult = !documentationOnly && remoteRequired ? "success" : "skipped";
-  if (documentationOnly && remoteRequired) {
-    failures.push("remote-workspace classifier is inconsistent with documentation-only mode");
+  const expectedRemoteResult = fullMatrixRequired && remoteRequired ? "success" : "skipped";
+  if (!fullMatrixRequired && remoteRequired) {
+    failures.push("remote-workspace classifier is inconsistent with full-matrix mode");
   }
   if (remoteResult !== expectedRemoteResult) {
     failures.push(`${OPTIONAL_CI_JOB}=${remoteResult ?? "missing"} (expected ${expectedRemoteResult})`);
@@ -71,6 +99,11 @@ export function requireCiResults({
 
   if (failures.length > 0) {
     throw new Error(`Required CI did not pass: ${failures.join(", ")}.`);
+  }
+  if (draftPullRequest) {
+    throw new Error(
+      "Draft pull request passed fast feedback; mergeable validation is deferred until ready_for_review reruns its required CI tier."
+    );
   }
 }
 
@@ -87,6 +120,10 @@ function main(environment) {
   requireCiResults({
     requiredResults,
     documentationOnly: parseRequiredFlag(environment.DOCUMENTATION_ONLY, "DOCUMENTATION_ONLY"),
+    draftPullRequest: parseRequiredFlag(environment.DRAFT_PULL_REQUEST, "DRAFT_PULL_REQUEST"),
+    lightweightOnly: parseRequiredFlag(environment.LIGHTWEIGHT_ONLY, "LIGHTWEIGHT_ONLY"),
+    packageOnly: parseRequiredFlag(environment.PACKAGE_ONLY, "PACKAGE_ONLY"),
+    fullMatrixRequired: parseRequiredFlag(environment.FULL_MATRIX_REQUIRED, "FULL_MATRIX_REQUIRED"),
     releasedJupyterResult: environment[resultEnvironmentKey(CONDITIONAL_CI_JOB)],
     releasedJupyterRequired: parseRequiredFlag(environment.RELEASED_JUPYTER_REQUIRED, "RELEASED_JUPYTER_REQUIRED"),
     remoteResult: environment[resultEnvironmentKey(OPTIONAL_CI_JOB)],

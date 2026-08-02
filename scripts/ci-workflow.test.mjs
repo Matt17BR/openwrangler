@@ -5,15 +5,20 @@ import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
 import { loadConfigFromFile } from "vite";
 import {
+  classifyCiChange,
   isDocumentationOnlyChangeSet,
+  isPackageOnlyChangeSet,
   parseChangedPathBuffer,
+  parsePullRequestDraft,
   requiresReleasedJupyter
 } from "./ci-path-classification.mjs";
 import { inspectStableCandidateWorkflow } from "./release-workflow.mjs";
 import {
   ALWAYS_REQUIRED_CI_JOBS,
   CONDITIONAL_CI_JOB,
+  FULL_MATRIX_CI_JOBS,
   OPTIONAL_CI_JOB,
+  PACKAGE_CI_JOBS,
   PRODUCT_CI_JOBS,
   REQUIRED_CI_JOBS,
   parseRequiredFlag,
@@ -52,14 +57,19 @@ const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af8
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
+const CANONICAL_CI_IF =
+  "${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}";
 const FULL_CI_IF =
-  "${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.documentation_only != 'true') }}";
+  "${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
 const MATRIX_CONTEXT_IF = "${{ !cancelled() }}";
-const DOCUMENTATION_CONTEXT_IF =
-  "${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only == 'true' }}";
+const NON_MATRIX_CONTEXT_IF =
+  "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}";
 const SUBSTANTIVE_MATRIX_STEP_IF =
-  "${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}";
+  "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}";
+const CLASSIFICATION_GATE_IF =
+  "${{ needs.classify.result != 'success' || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') || (needs.classify.outputs.draft_pull_request != 'true' && needs.classify.outputs.draft_pull_request != 'false') || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.lightweight_only != 'false') || (needs.classify.outputs.package_only != 'true' && needs.classify.outputs.package_only != 'false') || (needs.classify.outputs.full_matrix_required != 'true' && needs.classify.outputs.full_matrix_required != 'false') || (needs.classify.outputs.lightweight_only == 'true' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') || (needs.classify.outputs.lightweight_only == 'false' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.documentation_only == 'true' && needs.classify.outputs.package_only == 'true') || (needs.classify.outputs.full_matrix_required == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'false' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.package_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') }}";
 const PROTECTED_PRODUCT_BRANCHES = ["main", "release/1.x"];
+const PULL_REQUEST_ACTIVITY_TYPES = ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"];
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
@@ -90,11 +100,12 @@ function nodeTestFiles(command, group) {
 test("product CI covers both protected integration and v1 maintenance branches", () => {
   const ci = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
   assert.deepEqual(ci?.on?.push?.branches, PROTECTED_PRODUCT_BRANCHES);
-  assert.equal(Object.hasOwn(ci?.on ?? {}, "pull_request"), true);
+  assert.deepEqual(ci?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
 
   for (const path of ["codeql.yml", "cross-platform.yml"]) {
     const workflow = parseYaml(readFileSync(new URL(`../.github/workflows/${path}`, import.meta.url), "utf8"));
     assert.deepEqual(workflow?.on?.pull_request?.branches, PROTECTED_PRODUCT_BRANCHES);
+    assert.deepEqual(workflow?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
     assert.deepEqual(workflow?.on?.push?.branches, PROTECTED_PRODUCT_BRANCHES);
   }
 });
@@ -526,8 +537,10 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   assert.throws(() => parseChangedPathBuffer(Buffer.from([0xff, 0])), /encoded data/u);
   assert.throws(() => parseChangedPathBuffer("AGENTS.md\0"), /provided as a Buffer/u);
 
-  const required = (changedPaths) => requiresReleasedJupyter({ eventName: "pull_request", changedPaths });
+  const required = (changedPaths, pullRequestDraft = "false") =>
+    requiresReleasedJupyter({ eventName: "pull_request", changedPaths, pullRequestDraft });
   const documentationOnly = (eventName, changedPaths) => isDocumentationOnlyChangeSet({ eventName, changedPaths });
+  const packageOnly = (eventName, changedPaths) => isPackageOnlyChangeSet({ eventName, changedPaths });
   const allowed = [
     "AGENTS.md",
     "CONTRIBUTING.md",
@@ -542,11 +555,39 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   ];
   assert.equal(documentationOnly("pull_request", allowed), true);
   assert.equal(required(allowed), false);
+  assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: allowed, pullRequestDraft: "false" }), {
+    documentationOnly: true,
+    draftPullRequest: false,
+    lightweightOnly: true,
+    packageOnly: false,
+    fullMatrixRequired: false,
+    releasedJupyterRequired: false
+  });
+  const packagedDocuments = ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"];
+  assert.equal(packageOnly("pull_request", packagedDocuments), true);
+  assert.deepEqual(
+    classifyCiChange({ eventName: "pull_request", changedPaths: packagedDocuments, pullRequestDraft: "false" }),
+    {
+      documentationOnly: false,
+      draftPullRequest: false,
+      lightweightOnly: false,
+      packageOnly: true,
+      fullMatrixRequired: false,
+      releasedJupyterRequired: false
+    }
+  );
+  assert.deepEqual(
+    classifyCiChange({ eventName: "pull_request", changedPaths: packagedDocuments, pullRequestDraft: "true" }),
+    {
+      documentationOnly: false,
+      draftPullRequest: true,
+      lightweightOnly: true,
+      packageOnly: true,
+      fullMatrixRequired: false,
+      releasedJupyterRequired: false
+    }
+  );
   for (const path of [
-    "CHANGELOG.md",
-    "LICENSE",
-    "README.md",
-    "THIRD_PARTY_NOTICES.md",
     ".github/workflows/ci.yml",
     ".vscodeignore",
     "assets/openwrangler.png",
@@ -556,6 +597,12 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     "scripts/build-webviews.mjs",
     "src/extension/notebooks/jupyterBridge.ts",
     "src/webviews/notebookRenderer.ts",
+    "docs/images/acceptance/grid-dark-1920.png",
+    "docs/images/editor-acceptance/vscode-hero-dark.png",
+    "docs/images/readme/v1.2/explore.png",
+    "docs/images/legacy.png",
+    "docs/media-gallery.md",
+    "docs/media-spec-v1.2.md",
     "docs/../src/extension/activate.ts",
     "/docs/testing.md",
     "docs//testing.md",
@@ -566,20 +613,73 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     "unknown/future-package-surface"
   ]) {
     assert.equal(documentationOnly("pull_request", [path]), false, `${path} must require the complete PR matrix.`);
+    assert.equal(packageOnly("pull_request", [path]), false, `${path} must not select package-only CI.`);
     assert.equal(required([path]), true, `${path} must require released-Jupyter acceptance.`);
   }
+  for (const path of packagedDocuments) {
+    assert.equal(documentationOnly("pull_request", [path]), false, `${path} is shipped, not documentation-only.`);
+    assert.equal(packageOnly("pull_request", [path]), true, `${path} must select package-only CI.`);
+    assert.equal(required([path]), false, `${path} must not require released-Jupyter acceptance.`);
+  }
+  assert.equal(packageOnly("pull_request", ["README.md", "docs/testing.md"]), false);
+  assert.equal(packageOnly("pull_request", ["README.md", "src/shared/notebookOutput.ts"]), false);
   assert.equal(documentationOnly("pull_request", ["docs/testing.md", "src/shared/notebookOutput.ts"]), false);
   assert.equal(required(["docs/testing.md", "src/shared/notebookOutput.ts"]), true);
+  assert.deepEqual(
+    classifyCiChange({
+      eventName: "pull_request",
+      changedPaths: ["src/shared/notebookOutput.ts"],
+      pullRequestDraft: "true"
+    }),
+    {
+      documentationOnly: false,
+      draftPullRequest: true,
+      lightweightOnly: true,
+      packageOnly: false,
+      fullMatrixRequired: false,
+      releasedJupyterRequired: false
+    }
+  );
+  assert.equal(required(["src/shared/notebookOutput.ts"], "true"), false);
   assert.equal(documentationOnly("pull_request", []), false, "an empty PR diff must fail closed");
+  assert.equal(packageOnly("pull_request", []), false, "an empty PR diff must fail closed");
   assert.equal(required([]), true, "an empty PR diff must fail closed into acceptance");
   for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
     assert.equal(documentationOnly(eventName, allowed), false, `${eventName} must always use the complete workflow.`);
+    assert.equal(
+      packageOnly(eventName, packagedDocuments),
+      false,
+      `${eventName} must always use the complete workflow.`
+    );
+    assert.deepEqual(classifyCiChange({ eventName, changedPaths: [], pullRequestDraft: "" }), {
+      documentationOnly: false,
+      draftPullRequest: false,
+      lightweightOnly: false,
+      packageOnly: false,
+      fullMatrixRequired: true,
+      releasedJupyterRequired: false
+    });
   }
   assert.equal(documentationOnly("pull_request", [undefined]), false);
   assert.equal(documentationOnly("pull_request", ["docs/testing.md", 42]), false);
   assert.throws(() => documentationOnly("pull_request", undefined), /changedPaths must be an array/u);
+  assert.throws(() => packageOnly("pull_request", undefined), /changedPaths must be an array/u);
   assert.equal(requiresReleasedJupyter({ eventName: "push", changedPaths: ["src/extension/activate.ts"] }), false);
   assert.throws(() => requiresReleasedJupyter({ eventName: "schedule", changedPaths: [] }), /Unsupported CI event/u);
+  assert.equal(parsePullRequestDraft({ eventName: "pull_request", value: "true" }), true);
+  assert.equal(parsePullRequestDraft({ eventName: "pull_request", value: "false" }), false);
+  for (const value of [undefined, "", "TRUE", "0", true, false]) {
+    assert.throws(
+      () => parsePullRequestDraft({ eventName: "pull_request", value }),
+      /draft state must be exactly true or false/u
+    );
+  }
+  assert.equal(parsePullRequestDraft({ eventName: "push", value: "" }), false);
+  assert.equal(parsePullRequestDraft({ eventName: "schedule", value: undefined }), false);
+  assert.throws(
+    () => parsePullRequestDraft({ eventName: "push", value: "false" }),
+    /must not carry pull-request draft state/u
+  );
 });
 
 test("documentation fast-path roots remain excluded from the VSIX inventory", () => {
@@ -592,7 +692,7 @@ test("documentation fast-path roots remain excluded from the VSIX inventory", ()
     assert.equal(ignored.has(path), true, `${path} must remain outside the packaged extension.`);
   }
   for (const path of ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]) {
-    assert.equal(ignored.has(path), false, `${path} changes shipped extension bytes and must keep full CI.`);
+    assert.equal(ignored.has(path), false, `${path} changes shipped extension bytes and must keep packaging CI.`);
   }
 });
 
@@ -611,6 +711,10 @@ test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX"
   const classification = workflow?.jobs?.classify;
   assert.equal(classification?.name, "CI change classification");
   assert.equal(classification?.outputs?.documentation_only, "${{ steps.classify.outputs.documentation_only }}");
+  assert.equal(classification?.outputs?.draft_pull_request, "${{ steps.classify.outputs.draft_pull_request }}");
+  assert.equal(classification?.outputs?.lightweight_only, "${{ steps.classify.outputs.lightweight_only }}");
+  assert.equal(classification?.outputs?.package_only, "${{ steps.classify.outputs.package_only }}");
+  assert.equal(classification?.outputs?.full_matrix_required, "${{ steps.classify.outputs.full_matrix_required }}");
   assert.equal(
     classification?.outputs?.released_jupyter_required,
     "${{ steps.classify.outputs.released_jupyter_required }}"
@@ -623,7 +727,8 @@ test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX"
   assert.deepEqual(classify?.env, {
     CI_EVENT_NAME: "${{ github.event_name }}",
     CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
-    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+    CI_PR_DRAFT: "${{ github.event.pull_request.draft }}"
   });
 
   const job = workflow?.jobs?.[CONDITIONAL_CI_JOB];
@@ -631,7 +736,7 @@ test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX"
   assert.deepEqual(job?.needs, ["classify", "canonical-vsix"]);
   assert.equal(
     normalizedCommand(job?.if),
-    "${{ !cancelled() && needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.released_jupyter_required == 'true' }}"
+    "${{ !cancelled() && needs.classify.outputs.full_matrix_required == 'true' && needs.classify.outputs.released_jupyter_required == 'true' }}"
   );
   assert.equal(job?.["runs-on"], "ubuntu-latest");
   assert.equal(job?.["timeout-minutes"], 90);
@@ -897,14 +1002,13 @@ test("authoritative CI work is independently attributable before the required ag
   assert.deepEqual(ownersByCommand.get("npm run test:scripts:native"), ["native-script-portability"]);
 });
 
-test("documentation-only PRs preserve check contexts while every non-documentation or invalid classification runs full", () => {
+test("non-matrix PR tiers preserve direct contexts while substantive changes and protected pushes run full", () => {
   const classifierEnvironment = {
     CI_EVENT_NAME: "${{ github.event_name }}",
     CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
-    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+    CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+    CI_PR_DRAFT: "${{ github.event.pull_request.draft }}"
   };
-  const expectedGate =
-    "${{ needs.classify.result != 'success' || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') }}";
   const loadWorkflow = (relativePath) =>
     parseYaml(readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8"));
   const assertClassifier = (workflow, name) => {
@@ -913,6 +1017,10 @@ test("documentation-only PRs preserve check contexts while every non-documentati
     assert.equal(job?.["runs-on"], "ubuntu-latest");
     assert.equal(job?.["timeout-minutes"], 5);
     assert.equal(job?.outputs?.documentation_only, "${{ steps.classify.outputs.documentation_only }}");
+    assert.equal(job?.outputs?.draft_pull_request, "${{ steps.classify.outputs.draft_pull_request }}");
+    assert.equal(job?.outputs?.lightweight_only, "${{ steps.classify.outputs.lightweight_only }}");
+    assert.equal(job?.outputs?.package_only, "${{ steps.classify.outputs.package_only }}");
+    assert.equal(job?.outputs?.full_matrix_required, "${{ steps.classify.outputs.full_matrix_required }}");
     assert.deepEqual(job?.steps?.find((step) => step?.uses === "actions/checkout@v6")?.with, {
       "fetch-depth": 0
     });
@@ -923,7 +1031,7 @@ test("documentation-only PRs preserve check contexts while every non-documentati
 
   const ci = loadWorkflow(".github/workflows/ci.yml");
   assertClassifier(ci, "CI change classification");
-  for (const jobId of PRODUCT_CI_JOBS) {
+  for (const jobId of FULL_MATRIX_CI_JOBS) {
     const job = ci?.jobs?.[jobId];
     const needs = Array.isArray(job?.needs) ? job.needs : [job?.needs];
     assert.equal(needs.includes("classify"), true, `${jobId} must consume the exact classifier result.`);
@@ -934,6 +1042,11 @@ test("documentation-only PRs preserve check contexts while every non-documentati
       `${jobId} must not duplicate documentation classification across individual steps.`
     );
   }
+  const canonical = ci?.jobs?.[PACKAGE_CI_JOBS[0]];
+  assert.equal(canonical?.if, CANONICAL_CI_IF);
+  const packagedMedia = canonical?.steps?.find((step) => step?.name === "Packaged release-media contracts");
+  assert.equal(packagedMedia?.if, "${{ needs.classify.outputs.package_only == 'true' }}");
+  assert.equal(packagedMedia?.run, "npm run test:scripts:media");
   assert.equal(ci?.jobs?.["fast-feedback"]?.needs, undefined);
   assert.equal(ci?.jobs?.["fast-feedback"]?.if, undefined);
 
@@ -978,18 +1091,14 @@ test("documentation-only PRs preserve check contexts while every non-documentati
       assert.deepEqual(job?.strategy?.matrix, expected.matrix);
       const gate = job?.steps?.[0];
       assert.equal(gate?.name, "Require exact change classification");
-      assert.equal(normalizedCommand(gate?.if), expectedGate);
+      assert.equal(normalizedCommand(gate?.if), CLASSIFICATION_GATE_IF);
       assert.equal(gate?.run, "exit 1");
       const contextCarrier = job?.steps?.[1];
-      assert.equal(contextCarrier?.name, "Preserve required documentation-only context");
-      assert.equal(contextCarrier?.if, DOCUMENTATION_CONTEXT_IF);
+      assert.equal(contextCarrier?.name, "Preserve required non-matrix context");
+      assert.equal(normalizedCommand(contextCarrier?.if), NON_MATRIX_CONTEXT_IF);
       assert.match(contextCarrier?.run ?? "", /preserves? (?:its|this) required check context/u);
       for (const step of job?.steps?.slice(2) ?? []) {
-        assert.equal(
-          step?.if,
-          SUBSTANTIVE_MATRIX_STEP_IF,
-          `${relativePath}:${jobId} substantive step must stay dormant in a documentation-only carrier cell.`
-        );
+        assert.equal(normalizedCommand(step?.if), SUBSTANTIVE_MATRIX_STEP_IF);
       }
     }
   }
@@ -1017,6 +1126,10 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
   assert.equal(resultStep?.env?.[resultEnvironmentKey(CONDITIONAL_CI_JOB)], "${{ needs.released-jupyter.result }}");
   assert.equal(resultStep?.env?.RELEASED_JUPYTER_REQUIRED, "${{ needs.classify.outputs.released_jupyter_required }}");
   assert.equal(resultStep?.env?.DOCUMENTATION_ONLY, "${{ needs.classify.outputs.documentation_only }}");
+  assert.equal(resultStep?.env?.DRAFT_PULL_REQUEST, "${{ needs.classify.outputs.draft_pull_request }}");
+  assert.equal(resultStep?.env?.LIGHTWEIGHT_ONLY, "${{ needs.classify.outputs.lightweight_only }}");
+  assert.equal(resultStep?.env?.PACKAGE_ONLY, "${{ needs.classify.outputs.package_only }}");
+  assert.equal(resultStep?.env?.FULL_MATRIX_REQUIRED, "${{ needs.classify.outputs.full_matrix_required }}");
   assert.equal(resultStep?.env?.[resultEnvironmentKey(OPTIONAL_CI_JOB)], "${{ needs.remote-workspace.result }}");
   assert.match(resultStep?.env?.REMOTE_WORKSPACE_REQUIRED ?? "", /acceptance:remote-ssh/u);
 });
@@ -1027,8 +1140,20 @@ test("required CI result validation rejects every absent or non-success blocking
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...PRODUCT_CI_JOBS.map((jobId) => [jobId, "skipped"])
   ]);
+  const packageResults = Object.fromEntries([
+    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
+  ]);
+  const validateResults = (configuration) => {
+    const normalized = { draftPullRequest: false, packageOnly: false, ...configuration };
+    normalized.lightweightOnly ??= normalized.documentationOnly || normalized.draftPullRequest;
+    normalized.fullMatrixRequired ??=
+      !normalized.documentationOnly && !normalized.packageOnly && !normalized.draftPullRequest;
+    return requireCiResults(normalized);
+  };
   assert.doesNotThrow(() =>
-    requireCiResults({
+    validateResults({
       requiredResults: successes,
       documentationOnly: false,
       releasedJupyterResult: "skipped",
@@ -1038,7 +1163,7 @@ test("required CI result validation rejects every absent or non-success blocking
     })
   );
   assert.doesNotThrow(() =>
-    requireCiResults({
+    validateResults({
       requiredResults: documentationResults,
       documentationOnly: true,
       releasedJupyterResult: "skipped",
@@ -1048,7 +1173,18 @@ test("required CI result validation rejects every absent or non-success blocking
     })
   );
   assert.doesNotThrow(() =>
-    requireCiResults({
+    validateResults({
+      requiredResults: packageResults,
+      documentationOnly: false,
+      packageOnly: true,
+      releasedJupyterResult: "skipped",
+      releasedJupyterRequired: false,
+      remoteResult: "skipped",
+      remoteRequired: false
+    })
+  );
+  assert.doesNotThrow(() =>
+    validateResults({
       requiredResults: successes,
       documentationOnly: false,
       releasedJupyterResult: "success",
@@ -1057,6 +1193,90 @@ test("required CI result validation rejects every absent or non-success blocking
       remoteRequired: true
     })
   );
+  assert.throws(
+    () =>
+      validateResults({
+        requiredResults: documentationResults,
+        documentationOnly: false,
+        draftPullRequest: true,
+        lightweightOnly: true,
+        releasedJupyterResult: "skipped",
+        releasedJupyterRequired: false,
+        remoteResult: "skipped",
+        remoteRequired: false
+      }),
+    /mergeable validation is deferred until ready_for_review/u
+  );
+  assert.throws(
+    () =>
+      validateResults({
+        requiredResults: documentationResults,
+        documentationOnly: false,
+        draftPullRequest: true,
+        packageOnly: true,
+        releasedJupyterResult: "skipped",
+        releasedJupyterRequired: false,
+        remoteResult: "skipped",
+        remoteRequired: false
+      }),
+    /mergeable validation is deferred until ready_for_review/u
+  );
+  for (const [documentationOnly, draftPullRequest, lightweightOnly] of [
+    [false, false, true],
+    [true, false, false],
+    [false, true, false],
+    [true, true, false]
+  ]) {
+    assert.throws(
+      () =>
+        validateResults({
+          requiredResults: documentationResults,
+          documentationOnly,
+          draftPullRequest,
+          lightweightOnly,
+          releasedJupyterResult: "skipped",
+          releasedJupyterRequired: false,
+          remoteResult: "skipped",
+          remoteRequired: false
+        }),
+      /lightweight classifier is inconsistent/u
+    );
+  }
+  for (const configuration of [
+    {
+      documentationOnly: true,
+      packageOnly: true,
+      fullMatrixRequired: false,
+      message: /documentation-only and package-only classifiers are mutually exclusive/u
+    },
+    {
+      documentationOnly: false,
+      packageOnly: true,
+      fullMatrixRequired: true,
+      message: /full-matrix classifier is inconsistent/u
+    },
+    {
+      documentationOnly: false,
+      packageOnly: false,
+      fullMatrixRequired: false,
+      message: /full-matrix classifier is inconsistent/u
+    }
+  ]) {
+    assert.throws(
+      () =>
+        validateResults({
+          requiredResults: documentationResults,
+          documentationOnly: configuration.documentationOnly,
+          packageOnly: configuration.packageOnly,
+          fullMatrixRequired: configuration.fullMatrixRequired,
+          releasedJupyterResult: "skipped",
+          releasedJupyterRequired: false,
+          remoteResult: "skipped",
+          remoteRequired: false
+        }),
+      configuration.message
+    );
+  }
 
   for (const jobId of REQUIRED_CI_JOBS) {
     for (const result of [undefined, "failure", "cancelled", "skipped"]) {
@@ -1065,7 +1285,7 @@ test("required CI result validation rejects every absent or non-success blocking
       else candidate[jobId] = result;
       assert.throws(
         () =>
-          requireCiResults({
+          validateResults({
             requiredResults: candidate,
             documentationOnly: false,
             releasedJupyterResult: "skipped",
@@ -1082,7 +1302,7 @@ test("required CI result validation rejects every absent or non-success blocking
     const candidate = { ...documentationResults, [jobId]: "skipped" };
     assert.throws(
       () =>
-        requireCiResults({
+        validateResults({
           requiredResults: candidate,
           documentationOnly: true,
           releasedJupyterResult: "skipped",
@@ -1100,9 +1320,49 @@ test("required CI result validation rejects every absent or non-success blocking
       else candidate[jobId] = result;
       assert.throws(
         () =>
-          requireCiResults({
+          validateResults({
             requiredResults: candidate,
             documentationOnly: true,
+            releasedJupyterResult: "skipped",
+            releasedJupyterRequired: false,
+            remoteResult: "skipped",
+            remoteRequired: false
+          }),
+        new RegExp(`${jobId}=${result ?? "missing"} \\(expected skipped\\)`, "u")
+      );
+    }
+  }
+  for (const jobId of PACKAGE_CI_JOBS) {
+    for (const result of [undefined, "skipped", "failure", "cancelled"]) {
+      const candidate = { ...packageResults };
+      if (result === undefined) delete candidate[jobId];
+      else candidate[jobId] = result;
+      assert.throws(
+        () =>
+          validateResults({
+            requiredResults: candidate,
+            documentationOnly: false,
+            packageOnly: true,
+            releasedJupyterResult: "skipped",
+            releasedJupyterRequired: false,
+            remoteResult: "skipped",
+            remoteRequired: false
+          }),
+        new RegExp(`${jobId}=${result ?? "missing"} \\(expected success\\)`, "u")
+      );
+    }
+  }
+  for (const jobId of FULL_MATRIX_CI_JOBS) {
+    for (const result of [undefined, "success", "failure", "cancelled"]) {
+      const candidate = { ...packageResults };
+      if (result === undefined) delete candidate[jobId];
+      else candidate[jobId] = result;
+      assert.throws(
+        () =>
+          validateResults({
+            requiredResults: candidate,
+            documentationOnly: false,
+            packageOnly: true,
             releasedJupyterResult: "skipped",
             releasedJupyterRequired: false,
             remoteResult: "skipped",
@@ -1118,7 +1378,7 @@ test("required CI result validation rejects every absent or non-success blocking
   ]) {
     assert.throws(
       () =>
-        requireCiResults({
+        validateResults({
           requiredResults: documentationResults,
           documentationOnly: true,
           releasedJupyterResult: "skipped",
@@ -1132,7 +1392,7 @@ test("required CI result validation rejects every absent or non-success blocking
 
   assert.throws(
     () =>
-      requireCiResults({
+      validateResults({
         requiredResults: successes,
         documentationOnly: false,
         releasedJupyterResult: "skipped",
@@ -1144,7 +1404,7 @@ test("required CI result validation rejects every absent or non-success blocking
   );
   assert.throws(
     () =>
-      requireCiResults({
+      validateResults({
         requiredResults: successes,
         documentationOnly: false,
         releasedJupyterResult: "skipped",
@@ -1163,7 +1423,7 @@ test("required CI result validation rejects every absent or non-success blocking
   ]) {
     assert.throws(
       () =>
-        requireCiResults({
+        validateResults({
           requiredResults: successes,
           documentationOnly: false,
           releasedJupyterResult,
@@ -1189,7 +1449,7 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
   assert.equal(job?.["runs-on"], "ubuntu-24.04");
   assert.equal(job?.["timeout-minutes"], 90);
   assert.match(job?.if ?? "", /!cancelled\(\)/u);
-  assert.match(job?.if ?? "", /needs\.classify\.outputs\.documentation_only != 'true'/u);
+  assert.match(job?.if ?? "", /needs\.classify\.outputs\.full_matrix_required == 'true'/u);
   assert.match(job?.if ?? "", /github\.event_name == 'pull_request'/u);
   assert.match(job?.if ?? "", /contains\(github\.event\.pull_request\.labels\.\*\.name, 'acceptance:remote-ssh'\)/u);
 
@@ -1276,16 +1536,22 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
   assert.equal(steps.filter((step) => String(step?.run ?? "").includes("npm run test:remote-workspace --")).length, 1);
 });
 
-test("PR evidence jobs never turn draft work into successful skipped checks", () => {
+test("draft fast feedback cannot satisfy merge protection before same-SHA ready validation", () => {
   for (const relativePath of requiredPullRequestWorkflows) {
     const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+    const workflow = parseYaml(source);
     assert.match(source, /\non:\n {2}pull_request:/u, `${relativePath} must retain its pull-request trigger.`);
-    assert.doesNotMatch(
-      source,
-      /github\.event\.pull_request\.draft/u,
-      `${relativePath} must not skip PR evidence jobs for draft pull requests because GitHub treats skipped jobs as successful checks.`
+    assert.deepEqual(
+      workflow?.on?.pull_request?.types,
+      PULL_REQUEST_ACTIVITY_TYPES,
+      `${relativePath} must rerun when the same head becomes ready or returns to draft.`
     );
+    const classify = workflow?.jobs?.classify?.steps?.find((step) => step?.id === "classify");
+    assert.equal(classify?.env?.CI_PR_DRAFT, "${{ github.event.pull_request.draft }}");
   }
+  const aggregateSource = readFileSync(new URL("./require-ci-results.mjs", import.meta.url), "utf8");
+  assert.match(aggregateSource, /Draft pull request passed fast feedback/u);
+  assert.match(aggregateSource, /ready_for_review reruns its required CI tier/u);
 });
 
 test("routine Dependabot work is grouped, bounded, and staggered without grouping security updates", () => {
