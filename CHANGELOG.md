@@ -26,7 +26,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Upgraded public README and gallery screenshots to a dedicated lossless 2× capture path while leaving ordinary
   visual baselines at 1×. Logical layouts and crops are converted exactly once, every product image declares its
   intrinsic logical dimensions, bounded per-file/total budgets reject accidental bloat or downscaling, and a
-  post-publication check detects browser upscaling across GitHub, Visual Studio Marketplace, and Open VSX.
+  post-publication check detects browser upscaling across GitHub, Visual Studio Marketplace, and Open VSX. The
+  versioned `1.2.1+` promotion contract pre-stats a bounded inventory, validates PNG CRC/order/decode, verifies all 46
+  declared sRGB assets and all 18 rendered README images, and retries only typed stale/unavailable registry
+  observations in fresh bounded browser contexts. Historical recovery below `1.2.1` is unchanged. Main protects
+  preview promotion; stable coverage requires the same reviewed backport on `release/1.x`. Because rendering is
+  observed after publication, failure blocks workflow success but cannot retract already-public bytes.
 - Made obsolete pull-request heads actually cancellable by replacing cancellation-resistant `always()` job and
   evidence-upload guards with `!cancelled()` across CI, CodeQL, and cross-platform acceptance. Failed current heads
   still aggregate and retain safe diagnostics, while superseded native editor runs stop before blocking their replacement.
