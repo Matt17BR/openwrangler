@@ -4,6 +4,7 @@ import {
   DATA_WRANGLER_STUDY_INLINE_ACTION_WINDOW_MS,
   executeDataWranglerNotebookTrialFlow,
   observeNotebookTrialGridScrollState,
+  observeNotebookTrialEngineLabel,
   observeNotebookTrialInlineAction,
   observeNotebookTrialIntegerProfile,
   observeNotebookTrialPointerAction,
@@ -114,6 +115,7 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
     },
     async executeSetup() {
       events.push("setup");
+      clock = 5;
     },
     async executeVerification(phase) {
       events.push(`verify:${phase}`);
@@ -121,7 +123,7 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
     },
     async countExactInlineActions() {
       events.push("baseline-action-count");
-      clock = 1;
+      clock = 10;
       return 0;
     },
     async prepareMeasuredAction() {
@@ -130,19 +132,19 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
     },
     async executeMeasured(immediatelyBeforePointerClick, immediatelyAfterCellCompletion) {
       events.push("run-cell-center-owned");
-      clock = 2;
+      clock = 12;
       events.push("run-cell-boundary-callback");
       immediatelyBeforePointerClick();
       events.push("run-cell-pointer-click");
       events.push("measured-start");
-      clock = 8;
+      clock = 18;
       events.push("measured-completion-boundary");
       immediatelyAfterCellCompletion();
       events.push("measured-complete");
     },
     async waitForInlineAction(immediatelyAfterReady) {
       events.push("inline-wait-start");
-      clock = 10;
+      clock = 20;
       events.push("inline-ready-boundary");
       immediatelyAfterReady();
       events.push("inline-ready");
@@ -154,7 +156,7 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
     },
     async clickInlineAction(immediatelyBeforePointerClick) {
       events.push("open-center-owned");
-      clock = 20;
+      clock = 30;
       events.push("open-boundary-callback");
       immediatelyBeforePointerClick();
       events.push("open-pointer-click");
@@ -162,7 +164,7 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
     },
     async waitForWorkbenchAndScroll(immediatelyAfterReady) {
       events.push("workbench-grid-ready");
-      clock = 30;
+      clock = 40;
       events.push("workbench-ready-boundary");
       immediatelyAfterReady();
       events.push("workbench-scroll-correctness");
@@ -187,10 +189,13 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
           rendererFramePointerUsable: true
         },
         fullShape: "aria-counts",
+        engineLabel: "pandas",
         scroll: {
           input: "pointer-wheel",
           verticalWindowChanged: true,
           horizontalWindowChanged: true,
+          beforeC00: 0,
+          afterC00: 80,
           stableFrames: 2,
           pointerUsableAfterScroll: true
         }
@@ -198,10 +203,11 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
     },
     async restoreFirstRows() {
       events.push("restore-first-rows");
+      return 0;
     },
     async activateProfiles(immediatelyBeforePointerClick) {
       events.push("profile-center-owned");
-      clock = 40;
+      clock = 50;
       events.push("profile-boundary-callback");
       immediatelyBeforePointerClick();
       events.push("profile-pointer-click");
@@ -209,7 +215,7 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
     },
     async profileColumn(index, immediatelyAfterReady) {
       events.push(`profile:c${String(index).padStart(2, "0")}`);
-      clock = 50 + index;
+      clock = 60 + index;
       events.push(`profile-ready-boundary:c${String(index).padStart(2, "0")}`);
       immediatelyAfterReady();
       return {
@@ -218,7 +224,7 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
         missingCount: 0,
         minimumMatched: true,
         maximumMatched: true,
-        distinct: "exact-count",
+        distinct: { semantics: "exact", count: 100_000, percent: null },
         rowValuesIncluded: false
       };
     },
@@ -240,7 +246,7 @@ describe("one-trial notebook comparison flow", () => {
 
     expect(receipt.protocol).toBe(DATA_WRANGLER_NOTEBOOK_TRIAL_PHASE_PROTOCOL);
     expect(receipt.status).toBe("success");
-    expect(receipt.inline.evidenceWindowMs).toBe(DATA_WRANGLER_STUDY_INLINE_ACTION_WINDOW_MS);
+    expect(receipt.inline!.evidenceWindowMs).toBe(DATA_WRANGLER_STUDY_INLINE_ACTION_WINDOW_MS);
     expect(receipt.inline).toMatchObject({
       baselineExactActionCount: 0,
       genericHostHtmlAcceptedAsProductPreview: false,
@@ -251,12 +257,32 @@ describe("one-trial notebook comparison flow", () => {
     expect(receipt.workbench).toMatchObject({
       newlySelectedProductEditor: true,
       fullShape: "aria-counts",
+      engineLabel: "pandas",
       scroll: {
         input: "pointer-wheel",
         verticalWindowChanged: true,
         horizontalWindowChanged: true,
+        beforeC00: 0,
+        afterC00: 80,
+        restoredC00: 0,
         firstRowsRestoredAfterTiming: true
       }
+    });
+    expect(receipt.sourceLoad).toEqual({
+      status: "measured",
+      durationMs: 5,
+      includedInInlineTiming: false,
+      measurementBoundary: "setup-cell-start-to-completion"
+    });
+    expect(receipt.clock.timeOriginUnixMs).toBe(1_750_000_000_010);
+    expect(receipt.clock).toMatchObject({
+      kind: "driver-local-performance-time-origin",
+      authoritativeForStudy: false
+    });
+    expect(receipt.finalization).toEqual({
+      closeAttempted: true,
+      closeStatus: "succeeded",
+      afterVerification: "matched"
     });
     expect(receipt.profiles?.columns).toHaveLength(50);
     expect(receipt.profiles?.columns.map(({ column }) => column)).toEqual(
@@ -283,20 +309,20 @@ describe("one-trial notebook comparison flow", () => {
     expect(() => validateDataWranglerNotebookTrialPhaseReceipt(receipt)).not.toThrow();
   });
 
-  it("allows only fixed-window Data Wrangler Polars exact-action absence to be unsupported", async () => {
+  it("rejects a manifest-declared unavailable trial before kernel selection", async () => {
     const events: string[] = [];
     const base = successDependencies(events);
     const dependencies: NotebookTrialFlowDependencies = {
       ...base,
       product: "data-wrangler",
       study: { ...STUDY, engine: "polars" },
+      publicSurfaceAvailability: "unavailable",
       async executeVerification(phase) {
         events.push(`verify:${phase}`);
         return verification(phase);
       },
-      async waitForInlineAction() {
-        events.push("inline-window-expired-without-exact-action");
-        return null;
+      async prepareMeasuredAction() {
+        throw new Error("unsupported must not prepare a measured action");
       },
       async clickInlineAction() {
         throw new Error("unsupported must not click");
@@ -309,22 +335,10 @@ describe("one-trial notebook comparison flow", () => {
       }
     };
 
-    const receipt = await executeDataWranglerNotebookTrialFlow(dependencies);
-
-    expect(receipt).toMatchObject({
-      product: "data-wrangler",
-      status: "unsupported",
-      unsupportedReason: "data-wrangler-polars-action-absent",
-      workbench: null,
-      profiles: null,
-      milestones: {
-        inlineReadyMs: null,
-        workbenchActionMs: null,
-        profilesCompleteMs: null
-      }
-    });
-    expect(events).toContain("close-product-restore-notebook");
-    expect(events).toContain("verify:after-workbench");
+    await expect(executeDataWranglerNotebookTrialFlow(dependencies)).rejects.toThrow(/skipped before/u);
+    expect(events).toEqual([]);
+    expect(events).not.toContain("close-product-restore-notebook");
+    expect(events).not.toContain("verify:after-workbench");
     expect(events.some((event) => event.startsWith("profile:"))).toBe(false);
   });
 
@@ -334,18 +348,18 @@ describe("one-trial notebook comparison flow", () => {
     const receipt = await executeDataWranglerNotebookTrialFlow({
       ...base,
       executeMeasured(immediatelyBeforePointerClick, immediatelyAfterCellCompletion) {
-        base.setClock(2);
+        base.setClock(12);
         immediatelyBeforePointerClick();
         return new Promise<void>((resolve) => {
           completeMeasured = () => {
-            base.setClock(12);
+            base.setClock(22);
             immediatelyAfterCellCompletion();
             resolve();
           };
         });
       },
       async waitForInlineAction(immediatelyAfterReady) {
-        base.setClock(5);
+        base.setClock(15);
         immediatelyAfterReady();
         completeMeasured();
         return {
@@ -360,14 +374,94 @@ describe("one-trial notebook comparison flow", () => {
     expect(receipt.milestones.inlineReadyMs).toBe(12);
   });
 
-  it("fails a missing exact action for every cell except Data Wrangler Polars", async () => {
+  it("measures a cold source load inside the inline timing boundary", async () => {
+    const base = successDependencies([]);
+    const receipt = await executeDataWranglerNotebookTrialFlow({
+      ...base,
+      study: { ...STUDY, kind: "cold" },
+      async executeVerification(phase) {
+        return verification(phase, "cold");
+      }
+    });
+
+    expect(receipt.status).toBe("success");
+    expect(receipt.sourceLoad).toEqual({
+      status: "measured",
+      durationMs: 6,
+      includedInInlineTiming: true,
+      measurementBoundary: "run-cell-pointer-to-cell-completion"
+    });
+    expect(receipt.sourceLoad.durationMs).toBeLessThanOrEqual(
+      receipt.milestones.inlineReadyMs! - receipt.milestones.inlineActionMs!
+    );
+  });
+
+  it("returns a bounded partial receipt when an available inline action times out", async () => {
     const dependencies = successDependencies([]);
-    await expect(
-      executeDataWranglerNotebookTrialFlow({
-        ...dependencies,
-        waitForInlineAction: async () => null
-      })
-    ).rejects.toThrow(/Only Data Wrangler Polars/u);
+    const receipt = await executeDataWranglerNotebookTrialFlow({
+      ...dependencies,
+      waitForInlineAction: async () => {
+        throw new Error("The measured output did not expose one action within 45000 ms.");
+      }
+    });
+
+    expect(receipt).toMatchObject({
+      status: "failed",
+      failure: { stage: "inline", kind: "timeout" },
+      sourceLoad: {
+        status: "measured",
+        durationMs: 5,
+        includedInInlineTiming: false,
+        measurementBoundary: "setup-cell-start-to-completion"
+      },
+      milestones: { inlineActionMs: 2, inlineReadyMs: null },
+      workbench: null,
+      profiles: null,
+      finalization: { closeAttempted: true, closeStatus: "succeeded", afterVerification: "matched" }
+    });
+    expect(receipt.inline).toMatchObject({ runCellAction: RUN_CELL_ACTION, action: null });
+    expect(() => validateDataWranglerNotebookTrialPhaseReceipt(receipt)).not.toThrow();
+  });
+
+  it("keeps the original timeout when failure cleanup also fails", async () => {
+    const base = successDependencies([]);
+    const receipt = await executeDataWranglerNotebookTrialFlow({
+      ...base,
+      waitForInlineAction: async () => {
+        throw new Error("The measured output did not expose one action within 45000 ms.");
+      },
+      async closeProductEditorAndRestoreNotebook() {
+        throw new Error("close failed");
+      }
+    });
+
+    expect(receipt.failure).toEqual({ stage: "inline", kind: "timeout" });
+    expect(receipt.finalization).toEqual({
+      closeAttempted: true,
+      closeStatus: "failed",
+      afterVerification: "matched"
+    });
+    expect(() => validateDataWranglerNotebookTrialPhaseReceipt(receipt)).not.toThrow();
+  });
+
+  it("keeps completed profile columns when a later profile times out", async () => {
+    const base = successDependencies([]);
+    const receipt = await executeDataWranglerNotebookTrialFlow({
+      ...base,
+      async profileColumn(index, immediatelyAfterReady) {
+        if (index === 3) throw new Error("The public profile did not finish within 135000 ms.");
+        return base.profileColumn(index, immediatelyAfterReady);
+      }
+    });
+
+    expect(receipt).toMatchObject({
+      status: "failed",
+      failure: { stage: "profiles", kind: "timeout" },
+      milestones: { inlineActionMs: 2, workbenchActionMs: 20, workbenchReadyMs: 30, profileActionMs: 40 },
+      profiles: { completedColumnCount: 3 }
+    });
+    expect(receipt.profiles?.columns.map(({ column }) => column)).toEqual(["c00", "c01", "c02"]);
+    expect(() => validateDataWranglerNotebookTrialPhaseReceipt(receipt)).not.toThrow();
   });
 
   it("rejects structurally valid-looking no-op and row-bearing receipt substitutions", async () => {
@@ -381,14 +475,14 @@ describe("one-trial notebook comparison flow", () => {
     expect(() =>
       validateDataWranglerNotebookTrialPhaseReceipt(
         mutate((value) => {
-          value.inline.runCellAction.accessibleName = "Run Cell";
+          value.inline!.runCellAction.accessibleName = "Run Cell";
         })
       )
     ).toThrow(/exact stable public Execute Cell/u);
     expect(() =>
       validateDataWranglerNotebookTrialPhaseReceipt(
         mutate((value) => {
-          value.inline.action!.pointerUsable = false;
+          value.inline!.action!.pointerUsable = false;
         })
       )
     ).toThrow(/pointer-usable/u);
@@ -417,11 +511,29 @@ describe("one-trial notebook comparison flow", () => {
     expect(() =>
       validateDataWranglerNotebookTrialPhaseReceipt(
         mutate((value) => {
-          value.inline.action!.accessibleName = "Open 'study_frame' in Open Wrangler";
+          value.inline!.action!.accessibleName = "Open 'study_frame' in Open Wrangler";
           value.workbench!.action.accessibleName = "Open 'study_frame' in Open Wrangler";
         })
       )
     ).toThrow(/name does not match/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          value.workbench!.engineLabel = "polars";
+        })
+      )
+    ).toThrow(/engine label/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          value.profiles!.columns[0]!.distinct = {
+            semantics: "approximate",
+            lowerBound: 99_000,
+            upperBound: 101_000
+          };
+        })
+      )
+    ).not.toThrow();
     expect(() =>
       validateDataWranglerNotebookTrialPhaseReceipt(
         mutate((value) => {
@@ -546,13 +658,34 @@ describe("notebook public-surface semantic probes", () => {
     installVisibleGeometry(document.querySelector("aside")!);
 
     expect(observeNotebookTrialIntegerProfile({ column: "c00", minimum: 0, maximum: 99_999, rows: 100_000 })).toEqual({
-      distinct: "exact-count"
+      distinct: { semantics: "exact", count: 100_000, percent: null }
+    });
+
+    document.querySelector("p")!.textContent =
+      "Int64 · Missing 0 · Minimum 0 · Maximum 99999 · Distinct approximately 99000-101000";
+    expect(observeNotebookTrialIntegerProfile({ column: "c00", minimum: 0, maximum: 99_999, rows: 100_000 })).toEqual({
+      distinct: { semantics: "approximate", lowerBound: 99_000, upperBound: 101_000 }
+    });
+
+    document.querySelector("p")!.textContent = "Int64 · Missing 0 · Minimum 0 · Maximum 99999 · Distinct ~99.8k";
+    expect(observeNotebookTrialIntegerProfile({ column: "c00", minimum: 0, maximum: 99_999, rows: 100_000 })).toEqual({
+      distinct: { semantics: "approximate-unqualified", displayedPoint: 99_800, displayedUnit: "count" }
     });
 
     document.querySelector("p")!.textContent = "Int64 · Missing 0 · Loading · Minimum 0 · Maximum 99999";
     expect(
       observeNotebookTrialIntegerProfile({ column: "c00", minimum: 0, maximum: 99_999, rows: 100_000 })
     ).toBeNull();
+  });
+
+  it("reads the engine word from a visible public product label", () => {
+    document.body.innerHTML = `<header><span aria-label="Backend: Polars">Polars</span></header>`;
+    installVisibleGeometry(document.querySelector("span")!);
+    expect(observeNotebookTrialEngineLabel()).toBe("polars");
+
+    document.body.innerHTML = `<header>Dataframe</header>`;
+    installVisibleGeometry(document.querySelector("header")!);
+    expect(observeNotebookTrialEngineLabel()).toBe("not-shown");
   });
 
   it("recognizes formatted full-shape labels and keeps tracking a horizontally virtualized canonical grid", async () => {
@@ -584,6 +717,32 @@ describe("notebook public-surface semantic probes", () => {
       horizontalOverflow: 400,
       stableFrames: 2,
       pointerUsable: true
+    });
+  });
+
+  it("reports the first visible c00 value without retaining any other row data", async () => {
+    document.body.innerHTML = `
+      <div role="grid" aria-busy="false">
+        <div role="row"><div role="columnheader">c00</div><div role="columnheader">c01</div></div>
+        <div role="row"><div role="gridcell">0</div><div role="gridcell">1</div></div>
+        <div role="row"><div role="gridcell">1</div><div role="gridcell">2</div></div>
+      </div>`;
+    const root = document.querySelector('[role="grid"]')!;
+    installVisibleGeometry(root);
+    for (const [name, value] of [
+      ["clientHeight", 100],
+      ["scrollHeight", 1_000],
+      ["clientWidth", 100],
+      ["scrollWidth", 500],
+      ["scrollTop", 0],
+      ["scrollLeft", 0]
+    ] as const) {
+      Object.defineProperty(root, name, { configurable: true, value });
+    }
+
+    await expect(observeNotebookTrialGridScrollState()).resolves.toMatchObject({
+      firstVisibleC00: 0,
+      visibleRowSignature: "01|12"
     });
   });
 });
