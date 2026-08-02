@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-const root = resolve(import.meta.dirname, "..");
-const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
-const notices = readFileSync(resolve(root, "THIRD_PARTY_NOTICES.md"), "utf8");
+const APPROVED_PROJECT_LICENSE = Object.freeze({
+  spdx: "MIT",
+  sha256: "1436578df6da613a94af2095a3bc369ec565175f8b32d4d89f7af5cd5de9ca16"
+});
+
 const allowedLicenses = new Set(["MIT", "CC-BY-4.0"]);
 const noticeGroups = [
   {
@@ -23,34 +27,83 @@ const noticeGroups = [
   }
 ];
 
-const errors = [];
-const productionPackages = [];
-for (const [packagePath, metadata] of Object.entries(lock.packages)) {
-  if (!packagePath || metadata.dev) continue;
-  const manifest = JSON.parse(readFileSync(resolve(root, packagePath, "package.json"), "utf8"));
-  const name = manifest.name ?? metadata.name ?? packagePath.split("node_modules/").at(-1);
-  const license = manifest.license ?? metadata.license;
-  productionPackages.push({ name, license });
-  if (!license) errors.push(`${name} does not declare a license.`);
-  else if (!allowedLicenses.has(license)) errors.push(`${name} uses unapproved production license ${license}.`);
+export function inspectProjectLicensePolicy({ packageJsonSource, licenseBytes }) {
+  if (typeof packageJsonSource !== "string" || !Buffer.isBuffer(licenseBytes)) {
+    throw new TypeError("Project license policy requires package metadata and exact license bytes.");
+  }
 
-  const group = noticeGroups.find((candidate) => candidate.matches(name));
-  if (!group) errors.push(`${name} is not assigned to a third-party notice group.`);
-  else if (!notices.includes(group.name)) errors.push(`THIRD_PARTY_NOTICES.md is missing ${group.name}.`);
+  let packageJson;
+  try {
+    packageJson = JSON.parse(packageJsonSource);
+  } catch {
+    return ["package.json must contain valid JSON before its project license can be checked."];
+  }
+
+  const errors = [];
+  if (packageJson.license !== APPROVED_PROJECT_LICENSE.spdx) {
+    errors.push(`package.json must declare the approved ${APPROVED_PROJECT_LICENSE.spdx} project license.`);
+  }
+  const digest = createHash("sha256").update(licenseBytes).digest("hex");
+  if (digest !== APPROVED_PROJECT_LICENSE.sha256) {
+    errors.push("LICENSE must byte-match the reviewed Open Wrangler MIT license text.");
+  }
+  return errors;
 }
 
-for (const required of ["MIT", "CC-BY-4.0", "Pandas", "Polars", "PyArrow", "openpyxl", "fastexcel"]) {
-  if (!notices.includes(required)) errors.push(`THIRD_PARTY_NOTICES.md is missing ${required}.`);
+export function inspectDependencyLicensePolicy({ root, lock, notices }) {
+  if (typeof root !== "string" || typeof lock !== "object" || lock === null || typeof notices !== "string") {
+    throw new TypeError("Dependency license policy requires a root, lockfile object, and notices text.");
+  }
+
+  const errors = [];
+  const productionPackages = [];
+  for (const [packagePath, metadata] of Object.entries(lock.packages)) {
+    if (!packagePath || metadata.dev) continue;
+    const manifest = JSON.parse(readFileSync(resolve(root, packagePath, "package.json"), "utf8"));
+    const name = manifest.name ?? metadata.name ?? packagePath.split("node_modules/").at(-1);
+    const license = manifest.license ?? metadata.license;
+    productionPackages.push({ name, license });
+    if (!license) errors.push(`${name} does not declare a license.`);
+    else if (!allowedLicenses.has(license)) errors.push(`${name} uses unapproved production license ${license}.`);
+
+    const group = noticeGroups.find((candidate) => candidate.matches(name));
+    if (!group) errors.push(`${name} is not assigned to a third-party notice group.`);
+    else if (!notices.includes(group.name)) errors.push(`THIRD_PARTY_NOTICES.md is missing ${group.name}.`);
+  }
+
+  for (const required of ["MIT", "CC-BY-4.0", "Pandas", "Polars", "PyArrow", "openpyxl", "fastexcel"]) {
+    if (!notices.includes(required)) errors.push(`THIRD_PARTY_NOTICES.md is missing ${required}.`);
+  }
+  return { errors, productionPackages };
 }
 
-if (errors.length) throw new Error(`Dependency license policy failed:\n- ${[...new Set(errors)].join("\n- ")}`);
+export function runLicenseCheck(root = resolve(import.meta.dirname, "..")) {
+  const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
+  const notices = readFileSync(resolve(root, "THIRD_PARTY_NOTICES.md"), "utf8");
+  const errors = inspectProjectLicensePolicy({
+    packageJsonSource: readFileSync(resolve(root, "package.json"), "utf8"),
+    licenseBytes: readFileSync(resolve(root, "LICENSE"))
+  });
+  const dependencyPolicy = inspectDependencyLicensePolicy({ root, lock, notices });
+  errors.push(...dependencyPolicy.errors);
 
-const counts = new Map();
-for (const dependency of productionPackages) {
-  counts.set(dependency.license, (counts.get(dependency.license) ?? 0) + 1);
+  if (errors.length) throw new Error(`License policy failed:\n- ${[...new Set(errors)].join("\n- ")}`);
+
+  const counts = new Map();
+  for (const dependency of dependencyPolicy.productionPackages) {
+    counts.set(dependency.license, (counts.get(dependency.license) ?? 0) + 1);
+  }
+  return `Verified the ${APPROVED_PROJECT_LICENSE.spdx} project license and ${
+    dependencyPolicy.productionPackages.length
+  } bundled production packages: ${[...counts.entries()].map(([license, count]) => `${count} ${license}`).join(", ")}.`;
 }
-console.log(
-  `Verified ${productionPackages.length} bundled production packages: ${[...counts.entries()]
-    .map(([license, count]) => `${count} ${license}`)
-    .join(", ")}.`
-);
+
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;
+if (invokedPath === import.meta.url) {
+  try {
+    console.log(runLicenseCheck());
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : "License policy failed."}\n`);
+    process.exitCode = 1;
+  }
+}
