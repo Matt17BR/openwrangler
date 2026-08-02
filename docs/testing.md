@@ -15,7 +15,18 @@ Agent checkout lifecycle has a separate, small contract test:
   recovery, a real child-process mutex conflict, owner handoff, the real CLI finishing from its own checkout, exact
   filesystem and Git-admin receipts, dirty/untracked retention, assume-unchanged and skip-worktree flags, generated
   child and checkout-root replacement, partial Git-admin state, unrelated worktree branches, and the shared Python
-  child environment that prevents routine checks from leaving ignored bytecode in managed checkouts.
+  child environment that prevents routine checks from leaving ignored bytecode in managed checkouts. Bootstrap cases
+  use local disposable remotes only. They cover interrupted attempts, atomic no-replace receipt publication, exact
+  source/child routing, concurrent bootstrap races, source and remote drift, real bare worktree creation, and rejection
+  of shallow, alternate, partial, promisor, symlinked, or hard-linked object stores. A source-advance case proves that
+  create copies the newly committed local base into the bare repository and checks out that exact commit without
+  contacting `origin`.
+- `npm run checkout:bootstrap` is explicit and runs only from the ordinary source checkout. It makes a standalone bare
+  clone from the local source, records a normal `origin` fetch refspec, and runs strict `fsck` without contacting
+  `origin`. Source-side create commands synchronize only the exact locally resolved base commit, then repeat the
+  self-containment and `fsck` checks. Each attempt atomically claims one of eight retained slots. Failed attempts and
+  claimed slots remain available for review; ordinary lifecycle commands fail closed while only partial attempts
+  exist.
 - `npm run clean` removes build output and the known screenshot harness output directories. Run it after inspecting a
   local visual failure so those generated artifacts do not block checkout retirement.
 - `checkout:status` reports the current owner and revision without deciding that a dead process or old timestamp has

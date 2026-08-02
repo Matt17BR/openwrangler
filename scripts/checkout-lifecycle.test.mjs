@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -11,6 +12,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   CheckoutLifecycleError,
+  bootstrapCheckoutManager,
   classifyQuarantineObservation,
   createCheckoutManager,
   normalizeWorktreeRegistryPath
@@ -141,6 +144,356 @@ function create(fixture, slug, options = {}) {
     generatedRoots: options.generatedRoots ?? []
   });
 }
+
+test("bootstrap publishes one self-contained bare manager and routes source and child commands to it", () => {
+  withRepository((fixture) => {
+    const behavior = {};
+    const published = bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      run: fixtureRun(behavior),
+      tokenFactory: () => "1".repeat(32)
+    });
+    assert.equal(git(published.repositoryPath, "rev-parse", "--is-bare-repository"), "true");
+    assert.equal(git(published.repositoryPath, "rev-parse", "--is-shallow-repository"), "false");
+    assert.equal(
+      git(published.repositoryPath, "config", "--get-all", "remote.origin.fetch"),
+      "+refs/heads/*:refs/remotes/origin/*"
+    );
+    assert.equal(existsSync(join(published.repositoryPath, "objects", "info", "alternates")), false);
+    assert.equal(existsSync(join(published.repositoryPath, "shallow")), false);
+    writeFileSync(join(fixture.repository, "README.md"), "source advanced after bootstrap\n");
+    git(fixture.repository, "add", "README.md");
+    git(fixture.repository, "commit", "-q", "-m", "Advance source after bootstrap");
+    const advancedHead = git(fixture.repository, "rev-parse", "HEAD");
+    const fromSource = createCheckoutManager({ repositoryPath: fixture.repository, run: fixtureRun(behavior) });
+    assert.equal(fromSource.paths.root, published.statePath);
+    const first = create(fixture, "bare-source", { manager: fromSource });
+    assert.equal(git(first.checkoutPath, "rev-parse", "HEAD"), advancedHead);
+    assert.equal(defaultManager(fixture).status("bare-source")[0].state, "active");
+
+    const fromChild = createCheckoutManager({ repositoryPath: first.checkoutPath, run: fixtureRun(behavior) });
+    assert.equal(fromChild.paths.root, published.statePath);
+    const second = fromChild.create({
+      slug: "bare-child",
+      branch: "agent/bare-child",
+      ownerTask: "/root/bare-child"
+    });
+    assert.equal(existsSync(join(second.checkoutPath, "README.md")), true);
+    assert.deepEqual(
+      createCheckoutManager({ repositoryPath: second.checkoutPath, run: fixtureRun(behavior) })
+        .status()
+        .map((item) => item.slug),
+      ["bare-child", "bare-source"]
+    );
+    assert.equal(behavior.networkCommands.length, 1);
+    assert.equal(behavior.networkCommands[0].includes(fixture.repository), true);
+    assert.equal(
+      behavior.networkCommands[0].some((item) => /^https?:|^ssh:|^[^/]+@[^:]+:/u.test(item)),
+      false
+    );
+  });
+});
+
+test("ordinary repositories ignore unrelated receipt files beside their Git directory", () => {
+  withRepository((fixture) => {
+    writeFileSync(join(fixture.repository, "receipt.json"), "not manager metadata\n");
+    const checkout = create(fixture, "legacy-route", { manager: defaultManager(fixture) });
+    assert.equal(
+      checkout.checkoutPath,
+      join(fixture.repository, "tmp", "agent-checkouts", "checkouts", "legacy-route")
+    );
+  });
+});
+
+test("legacy alternate-backed managers remain discoverable from their own child worktrees", () => {
+  withRepository((fixture) => {
+    const legacy = join(fixture.root, "legacy-shared");
+    git(fixture.root, "clone", "-q", "--shared", fixture.repository, legacy);
+    const legacyManager = createCheckoutManager({ repositoryPath: legacy });
+    const checkout = legacyManager.create({
+      slug: "legacy-shared",
+      branch: "agent/legacy-shared",
+      ownerTask: "/root/legacy-shared"
+    });
+    const fromChild = createCheckoutManager({ repositoryPath: checkout.checkoutPath });
+    assert.equal(fromChild.paths.root, legacyManager.paths.root);
+    assert.equal(fromChild.status("legacy-shared")[0].state, "active");
+    assert.equal(existsSync(join(legacy, ".git", "objects", "info", "alternates")), true);
+  });
+});
+
+test("routed bare-manager commands ignore inherited Git object and configuration redirects", () => {
+  withRepository((fixture) => {
+    const published = bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "9".repeat(32)
+    });
+    const other = join(fixture.root, "other");
+    mkdirSync(other);
+    git(other, "init", "-q", "-b", "main");
+    const hostileConfig = join(fixture.root, "hostile.gitconfig");
+    writeFileSync(hostileConfig, "[core]\n\thooksPath = /not-used\n");
+    const hostile = {
+      GIT_DIR: join(other, ".git"),
+      GIT_OBJECT_DIRECTORY: join(fixture.root, "missing-objects"),
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: join(other, ".git", "objects"),
+      GIT_CONFIG_GLOBAL: hostileConfig,
+      GIT_REPLACE_REF_BASE: "refs/replace-hostile/"
+    };
+    const previous = Object.fromEntries(Object.keys(hostile).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, hostile);
+    try {
+      const managed = defaultManager(fixture);
+      const checkout = create(fixture, "hostile-git-env", { manager: managed });
+      assert.equal(defaultManager(fixture).status("hostile-git-env")[0].state, "active");
+      assert.equal(createCheckoutManager({ repositoryPath: checkout.checkoutPath }).paths.root, published.statePath);
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+});
+
+test("an interrupted bootstrap is retained, blocks lifecycle routing, and permits a new numbered attempt", () => {
+  withRepository((fixture) => {
+    assert.throws(
+      () =>
+        bootstrapCheckoutManager({
+          repositoryPath: fixture.repository,
+          tokenFactory: () => "2".repeat(32),
+          hooks: { afterBootstrapClone: () => assert.fail("simulated shutdown") }
+        }),
+      /simulated shutdown/u
+    );
+    lifecycleError(() => defaultManager(fixture).status(), "manager-bootstrap-incomplete");
+    const published = bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "3".repeat(32)
+    });
+    const attempts = readdirSync(dirname(published.receiptPath)).sort();
+    assert.deepEqual(attempts, [
+      `00000001-${"2".repeat(32)}`,
+      `00000002-${"3".repeat(32)}`,
+      "current.json",
+      "slot-00000001",
+      "slot-00000002"
+    ]);
+    assert.equal(defaultManager(fixture).paths.root, published.statePath);
+  });
+});
+
+test("concurrent bootstrap attempts retain the loser and leave one usable published manager", () => {
+  withRepository((fixture) => {
+    let winner;
+    lifecycleError(
+      () =>
+        bootstrapCheckoutManager({
+          repositoryPath: fixture.repository,
+          tokenFactory: () => "a".repeat(32),
+          hooks: {
+            afterBootstrapAttemptsRead() {
+              winner = bootstrapCheckoutManager({
+                repositoryPath: fixture.repository,
+                tokenFactory: () => "b".repeat(32)
+              });
+            }
+          }
+        }),
+      "manager-bootstrap-changed"
+    );
+
+    assert.equal(defaultManager(fixture).paths.root, winner.statePath);
+    const checkout = create(fixture, "concurrent-winner", { manager: defaultManager(fixture) });
+    assert.equal(git(checkout.checkoutPath, "rev-parse", "HEAD"), git(fixture.repository, "rev-parse", "HEAD"));
+    assert.equal(defaultManager(fixture).status("concurrent-winner")[0].state, "active");
+    assert.deepEqual(readdirSync(dirname(winner.receiptPath)).sort(), [
+      `00000001-${"b".repeat(32)}`,
+      `00000002-${"a".repeat(32)}`,
+      "current.json",
+      "slot-00000001",
+      "slot-00000002"
+    ]);
+  });
+});
+
+test("the eighth bootstrap slot is claimed atomically under a concurrent start", () => {
+  withRepository((fixture) => {
+    for (let attempt = 1; attempt <= 7; attempt += 1) {
+      assert.throws(
+        () =>
+          bootstrapCheckoutManager({
+            repositoryPath: fixture.repository,
+            tokenFactory: () => attempt.toString(16).repeat(32),
+            hooks: { afterBootstrapClone: () => assert.fail(`retain attempt ${attempt}`) }
+          }),
+        new RegExp(`retain attempt ${attempt}`, "u")
+      );
+    }
+
+    let winner;
+    lifecycleError(
+      () =>
+        bootstrapCheckoutManager({
+          repositoryPath: fixture.repository,
+          tokenFactory: () => "a".repeat(32),
+          hooks: {
+            afterBootstrapAttemptsRead() {
+              winner = bootstrapCheckoutManager({
+                repositoryPath: fixture.repository,
+                tokenFactory: () => "b".repeat(32)
+              });
+            }
+          }
+        }),
+      "manager-bootstrap-attempts-exhausted"
+    );
+
+    assert.equal(defaultManager(fixture).paths.root, winner.statePath);
+    const journal = readdirSync(dirname(winner.receiptPath));
+    assert.equal(journal.filter((name) => /^slot-/u.test(name)).length, 8);
+    assert.equal(journal.filter((name) => /^[0-9]{8}-/u.test(name)).length, 8);
+    assert.equal(journal.length, 17);
+    const checkout = create(fixture, "eighth-slot-winner", { manager: defaultManager(fixture) });
+    assert.equal(defaultManager(fixture).status("eighth-slot-winner")[0].state, "active");
+    assert.equal(git(checkout.checkoutPath, "rev-parse", "HEAD"), git(fixture.repository, "rev-parse", "HEAD"));
+  });
+});
+
+test("atomic receipt publication never replaces a raced destination", () => {
+  withRepository((fixture) => {
+    let planted;
+    lifecycleError(
+      () =>
+        bootstrapCheckoutManager({
+          repositoryPath: fixture.repository,
+          tokenFactory: () => "4".repeat(32),
+          hooks: {
+            beforeBootstrapPublish({ attemptPath }) {
+              planted = join(dirname(attemptPath), "current.json");
+              writeFileSync(planted, "", { flag: "wx", mode: 0o600 });
+            }
+          }
+        }),
+      "manager-bootstrap-changed"
+    );
+    assert.equal(readFileSync(planted, "utf8"), "");
+    assert.equal(existsSync(join(dirname(planted), `00000001-${"4".repeat(32)}`, "receipt.json")), true);
+  });
+});
+
+test("bootstrap rejects credential-bearing remotes without echoing the credential", () => {
+  withRepository((fixture) => {
+    git(fixture.repository, "remote", "set-url", "origin", "https://user:secret@example.invalid/repository.git");
+    assert.throws(
+      () => bootstrapCheckoutManager({ repositoryPath: fixture.repository }),
+      (error) =>
+        error instanceof CheckoutLifecycleError &&
+        error.code === "unsafe-manager-remote" &&
+        !error.message.includes("secret")
+    );
+  });
+});
+
+for (const corruption of ["alternates", "shallow", "partial", "promisor", "hardlink", "symlink"]) {
+  test(`bootstrap rejects ${corruption} manager state before publication`, () => {
+    withRepository((fixture) => {
+      lifecycleError(
+        () =>
+          bootstrapCheckoutManager({
+            repositoryPath: fixture.repository,
+            tokenFactory: () => "5".repeat(32),
+            hooks: {
+              afterBootstrapClone({ repositoryPath, source }) {
+                if (corruption === "alternates") {
+                  writeFileSync(
+                    join(repositoryPath, "objects", "info", "alternates"),
+                    `${join(source.commonGitDirectory, "objects")}\n`
+                  );
+                } else if (corruption === "shallow") {
+                  writeFileSync(join(repositoryPath, "shallow"), `${git(source.topLevel, "rev-parse", "HEAD")}\n`);
+                } else if (corruption === "partial") {
+                  git(repositoryPath, "config", "extensions.partialClone", "origin");
+                } else if (corruption === "promisor") {
+                  writeFileSync(join(repositoryPath, "objects", "pack", "fixture.promisor"), "promisor\n");
+                } else if (corruption === "hardlink") {
+                  linkSync(join(source.topLevel, "README.md"), join(repositoryPath, "objects", "hardlinked-object"));
+                } else {
+                  symlinkSync(join(source.topLevel, "README.md"), join(repositoryPath, "objects", "linked-object"));
+                }
+              }
+            }
+          }),
+        "unsafe-manager-bootstrap"
+      );
+      const attempts = join(fixture.repository, "tmp", "agent-checkouts", "manager", "attempts");
+      assert.equal(existsSync(join(attempts, "current.json")), false);
+    });
+  });
+}
+
+test("bootstrap reruns strict fsck after the final pre-publication hook", () => {
+  withRepository((fixture) => {
+    lifecycleError(
+      () =>
+        bootstrapCheckoutManager({
+          repositoryPath: fixture.repository,
+          tokenFactory: () => "8".repeat(32),
+          hooks: {
+            beforeBootstrapPublish({ repositoryPath }) {
+              const pack = readdirSync(join(repositoryPath, "objects", "pack")).find((name) => name.endsWith(".pack"));
+              assert.notEqual(pack, undefined);
+              writeFileSync(join(repositoryPath, "objects", "pack", pack), "corrupt pack\n");
+            }
+          }
+        }),
+      "manager-bootstrap-command-failed"
+    );
+    assert.equal(
+      existsSync(join(fixture.repository, "tmp", "agent-checkouts", "manager", "attempts", "current.json")),
+      false
+    );
+  });
+});
+
+test("bootstrap rejects source-ref drift and routed managers reject remote and state identity drift", () => {
+  withRepository((fixture) => {
+    lifecycleError(
+      () =>
+        bootstrapCheckoutManager({
+          repositoryPath: fixture.repository,
+          tokenFactory: () => "6".repeat(32),
+          hooks: {
+            beforeBootstrapPublish() {
+              writeFileSync(join(fixture.repository, "README.md"), "new source commit\n");
+              git(fixture.repository, "add", "README.md");
+              git(fixture.repository, "commit", "-q", "-m", "Move source during bootstrap");
+            }
+          }
+        }),
+      "manager-bootstrap-drift"
+    );
+  });
+
+  withRepository((fixture) => {
+    const published = bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "7".repeat(32)
+    });
+    git(published.repositoryPath, "config", "remote.origin.url", "https://example.invalid/drift.git");
+    lifecycleError(() => defaultManager(fixture).status(), "manager-bootstrap-drift");
+    git(published.repositoryPath, "config", "remote.origin.url", fixture.remote);
+    git(fixture.repository, "remote", "set-url", "origin", "https://example.invalid/source-drift.git");
+    lifecycleError(() => defaultManager(fixture).status(), "manager-bootstrap-drift");
+    git(fixture.repository, "remote", "set-url", "origin", fixture.remote);
+    const retained = `${published.statePath}.retained`;
+    renameSync(published.statePath, retained);
+    mkdirSync(published.statePath, { mode: 0o700 });
+    lifecycleError(() => defaultManager(fixture).status(), "manager-bootstrap-drift");
+    assert.equal(existsSync(join(retained, "entries")), true);
+  });
+});
 
 function entry(fixture, slug, root = fixture.managerRoot) {
   return entryHistory(fixture, slug, root).at(-1);

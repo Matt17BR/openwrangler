@@ -88,6 +88,16 @@ sound weightier. Commit subjects and PR titles should name the observable result
 
 ## Managed agent checkouts
 
+From the ordinary source checkout, run `npm run checkout:bootstrap` once before creating new managed checkouts. It seeds
+a private bare repository without object alternates or partial-clone state and records manager state below the ignored
+`tmp/agent-checkouts/manager` path. A completed numbered attempt is published by an atomic no-replace hard link to one
+fixed receipt. Before starting, each attempt atomically claims one of eight retained slots, so concurrent starts cannot
+overfill the journal. Interrupted attempts and claimed slots stay in place for review. Do not remove or rewrite either
+by hand. Source commands and worktrees made by that bare repository must resolve the same exact receipt. Older manager
+worktrees keep using their own Git common directory when no bootstrap receipt exists. Before a source command creates a
+worktree, it copies the exact locally resolved base commit into the bare manager without contacting `origin`, then
+rechecks the self-contained object store. A command from an existing child uses that child's current commit as before.
+
 The coordinating agent creates task isolation with
 `npm run checkout:create -- <slug> --owner <canonical-task-name>`. Add `--generated-root node_modules`, or another
 exact top-level directory, only when Git ignores that directory and it is absent from the new checkout. The manager
