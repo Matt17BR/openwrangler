@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -40,6 +50,35 @@ function fixture() {
       rmSync(root, { recursive: true, force: true });
     }
   };
+}
+
+function corruptFirstDataDescriptor(path) {
+  const bytes = readFileSync(path);
+  let endOffset = -1;
+  for (let index = bytes.length - 22; index >= Math.max(0, bytes.length - 65_557); index -= 1) {
+    if (bytes.readUInt32LE(index) === 0x06054b50 && index + 22 + bytes.readUInt16LE(index + 20) === bytes.length) {
+      endOffset = index;
+      break;
+    }
+  }
+  assert.notEqual(endOffset, -1);
+  let cursor = bytes.readUInt32LE(endOffset + 16);
+  while (cursor < endOffset) {
+    assert.equal(bytes.readUInt32LE(cursor), 0x02014b50);
+    const flags = bytes.readUInt16LE(cursor + 8);
+    if ((flags & 0x0008) !== 0) {
+      const compressedBytes = bytes.readUInt32LE(cursor + 20);
+      const localOffset = bytes.readUInt32LE(cursor + 42);
+      const dataOffset = localOffset + 30 + bytes.readUInt16LE(localOffset + 26) + bytes.readUInt16LE(localOffset + 28);
+      const descriptorOffset = dataOffset + compressedBytes;
+      assert.equal(bytes.readUInt32LE(descriptorOffset), 0x08074b50);
+      bytes[descriptorOffset + 4] ^= 0xff;
+      writeFileSync(path, bytes);
+      return;
+    }
+    cursor += 46 + bytes.readUInt16LE(cursor + 28) + bytes.readUInt16LE(cursor + 30) + bytes.readUInt16LE(cursor + 32);
+  }
+  assert.fail("Expected the real VSCE package to contain a data descriptor.");
 }
 
 test("the neutral driver has its own identity and imports only the notebook journey", () => {
@@ -187,11 +226,45 @@ test("the journey proof follows the complete local graph and rejects product or 
     ['require("./index.js");\n', /neutral test\/shared roots/u],
     ['void import("../../../dist/" + "extension.js");\n', /unsupported module loader/u],
     ['require("node:net");\n', /unapproved external package node:net/u],
-    ['module["require"]("../../../di" + "st/extension.js");\n', /indirect module-loader reference/u],
-    ['module.require("../../../di" + "st/extension.js");\n', /unsupported module-loader reference/u],
+    [
+      'module["require"]("../../../di" + "st/extension.js");\n',
+      /unsupported CommonJS module reference|indirect code or module-loader capability/u
+    ],
+    [
+      'module.require("../../../di" + "st/extension.js");\n',
+      /unsupported CommonJS module reference|indirect code or module-loader capability/u
+    ],
     ["const load = require; load('../../../di' + 'st/extension.js');\n", /unsupported module-loader reference/u],
-    ['process.getBuiltinModule("module");\n', /unsupported module-loader reference/u],
-    ['eval("1");\n', /unsupported module-loader reference/u]
+    [
+      'process.getBuiltinModule("module");\n',
+      /unsupported process capability|indirect code or module-loader capability/u
+    ],
+    ['eval("1");\n', /dynamic-code capability/u],
+    [
+      'module.constructor.constructor("return process")();\n',
+      /unsupported CommonJS module reference|indirect code or module-loader capability/u
+    ],
+    [
+      'const key = "con" + "structor"; (() => {})[key]("return process")();\n',
+      /indirect code or module-loader capability/u
+    ],
+    [
+      'const prefix = "con"; const key = prefix + "structor"; (() => {})[key]("return process")();\n',
+      /indirect code or module-loader capability/u
+    ],
+    ['(async () => {}).constructor("return import(\\"node:fs\\")")();\n', /indirect code or module-loader capability/u],
+    ['(function* () {}).constructor("return process")();\n', /indirect code or module-loader capability/u],
+    ['(async function* () {}).constructor("return process")();\n', /indirect code or module-loader capability/u],
+    ['const indirect = require; indirect("node:fs");\n', /unsupported module-loader reference/u],
+    ['const indirect = eval; indirect("require(\\"node:fs\\")");\n', /dynamic-code capability/u],
+    ['global.require("node:fs");\n', /dynamic-code capability|indirect code or module-loader capability/u],
+    ['globalThis.process.getBuiltinModule("node:fs");\n', /indirect code or module-loader capability/u],
+    [
+      'const world = globalThis; world["pro" + "cess"].mainModule.require("node:fs");\n',
+      /indirect code or module-loader capability/u
+    ],
+    ['Reflect.get(() => {}, "constructor")("return process")();\n', /dynamic-code capability/u],
+    ['void import("node:fs");\n', /unsupported module loader/u]
   ]) {
     const value = fixture();
     try {
@@ -208,16 +281,59 @@ test("the journey proof follows the complete local graph and rejects product or 
   }
 });
 
+test("packaging rejects bytes that are not the inspected driver archive", async () => {
+  const value = fixture();
+  try {
+    await assert.rejects(
+      () =>
+        packageDataWranglerComparisonDriver(
+          { directory: value.driver, testModule: value.testModule, vsixPath: value.vsix },
+          {
+            async createVsix(options) {
+              writeFileSync(options.packagePath, Buffer.from("not-a-vsix"), { flag: "wx", mode: 0o600 });
+            }
+          }
+        ),
+      /no exact bounded end record/u
+    );
+  } finally {
+    value.cleanup();
+  }
+});
+
+test("packaging rejects a malformed descriptor in a real VSCE archive", async () => {
+  const value = fixture();
+  try {
+    const { createVSIX } = await import("@vscode/vsce");
+    await assert.rejects(
+      () =>
+        packageDataWranglerComparisonDriver(
+          { directory: value.driver, testModule: value.testModule, vsixPath: value.vsix },
+          {
+            async createVsix(options) {
+              await createVSIX(options);
+              corruptFirstDataDescriptor(options.packagePath);
+            }
+          }
+        ),
+      /malformed data descriptor/u
+    );
+  } finally {
+    value.cleanup();
+  }
+});
+
 test("the driver is packaged once, revalidated, and installed through the editor CLI", async () => {
   const value = fixture();
   try {
     let packageOptions;
+    const { createVSIX } = await import("@vscode/vsce");
     const receipt = await packageDataWranglerComparisonDriver(
       { directory: value.driver, testModule: value.testModule, vsixPath: value.vsix },
       {
         async createVsix(options) {
           packageOptions = options;
-          writeFileSync(options.packagePath, Buffer.from("neutral-driver-vsix"), { flag: "wx", mode: 0o600 });
+          return createVSIX(options);
         }
       }
     );
@@ -231,6 +347,12 @@ test("the driver is packaged once, revalidated, and installed through the editor
     });
     assert.equal(revalidateDataWranglerComparisonDriver(receipt), receipt);
     assert.match(receipt.vsix.sha256, /^[0-9a-f]{64}$/u);
+    const archivePaths = receipt.vsix.archive.entries.map((entry) => entry.path);
+    assert.equal(
+      archivePaths.includes("extension/journey/test/extensionHost/dataWranglerComparisonNotebookTrial.js"),
+      true
+    );
+    assert.equal(archivePaths.includes("extension/node_modules/playwright-core/package.json"), true);
     assert.deepEqual(createDataWranglerComparisonDriverStudyReceipt(receipt), {
       extensionId: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.extensionId,
       version: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.version,
@@ -241,8 +363,10 @@ test("the driver is packaged once, revalidated, and installed through the editor
           inode: receipt.vsix.identity.ino,
           sizeBytes: receipt.vsix.bytes,
           mtimeNs: receipt.vsix.identity.mtimeNs
-        }
+        },
+        archive: receipt.vsix.archive
       },
+      packageFiles: receipt.packageFiles,
       runtimeDependencies: {
         playwrightCore: { ...receipt.runtimeDependencies.playwrightCore }
       },
@@ -256,6 +380,7 @@ test("the driver is packaged once, revalidated, and installed through the editor
     });
 
     const profile = createDataWranglerComparisonDriverProfile({
+      product: "open-wrangler",
       editor: { name: "VS Code", cliPath: "/editor/code" },
       userData: "/private/user-data",
       extensions: "/private/extensions",
@@ -265,6 +390,7 @@ test("the driver is packaged once, revalidated, and installed through the editor
       inventoryLabel: "neutral driver inventory"
     });
     let invocation;
+    let installedSha256;
     const result = await installDataWranglerComparisonDriver(
       {
         receipt,
@@ -273,22 +399,55 @@ test("the driver is packaged once, revalidated, and installed through the editor
       {
         async runCli(options, commandOptions) {
           invocation = { options, commandOptions };
+          const installPath = options.args[options.args.indexOf("--install-extension") + 1];
+          assert.notEqual(installPath, value.vsix);
+          assert.equal(Number(lstatSync(installPath, { bigint: true }).mode & 0o777n), 0o400);
+          installedSha256 = (await import("node:crypto"))
+            .createHash("sha256")
+            .update(readFileSync(installPath))
+            .digest("hex");
           return { stdout: "installed\n", stderr: "" };
         }
       }
     );
     assert.deepEqual(result, { stdout: "installed\n", stderr: "" });
+    assert.equal(installedSha256, receipt.vsix.sha256);
     assert.deepEqual(invocation.commandOptions, { timeoutMs: 60_000 });
-    assert.deepEqual(invocation.options.args, [
+    assert.deepEqual(invocation.options.args.slice(0, 5), [
       "--user-data-dir",
       "/private/user-data",
       "--extensions-dir",
       "/private/extensions",
-      "--install-extension",
-      value.vsix,
-      "--force",
-      "--no-sandbox"
+      "--install-extension"
     ]);
+    assert.deepEqual(invocation.options.args.slice(6), ["--force", "--no-sandbox"]);
+    assert.equal(existsSync(invocation.options.args[5]), false);
+
+    const originalBytes = readFileSync(value.vsix);
+    let racedInstallSha256;
+    let racedInstallPath;
+    await assert.rejects(
+      () =>
+        installDataWranglerComparisonDriver(
+          { receipt, profile },
+          {
+            async runCli(options) {
+              racedInstallPath = options.args[options.args.indexOf("--install-extension") + 1];
+              racedInstallSha256 = (await import("node:crypto"))
+                .createHash("sha256")
+                .update(readFileSync(racedInstallPath))
+                .digest("hex");
+              renameSync(value.vsix, `${value.vsix}.replaced`);
+              writeFileSync(value.vsix, originalBytes, { flag: "wx", mode: 0o600 });
+              return { stdout: "installed\n", stderr: "" };
+            }
+          }
+        ),
+      /changed after it was captured/u
+    );
+    assert.equal(racedInstallSha256, receipt.vsix.sha256);
+    assert.notEqual(racedInstallPath, value.vsix);
+    assert.equal(existsSync(racedInstallPath), false);
   } finally {
     value.cleanup();
   }
@@ -298,12 +457,13 @@ test("an existing self-contained driver recovers after process state and source-
   const value = fixture();
   try {
     let packageCount = 0;
+    const { createVSIX } = await import("@vscode/vsce");
     const receipt = await packageDataWranglerComparisonDriver(
       { directory: value.driver, testModule: value.testModule, vsixPath: value.vsix },
       {
         async createVsix(options) {
           packageCount += 1;
-          writeFileSync(options.packagePath, Buffer.from("neutral-driver-vsix"), { flag: "wx", mode: 0o600 });
+          return createVSIX(options);
         }
       }
     );
@@ -333,13 +493,24 @@ test("an existing self-contained driver recovers after process state and source-
         }),
       /does not match the immutable study manifest/u
     );
-    const recovered = recoverDataWranglerComparisonDriver({
-      directory: value.driver,
-      vsixPath: value.vsix,
-      expectedDriver
-    });
-    assert.notEqual(recovered, receipt);
-    assert.deepEqual(createDataWranglerComparisonDriverStudyReceipt(recovered), expectedDriver);
+    const expectedPath = resolve(value.root, "expected-driver.json");
+    writeFileSync(expectedPath, JSON.stringify(expectedDriver), { flag: "wx", mode: 0o600 });
+    const moduleUrl = new URL("./data-wrangler-comparison-driver.mjs", import.meta.url).href;
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--no-addons",
+        "-e",
+        `import { readFileSync } from "node:fs"; import { recoverDataWranglerComparisonDriver, createDataWranglerComparisonDriverStudyReceipt } from ${JSON.stringify(moduleUrl)}; const [directory, vsixPath, expectedPath] = process.argv.slice(1); const expectedDriver = JSON.parse(readFileSync(expectedPath, "utf8")); const recovered = recoverDataWranglerComparisonDriver({ directory, vsixPath, expectedDriver }); process.stdout.write(JSON.stringify(createDataWranglerComparisonDriverStudyReceipt(recovered)));`,
+        value.driver,
+        value.vsix,
+        expectedPath
+      ],
+      { encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 30_000 }
+    );
+    assert.equal(child.status, 0, child.stderr);
+    assert.deepEqual(JSON.parse(child.stdout), expectedDriver);
     const after = watchedPaths.map((path) => {
       const metadata = lstatSync(path, { bigint: true });
       return {
@@ -352,6 +523,25 @@ test("an existing self-contained driver recovers after process state and source-
     });
     assert.deepEqual(after, before);
     assert.equal(packageCount, 1);
+
+    const originalBytes = readFileSync(value.vsix);
+    let reboundDuringRead = false;
+    assert.throws(
+      () =>
+        revalidateDataWranglerComparisonDriver(receipt, {
+          readFile(target, ...args) {
+            const contents = readFileSync(target, ...args);
+            if (typeof target === "number" && !reboundDuringRead) {
+              reboundDuringRead = true;
+              renameSync(value.vsix, `${value.vsix}.during-read`);
+              writeFileSync(value.vsix, originalBytes, { flag: "wx", mode: 0o600 });
+            }
+            return contents;
+          }
+        }),
+      /changed while its descriptor was read/u
+    );
+    assert.equal(reboundDuringRead, true);
   } finally {
     value.cleanup();
   }
@@ -360,14 +550,11 @@ test("an existing self-contained driver recovers after process state and source-
 test("both measured arms run with the private driver, one product, and no development path", async () => {
   const value = fixture();
   try {
-    const receipt = await packageDataWranglerComparisonDriver(
-      { directory: value.driver, testModule: value.testModule, vsixPath: value.vsix },
-      {
-        async createVsix(options) {
-          writeFileSync(options.packagePath, Buffer.from("neutral-driver-vsix"), { flag: "wx", mode: 0o600 });
-        }
-      }
-    );
+    const receipt = await packageDataWranglerComparisonDriver({
+      directory: value.driver,
+      testModule: value.testModule,
+      vsixPath: value.vsix
+    });
     const expectedDriver = createDataWranglerComparisonDriverStudyReceipt(receipt);
     const products = [
       {
@@ -398,6 +585,7 @@ test("both measured arms run with the private driver, one product, and no develo
       let phaseDependencies;
       let inventoryReads = 0;
       const profile = createDataWranglerComparisonDriverProfile({
+        product: arm.product,
         editor: { name: "VS Code", executable: "/editor/code" },
         userData: "/private/user-data",
         extensions: "/private/extensions",
@@ -457,6 +645,7 @@ test("both measured arms run with the private driver, one product, and no develo
       { extensionId: "Matt17BR.openwrangler", version: "1.2.1" }
     ];
     const failedProfile = createDataWranglerComparisonDriverProfile({
+      product: "open-wrangler",
       editor: { name: "VS Code", executable: "/editor/code" },
       userData: "/private/failure-user-data",
       extensions: "/private/failure-extensions",
@@ -522,6 +711,7 @@ test("both measured arms run with the private driver, one product, and no develo
     );
 
     const profile = createDataWranglerComparisonDriverProfile({
+      product: "open-wrangler",
       editor: { name: "VS Code" },
       userData: "/private/user-data",
       extensions: "/private/extensions",
@@ -544,6 +734,22 @@ test("both measured arms run with the private driver, one product, and no develo
           { installDriver() {}, readInventory() {}, runPhase() {} }
         ),
       /cannot override their sealed editor value/u
+    );
+
+    await assert.rejects(
+      () =>
+        runDataWranglerComparisonNeutralDriverPhase(
+          {
+            product: "data-wrangler",
+            receipt,
+            expectedDriver,
+            expectedExtensions: failedExtensions,
+            profile,
+            editorPhaseOptions: {}
+          },
+          { installDriver() {}, readInventory() {}, runPhase() {} }
+        ),
+      /product does not match its sealed editor profile/u
     );
   } finally {
     value.cleanup();

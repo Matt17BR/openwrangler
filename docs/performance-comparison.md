@@ -36,15 +36,22 @@ Polars surface, that cell is unavailable rather than replaced with a different w
 - Both arms load the same `openwrangler-study.notebook-comparison-driver@1.0.0` test extension. It runs the public
   notebook journey and contains no Open Wrangler product code. Its VSIX carries a copy of the audited journey graph
   and the lockfile version of Playwright Core, so it does not load test code or packages from the repository. The
-  manifest records the VSIX hash and file identity, every journey-module hash, and the Playwright tree hash. The
-  runner checks those receipts before and after each trial. After a restart it reopens the same files and checks them
-  again; it never rebuilds the driver in the middle of a study. The rest of the common inventory is Python 2026.4.0,
+  packager reads the completed ZIP and requires exactly its manifest, extension entrypoint, journey modules,
+  Playwright files, and the two VSIX metadata files. The manifest records that complete archive inventory, every
+  journey-module hash, and every Playwright file hash. Installation uses a private read-only copy of the verified
+  archive. The runner checks the source files, archive, and installed-extension inventory before and after each
+  trial. After a restart it reopens the same files and checks them again; it never rebuilds the driver in the middle
+  of a study. The source-graph check is an integrity and review boundary, not a JavaScript sandbox. It rejects normal
+  dynamic-code and module-loader escape routes, while treating the reviewed repository, compiler, Node, VS Code, and
+  named packages as trusted inputs. The rest of the common inventory is Python 2026.4.0,
   Jupyter 2025.9.1, Debugpy 2026.6.0, Pylance 2026.3.1, Python Environments 1.36.0, Jupyter Keymap 1.1.2, Jupyter
   Renderers 1.3.0, Jupyter Cell Tags 0.1.9, and Jupyter Slideshow 0.1.6. Each arm adds exactly one measured product.
   Inventory is checked before and after every trial. The Data Wrangler arm must not load or activate
   `Matt17BR.openwrangler`.
 - Separate disposable user-data and extension directories per product. Public first-use consent and runtime selection
-  are completed in a configured-only template using tiny synthetic data; no extension storage is fabricated.
+  are completed in a configured-only template using tiny synthetic data; no extension storage is fabricated. The
+  sealed editor profile names its product. The trial builder must separately match cold runs to that product's
+  configured-only template receipt and warm runs to its warmed-template receipt.
 - Telemetry, updates, repository discovery, workspace recommendations, and unrelated extensions are disabled.
 - Headless Ozone only. The harness may not fall back to the current desktop, normal profiles, or user workspaces.
 - One manifest-pinned CPU affinity, AC-power state, CPU governor set, display geometry, and zoom for the whole run.

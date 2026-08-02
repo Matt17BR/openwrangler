@@ -1,11 +1,17 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
   cpSync,
   existsSync,
+  fstatSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -15,6 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { inflateRawSync } from "node:zlib";
 import ts from "typescript";
 import {
   describeEditorAcceptanceHarnessFailure,
@@ -32,6 +39,10 @@ export { DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION } from "./data-wrangler-compa
 const DRIVER_SOURCE_MAX_BYTES = 64 * 1024;
 const DRIVER_MANIFEST_MAX_BYTES = 8 * 1024;
 const DRIVER_VSIX_MAX_BYTES = 32 * 1024 * 1024;
+const DRIVER_VSIX_MAX_ENTRIES = 324;
+const DRIVER_VSIX_ENTRY_MAX_BYTES = 8 * 1024 * 1024;
+const DRIVER_VSIX_UNCOMPRESSED_MAX_BYTES = 32 * 1024 * 1024;
+const DRIVER_VSIX_ENTRY_NAME_MAX_BYTES = 512;
 const JOURNEY_GRAPH_MAX_FILES = 64;
 const JOURNEY_GRAPH_MAX_BYTES = 2 * 1024 * 1024;
 const PLAYWRIGHT_GRAPH_MAX_FILES = 256;
@@ -54,7 +65,34 @@ const ALLOWED_EXTERNAL_IMPORTS = new Set([
   "playwright-core",
   "vscode"
 ]);
-const FORBIDDEN_LOADER_NAMES = new Set(["Function", "_load", "createRequire", "eval", "getBuiltinModule", "require"]);
+const FORBIDDEN_CODE_CAPABILITIES = new Set([
+  "AsyncFunction",
+  "AsyncGeneratorFunction",
+  "Function",
+  "GeneratorFunction",
+  "Proxy",
+  "Reflect",
+  "WebAssembly",
+  "eval",
+  "global"
+]);
+const FORBIDDEN_CAPABILITY_PROPERTIES = new Set([
+  "Function",
+  "__proto__",
+  "_load",
+  "binding",
+  "constructor",
+  "createRequire",
+  "dlopen",
+  "eval",
+  "getBuiltinModule",
+  "mainModule",
+  "process",
+  "prototype",
+  "require"
+]);
+const ALLOWED_PROCESS_PROPERTIES = new Set(["env", "getuid", "hrtime", "pid", "platform"]);
+const DRIVER_ARCHIVE_METADATA_PATHS = new Set(["[Content_Types].xml", "extension.vsixmanifest"]);
 const PRODUCT_ENTRYPOINT_MARKERS = Object.freeze([
   "Matt17BR.openwrangler",
   "openwrangler_runtime",
@@ -216,11 +254,99 @@ function resolveRelativeJourneyImport(importer, specifier, root, exists) {
   return matches[0];
 }
 
+function staticStringExpression(node, bindings, depth = 0) {
+  if (depth > 16) return undefined;
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isParenthesizedExpression(node)) return staticStringExpression(node.expression, bindings, depth + 1);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = staticStringExpression(node.left, bindings, depth + 1);
+    const right = staticStringExpression(node.right, bindings, depth + 1);
+    if (left !== undefined && right !== undefined && left.length + right.length <= 256) return left + right;
+  }
+  if (ts.isIdentifier(node) && bindings.has(node.text)) return bindings.get(node.text);
+  return undefined;
+}
+
+function immutableStaticStringBindings(sourceFile) {
+  const declarations = new Map();
+  const visit = (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      (node.parent.flags & ts.NodeFlags.Const) !== 0
+    ) {
+      const candidates = declarations.get(node.name.text) ?? [];
+      candidates.push(node.initializer);
+      declarations.set(node.name.text, candidates);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  const bindings = new Map();
+  for (let pass = 0; pass < 16; pass += 1) {
+    let changed = false;
+    for (const [name, candidates] of declarations) {
+      if (bindings.has(name) || candidates.length !== 1) continue;
+      const value = staticStringExpression(candidates[0], bindings);
+      if (value !== undefined && value.length <= 256) {
+        bindings.set(name, value);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return bindings;
+}
+
+function accessedPropertyName(node, bindings) {
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (ts.isElementAccessExpression(node)) return staticStringExpression(node.argumentExpression, bindings);
+  return undefined;
+}
+
+function isExactModuleExportsReference(node) {
+  return (
+    ts.isIdentifier(node) &&
+    node.text === "module" &&
+    ts.isPropertyAccessExpression(node.parent) &&
+    node.parent.expression === node &&
+    node.parent.name.text === "exports" &&
+    ts.isBinaryExpression(node.parent.parent) &&
+    node.parent.parent.left === node.parent &&
+    node.parent.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  );
+}
+
+function isTypeScriptHasOwnPropertyHelper(node) {
+  return (
+    ts.isPropertyAccessExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "Object" &&
+    node.name.text === "prototype" &&
+    ts.isPropertyAccessExpression(node.parent) &&
+    node.parent.expression === node &&
+    node.parent.name.text === "hasOwnProperty" &&
+    ts.isPropertyAccessExpression(node.parent.parent) &&
+    node.parent.parent.expression === node.parent &&
+    node.parent.parent.name.text === "call" &&
+    ts.isCallExpression(node.parent.parent.parent) &&
+    node.parent.parent.parent.expression === node.parent.parent
+  );
+}
+
+/**
+ * Enumerate the reviewed CommonJS graph and reject JavaScript's ordinary escape
+ * hatches from that graph. This is a source-review boundary, not a sandbox for
+ * hostile JavaScript: the repository, TypeScript compiler, Node runtime, VS Code,
+ * and the explicitly allowed packages remain trusted inputs.
+ */
 function staticCommonJsDependencies(source, label) {
   const sourceFile = ts.createSourceFile(label, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
   if (sourceFile.parseDiagnostics.length > 0) {
     fail(`${label} is not parseable JavaScript.`);
   }
+  const staticBindings = immutableStaticStringBindings(sourceFile);
   const specifiers = [];
   const visit = (node) => {
     if (
@@ -237,9 +363,8 @@ function staticCommonJsDependencies(source, label) {
       }
       specifiers.push(node.arguments[0].text);
     }
-    if (ts.isIdentifier(node) && FORBIDDEN_LOADER_NAMES.has(node.text)) {
+    if (ts.isIdentifier(node) && node.text === "require") {
       const directStaticRequire =
-        node.text === "require" &&
         ts.isCallExpression(node.parent) &&
         node.parent.expression === node &&
         node.parent.arguments.length === 1 &&
@@ -249,11 +374,38 @@ function staticCommonJsDependencies(source, label) {
       }
     }
     if (
-      ts.isElementAccessExpression(node) &&
-      ts.isStringLiteral(node.argumentExpression) &&
-      FORBIDDEN_LOADER_NAMES.has(node.argumentExpression.text)
+      ts.isIdentifier(node) &&
+      node.text === "module" &&
+      !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) &&
+      !isExactModuleExportsReference(node)
     ) {
-      fail(`${label} contains an indirect module-loader reference.`);
+      fail(`${label} contains an unsupported CommonJS module reference.`);
+    }
+    if (ts.isIdentifier(node) && ["__dirname", "__filename"].includes(node.text)) {
+      fail(`${label} contains an unrecorded local-path capability.`);
+    }
+    if (ts.isIdentifier(node) && FORBIDDEN_CODE_CAPABILITIES.has(node.text)) {
+      fail(`${label} contains a dynamic-code capability.`);
+    }
+    if (ts.isIdentifier(node) && node.text === "process") {
+      const parent = node.parent;
+      const property =
+        (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === node
+          ? accessedPropertyName(parent, staticBindings)
+          : undefined;
+      if (property === undefined || !ALLOWED_PROCESS_PROPERTIES.has(property)) {
+        fail(`${label} contains an unsupported process capability.`);
+      }
+    }
+    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+      const property = accessedPropertyName(node, staticBindings);
+      if (
+        property !== undefined &&
+        FORBIDDEN_CAPABILITY_PROPERTIES.has(property) &&
+        !(property === "prototype" && isTypeScriptHasOwnPropertyHelper(node))
+      ) {
+        fail(`${label} contains an indirect code or module-loader capability (${property}).`);
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -510,12 +662,13 @@ export function writeDataWranglerComparisonDriver(directory, testModule, depende
   });
   const manifest = driverManifest();
   const source = driverSource();
+  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   validateDataWranglerComparisonDriverBundle({ manifest, source });
   let created = false;
   try {
     hooks.mkdir(directory, { mode: 0o700 });
     created = true;
-    hooks.writeFile(resolve(directory, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`, {
+    hooks.writeFile(resolve(directory, "package.json"), manifestText, {
       encoding: "utf8",
       flag: "wx",
       mode: 0o600
@@ -565,7 +718,15 @@ export function writeDataWranglerComparisonDriver(directory, testModule, depende
     if (JSON.stringify(copiedGraph) !== JSON.stringify(journeyGraph)) {
       fail("The packaged comparison journey does not match the proven source graph.");
     }
-    return Object.freeze({ directory, journeyGraph: copiedGraph, ...receipt });
+    return Object.freeze({
+      directory,
+      journeyGraph: copiedGraph,
+      packageFiles: Object.freeze({
+        packageJsonSha256: createHash("sha256").update(manifestText, "utf8").digest("hex"),
+        extensionSourceSha256: createHash("sha256").update(source, "utf8").digest("hex")
+      }),
+      ...receipt
+    });
   } catch (error) {
     if (created) {
       try {
@@ -638,7 +799,8 @@ function capturePlaywrightRuntime(root, hooks) {
     version: packageJson.version,
     fileCount: files.length,
     totalBytes,
-    treeSha256: createHash("sha256").update(JSON.stringify(files), "utf8").digest("hex")
+    treeSha256: createHash("sha256").update(JSON.stringify(files), "utf8").digest("hex"),
+    files: Object.freeze(files.map((entry) => Object.freeze(entry)))
   });
 }
 
@@ -732,35 +894,295 @@ async function createDriverVsix(options) {
   return createVSIX(options);
 }
 
-function captureDriverVsix(path, hooks) {
-  const metadata = hooks.lstat(path, { bigint: true });
-  const canonicalPath = hooks.realpath(path);
+const driverArchiveCrcTable = new Uint32Array(256);
+for (let index = 0; index < driverArchiveCrcTable.length; index += 1) {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = (value & 1) === 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  driverArchiveCrcTable[index] = value >>> 0;
+}
+
+function driverArchiveCrc32(bytes) {
+  let value = 0xffffffff;
+  for (const byte of bytes) value = (driverArchiveCrcTable[(value ^ byte) & 0xff] ^ (value >>> 8)) >>> 0;
+  return (value ^ 0xffffffff) >>> 0;
+}
+
+function decodeDriverArchiveName(bytes) {
+  let value;
+  try {
+    value = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (error) {
+    throw new Error("Comparison-driver VSIX contains an invalid UTF-8 entry name.", { cause: error });
+  }
   if (
-    canonicalPath !== path ||
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size <= 0n ||
-    metadata.size > BigInt(DRIVER_VSIX_MAX_BYTES) ||
-    (typeof process.getuid === "function" && metadata.uid !== BigInt(process.getuid()))
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > DRIVER_VSIX_ENTRY_NAME_MAX_BYTES ||
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    /[\0\r\n]/u.test(value) ||
+    value.split("/").some((part) => part.length === 0 || part === "." || part === "..")
   ) {
-    fail("The packaged comparison driver must be one bounded current-user-owned VSIX.");
+    fail("Comparison-driver VSIX contains an unsafe entry name.");
   }
-  const bytes = hooks.readFile(path);
-  if (!Buffer.isBuffer(bytes) || bytes.length !== Number(metadata.size)) {
-    fail("The packaged comparison driver could not be read completely.");
+  return value;
+}
+
+function inspectDataWranglerComparisonDriverArchive(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > DRIVER_VSIX_MAX_BYTES) {
+    fail("Comparison-driver VSIX bytes are missing or exceed their fixed bound.");
   }
+  const endSignature = 0x06054b50;
+  let endOffset = -1;
+  for (let index = bytes.length - 22; index >= Math.max(0, bytes.length - 65_557); index -= 1) {
+    if (bytes.readUInt32LE(index) === endSignature && index + 22 + bytes.readUInt16LE(index + 20) === bytes.length) {
+      endOffset = index;
+      break;
+    }
+  }
+  if (endOffset < 0) fail("Comparison-driver VSIX has no exact bounded end record.");
+  const disk = bytes.readUInt16LE(endOffset + 4);
+  const centralDisk = bytes.readUInt16LE(endOffset + 6);
+  const entriesOnDisk = bytes.readUInt16LE(endOffset + 8);
+  const entryCount = bytes.readUInt16LE(endOffset + 10);
+  const centralBytes = bytes.readUInt32LE(endOffset + 12);
+  const centralOffset = bytes.readUInt32LE(endOffset + 16);
+  if (
+    disk !== 0 ||
+    centralDisk !== 0 ||
+    entriesOnDisk !== entryCount ||
+    entryCount < 1 ||
+    entryCount > DRIVER_VSIX_MAX_ENTRIES ||
+    centralOffset + centralBytes !== endOffset ||
+    bytes.readUInt16LE(endOffset + 20) !== 0
+  ) {
+    fail("Comparison-driver VSIX uses an unsupported split, ZIP64, or oversized directory.");
+  }
+  const entries = [];
+  const paths = new Set();
+  const localRanges = [];
+  let totalCompressedBytes = 0;
+  let totalUncompressedBytes = 0;
+  let cursor = centralOffset;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (cursor + 46 > endOffset || bytes.readUInt32LE(cursor) !== 0x02014b50) {
+      fail("Comparison-driver VSIX has a malformed central directory.");
+    }
+    const versionMadeBy = bytes.readUInt16LE(cursor + 4);
+    const flags = bytes.readUInt16LE(cursor + 8);
+    const method = bytes.readUInt16LE(cursor + 10);
+    const expectedCrc = bytes.readUInt32LE(cursor + 16);
+    const compressedBytes = bytes.readUInt32LE(cursor + 20);
+    const uncompressedBytes = bytes.readUInt32LE(cursor + 24);
+    const nameBytes = bytes.readUInt16LE(cursor + 28);
+    const extraBytes = bytes.readUInt16LE(cursor + 30);
+    const commentBytes = bytes.readUInt16LE(cursor + 32);
+    const startDisk = bytes.readUInt16LE(cursor + 34);
+    const externalAttributes = bytes.readUInt32LE(cursor + 38);
+    const localOffset = bytes.readUInt32LE(cursor + 42);
+    const nextCursor = cursor + 46 + nameBytes + extraBytes + commentBytes;
+    if (
+      nextCursor > endOffset ||
+      ((versionMadeBy >>> 8) & 0xff) !== 3 ||
+      ((externalAttributes >>> 16) & 0o170000) !== 0o100000 ||
+      startDisk !== 0 ||
+      extraBytes !== 0 ||
+      commentBytes !== 0 ||
+      (flags & ~0x0808) !== 0 ||
+      (flags & 0x0800) === 0 ||
+      (method !== 0 && method !== 8) ||
+      compressedBytes > DRIVER_VSIX_MAX_BYTES ||
+      uncompressedBytes > DRIVER_VSIX_ENTRY_MAX_BYTES
+    ) {
+      fail("Comparison-driver VSIX contains an unsupported or oversized ZIP entry.");
+    }
+    const path = decodeDriverArchiveName(bytes.subarray(cursor + 46, cursor + 46 + nameBytes));
+    if (paths.has(path)) fail("Comparison-driver VSIX contains a duplicate entry.");
+    paths.add(path);
+
+    if (localOffset + 30 > centralOffset || bytes.readUInt32LE(localOffset) !== 0x04034b50) {
+      fail("Comparison-driver VSIX has a malformed local entry header.");
+    }
+    const localFlags = bytes.readUInt16LE(localOffset + 6);
+    const localMethod = bytes.readUInt16LE(localOffset + 8);
+    const localCrc = bytes.readUInt32LE(localOffset + 14);
+    const localCompressedBytes = bytes.readUInt32LE(localOffset + 18);
+    const localUncompressedBytes = bytes.readUInt32LE(localOffset + 22);
+    const localNameBytes = bytes.readUInt16LE(localOffset + 26);
+    const localExtraBytes = bytes.readUInt16LE(localOffset + 28);
+    const dataOffset = localOffset + 30 + localNameBytes + localExtraBytes;
+    const dataEnd = dataOffset + compressedBytes;
+    if (
+      localFlags !== flags ||
+      localMethod !== method ||
+      localNameBytes !== nameBytes ||
+      localExtraBytes !== 0 ||
+      dataEnd > centralOffset ||
+      !bytes.subarray(localOffset + 30, localOffset + 30 + localNameBytes).equals(Buffer.from(path, "utf8"))
+    ) {
+      fail("Comparison-driver VSIX central and local entry records disagree.");
+    }
+    let localEnd = dataEnd;
+    if ((flags & 0x0008) !== 0) {
+      if (
+        localCrc !== 0 ||
+        localCompressedBytes !== 0 ||
+        localUncompressedBytes !== 0 ||
+        dataEnd + 16 > centralOffset ||
+        bytes.readUInt32LE(dataEnd) !== 0x08074b50 ||
+        bytes.readUInt32LE(dataEnd + 4) !== expectedCrc ||
+        bytes.readUInt32LE(dataEnd + 8) !== compressedBytes ||
+        bytes.readUInt32LE(dataEnd + 12) !== uncompressedBytes
+      ) {
+        fail("Comparison-driver VSIX has a malformed data descriptor.");
+      }
+      localEnd += 16;
+    } else if (
+      localCrc !== expectedCrc ||
+      localCompressedBytes !== compressedBytes ||
+      localUncompressedBytes !== uncompressedBytes
+    ) {
+      fail("Comparison-driver VSIX local sizes or CRC disagree with its central directory.");
+    }
+    const compressed = bytes.subarray(dataOffset, dataEnd);
+    let contents;
+    try {
+      contents =
+        method === 0
+          ? Buffer.from(compressed)
+          : inflateRawSync(compressed, { maxOutputLength: DRIVER_VSIX_ENTRY_MAX_BYTES });
+    } catch (error) {
+      throw new Error(`Comparison-driver VSIX entry ${path} could not be decompressed safely.`, { cause: error });
+    }
+    if (contents.length !== uncompressedBytes || driverArchiveCrc32(contents) !== expectedCrc) {
+      fail("Comparison-driver VSIX entry bytes do not match their size and CRC.");
+    }
+    totalCompressedBytes += compressedBytes;
+    totalUncompressedBytes += uncompressedBytes;
+    if (totalCompressedBytes > DRIVER_VSIX_MAX_BYTES || totalUncompressedBytes > DRIVER_VSIX_UNCOMPRESSED_MAX_BYTES) {
+      fail("Comparison-driver VSIX exceeds its aggregate byte budget.");
+    }
+    localRanges.push([localOffset, localEnd]);
+    entries.push(Object.freeze({ path, sha256: createHash("sha256").update(contents).digest("hex") }));
+    cursor = nextCursor;
+  }
+  if (cursor !== endOffset) fail("Comparison-driver VSIX central directory has trailing data.");
+  localRanges.sort((left, right) => left[0] - right[0]);
+  if (localRanges[0][0] !== 0 || localRanges.at(-1)[1] !== centralOffset) {
+    fail("Comparison-driver VSIX contains data outside its exact local-entry inventory.");
+  }
+  for (let index = 1; index < localRanges.length; index += 1) {
+    if (localRanges[index][0] !== localRanges[index - 1][1]) {
+      fail("Comparison-driver VSIX local entries overlap or leave unaccounted data.");
+    }
+  }
+  entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+  return Object.freeze({
+    entryCount: entries.length,
+    totalUncompressedBytes,
+    inventorySha256: createHash("sha256").update(JSON.stringify(entries), "utf8").digest("hex"),
+    entries: Object.freeze(entries)
+  });
+}
+
+function expectedDriverArchiveEntries({ packageFiles, journeyGraph, runtimeDependencies }) {
+  return [
+    { path: "extension/package.json", sha256: packageFiles.packageJsonSha256 },
+    { path: "extension/extension.js", sha256: packageFiles.extensionSourceSha256 },
+    ...journeyGraph.modules.map((entry) => ({
+      path: `extension/journey/${entry.path}`,
+      sha256: entry.sha256
+    })),
+    ...runtimeDependencies.playwrightCore.files.map((entry) => ({
+      path: `extension/node_modules/playwright-core/${entry.path}`,
+      sha256: entry.sha256
+    }))
+  ].sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+}
+
+function assertDriverArchiveMatchesSource(archive, sourceReceipt) {
+  const expected = expectedDriverArchiveEntries(sourceReceipt);
+  const metadata = archive.entries.filter((entry) => DRIVER_ARCHIVE_METADATA_PATHS.has(entry.path));
+  const packaged = archive.entries.filter((entry) => !DRIVER_ARCHIVE_METADATA_PATHS.has(entry.path));
+  if (
+    metadata.length !== DRIVER_ARCHIVE_METADATA_PATHS.size ||
+    metadata.some((entry) => !DRIVER_ARCHIVE_METADATA_PATHS.has(entry.path)) ||
+    JSON.stringify(packaged) !== JSON.stringify(expected) ||
+    archive.entryCount !== expected.length + DRIVER_ARCHIVE_METADATA_PATHS.size
+  ) {
+    fail("Comparison-driver VSIX inventory does not exactly match its audited source graph.");
+  }
+  return archive;
+}
+
+function readDriverVsixSnapshot(path, hooks) {
+  let descriptor;
+  try {
+    descriptor = hooks.open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const before = hooks.fstat(descriptor, { bigint: true });
+    const namedBefore = hooks.lstat(path, { bigint: true });
+    const canonicalBefore = hooks.realpath(path);
+    if (
+      canonicalBefore !== path ||
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      !namedBefore.isFile() ||
+      namedBefore.isSymbolicLink() ||
+      namedBefore.nlink !== 1n ||
+      namedBefore.dev !== before.dev ||
+      namedBefore.ino !== before.ino ||
+      before.size <= 0n ||
+      before.size > BigInt(DRIVER_VSIX_MAX_BYTES) ||
+      (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
+    ) {
+      fail("The packaged comparison driver must be one bounded current-user-owned VSIX.");
+    }
+    const bytes = hooks.readFile(descriptor);
+    const after = hooks.fstat(descriptor, { bigint: true });
+    const namedAfter = hooks.lstat(path, { bigint: true });
+    const canonicalAfter = hooks.realpath(path);
+    if (
+      !Buffer.isBuffer(bytes) ||
+      bytes.length !== Number(before.size) ||
+      canonicalAfter !== path ||
+      !sameMetadata(before, after) ||
+      !sameMetadata(namedBefore, namedAfter) ||
+      namedAfter.dev !== after.dev ||
+      namedAfter.ino !== after.ino
+    ) {
+      fail("The packaged comparison driver changed while its descriptor was read.");
+    }
+    return Object.freeze({ bytes, metadata: after });
+  } finally {
+    if (descriptor !== undefined) hooks.close(descriptor);
+  }
+}
+
+function captureDriverVsix(path, hooks, sourceReceipt) {
+  if (
+    !isRecord(sourceReceipt) ||
+    !isRecord(sourceReceipt.packageFiles) ||
+    !isRecord(sourceReceipt.runtimeDependencies)
+  ) {
+    fail("Comparison-driver VSIX inspection requires its audited source receipt.");
+  }
+  const snapshot = readDriverVsixSnapshot(path, hooks);
+  const metadata = snapshot.metadata;
+  const archive = assertDriverArchiveMatchesSource(
+    inspectDataWranglerComparisonDriverArchive(snapshot.bytes),
+    sourceReceipt
+  );
   return Object.freeze({
     path,
-    bytes: bytes.length,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    bytes: snapshot.bytes.length,
+    sha256: createHash("sha256").update(snapshot.bytes).digest("hex"),
     identity: Object.freeze({
       dev: metadata.dev.toString(),
       ino: metadata.ino.toString(),
       size: metadata.size.toString(),
       mtimeNs: metadata.mtimeNs.toString(),
       ctimeNs: metadata.ctimeNs.toString()
-    })
+    }),
+    archive
   });
 }
 
@@ -815,14 +1237,20 @@ export async function packageDataWranglerComparisonDriver(
     allowMissingRepository: true
   });
   const hooks = {
+    close: fileDependencies.close ?? closeSync,
+    fstat: fileDependencies.fstat ?? fstatSync,
     lstat: fileDependencies.lstat ?? lstatSync,
+    open: fileDependencies.open ?? openSync,
     readFile: fileDependencies.readFile ?? readFileSync,
     realpath: fileDependencies.realpath ?? realpathSync
   };
-  const vsix = captureDriverVsix(vsixPath, hooks);
-  const receipt = Object.freeze({
+  const sourceReceipt = Object.freeze({
     ...written,
-    runtimeDependencies: Object.freeze({ playwrightCore }),
+    runtimeDependencies: Object.freeze({ playwrightCore })
+  });
+  const vsix = captureDriverVsix(vsixPath, hooks, sourceReceipt);
+  const receipt = Object.freeze({
+    ...sourceReceipt,
     vsix
   });
   driverVsixReceipts.add(receipt);
@@ -834,26 +1262,29 @@ export function revalidateDataWranglerComparisonDriver(receipt, dependencies = {
     fail("Comparison-driver revalidation requires an authentic packaged receipt.");
   }
   const hooks = {
+    close: dependencies.close ?? closeSync,
+    fstat: dependencies.fstat ?? fstatSync,
     lstat: dependencies.lstat ?? lstatSync,
+    open: dependencies.open ?? openSync,
     readFile: dependencies.readFile ?? readFileSync,
     readdir: dependencies.readdir ?? readdirSync,
     realpath: dependencies.realpath ?? realpathSync
   };
   validateCanonicalDirectory(receipt.directory, "Comparison-driver directory", hooks);
-  const manifest = JSON.parse(
-    readStableOwnedFile(
-      resolve(receipt.directory, "package.json"),
-      DRIVER_MANIFEST_MAX_BYTES,
-      "Comparison-driver manifest",
-      hooks
-    ).toString("utf8")
+  const manifestBytes = readStableOwnedFile(
+    resolve(receipt.directory, "package.json"),
+    DRIVER_MANIFEST_MAX_BYTES,
+    "Comparison-driver manifest",
+    hooks
   );
-  const source = readStableOwnedFile(
+  const manifest = JSON.parse(manifestBytes.toString("utf8"));
+  const sourceBytes = readStableOwnedFile(
     resolve(receipt.directory, "extension.js"),
     DRIVER_SOURCE_MAX_BYTES,
     "Comparison-driver source",
     hooks
-  ).toString("utf8");
+  );
+  const source = sourceBytes.toString("utf8");
   const bundle = validateDataWranglerComparisonDriverBundle({
     manifest,
     source
@@ -865,11 +1296,14 @@ export function revalidateDataWranglerComparisonDriver(receipt, dependencies = {
     realpath: hooks.realpath
   });
   const playwrightCore = capturePlaywrightRuntime(resolve(receipt.directory, "node_modules", "playwright-core"), hooks);
-  const current = captureDriverVsix(receipt.vsix.path, hooks);
+  const current = captureDriverVsix(receipt.vsix.path, hooks, receipt);
   if (
     bundle.manifestSha256 !== receipt.manifestSha256 ||
     bundle.sourceSha256 !== receipt.sourceSha256 ||
     JSON.stringify(journeyGraph) !== JSON.stringify(receipt.journeyGraph) ||
+    !isRecord(receipt.packageFiles) ||
+    createHash("sha256").update(manifestBytes).digest("hex") !== receipt.packageFiles.packageJsonSha256 ||
+    createHash("sha256").update(sourceBytes).digest("hex") !== receipt.packageFiles.extensionSourceSha256 ||
     !isRecord(receipt.runtimeDependencies) ||
     !isRecord(receipt.runtimeDependencies.playwrightCore) ||
     playwrightCore.version !== receipt.runtimeDependencies.playwrightCore.version ||
@@ -879,7 +1313,8 @@ export function revalidateDataWranglerComparisonDriver(receipt, dependencies = {
     typeof receipt.runtimeDependencies.playwrightCore.lockIntegrity !== "string" ||
     current.sha256 !== receipt.vsix.sha256 ||
     current.bytes !== receipt.vsix.bytes ||
-    JSON.stringify(current.identity) !== JSON.stringify(receipt.vsix.identity)
+    JSON.stringify(current.identity) !== JSON.stringify(receipt.vsix.identity) ||
+    JSON.stringify(current.archive) !== JSON.stringify(receipt.vsix.archive)
   ) {
     fail("The packaged comparison driver changed after it was captured.");
   }
@@ -900,10 +1335,20 @@ function studyReceiptFromDriverReceipt(receipt) {
         inode: receipt.vsix.identity.ino,
         sizeBytes: receipt.vsix.bytes,
         mtimeNs: receipt.vsix.identity.mtimeNs
+      }),
+      archive: Object.freeze({
+        ...receipt.vsix.archive,
+        entries: Object.freeze(receipt.vsix.archive.entries.map((entry) => Object.freeze({ ...entry })))
       })
     }),
+    packageFiles: Object.freeze({ ...receipt.packageFiles }),
     runtimeDependencies: Object.freeze({
-      playwrightCore: Object.freeze({ ...receipt.runtimeDependencies.playwrightCore })
+      playwrightCore: Object.freeze({
+        ...receipt.runtimeDependencies.playwrightCore,
+        files: Object.freeze(
+          receipt.runtimeDependencies.playwrightCore.files.map((entry) => Object.freeze({ ...entry }))
+        )
+      })
     }),
     journeyGraph: Object.freeze({
       entry: receipt.journeyGraph.entry,
@@ -938,26 +1383,35 @@ export function recoverDataWranglerComparisonDriver(
     /[\0\r\n]/u.test(vsixPath) ||
     basename(vsixPath) !== "notebook-comparison-driver.vsix" ||
     !isRecord(expectedDriver) ||
+    !isRecord(expectedDriver.packageFiles) ||
     !isRecord(expectedDriver.runtimeDependencies) ||
     !isRecord(expectedDriver.runtimeDependencies.playwrightCore)
   ) {
     fail("Comparison-driver recovery requires explicit canonical paths and an immutable study receipt.");
   }
-  const hooks = { lstat, readFile, readdir, realpath };
-  const manifest = JSON.parse(
-    readStableOwnedFile(
-      resolve(directory, "package.json"),
-      DRIVER_MANIFEST_MAX_BYTES,
-      "Recovered comparison-driver manifest",
-      hooks
-    ).toString("utf8")
+  const hooks = {
+    close: closeSync,
+    fstat: fstatSync,
+    lstat,
+    open: openSync,
+    readFile,
+    readdir,
+    realpath
+  };
+  const manifestBytes = readStableOwnedFile(
+    resolve(directory, "package.json"),
+    DRIVER_MANIFEST_MAX_BYTES,
+    "Recovered comparison-driver manifest",
+    hooks
   );
-  const source = readStableOwnedFile(
+  const manifest = JSON.parse(manifestBytes.toString("utf8"));
+  const sourceBytes = readStableOwnedFile(
     resolve(directory, "extension.js"),
     DRIVER_SOURCE_MAX_BYTES,
     "Recovered comparison-driver source",
     hooks
-  ).toString("utf8");
+  );
+  const source = sourceBytes.toString("utf8");
   const bundle = validateDataWranglerComparisonDriverBundle({ manifest, source });
   const journeyGraph = provePackagedJourneyGraph(directory, { exists, lstat, readFile, realpath });
   const capturedPlaywright = capturePlaywrightRuntime(resolve(directory, "node_modules", "playwright-core"), hooks);
@@ -972,12 +1426,19 @@ export function recoverDataWranglerComparisonDriver(
     ...capturedPlaywright,
     lockIntegrity: expectedPlaywright.lockIntegrity
   });
-  const vsix = captureDriverVsix(vsixPath, hooks);
-  const receipt = Object.freeze({
+  const sourceReceipt = Object.freeze({
     directory,
     journeyGraph,
     ...bundle,
-    runtimeDependencies: Object.freeze({ playwrightCore }),
+    packageFiles: Object.freeze({
+      packageJsonSha256: createHash("sha256").update(manifestBytes).digest("hex"),
+      extensionSourceSha256: createHash("sha256").update(sourceBytes).digest("hex")
+    }),
+    runtimeDependencies: Object.freeze({ playwrightCore })
+  });
+  const vsix = captureDriverVsix(vsixPath, hooks, sourceReceipt);
+  const receipt = Object.freeze({
+    ...sourceReceipt,
     vsix
   });
   if (canonicalJson(studyReceiptFromDriverReceipt(receipt)) !== canonicalJson(expectedDriver)) {
@@ -989,6 +1450,7 @@ export function recoverDataWranglerComparisonDriver(
 }
 
 export function createDataWranglerComparisonDriverProfile({
+  product,
   editor,
   userData,
   extensions,
@@ -998,6 +1460,7 @@ export function createDataWranglerComparisonDriverProfile({
   inventoryLabel
 }) {
   if (
+    (product !== "open-wrangler" && product !== "data-wrangler") ||
     !isRecord(editor) ||
     typeof editor.name !== "string" ||
     editor.name.length === 0 ||
@@ -1029,6 +1492,7 @@ export function createDataWranglerComparisonDriverProfile({
     fail("Comparison-driver profile is malformed.");
   }
   const profile = Object.freeze({
+    product,
     editor: Object.freeze({ ...editor }),
     userData,
     extensions,
@@ -1050,32 +1514,108 @@ function requireComparisonDriverProfile(profile) {
 
 export async function installDataWranglerComparisonDriver(
   { receipt, profile },
-  { runCli = runBoundedEditorCliCommand } = {}
+  {
+    chmod = chmodSync,
+    close = closeSync,
+    fsync = fsyncSync,
+    fstat = fstatSync,
+    lstat = lstatSync,
+    mkdtemp = mkdtempSync,
+    open = openSync,
+    readFile = readFileSync,
+    realpath = realpathSync,
+    remove = rmSync,
+    runCli = runBoundedEditorCliCommand,
+    writeFile = writeFileSync
+  } = {}
 ) {
   revalidateDataWranglerComparisonDriver(receipt);
   requireComparisonDriverProfile(profile);
   if (typeof runCli !== "function") {
     fail("Comparison-driver installation received malformed editor inputs.");
   }
-  const result = await runCli(
-    {
-      editor: profile.editor,
-      args: [
-        "--user-data-dir",
-        profile.userData,
-        "--extensions-dir",
-        profile.extensions,
-        "--install-extension",
-        receipt.vsix.path,
-        "--force",
-        ...profile.sandboxArgs
-      ],
-      environment: profile.environment,
-      label: profile.installLabel
-    },
-    { timeoutMs: 60_000 }
+  const hooks = { chmod, close, fsync, fstat, lstat, mkdtemp, open, readFile, realpath, remove, writeFile };
+  validateCanonicalDirectory(dirname(receipt.vsix.path), "Comparison-driver VSIX parent", hooks);
+  const original = readDriverVsixSnapshot(receipt.vsix.path, hooks);
+  const originalArchive = assertDriverArchiveMatchesSource(
+    inspectDataWranglerComparisonDriverArchive(original.bytes),
+    receipt
   );
-  revalidateDataWranglerComparisonDriver(receipt);
+  if (
+    createHash("sha256").update(original.bytes).digest("hex") !== receipt.vsix.sha256 ||
+    JSON.stringify(originalArchive) !== JSON.stringify(receipt.vsix.archive)
+  ) {
+    fail("The comparison-driver VSIX changed before its private install snapshot was created.");
+  }
+  const installRoot = hooks.mkdtemp(resolve(dirname(receipt.vsix.path), ".ow-driver-install-"));
+  const installPath = resolve(installRoot, "notebook-comparison-driver.vsix");
+  let descriptor;
+  let result;
+  let primaryError;
+  try {
+    descriptor = hooks.open(
+      installPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+    hooks.writeFile(descriptor, original.bytes);
+    hooks.fsync(descriptor);
+    hooks.close(descriptor);
+    descriptor = undefined;
+    hooks.chmod(installPath, 0o400);
+    const before = captureDriverVsix(installPath, hooks, receipt);
+    if (
+      before.sha256 !== receipt.vsix.sha256 ||
+      JSON.stringify(before.archive) !== JSON.stringify(receipt.vsix.archive)
+    ) {
+      fail("The private comparison-driver install snapshot does not match its audited VSIX.");
+    }
+    result = await runCli(
+      {
+        editor: profile.editor,
+        args: [
+          "--user-data-dir",
+          profile.userData,
+          "--extensions-dir",
+          profile.extensions,
+          "--install-extension",
+          installPath,
+          "--force",
+          ...profile.sandboxArgs
+        ],
+        environment: profile.environment,
+        label: profile.installLabel
+      },
+      { timeoutMs: 60_000 }
+    );
+    const after = captureDriverVsix(installPath, hooks, receipt);
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      fail("The private comparison-driver install snapshot changed while the editor used it.");
+    }
+    revalidateDataWranglerComparisonDriver(receipt);
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        hooks.close(descriptor);
+      } catch (error) {
+        primaryError =
+          primaryError === undefined
+            ? error
+            : new AggregateError([primaryError, error], "Comparison-driver installation and descriptor close failed.");
+      }
+    }
+    try {
+      hooks.remove(installRoot, { recursive: true, force: true });
+    } catch (error) {
+      primaryError =
+        primaryError === undefined
+          ? error
+          : new AggregateError([primaryError, error], "Comparison-driver installation and cleanup failed.");
+    }
+  }
+  if (primaryError !== undefined) throw primaryError;
   return result;
 }
 
@@ -1151,6 +1691,9 @@ export async function runDataWranglerComparisonNeutralDriverPhase(
     !isRecord(editorPhaseOptions)
   ) {
     fail("Neutral comparison phase requires driver installation, inventory, and phase callbacks.");
+  }
+  if (profile.product !== product) {
+    fail("Neutral comparison phase product does not match its sealed editor profile.");
   }
   for (const field of ["editor", "userData", "extensions", "developmentPaths"]) {
     if (Object.hasOwn(editorPhaseOptions, field)) {

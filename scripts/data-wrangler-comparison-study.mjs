@@ -563,7 +563,7 @@ function validateStudyCommonExtensions(extensions) {
 function validateComparisonDriverReceipt(receipt) {
   exactKeys(
     receipt,
-    ["extensionId", "version", "vsix", "runtimeDependencies", "journeyGraph"],
+    ["extensionId", "version", "vsix", "packageFiles", "runtimeDependencies", "journeyGraph"],
     "Study comparison driver"
   );
   if (
@@ -572,13 +572,20 @@ function validateComparisonDriverReceipt(receipt) {
   ) {
     fail("Study comparison driver identity does not match the preregistered lock.");
   }
-  exactKeys(receipt.vsix, ["sha256", "filesystemIdentity"], "Study comparison-driver VSIX");
+  exactKeys(receipt.vsix, ["sha256", "filesystemIdentity", "archive"], "Study comparison-driver VSIX");
   assertString(receipt.vsix.sha256, SHA256, "Study comparison-driver VSIX SHA-256");
   validateFilesystemIdentity(receipt.vsix.filesystemIdentity, "Study comparison-driver VSIX filesystem identity");
+  exactKeys(
+    receipt.packageFiles,
+    ["packageJsonSha256", "extensionSourceSha256"],
+    "Study comparison-driver package files"
+  );
+  assertString(receipt.packageFiles.packageJsonSha256, SHA256, "Study comparison-driver package.json SHA-256");
+  assertString(receipt.packageFiles.extensionSourceSha256, SHA256, "Study comparison-driver extension.js SHA-256");
   exactKeys(receipt.runtimeDependencies, ["playwrightCore"], "Study comparison-driver runtime dependencies");
   exactKeys(
     receipt.runtimeDependencies.playwrightCore,
-    ["version", "fileCount", "totalBytes", "treeSha256", "lockIntegrity"],
+    ["version", "fileCount", "totalBytes", "treeSha256", "lockIntegrity", "files"],
     "Study comparison-driver Playwright Core runtime"
   );
   assertString(
@@ -609,6 +616,37 @@ function validateComparisonDriverReceipt(receipt) {
     SHA256,
     "Study comparison-driver Playwright tree SHA-256"
   );
+  if (
+    !Array.isArray(receipt.runtimeDependencies.playwrightCore.files) ||
+    receipt.runtimeDependencies.playwrightCore.files.length !== receipt.runtimeDependencies.playwrightCore.fileCount
+  ) {
+    fail("Study comparison-driver Playwright receipt must enumerate every file.");
+  }
+  let previousPlaywrightPath = "";
+  const playwrightPaths = new Set();
+  for (const file of receipt.runtimeDependencies.playwrightCore.files) {
+    exactKeys(file, ["path", "sha256"], "Study comparison-driver Playwright file");
+    if (
+      typeof file.path !== "string" ||
+      file.path.length === 0 ||
+      file.path.length > 512 ||
+      /[\\\0\r\n]/u.test(file.path) ||
+      file.path.split("/").some((part) => part.length === 0 || part === "." || part === "..") ||
+      file.path <= previousPlaywrightPath ||
+      playwrightPaths.has(file.path)
+    ) {
+      fail("Study comparison-driver Playwright files must be unique, sorted, and relative.");
+    }
+    assertString(file.sha256, SHA256, "Study comparison-driver Playwright file SHA-256");
+    playwrightPaths.add(file.path);
+    previousPlaywrightPath = file.path;
+  }
+  const expectedPlaywrightTreeSha256 = createHash("sha256")
+    .update(JSON.stringify(receipt.runtimeDependencies.playwrightCore.files), "utf8")
+    .digest("hex");
+  if (receipt.runtimeDependencies.playwrightCore.treeSha256 !== expectedPlaywrightTreeSha256) {
+    fail("Study comparison-driver Playwright tree SHA-256 does not match its file list.");
+  }
   exactKeys(
     receipt.journeyGraph,
     ["entry", "moduleCount", "totalBytes", "graphSha256", "modules"],
@@ -660,6 +698,67 @@ function validateComparisonDriverReceipt(receipt) {
     .digest("hex");
   if (receipt.journeyGraph.graphSha256 !== expectedGraphSha256) {
     fail("Study comparison-driver graph SHA-256 does not match its complete module list.");
+  }
+  exactKeys(
+    receipt.vsix.archive,
+    ["entryCount", "totalUncompressedBytes", "inventorySha256", "entries"],
+    "Study comparison-driver archive"
+  );
+  assertInteger(receipt.vsix.archive.entryCount, "Study comparison-driver archive entry count", { minimum: 1 });
+  assertInteger(receipt.vsix.archive.totalUncompressedBytes, "Study comparison-driver archive byte count", {
+    minimum: 1
+  });
+  if (
+    receipt.vsix.archive.entryCount > 324 ||
+    receipt.vsix.archive.totalUncompressedBytes > 32 * 1024 * 1024 ||
+    !Array.isArray(receipt.vsix.archive.entries) ||
+    receipt.vsix.archive.entries.length !== receipt.vsix.archive.entryCount
+  ) {
+    fail("Study comparison-driver archive exceeds its fixed inventory bounds.");
+  }
+  let previousArchivePath = "";
+  const archiveByPath = new Map();
+  for (const entry of receipt.vsix.archive.entries) {
+    exactKeys(entry, ["path", "sha256"], "Study comparison-driver archive entry");
+    if (
+      typeof entry.path !== "string" ||
+      entry.path.length === 0 ||
+      entry.path.length > 512 ||
+      entry.path.startsWith("/") ||
+      /[\\\0\r\n]/u.test(entry.path) ||
+      entry.path.split("/").some((part) => part.length === 0 || part === "." || part === "..") ||
+      entry.path <= previousArchivePath ||
+      archiveByPath.has(entry.path)
+    ) {
+      fail("Study comparison-driver archive entries must be unique, sorted, and relative.");
+    }
+    assertString(entry.sha256, SHA256, "Study comparison-driver archive entry SHA-256");
+    archiveByPath.set(entry.path, entry.sha256);
+    previousArchivePath = entry.path;
+  }
+  assertString(receipt.vsix.archive.inventorySha256, SHA256, "Study comparison-driver archive inventory SHA-256");
+  const expectedInventorySha256 = createHash("sha256")
+    .update(JSON.stringify(receipt.vsix.archive.entries), "utf8")
+    .digest("hex");
+  if (receipt.vsix.archive.inventorySha256 !== expectedInventorySha256) {
+    fail("Study comparison-driver archive inventory SHA-256 does not match its entries.");
+  }
+  const expectedArchiveEntries = new Map([
+    ["extension/package.json", receipt.packageFiles.packageJsonSha256],
+    ["extension/extension.js", receipt.packageFiles.extensionSourceSha256],
+    ...receipt.journeyGraph.modules.map((module) => [`extension/journey/${module.path}`, module.sha256]),
+    ...receipt.runtimeDependencies.playwrightCore.files.map((file) => [
+      `extension/node_modules/playwright-core/${file.path}`,
+      file.sha256
+    ])
+  ]);
+  if (
+    archiveByPath.size !== expectedArchiveEntries.size + 2 ||
+    !archiveByPath.has("[Content_Types].xml") ||
+    !archiveByPath.has("extension.vsixmanifest") ||
+    [...expectedArchiveEntries].some(([path, sha256]) => archiveByPath.get(path) !== sha256)
+  ) {
+    fail("Study comparison-driver archive does not exactly match its package, journey, and Playwright receipts.");
   }
 }
 

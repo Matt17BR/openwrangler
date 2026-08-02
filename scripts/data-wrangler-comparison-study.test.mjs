@@ -237,6 +237,8 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
   });
   assert.equal(manifest.provenance.comparisonDriver.vsix.sha256, digest("f"));
   assert.equal(manifest.provenance.comparisonDriver.journeyGraph.modules.length, 2);
+  assert.equal(manifest.provenance.comparisonDriver.runtimeDependencies.playwrightCore.files.length, 2);
+  assert.equal(manifest.provenance.comparisonDriver.vsix.archive.entryCount, 8);
 
   const changedSchedule = structuredClone(manifest);
   [changedSchedule.schedule[0], changedSchedule.schedule[2]] = [
@@ -250,6 +252,16 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
   assert.throws(
     () => validateDataWranglerStudyManifest(incompleteDriverGraph),
     /graph SHA-256 does not match its complete module list/u
+  );
+
+  const changedDriverArchive = structuredClone(manifest);
+  changedDriverArchive.provenance.comparisonDriver.vsix.archive.entries[2].sha256 = digest("0");
+  changedDriverArchive.provenance.comparisonDriver.vsix.archive.inventorySha256 = createHash("sha256")
+    .update(JSON.stringify(changedDriverArchive.provenance.comparisonDriver.vsix.archive.entries), "utf8")
+    .digest("hex");
+  assert.throws(
+    () => validateDataWranglerStudyManifest(changedDriverArchive),
+    /does not exactly match its package, journey, and Playwright receipts/u
   );
 
   const wrongPython = structuredClone(manifest);
@@ -2034,6 +2046,25 @@ function studyComparisonDriverReceipt() {
     { path: "shared/strictJson.cjs", sha256: digest("d") },
     { path: "test/extensionHost/dataWranglerComparisonNotebookTrial.js", sha256: digest("e") }
   ];
+  const playwrightFiles = [
+    { path: "index.js", sha256: digest("8") },
+    { path: "package.json", sha256: digest("9") }
+  ];
+  const packageFiles = {
+    packageJsonSha256: digest("6"),
+    extensionSourceSha256: digest("7")
+  };
+  const archiveEntries = [
+    { path: "[Content_Types].xml", sha256: digest("0") },
+    { path: "extension.vsixmanifest", sha256: digest("1") },
+    { path: "extension/extension.js", sha256: packageFiles.extensionSourceSha256 },
+    ...modules.map((module) => ({ path: `extension/journey/${module.path}`, sha256: module.sha256 })),
+    ...playwrightFiles.map((file) => ({
+      path: `extension/node_modules/playwright-core/${file.path}`,
+      sha256: file.sha256
+    })),
+    { path: "extension/package.json", sha256: packageFiles.packageJsonSha256 }
+  ].sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   return {
     extensionId: "openwrangler-study.notebook-comparison-driver",
     version: "1.0.0",
@@ -2044,15 +2075,23 @@ function studyComparisonDriverReceipt() {
         inode: "2101",
         sizeBytes: 4096,
         mtimeNs: "1754100000000000000"
+      },
+      archive: {
+        entryCount: archiveEntries.length,
+        totalUncompressedBytes: 12_735_000,
+        inventorySha256: createHash("sha256").update(JSON.stringify(archiveEntries), "utf8").digest("hex"),
+        entries: archiveEntries
       }
     },
+    packageFiles,
     runtimeDependencies: {
       playwrightCore: {
         version: "1.61.1",
-        fileCount: 106,
+        fileCount: playwrightFiles.length,
         totalBytes: 12_701_224,
-        treeSha256: digest("a"),
-        lockIntegrity: "sha512-dGVzdC1wbGF5d3JpZ2h0LWNvcmU="
+        treeSha256: createHash("sha256").update(JSON.stringify(playwrightFiles), "utf8").digest("hex"),
+        lockIntegrity: "sha512-dGVzdC1wbGF5d3JpZ2h0LWNvcmU=",
+        files: playwrightFiles
       }
     },
     journeyGraph: {
