@@ -324,6 +324,25 @@ test("run-next selects only pending zero, publishes one fragment, and reloads a 
   });
 });
 
+test("run-next validates the prepared schedule entry before executing or shortcutting it", async () => {
+  await withDirectory(async (directory) => {
+    const paths = planStudy(directory);
+    let executed = false;
+    await assert.rejects(
+      runNextDataWranglerComparisonStudyTrial(paths, {
+        expectedEntryId: "not-the-prepared-entry",
+        executeTrial: async () => {
+          executed = true;
+          throw new Error("schedule mismatch executed");
+        }
+      }),
+      /expected not-the-prepared-entry, but the durable ledger selected/u
+    );
+    assert.equal(executed, false);
+    assert.equal(existsSync(paths.intentsDirectory), false);
+  });
+});
+
 test("run-next keeps one exclusive Linux execution owner across asynchronous trial work", async () => {
   await withDirectory(async (directory) => {
     const paths = planStudy(directory);
@@ -477,6 +496,68 @@ test("run-next retries a pre-authorization crash and halts after a post-authoriz
       assert.equal(retried, false);
     });
   });
+
+  await t.test("a linked authorization is recovered into scheduler state after its publisher throws", async () => {
+    await withDirectory(async (directory) => {
+      const paths = planStudy(directory);
+      let recovery;
+      await assert.rejects(
+        runNextDataWranglerComparisonStudyTrial(paths, {
+          executeTrial: async ({
+            manifest,
+            scheduleEntry,
+            executionIndex,
+            authorizeAction,
+            reinspectActionAuthorization
+          }) => {
+            assert.throws(authorizeAction, /injected action-authorization link crash/u);
+            recovery = reinspectActionAuthorization();
+            assert.equal(recovery.status, "authorized");
+            assert.equal(recovery.authorization.publication.status, "recovered");
+            return preActionInvalidFragment(manifest, scheduleEntry, executionIndex);
+          },
+          publicationOptions: {
+            actionAuthorization: {
+              tokenFactory: () => "2".repeat(32),
+              faultInjector(point) {
+                if (point === "target-linked") {
+                  throw new Error("injected action-authorization link crash");
+                }
+              }
+            }
+          }
+        }),
+        /authorized a product action without retaining action-started evidence/u
+      );
+      assert.equal(recovery.authorization.intent.scheduleEntryId, paths.manifest.schedule[0].id);
+      const inspection = inspectDataWranglerStudyTrialIntents({
+        directory: paths.intentsDirectory,
+        manifest: paths.manifest,
+        fragments: []
+      });
+      assert.equal(inspection.unresolved.length, 1);
+      assert.equal(inspection.unresolved[0].runId, recovery.authorization.intent.runId);
+    });
+  });
+
+  await t.test("an action-started claim never authorizes after the executor returns", async () => {
+    await withDirectory(async (directory) => {
+      const paths = planStudy(directory);
+      await assert.rejects(
+        runNextDataWranglerComparisonStudyTrial(paths, {
+          executeTrial: async () => ({ outcome: { actionStarted: true } })
+        }),
+        /reported a product action without durable authorization/u
+      );
+      const inspection = inspectDataWranglerStudyTrialIntents({
+        directory: paths.intentsDirectory,
+        manifest: paths.manifest,
+        fragments: []
+      });
+      assert.equal(inspection.authorizedCount, 0);
+      assert.equal(inspection.unresolved.length, 0);
+    });
+  });
 });
 
 test("manifest-declared Data Wrangler Polars unavailability produces a launch-free fragment", () => {
@@ -597,6 +678,25 @@ function studyComparisonDriverReceipt() {
     { path: "shared/strictJson.cjs", sha256: digest("d") },
     { path: "test/extensionHost/dataWranglerComparisonNotebookTrial.js", sha256: digest("e") }
   ];
+  const playwrightFiles = [
+    { path: "index.js", sha256: digest("8") },
+    { path: "package.json", sha256: digest("9") }
+  ];
+  const packageFiles = {
+    packageJsonSha256: digest("6"),
+    extensionSourceSha256: digest("7")
+  };
+  const archiveEntries = [
+    { path: "[Content_Types].xml", sha256: digest("0") },
+    { path: "extension.vsixmanifest", sha256: digest("1") },
+    { path: "extension/extension.js", sha256: packageFiles.extensionSourceSha256 },
+    ...modules.map((module) => ({ path: `extension/journey/${module.path}`, sha256: module.sha256 })),
+    ...playwrightFiles.map((file) => ({
+      path: `extension/node_modules/playwright-core/${file.path}`,
+      sha256: file.sha256
+    })),
+    { path: "extension/package.json", sha256: packageFiles.packageJsonSha256 }
+  ].sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   return {
     extensionId: "openwrangler-study.notebook-comparison-driver",
     version: "1.0.0",
@@ -607,15 +707,23 @@ function studyComparisonDriverReceipt() {
         inode: "2101",
         sizeBytes: 4096,
         mtimeNs: "1754100000000000000"
+      },
+      archive: {
+        entryCount: archiveEntries.length,
+        totalUncompressedBytes: 12_735_000,
+        inventorySha256: createHash("sha256").update(JSON.stringify(archiveEntries), "utf8").digest("hex"),
+        entries: archiveEntries
       }
     },
+    packageFiles,
     runtimeDependencies: {
       playwrightCore: {
         version: "1.61.1",
-        fileCount: 106,
+        fileCount: playwrightFiles.length,
         totalBytes: 12_701_224,
-        treeSha256: digest("a"),
-        lockIntegrity: "sha512-dGVzdC1wbGF5d3JpZ2h0LWNvcmU="
+        treeSha256: createHash("sha256").update(JSON.stringify(playwrightFiles), "utf8").digest("hex"),
+        lockIntegrity: "sha512-dGVzdC1wbGF5d3JpZ2h0LWNvcmU=",
+        files: playwrightFiles
       }
     },
     journeyGraph: {

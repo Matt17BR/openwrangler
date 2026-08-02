@@ -138,9 +138,12 @@ function createHarness({
         events.push("create-supervisor");
         return adapter;
       },
-      async runEditorPhase(options, { spawnProcess }) {
+      async runEditorPhase(options, { spawnProcess, prepareWarmSourceCacheBeforeLaunch }) {
         assert.equal(options.runId, RUN_ID);
         assert.equal(options.phase, PHASE);
+        if (prepareWarmSourceCacheBeforeLaunch !== undefined) {
+          await prepareWarmSourceCacheBeforeLaunch();
+        }
         spawnProcess("code", [], {});
         events.push("editor-started");
         return runEditorPhase
@@ -767,12 +770,26 @@ test("control evidence is validated before its abandonment field affects lifecyc
   assert.deepEqual(harness.events.slice(-2), ["terminal-receipt", "complete-terminal-evidence"]);
 });
 
-test("warm cache failure happens before any editor or supervisor launch", async () => {
+test("warm cache failure happens after adapter setup but before any process launch", async () => {
   const harness = createHarness();
   harness.dependencies.prepareSourceCache = async () => {
     throw new Error("cache preparation failed");
   };
 
   await assert.rejects(executeDataWranglerComparisonTrial(input(), harness.dependencies), /cache preparation failed/u);
-  assert.deepEqual(harness.events, []);
+  assert.deepEqual(harness.events, ["create-supervisor"]);
+});
+
+test("a warm editor runner cannot bypass the fresh cache-proof hook", async () => {
+  const harness = createHarness();
+  harness.dependencies.runEditorPhase = async (_options, { spawnProcess, prepareWarmSourceCacheBeforeLaunch }) => {
+    assert.equal(typeof prepareWarmSourceCacheBeforeLaunch, "function");
+    spawnProcess("code", [], {});
+  };
+
+  await assert.rejects(
+    executeDataWranglerComparisonTrial(input(), harness.dependencies),
+    /refused to launch before its fresh warm-cache proof/u
+  );
+  assert.deepEqual(harness.events, ["create-supervisor"]);
 });

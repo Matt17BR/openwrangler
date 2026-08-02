@@ -608,9 +608,24 @@ export async function executeDataWranglerComparisonTrial(
   validateDependencies(dependencies);
 
   let cacheProof = null;
-  if (input.cacheState === "warm") {
-    cacheProof = await prepareSourceCache({ cacheState: "warm" });
-  }
+  let warmCachePreparationStarted = false;
+  let warmCachePrepared = false;
+  const prepareWarmSourceCacheBeforeLaunch = async () => {
+    if (input.cacheState !== "warm") {
+      throw new Error("Comparison trial warm-cache preparation is unavailable for a cold trial.");
+    }
+    if (warmCachePreparationStarted) {
+      throw new Error("Comparison trial warm-cache preparation may run only once.");
+    }
+    warmCachePreparationStarted = true;
+    const proof = await prepareSourceCache({ cacheState: "warm" });
+    if (!isRecord(proof)) {
+      throw new TypeError("Comparison trial warm-cache preparation did not return a proof object.");
+    }
+    cacheProof = proof;
+    warmCachePrepared = true;
+    return cacheProof;
+  };
 
   const adapter = validateAdapter(createSupervisorAdapter(input.supervisorOptions));
   const spawnObserved = createDeferred();
@@ -619,8 +634,14 @@ export async function executeDataWranglerComparisonTrial(
       { ...input.editorPhaseOptions, runId: input.runId, phase: input.phase },
       {
         ...editorRunnerDependencies,
+        ...(input.cacheState === "warm" ? { prepareWarmSourceCacheBeforeLaunch } : {}),
         spawnProcess(...arguments_) {
           try {
+            if (input.cacheState === "warm" && (!warmCachePrepared || !isRecord(cacheProof))) {
+              throw new Error(
+                "Comparison trial refused to launch before its fresh warm-cache proof was retained."
+              );
+            }
             const child = adapter.spawnProcess(...arguments_);
             spawnObserved.resolve(child);
             return child;

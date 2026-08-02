@@ -55,6 +55,7 @@ function input(overrides = {}) {
           { extensionId: "Matt17BR.openwrangler", version: "1.2.0" }
         ],
         profile: createDataWranglerComparisonDriverProfile({
+          product: "open-wrangler",
           editor: { name: "VS Code" },
           userData: "/private/user-data",
           extensions: "/private/extensions",
@@ -113,6 +114,7 @@ function context(overrides = {}) {
       preparedAtUtc: "2026-08-02T10:59:00.000Z"
     },
     authorizeAction: () => ({ protocol: "test-authorization-v1", runId: RUN_ID }),
+    reinspectActionAuthorization: () => Object.freeze({ status: "not-authorized" }),
     ...overrides
   };
 }
@@ -205,6 +207,7 @@ function fakeRunNext(events, suppliedContext = context()) {
       fragmentsDirectory: "/private/study/fragments",
       intentsDirectory: "/private/study/intents"
     });
+    assert.equal(options.expectedEntryId, "warm-000");
     const fragment = await options.executeTrial(suppliedContext);
     events.push("fragment-published");
     return { command: "run-next", status: "recorded", receipt: { sha256: "b".repeat(64) }, output: fragment };
@@ -265,12 +268,19 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
       assert.equal(executorInput.preparedIntent.runId, RUN_ID);
       assert.equal(executorInput.scheduleEntry.id, "warm-000");
       assert.equal(typeof executorInput.reinspectActionAuthorization, "function");
+      assert.deepEqual(executorInput.reinspectActionAuthorization(), { status: "not-authorized" });
+      let cache;
       const phaseReceipt = await executorDependencies.runEditorPhase(
         { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
-        { spawnProcess: "supervisor-owned-spawn" }
+        {
+          spawnProcess: "supervisor-owned-spawn",
+          async prepareWarmSourceCacheBeforeLaunch() {
+            cache = await executorDependencies.prepareSourceCache({ cacheState: "warm" });
+            return cache;
+          }
+        }
       );
       assert.deepEqual(phaseReceipt, { protocol: "test-editor-phase-v1" });
-      const cache = await executorDependencies.prepareSourceCache({ cacheState: "warm" });
       assert.deepEqual(cache, { protocol: "test-cache-v1" });
       events.push("supervisor-completed");
       const base = rawEvidence({ cacheProof: cache, terminalEvidence: null });
@@ -346,10 +356,10 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
     "executor-started",
     "neutral-driver-installed",
     "neutral-driver-inventory-read",
+    "cache-prepared",
     "provenance-captured-before",
     "editor-executed",
     "neutral-driver-inventory-read",
-    "cache-prepared",
     "supervisor-completed",
     "cleanup-polled",
     "cleanup-polled",
@@ -530,7 +540,10 @@ test("terminal driver receipts survive a rejected measured editor phase", async 
       await assert.rejects(
         executorDependencies.runEditorPhase(
           { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
-          { spawnProcess: "supervisor-owned-spawn" }
+          {
+            spawnProcess: "supervisor-owned-spawn",
+            prepareWarmSourceCacheBeforeLaunch: async () => ({ protocol: "test-cache-v1" })
+          }
         ),
         /measured editor failed/u
       );

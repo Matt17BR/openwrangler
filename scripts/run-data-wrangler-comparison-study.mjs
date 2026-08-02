@@ -27,6 +27,7 @@ import {
   createOrLoadDataWranglerStudyFinalizationIntent,
   createStudyFragmentIdentity,
   digestStudyValue,
+  inspectDataWranglerStudyTrialIntents,
   loadDataWranglerStudyFragments,
   pendingDataWranglerStudyTrials,
   prepareDataWranglerStudyTrialIntent,
@@ -34,8 +35,10 @@ import {
   readDataWranglerStudyManifestPublication,
   validateDataWranglerStudyFragment,
   validateDataWranglerStudyResultEvidence,
-  writeDataWranglerStudyJsonExclusive
+  writeDataWranglerStudyJsonExclusive,
+  DATA_WRANGLER_STUDY_TRIAL_INTENT_PROTOCOL
 } from "./data-wrangler-comparison-study.mjs";
+import { recoverDurableStudyJsonPublication } from "./durable-study-json.mjs";
 
 const MAX_INPUT_BYTES = 32 * 1024 * 1024;
 const MAX_EXECUTION_LOCK_BYTES = 4 * 1024;
@@ -730,6 +733,7 @@ export async function runNextDataWranglerComparisonStudyTrial(
     now = () => new Date(),
     runIdFactory = randomUUID,
     fragmentIdFactory = randomUUID,
+    expectedEntryId,
     lockOptions = {},
     readOptions = {},
     publicationOptions = {}
@@ -740,6 +744,12 @@ export async function runNextDataWranglerComparisonStudyTrial(
   const resolvedIntentsDirectory = requireRunNextPath(intentsDirectory, "Study run-next intent directory");
   if (typeof runIdFactory !== "function" || typeof fragmentIdFactory !== "function") {
     throw new TypeError("Study run-next identity factories must be functions.");
+  }
+  if (
+    expectedEntryId !== undefined &&
+    (typeof expectedEntryId !== "string" || expectedEntryId.length === 0 || /[\0\r\n]/u.test(expectedEntryId))
+  ) {
+    throw new TypeError("Study run-next expected entry ID must be one non-empty string.");
   }
 
   return await withDataWranglerStudyExecutionLock(
@@ -755,6 +765,11 @@ export async function runNextDataWranglerComparisonStudyTrial(
         options: readOptions.intents
       });
       const next = pendingDataWranglerStudyTrials(manifest, fragments)[0];
+      if (expectedEntryId !== undefined && next?.id !== expectedEntryId) {
+        throw new Error(
+          `Study run-next expected ${expectedEntryId}, but the durable ledger selected ${next?.id ?? "<complete>"}.`
+        );
+      }
       if (next === undefined) {
         return { command: "run-next", status: "complete", receipt: null, output: null };
       }
@@ -768,17 +783,9 @@ export async function runNextDataWranglerComparisonStudyTrial(
         options: publicationOptions.intentPreparation
       });
       let authorization;
+      let expectedAuthorizedIntent;
       let acceptingAuthorization = true;
-      const authorizeAction = (...arguments_) => {
-        if (arguments_.length !== 0) {
-          throw new TypeError("Study product-action authorization accepts no arguments.");
-        }
-        if (!acceptingAuthorization) {
-          throw new Error("Study product-action authorization is no longer available for this execution.");
-        }
-        if (authorization !== undefined) {
-          throw new Error("Study product action may be authorized only once.");
-        }
+      const verifyCurrentLedger = () => {
         const currentManifest = readDataWranglerStudyManifestPublication(resolvedManifestPath, readOptions.manifest);
         const currentFragments = loadDataWranglerStudyFragments(
           resolvedFragmentsDirectory,
@@ -789,17 +796,104 @@ export async function runNextDataWranglerComparisonStudyTrial(
           digestStudyValue(currentManifest) !== manifestSha256 ||
           fragmentLedgerDigest(currentFragments) !== fragmentLedgerDigest(fragments)
         ) {
-          throw new Error("Study ledger changed before product-action authorization.");
+          throw new Error("Study ledger changed before product-action authorization could be resolved.");
         }
+        return { currentManifest, currentFragments };
+      };
+      const authorizeAction = (...arguments_) => {
+        if (arguments_.length !== 0) {
+          throw new TypeError("Study product-action authorization accepts no arguments.");
+        }
+        if (!acceptingAuthorization) {
+          throw new Error("Study product-action authorization is no longer available for this execution.");
+        }
+        if (authorization !== undefined) {
+          throw new Error("Study product action may be authorized only once.");
+        }
+        verifyCurrentLedger();
+        const authorizedAtUtc = isoTimestamp(now, "Study product-action authorization");
+        expectedAuthorizedIntent = Object.freeze({
+          protocol: DATA_WRANGLER_STUDY_TRIAL_INTENT_PROTOCOL,
+          stage: "action-authorized",
+          runId: prepared.intent.runId,
+          manifestSha256: prepared.intent.manifestSha256,
+          executionIndex: prepared.intent.executionIndex,
+          scheduleEntryId: prepared.intent.scheduleEntryId,
+          attempt: prepared.intent.attempt,
+          effectiveBlockId: prepared.intent.effectiveBlockId,
+          product: prepared.intent.product,
+          ledgerSha256: prepared.intent.ledgerSha256,
+          preparedSha256: digestStudyValue(prepared.intent),
+          authorizedAtUtc
+        });
         authorization = authorizeDataWranglerStudyTrialAction({
           directory: resolvedIntentsDirectory,
           manifest,
           fragments,
           preparedIntent: prepared.intent,
-          authorizedAtUtc: isoTimestamp(now, "Study product-action authorization"),
+          authorizedAtUtc,
           options: publicationOptions.actionAuthorization
         });
         return structuredClone(authorization);
+      };
+      const reinspectActionAuthorization = (...arguments_) => {
+        if (arguments_.length !== 0) {
+          throw new TypeError("Study product-action authorization reinspection accepts no arguments.");
+        }
+        if (!acceptingAuthorization) {
+          throw new Error("Study product-action authorization reinspection is no longer available for this execution.");
+        }
+        if (authorization === undefined && expectedAuthorizedIntent !== undefined) {
+          recoverDurableStudyJsonPublication(
+            resolve(resolvedIntentsDirectory, `${expectedAuthorizedIntent.runId}.action-authorized.intent`),
+            digestStudyValue(expectedAuthorizedIntent),
+            { ...publicationOptions.actionAuthorization, parentLease: undefined }
+          );
+        }
+        const { currentManifest, currentFragments } = verifyCurrentLedger();
+        const inspection = inspectDataWranglerStudyTrialIntents({
+          directory: resolvedIntentsDirectory,
+          manifest: currentManifest,
+          fragments: currentFragments,
+          options: readOptions.intents
+        });
+        if (!Array.isArray(inspection?.unresolved)) {
+          throw new Error("Study product-action authorization journal returned malformed evidence.");
+        }
+        if (inspection.unresolved.length === 0) {
+          if (authorization !== undefined) {
+            throw new Error("Study product-action authorization disappeared from its durable journal.");
+          }
+          return Object.freeze({ status: "not-authorized" });
+        }
+        if (inspection.unresolved.length !== 1) {
+          throw new Error("Study product-action authorization journal is ambiguous.");
+        }
+        const intent = inspection.unresolved[0];
+        if (
+          intent.stage !== "action-authorized" ||
+          intent.runId !== prepared.intent.runId ||
+          intent.manifestSha256 !== prepared.intent.manifestSha256 ||
+          intent.executionIndex !== prepared.intent.executionIndex ||
+          intent.scheduleEntryId !== prepared.intent.scheduleEntryId ||
+          intent.attempt !== prepared.intent.attempt ||
+          intent.effectiveBlockId !== prepared.intent.effectiveBlockId ||
+          intent.product !== prepared.intent.product ||
+          intent.ledgerSha256 !== prepared.intent.ledgerSha256 ||
+          intent.preparedSha256 !== digestStudyValue(prepared.intent)
+        ) {
+          throw new Error("Study product-action authorization journal does not match the prepared execution.");
+        }
+        if (authorization !== undefined && canonicalStudyJson(authorization.intent) !== canonicalStudyJson(intent)) {
+          throw new Error("Study product-action authorization conflicts with its durable journal.");
+        }
+        if (authorization === undefined) {
+          authorization = Object.freeze({
+            intent: Object.freeze(structuredClone(intent)),
+            publication: Object.freeze({ status: "recovered", sha256: digestStudyValue(intent) })
+          });
+        }
+        return Object.freeze({ status: "authorized", authorization: structuredClone(authorization) });
       };
 
       let fragment;
@@ -821,7 +915,8 @@ export async function runNextDataWranglerComparisonStudyTrial(
             scheduleEntry: structuredClone(next),
             executionIndex: fragments.length,
             preparedIntent: structuredClone(prepared.intent),
-            authorizeAction
+            authorizeAction,
+            reinspectActionAuthorization
           });
         }
       } finally {
@@ -829,12 +924,6 @@ export async function runNextDataWranglerComparisonStudyTrial(
       }
 
       if (fragment?.outcome?.actionStarted === true && authorization === undefined) {
-        acceptingAuthorization = true;
-        try {
-          authorizeAction();
-        } finally {
-          acceptingAuthorization = false;
-        }
         throw new Error("Study executor reported a product action without durable authorization.");
       }
       if (authorization !== undefined && fragment?.outcome?.actionStarted !== true) {

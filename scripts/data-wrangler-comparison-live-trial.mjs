@@ -796,13 +796,11 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
     gateDependencies = {},
     executorDependencies = {},
     cleanupDependencies = {},
-    authorizationJournalDependencies = {},
     neutralDriverDependencies = {},
     runNextOptions = {}
   } = {}
 ) {
   const input = validateInput(inputValue);
-  requireRecord(authorizationJournalDependencies, "Authorization-journal dependencies");
   requireRecord(executorDependencies, "Trial executor dependencies");
   requireRecord(neutralDriverDependencies, "Neutral-driver dependencies");
   for (const [dependency, label] of [
@@ -839,12 +837,16 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
         ...runNextOptions,
         now,
         fragmentIdFactory,
+        expectedEntryId: prepared.scheduleEntryId,
         executeTrial: async (context) => {
           if (
             context.scheduleEntry.id !== prepared.scheduleEntryId ||
             context.preparedIntent.scheduleEntryId !== prepared.scheduleEntryId
           ) {
             fail("Prepared comparison trial does not match the next study schedule entry.");
+          }
+          if (typeof context.reinspectActionAuthorization !== "function") {
+            fail("Prepared comparison trial omitted its scheduler-owned authorization reinspector.");
           }
           const phase = PHASE_BY_PRODUCT[context.scheduleEntry.product];
           if (phase === undefined) fail("Prepared comparison trial product is invalid.");
@@ -931,22 +933,7 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
                   ? {}
                   : { samplerOptions: structuredClone(prepared.samplerOptions) }),
                 authorizeAction: context.authorizeAction,
-                reinspectActionAuthorization: () =>
-                  reinspectDataWranglerComparisonActionAuthorization(
-                    {
-                      manifestPath: input.manifestPath,
-                      fragmentsDirectory: input.fragmentsDirectory,
-                      intentsDirectory: input.intentsDirectory,
-                      manifest: context.manifest,
-                      preparedIntent: context.preparedIntent
-                    },
-                    {
-                      manifestReadOptions: runNextOptions.readOptions?.manifest ?? {},
-                      fragmentReadOptions: runNextOptions.readOptions?.fragments ?? {},
-                      intentReadOptions: runNextOptions.readOptions?.intents ?? {},
-                      ...authorizationJournalDependencies
-                    }
-                  )
+                reinspectActionAuthorization: context.reinspectActionAuthorization
               },
               {
                 ...executorDependencies,
@@ -999,6 +986,14 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
                           capturedDriverBefore = structuredClone(
                             requireRecord(dependencies.driverBefore, "Neutral driver before measured launch")
                           );
+                          if (context.scheduleEntry.kind === "warm") {
+                            const prepareWarmSourceCacheBeforeLaunch =
+                              editorRunnerDependencies.prepareWarmSourceCacheBeforeLaunch;
+                            if (typeof prepareWarmSourceCacheBeforeLaunch !== "function") {
+                              fail("Warm measured trial omitted its executor-owned cache preparation hook.");
+                            }
+                            await prepareWarmSourceCacheBeforeLaunch();
+                          }
                           provenanceBefore = structuredClone(
                             requireRecord(
                               await captureTrialProvenanceBefore({
