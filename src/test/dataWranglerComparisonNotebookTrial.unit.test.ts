@@ -538,6 +538,90 @@ describe("one-trial notebook comparison flow", () => {
     expect(() => validateDataWranglerNotebookTrialPhaseReceipt(receipt)).not.toThrow();
   });
 
+  it("settles the measured cell before snapshotting an inline failure", async () => {
+    const events: string[] = [];
+    const base = successDependencies(events);
+    let finishMeasured!: () => void;
+    let receiptSettled = false;
+    const pending = executeDataWranglerNotebookTrialFlow({
+      ...base,
+      study: { ...STUDY, kind: "cold" },
+      async executeVerification(phase) {
+        events.push(`verify:${phase}`);
+        return verification(phase, "cold");
+      },
+      executeMeasured(immediatelyBeforePointerClick, immediatelyAfterCellCompletion) {
+        events.push("run-cell-center-owned");
+        base.setClock(12);
+        immediatelyBeforePointerClick();
+        events.push("run-cell-pointer-click");
+        return new Promise<void>((resolve) => {
+          finishMeasured = () => {
+            base.setClock(32);
+            immediatelyAfterCellCompletion();
+            events.push("measured-complete");
+            resolve();
+          };
+        });
+      },
+      async waitForInlineAction() {
+        events.push("inline-wait-failed");
+        throw new Error("The measured output did not expose one action within 45000 ms.");
+      }
+    }).then((value) => {
+      receiptSettled = true;
+      return value;
+    });
+
+    await vi.waitFor(() => expect(events).toContain("inline-wait-failed"));
+    expect(receiptSettled).toBe(false);
+    expect(events).not.toContain("close-product-restore-notebook");
+    finishMeasured();
+    const receipt = await pending;
+
+    expect(receipt.failure).toEqual({ stage: "inline", kind: "timeout" });
+    expect(receipt.sourceLoad).toEqual({
+      status: "measured",
+      durationMs: 20,
+      includedInInlineTiming: true,
+      measurementBoundary: "run-cell-pointer-to-cell-completion"
+    });
+    expect(events.indexOf("measured-complete")).toBeLessThan(events.indexOf("close-product-restore-notebook"));
+    expect(() => validateDataWranglerNotebookTrialPhaseReceipt(receipt)).not.toThrow();
+  });
+
+  it("preserves the first inline failure when the measured cell later fails", async () => {
+    const events: string[] = [];
+    const base = successDependencies(events);
+    let failMeasured!: () => void;
+    const pending = executeDataWranglerNotebookTrialFlow({
+      ...base,
+      study: { ...STUDY, kind: "cold" },
+      async executeVerification(phase) {
+        return verification(phase, "cold");
+      },
+      executeMeasured(immediatelyBeforePointerClick) {
+        base.setClock(12);
+        immediatelyBeforePointerClick();
+        return new Promise<void>((_resolve, reject) => {
+          failMeasured = () => reject(new Error("The measured cell failed after dispatch."));
+        });
+      },
+      async waitForInlineAction() {
+        events.push("inline-wait-failed");
+        throw new Error("The measured output did not expose one action within 45000 ms.");
+      }
+    });
+
+    await vi.waitFor(() => expect(events).toContain("inline-wait-failed"));
+    failMeasured();
+    const receipt = await pending;
+
+    expect(receipt.failure).toEqual({ stage: "inline", kind: "timeout" });
+    expect(receipt.sourceLoad.status).toBe("failed");
+    expect(() => validateDataWranglerNotebookTrialPhaseReceipt(receipt)).not.toThrow();
+  });
+
   it("keeps the original timeout when failure cleanup also fails", async () => {
     const base = successDependencies([]);
     const receipt = await executeDataWranglerNotebookTrialFlow({
@@ -675,6 +759,26 @@ describe("one-trial notebook comparison flow", () => {
         })
       )
     ).toThrow(/out of order|acknowledgement/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          const workbenchBaseline = value.controlBridge.exchanges.find(
+            ({ request }) => request.kind === "workbench-baseline"
+          )!;
+          workbenchBaseline.request.monotonicNanoseconds = value.absoluteMilestones.inlineReadyNanoseconds!;
+        })
+      )
+    ).toThrow(/workbench-baseline request did not follow inline readiness/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          const profileBaseline = value.controlBridge.exchanges.find(
+            ({ request }) => request.kind === "profile-baseline"
+          )!;
+          profileBaseline.request.monotonicNanoseconds = value.absoluteMilestones.workbenchReadyNanoseconds!;
+        })
+      )
+    ).toThrow(/profile-baseline request did not follow workbench readiness/u);
   });
 });
 

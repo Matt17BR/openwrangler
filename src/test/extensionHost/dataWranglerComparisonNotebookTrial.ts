@@ -357,16 +357,22 @@ export async function executeDataWranglerNotebookTrialFlow(
   let inline: NotebookTrialInlineEvidence | null = null;
   let workbenchEvidence: DataWranglerNotebookTrialPhaseReceipt["workbench"] = null;
   let profileEvidence: DataWranglerNotebookTrialPhaseReceipt["profiles"] = null;
-  const sourceLoad: { -readonly [Key in keyof DataWranglerNotebookTrialPhaseReceipt["sourceLoad"]]: DataWranglerNotebookTrialPhaseReceipt["sourceLoad"][Key] } = {
+  const sourceLoad: {
+    -readonly [
+      Key in keyof DataWranglerNotebookTrialPhaseReceipt["sourceLoad"]
+    ]: DataWranglerNotebookTrialPhaseReceipt["sourceLoad"][Key];
+  } = {
     status: dependencies.study.kind === "warm" ? "measured" : "not-reached",
     durationMs: dependencies.study.kind === "warm" ? setupDurationMs : null,
     includedInInlineTiming: dependencies.study.kind === "cold",
     measurementBoundary:
-      dependencies.study.kind === "warm"
-        ? "setup-cell-start-to-completion"
-        : "run-cell-pointer-to-cell-completion"
+      dependencies.study.kind === "warm" ? "setup-cell-start-to-completion" : "run-cell-pointer-to-cell-completion"
   };
-  const finalization: { -readonly [Key in keyof DataWranglerNotebookTrialPhaseReceipt["finalization"]]: DataWranglerNotebookTrialPhaseReceipt["finalization"][Key] } = {
+  const finalization: {
+    -readonly [
+      Key in keyof DataWranglerNotebookTrialPhaseReceipt["finalization"]
+    ]: DataWranglerNotebookTrialPhaseReceipt["finalization"][Key];
+  } = {
     closeAttempted: true,
     closeStatus: "failed",
     afterVerification: "failed"
@@ -436,7 +442,11 @@ export async function executeDataWranglerNotebookTrialFlow(
     const measuredCompletion = dependencies
       .executeMeasured(
         () => {
-          assert.equal(measuredBoundaryReached, false, "The public Run Cell pointer boundary may be recorded only once.");
+          assert.equal(
+            measuredBoundaryReached,
+            false,
+            "The public Run Cell pointer boundary may be recorded only once."
+          );
           measuredBoundaryReached = true;
           coldSourceStartedAt = dependencies.now();
           milestones.inlineActionMs = mark();
@@ -462,19 +472,30 @@ export async function executeDataWranglerNotebookTrialFlow(
       });
     void measuredCompletion.catch(rejectMeasuredBoundary);
     await measuredBoundary;
-    assert.equal(measuredBoundaryReached, true, "The public Run Cell action never reached its physical pointer boundary.");
+    assert.equal(
+      measuredBoundaryReached,
+      true,
+      "The public Run Cell action never reached its physical pointer boundary."
+    );
     stage = "inline";
     let inlineReadyRecorded = false;
     let inlineSurfaceReadyMs: number | undefined;
-    const [inlineAction] = await Promise.all([
-      dependencies.waitForInlineAction(() => {
-        assert.equal(inlineReadyRecorded, false, "Inline readiness may be recorded only once.");
-        inlineReadyRecorded = true;
-        inlineSurfaceReadyMs = mark();
-        inlineSurfaceReadyNanoseconds = absoluteNow();
-      }),
-      measuredCompletion
-    ]);
+    const inlineActionPromise = dependencies.waitForInlineAction(() => {
+      assert.equal(inlineReadyRecorded, false, "Inline readiness may be recorded only once.");
+      inlineReadyRecorded = true;
+      inlineSurfaceReadyMs = mark();
+      inlineSurfaceReadyNanoseconds = absoluteNow();
+    });
+    let inlineAction: Awaited<typeof inlineActionPromise>;
+    try {
+      [inlineAction] = await Promise.all([inlineActionPromise, measuredCompletion]);
+    } catch (error) {
+      // Promise.all returns on the first failure. Keep the original failure, but
+      // wait for both bounded notebook tasks before snapshotting mutable evidence
+      // or disposing the listeners owned by the measured-cell execution.
+      await Promise.allSettled([inlineActionPromise, measuredCompletion]);
+      throw error;
+    }
     exact("after measured output");
     assert.ok(inlineAction, "An available product surface must expose its exact inline action.");
     assert.equal(inlineReadyRecorded, true, "The successful inline surface omitted its exact readiness boundary.");
@@ -567,7 +588,11 @@ export async function executeDataWranglerNotebookTrialFlow(
           absoluteMilestones.profilesCompleteNanoseconds = absoluteNow();
         }
       });
-      assert.equal(profileReadyRecorded, true, `Profile ${comparisonColumnName(index)} omitted its readiness boundary.`);
+      assert.equal(
+        profileReadyRecorded,
+        true,
+        `Profile ${comparisonColumnName(index)} omitted its readiness boundary.`
+      );
       assert.equal(evidence.column, comparisonColumnName(index));
       profileColumns.push(evidence);
       updateProfiles();
@@ -588,7 +613,11 @@ export async function executeDataWranglerNotebookTrialFlow(
       error instanceof NotebookTrialRecordedFailure
         ? { stage: error.stage, kind: error.kind }
         : { stage, kind: notebookTrialFailureKind(error) };
-    if (dependencies.study.kind === "cold" && sourceLoad.status === "not-reached" && milestones.inlineActionMs !== null) {
+    if (
+      dependencies.study.kind === "cold" &&
+      sourceLoad.status === "not-reached" &&
+      milestones.inlineActionMs !== null
+    ) {
       sourceLoad.status = "failed";
     }
     try {
@@ -661,9 +690,7 @@ export function validateDataWranglerNotebookTrialPhaseReceipt(value: unknown): D
   exactKeys(verification, ["before", "after"], "Notebook trial verification");
   const before = validateNormalizedVerification(verification.before, "before-timing");
   const after =
-    verification.after === null
-      ? null
-      : validateNormalizedVerification(verification.after, "after-workbench");
+    verification.after === null ? null : validateNormalizedVerification(verification.after, "after-workbench");
   assertVerificationMatchesStudy(before, study, "before-timing");
   if (after) assertVerificationMatchesStudy(after, study, "after-workbench");
   if (
@@ -739,7 +766,8 @@ export function validateDataWranglerNotebookTrialPhaseReceipt(value: unknown): D
 
   if (receipt.status === "success") {
     if (receipt.failure !== null) fail("A successful notebook trial cannot retain a failure.");
-    if (inline === null || after === null) fail("A successful notebook trial requires complete verification and inline evidence.");
+    if (inline === null || after === null)
+      fail("A successful notebook trial requires complete verification and inline evidence.");
     const expectedSurface: SurfaceKind =
       receipt.product === "open-wrangler" ? "open-wrangler-renderer" : "data-wrangler-action-on-host-output";
     if (inline.surfaceKind !== expectedSurface || inline.sentinelsVisibleWithAction !== true) {
@@ -785,7 +813,8 @@ export function validateDataWranglerNotebookTrialPhaseReceipt(value: unknown): D
       validateActionEvidence(inline.action, receipt.product as ProductKey, "inline");
     }
     if (receipt.workbench !== null) validateWorkbenchEvidence(receipt.workbench, study, receipt.product as ProductKey);
-    if (receipt.profiles !== null) validateProfileEvidence(receipt.profiles, study, receipt.product as ProductKey, true);
+    if (receipt.profiles !== null)
+      validateProfileEvidence(receipt.profiles, study, receipt.product as ProductKey, true);
   }
 
   const serialized = JSON.stringify(receipt);
@@ -1139,11 +1168,11 @@ function validateDistinctEvidence(value: unknown, rows: number, index: number): 
   const distinct = requireRecord(value, `Notebook trial profile column ${index} distinct evidence`);
   if (distinct.semantics === "exact") {
     exactKeys(distinct, ["semantics", "count", "percent"], `Notebook trial profile column ${index} distinct evidence`);
-    if (
-      !((distinct.count === rows || distinct.count === null) &&
-        (distinct.percent === 100 || distinct.percent === null) &&
-        (distinct.count !== null || distinct.percent !== null))
-    ) {
+    if (!(
+      (distinct.count === rows || distinct.count === null) &&
+      (distinct.percent === 100 || distinct.percent === null) &&
+      (distinct.count !== null || distinct.percent !== null)
+    )) {
       fail(`Notebook trial profile column ${index} has invalid exact distinct evidence.`);
     }
     return;
@@ -1330,6 +1359,19 @@ function assertBridgeTimingBoundaries(
   assertAcknowledgedBefore("inline-baseline", milestones.inlineActionNanoseconds);
   assertAcknowledgedBefore("workbench-baseline", milestones.workbenchActionNanoseconds);
   assertAcknowledgedBefore("profile-baseline", milestones.profileActionNanoseconds);
+  const assertRequestedAfter = (
+    kind: DataWranglerStudyBridgeKind,
+    milestone: string | null,
+    priorBoundary: string
+  ): void => {
+    const boundary = exchange(kind);
+    if (boundary === undefined) return;
+    if (milestone === null || BigInt(boundary.request.monotonicNanoseconds) <= BigInt(milestone)) {
+      fail(`Notebook trial ${kind} request did not follow ${priorBoundary}.`);
+    }
+  };
+  assertRequestedAfter("workbench-baseline", milestones.inlineReadyNanoseconds, "inline readiness");
+  assertRequestedAfter("profile-baseline", milestones.workbenchReadyNanoseconds, "workbench readiness");
   const samplingOrigin = exchange("sampling-origin");
   const inlineBaseline = exchange("inline-baseline");
   if (
@@ -1415,7 +1457,8 @@ function fail(message: string): never {
 }
 
 function notebookTrialFailureKind(error: unknown): "timeout" | "error" {
-  return error instanceof Error && /(?:timed out|within \d+ ms|exceeded (?:its )?fixed|window expired)/iu.test(error.message)
+  return error instanceof Error &&
+    /(?:timed out|within \d+ ms|exceeded (?:its )?fixed|window expired)/iu.test(error.message)
     ? "timeout"
     : "error";
 }
@@ -2107,7 +2150,9 @@ export function observeNotebookTrialGridScrollState(): Promise<NotebookTrialGrid
       .slice(0, 8)
       .map((row) => normalize(row.textContent).slice(0, 256))
       .join("|");
-    const canonicalHeaders = visibleHeaders.filter((header) => /^c\d{2}(?:\b|[^\p{L}\p{N}_])/u.test(headerName(header)));
+    const canonicalHeaders = visibleHeaders.filter((header) =>
+      /^c\d{2}(?:\b|[^\p{L}\p{N}_])/u.test(headerName(header))
+    );
     const c00Header = canonicalHeaders.find((header) => /^c00(?:\b|[^\p{L}\p{N}_])/u.test(headerName(header)));
     const c00AriaColumnIndex = c00Header?.getAttribute("aria-colindex") ?? null;
     const c00VisibleIndex = c00Header ? canonicalHeaders.indexOf(c00Header) : -1;
@@ -2367,7 +2412,12 @@ export function observeNotebookTrialIntegerProfile(input: {
     if (bounded) {
       const lowerBound = numericPoint(bounded[1]!, bounded[2]!);
       const upperBound = numericPoint(bounded[3]!, bounded[4]!);
-      if (lowerBound !== null && upperBound !== null && Number.isSafeInteger(lowerBound) && Number.isSafeInteger(upperBound)) {
+      if (
+        lowerBound !== null &&
+        upperBound !== null &&
+        Number.isSafeInteger(lowerBound) &&
+        Number.isSafeInteger(upperBound)
+      ) {
         return { distinct: { semantics: "approximate", lowerBound, upperBound } };
       }
     }
