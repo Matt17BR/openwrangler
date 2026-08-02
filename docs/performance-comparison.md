@@ -94,16 +94,13 @@ self-reported availability flag.
 
 Start on pointer activation of **Open in Open Wrangler** or **Open in Data Wrangler**. These actions follow the
 [public Data Wrangler workflow](https://code.visualstudio.com/docs/datascience/data-wrangler), not a private command.
-Stop when the newly selected
-custom/webview editor contains the expected grid/table, ordered sentinel headers and cells, a non-busy state, stable
-geometry across two animation frames, and no visible Quick Input, dialog, modal, or pointer obstruction. Merely
-creating a frame, returning from the kernel, or painting a loading shell is not readiness.
-
-The timer stops at the first stable, selected, unobstructed grid. The harness then checks that the grid reports the full
-source shape rather than a bounded notebook snapshot and uses a public wheel or **Page Down** interaction to prove that
-the visible row window changes. These correctness checks do not extend the open time. The harness returns to the first
-row before profiling. Failure to open the live 100,000- or 1,000,000-row dataframe is a correctness failure, not a fast
-result.
+Stop when the newly selected custom/webview editor contains the expected grid/table, ordered sentinel headers and
+cells, a non-busy state, stable geometry across two animation frames, and no visible Quick Input, dialog, modal, or
+pointer obstruction. The grid must also report the full source shape. A public wheel or **Page Down** interaction must
+change the visible row window, and a horizontal wheel interaction must change the visible column window. The timer
+stops after those interactions settle and the grid is still pointer-usable. Creating a frame, returning from the
+kernel, or painting a loading shell is not readiness. The harness returns to the first row before profiling. Failure
+to open and scroll the live 100,000- or 1,000,000-row dataframe is a correctness failure, not a fast result.
 
 ### Complete column profiles
 
@@ -114,9 +111,10 @@ evidence is either the integer `rowCount`, an unqualified exact `100%` field, or
 sampling label can finish the timing. It counts toward correctness only when its displayed confidence or error interval
 contains `rowCount`. Record a displayed approximate point without an interval as `approximate-unqualified`. Exclude it
 from the distinct-count check and the semantic-equivalence claim. Exact type, missing count, minimum, and maximum are
-still required. Stop after every column has supplied its final profile. Record the first useful `c00`
-profile and complete traversal relative both to profile activation and to the original workbench-open click so
-background work that began earlier cannot appear free.
+still required. Stop after every column has supplied its final profile. Record the first useful `c00` profile and
+complete traversal relative both to profile activation and to the original workbench-open click. The workbench-click
+measurements are the primary comparison. The activation-relative measurements remain descriptive. This keeps
+background profiling done while the grid opens or scrolls inside the measured journey.
 
 This is an end-to-end public-UI comparison, not a private request benchmark. The final report must disclose that
 Open Wrangler profiles progressively/on demand and whether Data Wrangler was observed to profile eagerly. Histograms

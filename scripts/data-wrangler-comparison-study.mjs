@@ -70,14 +70,11 @@ export const DATA_WRANGLER_STUDY_CELLS = Object.freeze([
 export const DATA_WRANGLER_STUDY_METRICS = Object.freeze([
   Object.freeze({ name: "inlinePreviewMs", threshold: 500, allowZero: false }),
   Object.freeze({ name: "workbenchOpenMs", threshold: 750, allowZero: false }),
-  Object.freeze({ name: "firstProfileMs", threshold: 750, allowZero: false }),
-  Object.freeze({ name: "completeProfileMs", threshold: 2_000, allowZero: false }),
+  Object.freeze({ name: "firstProfileFromWorkbenchClickMs", threshold: 750, allowZero: false }),
+  Object.freeze({ name: "completeProfileFromWorkbenchClickMs", threshold: 2_000, allowZero: false }),
   Object.freeze({ name: "completeTrialPssDeltaBytes", threshold: 256 * 1024 * 1024, allowZero: true })
 ]);
-export const DATA_WRANGLER_STUDY_DESCRIPTIVE_METRICS = Object.freeze([
-  "firstProfileFromWorkbenchClickMs",
-  "completeProfileFromWorkbenchClickMs"
-]);
+export const DATA_WRANGLER_STUDY_DESCRIPTIVE_METRICS = Object.freeze(["firstProfileMs", "completeProfileMs"]);
 export const DATA_WRANGLER_STUDY_REASON_CLASSES = Object.freeze([
   "fixture",
   "setup",
