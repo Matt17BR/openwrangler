@@ -22,6 +22,23 @@ Agent checkout lifecycle has a separate, small contract test:
   `0700`; ordinary Git-created files below it may follow the caller's umask without making a valid worktree unreadable
   to the lifecycle manager. A source-advance case proves that create copies the newly committed local base into the
   bare repository and checks out that exact commit without contacting `origin`.
+- `npm run checkout:legacy-audit -- <slug>` inspects only the fixed
+  `tmp/codex-checkpoints/<slug>` path derived from the bootstrap receipt. Tests prove that the command does not create a
+  journal or refresh the candidate index, that every ignored leaf belongs to the exact generated root/file allowlist,
+  and that undeclared ignored files, ordinary untracked work, tracked content below an allowed root, unsafe paths,
+  includes, external attributes/excludes, content filters, split/sparse indexes, worktree config, operation/private-ref
+  metadata, corrupt unreachable objects, partial/promisor state, and external Git state fail closed. Positive evidence
+  records strict full `git fsck` output hashes. The audit validates Git administration before starting Git, copies the
+  config, index, and refs into a bounded private snapshot, and runs later probes against that snapshot plus the pinned
+  object directory. A race test injects a clean filter after config capture and proves that its process never starts;
+  separate cases replace objects, refs, logs, the index, and config with external symlinks and fail before Git runs.
+  The audit pins the object directory rather than every object byte. A same-user process could still replace an object
+  during the read, so this status-only record can never authorize movement; the later recovery archive must read and
+  verify every object again.
+  `checkout:legacy-adopt` preflights every persisted JSON record, records two byte-identical full audits, reruns the same
+  audit immediately before a no-replace hard-link publication, and revalidates candidate identities afterward. An
+  interruption retains its numbered attempt for `checkout:legacy-status`; every result explicitly denies move and
+  cleanup authority. These commands never register, archive, move, or remove a legacy clone.
 - `npm run checkout:bootstrap` is explicit and runs only from the ordinary source checkout. It makes a standalone bare
   clone from the local source, records a normal `origin` fetch refspec, and runs strict `fsck` without contacting
   `origin`. Source-side create commands synchronize only the exact locally resolved base commit, then repeat the

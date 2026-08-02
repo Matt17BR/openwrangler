@@ -11,12 +11,16 @@ import {
   linkSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   opendirSync,
+  readlinkSync,
   readSync,
   realpathSync,
+  rmSync,
   statfsSync,
-  writeFileSync
+  writeFileSync,
+  writeSync
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +37,9 @@ const ARCHIVE_RECEIPT_PROTOCOL = "openwrangler-checkout-archive-v1";
 const ARCHIVE_COMPLETION_PROTOCOL = "openwrangler-checkout-archive-completion-v1";
 const QUARANTINE_EVENT_PROTOCOL = "openwrangler-checkout-quarantine-event-v1";
 const MANAGER_BOOTSTRAP_PROTOCOL = "openwrangler-checkout-manager-bootstrap-v1";
+const LEGACY_ADOPTION_PROTOCOL = "openwrangler-legacy-checkout-adoption-v1";
+const LEGACY_ADOPTION_REQUEST_PROTOCOL = "openwrangler-legacy-checkout-adoption-request-v1";
+const LEGACY_ADOPTION_COMPLETION_PROTOCOL = "openwrangler-legacy-checkout-adoption-completion-v1";
 const MAXIMUM_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_BUNDLE_HEADER_BYTES = 4 * 1024 * 1024;
 const ARCHIVE_SPACE_MULTIPLIER = 8n;
@@ -53,6 +60,17 @@ const MAXIMUM_WORKTREE_FIELD_BYTES = 8192;
 const MAXIMUM_ARCHIVE_ATTEMPTS = 8;
 const MAXIMUM_QUARANTINE_RECORDS = 128;
 const MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS = 8;
+const MAXIMUM_LEGACY_ADOPTION_ATTEMPTS = 8;
+const MAXIMUM_LEGACY_GENERATED_ITEMS = 64;
+const MAXIMUM_LEGACY_GENERATED_ENTRIES = 1_000_000;
+const MAXIMUM_LEGACY_GENERATED_DEPTH = 32;
+const MAXIMUM_LEGACY_GENERATED_BYTES = 32n * 1024n * 1024n * 1024n;
+const MAXIMUM_LEGACY_ADMIN_ENTRIES = 1_000_000;
+const MAXIMUM_LEGACY_ADMIN_DEPTH = 64;
+const MAXIMUM_LEGACY_CONFIG_BYTES = 4 * 1024 * 1024;
+const MAXIMUM_LEGACY_INDEX_BYTES = 512 * 1024 * 1024;
+const MAXIMUM_LEGACY_PACKED_REFS_BYTES = 64 * 1024 * 1024;
+const MAXIMUM_LEGACY_REF_BYTES = 64 * 1024;
 const MAXIMUM_MANAGER_REPOSITORY_ENTRIES = 1_000_000;
 const MAXIMUM_MANAGER_REPOSITORY_DEPTH = 16;
 const MAXIMUM_ARCHIVE_DIRECTORIES = MAXIMUM_ENTRIES * MAXIMUM_ARCHIVE_ATTEMPTS;
@@ -75,6 +93,8 @@ const QUARANTINE_RECORD_PATTERN =
   /^([0-9]{8})\.(quarantine-intent|quarantine-result|restore-intent|restore-result)\.([0-9a-f]{32})\.json$/u;
 const MANAGER_BOOTSTRAP_ATTEMPT_PATTERN = /^[0-9]{8}-[0-9a-f]{32}$/u;
 const MANAGER_BOOTSTRAP_SLOT_PATTERN = /^slot-([0-9]{8})$/u;
+const LEGACY_ADOPTION_ATTEMPT_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([0-9]{8})$/u;
+const LEGACY_ADOPTION_ENTRY_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.json$/u;
 const MANAGER_REMOTE_FETCH = "+refs/heads/*:refs/remotes/origin/*";
 
 export class CheckoutLifecycleError extends Error {
@@ -454,8 +474,8 @@ function readJson(path, maximumBytes, label, privateMode = 0o600n, expectedLinks
   }
 }
 
-function readJsonReceipt(path, maximumBytes, label) {
-  const file = readBoundedFile(path, maximumBytes, label, 0o600n);
+function readJsonReceipt(path, maximumBytes, label, expectedLinks = 1n) {
+  const file = readBoundedFile(path, maximumBytes, label, 0o600n, expectedLinks);
   try {
     rejectDuplicateJsonKeys(file.text, label);
     return Object.freeze({
@@ -501,6 +521,19 @@ function writeJsonExclusive(path, value, expectedParentIdentity = undefined) {
   }
 }
 
+function assertPersistedJsonFits(value, label) {
+  let byteLength;
+  try {
+    byteLength = Buffer.byteLength(JSON.stringify(value), "utf8") + 1;
+  } catch {
+    fail("legacy-adoption-record-too-large", `${label} cannot be serialized safely.`);
+  }
+  if (byteLength > MAXIMUM_ENTRY_BYTES) {
+    fail("legacy-adoption-record-too-large", `${label} exceeds the persistent journal limit.`);
+  }
+  return byteLength;
+}
+
 function defaultRun(command, args, options = {}) {
   const stdoutFd = options.stdoutFd;
   const result = spawnSync(command, args, {
@@ -527,6 +560,17 @@ function withPrivateUmask(callback) {
   } finally {
     process.umask(previous);
   }
+}
+
+export function requireSynchronousLifecycleResult(value) {
+  if (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    typeof value.then === "function"
+  ) {
+    fail("async-lifecycle-operation", "A synchronous lifecycle lock callback returned a Promise or thenable.");
+  }
+  return value;
 }
 
 function discoverRawRepository(run, cwd) {
@@ -739,7 +783,7 @@ function assertSelfContainedManagerRepository(run, repositoryPath, expectedRemot
 }
 
 function validateManagerReceipt(receiptPath, rawRepository, run, route) {
-  const receipt = readJson(receiptPath, MAXIMUM_ENTRY_BYTES, "Checkout manager bootstrap receipt", 0o600n, 2n);
+  const receipt = readJsonReceipt(receiptPath, MAXIMUM_ENTRY_BYTES, "Checkout manager bootstrap receipt", 2n);
   exactKeys(
     receipt.value,
     [
@@ -852,12 +896,14 @@ function validateManagerReceipt(receiptPath, rawRepository, run, route) {
     fail("invalid-manager-bootstrap", "The checkout manager attempt journal is incomplete or ambiguous.");
   }
   const receiptMetadata = lstatSync(receiptPath, { bigint: true });
-  const attemptReceipt = readJson(expectedReceiptPath, MAXIMUM_ENTRY_BYTES, "Manager attempt receipt", 0o600n, 2n);
-  const fixedReceipt = readJson(fixedReceiptPath, MAXIMUM_ENTRY_BYTES, "Manager fixed receipt", 0o600n, 2n);
+  const attemptReceipt = readJsonReceipt(expectedReceiptPath, MAXIMUM_ENTRY_BYTES, "Manager attempt receipt", 2n);
+  const fixedReceipt = readJsonReceipt(fixedReceiptPath, MAXIMUM_ENTRY_BYTES, "Manager fixed receipt", 2n);
   if (
     receiptMetadata.nlink !== 2n ||
     !sameIdentity(attemptReceipt.identity, fixedReceipt.identity) ||
-    !isDeepStrictEqual(attemptReceipt.value, fixedReceipt.value)
+    !isDeepStrictEqual(attemptReceipt.value, fixedReceipt.value) ||
+    attemptReceipt.byteLength !== fixedReceipt.byteLength ||
+    attemptReceipt.sha256 !== fixedReceipt.sha256
   ) {
     fail("manager-bootstrap-drift", "The checkout manager receipt lost its exact publication link.");
   }
@@ -910,8 +956,20 @@ function validateManagerReceipt(receiptPath, rawRepository, run, route) {
     commonGitDirectory: expectedLayout.repository,
     identity: managerRepository.identity,
     managerRoot: expectedLayout.state,
-    bootstrapReceipt: receiptPath,
+    bootstrapReceipt: fixedReceiptPath,
+    bootstrapPublication: Object.freeze({
+      path: fixedReceiptPath,
+      identity: fixedReceipt.identity,
+      byteLength: fixedReceipt.byteLength,
+      sha256: fixedReceipt.sha256
+    }),
     managerRemote: value.remote.url,
+    bootstrapSourceRepository: Object.freeze({
+      topLevel: value.source.topLevel,
+      topLevelIdentity: value.source.topLevelIdentity,
+      commonGitDirectory: value.source.commonGitDirectory,
+      commonGitIdentity: value.source.commonGitIdentity
+    }),
     sourceRepository:
       route === "source"
         ? Object.freeze({
@@ -1272,6 +1330,7 @@ function auditGitEnvironment() {
     ...env,
     GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
+    GIT_ATTR_NOSYSTEM: "1",
     GIT_NO_LAZY_FETCH: "1",
     GIT_NO_REPLACE_OBJECTS: "1",
     GIT_OPTIONAL_LOCKS: "0",
@@ -1566,6 +1625,28 @@ function unsafeArchiveConfigKeys(output) {
   );
 }
 
+function unsafeLegacyConfigKeys(output) {
+  return Object.freeze(
+    output
+      .split("\0")
+      .filter(Boolean)
+      .map((key) => key.toLowerCase())
+      .filter(
+        (key) =>
+          key === "include.path" ||
+          /^includeif\..+\.path$/u.test(key) ||
+          key === "extensions.worktreeconfig" ||
+          key === "core.worktree" ||
+          key === "core.attributesfile" ||
+          key === "core.excludesfile" ||
+          key === "core.sparsecheckout" ||
+          key === "core.sparsecheckoutcone" ||
+          key === "core.splitindex" ||
+          key === "index.sparse"
+      )
+  );
+}
+
 function entryExistsNoFollow(path, label) {
   try {
     lstatSync(path, { bigint: true });
@@ -1587,6 +1668,421 @@ function decimalBigInt(value, label) {
 function belongsToGeneratedRoot(path, roots) {
   const normalized = path.endsWith("/") ? path.slice(0, -1) : path;
   return roots.some((root) => normalized === root || normalized.startsWith(`${root}/`));
+}
+
+function normalizeLegacyGeneratedPath(value, label) {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 1024 ||
+    value.includes("\\") ||
+    [...value].some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint <= 0x1f || codePoint === 0x7f || character === ":";
+    }) ||
+    posix.isAbsolute(value) ||
+    posix.normalize(value) !== value
+  ) {
+    fail("invalid-legacy-generated-path", `${label} must be one canonical repository-relative path.`);
+  }
+  const components = value.split("/");
+  if (
+    components.length > 32 ||
+    components.some(
+      (component) =>
+        component === "" ||
+        component === "." ||
+        component === ".." ||
+        component.toLowerCase() === ".git" ||
+        component.endsWith(".") ||
+        component.endsWith(" ")
+    )
+  ) {
+    fail("invalid-legacy-generated-path", `${label} contains an unsafe path component.`);
+  }
+  return value;
+}
+
+function normalizeLegacyGeneratedAllowlist(generatedRoots = [], generatedFiles = []) {
+  if (
+    !Array.isArray(generatedRoots) ||
+    !Array.isArray(generatedFiles) ||
+    generatedRoots.length + generatedFiles.length > MAXIMUM_LEGACY_GENERATED_ITEMS
+  ) {
+    fail("invalid-legacy-generated-path", "The legacy generated allowlist is too large.");
+  }
+  const items = [
+    ...generatedRoots.map((path) => ({
+      kind: "directory",
+      path: normalizeLegacyGeneratedPath(path, "Generated root")
+    })),
+    ...generatedFiles.map((path) => ({ kind: "file", path: normalizeLegacyGeneratedPath(path, "Generated file") }))
+  ]
+    .map((item) => ({ ...item, comparisonKey: item.path.toLowerCase() }))
+    .sort(
+      (left, right) =>
+        Buffer.compare(Buffer.from(left.comparisonKey), Buffer.from(right.comparisonKey)) ||
+        Buffer.compare(Buffer.from(left.path), Buffer.from(right.path))
+    );
+  if (new Set(items.map(({ comparisonKey }) => comparisonKey)).size !== items.length) {
+    fail("invalid-legacy-generated-path", "The legacy generated allowlist contains a duplicate path.");
+  }
+  for (const [index, item] of items.entries()) {
+    for (const other of items.slice(index + 1)) {
+      if (
+        other.comparisonKey.startsWith(`${item.comparisonKey}/`) ||
+        item.comparisonKey.startsWith(`${other.comparisonKey}/`)
+      ) {
+        fail("invalid-legacy-generated-path", "Legacy generated allowlist entries may not overlap.");
+      }
+    }
+  }
+  return Object.freeze(items.map(({ kind, path }) => Object.freeze({ kind, path })));
+}
+
+export function validateLegacyIndexStages(output) {
+  if (typeof output !== "string") {
+    fail("legacy-audit-not-eligible", "The candidate index stage output is malformed.");
+  }
+  const stages = output.split("\0").filter(Boolean);
+  if (
+    stages.some((line) => {
+      const match = /^(\d{6}) [0-9a-f]{40,64} ([0-3])\t/u.exec(line);
+      return match === null || ["040000", "160000"].includes(match[1]) || match[2] !== "0";
+    })
+  ) {
+    fail("legacy-audit-not-eligible", "The candidate index contains a directory, gitlink, or unresolved stage.");
+  }
+  return stages.length;
+}
+
+function copyLegacyAdminFile(sourcePath, destinationPath, label, maximumBytes) {
+  let sourceDescriptor;
+  let destinationDescriptor;
+  try {
+    sourceDescriptor = openSync(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = fstatSync(sourceDescriptor, { bigint: true });
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      !currentUserOwns(before) ||
+      before.size < 0n ||
+      before.size > BigInt(maximumBytes) ||
+      before.size > BigInt(Number.MAX_SAFE_INTEGER)
+    ) {
+      fail("legacy-audit-not-eligible", `${label} is not one bounded owned regular file.`);
+    }
+    destinationDescriptor = openSync(
+      destinationPath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+    fchmodSync(destinationDescriptor, 0o600);
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    const size = Number(before.size);
+    let offset = 0;
+    while (offset < size) {
+      const count = readSync(sourceDescriptor, buffer, 0, Math.min(buffer.length, size - offset), offset);
+      if (count === 0) fail("legacy-checkout-changed", `${label} changed while it was snapshotted.`);
+      hash.update(buffer.subarray(0, count));
+      let written = 0;
+      while (written < count) {
+        written += writeSync(destinationDescriptor, buffer, written, count - written);
+      }
+      offset += count;
+    }
+    fsyncSync(destinationDescriptor);
+    const after = fstatSync(sourceDescriptor, { bigint: true });
+    if (
+      !sameIdentity(identityOf(before), identityOf(after)) ||
+      before.size !== after.size ||
+      before.mode !== after.mode ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs
+    ) {
+      fail("legacy-checkout-changed", `${label} changed while it was snapshotted.`);
+    }
+    revalidatePathIdentity(sourcePath, identityOf(before), label);
+    return Object.freeze({
+      path: sourcePath,
+      identity: identityOf(before),
+      size: before.size.toString(),
+      mode: before.mode.toString(),
+      mtimeNs: before.mtimeNs.toString(),
+      ctimeNs: before.ctimeNs.toString(),
+      sha256: hash.digest("hex"),
+      maximumBytes
+    });
+  } catch (error) {
+    if (error instanceof CheckoutLifecycleError) throw error;
+    fail("legacy-audit-not-eligible", `${label} could not be snapshotted safely: ${error.message}`);
+  } finally {
+    if (destinationDescriptor !== undefined) closeSync(destinationDescriptor);
+    if (sourceDescriptor !== undefined) closeSync(sourceDescriptor);
+  }
+}
+
+function revalidateLegacyAdminFile(receipt, label) {
+  let descriptor;
+  try {
+    descriptor = openSync(receipt.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = fstatSync(descriptor, { bigint: true });
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      !currentUserOwns(before) ||
+      !sameIdentity(identityOf(before), receipt.identity) ||
+      before.size.toString() !== receipt.size ||
+      before.mode.toString() !== receipt.mode ||
+      before.mtimeNs.toString() !== receipt.mtimeNs ||
+      before.ctimeNs.toString() !== receipt.ctimeNs ||
+      before.size > BigInt(receipt.maximumBytes) ||
+      before.size > BigInt(Number.MAX_SAFE_INTEGER)
+    ) {
+      fail("legacy-checkout-changed", `${label} changed after its snapshot.`);
+    }
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    const size = Number(before.size);
+    let offset = 0;
+    while (offset < size) {
+      const count = readSync(descriptor, buffer, 0, Math.min(buffer.length, size - offset), offset);
+      if (count === 0) fail("legacy-checkout-changed", `${label} changed while it was revalidated.`);
+      hash.update(buffer.subarray(0, count));
+      offset += count;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      !sameIdentity(identityOf(before), identityOf(after)) ||
+      before.size !== after.size ||
+      before.mode !== after.mode ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs ||
+      hash.digest("hex") !== receipt.sha256
+    ) {
+      fail("legacy-checkout-changed", `${label} changed while it was revalidated.`);
+    }
+    revalidatePathIdentity(receipt.path, receipt.identity, label);
+  } catch (error) {
+    if (error instanceof CheckoutLifecycleError) throw error;
+    fail("legacy-checkout-changed", `${label} could not be revalidated safely: ${error.message}`);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function inspectLegacyAdminTree(sourceRoot, label, gitDirectory, options = {}) {
+  const { destinationRoot, copyFiles = false, maximumFileBytes = MAXIMUM_LEGACY_REF_BYTES } = options;
+  let entryCount = 0;
+  const files = [];
+
+  function visit(sourcePath, destinationPath, depth) {
+    if (depth > MAXIMUM_LEGACY_ADMIN_DEPTH) {
+      fail("legacy-audit-not-eligible", `${label} is nested too deeply.`);
+    }
+    const metadata = lstatSync(sourcePath, { bigint: true });
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !currentUserOwns(metadata) ||
+      realpathSync(sourcePath) !== resolve(sourcePath) ||
+      !(sourcePath === gitDirectory || isContained(gitDirectory, sourcePath))
+    ) {
+      fail("legacy-audit-not-eligible", `${label} contains an external or unsafe directory.`);
+    }
+    entryCount += 1;
+    if (entryCount > MAXIMUM_LEGACY_ADMIN_ENTRIES) {
+      fail("legacy-audit-not-eligible", `${label} contains too many entries.`);
+    }
+    if (destinationPath !== undefined) {
+      mkdirSync(destinationPath, { mode: 0o700 });
+      chmodSync(destinationPath, 0o700);
+    }
+    const identity = identityOf(metadata);
+    const entries = readDirectoryBounded(sourcePath, MAXIMUM_LEGACY_ADMIN_ENTRIES, label).sort((left, right) =>
+      Buffer.compare(Buffer.from(left.name), Buffer.from(right.name))
+    );
+    for (const item of entries) {
+      const childSource = join(sourcePath, item.name);
+      const childDestination = destinationPath === undefined ? undefined : join(destinationPath, item.name);
+      const child = lstatSync(childSource, { bigint: true });
+      entryCount += 1;
+      if (entryCount > MAXIMUM_LEGACY_ADMIN_ENTRIES) {
+        fail("legacy-audit-not-eligible", `${label} contains too many entries.`);
+      }
+      if (!currentUserOwns(child) || child.isSymbolicLink()) {
+        fail("legacy-audit-not-eligible", `${label} contains an external or unsafe entry.`);
+      }
+      if (child.isDirectory()) {
+        entryCount -= 1;
+        visit(childSource, childDestination, depth + 1);
+      } else if (child.isFile()) {
+        if (copyFiles) {
+          files.push(copyLegacyAdminFile(childSource, childDestination, `${label} file`, maximumFileBytes));
+        }
+      } else {
+        fail("legacy-audit-not-eligible", `${label} contains a special file.`);
+      }
+    }
+    revalidatePathIdentity(sourcePath, identity, label, "directory");
+    return identity;
+  }
+
+  const identity = visit(sourceRoot, destinationRoot, 0);
+  return Object.freeze({ identity, files: Object.freeze(files), entryCount });
+}
+
+function legacyPathIsAllowed(path, allowlist) {
+  const normalized = path.endsWith("/") ? path.slice(0, -1) : path;
+  return allowlist.some(
+    (item) => normalized === item.path || (item.kind === "directory" && normalized.startsWith(`${item.path}/`))
+  );
+}
+
+function captureLegacyGeneratedFile(path, relativePath) {
+  let descriptor;
+  try {
+    const parent = dirname(path);
+    const parentMetadata = lstatSync(parent, { bigint: true });
+    const parentIdentity = identityOf(parentMetadata);
+    if (
+      !parentMetadata.isDirectory() ||
+      parentMetadata.isSymbolicLink() ||
+      !currentUserOwns(parentMetadata) ||
+      realpathSync(parent) !== resolve(parent)
+    ) {
+      fail("legacy-generated-inventory-unsafe", "A generated file has an unsafe parent directory.");
+    }
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = fstatSync(descriptor, { bigint: true });
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      !currentUserOwns(before) ||
+      before.size < 0n ||
+      before.size > MAXIMUM_LEGACY_GENERATED_BYTES ||
+      before.size > BigInt(Number.MAX_SAFE_INTEGER)
+    ) {
+      fail("legacy-generated-inventory-unsafe", "A generated file is not one bounded owned regular file.");
+    }
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    const size = Number(before.size);
+    let offset = 0;
+    while (offset < size) {
+      const count = readSync(descriptor, buffer, 0, Math.min(buffer.length, size - offset), offset);
+      if (count === 0) fail("legacy-generated-inventory-changed", "A generated file changed while it was read.");
+      hash.update(buffer.subarray(0, count));
+      offset += count;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      !sameIdentity(identityOf(before), identityOf(after)) ||
+      before.size !== after.size ||
+      before.mode !== after.mode ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs
+    ) {
+      fail("legacy-generated-inventory-changed", "A generated file changed while it was read.");
+    }
+    revalidatePathIdentity(path, identityOf(before), "Generated file");
+    revalidatePathIdentity(parent, parentIdentity, "Generated file parent", "directory");
+    return Object.freeze({
+      record: Object.freeze({
+        kind: "file",
+        path: relativePath,
+        mode: Number(before.mode & 0o7777n),
+        byteLength: size.toString(),
+        sha256: hash.digest("hex")
+      }),
+      byteLength: before.size
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function captureLegacyGeneratedInventory(checkoutPath, allowlist) {
+  const aggregate = createHash("sha256");
+  let entryCount = 0;
+  let byteLength = 0n;
+  const add = (record, bytes = 0n) => {
+    entryCount += 1;
+    byteLength += bytes;
+    if (entryCount > MAXIMUM_LEGACY_GENERATED_ENTRIES || byteLength > MAXIMUM_LEGACY_GENERATED_BYTES) {
+      fail("legacy-generated-inventory-too-large", "The generated inventory exceeds its fixed limits.");
+    }
+    aggregate.update(`${JSON.stringify(record)}\n`);
+  };
+
+  function visitDirectory(path, relativePath, depth) {
+    if (depth > MAXIMUM_LEGACY_GENERATED_DEPTH) {
+      fail("legacy-generated-inventory-too-deep", "The generated inventory is nested too deeply.");
+    }
+    const before = lstatSync(path, { bigint: true });
+    if (
+      !before.isDirectory() ||
+      before.isSymbolicLink() ||
+      !currentUserOwns(before) ||
+      realpathSync(path) !== resolve(path)
+    ) {
+      fail("legacy-generated-inventory-unsafe", "A generated root contains an unsafe directory.");
+    }
+    const identity = identityOf(before);
+    add({ kind: "directory", path: relativePath, mode: Number(before.mode & 0o7777n) });
+    const entries = readDirectoryBounded(path, MAXIMUM_LEGACY_GENERATED_ENTRIES, "The generated inventory").sort(
+      (left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name))
+    );
+    for (const item of entries) {
+      const childPath = join(path, item.name);
+      const childRelative = `${relativePath}/${item.name}`;
+      const metadata = lstatSync(childPath, { bigint: true });
+      if (!currentUserOwns(metadata)) {
+        fail("legacy-generated-inventory-unsafe", "A generated root contains an entry owned by another user.");
+      }
+      if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+        visitDirectory(childPath, childRelative, depth + 1);
+      } else if (metadata.isFile() && !metadata.isSymbolicLink()) {
+        const file = captureLegacyGeneratedFile(childPath, childRelative);
+        add(file.record, file.byteLength);
+      } else if (metadata.isSymbolicLink()) {
+        const target = readlinkSync(childPath, { encoding: "buffer" });
+        const after = lstatSync(childPath, { bigint: true });
+        if (
+          metadata.nlink !== 1n ||
+          !sameIdentity(identityOf(metadata), identityOf(after)) ||
+          metadata.mtimeNs !== after.mtimeNs ||
+          metadata.ctimeNs !== after.ctimeNs
+        ) {
+          fail("legacy-generated-inventory-changed", "A generated symbolic link changed while it was read.");
+        }
+        add(
+          {
+            kind: "symlink",
+            path: childRelative,
+            byteLength: target.byteLength.toString(),
+            sha256: sha256(target)
+          },
+          BigInt(target.byteLength)
+        );
+      } else {
+        fail("legacy-generated-inventory-unsafe", "A generated root contains a special file.");
+      }
+    }
+    revalidatePathIdentity(path, identity, "Generated directory", "directory");
+  }
+
+  for (const item of allowlist) {
+    const path = join(checkoutPath, ...item.path.split("/"));
+    if (item.kind === "directory") {
+      visitDirectory(path, item.path, 0);
+    } else {
+      const file = captureLegacyGeneratedFile(path, item.path);
+      add(file.record, file.byteLength);
+    }
+  }
+  return Object.freeze({ entryCount, byteLength: byteLength.toString(), sha256: aggregate.digest("hex") });
 }
 
 function readDirectoryBounded(path, maximumEntries, label) {
@@ -1705,7 +2201,10 @@ function normalizePaths(root) {
     retirements: join(managerRoot, "retirements"),
     archives: join(managerRoot, "archives"),
     quarantines: join(managerRoot, "quarantines"),
-    quarantinedCheckouts: join(managerRoot, "quarantined-checkouts")
+    quarantinedCheckouts: join(managerRoot, "quarantined-checkouts"),
+    legacyAdoptions: join(managerRoot, "legacy-adoptions"),
+    legacyAdoptionAttempts: join(managerRoot, "legacy-adoptions", "attempts"),
+    legacyAdoptionEntries: join(managerRoot, "legacy-adoptions", "entries")
   });
 }
 
@@ -1837,6 +2336,950 @@ export function createCheckoutManager(options = {}) {
     }
     assertPrivateDirectory(paths.archives, paths.archives);
     revalidatePathIdentity(paths.archives, identity, paths.archives, "directory");
+  }
+
+  function initializeLegacyAdoptionJournal() {
+    for (const path of [paths.legacyAdoptions, paths.legacyAdoptionAttempts, paths.legacyAdoptionEntries]) {
+      const identity = managedIdentities.get(path);
+      if (identity === undefined) managedIdentities.set(path, ensurePrivateDirectory(path));
+      else {
+        assertPrivateDirectory(path, path);
+        revalidatePathIdentity(path, identity, path, "directory");
+      }
+    }
+  }
+
+  function captureLegacyDirectory(path, label, expectedIdentity = undefined) {
+    let metadata;
+    try {
+      metadata = lstatSync(path, { bigint: true });
+    } catch {
+      fail("legacy-checkout-not-found", `${label} is missing.`);
+    }
+    const identity = identityOf(metadata);
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !currentUserOwns(metadata) ||
+      realpathSync(path) !== resolve(path) ||
+      (expectedIdentity !== undefined && !sameIdentity(identity, expectedIdentity))
+    ) {
+      fail("legacy-checkout-unsafe", `${label} is not the expected owned canonical directory.`);
+    }
+    return identity;
+  }
+
+  function legacyProhibitedAdminPaths(gitDirectory) {
+    return Object.freeze([
+      join(gitDirectory, "modules"),
+      join(gitDirectory, "worktrees"),
+      join(gitDirectory, "shallow"),
+      join(gitDirectory, "index.lock"),
+      join(gitDirectory, "HEAD.lock"),
+      join(gitDirectory, "config.lock"),
+      join(gitDirectory, "packed-refs.lock"),
+      join(gitDirectory, "shallow.lock"),
+      join(gitDirectory, "MERGE_HEAD"),
+      join(gitDirectory, "MERGE_MSG"),
+      join(gitDirectory, "MERGE_MODE"),
+      join(gitDirectory, "MERGE_AUTOSTASH"),
+      join(gitDirectory, "MERGE_RR"),
+      join(gitDirectory, "AUTO_MERGE"),
+      join(gitDirectory, "CHERRY_PICK_HEAD"),
+      join(gitDirectory, "REVERT_HEAD"),
+      join(gitDirectory, "REBASE_HEAD"),
+      join(gitDirectory, "REBASE_AUTOSTASH"),
+      join(gitDirectory, "SQUASH_MSG"),
+      join(gitDirectory, "BISECT_LOG"),
+      join(gitDirectory, "BISECT_HEAD"),
+      join(gitDirectory, "BISECT_START"),
+      join(gitDirectory, "BISECT_NAMES"),
+      join(gitDirectory, "BISECT_TERMS"),
+      join(gitDirectory, "BISECT_EXPECTED_REV"),
+      join(gitDirectory, "BISECT_ANCESTORS_OK"),
+      join(gitDirectory, "BISECT_RUN"),
+      join(gitDirectory, "REWRITTEN_LIST"),
+      join(gitDirectory, "REWRITTEN_PENDING"),
+      join(gitDirectory, "rebase-merge"),
+      join(gitDirectory, "rebase-apply"),
+      join(gitDirectory, "sequencer")
+    ]);
+  }
+
+  function createLegacyAuditSnapshot(candidate) {
+    const gitRootEntries = readDirectoryBounded(
+      candidate.gitDirectory,
+      MAXIMUM_LEGACY_ADMIN_ENTRIES,
+      "The legacy Git directory"
+    );
+    if (
+      gitRootEntries.some(
+        (item) => item.name.toLowerCase() === "config.worktree" || item.name.toLowerCase().startsWith("sharedindex.")
+      ) ||
+      legacyProhibitedAdminPaths(candidate.gitDirectory).some((path) =>
+        entryExistsNoFollow(path, "Legacy Git metadata")
+      )
+    ) {
+      fail("legacy-audit-not-eligible", "The candidate has unsupported local Git or operation state.");
+    }
+
+    const auditRoot = withPrivateUmask(() => mkdtempSync(join(paths.root, ".legacy-audit-")));
+    chmodSync(auditRoot, 0o700);
+    const auditRootIdentity = assertPrivateDirectory(auditRoot, "Legacy audit workspace");
+    const shadowGitDirectory = join(auditRoot, "git");
+    mkdirSync(shadowGitDirectory, { mode: 0o700 });
+    chmodSync(shadowGitDirectory, 0o700);
+    const shadowGitIdentity = assertPrivateDirectory(shadowGitDirectory, "Legacy audit Git snapshot");
+    try {
+      const objectDirectory = join(candidate.gitDirectory, "objects");
+      const refsDirectory = join(candidate.gitDirectory, "refs");
+      const logsDirectory = join(candidate.gitDirectory, "logs");
+      const infoDirectory = join(candidate.gitDirectory, "info");
+      const objects = inspectLegacyAdminTree(objectDirectory, "The legacy object store", candidate.gitDirectory);
+      const refs = inspectLegacyAdminTree(refsDirectory, "The legacy refs", candidate.gitDirectory, {
+        destinationRoot: join(shadowGitDirectory, "refs"),
+        copyFiles: true,
+        maximumFileBytes: MAXIMUM_LEGACY_REF_BYTES
+      });
+      const logs = inspectLegacyAdminTree(logsDirectory, "The legacy reflogs", candidate.gitDirectory);
+      const info = entryExistsNoFollow(infoDirectory, "The legacy Git info directory")
+        ? inspectLegacyAdminTree(infoDirectory, "The legacy Git info directory", candidate.gitDirectory)
+        : undefined;
+      if (
+        [
+          join(objectDirectory, "info", "alternates"),
+          join(objectDirectory, "info", "http-alternates"),
+          join(infoDirectory, "grafts")
+        ].some((path) => entryExistsNoFollow(path, "Legacy Git metadata"))
+      ) {
+        fail("legacy-audit-not-eligible", "The candidate uses external or replacement object state.");
+      }
+      const config = copyLegacyAdminFile(
+        join(candidate.gitDirectory, "config"),
+        join(shadowGitDirectory, "config"),
+        "Legacy configuration",
+        MAXIMUM_LEGACY_CONFIG_BYTES
+      );
+      const index = copyLegacyAdminFile(
+        join(candidate.gitDirectory, "index"),
+        join(shadowGitDirectory, "index"),
+        "Legacy index",
+        MAXIMUM_LEGACY_INDEX_BYTES
+      );
+      const head = copyLegacyAdminFile(
+        join(candidate.gitDirectory, "HEAD"),
+        join(shadowGitDirectory, "HEAD"),
+        "Legacy HEAD file",
+        MAXIMUM_WORKTREE_FIELD_BYTES
+      );
+      let packedRefs;
+      const packedRefsPath = join(candidate.gitDirectory, "packed-refs");
+      if (entryExistsNoFollow(packedRefsPath, "Legacy packed refs")) {
+        packedRefs = copyLegacyAdminFile(
+          packedRefsPath,
+          join(shadowGitDirectory, "packed-refs"),
+          "Legacy packed refs",
+          MAXIMUM_LEGACY_PACKED_REFS_BYTES
+        );
+      }
+      const packDirectory = join(objectDirectory, "pack");
+      if (
+        entryExistsNoFollow(packDirectory, "Legacy pack directory") &&
+        readDirectoryBounded(packDirectory, MAXIMUM_ARCHIVE_PACK_FILES, "The legacy pack directory").some((item) =>
+          item.name.toLowerCase().endsWith(".promisor")
+        )
+      ) {
+        fail("legacy-audit-not-eligible", "The candidate contains a promisor pack.");
+      }
+      fsyncDirectory(shadowGitDirectory);
+      revalidatePathIdentity(auditRoot, auditRootIdentity, "Legacy audit workspace", "directory");
+      revalidatePathIdentity(shadowGitDirectory, shadowGitIdentity, "Legacy audit Git snapshot", "directory");
+      return Object.freeze({
+        root: auditRoot,
+        rootIdentity: auditRootIdentity,
+        gitDirectory: shadowGitDirectory,
+        gitIdentity: shadowGitIdentity,
+        checkout: candidate.checkout,
+        sourceGitDirectory: candidate.gitDirectory,
+        sourceGitIdentity: candidate.gitIdentity,
+        objectDirectory,
+        objectsIdentity: objects.identity,
+        refsDirectory,
+        refsIdentity: refs.identity,
+        logsDirectory,
+        logsIdentity: logs.identity,
+        infoDirectory: info === undefined ? undefined : infoDirectory,
+        infoIdentity: info?.identity,
+        config,
+        index,
+        head,
+        packedRefs,
+        refFiles: refs.files,
+        worktreeReceipt: JSON.stringify({
+          kind: "standalone-dot-git-directory",
+          checkout: candidate.checkout,
+          checkoutIdentity: candidate.checkoutIdentity,
+          gitDirectory: candidate.gitDirectory,
+          gitDirectoryIdentity: candidate.gitIdentity
+        })
+      });
+    } catch (error) {
+      revalidatePathIdentity(auditRoot, auditRootIdentity, "Legacy audit workspace", "directory");
+      rmSync(auditRoot, { recursive: true, force: false });
+      fsyncDirectory(paths.root);
+      throw error;
+    }
+  }
+
+  function revalidateLegacyAuditSnapshot(snapshot) {
+    revalidatePathIdentity(
+      snapshot.sourceGitDirectory,
+      snapshot.sourceGitIdentity,
+      "The legacy Git directory",
+      "directory"
+    );
+    revalidatePathIdentity(snapshot.objectDirectory, snapshot.objectsIdentity, "The legacy object store", "directory");
+    revalidatePathIdentity(snapshot.refsDirectory, snapshot.refsIdentity, "The legacy refs", "directory");
+    revalidatePathIdentity(snapshot.logsDirectory, snapshot.logsIdentity, "The legacy reflogs", "directory");
+    if (snapshot.infoDirectory !== undefined) {
+      revalidatePathIdentity(
+        snapshot.infoDirectory,
+        snapshot.infoIdentity,
+        "The legacy Git info directory",
+        "directory"
+      );
+    }
+    revalidateLegacyAdminFile(snapshot.config, "Legacy configuration");
+    revalidateLegacyAdminFile(snapshot.index, "Legacy index");
+    revalidateLegacyAdminFile(snapshot.head, "Legacy HEAD file");
+    if (snapshot.packedRefs !== undefined) revalidateLegacyAdminFile(snapshot.packedRefs, "Legacy packed refs");
+    for (const ref of snapshot.refFiles) revalidateLegacyAdminFile(ref, "Legacy ref");
+    revalidatePathIdentity(snapshot.root, snapshot.rootIdentity, "Legacy audit workspace", "directory");
+    revalidatePathIdentity(snapshot.gitDirectory, snapshot.gitIdentity, "Legacy audit Git snapshot", "directory");
+  }
+
+  function removeLegacyAuditSnapshot(snapshot) {
+    revalidatePathIdentity(snapshot.root, snapshot.rootIdentity, "Legacy audit workspace", "directory");
+    if (!isContained(paths.root, snapshot.root) || dirname(snapshot.root) !== paths.root) {
+      fail("legacy-checkout-changed", "The legacy audit workspace escaped its private parent.");
+    }
+    rmSync(snapshot.root, { recursive: true, force: false });
+    fsyncDirectory(paths.root);
+  }
+
+  function legacyCandidatePaths(slug) {
+    assertSlug(slug);
+    const source = repository.bootstrapSourceRepository;
+    if (source === undefined) {
+      fail("legacy-bootstrap-required", "Legacy checkout inspection requires the self-contained checkout manager.");
+    }
+    captureLegacyDirectory(source.topLevel, "The bootstrap source", source.topLevelIdentity);
+    revalidatePathIdentity(
+      source.commonGitDirectory,
+      source.commonGitIdentity,
+      "The bootstrap source Git directory",
+      "directory"
+    );
+    const parent = join(source.topLevel, "tmp", "codex-checkpoints");
+    const parentIdentity = captureLegacyDirectory(parent, "The legacy checkout parent");
+    const checkout = join(parent, slug);
+    if (dirname(checkout) !== parent || !isContained(parent, checkout)) {
+      fail("legacy-checkout-unsafe", "The legacy checkout path is outside its fixed parent.");
+    }
+    const checkoutIdentity = captureLegacyDirectory(checkout, "The legacy checkout");
+    const gitDirectory = join(checkout, ".git");
+    const gitIdentity = captureLegacyDirectory(gitDirectory, "The legacy checkout Git directory");
+    revalidatePathIdentity(parent, parentIdentity, "The legacy checkout parent", "directory");
+    return Object.freeze({
+      source,
+      parent,
+      parentIdentity,
+      checkout,
+      checkoutIdentity,
+      gitDirectory,
+      gitIdentity
+    });
+  }
+
+  function requireLegacyGit(snapshot, args, label, options = {}) {
+    const result = run(
+      "git",
+      [
+        "--git-dir",
+        snapshot.gitDirectory,
+        "--work-tree",
+        snapshot.checkout,
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+        "-c",
+        "submodule.recurse=false",
+        ...args
+      ],
+      {
+        cwd: paths.root,
+        allowFailure: true,
+        env: { ...auditGitEnvironment(), GIT_OBJECT_DIRECTORY: snapshot.objectDirectory }
+      }
+    );
+    if (options.statuses?.includes(result.status)) return result;
+    if (result.status !== 0) fail("legacy-audit-not-eligible", `${label} could not be proven.`);
+    return result;
+  }
+
+  function captureLegacyAudit(slug, generatedRoots = [], generatedFiles = []) {
+    const allowlist = normalizeLegacyGeneratedAllowlist(generatedRoots, generatedFiles);
+    const candidate = legacyCandidatePaths(slug);
+    const snapshot = createLegacyAuditSnapshot(candidate);
+    try {
+      const configNames = requireLegacyGit(
+        snapshot,
+        ["config", "--local", "--no-includes", "--null", "--name-only", "--list"],
+        "Legacy configuration"
+      ).stdout;
+      if (
+        configuredContentFilterKeys(configNames).length !== 0 ||
+        unsafeArchiveConfigKeys(configNames).length !== 0 ||
+        unsafeLegacyConfigKeys(configNames).length !== 0
+      ) {
+        fail(
+          "legacy-audit-not-eligible",
+          "The candidate has an include, external, sparse, split, partial, promisor, or content-filter configuration."
+        );
+      }
+      const config = requireLegacyGit(
+        snapshot,
+        ["config", "--local", "--no-includes", "--null", "--list"],
+        "Legacy configuration capture"
+      ).stdout;
+      const sharedIndexPath = requireLegacyGit(
+        snapshot,
+        ["rev-parse", "--shared-index-path"],
+        "Legacy split-index extension"
+      ).stdout.trim();
+      if (sharedIndexPath !== "") {
+        fail("legacy-audit-not-eligible", "The candidate index contains a split-index extension.");
+      }
+      const topLevel = resolve(
+        requireLegacyGit(snapshot, ["rev-parse", "--show-toplevel"], "Legacy checkout root").stdout.trim()
+      );
+      if (topLevel !== candidate.checkout) {
+        fail("legacy-audit-not-eligible", "The candidate is not one standalone checkout.");
+      }
+      const bareRepository = requireLegacyGit(
+        snapshot,
+        ["rev-parse", "--is-bare-repository"],
+        "Legacy bare-repository inspection"
+      ).stdout.trim();
+      const shallowRepository = requireLegacyGit(
+        snapshot,
+        ["rev-parse", "--is-shallow-repository"],
+        "Legacy shallow-repository inspection"
+      ).stdout.trim();
+      if (bareRepository !== "false" || shallowRepository !== "false") {
+        fail("legacy-audit-not-eligible", "The candidate is not one complete standalone worktree.");
+      }
+      const worktreeOutput = snapshot.worktreeReceipt;
+      const privateRefsOutput = requireLegacyGit(
+        snapshot,
+        [
+          "for-each-ref",
+          "--sort=refname",
+          "--format=%(objectname) %(refname)",
+          "refs/worktree/",
+          "refs/bisect/",
+          "refs/rewritten/"
+        ],
+        "Legacy private references"
+      ).stdout;
+      if (privateRefsOutput !== "") {
+        fail("legacy-audit-not-eligible", "The candidate has private operation references.");
+      }
+
+      const flags = requireLegacyGit(snapshot, ["ls-files", "-v", "-z"], "Legacy index flags")
+        .stdout.split("\0")
+        .filter(Boolean);
+      if (flags.some((line) => line[0] !== "H")) {
+        fail("legacy-audit-not-eligible", "The candidate index uses unsafe path flags.");
+      }
+      validateLegacyIndexStages(
+        requireLegacyGit(snapshot, ["ls-files", "--stage", "-z"], "Legacy index stages").stdout
+      );
+      if (
+        requireLegacyGit(
+          snapshot,
+          ["diff-files", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--"],
+          "Legacy tracked worktree",
+          { statuses: [0, 1] }
+        ).status !== 0 ||
+        requireLegacyGit(
+          snapshot,
+          [
+            "diff-index",
+            "--cached",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+            "HEAD",
+            "--"
+          ],
+          "Legacy staged index",
+          { statuses: [0, 1] }
+        ).status !== 0
+      ) {
+        fail("legacy-audit-not-eligible", "The candidate has tracked or staged changes.");
+      }
+
+      for (const item of allowlist) {
+        if (requireLegacyGit(snapshot, ["ls-files", "-z", "--", item.path], "Generated path tracking").stdout !== "") {
+          fail("legacy-audit-not-eligible", "A generated allowlist path contains tracked content.");
+        }
+        const ignored = requireLegacyGit(
+          snapshot,
+          ["check-ignore", "--no-index", "--quiet", "--", item.path],
+          "Generated ignore rule",
+          { statuses: [0, 1] }
+        );
+        if (ignored.status !== 0) {
+          fail("legacy-audit-not-eligible", "A generated allowlist path is not ignored by Git.");
+        }
+      }
+
+      const statusOutput = requireLegacyGit(
+        snapshot,
+        ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"],
+        "Legacy status"
+      ).stdout;
+      const status = parseStatus(statusOutput);
+      if (status.some((item) => item.kind !== "ignored")) {
+        fail("legacy-audit-not-eligible", "The candidate has tracked or untracked work.");
+      }
+      if (status.some((item) => !legacyPathIsAllowed(item.path, allowlist))) {
+        fail("legacy-audit-not-eligible", "The candidate has ignored content outside the generated allowlist.");
+      }
+      if (allowlist.some((allowed) => !status.some((item) => legacyPathIsAllowed(item.path, [allowed])))) {
+        fail("legacy-audit-not-eligible", "A generated allowlist path was not reported as ignored.");
+      }
+      const ignoredListing = requireLegacyGit(
+        snapshot,
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+        "Legacy ignored-file listing"
+      )
+        .stdout.split("\0")
+        .filter(Boolean);
+      if (ignoredListing.some((path) => !legacyPathIsAllowed(path, allowlist))) {
+        fail("legacy-audit-not-eligible", "The candidate has an ignored file outside the generated allowlist.");
+      }
+
+      const objectFormat = requireLegacyGit(
+        snapshot,
+        ["rev-parse", "--show-object-format"],
+        "Legacy object format"
+      ).stdout.trim();
+      if (!["sha1", "sha256"].includes(objectFormat)) {
+        fail("legacy-audit-not-eligible", "The candidate uses an unsupported object format.");
+      }
+      const fsck = requireLegacyGit(
+        snapshot,
+        ["fsck", "--strict", "--full", "--no-dangling"],
+        "Legacy object-store verification"
+      );
+      const head = requireLegacyGit(snapshot, ["rev-parse", "--verify", "HEAD^{commit}"], "Legacy HEAD").stdout.trim();
+      const headTree = requireLegacyGit(
+        snapshot,
+        ["rev-parse", "--verify", "HEAD^{tree}"],
+        "Legacy HEAD tree"
+      ).stdout.trim();
+      if (!SHA_PATTERN.test(head) || !SHA_PATTERN.test(headTree)) {
+        fail("legacy-audit-not-eligible", "The candidate HEAD is malformed.");
+      }
+      const symbolic = requireLegacyGit(snapshot, ["symbolic-ref", "--quiet", "--short", "HEAD"], "Legacy branch", {
+        statuses: [0, 1]
+      });
+      const refs = parseRefList(
+        requireLegacyGit(
+          snapshot,
+          ["for-each-ref", "--sort=refname", "--format=%(objectname) %(refname)", "refs/"],
+          "Legacy references"
+        ).stdout,
+        objectFormat,
+        "Legacy references"
+      );
+      const generatedInventory = captureLegacyGeneratedInventory(candidate.checkout, allowlist);
+      revalidatePathIdentity(
+        candidate.source.topLevel,
+        candidate.source.topLevelIdentity,
+        "The bootstrap source",
+        "directory"
+      );
+      revalidatePathIdentity(candidate.parent, candidate.parentIdentity, "The legacy checkout parent", "directory");
+      revalidatePathIdentity(candidate.checkout, candidate.checkoutIdentity, "The legacy checkout", "directory");
+      revalidatePathIdentity(candidate.gitDirectory, candidate.gitIdentity, "The legacy Git directory", "directory");
+      revalidateLegacyAuditSnapshot(snapshot);
+      return Object.freeze({
+        protocol: LEGACY_ADOPTION_PROTOCOL,
+        slug,
+        state: "adopted-review-required",
+        source: Object.freeze({
+          bootstrapPublication: repository.bootstrapPublication,
+          topLevel: candidate.source.topLevel,
+          topLevelIdentity: candidate.source.topLevelIdentity,
+          legacyParent: candidate.parent,
+          legacyParentIdentity: candidate.parentIdentity,
+          checkout: candidate.checkout,
+          checkoutIdentity: candidate.checkoutIdentity,
+          gitDirectory: candidate.gitDirectory,
+          gitDirectoryIdentity: candidate.gitIdentity
+        }),
+        git: Object.freeze({
+          head,
+          headTree,
+          branch: symbolic.status === 0 ? symbolic.stdout.trim() : null,
+          objectFormat,
+          refs: refsReceipt(refs),
+          fsck: Object.freeze({
+            mode: "strict-full-no-dangling",
+            stdoutSha256: sha256(fsck.stdout),
+            stderrSha256: sha256(fsck.stderr)
+          }),
+          worktreeRegistrySha256: sha256(worktreeOutput),
+          configNamesSha256: sha256(configNames),
+          configSha256: sha256(config),
+          trackedClean: true,
+          stagedClean: true,
+          untrackedCount: 0,
+          ignoredCount: ignoredListing.length,
+          ignoredListingSha256: sha256(`${ignoredListing.sort().join("\0")}\0`)
+        }),
+        generated: Object.freeze({ allowlist, inventory: generatedInventory }),
+        deferredChecks: Object.freeze({
+          archive: "not-created-recheck-required",
+          processUse: "not-checked-recheck-required",
+          mounts: "not-checked-recheck-required"
+        }),
+        authorizesMove: false,
+        authorizesCleanup: false
+      });
+    } finally {
+      removeLegacyAuditSnapshot(snapshot);
+    }
+  }
+
+  function validateLegacyRequest(value, slug, generation) {
+    exactKeys(
+      value,
+      ["protocol", "slug", "generation", "ownerTask", "token", "generatedRoots", "generatedFiles"],
+      "Legacy adoption request"
+    );
+    assertOwner(value.ownerTask);
+    const allowlist = normalizeLegacyGeneratedAllowlist(value.generatedRoots, value.generatedFiles);
+    const normalizedRoots = allowlist.filter((item) => item.kind === "directory").map((item) => item.path);
+    const normalizedFiles = allowlist.filter((item) => item.kind === "file").map((item) => item.path);
+    if (
+      value.protocol !== LEGACY_ADOPTION_REQUEST_PROTOCOL ||
+      value.slug !== slug ||
+      value.generation !== generation ||
+      !/^[0-9a-f]{32}$/u.test(value.token) ||
+      !isDeepStrictEqual(value.generatedRoots, normalizedRoots) ||
+      !isDeepStrictEqual(value.generatedFiles, normalizedFiles)
+    ) {
+      fail("invalid-legacy-adoption", "The legacy adoption request is malformed.");
+    }
+    return value;
+  }
+
+  function validateLegacyEvidence(value, slug, request) {
+    exactKeys(
+      value,
+      [
+        "protocol",
+        "slug",
+        "state",
+        "source",
+        "git",
+        "generated",
+        "deferredChecks",
+        "authorizesMove",
+        "authorizesCleanup"
+      ],
+      "Legacy adoption evidence"
+    );
+    exactKeys(
+      value.source,
+      [
+        "bootstrapPublication",
+        "topLevel",
+        "topLevelIdentity",
+        "legacyParent",
+        "legacyParentIdentity",
+        "checkout",
+        "checkoutIdentity",
+        "gitDirectory",
+        "gitDirectoryIdentity"
+      ],
+      "Legacy adoption source"
+    );
+    exactKeys(
+      value.source.bootstrapPublication,
+      ["path", "identity", "byteLength", "sha256"],
+      "Legacy bootstrap publication"
+    );
+    validateIdentity(value.source.bootstrapPublication.identity, "Legacy bootstrap publication identity");
+    for (const [identity, label] of [
+      [value.source.topLevelIdentity, "Legacy source identity"],
+      [value.source.legacyParentIdentity, "Legacy parent identity"],
+      [value.source.checkoutIdentity, "Legacy checkout identity"],
+      [value.source.gitDirectoryIdentity, "Legacy Git identity"]
+    ]) {
+      validateIdentity(identity, label);
+    }
+    const source = repository.bootstrapSourceRepository;
+    if (source === undefined) fail("legacy-bootstrap-required", "Legacy adoption requires a bootstrap source.");
+    const expectedParent = join(source.topLevel, "tmp", "codex-checkpoints");
+    const expectedCheckout = join(expectedParent, slug);
+    if (
+      value.protocol !== LEGACY_ADOPTION_PROTOCOL ||
+      value.slug !== slug ||
+      value.state !== "adopted-review-required" ||
+      !isDeepStrictEqual(value.source.bootstrapPublication, repository.bootstrapPublication) ||
+      value.source.topLevel !== source.topLevel ||
+      !sameIdentity(value.source.topLevelIdentity, source.topLevelIdentity) ||
+      value.source.legacyParent !== expectedParent ||
+      value.source.checkout !== expectedCheckout ||
+      value.source.gitDirectory !== join(expectedCheckout, ".git") ||
+      value.authorizesMove !== false ||
+      value.authorizesCleanup !== false
+    ) {
+      fail("invalid-legacy-adoption", "The legacy adoption evidence has an invalid source or authority.");
+    }
+    exactKeys(
+      value.git,
+      [
+        "head",
+        "headTree",
+        "branch",
+        "objectFormat",
+        "refs",
+        "fsck",
+        "worktreeRegistrySha256",
+        "configNamesSha256",
+        "configSha256",
+        "trackedClean",
+        "stagedClean",
+        "untrackedCount",
+        "ignoredCount",
+        "ignoredListingSha256"
+      ],
+      "Legacy Git evidence"
+    );
+    exactKeys(value.git.refs, ["count", "sha256"], "Legacy ref receipt");
+    exactKeys(value.git.fsck, ["mode", "stdoutSha256", "stderrSha256"], "Legacy fsck receipt");
+    if (
+      !SHA_PATTERN.test(value.git.head) ||
+      !SHA_PATTERN.test(value.git.headTree) ||
+      (value.git.branch !== null &&
+        (typeof value.git.branch !== "string" || value.git.branch.length < 1 || value.git.branch.length > 1024)) ||
+      !["sha1", "sha256"].includes(value.git.objectFormat) ||
+      !Number.isSafeInteger(value.git.refs.count) ||
+      value.git.refs.count < 0 ||
+      !Number.isSafeInteger(value.git.ignoredCount) ||
+      value.git.ignoredCount < 0 ||
+      value.git.trackedClean !== true ||
+      value.git.stagedClean !== true ||
+      value.git.untrackedCount !== 0 ||
+      value.git.fsck.mode !== "strict-full-no-dangling" ||
+      [
+        value.git.refs.sha256,
+        value.git.fsck.stdoutSha256,
+        value.git.fsck.stderrSha256,
+        value.git.worktreeRegistrySha256,
+        value.git.configNamesSha256,
+        value.git.configSha256,
+        value.git.ignoredListingSha256
+      ].some((hash) => typeof hash !== "string" || !/^[0-9a-f]{64}$/u.test(hash))
+    ) {
+      fail("invalid-legacy-adoption", "The legacy Git evidence is malformed.");
+    }
+    exactKeys(value.generated, ["allowlist", "inventory"], "Legacy generated evidence");
+    exactKeys(value.generated.inventory, ["entryCount", "byteLength", "sha256"], "Legacy generated inventory");
+    const expectedAllowlist = normalizeLegacyGeneratedAllowlist(request.generatedRoots, request.generatedFiles);
+    if (
+      !isDeepStrictEqual(value.generated.allowlist, expectedAllowlist) ||
+      !Number.isSafeInteger(value.generated.inventory.entryCount) ||
+      value.generated.inventory.entryCount < 0 ||
+      typeof value.generated.inventory.byteLength !== "string" ||
+      !/^(?:0|[1-9][0-9]{0,39})$/u.test(value.generated.inventory.byteLength) ||
+      !/^[0-9a-f]{64}$/u.test(value.generated.inventory.sha256)
+    ) {
+      fail("invalid-legacy-adoption", "The legacy generated inventory is malformed.");
+    }
+    exactKeys(value.deferredChecks, ["archive", "processUse", "mounts"], "Legacy deferred checks");
+    if (
+      value.deferredChecks.archive !== "not-created-recheck-required" ||
+      value.deferredChecks.processUse !== "not-checked-recheck-required" ||
+      value.deferredChecks.mounts !== "not-checked-recheck-required"
+    ) {
+      fail("invalid-legacy-adoption", "The legacy deferred checks are malformed.");
+    }
+    return value;
+  }
+
+  function revalidateLegacyEvidenceSource(evidence) {
+    const publication = readJsonReceipt(
+      evidence.source.bootstrapPublication.path,
+      MAXIMUM_ENTRY_BYTES,
+      "Legacy bootstrap publication",
+      2n
+    );
+    if (
+      !sameIdentity(publication.identity, evidence.source.bootstrapPublication.identity) ||
+      publication.byteLength !== evidence.source.bootstrapPublication.byteLength ||
+      publication.sha256 !== evidence.source.bootstrapPublication.sha256
+    ) {
+      fail("legacy-checkout-changed", "The canonical bootstrap publication changed.");
+    }
+    revalidatePathIdentity(
+      evidence.source.topLevel,
+      evidence.source.topLevelIdentity,
+      "The bootstrap source",
+      "directory"
+    );
+    revalidatePathIdentity(
+      evidence.source.legacyParent,
+      evidence.source.legacyParentIdentity,
+      "The legacy checkout parent",
+      "directory"
+    );
+    revalidatePathIdentity(
+      evidence.source.checkout,
+      evidence.source.checkoutIdentity,
+      "The legacy checkout",
+      "directory"
+    );
+    revalidatePathIdentity(
+      evidence.source.gitDirectory,
+      evidence.source.gitDirectoryIdentity,
+      "The legacy Git directory",
+      "directory"
+    );
+  }
+
+  function validateLegacyCompletion(value, slug, generation) {
+    exactKeys(value, ["protocol", "slug", "generation", "ownerTask", "request", "evidence"], "Legacy completion");
+    exactKeys(value.request, ["path", "identity", "byteLength", "sha256"], "Legacy request receipt");
+    validateIdentity(value.request.identity, "Legacy request file identity");
+    assertOwner(value.ownerTask);
+    const expectedRequestPath = join(legacyAttemptPath(slug, generation), "request.json");
+    if (
+      value.protocol !== LEGACY_ADOPTION_COMPLETION_PROTOCOL ||
+      value.slug !== slug ||
+      value.generation !== generation ||
+      value.request.path !== expectedRequestPath ||
+      !Number.isSafeInteger(value.request.byteLength) ||
+      value.request.byteLength < 1 ||
+      !/^[0-9a-f]{64}$/u.test(value.request.sha256)
+    ) {
+      fail("invalid-legacy-adoption", "The legacy adoption completion is malformed.");
+    }
+    const requestFile = readJsonReceipt(value.request.path, MAXIMUM_ENTRY_BYTES, "Legacy adoption request");
+    validateLegacyRequest(requestFile.value, slug, generation);
+    if (
+      !sameIdentity(requestFile.identity, value.request.identity) ||
+      requestFile.byteLength !== value.request.byteLength ||
+      requestFile.sha256 !== value.request.sha256 ||
+      requestFile.value.ownerTask !== value.ownerTask
+    ) {
+      fail("invalid-legacy-adoption", "The legacy adoption request changed.");
+    }
+    validateLegacyEvidence(value.evidence, slug, requestFile.value);
+    return value;
+  }
+
+  function legacyAttemptPath(slug, generation) {
+    assertSlug(slug);
+    if (!Number.isSafeInteger(generation) || generation < 1 || generation > MAXIMUM_LEGACY_ADOPTION_ATTEMPTS) {
+      fail("invalid-legacy-adoption", "The legacy adoption attempt is out of range.");
+    }
+    return join(paths.legacyAdoptionAttempts, `${slug}.${String(generation).padStart(8, "0")}`);
+  }
+
+  function legacyEntryPath(slug) {
+    assertSlug(slug);
+    return join(paths.legacyAdoptionEntries, `${slug}.json`);
+  }
+
+  function listLegacyAttempts(slug = undefined) {
+    if (!existsSync(paths.legacyAdoptions)) return Object.freeze([]);
+    const rootIdentity = assertPrivateDirectory(paths.legacyAdoptions, "Legacy adoption journal");
+    const attemptsIdentity = assertPrivateDirectory(paths.legacyAdoptionAttempts, "Legacy adoption attempts");
+    const entriesIdentity = assertPrivateDirectory(paths.legacyAdoptionEntries, "Legacy adoption entries");
+    const attempts = [];
+    for (const item of readDirectoryBounded(
+      paths.legacyAdoptionAttempts,
+      MAXIMUM_ENTRIES * MAXIMUM_LEGACY_ADOPTION_ATTEMPTS,
+      "The legacy adoption journal"
+    )) {
+      const match = LEGACY_ADOPTION_ATTEMPT_PATTERN.exec(item.name);
+      if (!item.isDirectory() || item.isSymbolicLink() || match === null) {
+        fail("invalid-legacy-adoption", "The legacy adoption journal contains an unknown entry.");
+      }
+      const attemptSlug = match[1];
+      const generation = Number(match[2]);
+      if (generation < 1 || generation > MAXIMUM_LEGACY_ADOPTION_ATTEMPTS) {
+        fail("invalid-legacy-adoption", "A legacy adoption generation is out of range.");
+      }
+      if (slug === undefined || slug === attemptSlug) {
+        const path = join(paths.legacyAdoptionAttempts, item.name);
+        const identity = assertPrivateDirectory(path, "Legacy adoption attempt");
+        const names = readDirectoryBounded(path, 2, "Legacy adoption attempt")
+          .map((entry) => entry.name)
+          .sort();
+        if (names.some((name) => !["request.json", "complete.json"].includes(name))) {
+          fail("invalid-legacy-adoption", "A legacy adoption attempt contains an unknown file.");
+        }
+        let request;
+        if (names.includes("request.json")) {
+          request = readJsonReceipt(join(path, "request.json"), MAXIMUM_ENTRY_BYTES, "Legacy adoption request");
+          validateLegacyRequest(request.value, attemptSlug, generation);
+        }
+        let completion;
+        if (names.includes("complete.json")) {
+          if (request === undefined) fail("invalid-legacy-adoption", "A legacy completion has no request.");
+          const completionPath = join(path, "complete.json");
+          const links = lstatSync(completionPath, { bigint: true }).nlink;
+          if (![1n, 2n].includes(links)) fail("invalid-legacy-adoption", "A legacy completion has unsafe links.");
+          completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Legacy adoption completion", links);
+          validateLegacyCompletion(completion.value, attemptSlug, generation);
+        }
+        revalidatePathIdentity(path, identity, "Legacy adoption attempt", "directory");
+        attempts.push(Object.freeze({ slug: attemptSlug, generation, path, identity, request, completion }));
+      }
+    }
+    attempts.sort((left, right) => left.slug.localeCompare(right.slug) || left.generation - right.generation);
+    if (
+      new Set(attempts.map((attempt) => `${attempt.slug}:${attempt.generation}`)).size !== attempts.length ||
+      attempts.some((attempt, index) => {
+        const prior = attempts[index - 1];
+        return prior?.slug === attempt.slug && attempt.generation !== prior.generation + 1;
+      })
+    ) {
+      fail("invalid-legacy-adoption", "The legacy adoption journal has a duplicate or generation gap.");
+    }
+    revalidatePathIdentity(paths.legacyAdoptions, rootIdentity, "Legacy adoption journal", "directory");
+    revalidatePathIdentity(paths.legacyAdoptionAttempts, attemptsIdentity, "Legacy adoption attempts", "directory");
+    revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
+    return Object.freeze(attempts);
+  }
+
+  function readLegacyEntry(slug, attempts) {
+    const path = legacyEntryPath(slug);
+    if (!existsSync(path)) return undefined;
+    const entry = readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, "Legacy adoption entry", 2n);
+    validateLegacyCompletion(entry.value, slug, entry.value.generation);
+    const matching = attempts.filter(
+      (attempt) =>
+        attempt.generation === entry.value.generation &&
+        attempt.completion !== undefined &&
+        sameIdentity(attempt.completion.identity, entry.identity) &&
+        isDeepStrictEqual(attempt.completion.value, entry.value)
+    );
+    if (matching.length !== 1) {
+      fail("invalid-legacy-adoption", "The legacy adoption entry has no exact completed attempt.");
+    }
+    revalidatePathIdentity(path, entry.identity, "Legacy adoption entry");
+    return Object.freeze({ path, ...entry });
+  }
+
+  function legacyEntrySlugs(slug = undefined) {
+    if (!existsSync(paths.legacyAdoptions)) return Object.freeze([]);
+    const names = readDirectoryBounded(paths.legacyAdoptionEntries, MAXIMUM_ENTRIES, "Legacy adoption entries");
+    const slugs = names.map((item) => {
+      const match = LEGACY_ADOPTION_ENTRY_PATTERN.exec(item.name);
+      if (!item.isFile() || item.isSymbolicLink() || match === null) {
+        fail("invalid-legacy-adoption", "The legacy adoption entries contain an unknown file.");
+      }
+      return match[1];
+    });
+    if (new Set(slugs).size !== slugs.length) fail("invalid-legacy-adoption", "A legacy adoption entry is duplicated.");
+    return Object.freeze(slug === undefined ? slugs.sort() : slugs.filter((value) => value === slug));
+  }
+
+  function allocateLegacyAttempt(slug) {
+    const attempts = listLegacyAttempts(slug);
+    const generation = (attempts.at(-1)?.generation ?? 0) + 1;
+    if (generation > MAXIMUM_LEGACY_ADOPTION_ATTEMPTS) {
+      fail("legacy-adoption-attempts-exhausted", "The legacy adoption journal has no remaining attempt slots.");
+    }
+    const path = legacyAttemptPath(slug, generation);
+    const parentIdentity = managedIdentities.get(paths.legacyAdoptionAttempts);
+    if (parentIdentity === undefined) fail("unsafe-manager", "The legacy adoption journal was not initialized.");
+    revalidatePathIdentity(paths.legacyAdoptionAttempts, parentIdentity, "Legacy adoption attempts", "directory");
+    try {
+      mkdirSync(path, { mode: 0o700 });
+      chmodSync(path, 0o700);
+      fsyncDirectory(paths.legacyAdoptionAttempts);
+    } catch (error) {
+      if (error.code === "EEXIST") fail("legacy-adoption-changed", "The next legacy adoption attempt already exists.");
+      throw error;
+    }
+    const identity = assertPrivateDirectory(path, "Legacy adoption attempt");
+    revalidatePathIdentity(paths.legacyAdoptionAttempts, parentIdentity, "Legacy adoption attempts", "directory");
+    return Object.freeze({ slug, generation, path, identity });
+  }
+
+  function legacyStatusRows(slug = undefined) {
+    const attempts = listLegacyAttempts(slug);
+    const slugs = [...new Set([...attempts.map((attempt) => attempt.slug), ...legacyEntrySlugs(slug)])].sort();
+    return Object.freeze(
+      slugs.map((entrySlug) => {
+        const matching = attempts.filter((attempt) => attempt.slug === entrySlug);
+        const entry = readLegacyEntry(entrySlug, matching);
+        for (const attempt of matching) {
+          if (attempt.completion !== undefined && attempt.completion.value.generation === entry?.value.generation) {
+            if (
+              attempt.completion.identity.device !== entry.identity.device ||
+              attempt.completion.identity.inode !== entry.identity.inode
+            ) {
+              fail("invalid-legacy-adoption", "The published legacy completion changed identity.");
+            }
+          } else if (
+            attempt.completion !== undefined &&
+            lstatSync(join(attempt.path, "complete.json"), { bigint: true }).nlink !== 1n
+          ) {
+            fail("invalid-legacy-adoption", "An unpublished legacy completion has an unexpected hard link.");
+          }
+        }
+        const current = entry?.value;
+        return Object.freeze({
+          slug: entrySlug,
+          state: current === undefined ? "interrupted-review-required" : current.evidence.state,
+          generation: current?.generation ?? null,
+          ownerTask: current?.ownerTask ?? null,
+          checkout: current?.evidence.source.checkout ?? null,
+          head: current?.evidence.git.head ?? null,
+          generatedInventorySha256: current?.evidence.generated.inventory.sha256 ?? null,
+          attempts: Object.freeze(
+            matching.map((attempt) =>
+              Object.freeze({
+                generation: attempt.generation,
+                state:
+                  entry?.value.generation === attempt.generation
+                    ? "published-review-required"
+                    : attempt.completion !== undefined
+                      ? "completed-unpublished-review-required"
+                      : attempt.request !== undefined
+                        ? "requested-review-required"
+                        : "allocated-review-required"
+              })
+            )
+          ),
+          authorizesMove: false,
+          authorizesCleanup: false
+        });
+      })
+    );
   }
 
   function checkoutPathFor(slug) {
@@ -2038,7 +3481,7 @@ export function createCheckoutManager(options = {}) {
     const lock = acquireOperationLock();
     try {
       hooks?.afterOperationLockAcquired?.(lock);
-      return callback();
+      return requireSynchronousLifecycleResult(callback());
     } finally {
       releaseOperationLock(lock, "released");
     }
@@ -4373,6 +5816,136 @@ export function createCheckoutManager(options = {}) {
   return Object.freeze({
     paths,
 
+    legacyAudit({ slug, generatedRoots = [], generatedFiles = [] }) {
+      assertSlug(slug);
+      initializeManager(false);
+      for (const [path, identity] of managedIdentities) {
+        assertPrivateDirectory(path, path);
+        revalidatePathIdentity(path, identity, path, "directory");
+      }
+      revalidatePathIdentity(repository.commonGitDirectory, repository.identity, "Git common directory", "directory");
+      return captureLegacyAudit(slug, generatedRoots, generatedFiles);
+    },
+
+    legacyStatus(slug = undefined) {
+      if (slug !== undefined) assertSlug(slug);
+      initializeManager(false);
+      for (const [path, identity] of managedIdentities) {
+        assertPrivateDirectory(path, path);
+        revalidatePathIdentity(path, identity, path, "directory");
+      }
+      revalidatePathIdentity(repository.commonGitDirectory, repository.identity, "Git common directory", "directory");
+      return legacyStatusRows(slug);
+    },
+
+    legacyAdopt({ slug, ownerTask, generatedRoots = [], generatedFiles = [] }) {
+      assertSlug(slug);
+      assertOwner(ownerTask);
+      const allowlist = normalizeLegacyGeneratedAllowlist(generatedRoots, generatedFiles);
+      const normalizedRoots = allowlist.filter((item) => item.kind === "directory").map((item) => item.path);
+      const normalizedFiles = allowlist.filter((item) => item.kind === "file").map((item) => item.path);
+      return withLock(() => {
+        initializeLegacyAdoptionJournal();
+        const priorAttempts = listLegacyAttempts(slug);
+        if (legacyEntrySlugs(slug).length !== 0) {
+          readLegacyEntry(slug, priorAttempts);
+          fail("legacy-adoption-exists", `Legacy checkout ${slug} is already adopted for review.`);
+        }
+        const attempt = allocateLegacyAttempt(slug);
+        const token = tokenFactory();
+        if (!/^[0-9a-f]{32}$/u.test(token)) fail("invalid-legacy-adoption", "The adoption token is malformed.");
+        const requestValue = {
+          protocol: LEGACY_ADOPTION_REQUEST_PROTOCOL,
+          slug,
+          generation: attempt.generation,
+          ownerTask,
+          token,
+          generatedRoots: normalizedRoots,
+          generatedFiles: normalizedFiles
+        };
+        validateLegacyRequest(requestValue, slug, attempt.generation);
+        assertPersistedJsonFits(requestValue, "The legacy adoption request");
+        const requestPath = join(attempt.path, "request.json");
+        writeJsonExclusive(requestPath, requestValue, attempt.identity);
+        const request = readJsonReceipt(requestPath, MAXIMUM_ENTRY_BYTES, "Legacy adoption request");
+        validateLegacyRequest(request.value, slug, attempt.generation);
+        if (!isDeepStrictEqual(request.value, requestValue)) {
+          fail("legacy-adoption-changed", "The legacy adoption request changed while it was recorded.");
+        }
+        hooks?.afterLegacyAdoptionRequest?.(attempt, requestValue);
+        const firstEvidence = captureLegacyAudit(slug, normalizedRoots, normalizedFiles);
+        hooks?.afterFirstLegacyAudit?.(attempt, firstEvidence);
+        const secondEvidence = captureLegacyAudit(slug, normalizedRoots, normalizedFiles);
+        if (!isDeepStrictEqual(firstEvidence, secondEvidence)) {
+          fail("legacy-checkout-changed", "The legacy checkout changed between its two complete audits.");
+        }
+        hooks?.beforeLegacyAdoptionCompletion?.(attempt, secondEvidence);
+        revalidatePathIdentity(requestPath, request.identity, "Legacy adoption request");
+        revalidatePathIdentity(attempt.path, attempt.identity, "Legacy adoption attempt", "directory");
+        const completionValue = {
+          protocol: LEGACY_ADOPTION_COMPLETION_PROTOCOL,
+          slug,
+          generation: attempt.generation,
+          ownerTask,
+          request: {
+            path: requestPath,
+            identity: request.identity,
+            byteLength: request.byteLength,
+            sha256: request.sha256
+          },
+          evidence: secondEvidence
+        };
+        validateLegacyCompletion(completionValue, slug, attempt.generation);
+        assertPersistedJsonFits(completionValue, "The legacy adoption completion");
+        const completionPath = join(attempt.path, "complete.json");
+        writeJsonExclusive(completionPath, completionValue, attempt.identity);
+        const completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Legacy adoption completion");
+        validateLegacyCompletion(completion.value, slug, attempt.generation);
+        if (!isDeepStrictEqual(completion.value, completionValue)) {
+          fail("legacy-adoption-changed", "The legacy completion changed while it was recorded.");
+        }
+        const entriesIdentity = managedIdentities.get(paths.legacyAdoptionEntries);
+        if (entriesIdentity === undefined) fail("unsafe-manager", "The legacy adoption entries were not initialized.");
+        revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
+        hooks?.beforeLegacyAdoptionPublish?.(attempt, completionValue);
+        const publicationEvidence = captureLegacyAudit(slug, normalizedRoots, normalizedFiles);
+        if (!isDeepStrictEqual(publicationEvidence, secondEvidence)) {
+          fail("legacy-checkout-changed", "The legacy checkout changed before adoption publication.");
+        }
+        revalidatePathIdentity(requestPath, request.identity, "Legacy adoption request");
+        revalidatePathIdentity(completionPath, completion.identity, "Legacy adoption completion");
+        revalidatePathIdentity(attempt.path, attempt.identity, "Legacy adoption attempt", "directory");
+        revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
+        try {
+          linkSync(completionPath, legacyEntryPath(slug));
+          fsyncDirectory(paths.legacyAdoptionEntries);
+        } catch (error) {
+          if (error.code === "EEXIST") {
+            fail("legacy-adoption-exists", `Legacy checkout ${slug} was adopted concurrently.`);
+          }
+          throw error;
+        }
+        hooks?.afterLegacyAdoptionPublish?.(attempt, completionValue);
+        revalidateLegacyEvidenceSource(secondEvidence);
+        revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
+        const recordedAttempts = listLegacyAttempts(slug);
+        const entry = readLegacyEntry(slug, recordedAttempts);
+        if (entry === undefined || !isDeepStrictEqual(entry.value, completionValue)) {
+          fail("legacy-adoption-changed", "The published legacy adoption record changed.");
+        }
+        revalidatePathIdentity(attempt.path, attempt.identity, "Legacy adoption attempt", "directory");
+        return Object.freeze({
+          status: "adopted-review-required",
+          slug,
+          generation: attempt.generation,
+          ownerTask,
+          evidence: entry.value.evidence,
+          authorizesMove: false,
+          authorizesCleanup: false
+        });
+      });
+    },
+
     create({ slug, ownerTask, branch, base = "HEAD", remote = "origin", generatedRoots = [] }) {
       assertSlug(slug);
       assertOwner(ownerTask);
@@ -4895,6 +6468,42 @@ function parseGeneration(value) {
   return generation;
 }
 
+function validateCliInvocation(positionals, values) {
+  const command = positionals[0];
+  const specifications = new Map([
+    ["bootstrap", { minimum: 1, maximum: 1, options: [] }],
+    ["legacy-audit", { minimum: 2, maximum: 2, options: ["generated-root", "generated-file"] }],
+    ["legacy-adopt", { minimum: 2, maximum: 2, options: ["owner", "generated-root", "generated-file"] }],
+    ["legacy-status", { minimum: 1, maximum: 2, options: [] }],
+    ["create", { minimum: 2, maximum: 2, options: ["owner", "branch", "base", "remote", "generated-root"] }],
+    ["status", { minimum: 1, maximum: 2, options: [] }],
+    ["audit", { minimum: 2, maximum: 2, options: [] }],
+    ["quarantine-status", { minimum: 1, maximum: 2, options: [] }],
+    ["handoff", { minimum: 2, maximum: 2, options: ["owner", "to", "revision"] }],
+    ["finish", { minimum: 2, maximum: 2, options: ["owner", "revision"] }],
+    ["plan-retirement", { minimum: 2, maximum: 2, options: ["owner", "revision", "generation"] }],
+    ["archive-retirement", { minimum: 2, maximum: 2, options: ["owner", "revision", "generation"] }],
+    ["abandon", { minimum: 2, maximum: 2, options: ["expect-owner", "expect-head", "revision"] }]
+  ]);
+  const specification = specifications.get(command);
+  if (specification === undefined) {
+    fail(
+      "invalid-cli",
+      "Use bootstrap, legacy-audit, legacy-adopt, legacy-status, create, status, audit, quarantine-status, handoff, finish, plan-retirement, archive-retirement, or abandon."
+    );
+  }
+  const suppliedOptions = Object.entries(values)
+    .filter(([, value]) => value !== undefined)
+    .map(([name]) => name);
+  if (
+    positionals.length < specification.minimum ||
+    positionals.length > specification.maximum ||
+    suppliedOptions.some((name) => !specification.options.includes(name))
+  ) {
+    fail("invalid-cli", `The ${command} command received an extra, missing, or irrelevant argument.`);
+  }
+}
+
 export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = {}) {
   const { positionals, values } = parseArgs({
     args: argv,
@@ -4910,9 +6519,11 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       remote: { type: "string" },
       "expect-owner": { type: "string" },
       "expect-head": { type: "string" },
-      "generated-root": { type: "string", multiple: true }
+      "generated-root": { type: "string", multiple: true },
+      "generated-file": { type: "string", multiple: true }
     }
   });
+  validateCliInvocation(positionals, values);
   const [command, slug] = positionals;
   if (command === "bootstrap") {
     const result = bootstrapCheckoutManager(options);
@@ -4921,7 +6532,21 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
   }
   const manager = createCheckoutManager(options);
   let result;
-  if (command === "create") {
+  if (command === "legacy-audit") {
+    result = manager.legacyAudit({
+      slug,
+      generatedRoots: values["generated-root"] ?? [],
+      generatedFiles: values["generated-file"] ?? []
+    });
+  } else if (command === "legacy-adopt") {
+    result = manager.legacyAdopt({
+      slug,
+      ownerTask: values.owner,
+      generatedRoots: values["generated-root"] ?? [],
+      generatedFiles: values["generated-file"] ?? []
+    });
+  } else if (command === "legacy-status") result = manager.legacyStatus(slug);
+  else if (command === "create") {
     result = manager.create({
       slug,
       ownerTask: values.owner,
@@ -4964,10 +6589,7 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       expectedRevision: parseRevision(values.revision)
     });
   } else {
-    fail(
-      "invalid-cli",
-      "Use bootstrap, create, status, audit, quarantine-status, handoff, finish, plan-retirement, archive-retirement, or abandon."
-    );
+    fail("invalid-cli", "The lifecycle command was not dispatched.");
   }
   (options.stdout ?? process.stdout).write(`${JSON.stringify(result, null, 2)}\n`);
   return result;
