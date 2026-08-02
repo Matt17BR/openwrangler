@@ -17,6 +17,7 @@ const PHASE = /^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/u;
 const FAILURE_CLASSIFICATION = /^[a-z][a-z0-9-]{0,63}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const AUTHORIZATION_OUTCOMES = Object.freeze(["not-attempted", "not-authorized", "authorized"]);
+const RECEIPT_STATUSES = Object.freeze(["evidence", "pre-notebook-failure", "post-launch-setup-failure"]);
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -206,6 +207,13 @@ function boundedFailureClassification(error, fallback) {
   return fallback;
 }
 
+function setupFailureClassification(boundary, error) {
+  const detail = boundedFailureClassification(error, "failure");
+  const maximumDetailLength = 64 - boundary.length - 1;
+  const boundedDetail = detail.slice(0, maximumDetailLength).replace(/-+$/u, "") || "failure";
+  return `${boundary}-${boundedDetail}`;
+}
+
 function defaultCreateSampler({ launchReceipt, classify, samplerOptions }) {
   return new LinuxPssTreeSampler({
     ...(samplerOptions ?? {}),
@@ -230,6 +238,43 @@ function defaultCompleteTerminalEvidence() {
   return null;
 }
 
+function launchOnlyProcessProofs(launchReceipt) {
+  const editorRoot = launchReceipt?.editorRoot;
+  if (
+    !isRecord(editorRoot) ||
+    !Number.isSafeInteger(editorRoot.pid) ||
+    editorRoot.pid < 1 ||
+    typeof editorRoot.startTimeTicks !== "string" ||
+    !/^\d+$/u.test(editorRoot.startTimeTicks)
+  ) {
+    throw new TypeError("Comparison trial supervisor launch receipt has no usable editor-root identity.");
+  }
+  return Object.freeze({
+    editorRoot: Object.freeze({
+      pid: editorRoot.pid,
+      startTimeTicks: editorRoot.startTimeTicks,
+      capturedAtLaunch: true
+    }),
+    configuredKernel: null,
+    openWranglerRuntime: null
+  });
+}
+
+function validateLaunchOnlyProcessProofs(value, launchReceipt) {
+  exactKeys(value, ["editorRoot", "configuredKernel", "openWranglerRuntime"], "Comparison trial launch process proofs");
+  exactKeys(value.editorRoot, ["pid", "startTimeTicks", "capturedAtLaunch"], "Comparison trial editor-root proof");
+  if (
+    value.editorRoot.pid !== launchReceipt.editorRoot?.pid ||
+    value.editorRoot.startTimeTicks !== launchReceipt.editorRoot?.startTimeTicks ||
+    value.editorRoot.capturedAtLaunch !== true ||
+    value.configuredKernel !== null ||
+    value.openWranglerRuntime !== null
+  ) {
+    throw new TypeError("Comparison trial launch process proofs do not match the supervisor receipt.");
+  }
+  return value;
+}
+
 function validateAdapter(adapter) {
   if (
     !isRecord(adapter) ||
@@ -245,6 +290,7 @@ function validateAdapter(adapter) {
 
 function rawEvidence({
   input,
+  status,
   notebookPhaseReceipt,
   controlReceipt,
   cacheProof,
@@ -259,7 +305,7 @@ function rawEvidence({
 }) {
   return Object.freeze({
     protocol: DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL,
-    status: notebookPhaseReceipt === null ? "pre-notebook-failure" : "evidence",
+    status: status ?? (notebookPhaseReceipt === null ? "pre-notebook-failure" : "evidence"),
     runId: input.runId,
     phase: input.phase,
     cacheState: input.cacheState,
@@ -287,6 +333,7 @@ async function completeAfterSetupFailure({
   cacheProof,
   processProofs,
   failure,
+  failureBoundary,
   signalSupervisor,
   completeTerminalEvidence
 }) {
@@ -320,6 +367,7 @@ async function completeAfterSetupFailure({
   });
   return rawEvidence({
     input,
+    status: "post-launch-setup-failure",
     notebookPhaseReceipt: null,
     controlReceipt: null,
     cacheProof,
@@ -329,7 +377,7 @@ async function completeAfterSetupFailure({
     terminalEvidence,
     outerEditorFailure: Object.freeze({
       status: "failed",
-      classification: boundedFailureClassification(failure, "post-launch-setup-failure")
+      classification: setupFailureClassification(failureBoundary, failure)
     }),
     actionAuthorized: false,
     authorizationAttempted: false,
@@ -409,7 +457,7 @@ export function validateDataWranglerComparisonTrialExecutorReceipt(
   );
   if (
     value.protocol !== DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL ||
-    !["evidence", "pre-notebook-failure"].includes(value.status) ||
+    !RECEIPT_STATUSES.includes(value.status) ||
     !UUID_V4.test(value.runId ?? "") ||
     !PHASE.test(value.phase ?? "") ||
     !["warm", "cold"].includes(value.cacheState) ||
@@ -484,6 +532,23 @@ export function validateDataWranglerComparisonTrialExecutorReceipt(
       !FAILURE_CLASSIFICATION.test(value.outerEditorFailure.classification ?? "")
     ) {
       throw new TypeError("Comparison trial executor pre-notebook failure is malformed.");
+    }
+    if (value.status === "post-launch-setup-failure") {
+      if (
+        controlReceipt !== null ||
+        value.authorizationAttempted ||
+        value.actionAuthorized ||
+        value.authorizationOutcome !== "not-attempted" ||
+        !/^(?:process-evidence|resource-sampler)-[a-z][a-z0-9-]{0,63}$/u.test(
+          value.outerEditorFailure.classification
+        ) ||
+        value.terminalEvidence === null
+      ) {
+        throw new TypeError("Comparison trial post-launch setup failure is contradictory.");
+      }
+      validateLaunchOnlyProcessProofs(value.processProofs, value.launchReceipt);
+    } else if (controlReceipt === null) {
+      throw new TypeError("Comparison trial pre-notebook failure omitted its controller receipt.");
     }
   }
   return value;
@@ -574,7 +639,8 @@ export async function executeDataWranglerComparisonTrial(
 
   let processEvidence;
   let sampler;
-  let processProofs = null;
+  let processProofs = launchOnlyProcessProofs(launchReceipt);
+  let failureBoundary = "process-evidence";
   try {
     processEvidence = createProcessEvidence({
       ...input.processEvidenceOptions,
@@ -595,6 +661,7 @@ export async function executeDataWranglerComparisonTrial(
     if (!isRecord(processProofs) || (processProofs && typeof processProofs.then === "function")) {
       throw new TypeError("Comparison trial launch process proofs must be captured synchronously.");
     }
+    failureBoundary = "resource-sampler";
     sampler = createSampler({
       launchReceipt,
       classify: processEvidence.classify,
@@ -609,6 +676,7 @@ export async function executeDataWranglerComparisonTrial(
       cacheProof,
       processProofs,
       failure: error,
+      failureBoundary,
       signalSupervisor,
       completeTerminalEvidence
     });

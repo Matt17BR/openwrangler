@@ -418,20 +418,57 @@ test("post-launch setup failure is path-free and waits for terminal cleanup", as
     createProcessEvidence: () => {
       throw new TypeError("private /proc setup detail");
     },
-    signalSupervisor: () => stopEditor.resolve()
+    signalSupervisor: () => stopEditor.resolve(),
+    completeTerminalEvidence: () => ({ cleanupProof: {}, trialProvenance: {} })
   });
 
   const result = await executeDataWranglerComparisonTrial(input(), harness.dependencies);
 
-  assert.equal(result.status, "pre-notebook-failure");
+  assert.equal(result.status, "post-launch-setup-failure");
   assert.equal(result.controlReceipt, null);
-  assert.equal(result.processProofs, null);
-  assert.deepEqual(result.outerEditorFailure, { status: "failed", classification: "type-error" });
+  assert.deepEqual(result.processProofs, {
+    editorRoot: { pid: 41, startTimeTicks: "410", capturedAtLaunch: true },
+    configuredKernel: null,
+    openWranglerRuntime: null
+  });
+  assert.deepEqual(result.outerEditorFailure, {
+    status: "failed",
+    classification: "process-evidence-type-error"
+  });
+  assert.equal(validateDataWranglerComparisonTrialExecutorReceipt(result), result);
   const serialized = JSON.stringify(result);
   assert.equal(serialized.includes("private /proc setup detail"), false);
   assert.equal(serialized.includes("private editor failure detail"), false);
   assert.ok(harness.events.includes("signal:post-launch-setup-failure"));
   assert.deepEqual(harness.events.slice(-2), ["terminal-receipt", "complete-terminal-evidence"]);
+});
+
+test("sampler setup failure retains launch proof without inventing a resource observation", async () => {
+  const stopEditor = deferred();
+  const harness = createHarness({
+    runEditorPhase: async () => {
+      await stopEditor.promise;
+      throw new Error("private editor failure detail");
+    },
+    signalSupervisor: () => stopEditor.resolve(),
+    completeTerminalEvidence: () => ({ cleanupProof: {}, trialProvenance: {} })
+  });
+  harness.dependencies.createSampler = () => {
+    throw new Error("private sampler setup detail");
+  };
+
+  const result = await executeDataWranglerComparisonTrial(input(), harness.dependencies);
+
+  assert.equal(result.status, "post-launch-setup-failure");
+  assert.equal(result.controlReceipt, null);
+  assert.equal(result.authorizationAttempted, false);
+  assert.equal(result.authorizationOutcome, "not-attempted");
+  assert.deepEqual(result.outerEditorFailure, {
+    status: "failed",
+    classification: "resource-sampler-error"
+  });
+  assert.equal(validateDataWranglerComparisonTrialExecutorReceipt(result), result);
+  assert.equal(JSON.stringify(result).includes("private sampler setup detail"), false);
 });
 
 test("authorized action without notebook evidence throws after verified cleanup and cannot be retried", async () => {

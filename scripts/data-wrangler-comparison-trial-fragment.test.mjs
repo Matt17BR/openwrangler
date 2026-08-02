@@ -34,6 +34,7 @@ import {
   executeDataWranglerComparisonTrial
 } from "./data-wrangler-comparison-trial-executor.mjs";
 import {
+  normalizeDataWranglerComparisonPostLaunchSetupFailureFragment,
   normalizeDataWranglerComparisonPreNotebookFailureFragment,
   normalizeDataWranglerComparisonTrialFragment
 } from "./data-wrangler-comparison-trial-fragment.mjs";
@@ -654,7 +655,10 @@ async function executeFixtureReceipt(input, { preNotebookFailure = false } = {})
       scheduleEntry: input.scheduleEntry,
       requestPath: "/private/request.json",
       acknowledgementPath: "/private/ack.json",
-      selectedKernel: input.notebookPhaseReceipt.study.kernel,
+      selectedKernel: {
+        name: "openwrangler-study-fragment-test",
+        displayName: "Open Wrangler fragment test CPython 3.12"
+      },
       editorPhaseOptions: {},
       supervisorOptions: {},
       processEvidenceOptions: {},
@@ -689,6 +693,101 @@ async function executeFixtureReceipt(input, { preNotebookFailure = false } = {})
   );
 }
 
+function launchOnlyTerminalEvidence(input) {
+  const editorRoot = input.supervisorLaunchReceipt.editorRoot;
+  const processProofs = {
+    editorRoot: {
+      pid: editorRoot.pid,
+      startTimeTicks: editorRoot.startTimeTicks,
+      capturedAtLaunch: true
+    },
+    configuredKernel: null,
+    openWranglerRuntime: null
+  };
+  const cleanupProof = structuredClone(input.cleanupProof);
+  cleanupProof.retainedOwnedIdentities = [{ pid: editorRoot.pid, startTimeTicks: editorRoot.startTimeTicks }];
+  cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities = [
+    { pid: editorRoot.pid, startTimeTicks: editorRoot.startTimeTicks, disposition: "terminated" }
+  ];
+  cleanupProof.observations = [
+    {
+      sequence: 0,
+      elapsedMs: 0,
+      processes: [{ pid: editorRoot.pid, startTimeTicks: editorRoot.startTimeTicks }]
+    },
+    { sequence: 1, elapsedMs: 200, processes: [] },
+    { sequence: 2, elapsedMs: 400, processes: [] }
+  ];
+  const trialProvenance = structuredClone(input.trialProvenance);
+  trialProvenance.kernelProcess = null;
+  return { processProofs, cleanupProof, trialProvenance };
+}
+
+async function executeSetupFailureReceipt(input, boundary) {
+  const launchReceipt = input.supervisorLaunchReceipt;
+  const terminal = launchOnlyTerminalEvidence(input);
+  const completion = {
+    launchReceipt,
+    terminalReceipt: terminal.cleanupProof.supervisorTerminalReceipt,
+    exit: { code: 0, signal: null, error: undefined }
+  };
+  const stopEditor = deferred();
+  const child = Object.freeze({ kill: () => true });
+  const adapter = Object.freeze({
+    spawnProcess: () => child,
+    waitForLaunch: async () => launchReceipt,
+    waitForCompletion: async () => completion,
+    child: () => child
+  });
+  return await executeDataWranglerComparisonTrial(
+    {
+      runId: RUN_ID,
+      phase: PHASE,
+      cacheState: input.scheduleEntry.kind,
+      product: input.scheduleEntry.product,
+      preparedIntent: input.preparedIntent,
+      scheduleEntry: input.scheduleEntry,
+      requestPath: "/private/request.json",
+      acknowledgementPath: "/private/ack.json",
+      selectedKernel: {
+        name: "openwrangler-study-setup-failure-test",
+        displayName: "Open Wrangler setup failure test CPython 3.12"
+      },
+      editorPhaseOptions: {},
+      supervisorOptions: {},
+      processEvidenceOptions: {},
+      authorizeAction: () => assert.fail("setup failure must not authorize an action"),
+      reinspectActionAuthorization: () => assert.fail("setup failure must not inspect authorization")
+    },
+    {
+      createSupervisorAdapter: () => adapter,
+      runEditorPhase: async (_options, { spawnProcess }) => {
+        spawnProcess("code", [], {});
+        await stopEditor.promise;
+        throw new Error("private editor shutdown detail");
+      },
+      createProcessEvidence: () => {
+        if (boundary === "process-evidence") throw new Error("private process evidence detail");
+        return {
+          classify: () => "other-owned-child",
+          snapshotLaunchProcessProofs: () => terminal.processProofs,
+          snapshotPreActionProcessProofs: () => terminal.processProofs,
+          snapshotProcessProofs: () => assert.fail("setup failure cannot snapshot an action")
+        };
+      },
+      createSampler: () => {
+        throw new Error("private resource sampler detail");
+      },
+      prepareSourceCache: async () => input.cacheProof,
+      signalSupervisor: async () => stopEditor.resolve(),
+      completeTerminalEvidence: async () => ({
+        cleanupProof: terminal.cleanupProof,
+        trialProvenance: terminal.trialProvenance
+      })
+    }
+  );
+}
+
 test("normalizes a successful trial through the manifest fragment validator", () => {
   const input = trialInput();
   const fragment = normalizeDataWranglerComparisonTrialFragment(input);
@@ -714,6 +813,49 @@ test("composes one real pre-notebook executor failure directly into the normaliz
   const fragment = normalizeDataWranglerComparisonPreNotebookFailureFragment(input);
   assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
   assert.equal(fragment.outcome.status, "pre-action-invalid");
+});
+
+test("composes honest process and sampler setup failures without a resource sample", async (t) => {
+  for (const [boundary, reasonClass] of [
+    ["process-evidence", "setup"],
+    ["resource-sampler", "resource-sampling"]
+  ]) {
+    await t.test(boundary, async () => {
+      const input = preNotebookFailureInput();
+      input.executorReceipt = await executeSetupFailureReceipt(input, boundary);
+      const fragment = normalizeDataWranglerComparisonPostLaunchSetupFailureFragment(input);
+      assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
+      assert.equal(fragment.outcome.status, "pre-action-invalid");
+      assert.equal(fragment.outcome.reasonClass, reasonClass);
+      assert.equal(fragment.outcome.actionStarted, false);
+      assert.equal(fragment.resourceObservation, null);
+      assert.equal(fragment.processProofs.configuredKernel, null);
+      assert.equal(fragment.trialProvenance.kernelProcess, null);
+      assert.deepEqual(fragment.cleanupProof.supervisorLaunchReceipt, input.supervisorLaunchReceipt);
+      assert.equal(JSON.stringify(fragment).includes("private"), false);
+
+      const missingLaunch = structuredClone(fragment);
+      delete missingLaunch.cleanupProof.supervisorLaunchReceipt;
+      assert.throws(
+        () => validateDataWranglerStudyFragment(missingLaunch, input.manifest),
+        /resource observation|missing or unknown fields/u
+      );
+
+      const inventedKernel = structuredClone(fragment);
+      inventedKernel.processProofs.configuredKernel = structuredClone(input.processProofs.configuredKernel);
+      inventedKernel.processProofs.openWranglerRuntime = structuredClone(input.processProofs.openWranglerRuntime);
+      assert.throws(() => validateDataWranglerStudyFragment(inventedKernel, input.manifest), /resource observation/u);
+    });
+  }
+
+  await t.test("cold cache preparation was not claimed", async () => {
+    const input = preNotebookFailureInput({ kind: "cold" });
+    input.executorReceipt = await executeSetupFailureReceipt(input, "process-evidence");
+    const fragment = normalizeDataWranglerComparisonPostLaunchSetupFailureFragment(input);
+    assert.equal(fragment.cacheProof, null);
+    assert.equal(fragment.sourceLoad.includedInInlineTiming, true);
+    assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
+  });
 });
 
 test("binds a cold trial to the controller's verified cache proof", () => {

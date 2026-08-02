@@ -1023,6 +1023,7 @@ function fixtureForStudyEntry(manifest, entry) {
 
 function validateCacheProof(proof, entry, fragment, manifest) {
   if (proof === null) {
+    if (entry.kind === "cold" && fragmentFailedBeforeResourceSampling(fragment)) return;
     if (
       fragment.outcome.status !== "unsupported" &&
       !(fragment.outcome.actionStarted === false && fragment.environmentGate?.passed === false)
@@ -2388,6 +2389,18 @@ function fragmentSkippedEditorLaunch(fragment) {
   );
 }
 
+function fragmentFailedBeforeResourceSampling(fragment) {
+  return (
+    fragment.outcome.status === "pre-action-invalid" &&
+    fragment.outcome.actionStarted === false &&
+    ["setup", "resource-sampling"].includes(fragment.outcome.reasonClass) &&
+    fragment.resourceObservation === null &&
+    fragment.processProofs?.configuredKernel === null &&
+    fragment.processProofs?.openWranglerRuntime === null &&
+    isRecord(fragment.cleanupProof?.supervisorLaunchReceipt)
+  );
+}
+
 function validateStudyProcessProofs(proofs, fragment, manifest) {
   const proofRequired = fragment.outcome.actionStarted;
   const launchSkipped = fragmentSkippedEditorLaunch(fragment);
@@ -2409,7 +2422,11 @@ function validateStudyProcessProofs(proofs, fragment, manifest) {
   if (proofs.editorRoot.capturedAtLaunch !== true) {
     fail("Study editor-root identity must be captured at launch.");
   }
-  const ownershipTracker = fragment.resourceObservation?.ownershipTracker;
+  const ownershipTracker =
+    fragment.resourceObservation?.ownershipTracker ?? fragment.cleanupProof?.supervisorLaunchReceipt;
+  if (fragment.resourceObservation === null && ownershipTracker !== undefined) {
+    validatePssOwnershipTracker(ownershipTracker);
+  }
   const expectedTracker = manifest.provenance.ownershipTracker;
   if (
     ownershipTracker !== undefined &&
@@ -2421,9 +2438,9 @@ function validateStudyProcessProofs(proofs, fragment, manifest) {
     fail("Study ownership receipt does not match the manifest-pinned supervisor and Python identity.");
   }
   if (
-    fragment.resourceObservation !== null &&
-    (fragment.resourceObservation.ownershipTracker.editorRoot.pid !== proofs.editorRoot.pid ||
-      fragment.resourceObservation.ownershipTracker.editorRoot.startTimeTicks !== proofs.editorRoot.startTimeTicks)
+    ownershipTracker !== undefined &&
+    (ownershipTracker.editorRoot.pid !== proofs.editorRoot.pid ||
+      ownershipTracker.editorRoot.startTimeTicks !== proofs.editorRoot.startTimeTicks)
   ) {
     fail("Study ownership receipt does not match the editor root captured from the supervisor receipt.");
   }
@@ -2686,23 +2703,21 @@ function validateCleanupProof(proof, processProofs, fragment) {
   if (launchSkipped) {
     fail("A pre-launch study outcome cannot contain process-tree cleanup evidence.");
   }
-  exactKeys(
-    proof,
-    [
-      "editorRootPid",
-      "editorRootStartTimeTicks",
-      "startedAfterTrial",
-      "intervalMs",
-      "deadlineMs",
-      "retainedOwnedIdentities",
-      "supervisorTerminalReceipt",
-      "observations",
-      "treeEmpty",
-      "status",
-      "failure"
-    ],
-    "Study cleanup proof"
-  );
+  const proofKeys = [
+    "editorRootPid",
+    "editorRootStartTimeTicks",
+    "startedAfterTrial",
+    "intervalMs",
+    "deadlineMs",
+    "retainedOwnedIdentities",
+    "supervisorTerminalReceipt",
+    "observations",
+    "treeEmpty",
+    "status",
+    "failure"
+  ];
+  if (fragment.resourceObservation === null) proofKeys.push("supervisorLaunchReceipt");
+  exactKeys(proof, proofKeys, "Study cleanup proof");
   if (
     processProofs === null ||
     proof.editorRootPid !== processProofs.editorRoot.pid ||
@@ -2718,9 +2733,11 @@ function validateCleanupProof(proof, processProofs, fragment) {
     [processProofs.editorRoot, processProofs.configuredKernel, processProofs.openWranglerRuntime]
       .filter((identity) => identity?.pid !== null && identity?.pid !== undefined)
       .sort((left, right) => left.pid - right.pid);
+  const ownershipTracker =
+    fragment.resourceObservation?.ownershipTracker ?? validatePssOwnershipTracker(proof.supervisorLaunchReceipt);
   const { terminalIdentities, identityReuseEvents } = validateSupervisorTerminalReceipt(
     proof.supervisorTerminalReceipt,
-    fragment.resourceObservation.ownershipTracker
+    ownershipTracker
   );
   const expectedRetainedIdentities = [
     ...new Map(
@@ -3089,7 +3106,11 @@ export function validateDataWranglerStudyFragment(fragment, manifest) {
   if (fragment.outcome.status === "success" && fragment.resourceObservation?.valid !== true) {
     fail("A successful study fragment requires a valid resource observation.");
   }
-  if (!fragmentSkippedEditorLaunch(fragment) && fragment.resourceObservation === null) {
+  if (
+    !fragmentSkippedEditorLaunch(fragment) &&
+    fragment.resourceObservation === null &&
+    !fragmentFailedBeforeResourceSampling(fragment)
+  ) {
     fail("A launched study fragment requires a retained valid or explicitly invalid resource observation.");
   }
   if (fragment.outcome.status === "success") {
