@@ -578,6 +578,33 @@ all-column-profile, and PSS boundaries supersede no feasibility-smoke contract a
 after that reviewed method, its versioned study protocol, the exact candidate artifact, and all raw scheduled outcomes
 land together.
 
+The study command manages the durable ledger; it does not drive the notebook UI yet:
+
+```bash
+npm run comparison:study -- plan --spec tmp/comparison-study/spec.json --out tmp/comparison-study/manifest.json
+npm run comparison:study -- status --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments
+npm run comparison:study -- record --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --fragment tmp/comparison-study/next-fragment.json
+npm run comparison:study -- finalize --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --out tmp/comparison-study/result.json
+```
+
+The on-disk formats are `openwrangler-data-wrangler-study-manifest-v1`,
+`openwrangler-data-wrangler-study-fragment-v1`, `openwrangler-data-wrangler-study-result-v1`, and
+`openwrangler-linux-pss-observation-v1`. Validators reject unknown fields and mismatched manifest, schedule, product,
+attempt, and fragment identities.
+
+`plan` writes the manifest once. Its fixed seed produces ten paired warm blocks for each Pandas/Polars and CSV/Parquet
+cell. Each product runs first five times. One cold AB pair and one cold BA pair follow for each cell. `record` checks a
+versioned fragment against that manifest and will not overwrite an attempt already on disk. `status` returns only the
+work still missing. When both products fail the pre-action environment gate, their fragments stay in the ledger and
+the next status call returns a new correlated attempt. A shutdown can therefore leave a half-pair, but it cannot erase
+completed work or turn it into a complete result. `finalize` refuses to write a result while planned work remains.
+
+The result uses Hyndman-Fan type-7 median and p95. It keeps the paired differences and ratios used by the registered
+latency and memory checks. On Linux, resource sampling reads `/proc/<pid>/smaps_rollup` every 200 ms. It walks the
+isolated editor's descendants, checks each PID's start time before and after the read, and assigns every process to one
+category. PSS is the comparison measure; RSS is diagnostic. The notebook UI driver must be finished before this
+command can produce study evidence.
+
 ## Performance fixtures
 
 `npm run benchmark:runtime` is the canonical strict native-Polars release benchmark. It creates deterministic 100k×50 CSV and 1M×20 Parquet fixtures under ignored `tmp/performance`. Before timing, it validates exact dimensions, ordered Int64 schema, and deterministic sentinel values in every column; an invalid or partial fixture is atomically regenerated. Validation reads the source, so the harness then requires Linux to accept a per-file `posix_fadvise(POSIX_FADV_DONTNEED)` eviction before the first direct open and again immediately before the canonical stdio open. The stdio cold-source open is the release-gated first-usable-grid boundary at 3s/5s; missing eviction proof fails strict mode. Every timed open requests the first 16 columns, matching the shipped default; timed cache-miss pages rotate across real horizontal blocks, including nonzero offsets. `projectedGridColumns` records the resolved width, while the report records every sampled column offset and validates the returned stable IDs. `pageCache.maxBytes` is the maximum total retained cache weight observed during the run, not the byte size of one response. The report separately retains the first direct open and the median of later fresh-manager opens against a warm OS source cache (`warmSourceReopenMedianMs`). Direct `SessionManager` cache timing is explicitly named `directRuntimeCachedPageP95Ms` and `directRuntimeCacheMissPageP95Ms`; it is not presented as editor or transport latency. A second measurement spawns the real standalone Python runtime with the selected backend already imported, sends canonical protocol-v2 newline-delimited JSON envelopes over stdin, parses stdout envelopes, and records `stdioTransport.cacheMissPageP95Ms`. Its isolated benchmark bootstrap leaves canonical stdin/stdout behavior unchanged and wraps only the selected engine's production `header_stats` call, emitting entry and exit timestamps on stderr from Python's process-wide monotonic clock. The interactive cache-miss page is sent only after the entry event, and strict mode requires its completed write timestamp to fall inside that measured call interval; the report retains both signed timing margins around the send. A completed-before-send or otherwise unproven interval is an inconclusive release failure rather than a pass.

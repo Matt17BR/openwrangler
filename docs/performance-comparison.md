@@ -131,7 +131,7 @@ private completion signal.
   clones of the configured-only template. Those cold blocks prove source-page eviction immediately before a measured
   cell that loads and evaluates the dataframe, so their `loadAndPreviewMs` is deliberately different from the primary
   preloaded-variable `inlinePreviewMs`. They do not enter the ten-sample warm distribution. “Cold” describes target
-  source pages, target variable, process, and kernel—not OS boot, package installation, or never-activated extensions.
+  source pages, target variable, process, and kernel. It does not mean OS boot, package installation, or never-activated extensions.
   Package installation and dependency provisioning remain outside timing.
 - Use fixed editor dimensions, zoom, theme, viewport, row-page size, and visible notebook/output layout.
 - Apply predeclared 45-second inline, 60-second workbench, and 135-second complete-profile deadlines. Their 240-second
