@@ -5,6 +5,7 @@ import { canonicalDurableJson, publishDurableStudyJsonExclusive } from "./durabl
 
 export const DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL = "openwrangler-data-wrangler-study-bridge-request-v1";
 export const DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL = "openwrangler-data-wrangler-study-bridge-ack-v1";
+export const DATA_WRANGLER_STUDY_BRIDGE_ABANDONMENT_PROTOCOL = "openwrangler-data-wrangler-study-bridge-abandonment-v1";
 export const DATA_WRANGLER_STUDY_BRIDGE_ENVIRONMENT = Object.freeze({
   request: "OPEN_WRANGLER_STUDY_REQUEST",
   acknowledgement: "OPEN_WRANGLER_STUDY_ACK",
@@ -40,6 +41,10 @@ export class DataWranglerStudyBridgeError extends Error {
 
 function fail(code, message, options) {
   throw new DataWranglerStudyBridgeError(code, message, options);
+}
+
+function abortError() {
+  return new DataWranglerStudyBridgeError("aborted", "Study bridge request wait was aborted.");
 }
 
 function isRecord(value) {
@@ -84,6 +89,48 @@ function validateMonotonicNanoseconds(value) {
     fail("invalid-clock", "Study bridge monotonic timestamp is malformed or exceeds its bound.");
   }
   return value;
+}
+
+function validateOptionalAbortSignal(signal) {
+  if (
+    signal !== undefined &&
+    (signal === null ||
+      typeof signal !== "object" ||
+      typeof signal.aborted !== "boolean" ||
+      typeof signal.addEventListener !== "function" ||
+      typeof signal.removeEventListener !== "function")
+  ) {
+    fail("invalid-dependency", "Study bridge request wait requires an AbortSignal when one is provided.");
+  }
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError();
+}
+
+async function waitForPollOrAbort(waitResult, signal) {
+  throwIfAborted(signal);
+  if (signal === undefined) {
+    await waitResult;
+    return;
+  }
+  let onAbort;
+  const aborted = new Promise((_, reject) => {
+    onAbort = () => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try {
+    try {
+      await Promise.race([waitResult, aborted]);
+    } catch (error) {
+      throwIfAborted(signal);
+      throw error;
+    }
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+  throwIfAborted(signal);
 }
 
 function createEnvelope(protocol, { runId, phase, sequence, kind, monotonicNanoseconds }) {
@@ -552,17 +599,15 @@ export function createDataWranglerStudyBridgeResponder(
   const acceptedRequests = new WeakMap();
 
   return Object.freeze({
-    async waitForRequest(expectedSequence, expectedKind) {
+    async waitForRequest(expectedSequence, expectedKind, signal) {
       validateSequence(expectedSequence);
       validateKind(expectedKind);
+      validateOptionalAbortSignal(signal);
+      throwIfAborted(signal);
       const startedAt = now();
       while (true) {
-        elapsedBeforeDeadline(
-          now,
-          startedAt,
-          timeoutMs,
-          `Study bridge request did not arrive within ${timeoutMs} ms.`
-        );
+        throwIfAborted(signal);
+        elapsedBeforeDeadline(now, startedAt, timeoutMs, `Study bridge request did not arrive within ${timeoutMs} ms.`);
         const candidate = readRequest(paths.request, { optional: true });
         if (candidate !== null) {
           elapsedBeforeDeadline(
@@ -599,7 +644,9 @@ export function createDataWranglerStudyBridgeResponder(
         if (!waitResult || typeof waitResult.then !== "function") {
           fail("invalid-dependency", "Study bridge wait function must return a promise.");
         }
-        await waitResult;
+        throwIfAborted(signal);
+        await waitForPollOrAbort(waitResult, signal);
+        throwIfAborted(signal);
       }
     },
     acknowledge(request) {
@@ -629,6 +676,42 @@ export function createDataWranglerStudyBridgeResponder(
       acceptedRequests.delete(request);
       lastAcknowledged = request;
       return acknowledgement;
+    },
+    abandon(request) {
+      const acceptedMetadata = acceptedRequests.get(request);
+      if (acceptedMetadata === undefined) {
+        fail("inauthentic-request", "Study bridge responder can abandon only a request it read itself.");
+      }
+      if (request.runId !== correlation.runId || request.phase !== correlation.phase) {
+        fail("stale-envelope", "Study bridge request belongs to another trial.");
+      }
+      if (entryExists(paths.acknowledgement)) {
+        fail("stale-entry", "Study bridge acknowledgement path is already occupied.");
+      }
+      const currentRequest = readRequest(paths.request);
+      assertSameEnvelope(currentRequest.envelope, request, "Study bridge request");
+      assertSameMetadata(currentRequest.metadata, acceptedMetadata, "Study bridge request");
+      const abandonedMonotonicNanoseconds = clockText(clock);
+      if (BigInt(abandonedMonotonicNanoseconds) < BigInt(request.monotonicNanoseconds)) {
+        fail("clock-regression", "Study bridge abandonment predates its request.");
+      }
+      if (entryExists(paths.acknowledgement)) {
+        fail("stale-entry", "Study bridge acknowledgement path is already occupied.");
+      }
+      const consumedRequest = readRequest(paths.request, { consume: true });
+      assertSameEnvelope(consumedRequest.envelope, request, "Study bridge request");
+      assertSameMetadata(consumedRequest.metadata, acceptedMetadata, "Study bridge request");
+      assertOpenPaths(paths);
+      acceptedRequests.delete(request);
+      return Object.freeze({
+        protocol: DATA_WRANGLER_STUDY_BRIDGE_ABANDONMENT_PROTOCOL,
+        runId: request.runId,
+        phase: request.phase,
+        sequence: request.sequence,
+        kind: request.kind,
+        requestMonotonicNanoseconds: request.monotonicNanoseconds,
+        abandonedMonotonicNanoseconds
+      });
     }
   });
 }

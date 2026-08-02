@@ -6,6 +6,7 @@ import test from "node:test";
 import { canonicalDurableJson } from "./durable-study-json.mjs";
 import {
   DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+  DATA_WRANGLER_STUDY_BRIDGE_ABANDONMENT_PROTOCOL,
   DATA_WRANGLER_STUDY_BRIDGE_ENVIRONMENT,
   DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
   createDataWranglerStudyBridgeAcknowledgement,
@@ -238,6 +239,231 @@ test("responder rejects requests that cross its deadline", async (t) => {
         }
       );
       await assert.rejects(responder.waitForRequest(0, "measurement-ready"), /within 100 ms/u);
+    });
+  });
+});
+
+test("responder abandonment consumes one authenticated request without releasing child progress", async () => {
+  await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+    const controller = createDataWranglerStudyBridgeController(
+      { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+      { clock: () => 100n, timeoutMs: 20, pollIntervalMs: 1 }
+    );
+    const responder = createDataWranglerStudyBridgeResponder(
+      { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+      { clock: () => 200n, pollIntervalMs: 1 }
+    );
+
+    let childProgressed = false;
+    const exchange = controller.exchange("inline-baseline").then((value) => {
+      childProgressed = true;
+      return value;
+    });
+    const request = await responder.waitForRequest(0, "inline-baseline");
+    const abandonment = responder.abandon(request);
+
+    assert.deepEqual(abandonment, {
+      protocol: DATA_WRANGLER_STUDY_BRIDGE_ABANDONMENT_PROTOCOL,
+      runId: RUN_ID,
+      phase: PHASE,
+      sequence: 0,
+      kind: "inline-baseline",
+      requestMonotonicNanoseconds: "100",
+      abandonedMonotonicNanoseconds: "200"
+    });
+    assert.equal(Object.isFrozen(abandonment), true);
+    assert.equal(existsSync(requestPath), false);
+    assert.equal(existsSync(acknowledgementPath), false);
+    assert.throws(() => responder.acknowledge(request), /only a request it read itself/u);
+    assert.throws(() => responder.abandon(request), /only a request it read itself/u);
+    await assert.rejects(exchange, /acknowledgement did not arrive within 20 ms/u);
+    assert.equal(childProgressed, false);
+    assert.equal(controller.nextSequence(), 0);
+    assert.doesNotThrow(() => controller.close());
+  });
+});
+
+test("responder abandonment rejects cloned, foreign, changed, and already acknowledged requests", async (t) => {
+  await t.test("cloned and foreign objects", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const responder = createDataWranglerStudyBridgeResponder(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        { clock: () => 200n, pollIntervalMs: 1 }
+      );
+      const published = createDataWranglerStudyBridgeRequest({
+        runId: RUN_ID,
+        phase: PHASE,
+        sequence: 0,
+        kind: "measurement-ready",
+        monotonicNanoseconds: "100"
+      });
+      writeFileSync(requestPath, canonicalDurableJson(published), { mode: 0o600, flag: "wx" });
+      const request = await responder.waitForRequest(0, "measurement-ready");
+      assert.throws(() => responder.abandon({ ...request }), /only a request it read itself/u);
+      assert.throws(
+        () =>
+          responder.abandon(
+            createDataWranglerStudyBridgeRequest({
+              runId: RUN_ID,
+              phase: PHASE,
+              sequence: 1,
+              kind: "workbench-baseline",
+              monotonicNanoseconds: "150"
+            })
+          ),
+        /only a request it read itself/u
+      );
+      assert.equal(existsSync(requestPath), true);
+      responder.abandon(request);
+    });
+  });
+
+  await t.test("changed request", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const responder = createDataWranglerStudyBridgeResponder(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        { clock: () => 200n, pollIntervalMs: 1 }
+      );
+      const published = createDataWranglerStudyBridgeRequest({
+        runId: RUN_ID,
+        phase: PHASE,
+        sequence: 0,
+        kind: "measurement-ready",
+        monotonicNanoseconds: "100"
+      });
+      writeFileSync(requestPath, canonicalDurableJson(published), { mode: 0o600, flag: "wx" });
+      const request = await responder.waitForRequest(0, "measurement-ready");
+      writeFileSync(
+        requestPath,
+        canonicalDurableJson(createDataWranglerStudyBridgeRequest({ ...published, monotonicNanoseconds: "101" }))
+      );
+      assert.throws(() => responder.abandon(request), /changed between validation and consumption|changed identity/u);
+      assert.equal(existsSync(requestPath), true);
+    });
+  });
+
+  await t.test("pre-existing acknowledgement", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const responder = createDataWranglerStudyBridgeResponder(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        { clock: () => 200n, pollIntervalMs: 1 }
+      );
+      const requestEnvelope = createDataWranglerStudyBridgeRequest({
+        runId: RUN_ID,
+        phase: PHASE,
+        sequence: 0,
+        kind: "measurement-ready",
+        monotonicNanoseconds: "100"
+      });
+      writeFileSync(requestPath, canonicalDurableJson(requestEnvelope), { mode: 0o600, flag: "wx" });
+      const request = await responder.waitForRequest(0, "measurement-ready");
+      writeFileSync(
+        acknowledgementPath,
+        canonicalDurableJson(
+          createDataWranglerStudyBridgeAcknowledgement({ ...requestEnvelope, monotonicNanoseconds: "150" })
+        ),
+        { mode: 0o600, flag: "wx" }
+      );
+      assert.throws(() => responder.abandon(request), /acknowledgement path is already occupied/u);
+      assert.equal(existsSync(requestPath), true);
+      assert.equal(existsSync(acknowledgementPath), true);
+    });
+  });
+});
+
+test("responder request waits stop promptly when their optional signal aborts", async (t) => {
+  await t.test("already aborted", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const controller = new AbortController();
+      controller.abort("laptop-shutdown");
+      const responder = createDataWranglerStudyBridgeResponder({
+        requestPath,
+        acknowledgementPath,
+        runId: RUN_ID,
+        phase: PHASE
+      });
+      await assert.rejects(responder.waitForRequest(0, "measurement-ready", controller.signal), {
+        code: "aborted"
+      });
+    });
+  });
+
+  await t.test("while a poll is pending", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const controller = new AbortController();
+      let markWaiting;
+      const waiting = new Promise((resolvePromise) => {
+        markWaiting = resolvePromise;
+      });
+      const responder = createDataWranglerStudyBridgeResponder(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        {
+          pollIntervalMs: 1,
+          wait: () => {
+            markWaiting();
+            return new Promise(() => {});
+          }
+        }
+      );
+      const request = responder.waitForRequest(0, "measurement-ready", controller.signal);
+      await waiting;
+      controller.abort("laptop-shutdown");
+      await assert.rejects(request, { code: "aborted" });
+    });
+  });
+
+  await t.test("immediately after a poll", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const controller = new AbortController();
+      const responder = createDataWranglerStudyBridgeResponder(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        {
+          pollIntervalMs: 1,
+          wait: async () => controller.abort("laptop-shutdown")
+        }
+      );
+      await assert.rejects(responder.waitForRequest(0, "measurement-ready", controller.signal), {
+        code: "aborted"
+      });
+    });
+  });
+
+  await t.test("normalizes a concurrently rejected poll", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const controller = new AbortController();
+      let markWaiting;
+      const waiting = new Promise((resolvePromise) => {
+        markWaiting = resolvePromise;
+      });
+      const responder = createDataWranglerStudyBridgeResponder(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        {
+          pollIntervalMs: 1,
+          wait: () =>
+            new Promise((_, reject) => {
+              controller.signal.addEventListener("abort", () => reject(new Error("unbounded injected wait failure")), {
+                once: true
+              });
+              markWaiting();
+            })
+        }
+      );
+      const request = responder.waitForRequest(0, "measurement-ready", controller.signal);
+      await waiting;
+      controller.abort("laptop-shutdown");
+      await assert.rejects(request, { code: "aborted" });
+    });
+  });
+
+  await t.test("rejects a malformed optional signal", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const responder = createDataWranglerStudyBridgeResponder({
+        requestPath,
+        acknowledgementPath,
+        runId: RUN_ID,
+        phase: PHASE
+      });
+      await assert.rejects(responder.waitForRequest(0, "measurement-ready", {}), /requires an AbortSignal/u);
     });
   });
 });
