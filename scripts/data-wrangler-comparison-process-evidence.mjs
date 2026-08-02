@@ -442,19 +442,24 @@ function frozenProofs(editorRoot, configuredKernel, runtime, product, executable
       startTimeTicks: editorRoot.startTimeTicks,
       capturedAtLaunch: true
     }),
-    configuredKernel: Object.freeze({
-      pid: configuredKernel.pid,
-      startTimeTicks: configuredKernel.startTimeTicks,
-      executableSha256,
-      kernelIdSha256: configuredKernel.kernelIdSha256,
-      observedBeforeAction: true
-    }),
+    configuredKernel:
+      configuredKernel === null
+        ? null
+        : Object.freeze({
+            pid: configuredKernel.pid,
+            startTimeTicks: configuredKernel.startTimeTicks,
+            executableSha256,
+            kernelIdSha256: configuredKernel.kernelIdSha256,
+            observedBeforeAction: true
+          }),
     openWranglerRuntime: Object.freeze(
-      product === "data-wrangler"
-        ? { status: "not-applicable", pid: null, startTimeTicks: null }
-        : runtime === null
-          ? { status: "live-kernel-absence-proven", pid: null, startTimeTicks: null }
-          : { status: "observed", pid: runtime.pid, startTimeTicks: runtime.startTimeTicks }
+      configuredKernel === null
+        ? null
+        : product === "data-wrangler"
+          ? { status: "not-applicable", pid: null, startTimeTicks: null }
+          : runtime === null
+            ? { status: "live-kernel-absence-proven", pid: null, startTimeTicks: null }
+            : { status: "observed", pid: runtime.pid, startTimeTicks: runtime.startTimeTicks }
     )
   });
 }
@@ -628,5 +633,34 @@ export function createDataWranglerComparisonProcessEvidence({
     return frozenProofs(launchReceipt.editorRoot, configuredKernel, runtime, product, pythonExecutableSha256);
   };
 
-  return Object.freeze({ classify, snapshotProcessProofs });
+  // Pin the editor root immediately. A failure can happen before the notebook
+  // starts its kernel, but a launched trial still needs proof of which editor
+  // process owned the isolated tree.
+  classify({
+    pid: launchReceipt.editorRoot.pid,
+    startTimeTicks: launchReceipt.editorRoot.startTimeTicks,
+    rootPid: launchReceipt.editorRoot.pid,
+    rootStartTimeTicks: launchReceipt.editorRoot.startTimeTicks
+  });
+
+  const snapshotLaunchProcessProofs = () => {
+    if (!rootObserved) fail("The editor root was not observed at launch.");
+    return frozenProofs(launchReceipt.editorRoot, null, null, product, pythonExecutableSha256);
+  };
+
+  const snapshotPreActionProcessProofs = ({ selectedKernel } = {}) => {
+    const selected = validateKernelBinding(selectedKernel);
+    if (!sameSelectedKernel(selected, kernelBinding)) {
+      fail("The pre-action process proof does not match the notebook-selected kernel.");
+    }
+    if (!rootObserved) fail("The editor root was not observed at launch.");
+    return frozenProofs(launchReceipt.editorRoot, configuredKernel, runtime, product, pythonExecutableSha256);
+  };
+
+  return Object.freeze({
+    classify,
+    snapshotLaunchProcessProofs,
+    snapshotPreActionProcessProofs,
+    snapshotProcessProofs
+  });
 }

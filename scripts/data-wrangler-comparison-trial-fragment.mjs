@@ -5,6 +5,7 @@ import {
   validateDataWranglerStudyFragment
 } from "./data-wrangler-comparison-study.mjs";
 import { validateDataWranglerComparisonTrialControlReceipt } from "./data-wrangler-comparison-trial-control.mjs";
+import { validateDataWranglerComparisonTrialExecutorReceipt } from "./data-wrangler-comparison-trial-executor.mjs";
 
 const ABSOLUTE_MILESTONES = Object.freeze([
   "inlineActionNanoseconds",
@@ -65,6 +66,39 @@ function canonical(value) {
 
 function sameValue(left, right) {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+function validateExecutorBinding(executorReceipt, input, manifest, scheduleEntry) {
+  const preparedIntent = requireRecord(input.preparedIntent, "Prepared trial intent");
+  const fragmentIdentity = requireRecord(input.fragmentIdentity, "Study fragment identity");
+  const binding = executorReceipt.trialBinding;
+  if (
+    binding.preparedIntentSha256 !== digestStudyValue(preparedIntent) ||
+    preparedIntent.stage !== "prepared" ||
+    preparedIntent.runId !== executorReceipt.runId ||
+    preparedIntent.manifestSha256 !== digestStudyValue(manifest) ||
+    preparedIntent.executionIndex !== fragmentIdentity.executionIndex ||
+    preparedIntent.scheduleEntryId !== scheduleEntry.id ||
+    preparedIntent.attempt !== fragmentIdentity.attempt ||
+    preparedIntent.effectiveBlockId !== fragmentIdentity.effectiveBlockId ||
+    preparedIntent.product !== scheduleEntry.product ||
+    binding.manifestSha256 !== preparedIntent.manifestSha256 ||
+    binding.executionIndex !== preparedIntent.executionIndex ||
+    binding.scheduleEntryId !== scheduleEntry.id ||
+    binding.baseBlockId !== scheduleEntry.blockId ||
+    binding.attempt !== preparedIntent.attempt ||
+    binding.effectiveBlockId !== preparedIntent.effectiveBlockId ||
+    binding.product !== scheduleEntry.product ||
+    binding.engine !== scheduleEntry.engine ||
+    binding.format !== scheduleEntry.format ||
+    binding.cacheState !== scheduleEntry.kind
+  ) {
+    fail("The executor receipt does not match the prepared trial, schedule, and fragment identity.");
+  }
+}
+
+function terminalReceipt(executorReceipt) {
+  return requireRecord(executorReceipt.supervisorCompletion?.terminalReceipt, "Supervisor terminal receipt");
 }
 
 function nanoseconds(value, label, { nullable = false } = {}) {
@@ -500,13 +534,21 @@ export function normalizeDataWranglerComparisonTrialFragment(
   input,
   {
     validateControlReceipt = validateDataWranglerComparisonTrialControlReceipt,
+    validateExecutorReceipt = validateDataWranglerComparisonTrialExecutorReceipt,
     validateFragment = validateDataWranglerStudyFragment
   } = {}
 ) {
   const manifest = requireRecord(input.manifest, "Study manifest");
   const scheduleEntry = requireRecord(input.scheduleEntry, "Study schedule entry");
-  const phaseReceipt = requireRecord(input.notebookPhaseReceipt, "Notebook phase receipt");
-  const controlReceipt = validateControlReceipt(requireRecord(input.controlReceipt, "Trial control receipt"));
+  const executorReceipt = validateExecutorReceipt(requireRecord(input.executorReceipt, "Trial executor receipt"), {
+    validateControlReceipt
+  });
+  if (executorReceipt.status !== "evidence") {
+    fail("The main trial normalizer requires executor evidence with a notebook receipt.");
+  }
+  validateExecutorBinding(executorReceipt, input, manifest, scheduleEntry);
+  const phaseReceipt = requireRecord(executorReceipt.notebookPhaseReceipt, "Notebook phase receipt");
+  const controlReceipt = requireRecord(executorReceipt.controlReceipt, "Trial control receipt");
   if (
     phaseReceipt.product !== scheduleEntry.product ||
     phaseReceipt.study.engine !== scheduleEntry.engine ||
@@ -516,18 +558,20 @@ export function normalizeDataWranglerComparisonTrialFragment(
     fail("Notebook phase evidence does not match the scheduled trial.");
   }
   validateStatusAndFailureAgreement(controlReceipt, phaseReceipt);
-  validateControlBinding(controlReceipt, scheduleEntry, phaseReceipt, input.cacheProof);
-  const resourceObservation = requireRecord(input.resourceObservation, "Trial resource observation");
+  validateControlBinding(controlReceipt, scheduleEntry, phaseReceipt, executorReceipt.cacheProof);
+  const resourceObservation = requireRecord(controlReceipt.resourceObservation, "Trial resource observation");
   if (!sameValue(controlReceipt.resourceObservation, resourceObservation)) {
     fail("The supplied PSS observation does not match the parent control receipt.");
   }
   const exchanges = bridgeExchanges(controlReceipt, phaseReceipt, scheduleEntry);
   const milestones = authoritativeMilestones(phaseReceipt, resourceObservation, exchanges);
   verifyAuthorization(controlReceipt, scheduleEntry, input.fragmentIdentity, milestones, exchanges, phaseReceipt);
-  if (!sameValue(input.supervisorLaunchReceipt, resourceObservation.ownershipTracker)) {
+  if (!sameValue(executorReceipt.launchReceipt, resourceObservation.ownershipTracker)) {
     fail("Resource sampling is not bound to the supervisor launch receipt.");
   }
-  if (!sameValue(input.supervisorTerminalReceipt, input.cleanupProof.supervisorTerminalReceipt)) {
+  const terminalEvidence = requireRecord(executorReceipt.terminalEvidence, "Trial terminal evidence");
+  const cleanupProof = requireRecord(terminalEvidence.cleanupProof, "Trial cleanup proof");
+  if (!sameValue(terminalReceipt(executorReceipt), cleanupProof.supervisorTerminalReceipt)) {
     fail("Cleanup is not bound to the supervisor terminal receipt.");
   }
   const timeout = timeoutForFailure(phaseReceipt, milestones);
@@ -540,9 +584,9 @@ export function normalizeDataWranglerComparisonTrialFragment(
       : phaseReceipt.workbench.engineLabel;
   const fragment = {
     ...structuredClone(input.fragmentIdentity),
-    outcome: outcomeForPhase(phaseReceipt, milestones, resourceObservation, input.cleanupProof),
+    outcome: outcomeForPhase(phaseReceipt, milestones, resourceObservation, cleanupProof),
     milestones,
-    cacheProof: structuredClone(input.cacheProof),
+    cacheProof: structuredClone(executorReceipt.cacheProof),
     sourceLoad: sourceLoadForPhase(phaseReceipt),
     engineEvidence: actionStarted
       ? {
@@ -570,10 +614,10 @@ export function normalizeDataWranglerComparisonTrialFragment(
           profiles: profileEvidence(phaseReceipt, fixture, milestones, timeout?.journey ?? null)
         }
       : null,
-    processProofs: structuredClone(input.processProofs),
+    processProofs: structuredClone(executorReceipt.processProofs),
     resourceObservation: structuredClone(resourceObservation),
-    cleanupProof: structuredClone(input.cleanupProof),
-    trialProvenance: structuredClone(input.trialProvenance)
+    cleanupProof: structuredClone(cleanupProof),
+    trialProvenance: structuredClone(terminalEvidence.trialProvenance)
   };
   return validateFragment(fragment, manifest);
 }
@@ -603,6 +647,12 @@ function validatePreNotebookControlReceipt(controlReceipt) {
   if (controlReceipt.abandonedRequest?.request.kind === "sampling-stop") {
     fail("A pre-notebook failure cannot retain an ambiguous started action.");
   }
+  const sequence =
+    controlReceipt.cacheState === "cold" ? BRIDGE_ORDER : BRIDGE_ORDER.filter((kind) => kind !== "cold-cache-evicted");
+  const expectedStage = sequence[controlReceipt.completedExchanges.length];
+  if (expectedStage === undefined || controlReceipt.failure.stage !== expectedStage) {
+    fail("A pre-notebook control failure must identify the next expected bridge request.");
+  }
 }
 
 /**
@@ -615,12 +665,20 @@ export function normalizeDataWranglerComparisonPreNotebookFailureFragment(
   input,
   {
     validateControlReceipt = validateDataWranglerComparisonTrialControlReceipt,
+    validateExecutorReceipt = validateDataWranglerComparisonTrialExecutorReceipt,
     validateFragment = validateDataWranglerStudyFragment
   } = {}
 ) {
   const manifest = requireRecord(input.manifest, "Study manifest");
   const scheduleEntry = requireRecord(input.scheduleEntry, "Study schedule entry");
-  const outerFailure = requireRecord(input.outerEditorFailure, "Outer editor failure");
+  const executorReceipt = validateExecutorReceipt(requireRecord(input.executorReceipt, "Trial executor receipt"), {
+    validateControlReceipt
+  });
+  if (executorReceipt.status !== "pre-notebook-failure") {
+    fail("The pre-notebook normalizer requires a matching executor failure receipt.");
+  }
+  validateExecutorBinding(executorReceipt, input, manifest, scheduleEntry);
+  const outerFailure = requireRecord(executorReceipt.outerEditorFailure, "Outer editor failure");
   exactKeys(outerFailure, ["status", "classification"], "Outer editor failure");
   if (
     outerFailure.status !== "failed" ||
@@ -629,7 +687,7 @@ export function normalizeDataWranglerComparisonPreNotebookFailureFragment(
   ) {
     fail("The outer editor failure classification is invalid.");
   }
-  const controlReceipt = validateControlReceipt(requireRecord(input.controlReceipt, "Trial control receipt"));
+  const controlReceipt = requireRecord(executorReceipt.controlReceipt, "Trial control receipt");
   validatePreNotebookControlReceipt(controlReceipt);
   if (controlReceipt.cacheState !== scheduleEntry.kind) {
     fail("The failed trial control receipt does not match the scheduled cache state.");
@@ -641,19 +699,20 @@ export function normalizeDataWranglerComparisonPreNotebookFailureFragment(
     if (!cacheEvictionCompleted) {
       fail("A launched cold failure without verified cache eviction cannot be published by the current study schema.");
     }
-    if (!sameValue(controlReceipt.coldCacheProof, input.cacheProof)) {
+    if (!sameValue(controlReceipt.coldCacheProof, executorReceipt.cacheProof)) {
       fail("The cold-cache control proof does not match the pre-notebook fragment cache proof.");
     }
   }
-  const resourceObservation = requireRecord(input.resourceObservation, "Trial resource observation");
-  const cleanupProof = requireRecord(input.cleanupProof, "Trial cleanup proof");
+  const resourceObservation = requireRecord(controlReceipt.resourceObservation, "Trial resource observation");
+  const terminalEvidence = requireRecord(executorReceipt.terminalEvidence, "Trial terminal evidence");
+  const cleanupProof = requireRecord(terminalEvidence.cleanupProof, "Trial cleanup proof");
   if (!sameValue(controlReceipt.resourceObservation, resourceObservation)) {
     fail("The supplied PSS observation does not match the failed trial control receipt.");
   }
-  if (!sameValue(input.supervisorLaunchReceipt, resourceObservation.ownershipTracker)) {
+  if (!sameValue(executorReceipt.launchReceipt, resourceObservation.ownershipTracker)) {
     fail("Resource sampling is not bound to the supervisor launch receipt.");
   }
-  if (!sameValue(input.supervisorTerminalReceipt, cleanupProof.supervisorTerminalReceipt)) {
+  if (!sameValue(terminalReceipt(executorReceipt), cleanupProof.supervisorTerminalReceipt)) {
     fail("Cleanup is not bound to the supervisor terminal receipt.");
   }
   const fragment = {
@@ -667,7 +726,7 @@ export function normalizeDataWranglerComparisonPreNotebookFailureFragment(
       unsupported: null
     },
     milestones: createEmptyStudyMilestones(),
-    cacheProof: structuredClone(input.cacheProof),
+    cacheProof: structuredClone(executorReceipt.cacheProof),
     sourceLoad: {
       status: "not-reached",
       durationMs: null,
@@ -676,10 +735,10 @@ export function normalizeDataWranglerComparisonPreNotebookFailureFragment(
     engineEvidence: null,
     environmentGate: structuredClone(input.environmentGate),
     uiEvidence: null,
-    processProofs: structuredClone(input.processProofs),
+    processProofs: structuredClone(executorReceipt.processProofs),
     resourceObservation: structuredClone(resourceObservation),
     cleanupProof: structuredClone(cleanupProof),
-    trialProvenance: structuredClone(input.trialProvenance)
+    trialProvenance: structuredClone(terminalEvidence.trialProvenance)
   };
   return validateFragment(fragment, manifest);
 }

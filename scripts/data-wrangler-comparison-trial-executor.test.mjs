@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL,
-  executeDataWranglerComparisonTrial
+  executeDataWranglerComparisonTrial,
+  validateDataWranglerComparisonTrialExecutorReceipt
 } from "./data-wrangler-comparison-trial-executor.mjs";
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
@@ -11,6 +12,30 @@ const KERNEL = Object.freeze({
   name: "openwrangler-study-executor",
   displayName: "Open Wrangler study CPython 3.12"
 });
+const SCHEDULE_ENTRY = Object.freeze({
+  id: "warm-pandas-csv-r00-ow",
+  blockId: "warm-pandas-csv-r00",
+  kind: "warm",
+  engine: "pandas",
+  format: "csv",
+  product: "open-wrangler"
+});
+
+function preparedIntent(scheduleEntry = SCHEDULE_ENTRY) {
+  return Object.freeze({
+    protocol: "openwrangler-data-wrangler-study-trial-intent-v1",
+    stage: "prepared",
+    runId: RUN_ID,
+    manifestSha256: "a".repeat(64),
+    executionIndex: 0,
+    scheduleEntryId: scheduleEntry.id,
+    attempt: 0,
+    effectiveBlockId: `${scheduleEntry.blockId}~a00`,
+    product: scheduleEntry.product,
+    ledgerSha256: "b".repeat(64),
+    preparedAtUtc: "2026-08-02T12:00:00.000Z"
+  });
+}
 
 function deferred() {
   let resolvePromise;
@@ -24,11 +49,22 @@ function deferred() {
 }
 
 function input(overrides = {}) {
+  const cacheState = overrides.cacheState ?? "warm";
+  const product = overrides.product ?? "open-wrangler";
+  const scheduleEntry =
+    overrides.scheduleEntry ??
+    Object.freeze({
+      ...SCHEDULE_ENTRY,
+      id: `${cacheState}-pandas-csv-r00-${product === "open-wrangler" ? "ow" : "dw"}`,
+      blockId: `${cacheState}-pandas-csv-r00`,
+      kind: cacheState,
+      product
+    });
   return {
     runId: RUN_ID,
     phase: PHASE,
-    cacheState: "warm",
-    product: "open-wrangler",
+    cacheState,
+    product,
     requestPath: "/private/bridge/request.json",
     acknowledgementPath: "/private/bridge/acknowledgement.json",
     selectedKernel: KERNEL,
@@ -36,7 +72,10 @@ function input(overrides = {}) {
     supervisorOptions: { pythonExecutable: "/private/python" },
     processEvidenceOptions: { pythonExecutablePath: "/private/python" },
     authorizeAction: () => Object.freeze({ protocol: "test-authorization-v1", runId: RUN_ID }),
-    ...overrides
+    reinspectActionAuthorization: () => Object.freeze({ status: "not-authorized" }),
+    ...overrides,
+    scheduleEntry,
+    preparedIntent: overrides.preparedIntent ?? preparedIntent(scheduleEntry)
   };
 }
 
@@ -57,7 +96,13 @@ function completionReceipt(launch = launchReceipt()) {
   });
 }
 
-function createHarness({ runEditorPhase, controlTrial, createProcessEvidence, signalSupervisor } = {}) {
+function createHarness({
+  runEditorPhase,
+  controlTrial,
+  createProcessEvidence,
+  signalSupervisor,
+  completeTerminalEvidence
+} = {}) {
   const events = [];
   const launch = launchReceipt();
   const completion = completionReceipt(launch);
@@ -100,13 +145,34 @@ function createHarness({ runEditorPhase, controlTrial, createProcessEvidence, si
         events.push("editor-started");
         return runEditorPhase
           ? runEditorPhase({ options, events })
-          : Object.freeze({ protocol: "test-notebook-phase-v1", status: "success" });
+          : Object.freeze({
+              protocol: "test-notebook-phase-v1",
+              status: "success",
+              product: "open-wrangler",
+              study: Object.freeze({ engine: "pandas", format: "csv", kind: "warm" })
+            });
       },
       createProcessEvidence() {
         if (createProcessEvidence) return createProcessEvidence({ events });
         return Object.freeze({
           classify() {
             return "other-owned-child";
+          },
+          snapshotLaunchProcessProofs() {
+            events.push("launch-process-proof");
+            return Object.freeze({
+              editorRoot: Object.freeze({ pid: 41, startTimeTicks: "410", capturedAtLaunch: true }),
+              configuredKernel: null,
+              openWranglerRuntime: null
+            });
+          },
+          snapshotPreActionProcessProofs() {
+            events.push("pre-action-process-proof");
+            return Object.freeze({
+              editorRoot: Object.freeze({ pid: 41, startTimeTicks: "410", capturedAtLaunch: true }),
+              configuredKernel: null,
+              openWranglerRuntime: null
+            });
           },
           snapshotProcessProofs({ selectedKernel }) {
             assert.deepEqual(selectedKernel, KERNEL);
@@ -126,6 +192,10 @@ function createHarness({ runEditorPhase, controlTrial, createProcessEvidence, si
           ? controlTrial({ options, events })
           : Object.freeze({ protocol: "test-control-v1", status: "success", abandonedRequest: null });
       },
+      validateControlReceipt(receipt) {
+        events.push("validate-control");
+        return receipt;
+      },
       async prepareSourceCache({ cacheState, request }) {
         events.push(`cache:${cacheState}${request ? `:${request.kind}` : ""}`);
         return Object.freeze({ protocol: "test-cache-v1", requestedState: cacheState });
@@ -134,6 +204,10 @@ function createHarness({ runEditorPhase, controlTrial, createProcessEvidence, si
         assert.equal(receivedAdapter, adapter);
         events.push(`signal:${reason}`);
         if (signalSupervisor) await signalSupervisor({ reason, events });
+      },
+      async completeTerminalEvidence(context) {
+        events.push("complete-terminal-evidence");
+        return completeTerminalEvidence ? await completeTerminalEvidence({ context, events }) : null;
       }
     }
   };
@@ -148,6 +222,9 @@ test("one warm trial keeps launch, action, process, notebook, control, and clean
       return Object.freeze({
         protocol: "test-control-v1",
         status: "success",
+        runId: RUN_ID,
+        phase: PHASE,
+        cacheState: "warm",
         abandonedRequest: null,
         authorization
       });
@@ -165,18 +242,29 @@ test("one warm trial keeps launch, action, process, notebook, control, and clean
   assert.equal(result.protocol, DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL);
   assert.equal(result.status, "evidence");
   assert.equal(result.actionAuthorized, true);
+  assert.equal(result.authorizationAttempted, true);
+  assert.equal(result.authorizationOutcome, "authorized");
+  assert.equal(result.trialBinding.scheduleEntryId, SCHEDULE_ENTRY.id);
+  assert.equal(result.trialBinding.preparedIntentSha256.length, 64);
   assert.equal(result.notebookPhaseReceipt.status, "success");
   assert.equal(result.controlReceipt.status, "success");
   assert.equal(result.cacheProof.requestedState, "warm");
   assert.deepEqual(result.processProofs, { protocol: "test-process-proof-v1" });
   assert.equal(result.launchReceipt, harness.launch);
   assert.equal(result.supervisorCompletion, harness.completion);
+  assert.equal(result.terminalEvidence, null);
   assert.equal(result.outerEditorFailure, null);
   assert.ok(harness.events.indexOf("cache:warm") < harness.events.indexOf("spawn"));
   assert.ok(harness.events.indexOf("process-proof") < harness.events.indexOf("durable-authorization"));
   assert.ok(harness.events.indexOf("durable-authorization") < harness.events.indexOf("control-complete"));
   assert.equal(harness.events.filter((event) => event === "durable-authorization").length, 1);
-  assert.equal(harness.events.at(-1), "terminal-receipt");
+  assert.deepEqual(harness.events.slice(-2), ["terminal-receipt", "complete-terminal-evidence"]);
+  assert.equal(
+    validateDataWranglerComparisonTrialExecutorReceipt(result, {
+      validateControlReceipt: (receipt) => receipt
+    }),
+    result
+  );
 });
 
 test("cold cache preparation stays behind the controller's source-verification fence", async () => {
@@ -210,6 +298,26 @@ test("cold cache preparation stays behind the controller's source-verification f
     harness.events.some((event) => event.startsWith("signal:")),
     false
   );
+});
+
+test("post-terminal cleanup and provenance evidence stays inside the executor receipt", async () => {
+  const terminalEvidence = Object.freeze({
+    cleanupProof: Object.freeze({ protocol: "test-cleanup-v1" }),
+    trialProvenance: Object.freeze({ protocol: "test-provenance-v1" })
+  });
+  const harness = createHarness({
+    completeTerminalEvidence: ({ context, events }) => {
+      assert.equal(context.supervisorCompletion, harness.completion);
+      assert.equal(context.launchReceipt, harness.launch);
+      assert.equal(context.notebookPhaseReceipt.status, "success");
+      assert.ok(events.includes("terminal-receipt"));
+      return terminalEvidence;
+    }
+  });
+
+  const result = await executeDataWranglerComparisonTrial(input(), harness.dependencies);
+
+  assert.equal(result.terminalEvidence, terminalEvidence);
 });
 
 test("a failed notebook receipt aborts a waiting controller immediately", async () => {
@@ -286,11 +394,18 @@ test("a controller failure without abandonment terminates the supervisor and ret
 
   assert.equal(result.status, "pre-notebook-failure");
   assert.equal(result.actionAuthorized, false);
+  assert.equal(result.authorizationAttempted, false);
+  assert.equal(result.authorizationOutcome, "not-attempted");
   assert.equal(result.notebookPhaseReceipt, null);
+  assert.deepEqual(result.processProofs, {
+    editorRoot: { pid: 41, startTimeTicks: "410", capturedAtLaunch: true },
+    configuredKernel: null,
+    openWranglerRuntime: null
+  });
   assert.deepEqual(result.outerEditorFailure, { status: "failed", classification: "error" });
   assert.equal(JSON.stringify(result).includes("private editor failure detail"), false);
   assert.ok(harness.events.includes("signal:trial-control-failed-before-a-retained-abandonment"));
-  assert.equal(harness.events.at(-1), "terminal-receipt");
+  assert.deepEqual(harness.events.slice(-2), ["terminal-receipt", "complete-terminal-evidence"]);
 });
 
 test("post-launch setup failure is path-free and waits for terminal cleanup", async () => {
@@ -316,7 +431,7 @@ test("post-launch setup failure is path-free and waits for terminal cleanup", as
   assert.equal(serialized.includes("private /proc setup detail"), false);
   assert.equal(serialized.includes("private editor failure detail"), false);
   assert.ok(harness.events.includes("signal:post-launch-setup-failure"));
-  assert.equal(harness.events.at(-1), "terminal-receipt");
+  assert.deepEqual(harness.events.slice(-2), ["terminal-receipt", "complete-terminal-evidence"]);
 });
 
 test("authorized action without notebook evidence throws after verified cleanup and cannot be retried", async () => {
@@ -349,6 +464,126 @@ test("authorized action without notebook evidence throws after verified cleanup 
   assert.equal(authorizations, 1);
   assert.ok(harness.events.indexOf("process-proof") < harness.events.indexOf("terminal-receipt"));
   assert.ok(harness.events.includes("signal:trial-control-failed-before-a-retained-abandonment"));
+});
+
+test("a journal reinspection recovers an authorization callback that threw after publication", async () => {
+  const recoveredAuthorization = Object.freeze({ protocol: "test-authorization-v1", runId: RUN_ID });
+  let inspections = 0;
+  const harness = createHarness({
+    controlTrial: ({ options }) => {
+      const authorization = options.authorizeAction();
+      return Object.freeze({
+        protocol: "test-control-v1",
+        status: "success",
+        abandonedRequest: null,
+        authorization
+      });
+    }
+  });
+
+  const result = await executeDataWranglerComparisonTrial(
+    input({
+      authorizeAction() {
+        throw new Error("post-publication inspection failed");
+      },
+      reinspectActionAuthorization() {
+        inspections += 1;
+        return Object.freeze({ status: "authorized", authorization: recoveredAuthorization });
+      }
+    }),
+    harness.dependencies
+  );
+
+  assert.equal(inspections, 1);
+  assert.equal(result.actionAuthorized, true);
+  assert.equal(result.authorizationAttempted, true);
+  assert.equal(result.authorizationOutcome, "authorized");
+  assert.equal(result.controlReceipt.authorization, recoveredAuthorization);
+});
+
+test("an authorization attempt with an unreadable journal stays indeterminate after cleanup", async () => {
+  const harness = createHarness({
+    controlTrial: ({ options }) => {
+      try {
+        options.authorizeAction();
+      } catch {
+        return Object.freeze({ protocol: "test-control-v1", status: "failed", abandonedRequest: null });
+      }
+      assert.fail("authorization unexpectedly succeeded");
+    }
+  });
+
+  await assert.rejects(
+    executeDataWranglerComparisonTrial(
+      input({
+        authorizeAction() {
+          throw new Error("publication outcome unknown");
+        },
+        reinspectActionAuthorization() {
+          throw new Error("journal unavailable");
+        }
+      }),
+      harness.dependencies
+    ),
+    /indeterminate/u
+  );
+  assert.deepEqual(harness.events.slice(-2), ["terminal-receipt", "complete-terminal-evidence"]);
+});
+
+test("a malformed authorization result is resolved from the journal before retry classification", async () => {
+  let inspections = 0;
+  const harness = createHarness({
+    controlTrial: ({ options }) => {
+      options.authorizeAction();
+      return Object.freeze({ protocol: "test-control-v1", status: "failed", abandonedRequest: null });
+    }
+  });
+  harness.dependencies.validateControlReceipt = () => {
+    throw new TypeError("authorization evidence is malformed");
+  };
+
+  await assert.rejects(
+    executeDataWranglerComparisonTrial(
+      input({
+        authorizeAction: () => Object.freeze({ malformed: true }),
+        reinspectActionAuthorization() {
+          inspections += 1;
+          return Object.freeze({ status: "not-authorized" });
+        }
+      }),
+      harness.dependencies
+    ),
+    /control failed without publishable raw evidence/u
+  );
+  assert.equal(inspections, 1);
+  assert.deepEqual(harness.events.slice(-2), ["terminal-receipt", "complete-terminal-evidence"]);
+});
+
+test("control evidence is validated before its abandonment field affects lifecycle", async () => {
+  const stopEditor = deferred();
+  const harness = createHarness({
+    runEditorPhase: async () => {
+      await stopEditor.promise;
+      throw new Error("editor stopped");
+    },
+    controlTrial: () =>
+      Object.freeze({
+        protocol: "malformed-control",
+        status: "failed",
+        abandonedRequest: Object.freeze({ request: Object.freeze({ kind: "inline-baseline" }) })
+      }),
+    signalSupervisor: () => stopEditor.resolve()
+  });
+  harness.dependencies.validateControlReceipt = () => {
+    throw new TypeError("invalid control receipt");
+  };
+
+  await assert.rejects(
+    executeDataWranglerComparisonTrial(input(), harness.dependencies),
+    /control failed without publishable raw evidence/u
+  );
+  assert.ok(harness.events.includes("signal:trial-control-failed-before-a-retained-abandonment"));
+  assert.deepEqual(harness.events.slice(-2), ["terminal-receipt", "complete-terminal-evidence"]);
 });
 
 test("warm cache failure happens before any editor or supervisor launch", async () => {

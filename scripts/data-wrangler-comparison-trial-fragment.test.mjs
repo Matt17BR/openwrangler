@@ -30,6 +30,10 @@ import {
   validateDataWranglerComparisonTrialControlReceipt
 } from "./data-wrangler-comparison-trial-control.mjs";
 import {
+  DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL,
+  executeDataWranglerComparisonTrial
+} from "./data-wrangler-comparison-trial-executor.mjs";
+import {
   normalizeDataWranglerComparisonPreNotebookFailureFragment,
   normalizeDataWranglerComparisonTrialFragment
 } from "./data-wrangler-comparison-trial-fragment.mjs";
@@ -395,6 +399,74 @@ function phaseReceipt({ entry, fixture, status = "success", failure = null, valu
   };
 }
 
+function preparedIntent(manifest, entry, fragmentIdentity) {
+  return {
+    protocol: "openwrangler-data-wrangler-study-trial-intent-v1",
+    stage: "prepared",
+    runId: RUN_ID,
+    manifestSha256: digestStudyValue(manifest),
+    executionIndex: fragmentIdentity.executionIndex,
+    scheduleEntryId: entry.id,
+    attempt: fragmentIdentity.attempt,
+    effectiveBlockId: fragmentIdentity.effectiveBlockId,
+    product: entry.product,
+    ledgerSha256: "b".repeat(64),
+    preparedAtUtc: "2026-08-02T10:59:00.000Z"
+  };
+}
+
+function executorReceipt({
+  entry,
+  prepared,
+  phase,
+  control,
+  cacheProof,
+  processProofs,
+  launchReceipt,
+  terminalReceipt,
+  cleanupProof,
+  trialProvenance,
+  outerEditorFailure = null
+}) {
+  const actionAuthorized = control.authorization !== null;
+  return {
+    protocol: DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL,
+    status: phase === null ? "pre-notebook-failure" : "evidence",
+    runId: RUN_ID,
+    phase: PHASE,
+    cacheState: entry.kind,
+    product: entry.product,
+    trialBinding: {
+      preparedIntentSha256: digestStudyValue(prepared),
+      manifestSha256: prepared.manifestSha256,
+      executionIndex: prepared.executionIndex,
+      scheduleEntryId: entry.id,
+      baseBlockId: entry.blockId,
+      attempt: prepared.attempt,
+      effectiveBlockId: prepared.effectiveBlockId,
+      product: entry.product,
+      engine: entry.engine,
+      format: entry.format,
+      cacheState: entry.kind
+    },
+    actionAuthorized,
+    authorizationAttempted: actionAuthorized,
+    authorizationOutcome: actionAuthorized ? "authorized" : "not-attempted",
+    notebookPhaseReceipt: phase,
+    controlReceipt: control,
+    cacheProof,
+    processProofs,
+    launchReceipt,
+    supervisorCompletion: {
+      launchReceipt,
+      terminalReceipt,
+      exit: { code: 0, signal: null, error: undefined }
+    },
+    terminalEvidence: { cleanupProof, trialProvenance },
+    outerEditorFailure
+  };
+}
+
 function trialInput({
   product = "open-wrangler",
   kind = "warm",
@@ -467,38 +539,60 @@ function trialInput({
     entry,
     entry.product === "data-wrangler" ? "unverified" : entry.engine
   ).sourceVerification.receipt;
+  const prepared = preparedIntent(manifest, entry, fragmentIdentity);
+  const controlReceipt = parentControlReceipt({
+    entry,
+    fragmentIdentity,
+    exchanges: structuredClone(phase.controlBridge.exchanges),
+    resourceObservation,
+    phaseReceipt: phase,
+    cacheProof
+  });
+  const trialProvenance = fixtures.studyTrialProvenance(manifest, entry, processProofs);
+  const executor = executorReceipt({
+    entry,
+    prepared,
+    phase,
+    control: controlReceipt,
+    cacheProof,
+    processProofs,
+    launchReceipt: structuredClone(resourceObservation.ownershipTracker),
+    terminalReceipt: structuredClone(cleanupProof.supervisorTerminalReceipt),
+    cleanupProof,
+    trialProvenance
+  });
   return {
     manifest,
     scheduleEntry: entry,
+    preparedIntent: prepared,
     fragmentIdentity,
     environmentGate: fixtures.studyEnvironmentGate(manifest, "passed"),
     cacheProof,
     notebookPhaseReceipt: phase,
-    controlReceipt: parentControlReceipt({
-      entry,
-      fragmentIdentity,
-      exchanges: structuredClone(phase.controlBridge.exchanges),
-      resourceObservation,
-      phaseReceipt: phase,
-      cacheProof
-    }),
+    executorReceipt: executor,
+    controlReceipt,
     resourceObservation,
     supervisorLaunchReceipt: structuredClone(resourceObservation.ownershipTracker),
     supervisorTerminalReceipt: structuredClone(cleanupProof.supervisorTerminalReceipt),
     processProofs,
     cleanupProof,
     sourceVerificationReceipt,
-    trialProvenance: fixtures.studyTrialProvenance(manifest, entry, processProofs)
+    trialProvenance
   };
 }
 
 function preNotebookFailureInput({ classification = "premature-exit", kind = "warm" } = {}) {
   const input = trialInput({ kind, failure: { stage: "run-cell-preparation", kind: "error" } });
+  input.executorReceipt.status = "pre-notebook-failure";
+  input.executorReceipt.notebookPhaseReceipt = null;
+  input.executorReceipt.outerEditorFailure = { status: "failed", classification };
   return {
     manifest: input.manifest,
     scheduleEntry: input.scheduleEntry,
+    preparedIntent: input.preparedIntent,
     fragmentIdentity: input.fragmentIdentity,
-    outerEditorFailure: { status: "failed", classification },
+    executorReceipt: input.executorReceipt,
+    outerEditorFailure: input.executorReceipt.outerEditorFailure,
     environmentGate: input.environmentGate,
     cacheProof: input.cacheProof,
     controlReceipt: input.controlReceipt,
@@ -511,6 +605,90 @@ function preNotebookFailureInput({ classification = "premature-exit", kind = "wa
   };
 }
 
+function deferred() {
+  let resolvePromise;
+  const promise = new Promise((resolvePromise_) => {
+    resolvePromise = resolvePromise_;
+  });
+  return { promise, resolve: resolvePromise };
+}
+
+async function executeFixtureReceipt(input, { preNotebookFailure = false } = {}) {
+  const launchReceipt = input.executorReceipt.launchReceipt;
+  const completion = input.executorReceipt.supervisorCompletion;
+  const stopEditor = deferred();
+  const child = Object.freeze({ kill: () => true });
+  const adapter = Object.freeze({
+    spawnProcess: () => child,
+    waitForLaunch: async () => launchReceipt,
+    waitForCompletion: async () => completion,
+    child: () => child
+  });
+  const authorizationResult = {
+    intent: {
+      protocol: input.preparedIntent.protocol,
+      stage: "action-authorized",
+      runId: RUN_ID,
+      manifestSha256: input.preparedIntent.manifestSha256,
+      executionIndex: input.preparedIntent.executionIndex,
+      scheduleEntryId: input.preparedIntent.scheduleEntryId,
+      attempt: input.preparedIntent.attempt,
+      effectiveBlockId: input.preparedIntent.effectiveBlockId,
+      product: input.preparedIntent.product,
+      ledgerSha256: input.preparedIntent.ledgerSha256,
+      preparedSha256: digestStudyValue(input.preparedIntent),
+      authorizedAtUtc: "2026-08-02T11:00:00.000Z"
+    }
+  };
+  authorizationResult.publication = {
+    status: "published",
+    sha256: digestStudyValue(authorizationResult.intent)
+  };
+  return await executeDataWranglerComparisonTrial(
+    {
+      runId: RUN_ID,
+      phase: PHASE,
+      cacheState: input.scheduleEntry.kind,
+      product: input.scheduleEntry.product,
+      preparedIntent: input.preparedIntent,
+      scheduleEntry: input.scheduleEntry,
+      requestPath: "/private/request.json",
+      acknowledgementPath: "/private/ack.json",
+      selectedKernel: input.notebookPhaseReceipt.study.kernel,
+      editorPhaseOptions: {},
+      supervisorOptions: {},
+      processEvidenceOptions: {},
+      authorizeAction: () => authorizationResult,
+      reinspectActionAuthorization: () => ({ status: "not-authorized" })
+    },
+    {
+      createSupervisorAdapter: () => adapter,
+      runEditorPhase: async (_options, { spawnProcess }) => {
+        spawnProcess("code", [], {});
+        if (preNotebookFailure) {
+          await stopEditor.promise;
+          throw new Error("editor phase stopped");
+        }
+        return input.notebookPhaseReceipt;
+      },
+      createProcessEvidence: () => ({
+        classify: () => "other-owned-child",
+        snapshotLaunchProcessProofs: () => input.processProofs,
+        snapshotPreActionProcessProofs: () => input.processProofs,
+        snapshotProcessProofs: () => input.processProofs
+      }),
+      createSampler: () => ({}),
+      controlTrial: ({ authorizeAction }) => {
+        if (input.controlReceipt.authorization !== null) authorizeAction();
+        return input.controlReceipt;
+      },
+      prepareSourceCache: async () => input.cacheProof,
+      signalSupervisor: async () => stopEditor.resolve(),
+      completeTerminalEvidence: async () => input.executorReceipt.terminalEvidence
+    }
+  );
+}
+
 test("normalizes a successful trial through the manifest fragment validator", () => {
   const input = trialInput();
   const fragment = normalizeDataWranglerComparisonTrialFragment(input);
@@ -519,6 +697,23 @@ test("normalizes a successful trial through the manifest fragment validator", ()
   assert.equal(fragment.uiEvidence.inline.surfaceOwner, "open-wrangler");
   assert.equal(fragment.engineEvidence.workbenchEngine, "pandas");
   assert.equal(fragment.milestones.inlineActionMs, 1_000);
+});
+
+test("composes one real executor success receipt directly into the normalizer", async () => {
+  const input = trialInput();
+  input.executorReceipt = await executeFixtureReceipt(input);
+  const fragment = normalizeDataWranglerComparisonTrialFragment(input);
+  assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
+  assert.equal(fragment.outcome.status, "success");
+});
+
+test("composes one real pre-notebook executor failure directly into the normalizer", async () => {
+  const input = preNotebookFailureInput();
+  const source = trialInput({ failure: { stage: "run-cell-preparation", kind: "error" } });
+  input.executorReceipt = await executeFixtureReceipt(source, { preNotebookFailure: true });
+  const fragment = normalizeDataWranglerComparisonPreNotebookFailureFragment(input);
+  assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
+  assert.equal(fragment.outcome.status, "pre-action-invalid");
 });
 
 test("binds a cold trial to the controller's verified cache proof", () => {
@@ -678,9 +873,12 @@ test("pre-notebook normalization rejects authorization, action ambiguity, and mi
       validateDataWranglerComparisonTrialControlReceipt(authorized.controlReceipt),
       authorized.controlReceipt
     );
-    input.controlReceipt = authorized.controlReceipt;
-    input.resourceObservation = authorized.resourceObservation;
-    input.supervisorLaunchReceipt = authorized.supervisorLaunchReceipt;
+    input.executorReceipt.controlReceipt = authorized.controlReceipt;
+    input.executorReceipt.actionAuthorized = true;
+    input.executorReceipt.authorizationAttempted = true;
+    input.executorReceipt.authorizationOutcome = "authorized";
+    input.executorReceipt.launchReceipt = authorized.supervisorLaunchReceipt;
+    input.executorReceipt.supervisorCompletion.launchReceipt = authorized.supervisorLaunchReceipt;
     assert.throws(
       () => normalizeDataWranglerComparisonPreNotebookFailureFragment(input),
       /cannot retain product-action authorization/u
@@ -695,7 +893,7 @@ test("pre-notebook normalization rejects authorization, action ambiguity, and mi
       () =>
         normalizeDataWranglerComparisonPreNotebookFailureFragment({
           ...input,
-          controlReceipt: authorized.controlReceipt
+          executorReceipt: { ...input.executorReceipt, controlReceipt: authorized.controlReceipt }
         }),
       /Acknowledged inline baseline has no durable action authorization/u
     );
@@ -709,7 +907,10 @@ test("pre-notebook normalization rejects authorization, action ambiguity, and mi
 
   await t.test("path-bearing outer failure classification", () => {
     const input = preNotebookFailureInput({ classification: "tmp/failure" });
-    assert.throws(() => normalizeDataWranglerComparisonPreNotebookFailureFragment(input), /classification is invalid/u);
+    assert.throws(
+      () => normalizeDataWranglerComparisonPreNotebookFailureFragment(input),
+      /pre-notebook failure is malformed/u
+    );
   });
 
   await t.test("cold launch before verified cache eviction", () => {
@@ -717,7 +918,7 @@ test("pre-notebook normalization rejects authorization, action ambiguity, and mi
     input.controlReceipt.completedExchanges.pop();
     input.controlReceipt.failure = { stage: "cold-cache-evicted", kind: "timeout" };
     input.controlReceipt.coldCacheProof = null;
-    input.cacheProof = null;
+    input.executorReceipt.cacheProof = null;
     assert.deepEqual(validateDataWranglerComparisonTrialControlReceipt(input.controlReceipt), input.controlReceipt);
     assert.throws(
       () => normalizeDataWranglerComparisonPreNotebookFailureFragment(input),
@@ -725,12 +926,41 @@ test("pre-notebook normalization rejects authorization, action ambiguity, and mi
     );
   });
 
+  await t.test("failure stage is not the next bridge request", () => {
+    const input = preNotebookFailureInput();
+    input.executorReceipt.controlReceipt.failure.stage = "profile-baseline";
+    assert.throws(
+      () => normalizeDataWranglerComparisonPreNotebookFailureFragment(input),
+      /next expected bridge request/u
+    );
+  });
+
+  await t.test("launch proof has no configured kernel", () => {
+    const input = preNotebookFailureInput();
+    input.executorReceipt.processProofs = {
+      editorRoot: input.executorReceipt.processProofs.editorRoot,
+      configuredKernel: null,
+      openWranglerRuntime: null
+    };
+    const fragment = normalizeDataWranglerComparisonPreNotebookFailureFragment(input, {
+      validateFragment: (value) => value
+    });
+    assert.equal(fragment.processProofs.configuredKernel, null);
+    assert.equal(fragment.outcome.actionStarted, false);
+  });
+
+  await t.test("prepared intent digest differs from executor binding", () => {
+    const input = preNotebookFailureInput();
+    input.executorReceipt.trialBinding.preparedIntentSha256 = "c".repeat(64);
+    assert.throws(
+      () => normalizeDataWranglerComparisonPreNotebookFailureFragment(input),
+      /does not match the prepared trial/u
+    );
+  });
+
   await t.test("no notebook phase receipt on the main path", () => {
     const input = trialInput();
-    delete input.notebookPhaseReceipt;
-    assert.throws(
-      () => normalizeDataWranglerComparisonTrialFragment(input),
-      /Notebook phase receipt must be an object/u
-    );
+    delete input.executorReceipt.notebookPhaseReceipt;
+    assert.throws(() => normalizeDataWranglerComparisonTrialFragment(input), /receipt has missing or unknown fields/u);
   });
 });

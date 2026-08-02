@@ -54,6 +54,16 @@ test("owned processes receive exact study categories without retaining command o
     });
 
     const evidence = createEvidence(fixture, { product: "open-wrangler" });
+    assert.deepEqual(evidence.snapshotLaunchProcessProofs(), {
+      editorRoot: { pid: 100, startTimeTicks: "1000", capturedAtLaunch: true },
+      configuredKernel: null,
+      openWranglerRuntime: null
+    });
+    assert.deepEqual(evidence.snapshotPreActionProcessProofs({ selectedKernel: KERNEL }), {
+      editorRoot: { pid: 100, startTimeTicks: "1000", capturedAtLaunch: true },
+      configuredKernel: null,
+      openWranglerRuntime: null
+    });
     const categories = [100, 101, 102, 103, 104, 105, 106].map((pid) =>
       evidence.classify(classificationInput(pid, `${pid}0`))
     );
@@ -202,6 +212,7 @@ test("process identity reuse and category changes cannot alter retained evidence
 
 test("malformed and oversized proc evidence is rejected without echoing its contents", () => {
   withFixture((fixture) => {
+    writeProcess(fixture, 100, { command: ["/editor"], start: "1000" });
     writeProcess(fixture, 130, { command: ["/helper"], start: "1300" });
     writeFileSync(resolve(fixture.procRoot, "130", "cmdline"), Buffer.alloc(64 * 1024 + 1, 0x73));
     const evidence = createEvidence(fixture);
@@ -254,6 +265,22 @@ test("pre-action proofs require the exact selected kernel and classify Data Wran
       pid: null,
       startTimeTicks: null
     });
+  });
+});
+
+test("launch proof remains available before a kernel exists", () => {
+  withFixture((fixture) => {
+    writeProcess(fixture, 100, { command: ["/editor"], start: "1000" });
+    const evidence = createEvidence(fixture);
+    assert.deepEqual(evidence.snapshotLaunchProcessProofs(), {
+      editorRoot: { pid: 100, startTimeTicks: "1000", capturedAtLaunch: true },
+      configuredKernel: null,
+      openWranglerRuntime: null
+    });
+    assert.throws(
+      () => evidence.snapshotProcessProofs({ selectedKernel: KERNEL }),
+      /configured kernel was not observed/u
+    );
   });
 });
 

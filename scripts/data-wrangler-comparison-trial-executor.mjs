@@ -1,7 +1,11 @@
 import { isAbsolute } from "node:path";
 import { runEditorAcceptancePhase } from "./editor-acceptance.mjs";
 import { createDataWranglerComparisonProcessEvidence } from "./data-wrangler-comparison-process-evidence.mjs";
-import { controlDataWranglerComparisonMeasuredTrial } from "./data-wrangler-comparison-trial-control.mjs";
+import {
+  controlDataWranglerComparisonMeasuredTrial,
+  validateDataWranglerComparisonTrialControlReceipt
+} from "./data-wrangler-comparison-trial-control.mjs";
+import { digestStudyValue } from "./data-wrangler-comparison-study.mjs";
 import { createLinuxStudySupervisorSpawnAdapter } from "./linux-study-supervisor-client.mjs";
 import { LinuxPssTreeSampler } from "./linux-pss-sampler.mjs";
 
@@ -11,9 +15,87 @@ export const DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL =
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const PHASE = /^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/u;
 const FAILURE_CLASSIFICATION = /^[a-z][a-z0-9-]{0,63}$/u;
+const SHA256 = /^[0-9a-f]{64}$/u;
+const AUTHORIZATION_OUTCOMES = Object.freeze(["not-attempted", "not-authorized", "authorized"]);
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function exactKeys(value, expected, label) {
+  if (!isRecord(value) || Object.keys(value).sort().join("\0") !== [...expected].sort().join("\0")) {
+    throw new TypeError(`${label} has missing or unknown fields.`);
+  }
+}
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical(value[key])])
+    );
+  }
+  return value;
+}
+
+function sameValue(left, right) {
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+function validateTrialBindingInput(input) {
+  const prepared = input.preparedIntent;
+  const schedule = input.scheduleEntry;
+  if (
+    !isRecord(prepared) ||
+    prepared.stage !== "prepared" ||
+    prepared.runId !== input.runId ||
+    !SHA256.test(prepared.manifestSha256 ?? "") ||
+    !Number.isSafeInteger(prepared.executionIndex) ||
+    prepared.executionIndex < 0 ||
+    !Number.isSafeInteger(prepared.attempt) ||
+    prepared.attempt < 0 ||
+    typeof prepared.scheduleEntryId !== "string" ||
+    typeof prepared.effectiveBlockId !== "string" ||
+    typeof prepared.ledgerSha256 !== "string" ||
+    !SHA256.test(prepared.ledgerSha256) ||
+    typeof prepared.preparedAtUtc !== "string"
+  ) {
+    throw new TypeError("Comparison trial executor prepared intent is malformed.");
+  }
+  if (
+    !isRecord(schedule) ||
+    typeof schedule.id !== "string" ||
+    typeof schedule.blockId !== "string" ||
+    !["warm", "cold"].includes(schedule.kind) ||
+    typeof schedule.engine !== "string" ||
+    typeof schedule.format !== "string" ||
+    !["open-wrangler", "data-wrangler"].includes(schedule.product) ||
+    prepared.scheduleEntryId !== schedule.id ||
+    prepared.effectiveBlockId !== `${schedule.blockId}~a${String(prepared.attempt).padStart(2, "0")}` ||
+    prepared.product !== schedule.product ||
+    input.cacheState !== schedule.kind ||
+    input.product !== schedule.product
+  ) {
+    throw new TypeError("Comparison trial executor prepared intent does not match its schedule entry.");
+  }
+}
+
+function trialBinding(input) {
+  return Object.freeze({
+    preparedIntentSha256: digestStudyValue(input.preparedIntent),
+    manifestSha256: input.preparedIntent.manifestSha256,
+    executionIndex: input.preparedIntent.executionIndex,
+    scheduleEntryId: input.scheduleEntry.id,
+    baseBlockId: input.scheduleEntry.blockId,
+    attempt: input.preparedIntent.attempt,
+    effectiveBlockId: input.preparedIntent.effectiveBlockId,
+    product: input.scheduleEntry.product,
+    engine: input.scheduleEntry.engine,
+    format: input.scheduleEntry.format,
+    cacheState: input.scheduleEntry.kind
+  });
 }
 
 function validateInput(input) {
@@ -56,6 +138,10 @@ function validateInput(input) {
   if (typeof input.authorizeAction !== "function") {
     throw new TypeError("Comparison trial executor requires a synchronous action authorizer.");
   }
+  if (typeof input.reinspectActionAuthorization !== "function") {
+    throw new TypeError("Comparison trial executor requires a synchronous authorization-journal reinspector.");
+  }
+  validateTrialBindingInput(input);
   return input;
 }
 
@@ -140,6 +226,10 @@ function defaultSignalSupervisor(adapter) {
   child.kill("SIGTERM");
 }
 
+function defaultCompleteTerminalEvidence() {
+  return null;
+}
+
 function validateAdapter(adapter) {
   if (
     !isRecord(adapter) ||
@@ -161,8 +251,11 @@ function rawEvidence({
   processProofs,
   launchReceipt,
   supervisorCompletion,
+  terminalEvidence,
   outerEditorFailure,
-  actionAuthorized
+  actionAuthorized,
+  authorizationAttempted,
+  authorizationOutcome
 }) {
   return Object.freeze({
     protocol: DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL,
@@ -171,13 +264,17 @@ function rawEvidence({
     phase: input.phase,
     cacheState: input.cacheState,
     product: input.product,
+    trialBinding: trialBinding(input),
     actionAuthorized,
+    authorizationAttempted,
+    authorizationOutcome,
     notebookPhaseReceipt,
     controlReceipt,
     cacheProof,
     processProofs,
     launchReceipt,
     supervisorCompletion,
+    terminalEvidence,
     outerEditorFailure
   });
 }
@@ -188,8 +285,10 @@ async function completeAfterSetupFailure({
   editorSettlement,
   launchReceipt,
   cacheProof,
+  processProofs,
   failure,
-  signalSupervisor
+  signalSupervisor,
+  completeTerminalEvidence
 }) {
   let signalError;
   try {
@@ -210,20 +309,184 @@ async function completeAfterSetupFailure({
       "Comparison trial setup failed after launch but the editor returned unsupported notebook evidence."
     );
   }
+  const terminalEvidence = await completeTerminalEvidence({
+    input,
+    launchReceipt,
+    supervisorCompletion: completion.value,
+    processProofs,
+    notebookPhaseReceipt: null,
+    controlReceipt: null,
+    cacheProof
+  });
   return rawEvidence({
     input,
     notebookPhaseReceipt: null,
     controlReceipt: null,
     cacheProof,
-    processProofs: null,
+    processProofs,
     launchReceipt,
     supervisorCompletion: completion.value,
+    terminalEvidence,
     outerEditorFailure: Object.freeze({
       status: "failed",
       classification: boundedFailureClassification(failure, "post-launch-setup-failure")
     }),
-    actionAuthorized: false
+    actionAuthorized: false,
+    authorizationAttempted: false,
+    authorizationOutcome: "not-attempted"
   });
+}
+
+function validateRetainedTrialBinding(value) {
+  exactKeys(
+    value,
+    [
+      "preparedIntentSha256",
+      "manifestSha256",
+      "executionIndex",
+      "scheduleEntryId",
+      "baseBlockId",
+      "attempt",
+      "effectiveBlockId",
+      "product",
+      "engine",
+      "format",
+      "cacheState"
+    ],
+    "Comparison trial executor binding"
+  );
+  if (
+    !SHA256.test(value.preparedIntentSha256 ?? "") ||
+    !SHA256.test(value.manifestSha256 ?? "") ||
+    !Number.isSafeInteger(value.executionIndex) ||
+    value.executionIndex < 0 ||
+    !Number.isSafeInteger(value.attempt) ||
+    value.attempt < 0 ||
+    typeof value.scheduleEntryId !== "string" ||
+    typeof value.baseBlockId !== "string" ||
+    value.effectiveBlockId !== `${value.baseBlockId}~a${String(value.attempt).padStart(2, "0")}` ||
+    !["open-wrangler", "data-wrangler"].includes(value.product) ||
+    typeof value.engine !== "string" ||
+    typeof value.format !== "string" ||
+    !["warm", "cold"].includes(value.cacheState)
+  ) {
+    throw new TypeError("Comparison trial executor binding is malformed.");
+  }
+}
+
+/**
+ * Checks the complete executor handoff before a normalizer can use any part of
+ * it. This keeps schedule, journal, process, controller, and notebook receipts
+ * tied to one measured attempt.
+ */
+export function validateDataWranglerComparisonTrialExecutorReceipt(
+  value,
+  { validateControlReceipt = validateDataWranglerComparisonTrialControlReceipt } = {}
+) {
+  exactKeys(
+    value,
+    [
+      "protocol",
+      "status",
+      "runId",
+      "phase",
+      "cacheState",
+      "product",
+      "trialBinding",
+      "actionAuthorized",
+      "authorizationAttempted",
+      "authorizationOutcome",
+      "notebookPhaseReceipt",
+      "controlReceipt",
+      "cacheProof",
+      "processProofs",
+      "launchReceipt",
+      "supervisorCompletion",
+      "terminalEvidence",
+      "outerEditorFailure"
+    ],
+    "Comparison trial executor receipt"
+  );
+  if (
+    value.protocol !== DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL ||
+    !["evidence", "pre-notebook-failure"].includes(value.status) ||
+    !UUID_V4.test(value.runId ?? "") ||
+    !PHASE.test(value.phase ?? "") ||
+    !["warm", "cold"].includes(value.cacheState) ||
+    !["open-wrangler", "data-wrangler"].includes(value.product) ||
+    typeof value.actionAuthorized !== "boolean" ||
+    typeof value.authorizationAttempted !== "boolean" ||
+    !AUTHORIZATION_OUTCOMES.includes(value.authorizationOutcome)
+  ) {
+    throw new TypeError("Comparison trial executor receipt is malformed.");
+  }
+  validateRetainedTrialBinding(value.trialBinding);
+  if (value.trialBinding.product !== value.product || value.trialBinding.cacheState !== value.cacheState) {
+    throw new TypeError("Comparison trial executor receipt does not match its retained schedule binding.");
+  }
+  if (
+    (value.authorizationOutcome === "not-attempted" && (value.authorizationAttempted || value.actionAuthorized)) ||
+    (value.authorizationOutcome === "not-authorized" && (!value.authorizationAttempted || value.actionAuthorized)) ||
+    (value.authorizationOutcome === "authorized" && (!value.authorizationAttempted || !value.actionAuthorized))
+  ) {
+    throw new TypeError("Comparison trial executor authorization state is contradictory.");
+  }
+  if (!isRecord(value.launchReceipt) || !isRecord(value.supervisorCompletion)) {
+    throw new TypeError("Comparison trial executor omitted launch or terminal supervisor evidence.");
+  }
+  if (value.terminalEvidence !== null) {
+    exactKeys(value.terminalEvidence, ["cleanupProof", "trialProvenance"], "Comparison trial terminal evidence");
+    if (!isRecord(value.terminalEvidence.cleanupProof) || !isRecord(value.terminalEvidence.trialProvenance)) {
+      throw new TypeError("Comparison trial terminal evidence is malformed.");
+    }
+  }
+  if (
+    isRecord(value.supervisorCompletion.launchReceipt) &&
+    !sameValue(value.launchReceipt, value.supervisorCompletion.launchReceipt)
+  ) {
+    throw new TypeError("Comparison trial executor launch and completion receipts do not match.");
+  }
+  let controlReceipt = null;
+  if (value.controlReceipt !== null) {
+    controlReceipt = validateControlReceipt(value.controlReceipt);
+    if (
+      controlReceipt.runId !== value.runId ||
+      controlReceipt.phase !== value.phase ||
+      controlReceipt.cacheState !== value.cacheState
+    ) {
+      throw new TypeError("Comparison trial executor control receipt is stale.");
+    }
+    if ((controlReceipt.authorization !== null) !== value.actionAuthorized) {
+      throw new TypeError("Comparison trial executor control authorization does not match its journal outcome.");
+    }
+  } else if (value.actionAuthorized || value.authorizationAttempted) {
+    throw new TypeError("Comparison trial executor lost control evidence after an authorization attempt.");
+  }
+  if (value.status === "evidence") {
+    const notebook = value.notebookPhaseReceipt;
+    if (
+      !isRecord(notebook) ||
+      !["success", "failed"].includes(notebook.status) ||
+      notebook.product !== value.product ||
+      notebook.study?.engine !== value.trialBinding.engine ||
+      notebook.study?.format !== value.trialBinding.format ||
+      notebook.study?.kind !== value.cacheState ||
+      value.outerEditorFailure !== null ||
+      controlReceipt === null
+    ) {
+      throw new TypeError("Comparison trial executor notebook evidence is stale or malformed.");
+    }
+  } else {
+    exactKeys(value.outerEditorFailure, ["status", "classification"], "Comparison trial outer failure");
+    if (
+      value.notebookPhaseReceipt !== null ||
+      value.outerEditorFailure.status !== "failed" ||
+      !FAILURE_CLASSIFICATION.test(value.outerEditorFailure.classification ?? "")
+    ) {
+      throw new TypeError("Comparison trial executor pre-notebook failure is malformed.");
+    }
+  }
+  return value;
 }
 
 /**
@@ -238,8 +501,10 @@ export async function executeDataWranglerComparisonTrial(
     createProcessEvidence = createDataWranglerComparisonProcessEvidence,
     createSampler = defaultCreateSampler,
     controlTrial = controlDataWranglerComparisonMeasuredTrial,
+    validateControlReceipt = validateDataWranglerComparisonTrialControlReceipt,
     prepareSourceCache,
     signalSupervisor = defaultSignalSupervisor,
+    completeTerminalEvidence = defaultCompleteTerminalEvidence,
     editorRunnerDependencies = {},
     controlDependencies = {}
   } = {}
@@ -251,8 +516,10 @@ export async function executeDataWranglerComparisonTrial(
     createProcessEvidence,
     createSampler,
     controlTrial,
+    validateControlReceipt,
     prepareSourceCache,
     signalSupervisor,
+    completeTerminalEvidence,
     editorRunnerDependencies,
     controlDependencies
   };
@@ -307,6 +574,7 @@ export async function executeDataWranglerComparisonTrial(
 
   let processEvidence;
   let sampler;
+  let processProofs = null;
   try {
     processEvidence = createProcessEvidence({
       ...input.processEvidenceOptions,
@@ -317,9 +585,15 @@ export async function executeDataWranglerComparisonTrial(
     if (
       !isRecord(processEvidence) ||
       typeof processEvidence.classify !== "function" ||
+      typeof processEvidence.snapshotLaunchProcessProofs !== "function" ||
+      typeof processEvidence.snapshotPreActionProcessProofs !== "function" ||
       typeof processEvidence.snapshotProcessProofs !== "function"
     ) {
       throw new TypeError("Comparison trial process-evidence factory returned a malformed value.");
+    }
+    processProofs = processEvidence.snapshotLaunchProcessProofs();
+    if (!isRecord(processProofs) || (processProofs && typeof processProofs.then === "function")) {
+      throw new TypeError("Comparison trial launch process proofs must be captured synchronously.");
     }
     sampler = createSampler({
       launchReceipt,
@@ -333,26 +607,82 @@ export async function executeDataWranglerComparisonTrial(
       editorSettlement,
       launchReceipt,
       cacheProof,
+      processProofs,
       failure: error,
-      signalSupervisor
+      signalSupervisor,
+      completeTerminalEvidence
     });
   }
 
   const controlAbort = new AbortController();
   let actionAuthorized = false;
-  let processProofs = null;
+  let authorizationAttempted = false;
+  let authorizationOutcome = "not-attempted";
+
+  const indeterminateAuthorization = (cause) => {
+    const error = new Error(
+      "Comparison trial action authorization may have reached the durable journal; inspect it before any retry.",
+      { cause }
+    );
+    error.code = "action-authorization-indeterminate";
+    return error;
+  };
+
+  const inspectAuthorizationAttempt = (authorizationError) => {
+    let inspection;
+    try {
+      inspection = input.reinspectActionAuthorization();
+    } catch (inspectionError) {
+      authorizationOutcome = "indeterminate";
+      throw indeterminateAuthorization(new AggregateError([authorizationError, inspectionError]));
+    }
+    if (inspection && typeof inspection.then === "function") {
+      authorizationOutcome = "indeterminate";
+      throw indeterminateAuthorization(authorizationError);
+    }
+    if (isRecord(inspection) && inspection.status === "authorized" && isRecord(inspection.authorization)) {
+      actionAuthorized = true;
+      authorizationOutcome = "authorized";
+      return { status: "authorized", authorization: inspection.authorization };
+    }
+    if (isRecord(inspection) && inspection.status === "not-authorized") {
+      actionAuthorized = false;
+      authorizationOutcome = "not-authorized";
+      return { status: "not-authorized", authorization: null };
+    }
+    authorizationOutcome = "indeterminate";
+    throw indeterminateAuthorization(authorizationError);
+  };
+
+  const recoverAuthorizationAttempt = (authorizationError) => {
+    const inspection = inspectAuthorizationAttempt(authorizationError);
+    if (inspection.status === "authorized") return inspection.authorization;
+    throw authorizationError;
+  };
+
   const authorizeMeasuredAction = () => {
-    if (actionAuthorized) throw new Error("Comparison trial product action was authorized more than once.");
+    if (authorizationAttempted) throw new Error("Comparison trial product action was authorized more than once.");
     const proofs = processEvidence.snapshotProcessProofs({ selectedKernel: input.selectedKernel });
     if (!isRecord(proofs) || (proofs && typeof proofs.then === "function")) {
       throw new TypeError("Comparison trial process proofs must be captured synchronously before authorization.");
     }
-    const authorization = input.authorizeAction();
-    if (authorization && typeof authorization.then === "function") {
-      throw new TypeError("Comparison trial product-action authorization must be synchronous.");
-    }
     processProofs = proofs;
+    authorizationAttempted = true;
+    authorizationOutcome = "indeterminate";
+    let authorization;
+    try {
+      authorization = input.authorizeAction();
+    } catch (error) {
+      return recoverAuthorizationAttempt(error);
+    }
+    if (authorization && typeof authorization.then === "function") {
+      void Promise.resolve(authorization).catch(() => {});
+      throw indeterminateAuthorization(
+        new TypeError("Comparison trial product-action authorization must be synchronous.")
+      );
+    }
     actionAuthorized = true;
+    authorizationOutcome = "authorized";
     return authorization;
   };
 
@@ -361,32 +691,53 @@ export async function executeDataWranglerComparisonTrial(
     cacheProof = proof;
     return proof;
   };
-  const controlPromise = Promise.resolve().then(() =>
-    controlTrial(
-      {
-        requestPath: input.requestPath,
-        acknowledgementPath: input.acknowledgementPath,
-        runId: input.runId,
-        phase: input.phase,
-        cacheState: input.cacheState,
-        sampler,
-        authorizeAction: authorizeMeasuredAction,
-        signal: controlAbort.signal
-      },
-      {
-        ...controlDependencies,
-        ...(input.cacheState === "cold" ? { evictColdCache } : {})
-      }
+  const controlPromise = Promise.resolve()
+    .then(() =>
+      controlTrial(
+        {
+          requestPath: input.requestPath,
+          acknowledgementPath: input.acknowledgementPath,
+          runId: input.runId,
+          phase: input.phase,
+          cacheState: input.cacheState,
+          sampler,
+          authorizeAction: authorizeMeasuredAction,
+          signal: controlAbort.signal
+        },
+        {
+          ...controlDependencies,
+          ...(input.cacheState === "cold" ? { evictColdCache } : {})
+        }
+      )
     )
-  );
+    .then((receipt) => validateControlReceipt(receipt));
   const controlSettlement = settled(controlPromise);
   const first = await Promise.race([
     editorSettlement.then((outcome) => ({ owner: "editor", outcome })),
     controlSettlement.then((outcome) => ({ owner: "control", outcome }))
   ]);
 
+  let preActionProofError;
+  if (!authorizationAttempted) {
+    try {
+      processProofs = processEvidence.snapshotPreActionProcessProofs({ selectedKernel: input.selectedKernel });
+      if (!isRecord(processProofs) || (processProofs && typeof processProofs.then === "function")) {
+        throw new TypeError("Comparison trial pre-action process proofs must be captured synchronously.");
+      }
+    } catch (error) {
+      preActionProofError = error;
+      controlAbort.abort("pre-action-process-proof-failed");
+    }
+  }
+
   let earlySignalError;
-  if (first.owner === "editor") {
+  if (preActionProofError !== undefined) {
+    try {
+      await signalSupervisor(adapter, "pre-action-process-proof-failed");
+    } catch (error) {
+      earlySignalError = error;
+    }
+  } else if (first.owner === "editor") {
     if (first.outcome.status === "rejected" || first.outcome.value?.status === "failed") {
       controlAbort.abort("editor-phase-finished-without-a-successful-notebook-receipt");
     }
@@ -402,14 +753,68 @@ export async function executeDataWranglerComparisonTrial(
   }
 
   const [editor, control] = await Promise.all([editorSettlement, controlSettlement]);
+  let authorizationInspectionError;
+  if (
+    authorizationAttempted &&
+    actionAuthorized &&
+    (control.status === "rejected" || control.value.authorization === null)
+  ) {
+    try {
+      inspectAuthorizationAttempt(
+        control.status === "rejected"
+          ? control.reason
+          : new TypeError("Validated control evidence omitted the attempted authorization.")
+      );
+    } catch (error) {
+      authorizationInspectionError = error;
+    }
+  }
   const completion = await adapter.waitForCompletion();
   const notebookPhaseReceipt = editor.status === "fulfilled" ? editor.value : null;
   const controlReceipt = control.status === "fulfilled" ? control.value : null;
 
+  const terminalEvidence = await completeTerminalEvidence({
+    input,
+    launchReceipt,
+    supervisorCompletion: completion,
+    processProofs,
+    notebookPhaseReceipt,
+    controlReceipt,
+    cacheProof
+  });
+
+  if (preActionProofError !== undefined) {
+    throw new AggregateError(
+      [preActionProofError, earlySignalError].filter(Boolean),
+      "Comparison trial pre-action process proof failed after launch."
+    );
+  }
+
+  if (authorizationInspectionError !== undefined) {
+    throw new AggregateError(
+      [authorizationInspectionError, earlySignalError].filter(Boolean),
+      "Comparison trial action authorization is indeterminate; inspect the durable journal before any retry."
+    );
+  }
+
   if (control.status === "rejected") {
+    if (authorizationOutcome === "indeterminate" || actionAuthorized) {
+      throw new AggregateError(
+        [control.reason, earlySignalError, ...(editor.status === "rejected" ? [editor.reason] : [])].filter(Boolean),
+        actionAuthorized
+          ? "Comparison trial authorized a product action but lost its validated control evidence; the trial must not be retried."
+          : "Comparison trial action authorization is indeterminate; inspect the durable journal before any retry."
+      );
+    }
     throw new AggregateError(
       [control.reason, earlySignalError, ...(editor.status === "rejected" ? [editor.reason] : [])].filter(Boolean),
       "Comparison trial control failed without publishable raw evidence."
+    );
+  }
+  if (authorizationOutcome === "indeterminate") {
+    throw new AggregateError(
+      [...(editor.status === "rejected" ? [editor.reason] : [])],
+      "Comparison trial action authorization is indeterminate; inspect the durable journal before any retry."
     );
   }
   if (actionAuthorized && notebookPhaseReceipt === null) {
@@ -427,11 +832,14 @@ export async function executeDataWranglerComparisonTrial(
       processProofs,
       launchReceipt,
       supervisorCompletion: completion,
+      terminalEvidence,
       outerEditorFailure: Object.freeze({
         status: "failed",
         classification: boundedFailureClassification(editor.reason, "editor-phase-failure")
       }),
-      actionAuthorized: false
+      actionAuthorized: false,
+      authorizationAttempted,
+      authorizationOutcome
     });
   }
   return rawEvidence({
@@ -442,7 +850,10 @@ export async function executeDataWranglerComparisonTrial(
     processProofs,
     launchReceipt,
     supervisorCompletion: completion,
+    terminalEvidence,
     outerEditorFailure: null,
-    actionAuthorized
+    actionAuthorized,
+    authorizationAttempted,
+    authorizationOutcome
   });
 }
