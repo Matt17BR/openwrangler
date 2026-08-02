@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -34,6 +35,7 @@ const CAPABILITY_KIND = DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND;
 const CONTROL_KIND = NEITHER_PRODUCT_CONTROL_RECEIPT_KIND;
 
 export const PUBLIC_UI_COMMON_EXTENSION_INVENTORY = freezeInventory([
+  DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY,
   { extensionId: "ms-python.debugpy", version: "2026.6.0" },
   { extensionId: "ms-python.python", version: "2026.4.0" },
   { extensionId: "ms-python.vscode-pylance", version: "2026.3.1" },

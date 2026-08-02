@@ -16,6 +16,7 @@ import {
   validateDataWranglerPolarsCapabilityReceipt,
   validateNeitherProductControlReceipt
 } from "./data-wrangler-public-ui-receipts.mjs";
+import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
 import {
   digestDurableJsonValue,
   publishDurableStudyJsonExclusive,
@@ -51,6 +52,7 @@ export const DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES =
       200
   ) + 1;
 export const DATA_WRANGLER_STUDY_COMMON_EXTENSIONS = Object.freeze([
+  DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY,
   Object.freeze({ extensionId: "ms-python.debugpy", version: "2026.6.0" }),
   Object.freeze({ extensionId: "ms-python.python", version: "2026.4.0" }),
   Object.freeze({ extensionId: "ms-python.vscode-pylance", version: "2026.3.1" }),
@@ -648,40 +650,49 @@ function validatePublicUiReceiptContext(context, fixtureId, manifestContext, lab
 }
 
 function validateCapabilityReceipts(receipts, manifestContext) {
-  if (!Array.isArray(receipts) || receipts.length !== 1) {
-    fail("Study capability provenance must contain the Data Wrangler Polars receipt.");
+  const expectedFixtureIds = manifestContext.fixtures.map((fixture) => fixture.id);
+  if (!Array.isArray(receipts) || receipts.length !== expectedFixtureIds.length) {
+    fail("Study capability provenance must contain one Data Wrangler Polars receipt for every fixture.");
   }
-  const receipt = receipts[0];
-  exactKeys(
-    receipt,
-    ["product", "engine", "availability", "method", "timed", "fixtureId", "context", "receiptSha256", "receipt"],
-    "Study public-capability receipt"
-  );
-  if (
-    receipt.product !== "data-wrangler" ||
-    receipt.engine !== "polars" ||
-    !["available", "unavailable"].includes(receipt.availability) ||
-    receipt.method !== "public-capability" ||
-    receipt.timed !== false
-  ) {
-    fail("Study Data Wrangler Polars capability receipt is invalid.");
-  }
-  assertBoundedText(receipt.fixtureId, "Study public-capability fixture ID", 128);
-  const context = validatePublicUiReceiptContext(
-    receipt.context,
-    receipt.fixtureId,
-    manifestContext,
-    "Study public-capability context"
-  );
-  validateDataWranglerPolarsCapabilityReceipt(receipt.receipt, context);
-  const expectedAvailability = receipt.receipt.evidence.conclusion === "available" ? "available" : "unavailable";
-  if (receipt.availability !== expectedAvailability) {
-    fail("Study Data Wrangler Polars availability does not match its public-UI observation trace.");
-  }
-  assertString(receipt.receiptSha256, SHA256, "Study public-capability receipt SHA-256");
-  if (receipt.receiptSha256 !== digestStudyValue(receipt.receipt)) {
-    fail("Study public-capability receipt SHA-256 does not match its validated public-UI evidence.");
-  }
+  const captureIds = new Set();
+  receipts.forEach((receipt, index) => {
+    exactKeys(
+      receipt,
+      ["product", "engine", "availability", "method", "timed", "fixtureId", "context", "receiptSha256", "receipt"],
+      "Study public-capability receipt"
+    );
+    if (
+      receipt.product !== "data-wrangler" ||
+      receipt.engine !== "polars" ||
+      !["available", "unavailable"].includes(receipt.availability) ||
+      receipt.method !== "public-capability" ||
+      receipt.timed !== false ||
+      receipt.fixtureId !== expectedFixtureIds[index]
+    ) {
+      fail("Study Data Wrangler Polars capability receipts must follow the exact fixture order.");
+    }
+    assertBoundedText(receipt.fixtureId, "Study public-capability fixture ID", 128);
+    const context = validatePublicUiReceiptContext(
+      receipt.context,
+      receipt.fixtureId,
+      manifestContext,
+      "Study public-capability context"
+    );
+    if (captureIds.has(context.captureId)) {
+      fail("Study public-capability captures must be independent for every fixture.");
+    }
+    captureIds.add(context.captureId);
+    validateDataWranglerPolarsCapabilityReceipt(receipt.receipt, context);
+    const expectedAvailability = receipt.receipt.evidence.conclusion === "available" ? "available" : "unavailable";
+    if (receipt.availability !== expectedAvailability) {
+      fail("Study Data Wrangler Polars availability does not match its public-UI observation trace.");
+    }
+    assertString(receipt.receiptSha256, SHA256, "Study public-capability receipt SHA-256");
+    if (receipt.receiptSha256 !== digestStudyValue(receipt.receipt)) {
+      fail("Study public-capability receipt SHA-256 does not match its validated public-UI evidence.");
+    }
+  });
+  return captureIds;
 }
 
 function validateControlProfile(controlProfile, manifestContext) {
@@ -768,9 +779,9 @@ function validateStudyProvenance(provenance, manifestContext) {
   validateStudyZoom(provenance.zoom);
   validateStudyCommonExtensions(provenance.commonExtensions);
   validateStudyTemplates(provenance.templates);
-  validateCapabilityReceipts(provenance.capabilities, manifestContext);
+  const capabilityCaptureIds = validateCapabilityReceipts(provenance.capabilities, manifestContext);
   validateControlProfile(provenance.controlProfile, manifestContext);
-  if (provenance.capabilities[0].context.captureId === provenance.controlProfile.context.captureId) {
+  if (capabilityCaptureIds.has(provenance.controlProfile.context.captureId)) {
     fail("Study capability and neither-product control captures must be independent.");
   }
   validateOwnershipTrackerProvenance(provenance.ownershipTracker);
@@ -2752,6 +2763,7 @@ function validateCleanupProof(proof, processProofs, fragment) {
     fail("Study cleanup proof must retain two to fifty-one bounded process-tree observations.");
   }
   let previousElapsedMs = -1;
+  let observedEmptyTree = false;
   proof.observations.forEach((observation, index) => {
     exactKeys(observation, ["sequence", "elapsedMs", "processes"], "Study cleanup observation");
     assertNonNegativeFinite(observation.elapsedMs, "Study cleanup observation elapsed time");
@@ -2784,20 +2796,26 @@ function validateCleanupProof(proof, processProofs, fragment) {
       }
       identities.add(identity);
     }
-    if (observation.processes.length === 0 && index !== proof.observations.length - 1) {
-      fail("Study cleanup polling must stop at the first empty process tree.");
+    if (observation.processes.length === 0) {
+      observedEmptyTree = true;
+    } else if (observedEmptyTree) {
+      fail("Study cleanup polling cannot observe a process after the tree first becomes empty.");
     }
     previousElapsedMs = observation.elapsedMs;
   });
   const terminal = proof.observations.at(-1);
+  const terminalConfirmation = proof.observations.at(-2);
   if (
     proof.status !== "complete" ||
     terminal.elapsedMs > proof.deadlineMs ||
+    terminalConfirmation.processes.length !== 0 ||
     terminal.processes.length !== 0 ||
     proof.treeEmpty !== true ||
     proof.failure !== null
   ) {
-    fail("A publishable cleanup proof must show the complete owned process tree empty within ten seconds.");
+    fail(
+      "A publishable cleanup proof must end with two consecutive empty process-tree observations within ten seconds."
+    );
   }
   if (
     identityReuseEvents.length > 0 &&
@@ -2900,19 +2918,29 @@ function validateTrialProvenance(provenance, fragment, entry, manifest) {
   ) {
     fail("Study trial fixture receipt does not match the exact stable manifest fixture.");
   }
-  if (fragment.processProofs === null || fragment.processProofs.configuredKernel === null) {
-    fail("Study trial provenance requires the correlated fresh editor and kernel identities.");
+  if (fragment.processProofs === null) {
+    fail("Study trial provenance requires the correlated fresh editor identity.");
   }
   exactKeys(provenance.editorProcess, ["pid", "startTimeTicks"], "Study trial editor identity");
-  exactKeys(provenance.kernelProcess, ["pid", "startTimeTicks", "kernelIdSha256"], "Study trial kernel identity");
   if (
     provenance.editorProcess.pid !== fragment.processProofs.editorRoot.pid ||
-    provenance.editorProcess.startTimeTicks !== fragment.processProofs.editorRoot.startTimeTicks ||
-    provenance.kernelProcess.pid !== fragment.processProofs.configuredKernel.pid ||
-    provenance.kernelProcess.startTimeTicks !== fragment.processProofs.configuredKernel.startTimeTicks ||
-    provenance.kernelProcess.kernelIdSha256 !== fragment.processProofs.configuredKernel.kernelIdSha256
+    provenance.editorProcess.startTimeTicks !== fragment.processProofs.editorRoot.startTimeTicks
   ) {
-    fail("Study trial provenance does not match its correlated editor and configured kernel.");
+    fail("Study trial provenance does not match its correlated editor.");
+  }
+  if (fragment.processProofs.configuredKernel === null) {
+    if (fragment.outcome.actionStarted || provenance.kernelProcess !== null) {
+      fail("A started action or recorded kernel provenance requires the exact configured kernel.");
+    }
+  } else {
+    exactKeys(provenance.kernelProcess, ["pid", "startTimeTicks", "kernelIdSha256"], "Study trial kernel identity");
+    if (
+      provenance.kernelProcess.pid !== fragment.processProofs.configuredKernel.pid ||
+      provenance.kernelProcess.startTimeTicks !== fragment.processProofs.configuredKernel.startTimeTicks ||
+      provenance.kernelProcess.kernelIdSha256 !== fragment.processProofs.configuredKernel.kernelIdSha256
+    ) {
+      fail("Study trial provenance does not match its configured kernel.");
+    }
   }
   if (provenance.revalidatedAfterCleanup !== true || fragment.cleanupProof === null) {
     fail("Study trial provenance must be revalidated after the bounded cleanup attempt.");
@@ -2984,8 +3012,13 @@ export function validateDataWranglerStudyFragment(fragment, manifest) {
     ["success", "product-failure", "pre-action-invalid", "unsupported"],
     "Study outcome status"
   );
-  const dataWranglerPolarsCapability = manifest.provenance.capabilities[0];
+  const dataWranglerPolarsCapability = manifest.provenance.capabilities.find(
+    (capability) => capability.fixtureId === fixtureForStudyEntry(manifest, entry).id
+  );
   if (entry.product === "data-wrangler" && entry.engine === "polars") {
+    if (dataWranglerPolarsCapability === undefined) {
+      fail("Study Data Wrangler Polars entry has no exact fixture capability receipt.");
+    }
     const mustBeUnsupported = dataWranglerPolarsCapability.availability === "unavailable";
     if ((fragment.outcome.status === "unsupported") !== mustBeUnsupported) {
       fail("Study Data Wrangler Polars outcomes must match the manifest-bound untimed capability receipt.");

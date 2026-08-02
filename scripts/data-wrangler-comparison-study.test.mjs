@@ -227,6 +227,14 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
   assert.equal(manifest.protocol, DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL);
   assert.equal(validateDataWranglerStudyManifest(manifest), manifest);
   assert.match(digestStudyValue(manifest), /^[0-9a-f]{64}$/u);
+  assert.deepEqual(
+    manifest.provenance.capabilities.map((capability) => capability.fixtureId),
+    manifest.fixtures.map((fixture) => fixture.id)
+  );
+  assert.deepEqual(manifest.provenance.commonExtensions[0], {
+    extensionId: "openwrangler-study.notebook-comparison-driver",
+    version: "1.0.0"
+  });
 
   const changedSchedule = structuredClone(manifest);
   [changedSchedule.schedule[0], changedSchedule.schedule[2]] = [
@@ -291,7 +299,15 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
 
   const timedCapabilityProbe = structuredClone(manifest);
   timedCapabilityProbe.provenance.capabilities[0].timed = true;
-  assert.throws(() => validateDataWranglerStudyManifest(timedCapabilityProbe), /capability receipt/u);
+  assert.throws(() => validateDataWranglerStudyManifest(timedCapabilityProbe), /capability receipt|fixture order/u);
+
+  const missingFixtureCapability = structuredClone(manifest);
+  missingFixtureCapability.provenance.capabilities.pop();
+  assert.throws(() => validateDataWranglerStudyManifest(missingFixtureCapability), /one.*receipt for every fixture/u);
+
+  const reversedFixtureCapabilities = structuredClone(manifest);
+  reversedFixtureCapabilities.provenance.capabilities.reverse();
+  assert.throws(() => validateDataWranglerStudyManifest(reversedFixtureCapabilities), /exact fixture order/u);
 
   const wrongLocale = structuredClone(manifest);
   wrongLocale.editor.uiLocale = "de";
@@ -669,6 +685,7 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
     processes: [adoptedIdentity]
   });
   adoptedDuringCleanup.cleanupProof.observations[2].sequence = 2;
+  adoptedDuringCleanup.cleanupProof.observations[3].sequence = 3;
   assert.equal(validateDataWranglerStudyFragment(adoptedDuringCleanup, manifest), adoptedDuringCleanup);
 
   const simultaneousCleanupPoll = structuredClone(fragment);
@@ -680,6 +697,37 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
   const minimumCleanupPoll = structuredClone(fragment);
   minimumCleanupPoll.cleanupProof.observations[1].elapsedMs = 100;
   assert.equal(validateDataWranglerStudyFragment(minimumCleanupPoll, manifest), minimumCleanupPoll);
+
+  const immediatelyEmptyCleanup = structuredClone(fragment);
+  immediatelyEmptyCleanup.cleanupProof.observations = [
+    { sequence: 0, elapsedMs: 0, processes: [] },
+    { sequence: 1, elapsedMs: 200, processes: [] }
+  ];
+  assert.equal(validateDataWranglerStudyFragment(immediatelyEmptyCleanup, manifest), immediatelyEmptyCleanup);
+
+  const oneEmptyPoll = structuredClone(fragment);
+  oneEmptyPoll.cleanupProof.observations.pop();
+  assert.throws(
+    () => validateDataWranglerStudyFragment(oneEmptyPoll, manifest),
+    /two consecutive empty process-tree observations/u
+  );
+
+  const processAfterEmpty = structuredClone(fragment);
+  processAfterEmpty.cleanupProof.observations.splice(2, 0, {
+    sequence: 2,
+    elapsedMs: 300,
+    processes: [
+      {
+        pid: processAfterEmpty.processProofs.editorRoot.pid,
+        startTimeTicks: processAfterEmpty.processProofs.editorRoot.startTimeTicks
+      }
+    ]
+  });
+  processAfterEmpty.cleanupProof.observations[3].sequence = 3;
+  assert.throws(
+    () => validateDataWranglerStudyFragment(processAfterEmpty, manifest),
+    /cannot observe a process after the tree first becomes empty/u
+  );
 
   const survivingCleanup = postActionFailureFragment(structuredClone(fragment), "cleanup");
   survivingCleanup.cleanupProof.status = "surviving-tree";
@@ -899,7 +947,10 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
 
   const incompleteCleanup = structuredClone(fragment);
   incompleteCleanup.cleanupProof.observations.at(-1).processes = [{ pid: 100, startTimeTicks: "12345" }];
-  assert.throws(() => validateDataWranglerStudyFragment(incompleteCleanup, manifest), /complete owned process tree/u);
+  assert.throws(
+    () => validateDataWranglerStudyFragment(incompleteCleanup, manifest),
+    /cannot observe a process after the tree first becomes empty/u
+  );
 
   const missingRuntimeProof = structuredClone(fragment);
   missingRuntimeProof.processProofs.openWranglerRuntime.status =
@@ -1500,6 +1551,107 @@ test("Data Wrangler Polars can be explicitly unavailable without becoming a fail
   assert.equal(validateDataWranglerStudyResult(result), result);
 });
 
+test("Data Wrangler Polars availability is bound to the exact CSV or Parquet fixture", () => {
+  const manifest = studyManifest({ csv: "available", parquet: "unavailable" });
+  const csvEntry = manifest.schedule.find(
+    (entry) =>
+      entry.kind === "warm" && entry.engine === "polars" && entry.format === "csv" && entry.product === "data-wrangler"
+  );
+  const parquetEntry = manifest.schedule.find(
+    (entry) =>
+      entry.kind === "warm" &&
+      entry.engine === "polars" &&
+      entry.format === "parquet" &&
+      entry.product === "data-wrangler"
+  );
+  assert.equal(
+    validateDataWranglerStudyFragment(successFragment(manifest, csvEntry, 0, 10, 0), manifest).outcome.status,
+    "success"
+  );
+  assert.equal(
+    validateDataWranglerStudyFragment(unsupportedFragment(manifest, parquetEntry, parquetEntry.sequence), manifest)
+      .outcome.status,
+    "unsupported"
+  );
+  assert.throws(
+    () => validateDataWranglerStudyFragment(unsupportedFragment(manifest, csvEntry, csvEntry.sequence), manifest),
+    /manifest-bound untimed capability receipt/u
+  );
+  assert.throws(
+    () => validateDataWranglerStudyFragment(successFragment(manifest, parquetEntry, 0, 10, 0), manifest),
+    /manifest-bound untimed capability receipt/u
+  );
+});
+
+test("each trial records the neutral driver and only its measured product", () => {
+  const manifest = studyManifest();
+  for (const product of DATA_WRANGLER_STUDY_PRODUCTS) {
+    const entry = manifest.schedule.find((candidate) => candidate.kind === "warm" && candidate.product === product);
+    const fragment = successFragment(manifest, entry, 0, 10, entry.sequence);
+    assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
+    const ids = fragment.trialProvenance.extensionsBefore.map((extension) => extension.extensionId);
+    assert.equal(ids.filter((id) => id === "openwrangler-study.notebook-comparison-driver").length, 1);
+    assert.equal(
+      ids.filter((id) => [manifest.candidate.extensionId, manifest.baseline.extensionId].includes(id)).length,
+      1
+    );
+    assert.equal(ids.includes(manifest.candidate.extensionId), product === "open-wrangler");
+    assert.equal(ids.includes(manifest.baseline.extensionId), product === "data-wrangler");
+  }
+
+  const dataWranglerEntry = manifest.schedule.find(
+    (entry) => entry.kind === "warm" && entry.product === "data-wrangler"
+  );
+  const contaminated = successFragment(manifest, dataWranglerEntry, 0, 10, dataWranglerEntry.sequence);
+  const openWranglerEntry = {
+    extensionId: manifest.candidate.extensionId,
+    version: manifest.candidate.version
+  };
+  contaminated.trialProvenance.extensionsBefore.push(openWranglerEntry);
+  contaminated.trialProvenance.extensionsAfter.push(structuredClone(openWranglerEntry));
+  assert.throws(
+    () => validateDataWranglerStudyFragment(contaminated, manifest),
+    /exact common and product extensions/u
+  );
+});
+
+test("a launched setup failure keeps editor provenance when no kernel was configured", () => {
+  const manifest = studyManifest();
+  const entry = manifest.schedule.find((candidate) => candidate.kind === "warm");
+  const fragment = successFragment(manifest, entry, 0, 10, entry.sequence);
+  fragment.outcome = {
+    status: "pre-action-invalid",
+    reasonClass: "setup",
+    actionStarted: false,
+    correctness: "not-reached",
+    timeout: null,
+    unsupported: null
+  };
+  fragment.milestones = createEmptyStudyMilestones();
+  fragment.sourceLoad = {
+    status: "failed",
+    durationMs: null,
+    includedInInlineTiming: entry.kind === "cold"
+  };
+  fragment.engineEvidence = null;
+  fragment.uiEvidence = null;
+  fragment.processProofs.configuredKernel = null;
+  fragment.processProofs.openWranglerRuntime = null;
+  fragment.trialProvenance.kernelProcess = null;
+  assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
+
+  const inventedKernel = structuredClone(fragment);
+  inventedKernel.trialProvenance.kernelProcess = {
+    pid: 120,
+    startTimeTicks: "12000",
+    kernelIdSha256: digest("1")
+  };
+  assert.throws(
+    () => validateDataWranglerStudyFragment(inventedKernel, manifest),
+    /recorded kernel provenance requires the exact configured kernel/u
+  );
+});
+
 test("type-7 summaries use the preregistered ten-sample interpolation", () => {
   const values = [10, 3, 8, 1, 9, 4, 6, 2, 7, 5];
   assert.equal(type7Quantile(values, 0.5), 5.5);
@@ -1862,13 +2014,31 @@ function studyManifest(dataWranglerPolarsAvailability = "available", ownershipTr
 }
 
 function studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, ownershipTracker) {
-  const capabilityContext = publicUiContext("22222222-2222-4222-8222-222222222222", editor, fixtures[0]);
   const controlContext = publicUiContext("33333333-3333-4333-8333-333333333333", editor, fixtures[0]);
-  const capabilityConclusion = dataWranglerPolarsAvailability === "available" ? "available" : "unsupported";
-  const capabilityReceipt = createDataWranglerPolarsCapabilityReceipt(
-    publicUiEvidence(DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND, capabilityContext, capabilityConclusion),
-    capabilityContext
-  );
+  const capabilityCaptureIds = ["22222222-2222-4222-8222-222222222222", "44444444-4444-4444-8444-444444444444"];
+  const capabilities = fixtures.map((fixture, index) => {
+    const availability =
+      typeof dataWranglerPolarsAvailability === "string"
+        ? dataWranglerPolarsAvailability
+        : dataWranglerPolarsAvailability[fixture.format];
+    const context = publicUiContext(capabilityCaptureIds[index], editor, fixture);
+    const conclusion = availability === "available" ? "available" : "unsupported";
+    const receipt = createDataWranglerPolarsCapabilityReceipt(
+      publicUiEvidence(DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND, context, conclusion),
+      context
+    );
+    return {
+      product: "data-wrangler",
+      engine: "polars",
+      availability,
+      method: "public-capability",
+      timed: false,
+      fixtureId: fixture.id,
+      context,
+      receiptSha256: digestStudyValue(receipt),
+      receipt
+    };
+  });
   const controlReceipt = createNeitherProductControlReceipt(
     publicUiEvidence(NEITHER_PRODUCT_CONTROL_RECEIPT_KIND, controlContext, "neither-product-control"),
     controlContext
@@ -1917,19 +2087,7 @@ function studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, owner
       publicWarmupCompleted: true,
       targetStateAbsent: true
     })),
-    capabilities: [
-      {
-        product: "data-wrangler",
-        engine: "polars",
-        availability: dataWranglerPolarsAvailability,
-        method: "public-capability",
-        timed: false,
-        fixtureId: fixtures[0].id,
-        context: capabilityContext,
-        receiptSha256: digestStudyValue(capabilityReceipt),
-        receipt: capabilityReceipt
-      }
-    ],
+    capabilities,
     controlProfile: {
       method: "neither-product",
       fixtureId: fixtures[0].id,
@@ -2623,7 +2781,8 @@ function studyCleanupProof(processProofs) {
           }
         ]
       },
-      { sequence: 1, elapsedMs: 200, processes: [] }
+      { sequence: 1, elapsedMs: 200, processes: [] },
+      { sequence: 2, elapsedMs: 400, processes: [] }
     ],
     treeEmpty: true,
     status: "complete",

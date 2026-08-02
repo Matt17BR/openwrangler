@@ -33,9 +33,12 @@ Polars surface, that cell is unavailable rather than replaced with a different w
 - Open Wrangler: the exact v1.2.1 release-candidate VSIX and SHA-256.
 - Microsoft Data Wrangler: exact Marketplace version 1.24.2.
 - One current-user-owned CPython 3.12 executable with pinned Pandas, Polars, PyArrow, Jupyter Core, and ipykernel.
-- One exact common extension inventory: Python 2026.4.0, Jupyter 2025.9.1, Debugpy 2026.6.0, Pylance 2026.3.1,
-  Python Environments 1.36.0, Jupyter Keymap 1.1.2, Jupyter Renderers 1.3.0, Jupyter Cell Tags 0.1.9, and Jupyter
-  Slideshow 0.1.6, plus exactly one measured product. Inventory is verified before and after every trial.
+- Both arms load the same `openwrangler-study.notebook-comparison-driver@1.0.0` test extension. It runs the public
+  notebook journey and contains no Open Wrangler product code. The rest of the common inventory is Python 2026.4.0,
+  Jupyter 2025.9.1, Debugpy 2026.6.0, Pylance 2026.3.1, Python Environments 1.36.0, Jupyter Keymap 1.1.2, Jupyter
+  Renderers 1.3.0, Jupyter Cell Tags 0.1.9, and Jupyter Slideshow 0.1.6. Each arm adds exactly one measured product.
+  Inventory is checked before and after every trial. The Data Wrangler arm must not load or activate
+  `Matt17BR.openwrangler`.
 - Separate disposable user-data and extension directories per product. Public first-use consent and runtime selection
   are completed in a configured-only template using tiny synthetic data; no extension storage is fabricated.
 - Telemetry, updates, repository discovery, workspace recommendations, and unrelated extensions are disabled.
@@ -83,8 +86,9 @@ neither product establishes the host renderer's behavior. If a Polars output has
 cell is unsupported/non-comparable rather than a timing of generic Polars HTML.
 
 The untimed Polars capability check records the complete extension inventory, English UI locale, and exact official
-VS Code build. It uses the same `study_frame` source shape, schema hash, and sentinels registered in the manifest. The capture samples the
-ready notebook output and both products' exact accessible launch-action names once per second for 30 seconds. An
+VS Code build. CSV and Parquet each get their own receipt, using that fixture's `study_frame` shape, schema hash, and
+sentinels. The capture samples the ready notebook output and both products' exact accessible launch-action names once
+per second for 30 seconds. An
 available action must be unique and pointer-usable twice in succession. An unsupported result requires the Data
 Wrangler action to stay absent for the full window. A separate capture without either measured product must keep both
 actions absent under the same host/Jupyter output. These normalized traces are part of the manifest rather than a
@@ -213,7 +217,8 @@ PSS must sum to total PSS. The sampler uses
 [`process.hrtime.bigint()`](https://nodejs.org/api/process.html#processhrtimebigint) for one monotonic clock origin shared
 by its retained samples and milestones. The exact configured kernel must be observed by pinned executable, kernel ID,
 and process start time before preview readiness; every publicly expected Open Wrangler runtime child must be observed
-or its absence explicitly proven for the live-kernel path.
+or its absence explicitly proven for the live-kernel path. A setup failure before the first product action may stop
+before a kernel exists, but it still records and rechecks the editor process.
 
 For every journey report:
 
@@ -229,8 +234,10 @@ Memory sampling begins before the action and ends two seconds after profile comp
 in total for `inlineActionMs`, the gap from inline readiness to the workbench action, and the gap from workbench
 readiness to the profile action. The fixed cap is 1,228 samples: the three journey
 deadlines, that control allowance, two-second quiescence, 250 ms terminal overshoot, and the inclusive origin sample at
-the 200 ms interval. Cleanup is outside the latency boundary. The supervisor must reap the editor tree and publish its terminal receipt; three consecutive full censuses
-must then find no owned process. Cleanup signals, when needed, use pidfds after rechecking the saved process start time.
+the 200 ms interval. Cleanup is outside the latency boundary. The supervisor must reap the editor tree and publish its
+terminal receipt; three consecutive full censuses must then find no owned process. The runner also records the first
+empty 200 ms poll and one consecutive empty confirmation. A process seen after the first empty poll invalidates the
+cleanup proof. Cleanup signals, when needed, use pidfds after rechecking the saved process start time.
 PID reuse is retained as invalid evidence even when cleanup succeeds. If ownership cannot be settled, the runner stops
 without publishing a fragment and leaves its private root for diagnosis. A missing `smaps_rollup`, process-identity
 ambiguity, surviving process, or sampling gap invalidates the resource observation; the study may not fall back
