@@ -15,8 +15,7 @@ import {
 import { performance } from "node:perf_hooks";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
-export const DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL =
-  "openwrangler-data-wrangler-study-bridge-request-v1";
+export const DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL = "openwrangler-data-wrangler-study-bridge-request-v1";
 export const DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL = "openwrangler-data-wrangler-study-bridge-ack-v1";
 export const DATA_WRANGLER_STUDY_BRIDGE_KINDS = [
   "source-verified",
@@ -34,8 +33,7 @@ export type DataWranglerStudyBridgeKind = (typeof DATA_WRANGLER_STUDY_BRIDGE_KIN
 
 export interface DataWranglerStudyBridgeEnvelope {
   readonly protocol:
-    | typeof DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL
-    | typeof DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL;
+    typeof DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL | typeof DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL;
   readonly runId: string;
   readonly phase: string;
   readonly sequence: number;
@@ -133,9 +131,7 @@ function validateClockText(value: unknown): string {
 
 export function validateDataWranglerStudyBridgeEnvelope(
   value: unknown,
-  expectedProtocol:
-    | typeof DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL
-    | typeof DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL
+  expectedProtocol: typeof DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL | typeof DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL
 ): DataWranglerStudyBridgeEnvelope {
   const envelope = requireRecord(value, "Study bridge envelope");
   exactKeys(
@@ -281,9 +277,7 @@ interface ReadEntry {
 
 function readEntry(
   path: string,
-  protocol:
-    | typeof DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL
-    | typeof DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+  protocol: typeof DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL | typeof DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
   options: { readonly optional?: boolean; readonly consume?: boolean } = {}
 ): ReadEntry | null {
   const parent = openParent(path);
@@ -377,7 +371,8 @@ function publishEnvelope(path: string, envelope: DataWranglerStudyBridgeEnvelope
     fsyncSync(parent.descriptor);
     const published = lstatSync(targetPath, { bigint: true });
     assertPrivateFile(published, 1n);
-    if (!sameIdentity(published, temporaryIdentity)) fail("entry-changed", "Study bridge publication changed identity.");
+    if (!sameIdentity(published, temporaryIdentity))
+      fail("entry-changed", "Study bridge publication changed identity.");
     verifyParent(parent);
     temporaryIdentity = undefined;
     return { device: published.dev, inode: published.ino };
@@ -473,11 +468,9 @@ export function createDataWranglerStudyControlBridge(
           if (!Number.isFinite(elapsedBeforeRead) || elapsedBeforeRead < 0 || elapsedBeforeRead >= timeoutMs) {
             fail("timeout", `Study bridge acknowledgement did not arrive within ${timeoutMs} ms.`);
           }
-          const acknowledgementEntry = readEntry(
-            acknowledgementPath,
-            DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
-            { optional: true }
-          );
+          const acknowledgementEntry = readEntry(acknowledgementPath, DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL, {
+            optional: true
+          });
           const elapsedAfterRead = now() - startedAt;
           if (!Number.isFinite(elapsedAfterRead) || elapsedAfterRead < 0 || elapsedAfterRead >= timeoutMs) {
             fail("timeout", `Study bridge acknowledgement did not arrive within ${timeoutMs} ms.`);
@@ -496,11 +489,9 @@ export function createDataWranglerStudyControlBridge(
             if (acknowledgementTime < clockValue) {
               fail("clock-regression", "Study bridge acknowledgement predates its request.");
             }
-            const consumedAcknowledgement = readEntry(
-              acknowledgementPath,
-              DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
-              { consume: true }
-            );
+            const consumedAcknowledgement = readEntry(acknowledgementPath, DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL, {
+              consume: true
+            });
             if (
               consumedAcknowledgement === null ||
               canonicalJson(consumedAcknowledgement.envelope) !== canonicalJson(acknowledgement) ||

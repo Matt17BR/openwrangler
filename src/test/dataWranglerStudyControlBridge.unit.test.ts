@@ -13,7 +13,11 @@ const RUN_ID = "12345678-1234-4123-8123-123456789abc";
 const PHASE = "comparison-study-open-wrangler-trial";
 const roots: string[] = [];
 
-function privateBridgePaths(): { readonly root: string; readonly requestPath: string; readonly acknowledgementPath: string } {
+function privateBridgePaths(): {
+  readonly root: string;
+  readonly requestPath: string;
+  readonly acknowledgementPath: string;
+} {
   const root = mkdtempSync(join(tmpdir(), "ow-study-child-"));
   chmodSync(root, 0o700);
   roots.push(root);
@@ -26,7 +30,11 @@ function privateBridgePaths(): { readonly root: string; readonly requestPath: st
 
 function canonical(value: Record<string, unknown>): string {
   return `${JSON.stringify(
-    Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]])),
+    Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, value[key]])
+    ),
     null,
     2
   )}\n`;
@@ -105,9 +113,9 @@ describe("notebook-trial child control bridge", () => {
   it("fails before publication when either wire path contains a stale entry", () => {
     const paths = privateBridgePaths();
     writeFileSync(paths.requestPath, "{}\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
-    expect(() =>
-      createDataWranglerStudyControlBridge({ ...paths, runId: RUN_ID, phase: PHASE })
-    ).toThrow(/unconsumed/u);
+    expect(() => createDataWranglerStudyControlBridge({ ...paths, runId: RUN_ID, phase: PHASE })).toThrow(
+      /unconsumed/u
+    );
   });
 
   it("rejects a malformed acknowledgement without consuming the durable request", async () => {
