@@ -22,13 +22,15 @@ export const PUBLIC_MEDIA_CONTEXT_CLEANUP_TIMEOUT_MS = 10_000;
 export const PUBLIC_MEDIA_FIRST_REQUIRED_VERSION = "1.2.1";
 
 export const PUBLIC_SURFACE_CONTENT = [
-  "Explore, profile, clean, and export dataframes in an open-source workbench",
-  "Why Open Wrangler"
+  "A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks.",
+  "Open files",
+  "The active filter matches 14,285 rows."
 ];
 
 export const REPRESENTATIVE_PUBLIC_IMAGES = [
   "Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views",
-  "A numeric histogram with an easy-to-target bin and exact interval and row count"
+  "Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows",
+  "PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels"
 ];
 
 export function parsePublicMediaVerifierArguments(arguments_) {

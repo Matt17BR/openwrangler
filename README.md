@@ -37,7 +37,9 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 | Other VS Code desktop forks | Experimental   |
 | Browser-hosted `vscode.dev` | Unsupported    |
 
-Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
+Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It uses your configured Python path,
+selected environment, or a supported system interpreter. If a required Python package is missing, Open Wrangler
+lists it and asks before installing anything.
 
 Opening data or running Python requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.
 
@@ -58,7 +60,7 @@ The sidebar keeps operations, dataset health, filters, sorts, and cleaning histo
 [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) for file entry points,
 by-example transformations, themes, Cursor, DuckDB types, and notebook engines.
 
-## Open and explore real files
+## Open files
 
 Ordinary CSV and TSV files open with automatic delimiter, encoding, quote, and header detection. **Import
 options** is available when a source needs an explicit override. Excel adds sheet selection; Parquet and
@@ -77,11 +79,12 @@ JSONL/NDJSON open directly.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/filter-result.png"><img alt="Open Wrangler showing a DACH filter, 14,285 matching rows, clear controls, and the same filter in the native sidebar" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/filter-result.png" width="1440" height="861"></a>
 
-_Filter without changing the source: the result count, active predicate, grid, and clear controls stay together._
+_The active filter matches 14,285 rows. The grid and sidebar show the same predicate and clear controls without
+changing the source._
 
 <table>
   <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="A numeric histogram with an easy-to-target bin and exact interval and row count" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/histogram-hover.png" width="448" height="480"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/histogram-hover.png" width="448" height="480"></a></td>
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with inline priority, reorder, edit, and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/sort-priority.png" width="448" height="480"></a></td>
   </tr>
   <tr>
@@ -141,7 +144,7 @@ Choose Notebook Preview Provider**.
   </tr>
   <tr>
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png" width="872" height="700"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="An experimental native PySpark notebook session with profiles" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
   </tr>
   <tr>
     <td>DuckDB relations are view-only and do not require dataframe conversion.</td>
@@ -203,9 +206,8 @@ and machine.
 The [performance test documentation](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md#performance-fixtures)
 contains the method, raw samples, and cleanup checks.
 
-Issue [#91](https://github.com/Matt17BR/openwrangler/issues/91) tracks a direct comparison with Microsoft Data
-Wrangler. We will publish results only after both extensions have been tested with the same files, editor, Python
-environment, and actions.
+Issue [#91](https://github.com/Matt17BR/openwrangler/issues/91) tracks a planned comparison with Microsoft Data
+Wrangler using the same files, editor, Python environment, and actions.
 
 ## Roadmap
 
@@ -227,5 +229,4 @@ Contributions are welcome. See
 ## License
 
 Open Wrangler is licensed under the [MIT License](https://github.com/Matt17BR/openwrangler/blob/main/LICENSE).
-It is independently developed from public documentation and black-box behavior, uses no Microsoft Data Wrangler
-code or assets, and is not affiliated with Microsoft.
+It is not affiliated with Microsoft.

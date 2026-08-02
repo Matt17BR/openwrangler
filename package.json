@@ -1,7 +1,7 @@
 {
   "name": "openwrangler",
   "displayName": "Open Wrangler",
-  "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
+  "description": "Open files and notebook variables, then clean and export data in VS Code and Cursor. Pandas and Polars are native. DuckDB and PySpark are experimental; their notebook sessions are viewing-only.",
   "version": "1.2.0",
   "publisher": "Matt17BR",
   "license": "MIT",
@@ -463,27 +463,27 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Explore, clean, and export tabular data with Pandas, Polars, or DuckDB file sessions and native notebook sessions without modifying the source.",
+        "description": "Open files or notebook variables, inspect profiles, preview cleaning steps, and export code or data. Filters and cleaning steps do not overwrite the source. DuckDB and PySpark are experimental; their notebook sessions are viewing-only.",
         "steps": [
           {
             "id": "openData",
-            "title": "Open a data source",
-            "description": "Use [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel, or launch Open Wrangler from a notebook dataframe."
+            "title": "Open files or notebook variables",
+            "description": "Choose [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel. In a notebook, choose a supported live Pandas, Polars, DuckDB, or PySpark variable from the toolbar."
           },
           {
             "id": "explore",
-            "title": "Explore without changing data",
-            "description": "Use column profiles, filters, sorts, search, and the virtual grid. Viewing state remains separate from cleaning steps."
+            "title": "Inspect and filter data",
+            "description": "Column profiles, filters, sorts, search, and the virtual grid share one workbench. Filters and sorts remain separate from cleaning steps."
           },
           {
             "id": "clean",
             "title": "Preview a cleaning step",
-            "description": "Choose [Add Cleaning Step](command:openWrangler.startOperation), inspect its diff and generated code, then apply or discard it."
+            "description": "Choose [Add Cleaning Step](command:openWrangler.startOperation), review the changed cells and generated code, then apply or discard the draft."
           },
           {
             "id": "export",
-            "title": "Export explicitly",
-            "description": "Copy or save generated code, insert it into the originating notebook, or export cleaned data to a new CSV or Parquet file."
+            "title": "Save code or data",
+            "description": "Copy generated code, save it as a Python script, insert it into the originating notebook, or export cleaned data to a new CSV or Parquet file."
           }
         ]
       }
