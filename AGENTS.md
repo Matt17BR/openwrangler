@@ -118,6 +118,23 @@ disable replacement objects, hooks, and filesystem monitors, and forbid lazy obj
 recovery, process-use, and mount checks were not performed and must be proven before any future movement.
 Planning does not move or delete anything and never authorizes either action.
 
+Once that evidence exists, `npm run checkout:archive-retirement -- <slug> --owner <task> --revision <n>
+--generation <n>` may create a private recovery bundle. It includes common refs, local-only refs, and each linked
+worktree HEAD. Every main or linked-worktree `ORIG_HEAD` is added as an explicit bundle root. The command stops if any
+worktree has a private `refs/worktree/*`, `refs/bisect/*`, or `refs/rewritten/*` ref, because `git bundle --all` would
+miss it. It also stops on target-worktree operation metadata or a target `HEAD` reflog commit that is not reachable from
+the advertised recovery roots. Shallow, partial, promisor, filtered, grafted, or alternate-backed repositories also
+stop for review.
+
+The command streams the bundle with one pack thread and checks a conservative free-space budget first. It then
+unbundles into a new private bare repository kept beside the bundle, resolves every advertised head, packs its
+deterministic recovery refs, and runs strict `git fsck`. Only then does it write the receipt and completion marker.
+Failed runs remain in numbered directories; at most eight are allowed per checkout generation. Archive commands
+deliberately have no deadline yet: killing only Git's direct process can orphan pack or index children. A future
+deadline requires POSIX process-group and Windows Job Object ownership. An external interruption leaves the numbered
+attempt in place. Neither a completed archive nor an interrupted attempt authorizes movement or cleanup. Process-use
+and mount checks remain separate review steps.
+
 Automatic purge is not implemented. JavaScript's path-based recursive removal cannot safely survive a child-directory
 rebind, and Git/network child ownership needs a platform helper before cleanup can be automated. Keep pending entries
 until that reviewed helper exists or a maintainer completes an explicit audit and manual cleanup. `checkout:abandon`

@@ -12,7 +12,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { CheckoutLifecycleError, createCheckoutManager, normalizeWorktreeRegistryPath } from "./checkout-lifecycle.mjs";
@@ -37,7 +37,13 @@ function fixtureRun(behavior = {}) {
       cwd: options.cwd,
       encoding: "utf8",
       env: options.env ?? process.env,
-      maxBuffer: 4 * 1024 * 1024
+      input: options.input,
+      maxBuffer: 4 * 1024 * 1024,
+      stdio: [
+        options.input === undefined ? "ignore" : "pipe",
+        options.stdoutFd === undefined ? "pipe" : options.stdoutFd,
+        "pipe"
+      ]
     });
     const normalized = Object.freeze({
       status: result.status,
@@ -325,6 +331,766 @@ test("retirement planning appends exact clean evidence without touching the chec
     assert.deepEqual(readFileSync(join(checkout.checkoutPath, ".git")), gitFileBytes);
     assert.deepEqual(readFileSync(join(cleanup.checkout.gitAdmin.path, "gitdir")), backlinkBytes);
     assert.equal(git(checkout.checkoutPath, "status", "--porcelain"), "");
+  });
+});
+
+test("retirement archive preserves every ref in a verified self-contained bundle", () => {
+  withRepository((fixture) => {
+    const behavior = {};
+    const managed = manager(fixture, { run: fixtureRun(behavior) });
+    const checkout = create(fixture, "archive-ready", { manager: managed });
+    const creationHead = git(checkout.checkoutPath, "rev-parse", "HEAD");
+    writeFileSync(join(checkout.checkoutPath, "after-create.txt"), "committed after checkout creation\n");
+    git(checkout.checkoutPath, "add", "after-create.txt");
+    git(checkout.checkoutPath, "commit", "-q", "-m", "Commit after managed checkout creation");
+    managed.finish({ slug: "archive-ready", ownerTask: "/root/archive-ready", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-ready");
+    managed.planRetirement({
+      slug: "archive-ready",
+      ownerTask: "/root/archive-ready",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const localHead = git(checkout.checkoutPath, "rev-parse", "HEAD");
+    assert.notEqual(localHead, creationHead);
+    const localBlob = git(checkout.checkoutPath, "hash-object", "README.md");
+    git(fixture.repository, "update-ref", "refs/recovery/local-only", localHead);
+    git(fixture.repository, "update-ref", "refs/recovery/blob-only", localBlob);
+    git(fixture.repository, "tag", "archive-fixture", localHead);
+    const beforeEntries = registryBytes(fixture);
+    const planPath = join(managed.paths.retirements, `archive-ready.${cleanup.generation}.json`);
+    const planBytes = readFileSync(planPath);
+    const checkoutBytes = readFileSync(join(checkout.checkoutPath, "README.md"));
+    behavior.gitCalls = [];
+
+    const result = managed.archiveRetirement({
+      slug: "archive-ready",
+      ownerTask: "/root/archive-ready",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    assert.equal(result.status, "recovery-archive-recorded");
+    assert.equal(result.attempt, 1);
+    assert.equal(result.authorizesCleanup, false);
+    assert.deepEqual(registryBytes(fixture), beforeEntries);
+    assert.deepEqual(readFileSync(planPath), planBytes);
+    assert.deepEqual(readFileSync(join(checkout.checkoutPath, "README.md")), checkoutBytes);
+    const attempt = join(managed.paths.archives, `archive-ready.${cleanup.generation}.1`);
+    assert.deepEqual(readdirSync(attempt).sort(), [
+      "archive.bundle",
+      "complete.json",
+      "receipt.json",
+      "verification-template",
+      "verification.git"
+    ]);
+    const receipt = JSON.parse(readFileSync(join(attempt, "receipt.json"), "utf8"));
+    const completion = JSON.parse(readFileSync(join(attempt, "complete.json"), "utf8"));
+    assert.equal(receipt.authorizesCleanup, false);
+    assert.equal(receipt.deferredChecks.recovery, "bundle-unbundled-and-fsck-verified");
+    assert.equal(receipt.deferredChecks.processUse, "not-checked-recheck-required");
+    assert.equal(receipt.git.head, localHead);
+    assert.equal(receipt.verification.recovery.objectFormat, receipt.git.objectFormat);
+    assert.deepEqual(completion.verification.repository, receipt.archive.verification.repository);
+    assert.equal(completion.authorizesCleanup, false);
+    const heads = git(fixture.repository, "bundle", "list-heads", result.archivePath);
+    assert.match(heads, new RegExp(`${localHead} refs/recovery/local-only`, "u"));
+    assert.match(heads, new RegExp(`${localBlob} refs/recovery/blob-only`, "u"));
+    assert.match(heads, new RegExp(`${localHead} refs/tags/archive-fixture`, "u"));
+    git(fixture.repository, "bundle", "verify", "-q", result.archivePath);
+    const recovered = join(fixture.root, "recovered.git");
+    git(fixture.root, "init", "-q", "--bare", recovered);
+    git(fixture.root, `--git-dir=${recovered}`, "bundle", "unbundle", result.archivePath);
+    git(fixture.root, `--git-dir=${recovered}`, "fsck", "--full", "--strict");
+    assert.equal(git(fixture.root, `--git-dir=${recovered}`, "rev-parse", `${localHead}^{tree}`), receipt.git.headTree);
+    assert.ok(BigInt(receipt.storage.availableBytes) >= BigInt(receipt.storage.requiredBytes));
+    const bundleCall = behavior.gitCalls.find((call) => call.args.includes("bundle") && call.args.includes("create"));
+    assert.ok(bundleCall);
+    for (const setting of [
+      "pack.threads=1",
+      "pack.window=4",
+      "pack.depth=10",
+      "pack.windowMemory=32m",
+      "pack.deltaCacheSize=16m",
+      "core.bigFileThreshold=16m"
+    ]) {
+      assert.ok(bundleCall.args.includes(setting), `bundle creation must set ${setting}`);
+    }
+    assert.deepEqual(behavior.networkCommands ?? [], []);
+    assert.equal(
+      behavior.gitCalls.some((call) => {
+        if (["fetch", "pull", "push", "ls-remote"].some((command) => call.args.includes(command))) return true;
+        if (call.args.includes("update-ref") || call.args.includes("pack-refs")) {
+          const gitDirectoryArgument = call.args.indexOf("--git-dir");
+          return (
+            gitDirectoryArgument === -1 || call.args[gitDirectoryArgument + 1] !== join(attempt, "verification.git")
+          );
+        }
+        return (
+          call.args.includes("worktree") && ["add", "move", "remove", "prune"].some((verb) => call.args.includes(verb))
+        );
+      }),
+      false
+    );
+  });
+});
+
+test("retirement archive preserves a unique linked-worktree ORIG_HEAD as a bundle root", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "archive-orig-head", { manager: managed });
+    managed.finish({ slug: "archive-orig-head", ownerTask: "/root/archive-orig-head", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-orig-head");
+    managed.planRetirement({
+      slug: "archive-orig-head",
+      ownerTask: "/root/archive-orig-head",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const tree = git(checkout.checkoutPath, "rev-parse", "HEAD^{tree}");
+    const dangling = git(checkout.checkoutPath, "commit-tree", tree, "-m", "ORIG_HEAD-only recovery commit");
+    git(checkout.checkoutPath, "update-ref", "ORIG_HEAD", dangling);
+
+    const result = managed.archiveRetirement({
+      slug: "archive-orig-head",
+      ownerTask: "/root/archive-orig-head",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    const pseudoref = `worktrees/${basename(cleanup.checkout.gitAdmin.path)}/ORIG_HEAD`;
+    const heads = git(fixture.repository, "bundle", "list-heads", result.archivePath);
+    assert.match(heads, new RegExp(`${dangling} ${pseudoref}`, "u"));
+    const receipt = JSON.parse(readFileSync(join(dirname(result.archivePath), "receipt.json"), "utf8"));
+    assert.ok(receipt.git.pseudorefs.count >= 1);
+    assert.equal(
+      git(fixture.root, `--git-dir=${receipt.archive.verification.repository.path}`, "cat-file", "-t", dangling),
+      "commit"
+    );
+  });
+});
+
+test("retirement archive rejects a commit reachable only from the target HEAD reflog", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "archive-reflog-only", { manager: managed });
+    managed.finish({ slug: "archive-reflog-only", ownerTask: "/root/archive-reflog-only", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-reflog-only");
+    managed.planRetirement({
+      slug: "archive-reflog-only",
+      ownerTask: "/root/archive-reflog-only",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const current = git(checkout.checkoutPath, "rev-parse", "HEAD");
+    const tree = git(checkout.checkoutPath, "rev-parse", "HEAD^{tree}");
+    const dangling = git(checkout.checkoutPath, "commit-tree", tree, "-m", "HEAD-reflog-only recovery commit");
+    const reflogPath = join(cleanup.checkout.gitAdmin.path, "logs", "HEAD");
+    writeFileSync(
+      reflogPath,
+      `${readFileSync(reflogPath, "utf8")}${current} ${dangling} Checkout Test <checkout@example.invalid> 0 +0000\torphan\n`
+    );
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-reflog-only",
+          ownerTask: "/root/archive-reflog-only",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-not-eligible"
+    );
+    assert.equal(existsSync(managed.paths.archives), false);
+  });
+});
+
+test("retirement archive rejects target-worktree operation metadata", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "archive-operation-state", { manager: managed });
+    managed.finish({
+      slug: "archive-operation-state",
+      ownerTask: "/root/archive-operation-state",
+      expectedRevision: 1
+    });
+    const cleanup = entry(fixture, "archive-operation-state");
+    managed.planRetirement({
+      slug: "archive-operation-state",
+      ownerTask: "/root/archive-operation-state",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    writeFileSync(
+      join(cleanup.checkout.gitAdmin.path, "MERGE_HEAD"),
+      `${git(checkout.checkoutPath, "rev-parse", "HEAD")}\n`
+    );
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-operation-state",
+          ownerTask: "/root/archive-operation-state",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-not-eligible"
+    );
+    assert.equal(existsSync(managed.paths.archives), false);
+  });
+});
+
+test("retirement archive packs more than 4096 recovery roots before retaining verification state", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    create(fixture, "archive-many-roots", { manager: managed });
+    managed.finish({ slug: "archive-many-roots", ownerTask: "/root/archive-many-roots", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-many-roots");
+    managed.planRetirement({
+      slug: "archive-many-roots",
+      ownerTask: "/root/archive-many-roots",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    let input = "";
+    for (let index = 0; index < 4100; index += 1) {
+      const message = `root-${index}`;
+      input += `blob\nmark :${index + 1}\ndata ${Buffer.byteLength(message, "utf8")}\n${message}\n`;
+    }
+    input += "done\n";
+    const marksPath = join(fixture.root, "many-root.marks");
+    const imported = spawnSync("git", ["fast-import", "--quiet", `--export-marks=${marksPath}`], {
+      cwd: fixture.repository,
+      encoding: "utf8",
+      input,
+      maxBuffer: 4 * 1024 * 1024
+    });
+    assert.equal(imported.status, 0, imported.stderr);
+    const objectIds = readFileSync(marksPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const match = /^:([1-9][0-9]*) ([0-9a-f]+)$/u.exec(line);
+        assert.ok(match, `Malformed fast-import mark: ${line}`);
+        return { mark: Number(match[1]), oid: match[2] };
+      })
+      .sort((left, right) => left.mark - right.mark);
+    assert.equal(objectIds.length, 4100);
+    const refsInput = objectIds
+      .map(({ oid }, index) => `create refs/recovery/many/${String(index).padStart(4, "0")} ${oid}\n`)
+      .join("");
+    const refs = spawnSync("git", ["update-ref", "--stdin"], {
+      cwd: fixture.repository,
+      encoding: "utf8",
+      input: refsInput,
+      maxBuffer: 4 * 1024 * 1024
+    });
+    assert.equal(refs.status, 0, refs.stderr);
+
+    const result = managed.archiveRetirement({
+      slug: "archive-many-roots",
+      ownerTask: "/root/archive-many-roots",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    const receipt = JSON.parse(readFileSync(join(dirname(result.archivePath), "receipt.json"), "utf8"));
+    assert.ok(receipt.verification.recovery.rootRefs.count > 4096);
+    assert.ok(receipt.archive.verification.repository.fileCount < 4096);
+    assert.equal(
+      existsSync(join(receipt.archive.verification.repository.path, "packed-refs")),
+      true,
+      "verification roots must be packed before the bounded retained-state manifest is captured"
+    );
+  });
+});
+
+test("retirement archive keeps an interrupted attempt and retries in a new directory", () => {
+  withRepository((fixture) => {
+    const interrupted = manager(fixture, {
+      run: fixtureRun(),
+      hooks: { beforeArchiveReceiptWrite: () => assert.fail("simulated shutdown") }
+    });
+    create(fixture, "archive-retry", { manager: interrupted });
+    interrupted.finish({ slug: "archive-retry", ownerTask: "/root/archive-retry", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-retry");
+    interrupted.planRetirement({
+      slug: "archive-retry",
+      ownerTask: "/root/archive-retry",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    assert.throws(
+      () =>
+        interrupted.archiveRetirement({
+          slug: "archive-retry",
+          ownerTask: "/root/archive-retry",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      /simulated shutdown/u
+    );
+    const firstAttempt = join(interrupted.paths.archives, `archive-retry.${cleanup.generation}.1`);
+    const retainedBundle = readFileSync(join(firstAttempt, "archive.bundle"));
+    assert.deepEqual(readdirSync(firstAttempt).sort(), ["archive.bundle", "verification-template", "verification.git"]);
+
+    const result = manager(fixture, { run: fixtureRun() }).archiveRetirement({
+      slug: "archive-retry",
+      ownerTask: "/root/archive-retry",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    assert.equal(result.attempt, 2);
+    assert.deepEqual(readFileSync(join(firstAttempt, "archive.bundle")), retainedBundle);
+    assert.deepEqual(readdirSync(firstAttempt).sort(), ["archive.bundle", "verification-template", "verification.git"]);
+    assert.deepEqual(readdirSync(join(interrupted.paths.archives, `archive-retry.${cleanup.generation}.2`)).sort(), [
+      "archive.bundle",
+      "complete.json",
+      "receipt.json",
+      "verification-template",
+      "verification.git"
+    ]);
+  });
+});
+
+test("retirement archive refuses ref changes before completion and retains its receipt", () => {
+  withRepository((fixture) => {
+    let changed = false;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeArchiveCompletionWrite() {
+          changed = true;
+          git(fixture.repository, "update-ref", "refs/recovery/late", "HEAD");
+        }
+      }
+    });
+    create(fixture, "archive-ref-race", { manager: managed });
+    managed.finish({ slug: "archive-ref-race", ownerTask: "/root/archive-ref-race", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-ref-race");
+    managed.planRetirement({
+      slug: "archive-ref-race",
+      ownerTask: "/root/archive-ref-race",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-ref-race",
+          ownerTask: "/root/archive-ref-race",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "checkout-changed"
+    );
+
+    assert.equal(changed, true);
+    const attempt = join(managed.paths.archives, `archive-ref-race.${cleanup.generation}.1`);
+    assert.deepEqual(readdirSync(attempt).sort(), [
+      "archive.bundle",
+      "receipt.json",
+      "verification-template",
+      "verification.git"
+    ]);
+    assert.equal(JSON.parse(readFileSync(join(attempt, "receipt.json"), "utf8")).authorizesCleanup, false);
+  });
+});
+
+test("retirement archive rejects a changed bundle and never publishes completion", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeArchiveHeaderParse(_entry, _attempt, bundle) {
+          writeFileSync(bundle.path, "not a bundle\n");
+        }
+      }
+    });
+    create(fixture, "archive-corrupt", { manager: managed });
+    managed.finish({ slug: "archive-corrupt", ownerTask: "/root/archive-corrupt", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-corrupt");
+    managed.planRetirement({
+      slug: "archive-corrupt",
+      ownerTask: "/root/archive-corrupt",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-corrupt",
+          ownerTask: "/root/archive-corrupt",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "invalid-archive"
+    );
+
+    const attempt = join(managed.paths.archives, `archive-corrupt.${cleanup.generation}.1`);
+    assert.equal(readFileSync(join(attempt, "archive.bundle"), "utf8"), "not a bundle\n");
+    assert.deepEqual(readdirSync(attempt), ["archive.bundle"]);
+  });
+});
+
+test("retirement archive rejects a truncated pack even when bundle verify accepts its header", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeArchiveRecoveryProof(_entry, _attempt, bundle) {
+          const bytes = readFileSync(bundle.path);
+          const headerEnd = bytes.indexOf("\n\nPACK");
+          assert.ok(headerEnd > 0);
+          assert.ok(bytes.length > headerEnd + 200);
+          writeFileSync(bundle.path, bytes.subarray(0, bytes.length - 100));
+          git(fixture.repository, "bundle", "verify", "-q", bundle.path);
+        }
+      }
+    });
+    create(fixture, "archive-pack-corrupt", { manager: managed });
+    managed.finish({ slug: "archive-pack-corrupt", ownerTask: "/root/archive-pack-corrupt", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-pack-corrupt");
+    managed.planRetirement({
+      slug: "archive-pack-corrupt",
+      ownerTask: "/root/archive-pack-corrupt",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-pack-corrupt",
+          ownerTask: "/root/archive-pack-corrupt",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-command-failed"
+    );
+
+    const attempt = join(managed.paths.archives, `archive-pack-corrupt.${cleanup.generation}.1`);
+    assert.equal(existsSync(join(attempt, "complete.json")), false);
+    assert.equal(existsSync(join(attempt, "receipt.json")), false);
+    assert.deepEqual(readdirSync(attempt).sort(), ["archive.bundle", "verification-template", "verification.git"]);
+  });
+});
+
+test("retirement archive rejects a prerequisite-free pack with a missing internal parent", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeArchiveRecoveryProof(_entry, _attempt, bundle) {
+          const bytes = readFileSync(bundle.path);
+          const headerEnd = bytes.indexOf("\n\nPACK");
+          assert.ok(headerEnd > 0);
+          const header = bytes.subarray(0, headerEnd + 2);
+          const advertisedObjectIds = header
+            .toString("utf8")
+            .split("\n")
+            .filter((line) => /^[0-9a-f]+ /u.test(line))
+            .map((line) => line.slice(0, line.indexOf(" ")));
+          const packedObjectIds = new Set(advertisedObjectIds);
+          for (const oid of advertisedObjectIds) {
+            assert.equal(git(fixture.repository, "cat-file", "-t", oid), "commit");
+            const tree = git(fixture.repository, "show", "-s", "--format=%T", oid);
+            packedObjectIds.add(tree);
+            for (const nested of git(fixture.repository, "ls-tree", "-r", "-t", "--format=%(objectname)", tree)
+              .split("\n")
+              .filter(Boolean)) {
+              packedObjectIds.add(nested);
+            }
+          }
+          const pack = spawnSync("git", ["pack-objects", "--stdout"], {
+            cwd: fixture.repository,
+            input: `${[...packedObjectIds].join("\n")}\n`,
+            maxBuffer: 4 * 1024 * 1024
+          });
+          assert.equal(pack.status, 0, pack.stderr.toString("utf8"));
+          writeFileSync(bundle.path, Buffer.concat([header, pack.stdout]));
+          git(fixture.repository, "bundle", "verify", "-q", bundle.path);
+        }
+      }
+    });
+    const checkout = create(fixture, "archive-missing-parent", { manager: managed });
+    for (const index of [1, 2]) {
+      writeFileSync(join(checkout.checkoutPath, `commit-${index}.txt`), `commit ${index}\n`);
+      git(checkout.checkoutPath, "add", `commit-${index}.txt`);
+      git(checkout.checkoutPath, "commit", "-q", "-m", `Commit ${index}`);
+    }
+    managed.finish({
+      slug: "archive-missing-parent",
+      ownerTask: "/root/archive-missing-parent",
+      expectedRevision: 1
+    });
+    const cleanup = entry(fixture, "archive-missing-parent");
+    managed.planRetirement({
+      slug: "archive-missing-parent",
+      ownerTask: "/root/archive-missing-parent",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-missing-parent",
+          ownerTask: "/root/archive-missing-parent",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-command-failed"
+    );
+
+    const attempt = join(managed.paths.archives, `archive-missing-parent.${cleanup.generation}.1`);
+    assert.equal(existsSync(join(attempt, "complete.json")), false);
+    assert.equal(existsSync(join(attempt, "receipt.json")), false);
+    assert.deepEqual(readdirSync(attempt).sort(), ["archive.bundle", "verification-template", "verification.git"]);
+  });
+});
+
+test("retirement archive rejects a valid bundle with prerequisites", () => {
+  withRepository((fixture) => {
+    writeFileSync(join(fixture.repository, "second.txt"), "second commit\n");
+    git(fixture.repository, "add", "second.txt");
+    git(fixture.repository, "commit", "-q", "-m", "Add second commit");
+    const replacement = join(fixture.root, "incremental.bundle");
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeArchiveHeaderParse(_entry, _attempt, bundle) {
+          git(fixture.repository, "bundle", "create", replacement, "HEAD^..HEAD");
+          writeFileSync(bundle.path, readFileSync(replacement));
+        }
+      }
+    });
+    create(fixture, "archive-prerequisite", { manager: managed });
+    managed.finish({ slug: "archive-prerequisite", ownerTask: "/root/archive-prerequisite", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-prerequisite");
+    managed.planRetirement({
+      slug: "archive-prerequisite",
+      ownerTask: "/root/archive-prerequisite",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-prerequisite",
+          ownerTask: "/root/archive-prerequisite",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-not-self-contained"
+    );
+    const attempt = join(managed.paths.archives, `archive-prerequisite.${cleanup.generation}.1`);
+    assert.deepEqual(readFileSync(join(attempt, "archive.bundle")), readFileSync(replacement));
+    assert.deepEqual(readdirSync(attempt), ["archive.bundle"]);
+  });
+});
+
+test("retirement archive rejects a shallow repository before creating an attempt", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    create(fixture, "archive-shallow", { manager: managed });
+    managed.finish({ slug: "archive-shallow", ownerTask: "/root/archive-shallow", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-shallow");
+    managed.planRetirement({
+      slug: "archive-shallow",
+      ownerTask: "/root/archive-shallow",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    writeFileSync(join(fixture.repository, ".git", "shallow"), `${git(fixture.repository, "rev-parse", "HEAD")}\n`);
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-shallow",
+          ownerTask: "/root/archive-shallow",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-not-eligible"
+    );
+    assert.equal(existsSync(managed.paths.archives), false);
+  });
+});
+
+test("retirement archive rejects grafts before creating an attempt", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    create(fixture, "archive-grafts", { manager: managed });
+    managed.finish({ slug: "archive-grafts", ownerTask: "/root/archive-grafts", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-grafts");
+    managed.planRetirement({
+      slug: "archive-grafts",
+      ownerTask: "/root/archive-grafts",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    writeFileSync(
+      join(fixture.repository, ".git", "info", "grafts"),
+      `${git(fixture.repository, "rev-parse", "HEAD")}\n`
+    );
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-grafts",
+          ownerTask: "/root/archive-grafts",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-not-eligible"
+    );
+    assert.equal(existsSync(managed.paths.archives), false);
+  });
+});
+
+test("retirement archive rejects a dangling target-worktree private ref", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "archive-private-ref", { manager: managed });
+    managed.finish({ slug: "archive-private-ref", ownerTask: "/root/archive-private-ref", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-private-ref");
+    managed.planRetirement({
+      slug: "archive-private-ref",
+      ownerTask: "/root/archive-private-ref",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const tree = git(checkout.checkoutPath, "rev-parse", "HEAD^{tree}");
+    const dangling = git(checkout.checkoutPath, "commit-tree", tree, "-m", "Private worktree recovery commit");
+    git(checkout.checkoutPath, "update-ref", "refs/worktree/recovery", dangling);
+    assert.match(git(checkout.checkoutPath, "for-each-ref", "--format=%(refname)", "refs/worktree/"), /recovery/u);
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-private-ref",
+          ownerTask: "/root/archive-private-ref",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-not-eligible"
+    );
+    assert.equal(existsSync(managed.paths.archives), false);
+  });
+});
+
+test("retirement archive inspects private refs in every other registered worktree", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "archive-other-private-ref", { manager: managed });
+    managed.finish({
+      slug: "archive-other-private-ref",
+      ownerTask: "/root/archive-other-private-ref",
+      expectedRevision: 1
+    });
+    const cleanup = entry(fixture, "archive-other-private-ref");
+    managed.planRetirement({
+      slug: "archive-other-private-ref",
+      ownerTask: "/root/archive-other-private-ref",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const tree = git(checkout.checkoutPath, "rev-parse", "HEAD^{tree}");
+    const dangling = git(checkout.checkoutPath, "commit-tree", tree, "-m", "Other worktree recovery commit");
+    git(fixture.repository, "update-ref", "refs/bisect/recovery", dangling);
+    assert.match(git(fixture.repository, "for-each-ref", "--format=%(refname)", "refs/bisect/"), /recovery/u);
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-other-private-ref",
+          ownerTask: "/root/archive-other-private-ref",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-not-eligible"
+    );
+    assert.equal(existsSync(managed.paths.archives), false);
+  });
+});
+
+test("retirement archive rejects partial-clone configuration and promisor pack markers", () => {
+  for (const kind of ["config", "pack"]) {
+    withRepository((fixture) => {
+      const managed = manager(fixture, { run: fixtureRun() });
+      create(fixture, `archive-promisor-${kind}`, { manager: managed });
+      if (kind === "config") git(fixture.repository, "config", "extensions.partialClone", "origin");
+      managed.finish({
+        slug: `archive-promisor-${kind}`,
+        ownerTask: `/root/archive-promisor-${kind}`,
+        expectedRevision: 1
+      });
+      const cleanup = entry(fixture, `archive-promisor-${kind}`);
+      managed.planRetirement({
+        slug: `archive-promisor-${kind}`,
+        ownerTask: `/root/archive-promisor-${kind}`,
+        expectedRevision: 1,
+        expectedGeneration: cleanup.generation
+      });
+      if (kind === "pack") {
+        const packDirectory = join(fixture.repository, ".git", "objects", "pack");
+        mkdirSync(packDirectory, { recursive: true });
+        writeFileSync(join(packDirectory, "synthetic.promisor"), "");
+      }
+
+      lifecycleError(
+        () =>
+          managed.archiveRetirement({
+            slug: `archive-promisor-${kind}`,
+            ownerTask: `/root/archive-promisor-${kind}`,
+            expectedRevision: 1,
+            expectedGeneration: cleanup.generation
+          }),
+        "archive-not-eligible"
+      );
+      assert.equal(existsSync(managed.paths.archives), false);
+    });
+  }
+});
+
+test("retirement archive never overwrites a planted receipt", () => {
+  withRepository((fixture) => {
+    let plantedPath;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeArchiveReceiptWrite(_entry, attempt) {
+          plantedPath = join(attempt.path, "receipt.json");
+          writeFileSync(plantedPath, "valuable planted receipt\n", { flag: "wx", mode: 0o600 });
+        }
+      }
+    });
+    create(fixture, "archive-collision", { manager: managed });
+    managed.finish({ slug: "archive-collision", ownerTask: "/root/archive-collision", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-collision");
+    managed.planRetirement({
+      slug: "archive-collision",
+      ownerTask: "/root/archive-collision",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-collision",
+          ownerTask: "/root/archive-collision",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-changed"
+    );
+    assert.equal(readFileSync(plantedPath, "utf8"), "valuable planted receipt\n");
   });
 });
 
@@ -1065,7 +1831,7 @@ test("lock release never overwrites a planted destination", () => {
   });
 });
 
-test("the real CLI audits and marks cleanup pending from inside its checkout without deleting it", () => {
+test("the real CLI plans and archives a finished checkout without deleting it", () => {
   withRepository((fixture) => {
     const managed = defaultManager(fixture);
     const checkout = create(fixture, "self-cli", { manager: managed });
@@ -1082,6 +1848,43 @@ test("the real CLI audits and marks cleanup pending from inside its checkout wit
     );
     assert.equal(finish.status, 0, finish.stderr);
     assert.equal(JSON.parse(finish.stdout).status, "cleanup-review-required");
+    const cleanup = entry(fixture, "self-cli", managed.paths.root);
+    const plan = spawnSync(
+      process.execPath,
+      [
+        SCRIPT,
+        "plan-retirement",
+        "self-cli",
+        "--owner",
+        "/root/self-cli",
+        "--revision",
+        "1",
+        "--generation",
+        String(cleanup.generation)
+      ],
+      { cwd: checkout.checkoutPath, encoding: "utf8" }
+    );
+    assert.equal(plan.status, 0, plan.stderr);
+    assert.equal(JSON.parse(plan.stdout).status, "retirement-evidence-recorded");
+    const archive = spawnSync(
+      process.execPath,
+      [
+        SCRIPT,
+        "archive-retirement",
+        "self-cli",
+        "--owner",
+        "/root/self-cli",
+        "--revision",
+        "1",
+        "--generation",
+        String(cleanup.generation)
+      ],
+      { cwd: checkout.checkoutPath, encoding: "utf8" }
+    );
+    assert.equal(archive.status, 0, archive.stderr);
+    const archived = JSON.parse(archive.stdout);
+    assert.equal(archived.status, "recovery-archive-recorded");
+    assert.equal(existsSync(join(dirname(archived.archivePath), "complete.json")), true);
     assert.equal(readFileSync(join(checkout.checkoutPath, "README.md"), "utf8"), "fixture\n");
   });
 });
