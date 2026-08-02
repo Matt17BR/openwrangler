@@ -52,6 +52,31 @@ function fixture() {
   };
 }
 
+function comparisonProfile(value, name, { product = "open-wrangler", templateKind = "configured-only" } = {}) {
+  const privateRoot = resolve(value.root, "profiles", name);
+  const userData = resolve(privateRoot, "user-data");
+  const extensions = resolve(privateRoot, "extensions");
+  mkdirSync(userData, { recursive: true, mode: 0o700 });
+  mkdirSync(extensions, { recursive: true, mode: 0o700 });
+  const templateReceiptSha256 = (templateKind === "configured-only" ? "a" : "b").repeat(64);
+  return {
+    expectedTemplate: { kind: templateKind, receiptSha256: templateReceiptSha256 },
+    profile: createDataWranglerComparisonDriverProfile({
+      product,
+      privateRoot,
+      templateKind,
+      templateReceiptSha256,
+      editor: { name: "VS Code", cliPath: "/editor/code" },
+      userData,
+      extensions,
+      sandboxArgs: ["--no-sandbox"],
+      environment: { OPEN_WRANGLER_EDITOR_TEMP_ROOT: privateRoot },
+      installLabel: `${name} driver installation`,
+      inventoryLabel: `${name} driver inventory`
+    })
+  };
+}
+
 function corruptFirstDataDescriptor(path) {
   const bytes = readFileSync(path);
   let endOffset = -1;
@@ -220,6 +245,68 @@ test("the writer rejects another test module and never overwrites an existing dr
   }
 });
 
+test("a comparison profile stays inside its pinned private template root", async () => {
+  const value = fixture();
+  try {
+    const { profile, expectedTemplate } = comparisonProfile(value, "profile", {
+      templateKind: "warmed"
+    });
+    assert.equal(profile.privateRoot, resolve(value.root, "profiles", "profile"));
+    assert.equal(profile.templateKind, "warmed");
+    assert.deepEqual(expectedTemplate, {
+      kind: "warmed",
+      receiptSha256: "b".repeat(64)
+    });
+
+    const outsideUserData = resolve(value.root, "outside-user-data");
+    mkdirSync(outsideUserData, { mode: 0o700 });
+    assert.throws(
+      () => createDataWranglerComparisonDriverProfile({ ...profile, userData: outsideUserData }),
+      /must stay inside the private comparison profile root/u
+    );
+    assert.throws(
+      () =>
+        createDataWranglerComparisonDriverProfile({
+          ...profile,
+          environment: { OPEN_WRANGLER_EDITOR_TEMP_ROOT: value.root }
+        }),
+      /profile is malformed/u
+    );
+
+    const movedExtensions = `${profile.extensions}.moved`;
+    renameSync(profile.extensions, movedExtensions);
+    mkdirSync(profile.extensions, { mode: 0o700 });
+    let installCalled = false;
+    await assert.rejects(
+      () =>
+        runDataWranglerComparisonNeutralDriverPhase(
+          {
+            product: profile.product,
+            receipt: {},
+            expectedDriver: {},
+            expectedExtensions: [],
+            expectedTemplate,
+            profile,
+            editorPhaseOptions: {}
+          },
+          {
+            async installDriver() {
+              installCalled = true;
+            },
+            async readInventory() {
+              return [];
+            },
+            async runPhase() {}
+          }
+        ),
+      /filesystem identity was pinned/u
+    );
+    assert.equal(installCalled, false);
+  } finally {
+    value.cleanup();
+  }
+});
+
 test("the journey proof follows the complete local graph and rejects product or harness entrypoints", () => {
   for (const [source, message] of [
     ['require("../../../dist/extension.js");\n', /left its neutral test\/shared roots|product extension/u],
@@ -228,42 +315,11 @@ test("the journey proof follows the complete local graph and rejects product or 
     ['require("node:net");\n', /unapproved external package node:net/u],
     [
       'module["require"]("../../../di" + "st/extension.js");\n',
-      /unsupported CommonJS module reference|indirect code or module-loader capability/u
+      /CommonJS loader outside the literal import inventory/u
     ],
-    [
-      'module.require("../../../di" + "st/extension.js");\n',
-      /unsupported CommonJS module reference|indirect code or module-loader capability/u
-    ],
+    ['module.require("../../../di" + "st/extension.js");\n', /CommonJS loader outside the literal import inventory/u],
     ["const load = require; load('../../../di' + 'st/extension.js');\n", /unsupported module-loader reference/u],
-    [
-      'process.getBuiltinModule("module");\n',
-      /unsupported process capability|indirect code or module-loader capability/u
-    ],
-    ['eval("1");\n', /dynamic-code capability/u],
-    [
-      'module.constructor.constructor("return process")();\n',
-      /unsupported CommonJS module reference|indirect code or module-loader capability/u
-    ],
-    [
-      'const key = "con" + "structor"; (() => {})[key]("return process")();\n',
-      /indirect code or module-loader capability/u
-    ],
-    [
-      'const prefix = "con"; const key = prefix + "structor"; (() => {})[key]("return process")();\n',
-      /indirect code or module-loader capability/u
-    ],
-    ['(async () => {}).constructor("return import(\\"node:fs\\")")();\n', /indirect code or module-loader capability/u],
-    ['(function* () {}).constructor("return process")();\n', /indirect code or module-loader capability/u],
-    ['(async function* () {}).constructor("return process")();\n', /indirect code or module-loader capability/u],
     ['const indirect = require; indirect("node:fs");\n', /unsupported module-loader reference/u],
-    ['const indirect = eval; indirect("require(\\"node:fs\\")");\n', /dynamic-code capability/u],
-    ['global.require("node:fs");\n', /dynamic-code capability|indirect code or module-loader capability/u],
-    ['globalThis.process.getBuiltinModule("node:fs");\n', /indirect code or module-loader capability/u],
-    [
-      'const world = globalThis; world["pro" + "cess"].mainModule.require("node:fs");\n',
-      /indirect code or module-loader capability/u
-    ],
-    ['Reflect.get(() => {}, "constructor")("return process")();\n', /dynamic-code capability/u],
     ['void import("node:fs");\n', /unsupported module loader/u]
   ]) {
     const value = fixture();
@@ -379,16 +435,7 @@ test("the driver is packaged once, revalidated, and installed through the editor
       }
     });
 
-    const profile = createDataWranglerComparisonDriverProfile({
-      product: "open-wrangler",
-      editor: { name: "VS Code", cliPath: "/editor/code" },
-      userData: "/private/user-data",
-      extensions: "/private/extensions",
-      sandboxArgs: ["--no-sandbox"],
-      environment: { HOME: "/private/home" },
-      installLabel: "neutral driver installation",
-      inventoryLabel: "neutral driver inventory"
-    });
+    const { profile } = comparisonProfile(value, "install");
     let invocation;
     let installedSha256;
     const result = await installDataWranglerComparisonDriver(
@@ -415,9 +462,9 @@ test("the driver is packaged once, revalidated, and installed through the editor
     assert.deepEqual(invocation.commandOptions, { timeoutMs: 60_000 });
     assert.deepEqual(invocation.options.args.slice(0, 5), [
       "--user-data-dir",
-      "/private/user-data",
+      profile.userData,
       "--extensions-dir",
-      "/private/extensions",
+      profile.extensions,
       "--install-extension"
     ]);
     assert.deepEqual(invocation.options.args.slice(6), ["--force", "--no-sandbox"]);
@@ -448,6 +495,42 @@ test("the driver is packaged once, revalidated, and installed through the editor
     assert.equal(racedInstallSha256, receipt.vsix.sha256);
     assert.notEqual(racedInstallPath, value.vsix);
     assert.equal(existsSync(racedInstallPath), false);
+  } finally {
+    value.cleanup();
+  }
+});
+
+test("install cleanup refuses to traverse a rebound private root", async () => {
+  const value = fixture();
+  try {
+    const receipt = await packageDataWranglerComparisonDriver({
+      directory: value.driver,
+      testModule: value.testModule,
+      vsixPath: value.vsix
+    });
+    const { profile } = comparisonProfile(value, "cleanup");
+    let installRoot;
+    let displacedInstallRoot;
+    await assert.rejects(
+      () =>
+        installDataWranglerComparisonDriver(
+          { receipt, profile },
+          {
+            async runCli(options) {
+              const installPath = options.args[options.args.indexOf("--install-extension") + 1];
+              installRoot = resolve(installPath, "..");
+              displacedInstallRoot = `${installRoot}.displaced`;
+              renameSync(installRoot, displacedInstallRoot);
+              renameSync(value.driver, installRoot);
+              return { stdout: "installed\n", stderr: "" };
+            }
+          }
+        ),
+      /installation and cleanup failed/u
+    );
+    assert.equal(existsSync(resolve(installRoot, "package.json")), true);
+    assert.equal(existsSync(resolve(displacedInstallRoot, "notebook-comparison-driver.vsix")), true);
+    assert.equal(existsSync(value.driver), false);
   } finally {
     value.cleanup();
   }
@@ -584,22 +667,14 @@ test("both measured arms run with the private driver, one product, and no develo
       let phaseOptions;
       let phaseDependencies;
       let inventoryReads = 0;
-      const profile = createDataWranglerComparisonDriverProfile({
-        product: arm.product,
-        editor: { name: "VS Code", executable: "/editor/code" },
-        userData: "/private/user-data",
-        extensions: "/private/extensions",
-        sandboxArgs: ["--no-sandbox"],
-        environment: { HOME: "/private/home" },
-        installLabel: "neutral driver installation",
-        inventoryLabel: "neutral driver inventory"
-      });
+      const { profile, expectedTemplate } = comparisonProfile(value, arm.product, { product: arm.product });
       const result = await runDataWranglerComparisonNeutralDriverPhase(
         {
           product: arm.product,
           receipt,
           expectedDriver,
           expectedExtensions,
+          expectedTemplate,
           profile,
           editorPhaseOptions: { phase: `${arm.product}-trial`, workspace: "/private/workspace" }
         },
@@ -644,16 +719,7 @@ test("both measured arms run with the private driver, one product, and no develo
       { extensionId: "ms-toolsai.jupyter", version: "2025.9.1" },
       { extensionId: "Matt17BR.openwrangler", version: "1.2.1" }
     ];
-    const failedProfile = createDataWranglerComparisonDriverProfile({
-      product: "open-wrangler",
-      editor: { name: "VS Code", executable: "/editor/code" },
-      userData: "/private/failure-user-data",
-      extensions: "/private/failure-extensions",
-      sandboxArgs: [],
-      environment: { HOME: "/private/failure-home" },
-      installLabel: "failure driver installation",
-      inventoryLabel: "failure driver inventory"
-    });
+    const { profile: failedProfile, expectedTemplate: failedTemplate } = comparisonProfile(value, "failure");
     const primaryFailure = new Error("primary measured phase failure");
     let terminalValidation;
     await assert.rejects(
@@ -664,6 +730,7 @@ test("both measured arms run with the private driver, one product, and no develo
             receipt,
             expectedDriver,
             expectedExtensions: failedExtensions,
+            expectedTemplate: failedTemplate,
             profile: failedProfile,
             editorPhaseOptions: { phase: "failed-trial" }
           },
@@ -710,16 +777,7 @@ test("both measured arms run with the private driver, one product, and no develo
       /neutral driver and exactly one measured product/u
     );
 
-    const profile = createDataWranglerComparisonDriverProfile({
-      product: "open-wrangler",
-      editor: { name: "VS Code" },
-      userData: "/private/user-data",
-      extensions: "/private/extensions",
-      sandboxArgs: [],
-      environment: {},
-      installLabel: "install",
-      inventoryLabel: "inventory"
-    });
+    const { profile, expectedTemplate } = comparisonProfile(value, "validation");
     await assert.rejects(
       () =>
         runDataWranglerComparisonNeutralDriverPhase(
@@ -728,6 +786,7 @@ test("both measured arms run with the private driver, one product, and no develo
             receipt: {},
             expectedDriver,
             expectedExtensions: [],
+            expectedTemplate,
             profile,
             editorPhaseOptions: { editor: { name: "another editor" } }
           },
@@ -744,6 +803,7 @@ test("both measured arms run with the private driver, one product, and no develo
             receipt,
             expectedDriver,
             expectedExtensions: failedExtensions,
+            expectedTemplate,
             profile,
             editorPhaseOptions: {}
           },
@@ -751,6 +811,33 @@ test("both measured arms run with the private driver, one product, and no develo
         ),
       /product does not match its sealed editor profile/u
     );
+
+    let prematureInstall = false;
+    await assert.rejects(
+      () =>
+        runDataWranglerComparisonNeutralDriverPhase(
+          {
+            product: "open-wrangler",
+            receipt,
+            expectedDriver: { ...expectedDriver, version: "9.9.9" },
+            expectedExtensions: failedExtensions,
+            expectedTemplate,
+            profile,
+            editorPhaseOptions: {}
+          },
+          {
+            async installDriver() {
+              prematureInstall = true;
+            },
+            async readInventory() {
+              return failedExtensions;
+            },
+            async runPhase() {}
+          }
+        ),
+      /does not match the immutable study manifest before installation/u
+    );
+    assert.equal(prematureInstall, false);
   } finally {
     value.cleanup();
   }

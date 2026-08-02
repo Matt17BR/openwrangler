@@ -65,33 +65,7 @@ const ALLOWED_EXTERNAL_IMPORTS = new Set([
   "playwright-core",
   "vscode"
 ]);
-const FORBIDDEN_CODE_CAPABILITIES = new Set([
-  "AsyncFunction",
-  "AsyncGeneratorFunction",
-  "Function",
-  "GeneratorFunction",
-  "Proxy",
-  "Reflect",
-  "WebAssembly",
-  "eval",
-  "global"
-]);
-const FORBIDDEN_CAPABILITY_PROPERTIES = new Set([
-  "Function",
-  "__proto__",
-  "_load",
-  "binding",
-  "constructor",
-  "createRequire",
-  "dlopen",
-  "eval",
-  "getBuiltinModule",
-  "mainModule",
-  "process",
-  "prototype",
-  "require"
-]);
-const ALLOWED_PROCESS_PROPERTIES = new Set(["env", "getuid", "hrtime", "pid", "platform"]);
+const EDITOR_TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
 const DRIVER_ARCHIVE_METADATA_PATHS = new Set(["[Content_Types].xml", "extension.vsixmanifest"]);
 const PRODUCT_ENTRYPOINT_MARKERS = Object.freeze([
   "Matt17BR.openwrangler",
@@ -103,6 +77,7 @@ const PRODUCT_ENTRYPOINT_MARKERS = Object.freeze([
 ]);
 const driverVsixReceipts = new WeakSet();
 const driverProfileReceipts = new WeakSet();
+const driverProfileFilesystemReceipts = new WeakMap();
 
 function fail(message) {
   throw new TypeError(message);
@@ -210,6 +185,49 @@ function validateCanonicalDirectory(path, label, { lstat = lstatSync, realpath =
   return path;
 }
 
+function captureDirectoryIdentity(
+  path,
+  label,
+  { requirePrivateMode = false, lstat = lstatSync, realpath = realpathSync } = {}
+) {
+  validateCanonicalDirectory(path, label, { lstat, realpath });
+  const metadata = lstat(path, { bigint: true });
+  if (requirePrivateMode && (metadata.mode & 0o777n) !== 0o700n) {
+    fail(`${label} must use private mode 0700.`);
+  }
+  return Object.freeze({
+    path,
+    device: metadata.dev.toString(),
+    inode: metadata.ino.toString(),
+    owner: metadata.uid.toString(),
+    mode: Number(metadata.mode & 0o777n)
+  });
+}
+
+function revalidateDirectoryIdentity(
+  receipt,
+  label,
+  { requirePrivateMode = false, lstat = lstatSync, realpath = realpathSync } = {}
+) {
+  const current = captureDirectoryIdentity(receipt.path, label, { requirePrivateMode, lstat, realpath });
+  if (
+    current.device !== receipt.device ||
+    current.inode !== receipt.inode ||
+    current.owner !== receipt.owner ||
+    current.mode !== receipt.mode
+  ) {
+    fail(`${label} changed after its filesystem identity was pinned.`);
+  }
+  return receipt;
+}
+
+function requirePhysicalContainment(root, child, label) {
+  const childPath = relative(root.path, child.path);
+  if (childPath.length === 0 || childPath === ".." || childPath.startsWith(`..${sep}`) || isAbsolute(childPath)) {
+    fail(`${label} must stay inside the private comparison profile root.`);
+  }
+}
+
 function readStableOwnedFile(path, maximumBytes, label, hooks) {
   let before;
   let canonicalBefore;
@@ -254,57 +272,6 @@ function resolveRelativeJourneyImport(importer, specifier, root, exists) {
   return matches[0];
 }
 
-function staticStringExpression(node, bindings, depth = 0) {
-  if (depth > 16) return undefined;
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-  if (ts.isParenthesizedExpression(node)) return staticStringExpression(node.expression, bindings, depth + 1);
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = staticStringExpression(node.left, bindings, depth + 1);
-    const right = staticStringExpression(node.right, bindings, depth + 1);
-    if (left !== undefined && right !== undefined && left.length + right.length <= 256) return left + right;
-  }
-  if (ts.isIdentifier(node) && bindings.has(node.text)) return bindings.get(node.text);
-  return undefined;
-}
-
-function immutableStaticStringBindings(sourceFile) {
-  const declarations = new Map();
-  const visit = (node) => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer !== undefined &&
-      (node.parent.flags & ts.NodeFlags.Const) !== 0
-    ) {
-      const candidates = declarations.get(node.name.text) ?? [];
-      candidates.push(node.initializer);
-      declarations.set(node.name.text, candidates);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  const bindings = new Map();
-  for (let pass = 0; pass < 16; pass += 1) {
-    let changed = false;
-    for (const [name, candidates] of declarations) {
-      if (bindings.has(name) || candidates.length !== 1) continue;
-      const value = staticStringExpression(candidates[0], bindings);
-      if (value !== undefined && value.length <= 256) {
-        bindings.set(name, value);
-        changed = true;
-      }
-    }
-    if (!changed) break;
-  }
-  return bindings;
-}
-
-function accessedPropertyName(node, bindings) {
-  if (ts.isPropertyAccessExpression(node)) return node.name.text;
-  if (ts.isElementAccessExpression(node)) return staticStringExpression(node.argumentExpression, bindings);
-  return undefined;
-}
-
 function isExactModuleExportsReference(node) {
   return (
     ts.isIdentifier(node) &&
@@ -318,35 +285,16 @@ function isExactModuleExportsReference(node) {
   );
 }
 
-function isTypeScriptHasOwnPropertyHelper(node) {
-  return (
-    ts.isPropertyAccessExpression(node) &&
-    ts.isIdentifier(node.expression) &&
-    node.expression.text === "Object" &&
-    node.name.text === "prototype" &&
-    ts.isPropertyAccessExpression(node.parent) &&
-    node.parent.expression === node &&
-    node.parent.name.text === "hasOwnProperty" &&
-    ts.isPropertyAccessExpression(node.parent.parent) &&
-    node.parent.parent.expression === node.parent &&
-    node.parent.parent.name.text === "call" &&
-    ts.isCallExpression(node.parent.parent.parent) &&
-    node.parent.parent.parent.expression === node.parent.parent
-  );
-}
-
 /**
- * Enumerate the reviewed CommonJS graph and reject JavaScript's ordinary escape
- * hatches from that graph. This is a source-review boundary, not a sandbox for
- * hostile JavaScript: the repository, TypeScript compiler, Node runtime, VS Code,
- * and the explicitly allowed packages remain trusted inputs.
+ * Enumerate literal CommonJS imports in the reviewed source graph. This is an
+ * integrity and review aid, not a JavaScript capability boundary: the checked-in
+ * source, compiler, Node, VS Code, and the named packages are trusted inputs.
  */
 function staticCommonJsDependencies(source, label) {
   const sourceFile = ts.createSourceFile(label, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
   if (sourceFile.parseDiagnostics.length > 0) {
     fail(`${label} is not parseable JavaScript.`);
   }
-  const staticBindings = immutableStaticStringBindings(sourceFile);
   const specifiers = [];
   const visit = (node) => {
     if (
@@ -373,39 +321,8 @@ function staticCommonJsDependencies(source, label) {
         fail(`${label} contains an unsupported module-loader reference.`);
       }
     }
-    if (
-      ts.isIdentifier(node) &&
-      node.text === "module" &&
-      !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) &&
-      !isExactModuleExportsReference(node)
-    ) {
-      fail(`${label} contains an unsupported CommonJS module reference.`);
-    }
-    if (ts.isIdentifier(node) && ["__dirname", "__filename"].includes(node.text)) {
-      fail(`${label} contains an unrecorded local-path capability.`);
-    }
-    if (ts.isIdentifier(node) && FORBIDDEN_CODE_CAPABILITIES.has(node.text)) {
-      fail(`${label} contains a dynamic-code capability.`);
-    }
-    if (ts.isIdentifier(node) && node.text === "process") {
-      const parent = node.parent;
-      const property =
-        (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === node
-          ? accessedPropertyName(parent, staticBindings)
-          : undefined;
-      if (property === undefined || !ALLOWED_PROCESS_PROPERTIES.has(property)) {
-        fail(`${label} contains an unsupported process capability.`);
-      }
-    }
-    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-      const property = accessedPropertyName(node, staticBindings);
-      if (
-        property !== undefined &&
-        FORBIDDEN_CAPABILITY_PROPERTIES.has(property) &&
-        !(property === "prototype" && isTypeScriptHasOwnPropertyHelper(node))
-      ) {
-        fail(`${label} contains an indirect code or module-loader capability (${property}).`);
-      }
+    if (ts.isIdentifier(node) && node.text === "module" && !isExactModuleExportsReference(node)) {
+      fail(`${label} contains a CommonJS loader outside the literal import inventory.`);
     }
     ts.forEachChild(node, visit);
   };
@@ -1451,6 +1368,9 @@ export function recoverDataWranglerComparisonDriver(
 
 export function createDataWranglerComparisonDriverProfile({
   product,
+  privateRoot,
+  templateKind,
+  templateReceiptSha256,
   editor,
   userData,
   extensions,
@@ -1461,6 +1381,9 @@ export function createDataWranglerComparisonDriverProfile({
 }) {
   if (
     (product !== "open-wrangler" && product !== "data-wrangler") ||
+    (templateKind !== "configured-only" && templateKind !== "warmed") ||
+    typeof templateReceiptSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(templateReceiptSha256) ||
     !isRecord(editor) ||
     typeof editor.name !== "string" ||
     editor.name.length === 0 ||
@@ -1470,6 +1393,12 @@ export function createDataWranglerComparisonDriverProfile({
     typeof extensions !== "string" ||
     !isAbsolute(extensions) ||
     resolve(extensions) !== extensions ||
+    typeof privateRoot !== "string" ||
+    !isAbsolute(privateRoot) ||
+    resolve(privateRoot) !== privateRoot ||
+    /[\0\r\n]/u.test(privateRoot) ||
+    privateRoot === userData ||
+    privateRoot === extensions ||
     userData === extensions ||
     /[\0\r\n]/u.test(userData) ||
     /[\0\r\n]/u.test(extensions) ||
@@ -1480,6 +1409,7 @@ export function createDataWranglerComparisonDriverProfile({
         typeof argument !== "string" || argument.length === 0 || argument.length > 256 || /[\0\r\n]/u.test(argument)
     ) ||
     !isRecord(environment) ||
+    environment[EDITOR_TEMP_ROOT_ENV] !== privateRoot ||
     typeof installLabel !== "string" ||
     installLabel.length === 0 ||
     installLabel.length > 128 ||
@@ -1491,8 +1421,28 @@ export function createDataWranglerComparisonDriverProfile({
   ) {
     fail("Comparison-driver profile is malformed.");
   }
+  const privateRootIdentity = captureDirectoryIdentity(privateRoot, "Comparison-driver private profile root", {
+    requirePrivateMode: true
+  });
+  const userDataIdentity = captureDirectoryIdentity(userData, "Comparison-driver user-data directory", {
+    requirePrivateMode: true
+  });
+  const extensionsIdentity = captureDirectoryIdentity(extensions, "Comparison-driver extensions directory", {
+    requirePrivateMode: true
+  });
+  requirePhysicalContainment(privateRootIdentity, userDataIdentity, "Comparison-driver user-data directory");
+  requirePhysicalContainment(privateRootIdentity, extensionsIdentity, "Comparison-driver extensions directory");
+  const physicalIdentities = [privateRootIdentity, userDataIdentity, extensionsIdentity].map(
+    (entry) => `${entry.device}:${entry.inode}`
+  );
+  if (new Set(physicalIdentities).size !== physicalIdentities.length) {
+    fail("Comparison-driver profile directories must have distinct filesystem identities.");
+  }
   const profile = Object.freeze({
     product,
+    privateRoot,
+    templateKind,
+    templateReceiptSha256,
     editor: Object.freeze({ ...editor }),
     userData,
     extensions,
@@ -1502,12 +1452,37 @@ export function createDataWranglerComparisonDriverProfile({
     inventoryLabel
   });
   driverProfileReceipts.add(profile);
+  driverProfileFilesystemReceipts.set(
+    profile,
+    Object.freeze({ privateRoot: privateRootIdentity, userData: userDataIdentity, extensions: extensionsIdentity })
+  );
   return profile;
 }
 
-function requireComparisonDriverProfile(profile) {
+function requireComparisonDriverProfile(profile, dependencies = {}) {
   if (!driverProfileReceipts.has(profile)) {
     fail("Comparison-driver work requires one authentic sealed editor profile.");
+  }
+  const filesystem = driverProfileFilesystemReceipts.get(profile);
+  if (!isRecord(filesystem)) {
+    fail("Comparison-driver profile has no pinned filesystem receipt.");
+  }
+  revalidateDirectoryIdentity(filesystem.privateRoot, "Comparison-driver private profile root", {
+    requirePrivateMode: true,
+    ...dependencies
+  });
+  revalidateDirectoryIdentity(filesystem.userData, "Comparison-driver user-data directory", {
+    requirePrivateMode: true,
+    ...dependencies
+  });
+  revalidateDirectoryIdentity(filesystem.extensions, "Comparison-driver extensions directory", {
+    requirePrivateMode: true,
+    ...dependencies
+  });
+  requirePhysicalContainment(filesystem.privateRoot, filesystem.userData, "Comparison-driver user-data directory");
+  requirePhysicalContainment(filesystem.privateRoot, filesystem.extensions, "Comparison-driver extensions directory");
+  if (profile.environment[EDITOR_TEMP_ROOT_ENV] !== profile.privateRoot) {
+    fail("Comparison-driver profile no longer names its private root in the editor environment.");
   }
   return profile;
 }
@@ -1530,12 +1505,16 @@ export async function installDataWranglerComparisonDriver(
   } = {}
 ) {
   revalidateDataWranglerComparisonDriver(receipt);
-  requireComparisonDriverProfile(profile);
   if (typeof runCli !== "function") {
     fail("Comparison-driver installation received malformed editor inputs.");
   }
   const hooks = { chmod, close, fsync, fstat, lstat, mkdtemp, open, readFile, realpath, remove, writeFile };
-  validateCanonicalDirectory(dirname(receipt.vsix.path), "Comparison-driver VSIX parent", hooks);
+  requireComparisonDriverProfile(profile, { lstat, realpath });
+  const installParentIdentity = captureDirectoryIdentity(
+    dirname(receipt.vsix.path),
+    "Comparison-driver VSIX parent",
+    hooks
+  );
   const original = readDriverVsixSnapshot(receipt.vsix.path, hooks);
   const originalArchive = assertDriverArchiveMatchesSource(
     inspectDataWranglerComparisonDriverArchive(original.bytes),
@@ -1549,10 +1528,17 @@ export async function installDataWranglerComparisonDriver(
   }
   const installRoot = hooks.mkdtemp(resolve(dirname(receipt.vsix.path), ".ow-driver-install-"));
   const installPath = resolve(installRoot, "notebook-comparison-driver.vsix");
+  let installRootIdentity;
   let descriptor;
   let result;
   let primaryError;
   try {
+    installRootIdentity = captureDirectoryIdentity(installRoot, "Private comparison-driver install root", {
+      requirePrivateMode: true,
+      lstat,
+      realpath
+    });
+    requirePhysicalContainment(installParentIdentity, installRootIdentity, "Private comparison-driver install root");
     descriptor = hooks.open(
       installPath,
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0),
@@ -1570,24 +1556,42 @@ export async function installDataWranglerComparisonDriver(
     ) {
       fail("The private comparison-driver install snapshot does not match its audited VSIX.");
     }
-    result = await runCli(
-      {
-        editor: profile.editor,
-        args: [
-          "--user-data-dir",
-          profile.userData,
-          "--extensions-dir",
-          profile.extensions,
-          "--install-extension",
-          installPath,
-          "--force",
-          ...profile.sandboxArgs
-        ],
-        environment: profile.environment,
-        label: profile.installLabel
-      },
-      { timeoutMs: 60_000 }
-    );
+    requireComparisonDriverProfile(profile, { lstat, realpath });
+    let cliError;
+    try {
+      result = await runCli(
+        {
+          editor: profile.editor,
+          args: [
+            "--user-data-dir",
+            profile.userData,
+            "--extensions-dir",
+            profile.extensions,
+            "--install-extension",
+            installPath,
+            "--force",
+            ...profile.sandboxArgs
+          ],
+          environment: profile.environment,
+          label: profile.installLabel
+        },
+        { timeoutMs: 60_000 }
+      );
+    } catch (error) {
+      cliError = error;
+    }
+    try {
+      requireComparisonDriverProfile(profile, { lstat, realpath });
+    } catch (error) {
+      if (cliError !== undefined) {
+        throw new AggregateError(
+          [cliError, error],
+          "Comparison-driver installation failed and its private editor profile also changed."
+        );
+      }
+      throw error;
+    }
+    if (cliError !== undefined) throw cliError;
     const after = captureDriverVsix(installPath, hooks, receipt);
     if (JSON.stringify(before) !== JSON.stringify(after)) {
       fail("The private comparison-driver install snapshot changed while the editor used it.");
@@ -1606,13 +1610,21 @@ export async function installDataWranglerComparisonDriver(
             : new AggregateError([primaryError, error], "Comparison-driver installation and descriptor close failed.");
       }
     }
-    try {
-      hooks.remove(installRoot, { recursive: true, force: true });
-    } catch (error) {
-      primaryError =
-        primaryError === undefined
-          ? error
-          : new AggregateError([primaryError, error], "Comparison-driver installation and cleanup failed.");
+    if (installRootIdentity !== undefined) {
+      try {
+        revalidateDirectoryIdentity(installParentIdentity, "Comparison-driver VSIX parent", { lstat, realpath });
+        revalidateDirectoryIdentity(installRootIdentity, "Private comparison-driver install root", {
+          requirePrivateMode: true,
+          lstat,
+          realpath
+        });
+        hooks.remove(installRootIdentity.path, { recursive: true, force: true });
+      } catch (error) {
+        primaryError =
+          primaryError === undefined
+            ? error
+            : new AggregateError([primaryError, error], "Comparison-driver installation and cleanup failed.");
+      }
     }
   }
   if (primaryError !== undefined) throw primaryError;
@@ -1670,8 +1682,20 @@ export function assertDataWranglerComparisonArmInventory(entries, { product, exp
   return Object.freeze(normalized.map((entry) => Object.freeze(entry)));
 }
 
+function validateExpectedTemplate(expectedTemplate) {
+  exactKeys(expectedTemplate, ["kind", "receiptSha256"], "Expected comparison profile template");
+  if (
+    (expectedTemplate.kind !== "configured-only" && expectedTemplate.kind !== "warmed") ||
+    typeof expectedTemplate.receiptSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(expectedTemplate.receiptSha256)
+  ) {
+    fail("Expected comparison profile template is invalid.");
+  }
+  return expectedTemplate;
+}
+
 export async function runDataWranglerComparisonNeutralDriverPhase(
-  { product, receipt, expectedDriver, expectedExtensions, profile, editorPhaseOptions },
+  { product, receipt, expectedDriver, expectedExtensions, expectedTemplate, profile, editorPhaseOptions },
   {
     captureDriverReceipt = createDataWranglerComparisonDriverStudyReceipt,
     installDriver = installDataWranglerComparisonDriver,
@@ -1695,10 +1719,25 @@ export async function runDataWranglerComparisonNeutralDriverPhase(
   if (profile.product !== product) {
     fail("Neutral comparison phase product does not match its sealed editor profile.");
   }
+  validateExpectedTemplate(expectedTemplate);
+  if (
+    profile.templateKind !== expectedTemplate.kind ||
+    profile.templateReceiptSha256 !== expectedTemplate.receiptSha256
+  ) {
+    fail("Neutral comparison phase template does not match its sealed editor profile.");
+  }
   for (const field of ["editor", "userData", "extensions", "developmentPaths"]) {
     if (Object.hasOwn(editorPhaseOptions, field)) {
       fail(`Neutral comparison phase options cannot override their sealed ${field} value.`);
     }
+  }
+  const expectedInventory = assertDataWranglerComparisonArmInventory(expectedExtensions, {
+    product,
+    expectedExtensions
+  });
+  const driverBeforeInstall = captureDriverReceipt(receipt);
+  if (canonicalJson(driverBeforeInstall) !== canonicalJson(expectedDriver)) {
+    fail("The neutral driver does not match the immutable study manifest before installation.");
   }
   await installDriver({ receipt, profile });
   const driverBefore = captureDriverReceipt(receipt);
@@ -1707,11 +1746,12 @@ export async function runDataWranglerComparisonNeutralDriverPhase(
   }
   const before = assertDataWranglerComparisonArmInventory(await readInventory({ profile, stage: "before" }), {
     product,
-    expectedExtensions
+    expectedExtensions: expectedInventory
   });
   let phaseResult;
   let phaseError;
   try {
+    requireComparisonDriverProfile(profile);
     phaseResult = await runPhase(
       {
         ...editorPhaseOptions,
@@ -1729,9 +1769,10 @@ export async function runDataWranglerComparisonNeutralDriverPhase(
   let driverAfter;
   let validationError;
   try {
+    requireComparisonDriverProfile(profile);
     after = assertDataWranglerComparisonArmInventory(await readInventory({ profile, stage: "after" }), {
       product,
-      expectedExtensions
+      expectedExtensions: expectedInventory
     });
     driverAfter = captureDriverReceipt(receipt);
     if (JSON.stringify(before) !== JSON.stringify(after)) {

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import test, { after } from "node:test";
 import {
   collectDataWranglerComparisonCleanupProof,
   prepareManifestBoundDataWranglerSourceCache,
@@ -13,6 +16,26 @@ const RUN_ID = "11111111-1111-4111-8111-111111111111";
 const FRAGMENT_ID = "22222222-2222-4222-8222-222222222222";
 const FIXTURE_SHA256 = "a".repeat(64);
 const FIXTURE_IDENTITY = Object.freeze({ device: "1", inode: "2", sizeBytes: 100, mtimeNs: "3" });
+const PROFILE_TEMPLATE_SHA256 = "d".repeat(64);
+const PROFILE_ROOT = mkdtempSync(resolve(tmpdir(), "ow-live-trial-profile-"));
+const PROFILE_USER_DATA = resolve(PROFILE_ROOT, "user-data");
+const PROFILE_EXTENSIONS = resolve(PROFILE_ROOT, "extensions");
+mkdirSync(PROFILE_USER_DATA, { mode: 0o700 });
+mkdirSync(PROFILE_EXTENSIONS, { mode: 0o700 });
+after(() => rmSync(PROFILE_ROOT, { recursive: true, force: true }));
+const LIVE_TRIAL_PROFILE = createDataWranglerComparisonDriverProfile({
+  product: "open-wrangler",
+  privateRoot: PROFILE_ROOT,
+  templateKind: "warmed",
+  templateReceiptSha256: PROFILE_TEMPLATE_SHA256,
+  editor: { name: "VS Code" },
+  userData: PROFILE_USER_DATA,
+  extensions: PROFILE_EXTENSIONS,
+  sandboxArgs: [],
+  environment: { OPEN_WRANGLER_EDITOR_TEMP_ROOT: PROFILE_ROOT },
+  installLabel: "comparison-driver-install",
+  inventoryLabel: "comparison-driver-inventory"
+});
 const DRIVER_RECEIPT = Object.freeze({
   extensionId: "openwrangler-study.notebook-comparison-driver",
   version: "1.0.0",
@@ -54,16 +77,8 @@ function input(overrides = {}) {
           { extensionId: "openwrangler-study.notebook-comparison-driver", version: "1.0.0" },
           { extensionId: "Matt17BR.openwrangler", version: "1.2.0" }
         ],
-        profile: createDataWranglerComparisonDriverProfile({
-          product: "open-wrangler",
-          editor: { name: "VS Code" },
-          userData: "/private/user-data",
-          extensions: "/private/extensions",
-          sandboxArgs: [],
-          environment: {},
-          installLabel: "comparison-driver-install",
-          inventoryLabel: "comparison-driver-inventory"
-        })
+        expectedTemplate: { kind: "warmed", receiptSha256: PROFILE_TEMPLATE_SHA256 },
+        profile: LIVE_TRIAL_PROFILE
       }
     },
     ...overrides
@@ -300,7 +315,7 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
         events.push("editor-executed");
         assert.deepEqual(options.developmentPaths, []);
         assert.equal(dependencies.spawnProcess, "supervisor-owned-spawn");
-        assert.deepEqual(dependencies.environment, {});
+        assert.deepEqual(dependencies.environment, LIVE_TRIAL_PROFILE.environment);
         return { protocol: "test-editor-phase-v1" };
       }
     },

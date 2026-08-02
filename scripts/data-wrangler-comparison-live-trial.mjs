@@ -148,10 +148,23 @@ function validatePreparedTrial(value) {
   absolutePath(sourceCache.pythonExecutablePath, "Prepared source-cache Python");
   absolutePath(sourceCache.controlScriptPath, "Prepared source-cache controller");
   const neutralDriver = requireRecord(value.neutralDriver, "Prepared neutral-driver options");
-  exactKeys(neutralDriver, ["receipt", "expectedExtensions", "profile"], "Prepared neutral-driver options");
+  exactKeys(
+    neutralDriver,
+    ["receipt", "expectedExtensions", "expectedTemplate", "profile"],
+    "Prepared neutral-driver options"
+  );
   requireRecord(neutralDriver.receipt, "Prepared neutral-driver receipt");
   if (!Array.isArray(neutralDriver.expectedExtensions)) {
     fail("Prepared neutral-driver extension inventory must be an array.");
+  }
+  const expectedTemplate = requireRecord(neutralDriver.expectedTemplate, "Prepared neutral-driver template");
+  exactKeys(expectedTemplate, ["kind", "receiptSha256"], "Prepared neutral-driver template");
+  if (
+    (expectedTemplate.kind !== "configured-only" && expectedTemplate.kind !== "warmed") ||
+    typeof expectedTemplate.receiptSha256 !== "string" ||
+    !SHA256.test(expectedTemplate.receiptSha256)
+  ) {
+    fail("Prepared neutral-driver template is invalid.");
   }
   requireRecord(neutralDriver.profile, "Prepared neutral-driver profile");
   return value;
@@ -969,6 +982,7 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
                         receipt: prepared.neutralDriver.receipt,
                         expectedDriver,
                         expectedExtensions: structuredClone(prepared.neutralDriver.expectedExtensions),
+                        expectedTemplate: structuredClone(prepared.neutralDriver.expectedTemplate),
                         profile: prepared.neutralDriver.profile,
                         editorPhaseOptions: phaseOptions
                       },
