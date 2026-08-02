@@ -6,6 +6,7 @@ import {
   observeNotebookTrialGridScrollState,
   observeNotebookTrialInlineAction,
   observeNotebookTrialIntegerProfile,
+  observeNotebookTrialPointerAction,
   observeNotebookTrialVisibleShape,
   validateDataWranglerNotebookTrialPhaseReceipt,
   type DataWranglerNotebookTrialPhaseReceipt,
@@ -160,10 +161,11 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
       return OPEN_ACTION;
     },
     async waitForWorkbenchAndScroll(immediatelyAfterReady) {
-      events.push("workbench-and-scroll");
+      events.push("workbench-grid-ready");
       clock = 30;
       events.push("workbench-ready-boundary");
       immediatelyAfterReady();
+      events.push("workbench-scroll-correctness");
       return {
         newlySelectedProductEditor: true,
         grid: {
@@ -274,6 +276,7 @@ describe("one-trial notebook comparison flow", () => {
       "profile-boundary-callback",
       "profile-pointer-click"
     ]);
+    expect(events.indexOf("workbench-ready-boundary")).toBeLessThan(events.indexOf("workbench-scroll-correctness"));
     expect(events.indexOf("restore-first-rows")).toBeLessThan(events.indexOf("profile-center-owned"));
     expect(events.at(-2)).toBe("verify:after-workbench");
     expect(events.at(-1)).toBe("exact:after after-workbench verification");
@@ -465,7 +468,7 @@ describe("notebook public-surface semantic probes", () => {
     document.body.innerHTML = `
       <section class="openwrangler-notebook">
         <h2>Open Wrangler preview: study_frame</h2>
-        <button aria-label="Open in Open Wrangler">Open</button>
+        <button title="Open the complete current value of study_frame">Open in Open Wrangler</button>
         ${sentinelTable}
       </section>`;
     const button = document.querySelector("button")!;
@@ -485,8 +488,18 @@ describe("notebook public-surface semantic probes", () => {
         stableFrames: 2
       }
     });
+    await expect(
+      observeNotebookTrialPointerAction(button, {
+        role: "button",
+        expectedName: "Open in Open Wrangler"
+      })
+    ).resolves.toMatchObject({
+      accessibleName: "Open in Open Wrangler",
+      pointerUsable: true,
+      stableFrames: 2
+    });
 
-    document.body.innerHTML = `<button aria-label="Open in Open Wrangler">Open</button>${sentinelTable}`;
+    document.body.innerHTML = `<button title="Open the complete current value of study_frame">Open in Open Wrangler</button>${sentinelTable}`;
     const genericButton = document.querySelector("button")!;
     installVisibleGeometry(genericButton);
     await expect(

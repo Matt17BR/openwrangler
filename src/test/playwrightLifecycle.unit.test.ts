@@ -332,10 +332,10 @@ describe("extension-host Playwright lifecycle", () => {
         events.push("bounding-box");
         return { x: 10, y: 20, width: 80, height: 30 };
       }),
-      evaluate: vi.fn(async () => {
+      async evaluate<Result>(_pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result> {
         events.push("center-owned");
-        return true;
-      })
+        return true as Result;
+      }
     };
 
     await activateAcceptancePointerTargetAtCurrentCenter(target, 10_000, () => {

@@ -99,10 +99,11 @@ custom/webview editor contains the expected grid/table, ordered sentinel headers
 geometry across two animation frames, and no visible Quick Input, dialog, modal, or pointer obstruction. Merely
 creating a frame, returning from the kernel, or painting a loading shell is not readiness.
 
-The grid must show the full source shape rather than a bounded notebook snapshot. A public wheel or **Page Down**
-interaction must change the visible row window and settle before the workbench timer stops. The harness then returns to
-the first row as untimed profile preparation. Failure to open the live 100,000- or 1,000,000-row dataframe is a
-correctness failure, not a fast result.
+The timer stops at the first stable, selected, unobstructed grid. The harness then checks that the grid reports the full
+source shape rather than a bounded notebook snapshot and uses a public wheel or **Page Down** interaction to prove that
+the visible row window changes. These correctness checks do not extend the open time. The harness returns to the first
+row before profiling. Failure to open the live 100,000- or 1,000,000-row dataframe is a correctness failure, not a fast
+result.
 
 ### Complete column profiles
 
@@ -237,11 +238,11 @@ Only an unavailable public surface or a failed pre-launch environment gate may o
 charged page cache.
 
 The inline segment starts at its accepted pre-cell baseline and ends at inline readiness. The workbench segment starts
-at the accepted five-sample baseline immediately before the launch click and ends after the required scroll settles.
-The profile segment starts at the accepted five-sample baseline immediately before profile activation and ends after
-complete traversal plus the two-second quiescence. The complete-trial segment starts at the pre-cell baseline and ends
-with that same quiescence. A baseline that cannot satisfy the range rule within ten seconds is a pre-action harness
-failure rather than a hand-picked lower value.
+at the accepted five-sample baseline immediately before the launch click and ends at the first stable, selected,
+unobstructed grid. The profile segment starts at the accepted five-sample baseline immediately before profile
+activation and ends after complete traversal plus the two-second quiescence. The complete-trial segment starts at the
+pre-cell baseline and ends with that same quiescence. A baseline that cannot satisfy the range rule within ten seconds
+is a pre-action harness failure rather than a hand-picked lower value.
 
 ## Predeclared regression gate
 

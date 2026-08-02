@@ -1001,7 +1001,7 @@ export function observeNotebookTrialInlineAction(
   if (!window_) return Promise.resolve(null);
   const normalize = (value: string | null): string => (value ?? "").replace(/\s+/gu, " ").trim();
   const accessibleName = (candidate: NotebookTrialElement): string => {
-    const direct = normalize(candidate.getAttribute("aria-label") ?? candidate.getAttribute("title"));
+    const direct = normalize(candidate.getAttribute("aria-label"));
     if (direct) return direct;
     const labelledBy = normalize(candidate.getAttribute("aria-labelledby"));
     if (labelledBy) {
@@ -1013,7 +1013,7 @@ export function observeNotebookTrialInlineAction(
         .filter(Boolean);
       if (labels.length > 0) return labels.join(" ");
     }
-    return normalize(candidate.textContent);
+    return normalize(candidate.textContent) || normalize(candidate.getAttribute("title"));
   };
   const visible = (candidate: NotebookTrialElement): boolean => {
     let current: NotebookTrialElement | null = candidate;
@@ -1208,8 +1208,17 @@ async function actionTargetFromLocator(
   role: "button" | "columnheader"
 ): Promise<NotebookTrialActionTarget | undefined> {
   const accessibleName = await locator.evaluate((element) => {
-    const direct = element.getAttribute("aria-label") ?? element.getAttribute("title");
-    return (direct || element.textContent || "").replace(/\s+/gu, " ").trim();
+    const direct = element.getAttribute("aria-label");
+    const labelledBy = element.getAttribute("aria-labelledby");
+    const labelled = labelledBy
+      ? labelledBy
+          .split(/\s+/u)
+          .map((id: string) => element.ownerDocument.getElementById(id)?.textContent ?? "")
+          .join(" ")
+      : "";
+    return (direct || labelled || element.textContent || element.getAttribute("title") || "")
+      .replace(/\s+/gu, " ")
+      .trim();
   });
   const target: NotebookTrialActionTarget = {
     pointer: frame.page().mouse,
@@ -1286,7 +1295,7 @@ export function observeNotebookTrialPointerAction(
   if (!element?.isConnected || !document_ || !window_) return Promise.resolve(null);
   const normalize = (value: string | null): string => (value ?? "").replace(/\s+/gu, " ").trim();
   const accessibleName = (() => {
-    const direct = normalize(element.getAttribute("aria-label") ?? element.getAttribute("title"));
+    const direct = normalize(element.getAttribute("aria-label"));
     if (direct) return direct;
     const labelledBy = normalize(element.getAttribute("aria-labelledby"));
     if (labelledBy) {
@@ -1298,7 +1307,7 @@ export function observeNotebookTrialPointerAction(
         .filter(Boolean);
       if (labels.length > 0) return labels.join(" ");
     }
-    return normalize(element.textContent);
+    return normalize(element.textContent) || normalize(element.getAttribute("title"));
   })();
   if (
     accessibleName !== input?.expectedName ||
@@ -1365,8 +1374,17 @@ async function pointerActionTargetFromLocator(
 ): Promise<NotebookTrialActionTarget | undefined> {
   const accessibleName = await locator
     .evaluate((element) => {
-      const direct = element.getAttribute("aria-label") ?? element.getAttribute("title");
-      return (direct || element.textContent || "").replace(/\s+/gu, " ").trim();
+      const direct = element.getAttribute("aria-label");
+      const labelledBy = element.getAttribute("aria-labelledby");
+      const labelled = labelledBy
+        ? labelledBy
+            .split(/\s+/u)
+            .map((id: string) => element.ownerDocument.getElementById(id)?.textContent ?? "")
+            .join(" ")
+        : "";
+      return (direct || labelled || element.textContent || element.getAttribute("title") || "")
+        .replace(/\s+/gu, " ")
+        .trim();
     })
     .catch(() => "");
   if (!accessibleName) return undefined;
@@ -1407,7 +1425,7 @@ async function requirePointerActionEvidence(target: NotebookTrialActionTarget): 
     if (!candidate.isConnected || candidate.disabled === true || candidate.getAttribute("aria-disabled") === "true") {
       return null;
     }
-    const direct = candidate.getAttribute("aria-label") ?? candidate.getAttribute("title");
+    const direct = candidate.getAttribute("aria-label");
     const labelledBy = candidate.getAttribute("aria-labelledby");
     const labelled = labelledBy
       ? labelledBy
@@ -1415,7 +1433,9 @@ async function requirePointerActionEvidence(target: NotebookTrialActionTarget): 
           .map((id) => candidate.ownerDocument.getElementById(id)?.textContent ?? "")
           .join(" ")
       : "";
-    const accessibleName = (direct || labelled || candidate.textContent || "").replace(/\s+/gu, " ").trim();
+    const accessibleName = (direct || labelled || candidate.textContent || candidate.getAttribute("title") || "")
+      .replace(/\s+/gu, " ")
+      .trim();
     const rectangle = candidate.getBoundingClientRect();
     const hit = candidate.ownerDocument.elementFromPoint(
       rectangle.left + rectangle.width / 2,
@@ -1976,13 +1996,13 @@ function createRealNotebookTrialDependencies(
         [targetTab],
         "The measured Open action must create exactly one selected product editor."
       );
-      const fullShape = await requireCompleteGridShape(gridFrame, readiness.grid, captured.definition.fixture);
-      const scroll = await exerciseNotebookTrialGridScroll(gridFrame);
       assert.equal(await frameChainIsVisibleAndPointerUsable(gridFrame), true);
       const workbench = await comparisonWorkbenchReadiness(page, sourceTab, true);
       assert.ok(Date.now() <= workbenchDeadline, "Workbench readiness exceeded its fixed 60000 ms window.");
       immediatelyAfterReady();
       recordProgress("comparison-study:workbench-ready");
+      const fullShape = await requireCompleteGridShape(gridFrame, readiness.grid, captured.definition.fixture);
+      const scroll = await exerciseNotebookTrialGridScroll(gridFrame);
       return {
         newlySelectedProductEditor: true,
         grid: readiness.grid,
