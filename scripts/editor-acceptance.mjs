@@ -3058,9 +3058,11 @@ function resolveEditorAcceptanceComparisonStudyEnvironment(comparisonStudyEnviro
       "A comparison-study environment must define exactly requestPath, acknowledgementPath, sourcePath, and publicSurfaceAvailability."
     );
   }
-  if (!Object.values(Object.getOwnPropertyDescriptors(comparisonStudyEnvironment)).every((descriptor) =>
-    descriptor.enumerable && descriptor.get === undefined && descriptor.set === undefined
-  )) {
+  if (
+    !Object.values(Object.getOwnPropertyDescriptors(comparisonStudyEnvironment)).every(
+      (descriptor) => descriptor.enumerable && descriptor.get === undefined && descriptor.set === undefined
+    )
+  ) {
     throw new Error("A comparison-study environment must contain only enumerable data fields.");
   }
   let canonicalRoot;
@@ -3094,8 +3096,7 @@ function resolveEditorAcceptanceComparisonStudyEnvironment(comparisonStudyEnviro
       if (
         metadata.isSymbolicLink() ||
         (typeof process.getuid === "function" && metadata.uid !== BigInt(process.getuid())) ||
-        (expectedType === "directory" &&
-          (!metadata.isDirectory() || (metadata.mode & 0o777n) !== 0o700n)) ||
+        (expectedType === "directory" && (!metadata.isDirectory() || (metadata.mode & 0o777n) !== 0o700n)) ||
         (expectedType === "source" &&
           (!metadata.isFile() ||
             metadata.nlink !== 1n ||
@@ -3162,8 +3163,7 @@ function resolveEditorAcceptanceComparisonStudyEnvironment(comparisonStudyEnviro
     OPEN_WRANGLER_STUDY_REQUEST: resolve(requestPath),
     OPEN_WRANGLER_STUDY_ACK: resolve(acknowledgementPath),
     OPEN_WRANGLER_STUDY_SOURCE: sourcePath,
-    OPEN_WRANGLER_STUDY_PUBLIC_SURFACE_AVAILABILITY:
-      comparisonStudyEnvironment.publicSurfaceAvailability
+    OPEN_WRANGLER_STUDY_PUBLIC_SURFACE_AVAILABILITY: comparisonStudyEnvironment.publicSurfaceAvailability
   };
 }
 

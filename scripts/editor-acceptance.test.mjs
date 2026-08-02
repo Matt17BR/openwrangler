@@ -3031,9 +3031,7 @@ posixTest("comparison-study phases pass only verified bridge and source paths", 
       }
     );
     assert.deepEqual(
-      Object.fromEntries(
-        Object.entries(launchedEnvironment).filter(([key]) => key.startsWith("OPEN_WRANGLER_STUDY_"))
-      ),
+      Object.fromEntries(Object.entries(launchedEnvironment).filter(([key]) => key.startsWith("OPEN_WRANGLER_STUDY_"))),
       {
         OPEN_WRANGLER_STUDY_REQUEST: requestPath,
         OPEN_WRANGLER_STUDY_ACK: acknowledgementPath,
@@ -3042,11 +3040,7 @@ posixTest("comparison-study phases pass only verified bridge and source paths", 
       }
     );
     assert.throws(
-      () =>
-        createEditorAcceptanceEnvironment(
-          { PATH: "/safe/bin" },
-          { OPEN_WRANGLER_STUDY_SOURCE: sourcePath }
-        ),
+      () => createEditorAcceptanceEnvironment({ PATH: "/safe/bin" }, { OPEN_WRANGLER_STUDY_SOURCE: sourcePath }),
       /does not allow the "OPEN_WRANGLER_STUDY_SOURCE" environment override/u
     );
   } finally {

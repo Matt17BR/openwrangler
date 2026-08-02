@@ -59,10 +59,7 @@ test("Linux provenance accepts colon-bearing USB-C power-supply names", () => {
     if (path === `/sys/class/power_supply/${usbSupply}/online`) return "0\n";
     return readText(path);
   };
-  const provenance = captureLinuxDataWranglerStudyProvenance(
-    { cpuIds: [0, 1], display: DISPLAY },
-    dependencies
-  );
+  const provenance = captureLinuxDataWranglerStudyProvenance({ cpuIds: [0, 1], display: DISPLAY }, dependencies);
   assert.deepEqual(provenance.power.externalSupplies, [
     { name: "AC", type: "Mains", online: true },
     { name: usbSupply, type: "USB_C", online: false }
