@@ -46,6 +46,29 @@ test("Linux provenance is path-free and pins CPU, power, governor, affinity, and
   assert.doesNotMatch(serialized, /\/proc|\/sys|\/home|\/tmp/u);
 });
 
+test("Linux provenance accepts colon-bearing USB-C power-supply names", () => {
+  const fixture = new LinuxStudyFixture();
+  const dependencies = fixture.dependencies();
+  const readDirectory = dependencies.readDirectory;
+  const readText = dependencies.readText;
+  const usbSupply = "ucsi-source-psy-USBC000:001";
+  dependencies.readDirectory = (path) =>
+    path === "/sys/class/power_supply" ? ["BAT0", "AC", usbSupply] : readDirectory(path);
+  dependencies.readText = (path) => {
+    if (path === `/sys/class/power_supply/${usbSupply}/type`) return "USB_C\n";
+    if (path === `/sys/class/power_supply/${usbSupply}/online`) return "0\n";
+    return readText(path);
+  };
+  const provenance = captureLinuxDataWranglerStudyProvenance(
+    { cpuIds: [0, 1], display: DISPLAY },
+    dependencies
+  );
+  assert.deepEqual(provenance.power.externalSupplies, [
+    { name: "AC", type: "Mains", online: true },
+    { name: usbSupply, type: "USB_C", online: false }
+  ]);
+});
+
 test("CPU-list parsing canonicalizes ranges and rejects overlap", () => {
   assert.deepEqual(parseLinuxCpuList("0-2,4,6-7"), [0, 1, 2, 4, 6, 7]);
   assert.equal(formatLinuxCpuList([0, 1, 2, 4, 6, 7]), "0-2,4,6-7");

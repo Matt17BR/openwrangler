@@ -294,7 +294,7 @@ function discoverThermalCounters(cpuIds, readDirectory) {
 function readExternalPower(readDirectory, readText, { requireOnline = true } = {}) {
   const supplies = [];
   for (const name of [...readDirectory(SYS_POWER_SUPPLY_ROOT)].sort()) {
-    if (!/^[A-Za-z0-9_.-]{1,128}$/u.test(name)) {
+    if (!/^[A-Za-z0-9_.:+-]{1,128}$/u.test(name)) {
       fail("Linux power-supply name is invalid.");
     }
     const type = normalizeSingleLine(readText(`${SYS_POWER_SUPPLY_ROOT}/${name}/type`), "Linux power-supply type");
