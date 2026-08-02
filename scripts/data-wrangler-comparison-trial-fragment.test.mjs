@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -61,6 +62,7 @@ function loadStudyFixtures() {
   assert.notEqual(start, -1);
   const context = {
     assert,
+    createHash,
     digestStudyValue,
     buildDataWranglerStudyManifest,
     DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,

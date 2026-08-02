@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -591,6 +592,42 @@ function writeExecutionLock(manifestPath, record) {
   writeFileSync(dataWranglerStudyExecutionLockPath(manifestPath), JSON.stringify(record), { mode: 0o600 });
 }
 
+function studyComparisonDriverReceipt() {
+  const modules = [
+    { path: "shared/strictJson.cjs", sha256: digest("d") },
+    { path: "test/extensionHost/dataWranglerComparisonNotebookTrial.js", sha256: digest("e") }
+  ];
+  return {
+    extensionId: "openwrangler-study.notebook-comparison-driver",
+    version: "1.0.0",
+    vsix: {
+      sha256: digest("f"),
+      filesystemIdentity: {
+        device: "2049",
+        inode: "2101",
+        sizeBytes: 4096,
+        mtimeNs: "1754100000000000000"
+      }
+    },
+    runtimeDependencies: {
+      playwrightCore: {
+        version: "1.61.1",
+        fileCount: 106,
+        totalBytes: 12_701_224,
+        treeSha256: digest("a"),
+        lockIntegrity: "sha512-dGVzdC1wbGF5d3JpZ2h0LWNvcmU="
+      }
+    },
+    journeyGraph: {
+      entry: "test/extensionHost/dataWranglerComparisonNotebookTrial.js",
+      moduleCount: modules.length,
+      totalBytes: 32_768,
+      graphSha256: createHash("sha256").update(JSON.stringify(modules), "utf8").digest("hex"),
+      modules
+    }
+  };
+}
+
 function studySpecification(dataWranglerPolarsAvailability = "available") {
   const editor = {
     id: "Microsoft.VisualStudioCode",
@@ -700,6 +737,7 @@ function studySpecification(dataWranglerPolarsAvailability = "available") {
         notebookLayoutSha256: digest("9")
       },
       commonExtensions: DATA_WRANGLER_STUDY_COMMON_EXTENSIONS.map((extension) => ({ ...extension })),
+      comparisonDriver: studyComparisonDriverReceipt(),
       templates: DATA_WRANGLER_STUDY_PRODUCTS.map((product, index) => ({
         product,
         configuredOnlyReceiptSha256: digest(String(index + 1)),

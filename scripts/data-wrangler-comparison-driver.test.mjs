@@ -7,9 +7,12 @@ import vm from "node:vm";
 import {
   DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION,
   assertDataWranglerComparisonArmInventory,
+  createDataWranglerComparisonDriverProfile,
+  createDataWranglerComparisonDriverStudyReceipt,
   installDataWranglerComparisonDriver,
   packageDataWranglerComparisonDriver,
   proveDataWranglerComparisonJourneyGraph,
+  recoverDataWranglerComparisonDriver,
   revalidateDataWranglerComparisonDriver,
   runDataWranglerComparisonNeutralDriverPhase,
   validateDataWranglerComparisonDriverBundle,
@@ -22,9 +25,11 @@ function fixture() {
   const root = mkdtempSync(resolve(tmpdir(), "ow-neutral-driver-"));
   const testModule = resolve(root, "dist-test", "test", "extensionHost", "dataWranglerComparisonNotebookTrial.js");
   mkdirSync(resolve(testModule, ".."), { recursive: true, mode: 0o700 });
-  writeFileSync(resolve(testModule, "..", "neutralHelper.js"), "exports.run = async () => ({ ok: true });\n", {
-    mode: 0o600
-  });
+  writeFileSync(
+    resolve(testModule, "..", "neutralHelper.js"),
+    'require("playwright-core"); exports.run = async () => ({ ok: true });\n',
+    { mode: 0o600 }
+  );
   writeFileSync(testModule, 'exports.run = require("./neutralHelper").run;\n', { mode: 0o600 });
   return {
     root,
@@ -60,14 +65,11 @@ test("the neutral driver has its own identity and imports only the notebook jour
     assert.equal(source.includes("Matt17BR.openwrangler"), false);
     assert.equal(source.includes("openwrangler_runtime"), false);
     assert.equal(source.includes("vscode.extensions.getExtension"), false);
-    assert.deepEqual(
-      validateDataWranglerComparisonDriverBundle({ manifest, source, expectedTestModule: value.testModule }),
-      {
-        extension: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION,
-        manifestSha256: receipt.manifestSha256,
-        sourceSha256: receipt.sourceSha256
-      }
-    );
+    assert.deepEqual(validateDataWranglerComparisonDriverBundle({ manifest, source }), {
+      extension: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION,
+      manifestSha256: receipt.manifestSha256,
+      sourceSha256: receipt.sourceSha256
+    });
   } finally {
     value.cleanup();
   }
@@ -105,7 +107,7 @@ test("the generated extension runs the existing notebook journey and publishes t
             }
           };
         }
-        if (id === value.testModule) {
+        if (id === "./journey/test/extensionHost/dataWranglerComparisonNotebookTrial.js") {
           return {
             async run() {
               calls.push("journey");
@@ -144,16 +146,16 @@ test("the bundle validator rejects product entrypoints and any extra import", ()
     for (const injected of [
       `${source}\nrequire("/repo/dist/extension.js");\n`,
       `${source}\nrequire("node:child_process");\n`,
-      `${source}\nvscode.extensions.getExtension("Matt17BR.openwrangler");\n`
+      `${source}\nvscode.extensions.getExtension("Matt17BR.openwrangler");\n`,
+      `${source}\nvoid import("/repo/dist/" + "extension.js");\n`
     ]) {
       assert.throws(
         () =>
           validateDataWranglerComparisonDriverBundle({
             manifest,
-            source: injected,
-            expectedTestModule: value.testModule
+            source: injected
           }),
-        /may not import|outside its fixed neutral module list/u
+        /may not import|outside its fixed neutral module list|unsupported module loader/u
       );
     }
   } finally {
@@ -182,7 +184,14 @@ test("the writer rejects another test module and never overwrites an existing dr
 test("the journey proof follows the complete local graph and rejects product or harness entrypoints", () => {
   for (const [source, message] of [
     ['require("../../../dist/extension.js");\n', /left its neutral test\/shared roots|product extension/u],
-    ['require("./index.js");\n', /neutral test\/shared roots/u]
+    ['require("./index.js");\n', /neutral test\/shared roots/u],
+    ['void import("../../../dist/" + "extension.js");\n', /unsupported module loader/u],
+    ['require("node:net");\n', /unapproved external package node:net/u],
+    ['module["require"]("../../../di" + "st/extension.js");\n', /indirect module-loader reference/u],
+    ['module.require("../../../di" + "st/extension.js");\n', /unsupported module-loader reference/u],
+    ["const load = require; load('../../../di' + 'st/extension.js');\n", /unsupported module-loader reference/u],
+    ['process.getBuiltinModule("module");\n', /unsupported module-loader reference/u],
+    ['eval("1");\n', /unsupported module-loader reference/u]
   ]) {
     const value = fixture();
     try {
@@ -215,24 +224,51 @@ test("the driver is packaged once, revalidated, and installed through the editor
     assert.deepEqual(packageOptions, {
       cwd: value.driver,
       packagePath: value.vsix,
-      dependencies: false,
+      dependencies: true,
       skipLicense: true,
       allowStarActivation: true,
       allowMissingRepository: true
     });
     assert.equal(revalidateDataWranglerComparisonDriver(receipt), receipt);
     assert.match(receipt.vsix.sha256, /^[0-9a-f]{64}$/u);
+    assert.deepEqual(createDataWranglerComparisonDriverStudyReceipt(receipt), {
+      extensionId: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.extensionId,
+      version: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.version,
+      vsix: {
+        sha256: receipt.vsix.sha256,
+        filesystemIdentity: {
+          device: receipt.vsix.identity.dev,
+          inode: receipt.vsix.identity.ino,
+          sizeBytes: receipt.vsix.bytes,
+          mtimeNs: receipt.vsix.identity.mtimeNs
+        }
+      },
+      runtimeDependencies: {
+        playwrightCore: { ...receipt.runtimeDependencies.playwrightCore }
+      },
+      journeyGraph: {
+        entry: "test/extensionHost/dataWranglerComparisonNotebookTrial.js",
+        moduleCount: 2,
+        totalBytes: receipt.journeyGraph.totalBytes,
+        graphSha256: receipt.journeyGraph.graphSha256,
+        modules: receipt.journeyGraph.modules.map(({ path, sha256 }) => ({ path, sha256 }))
+      }
+    });
 
+    const profile = createDataWranglerComparisonDriverProfile({
+      editor: { name: "VS Code", cliPath: "/editor/code" },
+      userData: "/private/user-data",
+      extensions: "/private/extensions",
+      sandboxArgs: ["--no-sandbox"],
+      environment: { HOME: "/private/home" },
+      installLabel: "neutral driver installation",
+      inventoryLabel: "neutral driver inventory"
+    });
     let invocation;
     const result = await installDataWranglerComparisonDriver(
       {
         receipt,
-        editor: { name: "VS Code", cliPath: "/editor/code" },
-        userData: "/private/user-data",
-        extensions: "/private/extensions",
-        sandboxArgs: ["--no-sandbox"],
-        environment: { HOME: "/private/home" },
-        label: "neutral driver installation"
+        profile
       },
       {
         async runCli(options, commandOptions) {
@@ -258,91 +294,260 @@ test("the driver is packaged once, revalidated, and installed through the editor
   }
 });
 
+test("an existing self-contained driver recovers after process state and source-build loss without rewriting files", async () => {
+  const value = fixture();
+  try {
+    let packageCount = 0;
+    const receipt = await packageDataWranglerComparisonDriver(
+      { directory: value.driver, testModule: value.testModule, vsixPath: value.vsix },
+      {
+        async createVsix(options) {
+          packageCount += 1;
+          writeFileSync(options.packagePath, Buffer.from("neutral-driver-vsix"), { flag: "wx", mode: 0o600 });
+        }
+      }
+    );
+    const expectedDriver = JSON.parse(JSON.stringify(createDataWranglerComparisonDriverStudyReceipt(receipt)));
+    const watchedPaths = [resolve(value.driver, "package.json"), resolve(value.driver, "extension.js"), value.vsix];
+    const before = watchedPaths.map((path) => {
+      const metadata = lstatSync(path, { bigint: true });
+      return {
+        dev: metadata.dev,
+        ino: metadata.ino,
+        size: metadata.size,
+        mtimeNs: metadata.mtimeNs,
+        ctimeNs: metadata.ctimeNs
+      };
+    });
+    rmSync(resolve(value.root, "dist-test"), { recursive: true, force: true });
+
+    assert.throws(
+      () =>
+        recoverDataWranglerComparisonDriver({
+          directory: value.driver,
+          vsixPath: value.vsix,
+          expectedDriver: {
+            ...expectedDriver,
+            vsix: { ...expectedDriver.vsix, sha256: "0".repeat(64) }
+          }
+        }),
+      /does not match the immutable study manifest/u
+    );
+    const recovered = recoverDataWranglerComparisonDriver({
+      directory: value.driver,
+      vsixPath: value.vsix,
+      expectedDriver
+    });
+    assert.notEqual(recovered, receipt);
+    assert.deepEqual(createDataWranglerComparisonDriverStudyReceipt(recovered), expectedDriver);
+    const after = watchedPaths.map((path) => {
+      const metadata = lstatSync(path, { bigint: true });
+      return {
+        dev: metadata.dev,
+        ino: metadata.ino,
+        size: metadata.size,
+        mtimeNs: metadata.mtimeNs,
+        ctimeNs: metadata.ctimeNs
+      };
+    });
+    assert.deepEqual(after, before);
+    assert.equal(packageCount, 1);
+  } finally {
+    value.cleanup();
+  }
+});
+
 test("both measured arms run with the private driver, one product, and no development path", async () => {
-  const products = [
-    {
-      product: "open-wrangler",
-      measured: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" }
-    },
-    {
-      product: "data-wrangler",
-      measured: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }
+  const value = fixture();
+  try {
+    const receipt = await packageDataWranglerComparisonDriver(
+      { directory: value.driver, testModule: value.testModule, vsixPath: value.vsix },
+      {
+        async createVsix(options) {
+          writeFileSync(options.packagePath, Buffer.from("neutral-driver-vsix"), { flag: "wx", mode: 0o600 });
+        }
+      }
+    );
+    const expectedDriver = createDataWranglerComparisonDriverStudyReceipt(receipt);
+    const products = [
+      {
+        product: "open-wrangler",
+        measured: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" }
+      },
+      {
+        product: "data-wrangler",
+        measured: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }
+      }
+    ];
+    for (const arm of products) {
+      const expectedExtensions = [
+        {
+          extensionId: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.extensionId,
+          version: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.version
+        },
+        { extensionId: "ms-toolsai.jupyter", version: "2025.9.1" },
+        arm.measured
+      ];
+      const inventory = assertDataWranglerComparisonArmInventory(expectedExtensions, {
+        product: arm.product,
+        expectedExtensions
+      });
+      assert.equal(inventory.length, 3);
+      let installation;
+      let phaseOptions;
+      let phaseDependencies;
+      let inventoryReads = 0;
+      const profile = createDataWranglerComparisonDriverProfile({
+        editor: { name: "VS Code", executable: "/editor/code" },
+        userData: "/private/user-data",
+        extensions: "/private/extensions",
+        sandboxArgs: ["--no-sandbox"],
+        environment: { HOME: "/private/home" },
+        installLabel: "neutral driver installation",
+        inventoryLabel: "neutral driver inventory"
+      });
+      const result = await runDataWranglerComparisonNeutralDriverPhase(
+        {
+          product: arm.product,
+          receipt,
+          expectedDriver,
+          expectedExtensions,
+          profile,
+          editorPhaseOptions: { phase: `${arm.product}-trial`, workspace: "/private/workspace" }
+        },
+        {
+          async installDriver(value) {
+            installation = value;
+          },
+          async readInventory(input) {
+            inventoryReads += 1;
+            assert.equal(input.profile, profile);
+            assert.equal(input.stage, inventoryReads === 1 ? "before" : "after");
+            return structuredClone(expectedExtensions);
+          },
+          async runPhase(value, dependencies) {
+            phaseOptions = value;
+            phaseDependencies = dependencies;
+            return { ok: true };
+          }
+        }
+      );
+      assert.deepEqual(installation, { receipt, profile });
+      assert.equal(inventoryReads, 2);
+      assert.deepEqual(phaseOptions, {
+        phase: `${arm.product}-trial`,
+        workspace: "/private/workspace",
+        editor: profile.editor,
+        userData: profile.userData,
+        extensions: profile.extensions,
+        developmentPaths: []
+      });
+      assert.deepEqual(phaseDependencies, { driverBefore: result.driverBefore, environment: profile.environment });
+      assert.deepEqual(result.phaseResult, { ok: true });
+      assert.deepEqual(result.driverBefore, result.driverAfter);
+      assert.equal(result.driverBefore.vsix.sha256, receipt.vsix.sha256);
     }
-  ];
-  for (const arm of products) {
-    const expectedExtensions = [
+
+    const failedExtensions = [
       {
         extensionId: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.extensionId,
         version: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.version
       },
       { extensionId: "ms-toolsai.jupyter", version: "2025.9.1" },
-      arm.measured
+      { extensionId: "Matt17BR.openwrangler", version: "1.2.1" }
     ];
-    const inventory = assertDataWranglerComparisonArmInventory(expectedExtensions, {
-      product: arm.product,
-      expectedExtensions
+    const failedProfile = createDataWranglerComparisonDriverProfile({
+      editor: { name: "VS Code", executable: "/editor/code" },
+      userData: "/private/failure-user-data",
+      extensions: "/private/failure-extensions",
+      sandboxArgs: [],
+      environment: { HOME: "/private/failure-home" },
+      installLabel: "failure driver installation",
+      inventoryLabel: "failure driver inventory"
     });
-    assert.equal(inventory.length, 3);
-    let installation;
-    let phaseOptions;
-    let inventoryReads = 0;
-    const result = await runDataWranglerComparisonNeutralDriverPhase(
-      {
-        product: arm.product,
-        receipt: { opaque: true },
-        expectedExtensions,
-        driverInstallation: { editor: { name: "VS Code" } },
-        editorPhaseOptions: { phase: `${arm.product}-trial`, workspace: "/private/workspace" }
-      },
-      {
-        async installDriver(value) {
-          installation = value;
-        },
-        async readInventory() {
-          inventoryReads += 1;
-          return structuredClone(expectedExtensions);
-        },
-        async runPhase(value) {
-          phaseOptions = value;
-          return { ok: true };
-        }
-      }
-    );
-    assert.deepEqual(installation, { receipt: { opaque: true }, editor: { name: "VS Code" } });
-    assert.equal(inventoryReads, 2);
-    assert.deepEqual(phaseOptions, {
-      phase: `${arm.product}-trial`,
-      workspace: "/private/workspace",
-      developmentPaths: []
-    });
-    assert.deepEqual(result.phaseResult, { ok: true });
-  }
-
-  assert.throws(
-    () =>
-      assertDataWranglerComparisonArmInventory(
-        [
+    const primaryFailure = new Error("primary measured phase failure");
+    let terminalValidation;
+    await assert.rejects(
+      () =>
+        runDataWranglerComparisonNeutralDriverPhase(
           {
-            extensionId: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.extensionId,
-            version: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.version
+            product: "open-wrangler",
+            receipt,
+            expectedDriver,
+            expectedExtensions: failedExtensions,
+            profile: failedProfile,
+            editorPhaseOptions: { phase: "failed-trial" }
           },
-          { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
-          { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }
-        ],
-        {
-          product: "data-wrangler",
-          expectedExtensions: [
+          {
+            async installDriver() {},
+            async readInventory() {
+              return structuredClone(failedExtensions);
+            },
+            async runPhase() {
+              throw primaryFailure;
+            },
+            async onAfterValidation(value) {
+              terminalValidation = value;
+            }
+          }
+        ),
+      (error) => error === primaryFailure
+    );
+    assert.deepEqual(terminalValidation.driverBefore, terminalValidation.driverAfter);
+
+    assert.throws(
+      () =>
+        assertDataWranglerComparisonArmInventory(
+          [
             {
               extensionId: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.extensionId,
               version: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.version
             },
             { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
             { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }
-          ]
-        }
-      ),
-    /neutral driver and exactly one measured product/u
-  );
+          ],
+          {
+            product: "data-wrangler",
+            expectedExtensions: [
+              {
+                extensionId: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.extensionId,
+                version: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.version
+              },
+              { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+              { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }
+            ]
+          }
+        ),
+      /neutral driver and exactly one measured product/u
+    );
+
+    const profile = createDataWranglerComparisonDriverProfile({
+      editor: { name: "VS Code" },
+      userData: "/private/user-data",
+      extensions: "/private/extensions",
+      sandboxArgs: [],
+      environment: {},
+      installLabel: "install",
+      inventoryLabel: "inventory"
+    });
+    await assert.rejects(
+      () =>
+        runDataWranglerComparisonNeutralDriverPhase(
+          {
+            product: "open-wrangler",
+            receipt: {},
+            expectedDriver,
+            expectedExtensions: [],
+            profile,
+            editorPhaseOptions: { editor: { name: "another editor" } }
+          },
+          { installDriver() {}, readInventory() {}, runPhase() {} }
+        ),
+      /cannot override their sealed editor value/u
+    );
+  } finally {
+    value.cleanup();
+  }
 });
 
 function awaitlessCrypto() {

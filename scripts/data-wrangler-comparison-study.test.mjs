@@ -235,6 +235,8 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
     extensionId: "openwrangler-study.notebook-comparison-driver",
     version: "1.0.0"
   });
+  assert.equal(manifest.provenance.comparisonDriver.vsix.sha256, digest("f"));
+  assert.equal(manifest.provenance.comparisonDriver.journeyGraph.modules.length, 2);
 
   const changedSchedule = structuredClone(manifest);
   [changedSchedule.schedule[0], changedSchedule.schedule[2]] = [
@@ -242,6 +244,13 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
     changedSchedule.schedule[0]
   ];
   assert.throws(() => validateDataWranglerStudyManifest(changedSchedule), /fixed seeded design/u);
+
+  const incompleteDriverGraph = structuredClone(manifest);
+  incompleteDriverGraph.provenance.comparisonDriver.journeyGraph.modules[0].sha256 = digest("0");
+  assert.throws(
+    () => validateDataWranglerStudyManifest(incompleteDriverGraph),
+    /graph SHA-256 does not match its complete module list/u
+  );
 
   const wrongPython = structuredClone(manifest);
   wrongPython.python.version = "3.14.0";
@@ -1613,6 +1622,13 @@ test("each trial records the neutral driver and only its measured product", () =
     () => validateDataWranglerStudyFragment(contaminated, manifest),
     /exact common and product extensions/u
   );
+
+  const changedDriver = successFragment(manifest, dataWranglerEntry, 0, 10, dataWranglerEntry.sequence);
+  changedDriver.trialProvenance.driverAfter.vsix.sha256 = digest("0");
+  assert.throws(
+    () => validateDataWranglerStudyFragment(changedDriver, manifest),
+    /does not match the manifest-pinned neutral VSIX and journey graph/u
+  );
 });
 
 test("a launched setup failure keeps editor provenance when no kernel was configured", () => {
@@ -2013,6 +2029,42 @@ function studyManifest(dataWranglerPolarsAvailability = "available", ownershipTr
   });
 }
 
+function studyComparisonDriverReceipt() {
+  const modules = [
+    { path: "shared/strictJson.cjs", sha256: digest("d") },
+    { path: "test/extensionHost/dataWranglerComparisonNotebookTrial.js", sha256: digest("e") }
+  ];
+  return {
+    extensionId: "openwrangler-study.notebook-comparison-driver",
+    version: "1.0.0",
+    vsix: {
+      sha256: digest("f"),
+      filesystemIdentity: {
+        device: "2049",
+        inode: "2101",
+        sizeBytes: 4096,
+        mtimeNs: "1754100000000000000"
+      }
+    },
+    runtimeDependencies: {
+      playwrightCore: {
+        version: "1.61.1",
+        fileCount: 106,
+        totalBytes: 12_701_224,
+        treeSha256: digest("a"),
+        lockIntegrity: "sha512-dGVzdC1wbGF5d3JpZ2h0LWNvcmU="
+      }
+    },
+    journeyGraph: {
+      entry: "test/extensionHost/dataWranglerComparisonNotebookTrial.js",
+      moduleCount: modules.length,
+      totalBytes: 32_768,
+      graphSha256: createHash("sha256").update(JSON.stringify(modules), "utf8").digest("hex"),
+      modules
+    }
+  };
+}
+
 function studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, ownershipTracker) {
   const controlContext = publicUiContext("33333333-3333-4333-8333-333333333333", editor, fixtures[0]);
   const capabilityCaptureIds = ["22222222-2222-4222-8222-222222222222", "44444444-4444-4444-8444-444444444444"];
@@ -2079,6 +2131,7 @@ function studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, owner
       notebookLayoutSha256: digest("9")
     },
     commonExtensions: DATA_WRANGLER_STUDY_COMMON_EXTENSIONS.map((extension) => ({ ...extension })),
+    comparisonDriver: studyComparisonDriverReceipt(),
     templates: DATA_WRANGLER_STUDY_PRODUCTS.map((product, index) => ({
       product,
       configuredOnlyReceiptSha256: digest(String(index + 1)),
@@ -2712,6 +2765,8 @@ function studyTrialProvenance(manifest, scheduleEntry, processProofs) {
     editorAfter: structuredClone(manifest.editor),
     extensionsBefore: structuredClone(extensions),
     extensionsAfter: structuredClone(extensions),
+    driverBefore: structuredClone(manifest.provenance.comparisonDriver),
+    driverAfter: structuredClone(manifest.provenance.comparisonDriver),
     pythonBefore: structuredClone(python),
     pythonAfter: structuredClone(python),
     fixtureBefore: structuredClone(fixtureReceipt),

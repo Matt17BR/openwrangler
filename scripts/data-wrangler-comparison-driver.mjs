@@ -1,6 +1,21 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import {
   describeEditorAcceptanceHarnessFailure,
   EDITOR_ACCEPTANCE_PROGRESS_MAX_BYTES,
@@ -16,11 +31,30 @@ export { DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION } from "./data-wrangler-compa
 
 const DRIVER_SOURCE_MAX_BYTES = 64 * 1024;
 const DRIVER_MANIFEST_MAX_BYTES = 8 * 1024;
-const DRIVER_VSIX_MAX_BYTES = 1024 * 1024;
+const DRIVER_VSIX_MAX_BYTES = 32 * 1024 * 1024;
 const JOURNEY_GRAPH_MAX_FILES = 64;
 const JOURNEY_GRAPH_MAX_BYTES = 2 * 1024 * 1024;
+const PLAYWRIGHT_GRAPH_MAX_FILES = 256;
+const PLAYWRIGHT_GRAPH_MAX_BYTES = 32 * 1024 * 1024;
+const PLAYWRIGHT_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const PACKAGE_LOCK_MAX_BYTES = 4 * 1024 * 1024;
+const PLAYWRIGHT_CORE_LOCKED_VERSION = "1.61.1";
 const TEST_MODULE_BASENAME = "dataWranglerComparisonNotebookTrial.js";
-const ALLOWED_EXTERNAL_IMPORTS = new Set(["playwright-core", "vscode"]);
+const JOURNEY_ENTRY = `test/extensionHost/${TEST_MODULE_BASENAME}`;
+const PACKAGED_JOURNEY_REQUIRE = `./journey/${JOURNEY_ENTRY}`;
+const PLAYWRIGHT_PACKAGE_ROOT = realpathSync(dirname(fileURLToPath(import.meta.resolve("playwright-core"))));
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const ALLOWED_EXTERNAL_IMPORTS = new Set([
+  "node:assert/strict",
+  "node:child_process",
+  "node:crypto",
+  "node:fs",
+  "node:path",
+  "node:perf_hooks",
+  "playwright-core",
+  "vscode"
+]);
+const FORBIDDEN_LOADER_NAMES = new Set(["Function", "_load", "createRequire", "eval", "getBuiltinModule", "require"]);
 const PRODUCT_ENTRYPOINT_MARKERS = Object.freeze([
   "Matt17BR.openwrangler",
   "openwrangler_runtime",
@@ -30,6 +64,7 @@ const PRODUCT_ENTRYPOINT_MARKERS = Object.freeze([
   "\\src\\extension\\extension"
 ]);
 const driverVsixReceipts = new WeakSet();
+const driverProfileReceipts = new WeakSet();
 
 function fail(message) {
   throw new TypeError(message);
@@ -46,6 +81,17 @@ function exactKeys(value, expected, label) {
   if (actual.length !== sortedExpected.length || actual.some((key, index) => key !== sortedExpected[index])) {
     fail(`${label} has missing or unknown fields.`);
   }
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function boundedSource(value, maximumBytes, label) {
@@ -93,6 +139,73 @@ function isContainedPath(root, path) {
   return child.length > 0 && child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
 }
 
+function sameMetadata(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function validateCanonicalDirectory(path, label, { lstat = lstatSync, realpath = realpathSync } = {}) {
+  if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path || /[\0\r\n]/u.test(path)) {
+    fail(`${label} must be one canonical absolute directory.`);
+  }
+  let metadata;
+  let canonicalPath;
+  try {
+    metadata = lstat(path, { bigint: true });
+    canonicalPath = realpath(path);
+  } catch (error) {
+    throw new Error(`${label} could not be inspected.`, { cause: error });
+  }
+  if (
+    canonicalPath !== path ||
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    (typeof process.getuid === "function" && metadata.uid !== BigInt(process.getuid()))
+  ) {
+    fail(`${label} must be one current-user-owned directory at its canonical path.`);
+  }
+  return path;
+}
+
+function readStableOwnedFile(path, maximumBytes, label, hooks) {
+  let before;
+  let canonicalBefore;
+  try {
+    before = hooks.lstat(path, { bigint: true });
+    canonicalBefore = hooks.realpath(path);
+  } catch (error) {
+    throw new Error(`${label} could not be inspected.`, { cause: error });
+  }
+  if (
+    canonicalBefore !== path ||
+    !before.isFile() ||
+    before.isSymbolicLink() ||
+    before.nlink !== 1n ||
+    before.size <= 0n ||
+    before.size > BigInt(maximumBytes) ||
+    (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
+  ) {
+    fail(`${label} must be one bounded current-user-owned regular file at its canonical path.`);
+  }
+  const bytes = hooks.readFile(path);
+  const after = hooks.lstat(path, { bigint: true });
+  const canonicalAfter = hooks.realpath(path);
+  if (
+    !Buffer.isBuffer(bytes) ||
+    bytes.length !== Number(before.size) ||
+    canonicalAfter !== path ||
+    !sameMetadata(before, after)
+  ) {
+    fail(`${label} changed while it was read.`);
+  }
+  return bytes;
+}
+
 function resolveRelativeJourneyImport(importer, specifier, root, exists) {
   const base = resolve(dirname(importer), specifier);
   const candidates = basename(base).includes(".") ? [base] : [`${base}.js`, `${base}.cjs`, resolve(base, "index.js")];
@@ -103,13 +216,57 @@ function resolveRelativeJourneyImport(importer, specifier, root, exists) {
   return matches[0];
 }
 
-export function proveDataWranglerComparisonJourneyGraph(
-  testModule,
+function staticCommonJsDependencies(source, label) {
+  const sourceFile = ts.createSourceFile(label, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  if (sourceFile.parseDiagnostics.length > 0) {
+    fail(`${label} is not parseable JavaScript.`);
+  }
+  const specifiers = [];
+  const visit = (node) => {
+    if (
+      ts.isImportDeclaration(node) ||
+      ts.isImportEqualsDeclaration(node) ||
+      (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) ||
+      node.kind === ts.SyntaxKind.ImportKeyword
+    ) {
+      fail(`${label} contains an unsupported module loader.`);
+    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "require") {
+      if (node.arguments.length !== 1 || !ts.isStringLiteral(node.arguments[0])) {
+        fail(`${label} contains a dynamic require.`);
+      }
+      specifiers.push(node.arguments[0].text);
+    }
+    if (ts.isIdentifier(node) && FORBIDDEN_LOADER_NAMES.has(node.text)) {
+      const directStaticRequire =
+        node.text === "require" &&
+        ts.isCallExpression(node.parent) &&
+        node.parent.expression === node &&
+        node.parent.arguments.length === 1 &&
+        ts.isStringLiteral(node.parent.arguments[0]);
+      if (!directStaticRequire) {
+        fail(`${label} contains an unsupported module-loader reference.`);
+      }
+    }
+    if (
+      ts.isElementAccessExpression(node) &&
+      ts.isStringLiteral(node.argumentExpression) &&
+      FORBIDDEN_LOADER_NAMES.has(node.argumentExpression.text)
+    ) {
+      fail(`${label} contains an indirect module-loader reference.`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return specifiers;
+}
+
+function proveJourneyGraph(
+  root,
+  entry,
   { exists = existsSync, lstat = lstatSync, readFile = readFileSync, realpath = realpathSync } = {}
 ) {
-  validateTestModulePath(testModule, { lstat, realpath });
-  const root = dirname(dirname(dirname(testModule)));
-  const pending = [testModule];
+  const pending = [entry];
   const visited = new Set();
   const modules = [];
   let totalBytes = 0;
@@ -134,6 +291,11 @@ export function proveDataWranglerComparisonJourneyGraph(
       fail("The comparison journey dependency graph left its neutral test/shared roots.");
     }
     const source = readFile(path, "utf8");
+    const metadataAfter = lstat(path, { bigint: true });
+    const canonicalPathAfter = realpath(path);
+    if (canonicalPathAfter !== path || !sameMetadata(metadata, metadataAfter)) {
+      fail("The comparison journey dependency graph changed while it was read.");
+    }
     const bytes = Buffer.byteLength(source, "utf8");
     totalBytes += bytes;
     if (bytes === 0 || totalBytes > JOURNEY_GRAPH_MAX_BYTES) {
@@ -145,17 +307,11 @@ export function proveDataWranglerComparisonJourneyGraph(
     ) {
       fail("The comparison journey dependency graph can reach the Open Wrangler product extension.");
     }
-    const requireCalls = [...source.matchAll(/require\s*\(/gu)];
-    const literalRequires = [...source.matchAll(/require\s*\(\s*("(?:[^"\\]|\\.)*")\s*\)/gu)].map((match) =>
-      JSON.parse(match[1])
-    );
-    if (requireCalls.length !== literalRequires.length) {
-      fail("The comparison journey dependency graph contains a dynamic import.");
-    }
+    const literalRequires = staticCommonJsDependencies(source, "Comparison journey module");
     for (const specifier of literalRequires) {
       if (specifier.startsWith(".")) {
         pending.push(resolveRelativeJourneyImport(path, specifier, root, exists));
-      } else if (!specifier.startsWith("node:") && !ALLOWED_EXTERNAL_IMPORTS.has(specifier)) {
+      } else if (!ALLOWED_EXTERNAL_IMPORTS.has(specifier)) {
         fail(`The comparison journey imports unapproved external package ${specifier}.`);
       }
     }
@@ -168,12 +324,31 @@ export function proveDataWranglerComparisonJourneyGraph(
   modules.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   const graphSha256 = createHash("sha256").update(JSON.stringify(modules), "utf8").digest("hex");
   return Object.freeze({
-    entry: relative(root, testModule).split(sep).join("/"),
+    entry: relative(root, entry).split(sep).join("/"),
     moduleCount: modules.length,
     totalBytes,
     graphSha256,
     modules: Object.freeze(modules.map((entry) => Object.freeze(entry)))
   });
+}
+
+export function proveDataWranglerComparisonJourneyGraph(
+  testModule,
+  { exists = existsSync, lstat = lstatSync, readFile = readFileSync, realpath = realpathSync } = {}
+) {
+  validateTestModulePath(testModule, { lstat, realpath });
+  const root = dirname(dirname(dirname(testModule)));
+  return proveJourneyGraph(root, testModule, { exists, lstat, readFile, realpath });
+}
+
+function provePackagedJourneyGraph(
+  directory,
+  { exists = existsSync, lstat = lstatSync, readFile = readFileSync, realpath = realpathSync } = {}
+) {
+  validateCanonicalDirectory(directory, "Comparison-driver directory", { lstat, realpath });
+  const root = resolve(directory, "journey");
+  validateCanonicalDirectory(root, "Comparison-driver journey directory", { lstat, realpath });
+  return proveJourneyGraph(root, resolve(root, JOURNEY_ENTRY), { exists, lstat, readFile, realpath });
 }
 
 function driverManifest() {
@@ -186,7 +361,8 @@ function driverManifest() {
     engines: { vscode: "^1.106.0" },
     extensionKind: ["workspace"],
     main: "./extension.js",
-    files: ["extension.js"],
+    dependencies: { "playwright-core": PLAYWRIGHT_CORE_LOCKED_VERSION },
+    bundledDependencies: ["playwright-core"],
     activationEvents: ["*"],
     capabilities: {
       untrustedWorkspaces: {
@@ -196,12 +372,12 @@ function driverManifest() {
   };
 }
 
-function driverSource(testModule) {
+function driverSource() {
   return `"use strict";
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const vscode = require("vscode");
-const runNotebookComparisonJourney = require(${JSON.stringify(testModule)}).run;
+const runNotebookComparisonJourney = require(${JSON.stringify(PACKAGED_JOURNEY_REQUIRE)}).run;
 
 function publishFile(targetPath, contents) {
   const temporaryPath = targetPath + "." + process.pid + "." + crypto.randomUUID() + ".tmp";
@@ -253,7 +429,7 @@ exports.activate = async function () {
 `;
 }
 
-export function validateDataWranglerComparisonDriverBundle({ manifest, source, expectedTestModule }) {
+export function validateDataWranglerComparisonDriverBundle({ manifest, source }) {
   exactKeys(
     manifest,
     [
@@ -265,7 +441,8 @@ export function validateDataWranglerComparisonDriverBundle({ manifest, source, e
       "engines",
       "extensionKind",
       "main",
-      "files",
+      "dependencies",
+      "bundledDependencies",
       "activationEvents",
       "capabilities"
     ],
@@ -276,16 +453,15 @@ export function validateDataWranglerComparisonDriverBundle({ manifest, source, e
     fail("The comparison-driver manifest does not match its neutral locked package.");
   }
   boundedSource(source, DRIVER_SOURCE_MAX_BYTES, "Comparison-driver source");
-  const expectedRequire = `require(${JSON.stringify(expectedTestModule)})`;
+  const expectedRequire = `require(${JSON.stringify(PACKAGED_JOURNEY_REQUIRE)})`;
   if (!source.includes(`const runNotebookComparisonJourney = ${expectedRequire}.run;`)) {
     fail("The comparison driver is not pinned to its notebook journey module.");
   }
-  const literalRequires = [...source.matchAll(/require\(("(?:[^"\\]|\\.)*")\)/gu)].map((match) => JSON.parse(match[1]));
-  const expectedRequires = ["node:crypto", "node:fs", "vscode", expectedTestModule];
+  const literalRequires = staticCommonJsDependencies(source, "Comparison-driver source");
+  const expectedRequires = ["node:crypto", "node:fs", "vscode", PACKAGED_JOURNEY_REQUIRE];
   if (
     literalRequires.length !== expectedRequires.length ||
-    literalRequires.some((entry, index) => entry !== expectedRequires[index]) ||
-    /require\((?!")/u.test(source)
+    literalRequires.some((entry, index) => entry !== expectedRequires[index])
   ) {
     fail("The comparison driver imports code outside its fixed neutral module list.");
   }
@@ -333,8 +509,8 @@ export function writeDataWranglerComparisonDriver(directory, testModule, depende
     realpath: hooks.realpath
   });
   const manifest = driverManifest();
-  const source = driverSource(testModule);
-  validateDataWranglerComparisonDriverBundle({ manifest, source, expectedTestModule: testModule });
+  const source = driverSource();
+  validateDataWranglerComparisonDriverBundle({ manifest, source });
   let created = false;
   try {
     hooks.mkdir(directory, { mode: 0o700 });
@@ -349,6 +525,21 @@ export function writeDataWranglerComparisonDriver(directory, testModule, depende
       flag: "wx",
       mode: 0o600
     });
+    const sourceRoot = dirname(dirname(dirname(testModule)));
+    for (const module of journeyGraph.modules) {
+      const sourcePath = resolve(sourceRoot, module.path);
+      const destination = resolve(directory, "journey", module.path);
+      const bytes = hooks.readFile(sourcePath);
+      if (
+        !Buffer.isBuffer(bytes) ||
+        createHash("sha256").update(bytes).digest("hex") !== module.sha256 ||
+        !isContainedPath(directory, destination)
+      ) {
+        fail("The comparison journey changed before it could be copied into the driver.");
+      }
+      hooks.mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+      hooks.writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
+    }
     const writtenManifest = JSON.parse(
       boundedSource(
         hooks.readFile(resolve(directory, "package.json"), "utf8"),
@@ -363,10 +554,18 @@ export function writeDataWranglerComparisonDriver(directory, testModule, depende
     );
     const receipt = validateDataWranglerComparisonDriverBundle({
       manifest: writtenManifest,
-      source: writtenSource,
-      expectedTestModule: testModule
+      source: writtenSource
     });
-    return Object.freeze({ directory, testModule, journeyGraph, ...receipt });
+    const copiedGraph = provePackagedJourneyGraph(directory, {
+      exists: hooks.exists,
+      lstat: hooks.lstat,
+      readFile: hooks.readFile,
+      realpath: hooks.realpath
+    });
+    if (JSON.stringify(copiedGraph) !== JSON.stringify(journeyGraph)) {
+      fail("The packaged comparison journey does not match the proven source graph.");
+    }
+    return Object.freeze({ directory, journeyGraph: copiedGraph, ...receipt });
   } catch (error) {
     if (created) {
       try {
@@ -376,6 +575,155 @@ export function writeDataWranglerComparisonDriver(directory, testModule, depende
       }
     }
     throw error;
+  }
+}
+
+function capturePlaywrightRuntime(root, hooks) {
+  validateCanonicalDirectory(root, "Comparison-driver Playwright runtime", hooks);
+  const pending = [root];
+  const files = [];
+  let totalBytes = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    const entries = hooks
+      .readdir(directory, { withFileTypes: true })
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    for (const entry of entries) {
+      if (/[/\\\0\r\n]/u.test(entry.name) || entry.isSymbolicLink()) {
+        fail("The comparison-driver Playwright runtime contains an unsafe entry.");
+      }
+      const path = resolve(directory, entry.name);
+      if (!isContainedPath(root, path)) {
+        fail("The comparison-driver Playwright runtime escaped its package root.");
+      }
+      if (entry.isDirectory()) {
+        validateCanonicalDirectory(path, "Comparison-driver Playwright directory", hooks);
+        pending.push(path);
+        continue;
+      }
+      if (!entry.isFile() || files.length >= PLAYWRIGHT_GRAPH_MAX_FILES) {
+        fail("The comparison-driver Playwright runtime exceeds its file bound or contains a special file.");
+      }
+      const bytes = readStableOwnedFile(path, PLAYWRIGHT_FILE_MAX_BYTES, "Comparison-driver Playwright file", hooks);
+      totalBytes += bytes.length;
+      if (totalBytes > PLAYWRIGHT_GRAPH_MAX_BYTES) {
+        fail("The comparison-driver Playwright runtime exceeds its byte bound.");
+      }
+      files.push({
+        path: relative(root, path).split(sep).join("/"),
+        sha256: createHash("sha256").update(bytes).digest("hex")
+      });
+    }
+  }
+  files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+  const packageEntry = files.find((entry) => entry.path === "package.json");
+  if (packageEntry === undefined) fail("The comparison-driver Playwright runtime has no package manifest.");
+  const packageJson = JSON.parse(
+    readStableOwnedFile(
+      resolve(root, "package.json"),
+      16 * 1024,
+      "Comparison-driver Playwright manifest",
+      hooks
+    ).toString("utf8")
+  );
+  if (
+    !isRecord(packageJson) ||
+    packageJson.name !== "playwright-core" ||
+    typeof packageJson.version !== "string" ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(packageJson.version)
+  ) {
+    fail("The comparison-driver Playwright runtime has an invalid package identity.");
+  }
+  return Object.freeze({
+    version: packageJson.version,
+    fileCount: files.length,
+    totalBytes,
+    treeSha256: createHash("sha256").update(JSON.stringify(files), "utf8").digest("hex")
+  });
+}
+
+function lockedPlaywrightRuntime(hooks) {
+  const lockPath = resolve(REPOSITORY_ROOT, "package-lock.json");
+  const lock = JSON.parse(
+    readStableOwnedFile(lockPath, PACKAGE_LOCK_MAX_BYTES, "Comparison-driver package lock", hooks).toString("utf8")
+  );
+  const entry = lock?.packages?.["node_modules/playwright-core"];
+  if (
+    !isRecord(entry) ||
+    typeof entry.version !== "string" ||
+    typeof entry.integrity !== "string" ||
+    !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(entry.integrity)
+  ) {
+    fail("The comparison-driver package lock does not pin Playwright Core.");
+  }
+  if (entry.version !== PLAYWRIGHT_CORE_LOCKED_VERSION) {
+    fail("The comparison-driver Playwright Core lock changed without updating its private package.");
+  }
+  return Object.freeze({ version: entry.version, lockIntegrity: entry.integrity });
+}
+
+function copyPlaywrightRuntime(directory, hooks) {
+  const locked = lockedPlaywrightRuntime(hooks);
+  const source = capturePlaywrightRuntime(PLAYWRIGHT_PACKAGE_ROOT, hooks);
+  if (source.version !== locked.version) {
+    fail("The installed Playwright Core runtime does not match package-lock.json.");
+  }
+  const destination = resolve(directory, "node_modules", "playwright-core");
+  hooks.mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+  hooks.copy(PLAYWRIGHT_PACKAGE_ROOT, destination, {
+    recursive: true,
+    dereference: true,
+    errorOnExist: true,
+    force: false,
+    preserveTimestamps: true
+  });
+  const copied = capturePlaywrightRuntime(destination, hooks);
+  if (JSON.stringify(source) !== JSON.stringify(copied)) {
+    fail("The packaged Playwright Core runtime does not match the lockfile-pinned installation.");
+  }
+  return Object.freeze({ ...copied, lockIntegrity: locked.lockIntegrity });
+}
+
+function smokePackagedJourneyModule(directory, hooks) {
+  const smokeRoot = hooks.mkdtemp(resolve(tmpdir(), "ow-comparison-driver-smoke-"));
+  try {
+    const vscodeStubRoot = resolve(smokeRoot, "node_modules", "vscode");
+    hooks.mkdir(vscodeStubRoot, { recursive: true, mode: 0o700 });
+    hooks.writeFile(
+      resolve(vscodeStubRoot, "index.js"),
+      `"use strict";\nconst recursive = new Proxy(function () { return recursive; }, {\n  get(_target, key) { return key === "__esModule" ? true : key === "then" ? undefined : recursive; },\n  construct() { return recursive; }\n});\nmodule.exports = recursive;\n`,
+      { encoding: "utf8", flag: "wx", mode: 0o600 }
+    );
+    const inherited = {};
+    for (const key of ["PATH", "Path", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "LD_LIBRARY_PATH"]) {
+      if (typeof process.env[key] === "string") inherited[key] = process.env[key];
+    }
+    hooks.execFile(
+      process.execPath,
+      [
+        "--no-addons",
+        "-e",
+        `const value = require(${JSON.stringify(PACKAGED_JOURNEY_REQUIRE)}); if (typeof value.run !== "function") process.exit(91);`
+      ],
+      {
+        cwd: directory,
+        env: {
+          ...inherited,
+          HOME: smokeRoot,
+          NODE_PATH: resolve(smokeRoot, "node_modules"),
+          TMPDIR: smokeRoot
+        },
+        maxBuffer: 64 * 1024,
+        stdio: "pipe",
+        timeout: 30_000
+      }
+    );
+  } catch (error) {
+    throw new Error("The self-contained comparison journey could not load in an isolated Node process.", {
+      cause: error
+    });
+  } finally {
+    hooks.remove(smokeRoot, { recursive: true, force: true });
   }
 }
 
@@ -418,7 +766,14 @@ function captureDriverVsix(path, hooks) {
 
 export async function packageDataWranglerComparisonDriver(
   { directory, testModule, vsixPath },
-  { createVsix = createDriverVsix, ...fileDependencies } = {}
+  {
+    createVsix = createDriverVsix,
+    copy = cpSync,
+    execFile = execFileSync,
+    mkdtemp = mkdtempSync,
+    readdir = readdirSync,
+    ...fileDependencies
+  } = {}
 ) {
   const pathExists = fileDependencies.exists ?? existsSync;
   if (
@@ -437,10 +792,24 @@ export async function packageDataWranglerComparisonDriver(
   }
   if (typeof createVsix !== "function") fail("The comparison-driver packager must be a function.");
   const written = writeDataWranglerComparisonDriver(directory, testModule, fileDependencies);
+  const runtimeHooks = {
+    copy,
+    execFile,
+    lstat: fileDependencies.lstat ?? lstatSync,
+    mkdir: fileDependencies.mkdir ?? mkdirSync,
+    mkdtemp,
+    readFile: fileDependencies.readFile ?? readFileSync,
+    readdir,
+    realpath: fileDependencies.realpath ?? realpathSync,
+    remove: fileDependencies.remove ?? rmSync,
+    writeFile: fileDependencies.writeFile ?? writeFileSync
+  };
+  const playwrightCore = copyPlaywrightRuntime(directory, runtimeHooks);
+  smokePackagedJourneyModule(directory, runtimeHooks);
   await createVsix({
     cwd: directory,
     packagePath: vsixPath,
-    dependencies: false,
+    dependencies: true,
     skipLicense: true,
     allowStarActivation: true,
     allowMissingRepository: true
@@ -451,7 +820,11 @@ export async function packageDataWranglerComparisonDriver(
     realpath: fileDependencies.realpath ?? realpathSync
   };
   const vsix = captureDriverVsix(vsixPath, hooks);
-  const receipt = Object.freeze({ ...written, vsix });
+  const receipt = Object.freeze({
+    ...written,
+    runtimeDependencies: Object.freeze({ playwrightCore }),
+    vsix
+  });
   driverVsixReceipts.add(receipt);
   return receipt;
 }
@@ -463,26 +836,47 @@ export function revalidateDataWranglerComparisonDriver(receipt, dependencies = {
   const hooks = {
     lstat: dependencies.lstat ?? lstatSync,
     readFile: dependencies.readFile ?? readFileSync,
+    readdir: dependencies.readdir ?? readdirSync,
     realpath: dependencies.realpath ?? realpathSync
   };
-  const manifest = JSON.parse(hooks.readFile(resolve(receipt.directory, "package.json"), "utf8"));
-  const source = hooks.readFile(resolve(receipt.directory, "extension.js"), "utf8");
+  validateCanonicalDirectory(receipt.directory, "Comparison-driver directory", hooks);
+  const manifest = JSON.parse(
+    readStableOwnedFile(
+      resolve(receipt.directory, "package.json"),
+      DRIVER_MANIFEST_MAX_BYTES,
+      "Comparison-driver manifest",
+      hooks
+    ).toString("utf8")
+  );
+  const source = readStableOwnedFile(
+    resolve(receipt.directory, "extension.js"),
+    DRIVER_SOURCE_MAX_BYTES,
+    "Comparison-driver source",
+    hooks
+  ).toString("utf8");
   const bundle = validateDataWranglerComparisonDriverBundle({
     manifest,
-    source,
-    expectedTestModule: receipt.testModule
+    source
   });
-  const journeyGraph = proveDataWranglerComparisonJourneyGraph(receipt.testModule, {
+  const journeyGraph = provePackagedJourneyGraph(receipt.directory, {
     exists: dependencies.exists ?? existsSync,
     lstat: hooks.lstat,
     readFile: hooks.readFile,
     realpath: hooks.realpath
   });
+  const playwrightCore = capturePlaywrightRuntime(resolve(receipt.directory, "node_modules", "playwright-core"), hooks);
   const current = captureDriverVsix(receipt.vsix.path, hooks);
   if (
     bundle.manifestSha256 !== receipt.manifestSha256 ||
     bundle.sourceSha256 !== receipt.sourceSha256 ||
-    journeyGraph.graphSha256 !== receipt.journeyGraph.graphSha256 ||
+    JSON.stringify(journeyGraph) !== JSON.stringify(receipt.journeyGraph) ||
+    !isRecord(receipt.runtimeDependencies) ||
+    !isRecord(receipt.runtimeDependencies.playwrightCore) ||
+    playwrightCore.version !== receipt.runtimeDependencies.playwrightCore.version ||
+    playwrightCore.fileCount !== receipt.runtimeDependencies.playwrightCore.fileCount ||
+    playwrightCore.totalBytes !== receipt.runtimeDependencies.playwrightCore.totalBytes ||
+    playwrightCore.treeSha256 !== receipt.runtimeDependencies.playwrightCore.treeSha256 ||
+    typeof receipt.runtimeDependencies.playwrightCore.lockIntegrity !== "string" ||
     current.sha256 !== receipt.vsix.sha256 ||
     current.bytes !== receipt.vsix.bytes ||
     JSON.stringify(current.identity) !== JSON.stringify(receipt.vsix.identity)
@@ -492,39 +886,192 @@ export function revalidateDataWranglerComparisonDriver(receipt, dependencies = {
   return receipt;
 }
 
+function studyReceiptFromDriverReceipt(receipt) {
+  const modules = receipt.journeyGraph.modules.map((module) =>
+    Object.freeze({ path: module.path, sha256: module.sha256 })
+  );
+  return Object.freeze({
+    extensionId: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.extensionId,
+    version: DATA_WRANGLER_COMPARISON_DRIVER_EXTENSION.version,
+    vsix: Object.freeze({
+      sha256: receipt.vsix.sha256,
+      filesystemIdentity: Object.freeze({
+        device: receipt.vsix.identity.dev,
+        inode: receipt.vsix.identity.ino,
+        sizeBytes: receipt.vsix.bytes,
+        mtimeNs: receipt.vsix.identity.mtimeNs
+      })
+    }),
+    runtimeDependencies: Object.freeze({
+      playwrightCore: Object.freeze({ ...receipt.runtimeDependencies.playwrightCore })
+    }),
+    journeyGraph: Object.freeze({
+      entry: receipt.journeyGraph.entry,
+      moduleCount: receipt.journeyGraph.moduleCount,
+      totalBytes: receipt.journeyGraph.totalBytes,
+      graphSha256: receipt.journeyGraph.graphSha256,
+      modules: Object.freeze(modules)
+    })
+  });
+}
+
+export function createDataWranglerComparisonDriverStudyReceipt(receipt, dependencies = {}) {
+  revalidateDataWranglerComparisonDriver(receipt, dependencies);
+  return studyReceiptFromDriverReceipt(receipt);
+}
+
+export function recoverDataWranglerComparisonDriver(
+  { directory, vsixPath, expectedDriver },
+  {
+    exists = existsSync,
+    lstat = lstatSync,
+    readFile = readFileSync,
+    readdir = readdirSync,
+    realpath = realpathSync
+  } = {}
+) {
+  validateCanonicalDirectory(directory, "Comparison-driver recovery directory", { lstat, realpath });
+  if (
+    typeof vsixPath !== "string" ||
+    !isAbsolute(vsixPath) ||
+    resolve(vsixPath) !== vsixPath ||
+    /[\0\r\n]/u.test(vsixPath) ||
+    basename(vsixPath) !== "notebook-comparison-driver.vsix" ||
+    !isRecord(expectedDriver) ||
+    !isRecord(expectedDriver.runtimeDependencies) ||
+    !isRecord(expectedDriver.runtimeDependencies.playwrightCore)
+  ) {
+    fail("Comparison-driver recovery requires explicit canonical paths and an immutable study receipt.");
+  }
+  const hooks = { lstat, readFile, readdir, realpath };
+  const manifest = JSON.parse(
+    readStableOwnedFile(
+      resolve(directory, "package.json"),
+      DRIVER_MANIFEST_MAX_BYTES,
+      "Recovered comparison-driver manifest",
+      hooks
+    ).toString("utf8")
+  );
+  const source = readStableOwnedFile(
+    resolve(directory, "extension.js"),
+    DRIVER_SOURCE_MAX_BYTES,
+    "Recovered comparison-driver source",
+    hooks
+  ).toString("utf8");
+  const bundle = validateDataWranglerComparisonDriverBundle({ manifest, source });
+  const journeyGraph = provePackagedJourneyGraph(directory, { exists, lstat, readFile, realpath });
+  const capturedPlaywright = capturePlaywrightRuntime(resolve(directory, "node_modules", "playwright-core"), hooks);
+  const expectedPlaywright = expectedDriver.runtimeDependencies.playwrightCore;
+  if (
+    typeof expectedPlaywright.lockIntegrity !== "string" ||
+    !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(expectedPlaywright.lockIntegrity)
+  ) {
+    fail("The immutable study receipt has no valid Playwright Core lock integrity.");
+  }
+  const playwrightCore = Object.freeze({
+    ...capturedPlaywright,
+    lockIntegrity: expectedPlaywright.lockIntegrity
+  });
+  const vsix = captureDriverVsix(vsixPath, hooks);
+  const receipt = Object.freeze({
+    directory,
+    journeyGraph,
+    ...bundle,
+    runtimeDependencies: Object.freeze({ playwrightCore }),
+    vsix
+  });
+  if (canonicalJson(studyReceiptFromDriverReceipt(receipt)) !== canonicalJson(expectedDriver)) {
+    fail("The recovered comparison driver does not match the immutable study manifest.");
+  }
+  driverVsixReceipts.add(receipt);
+  revalidateDataWranglerComparisonDriver(receipt, { exists, lstat, readFile, readdir, realpath });
+  return receipt;
+}
+
+export function createDataWranglerComparisonDriverProfile({
+  editor,
+  userData,
+  extensions,
+  sandboxArgs,
+  environment,
+  installLabel,
+  inventoryLabel
+}) {
+  if (
+    !isRecord(editor) ||
+    typeof editor.name !== "string" ||
+    editor.name.length === 0 ||
+    typeof userData !== "string" ||
+    !isAbsolute(userData) ||
+    resolve(userData) !== userData ||
+    typeof extensions !== "string" ||
+    !isAbsolute(extensions) ||
+    resolve(extensions) !== extensions ||
+    userData === extensions ||
+    /[\0\r\n]/u.test(userData) ||
+    /[\0\r\n]/u.test(extensions) ||
+    !Array.isArray(sandboxArgs) ||
+    sandboxArgs.length > 16 ||
+    sandboxArgs.some(
+      (argument) =>
+        typeof argument !== "string" || argument.length === 0 || argument.length > 256 || /[\0\r\n]/u.test(argument)
+    ) ||
+    !isRecord(environment) ||
+    typeof installLabel !== "string" ||
+    installLabel.length === 0 ||
+    installLabel.length > 128 ||
+    /[\0\r\n]/u.test(installLabel) ||
+    typeof inventoryLabel !== "string" ||
+    inventoryLabel.length === 0 ||
+    inventoryLabel.length > 128 ||
+    /[\0\r\n]/u.test(inventoryLabel)
+  ) {
+    fail("Comparison-driver profile is malformed.");
+  }
+  const profile = Object.freeze({
+    editor: Object.freeze({ ...editor }),
+    userData,
+    extensions,
+    sandboxArgs: Object.freeze([...sandboxArgs]),
+    environment: Object.freeze({ ...environment }),
+    installLabel,
+    inventoryLabel
+  });
+  driverProfileReceipts.add(profile);
+  return profile;
+}
+
+function requireComparisonDriverProfile(profile) {
+  if (!driverProfileReceipts.has(profile)) {
+    fail("Comparison-driver work requires one authentic sealed editor profile.");
+  }
+  return profile;
+}
+
 export async function installDataWranglerComparisonDriver(
-  { receipt, editor, userData, extensions, sandboxArgs, environment, label },
+  { receipt, profile },
   { runCli = runBoundedEditorCliCommand } = {}
 ) {
   revalidateDataWranglerComparisonDriver(receipt);
-  if (
-    !isRecord(editor) ||
-    typeof userData !== "string" ||
-    typeof extensions !== "string" ||
-    !Array.isArray(sandboxArgs) ||
-    !isRecord(environment) ||
-    typeof label !== "string" ||
-    label.length === 0 ||
-    /[\0\r\n]/u.test(label) ||
-    typeof runCli !== "function"
-  ) {
+  requireComparisonDriverProfile(profile);
+  if (typeof runCli !== "function") {
     fail("Comparison-driver installation received malformed editor inputs.");
   }
   const result = await runCli(
     {
-      editor,
+      editor: profile.editor,
       args: [
         "--user-data-dir",
-        userData,
+        profile.userData,
         "--extensions-dir",
-        extensions,
+        profile.extensions,
         "--install-extension",
         receipt.vsix.path,
         "--force",
-        ...sandboxArgs
+        ...profile.sandboxArgs
       ],
-      environment,
-      label
+      environment: profile.environment,
+      label: profile.installLabel
     },
     { timeoutMs: 60_000 }
   );
@@ -584,30 +1131,86 @@ export function assertDataWranglerComparisonArmInventory(entries, { product, exp
 }
 
 export async function runDataWranglerComparisonNeutralDriverPhase(
-  { product, receipt, expectedExtensions, driverInstallation, editorPhaseOptions },
-  { installDriver = installDataWranglerComparisonDriver, readInventory, runPhase } = {}
+  { product, receipt, expectedDriver, expectedExtensions, profile, editorPhaseOptions },
+  {
+    captureDriverReceipt = createDataWranglerComparisonDriverStudyReceipt,
+    installDriver = installDataWranglerComparisonDriver,
+    onAfterValidation = () => undefined,
+    readInventory,
+    runPhase
+  } = {}
 ) {
+  requireComparisonDriverProfile(profile);
   if (
+    typeof captureDriverReceipt !== "function" ||
     typeof installDriver !== "function" ||
+    typeof onAfterValidation !== "function" ||
     typeof readInventory !== "function" ||
     typeof runPhase !== "function" ||
-    !isRecord(driverInstallation) ||
+    !isRecord(expectedDriver) ||
     !isRecord(editorPhaseOptions)
   ) {
     fail("Neutral comparison phase requires driver installation, inventory, and phase callbacks.");
   }
-  if (
-    Object.hasOwn(editorPhaseOptions, "developmentPaths") &&
-    (!Array.isArray(editorPhaseOptions.developmentPaths) || editorPhaseOptions.developmentPaths.length !== 0)
-  ) {
-    fail("Neutral comparison phases cannot load an extension development path.");
+  for (const field of ["editor", "userData", "extensions", "developmentPaths"]) {
+    if (Object.hasOwn(editorPhaseOptions, field)) {
+      fail(`Neutral comparison phase options cannot override their sealed ${field} value.`);
+    }
   }
-  await installDriver({ receipt, ...driverInstallation });
-  const before = assertDataWranglerComparisonArmInventory(await readInventory(), { product, expectedExtensions });
-  const phaseResult = await runPhase({ ...editorPhaseOptions, developmentPaths: [] });
-  const after = assertDataWranglerComparisonArmInventory(await readInventory(), { product, expectedExtensions });
-  if (JSON.stringify(before) !== JSON.stringify(after)) {
-    fail("Comparison-arm extension inventory changed during the measured phase.");
+  await installDriver({ receipt, profile });
+  const driverBefore = captureDriverReceipt(receipt);
+  if (canonicalJson(driverBefore) !== canonicalJson(expectedDriver)) {
+    fail("The installed neutral driver does not match the immutable study manifest.");
   }
-  return Object.freeze({ installedExtensions: before, phaseResult });
+  const before = assertDataWranglerComparisonArmInventory(await readInventory({ profile, stage: "before" }), {
+    product,
+    expectedExtensions
+  });
+  let phaseResult;
+  let phaseError;
+  try {
+    phaseResult = await runPhase(
+      {
+        ...editorPhaseOptions,
+        editor: profile.editor,
+        userData: profile.userData,
+        extensions: profile.extensions,
+        developmentPaths: []
+      },
+      { driverBefore, environment: profile.environment }
+    );
+  } catch (error) {
+    phaseError = error;
+  }
+  let after;
+  let driverAfter;
+  let validationError;
+  try {
+    after = assertDataWranglerComparisonArmInventory(await readInventory({ profile, stage: "after" }), {
+      product,
+      expectedExtensions
+    });
+    driverAfter = captureDriverReceipt(receipt);
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      fail("Comparison-arm extension inventory changed during the measured phase.");
+    }
+    if (
+      canonicalJson(driverBefore) !== canonicalJson(driverAfter) ||
+      canonicalJson(driverAfter) !== canonicalJson(expectedDriver)
+    ) {
+      fail("The neutral comparison driver changed during the measured phase.");
+    }
+    await onAfterValidation({ driverBefore, driverAfter, installedExtensions: before });
+  } catch (error) {
+    validationError = error;
+  }
+  if (phaseError !== undefined && validationError !== undefined) {
+    throw new AggregateError(
+      [phaseError, validationError],
+      "The measured phase failed and its terminal neutral-driver validation also failed."
+    );
+  }
+  if (phaseError !== undefined) throw phaseError;
+  if (validationError !== undefined) throw validationError;
+  return Object.freeze({ installedExtensions: before, driverBefore, driverAfter, phaseResult });
 }

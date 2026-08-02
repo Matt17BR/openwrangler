@@ -560,6 +560,109 @@ function validateStudyCommonExtensions(extensions) {
   });
 }
 
+function validateComparisonDriverReceipt(receipt) {
+  exactKeys(
+    receipt,
+    ["extensionId", "version", "vsix", "runtimeDependencies", "journeyGraph"],
+    "Study comparison driver"
+  );
+  if (
+    receipt.extensionId !== DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY.extensionId ||
+    receipt.version !== DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY.version
+  ) {
+    fail("Study comparison driver identity does not match the preregistered lock.");
+  }
+  exactKeys(receipt.vsix, ["sha256", "filesystemIdentity"], "Study comparison-driver VSIX");
+  assertString(receipt.vsix.sha256, SHA256, "Study comparison-driver VSIX SHA-256");
+  validateFilesystemIdentity(receipt.vsix.filesystemIdentity, "Study comparison-driver VSIX filesystem identity");
+  exactKeys(receipt.runtimeDependencies, ["playwrightCore"], "Study comparison-driver runtime dependencies");
+  exactKeys(
+    receipt.runtimeDependencies.playwrightCore,
+    ["version", "fileCount", "totalBytes", "treeSha256", "lockIntegrity"],
+    "Study comparison-driver Playwright Core runtime"
+  );
+  assertString(
+    receipt.runtimeDependencies.playwrightCore.version,
+    PACKAGE_VERSION,
+    "Study comparison-driver Playwright Core version"
+  );
+  assertInteger(receipt.runtimeDependencies.playwrightCore.fileCount, "Study comparison-driver Playwright file count", {
+    minimum: 1
+  });
+  assertInteger(
+    receipt.runtimeDependencies.playwrightCore.totalBytes,
+    "Study comparison-driver Playwright byte count",
+    {
+      minimum: 1
+    }
+  );
+  if (
+    receipt.runtimeDependencies.playwrightCore.fileCount > 256 ||
+    receipt.runtimeDependencies.playwrightCore.totalBytes > 32 * 1024 * 1024 ||
+    typeof receipt.runtimeDependencies.playwrightCore.lockIntegrity !== "string" ||
+    !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(receipt.runtimeDependencies.playwrightCore.lockIntegrity)
+  ) {
+    fail("Study comparison-driver Playwright Core runtime exceeds its fixed lock bounds.");
+  }
+  assertString(
+    receipt.runtimeDependencies.playwrightCore.treeSha256,
+    SHA256,
+    "Study comparison-driver Playwright tree SHA-256"
+  );
+  exactKeys(
+    receipt.journeyGraph,
+    ["entry", "moduleCount", "totalBytes", "graphSha256", "modules"],
+    "Study comparison-driver journey graph"
+  );
+  if (receipt.journeyGraph.entry !== "test/extensionHost/dataWranglerComparisonNotebookTrial.js") {
+    fail("Study comparison-driver journey graph has the wrong entrypoint.");
+  }
+  assertInteger(receipt.journeyGraph.moduleCount, "Study comparison-driver module count", { minimum: 1 });
+  assertInteger(receipt.journeyGraph.totalBytes, "Study comparison-driver graph byte count", { minimum: 1 });
+  if (
+    receipt.journeyGraph.moduleCount > 64 ||
+    receipt.journeyGraph.totalBytes > 2 * 1024 * 1024 ||
+    !Array.isArray(receipt.journeyGraph.modules) ||
+    receipt.journeyGraph.modules.length !== receipt.journeyGraph.moduleCount
+  ) {
+    fail("Study comparison-driver journey graph exceeds its fixed bounds.");
+  }
+  const paths = new Set();
+  let previousPath = "";
+  for (const module of receipt.journeyGraph.modules) {
+    exactKeys(module, ["path", "sha256"], "Study comparison-driver module");
+    if (
+      typeof module.path !== "string" ||
+      module.path.length === 0 ||
+      module.path.length > 256 ||
+      /[\\\0\r\n]/u.test(module.path) ||
+      module.path.split("/").some((part) => part.length === 0 || part === "." || part === "..") ||
+      (!module.path.startsWith("test/extensionHost/") && !module.path.startsWith("shared/")) ||
+      module.path === "test/extensionHost/index.js" ||
+      module.path <= previousPath ||
+      paths.has(module.path)
+    ) {
+      fail("Study comparison-driver modules must be unique, sorted, and inside neutral roots.");
+    }
+    assertString(module.sha256, SHA256, "Study comparison-driver module SHA-256");
+    paths.add(module.path);
+    previousPath = module.path;
+  }
+  if (!paths.has(receipt.journeyGraph.entry)) {
+    fail("Study comparison-driver graph omits its entrypoint.");
+  }
+  assertString(receipt.journeyGraph.graphSha256, SHA256, "Study comparison-driver graph SHA-256");
+  const expectedGraphSha256 = createHash("sha256")
+    .update(
+      JSON.stringify(receipt.journeyGraph.modules.map((module) => ({ path: module.path, sha256: module.sha256 }))),
+      "utf8"
+    )
+    .digest("hex");
+  if (receipt.journeyGraph.graphSha256 !== expectedGraphSha256) {
+    fail("Study comparison-driver graph SHA-256 does not match its complete module list.");
+  }
+}
+
 function validateStudyTemplates(templates) {
   if (!Array.isArray(templates) || templates.length !== DATA_WRANGLER_STUDY_PRODUCTS.length) {
     fail("Study template provenance must contain both measured products.");
@@ -761,6 +864,7 @@ function validateStudyProvenance(provenance, manifestContext) {
       "display",
       "zoom",
       "commonExtensions",
+      "comparisonDriver",
       "templates",
       "capabilities",
       "controlProfile",
@@ -778,6 +882,7 @@ function validateStudyProvenance(provenance, manifestContext) {
   validateStudyDisplay(provenance.display);
   validateStudyZoom(provenance.zoom);
   validateStudyCommonExtensions(provenance.commonExtensions);
+  validateComparisonDriverReceipt(provenance.comparisonDriver);
   validateStudyTemplates(provenance.templates);
   const capabilityCaptureIds = validateCapabilityReceipts(provenance.capabilities, manifestContext);
   validateControlProfile(provenance.controlProfile, manifestContext);
@@ -2870,6 +2975,8 @@ function validateTrialProvenance(provenance, fragment, entry, manifest) {
       "editorAfter",
       "extensionsBefore",
       "extensionsAfter",
+      "driverBefore",
+      "driverAfter",
       "pythonBefore",
       "pythonAfter",
       "fixtureBefore",
@@ -2911,6 +3018,18 @@ function validateTrialProvenance(provenance, fragment, entry, manifest) {
     canonicalStudyJson(provenance.extensionsAfter) !== canonicalStudyJson(expectedInventory)
   ) {
     fail("Study trial extension inventory does not match the exact common and product extensions.");
+  }
+  for (const [receipt, label] of [
+    [provenance.driverBefore, "before"],
+    [provenance.driverAfter, "after"]
+  ]) {
+    validateComparisonDriverReceipt(receipt);
+    if (canonicalStudyJson(receipt) !== canonicalStudyJson(manifest.provenance.comparisonDriver)) {
+      fail(`Study ${label} trial driver does not match the manifest-pinned neutral VSIX and journey graph.`);
+    }
+  }
+  if (canonicalStudyJson(provenance.driverBefore) !== canonicalStudyJson(provenance.driverAfter)) {
+    fail("Study comparison driver changed during the measured trial.");
   }
   const expectedPython = {
     executableSha256: manifest.python.executableSha256,
