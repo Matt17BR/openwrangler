@@ -495,39 +495,48 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "README must link to the gallery instead of presenting the scrollable setup editor as fully expanded."
   );
   assert.doesNotMatch(readme, /docs\/images\/readme\/v1\.1|docs\/images\/editor-acceptance/u);
-  assert.match(readme, /The whole workflow stays in your editor/u);
-  assert.match(readme, /dataframes in an open-source workbench/u);
-  assert.match(readme, /Operations, dataset health, viewing state, and cleaning history remain visible/u);
+  assert.match(readme, /## Workbench/u);
+  assert.match(readme, /A dataframe workbench for VS Code, Cursor/u);
+  assert.match(
+    readme,
+    /sidebar keeps operations, dataset health, filters, sorts, and cleaning history beside the grid/u
+  );
   assert.match(readme, /14,285 matching rows/u);
   assert.match(readme, /automatic delimiter, encoding, quote, and header detection/u);
   assert.match(readme, /Open Wrangler stays inactive in Restricted Mode\./u);
-  assert.match(readme, /Search the complete schema\./u);
-  assert.match(readme, /Understand distributions\./u);
-  assert.match(readme, /Control compound sorts\./u);
+  assert.match(readme, /Column search covers the full schema and includes data-type icons/u);
+  assert.match(readme, /Hover or focus any histogram bin to see its range and row count/u);
+  assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
   assert.match(readme, /Choose from 27 built-in operations/u);
-  assert.match(readme, /Review the visible result and executable Polars code before applying the step/u);
-  assert.match(readme, /Insert generated cleaning code into the originating notebook/u);
-  assert.match(readme, /opens the complete current live dataframe in the\s+workbench/u);
-  assert.match(readme, /DuckDB, experimental\.<\/strong> Query the same live relation without converting it/u);
-  assert.match(readme, /PySpark 4\.2\.x, experimental\.<\/strong> View, filter, sort, page, and profile in Spark/u);
-  assert.match(readme, /These are evidence points, not row limits/u);
+  assert.match(readme, /preview shows the changed values and generated Polars code/u);
+  assert.match(readme, /Insert generated code into the notebook that opened the dataframe/u);
+  assert.match(readme, /\*\*Open in Open Wrangler\*\* loads the current live dataframe/u);
+  assert.match(readme, /DuckDB relations are view-only and do not require dataframe conversion/u);
+  assert.match(
+    readme,
+    /Experimental PySpark 4\.2\.x support provides viewing, filtering, sorting, paging, and profiles/u
+  );
+  assert.match(readme, /Open Wrangler can open larger datasets; usable size depends/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.doesNotMatch(
     readme,
     /real packaged|complete packaged-editor scene|current grid-block|bounded viewing|portable table|bridge verifies/u
   );
-  assert.match(readme, /Inspired by <a href="https:\/\/github\.com\/microsoft\/vscode-data-wrangler"/u);
+  assert.match(
+    readme,
+    /open-source project inspired by <a href="https:\/\/github\.com\/microsoft\/vscode-data-wrangler"/u
+  );
   assert.match(readme, /If Microsoft\s+Data Wrangler is installed too[\s\S]{0,180}Choose\s+Notebook Preview Provider/u);
   assert.match(readme, /\| Other VS Code desktop forks \| Experimental/u);
   assert.match(readme, /\| DuckDB, experimental\s+\|/u);
   assert.doesNotMatch(readme, /\| DuckDB, preview/u);
-  assert.match(readme, /loading a pickle can execute arbitrary code/u);
-  assert.match(readme, /opening\s+a large or remote dataframe may be expensive/u);
-  assert.match(readme, /does not install PySpark,\s+authenticate a cluster, or stop your session/u);
+  assert.match(readme, /Pickle files are not supported because opening one can run arbitrary code/u);
+  assert.match(readme, /large or remote dataframes can be expensive to open/u);
+  assert.match(readme, /does not install PySpark or\s+manage cluster authentication/u);
   assert.match(
     readme,
-    /\*\*v1\.2:\*\* adds native PySpark 4\.2 notebook viewing and interaction refinements[\s\S]{0,250}#36[\s\S]{0,500}compatibility validation[\s\S]{0,200}#86[\s\S]{0,300}comparison[\s\S]{0,200}#91/u
+    /\*\*Next in v1:\*\*[\s\S]{0,220}#36[\s\S]{0,220}#86[\s\S]{0,220}#91[\s\S]{0,180}currently\s+experimental/u
   );
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   assert.match(readme, /\*\*v2:\*\* add native R data frames[\s\S]{0,200}#87/u);
