@@ -134,6 +134,114 @@ test("controller fails on stale acknowledgements and a regressing monotonic cloc
   });
 });
 
+test("controller rejects acknowledgements that cross its deadline", async (t) => {
+  await t.test("present before a late poll", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const controller = createDataWranglerStudyBridgeController(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        {
+          clock: () => 200n,
+          now: valuesNumberClock([0, 1, 2, 100]),
+          timeoutMs: 100,
+          pollIntervalMs: 1,
+          wait: async () => {
+            writeFileSync(
+              acknowledgementPath,
+              canonicalDurableJson(
+                createDataWranglerStudyBridgeAcknowledgement({
+                  runId: RUN_ID,
+                  phase: PHASE,
+                  sequence: 0,
+                  kind: "sampling-origin",
+                  monotonicNanoseconds: "300"
+                })
+              ),
+              { mode: 0o600, flag: "wx" }
+            );
+          }
+        }
+      );
+      await assert.rejects(controller.exchange("sampling-origin"), /within 100 ms/u);
+    });
+  });
+
+  await t.test("becomes late while it is read", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      let call = 0;
+      const controller = createDataWranglerStudyBridgeController(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        {
+          clock: () => 200n,
+          now: () => {
+            call += 1;
+            if (call === 2) {
+              writeFileSync(
+                acknowledgementPath,
+                canonicalDurableJson(
+                  createDataWranglerStudyBridgeAcknowledgement({
+                    runId: RUN_ID,
+                    phase: PHASE,
+                    sequence: 0,
+                    kind: "sampling-origin",
+                    monotonicNanoseconds: "300"
+                  })
+                ),
+                { mode: 0o600, flag: "wx" }
+              );
+            }
+            return call === 1 ? 0 : call === 2 ? 1 : 100;
+          },
+          timeoutMs: 100,
+          pollIntervalMs: 1
+        }
+      );
+      await assert.rejects(controller.exchange("sampling-origin"), /within 100 ms/u);
+    });
+  });
+});
+
+test("responder rejects requests that cross its deadline", async (t) => {
+  const request = createDataWranglerStudyBridgeRequest({
+    runId: RUN_ID,
+    phase: PHASE,
+    sequence: 0,
+    kind: "measurement-ready",
+    monotonicNanoseconds: "200"
+  });
+
+  await t.test("present before a late poll", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      const responder = createDataWranglerStudyBridgeResponder(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        {
+          now: valuesNumberClock([0, 1, 2, 100]),
+          timeoutMs: 100,
+          pollIntervalMs: 1,
+          wait: async () => {
+            writeFileSync(requestPath, canonicalDurableJson(request), { mode: 0o600, flag: "wx" });
+          }
+        }
+      );
+      await assert.rejects(responder.waitForRequest(0, "measurement-ready"), /within 100 ms/u);
+    });
+  });
+
+  await t.test("becomes late while it is read", async () => {
+    await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
+      writeFileSync(requestPath, canonicalDurableJson(request), { mode: 0o600, flag: "wx" });
+      const responder = createDataWranglerStudyBridgeResponder(
+        { requestPath, acknowledgementPath, runId: RUN_ID, phase: PHASE },
+        {
+          now: valuesNumberClock([0, 1, 100]),
+          timeoutMs: 100,
+          pollIntervalMs: 1
+        }
+      );
+      await assert.rejects(responder.waitForRequest(0, "measurement-ready"), /within 100 ms/u);
+    });
+  });
+});
+
 test("bridge paths reject stale files, symlinks, non-private parents, and inauthentic acknowledgements", async (t) => {
   await t.test("stale file", async () => {
     await withBridgeDirectory(async ({ requestPath, acknowledgementPath }) => {
@@ -251,6 +359,16 @@ function valuesClock(values) {
   return () => {
     const value = values[index];
     if (value === undefined) throw new Error("clock exhausted");
+    index += 1;
+    return value;
+  };
+}
+
+function valuesNumberClock(values) {
+  let index = 0;
+  return () => {
+    const value = values[index];
+    if (value === undefined) throw new Error("numeric clock exhausted");
     index += 1;
     return value;
   };

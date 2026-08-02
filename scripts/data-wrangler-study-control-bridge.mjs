@@ -413,6 +413,14 @@ function delay(milliseconds) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
+function elapsedBeforeDeadline(now, startedAt, timeoutMs, message) {
+  const elapsed = now() - startedAt;
+  if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= timeoutMs) {
+    fail("timeout", message);
+  }
+  return elapsed;
+}
+
 function assertOpenPaths(paths) {
   if (entryExists(paths.request) || entryExists(paths.acknowledgement)) {
     fail("stale-entry", "Study bridge paths contain an unconsumed request or acknowledgement.");
@@ -459,8 +467,20 @@ export function createDataWranglerStudyBridgeController(
         const requestPublication = publishEnvelope(paths.request, request, requestPublicationOptions);
         const startedAt = now();
         while (true) {
+          elapsedBeforeDeadline(
+            now,
+            startedAt,
+            timeoutMs,
+            `Study bridge acknowledgement did not arrive within ${timeoutMs} ms.`
+          );
           const acknowledgement = readAcknowledgement(paths.acknowledgement, { optional: true });
           if (acknowledgement !== null) {
+            elapsedBeforeDeadline(
+              now,
+              startedAt,
+              timeoutMs,
+              `Study bridge acknowledgement did not arrive within ${timeoutMs} ms.`
+            );
             assertExpectedEnvelope(acknowledgement.envelope, request, "Study bridge acknowledgement");
             if (BigInt(acknowledgement.envelope.monotonicNanoseconds) < BigInt(request.monotonicNanoseconds)) {
               fail("clock-regression", "Study bridge acknowledgement predates its request.");
@@ -484,10 +504,12 @@ export function createDataWranglerStudyBridgeController(
             sequence += 1;
             return Object.freeze({ request, acknowledgement: acknowledgement.envelope });
           }
-          const elapsed = now() - startedAt;
-          if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= timeoutMs) {
-            fail("timeout", `Study bridge acknowledgement did not arrive within ${timeoutMs} ms.`);
-          }
+          const elapsed = elapsedBeforeDeadline(
+            now,
+            startedAt,
+            timeoutMs,
+            `Study bridge acknowledgement did not arrive within ${timeoutMs} ms.`
+          );
           const waitResult = wait(Math.min(pollIntervalMs, Math.max(1, timeoutMs - elapsed)));
           if (!waitResult || typeof waitResult.then !== "function") {
             fail("invalid-dependency", "Study bridge wait function must return a promise.");
@@ -535,8 +557,20 @@ export function createDataWranglerStudyBridgeResponder(
       validateKind(expectedKind);
       const startedAt = now();
       while (true) {
+        elapsedBeforeDeadline(
+          now,
+          startedAt,
+          timeoutMs,
+          `Study bridge request did not arrive within ${timeoutMs} ms.`
+        );
         const candidate = readRequest(paths.request, { optional: true });
         if (candidate !== null) {
+          elapsedBeforeDeadline(
+            now,
+            startedAt,
+            timeoutMs,
+            `Study bridge request did not arrive within ${timeoutMs} ms.`
+          );
           const request = candidate.envelope;
           if (
             lastAcknowledged !== undefined &&
@@ -555,10 +589,12 @@ export function createDataWranglerStudyBridgeResponder(
             return request;
           }
         }
-        const elapsed = now() - startedAt;
-        if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= timeoutMs) {
-          fail("timeout", `Study bridge request did not arrive within ${timeoutMs} ms.`);
-        }
+        const elapsed = elapsedBeforeDeadline(
+          now,
+          startedAt,
+          timeoutMs,
+          `Study bridge request did not arrive within ${timeoutMs} ms.`
+        );
         const waitResult = wait(Math.min(pollIntervalMs, Math.max(1, timeoutMs - elapsed)));
         if (!waitResult || typeof waitResult.then !== "function") {
           fail("invalid-dependency", "Study bridge wait function must return a promise.");
