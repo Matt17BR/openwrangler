@@ -16,6 +16,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   lossless-media contracts without repeating unrelated engine/editor matrices. Drafts still take precedence, mixed or
   unknown paths fail into full CI, and public/accepted evidence under `docs/images/**`, `docs/media-gallery.md`, or
   `docs/media-spec-*` remains full-matrix so PNG quality cannot bypass its visual checks.
+  Directly protected CodeQL and cross-platform check names remain present through classification-only carrier cells.
 - Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
   kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
   serialization, nested lease inheritance, and automatic crash release.
