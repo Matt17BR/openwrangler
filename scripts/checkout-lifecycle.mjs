@@ -5,6 +5,7 @@ import {
   closeSync,
   constants,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -13,6 +14,7 @@ import {
   opendirSync,
   readSync,
   realpathSync,
+  statfsSync,
   writeFileSync
 } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
@@ -26,7 +28,12 @@ const RECEIPT_PROTOCOL = "openwrangler-checkout-receipt-v2";
 const CLEANUP_REQUEST_PROTOCOL = "openwrangler-cleanup-request-v2";
 const RETIREMENT_PLAN_PROTOCOL = "openwrangler-retirement-plan-v1";
 const RETIREMENT_CHECKS_PROTOCOL = "openwrangler-retirement-deferred-checks-v1";
+const ARCHIVE_RECEIPT_PROTOCOL = "openwrangler-checkout-archive-v1";
+const ARCHIVE_COMPLETION_PROTOCOL = "openwrangler-checkout-archive-completion-v1";
 const MAXIMUM_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
+const MAXIMUM_BUNDLE_HEADER_BYTES = 4 * 1024 * 1024;
+const ARCHIVE_SPACE_MULTIPLIER = 8n;
+const ARCHIVE_SPACE_RESERVE_BYTES = 512n * 1024n * 1024n;
 const MAXIMUM_ENTRY_BYTES = 64 * 1024;
 const MAXIMUM_LOCK_BYTES = 2048;
 const MAXIMUM_ENTRIES = 256;
@@ -40,6 +47,14 @@ const MAXIMUM_GENERATED_ROOTS = 16;
 const MAXIMUM_WORKTREE_RECORDS = 4096;
 const MAXIMUM_WORKTREE_FIELDS = 16;
 const MAXIMUM_WORKTREE_FIELD_BYTES = 8192;
+const MAXIMUM_ARCHIVE_ATTEMPTS = 8;
+const MAXIMUM_ARCHIVE_DIRECTORIES = MAXIMUM_ENTRIES * MAXIMUM_ARCHIVE_ATTEMPTS;
+const MAXIMUM_ARCHIVE_REFS = 32_768;
+const MAXIMUM_ARCHIVE_PACK_FILES = 16_384;
+const MAXIMUM_ARCHIVE_REFLOG_BYTES = 16 * 1024 * 1024;
+const MAXIMUM_ARCHIVE_REFLOG_ENTRIES = 262_144;
+const MAXIMUM_VERIFICATION_FILES = 4096;
+const MAXIMUM_VERIFICATION_DEPTH = 16;
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const REMOTE_PATTERN = /^[A-Za-z0-9._-]{1,80}$/u;
 const GENERATED_ROOT_PATTERN = /^(?!\.\.?$)[A-Za-z0-9._-]{1,80}$/u;
@@ -47,6 +62,7 @@ const SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
 const IDENTITY_PATTERN = /^(?:0|[1-9][0-9]{0,39})$/u;
 const ENTRY_FILE_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})\.json$/u;
 const LOCK_FILE_PATTERN = /^([1-9][0-9]{0,8})\.(claim|release)\.json$/u;
+const ARCHIVE_ATTEMPT_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})\.([1-8])$/u;
 
 export class CheckoutLifecycleError extends Error {
   constructor(code, message) {
@@ -182,6 +198,54 @@ function readBoundedFile(path, maximumBytes, label, privateMode = undefined) {
   }
 }
 
+function validateOwnedRegularFile(metadata, label, privateMode = undefined) {
+  if (
+    !metadata.isFile() ||
+    metadata.nlink !== 1n ||
+    !currentUserOwns(metadata) ||
+    metadata.size < 1n ||
+    metadata.size > BigInt(Number.MAX_SAFE_INTEGER) ||
+    (privateMode !== undefined && typeof process.getuid === "function" && (metadata.mode & 0o777n) !== privateMode)
+  ) {
+    fail("unsafe-archive", `${label} is not one non-empty owned regular file.`);
+  }
+}
+
+function hashDescriptor(descriptor, label, privateMode = undefined) {
+  const before = fstatSync(descriptor, { bigint: true });
+  validateOwnedRegularFile(before, label, privateMode);
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const size = Number(before.size);
+  let offset = 0;
+  while (offset < size) {
+    const count = readSync(descriptor, buffer, 0, Math.min(buffer.length, size - offset), offset);
+    if (count === 0) fail("archive-changed", `${label} changed while it was hashed.`);
+    hash.update(buffer.subarray(0, count));
+    offset += count;
+  }
+  const after = fstatSync(descriptor, { bigint: true });
+  if (!sameIdentity(identityOf(before), identityOf(after)) || before.size !== after.size) {
+    fail("archive-changed", `${label} changed while it was hashed.`);
+  }
+  return Object.freeze({ identity: identityOf(before), byteLength: size, sha256: hash.digest("hex") });
+}
+
+function captureArchiveFile(path, label) {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const receipt = hashDescriptor(descriptor, label, 0o600n);
+    revalidatePathIdentity(path, receipt.identity, label);
+    return receipt;
+  } catch (error) {
+    if (error instanceof CheckoutLifecycleError) throw error;
+    fail("unsafe-archive", `${label} could not be read safely: ${error.message}`);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 function rejectDuplicateJsonKeys(text, label) {
   let offset = 0;
   let nodes = 0;
@@ -283,6 +347,22 @@ function readJson(path, maximumBytes, label, privateMode = 0o600n) {
   }
 }
 
+function readJsonReceipt(path, maximumBytes, label) {
+  const file = readBoundedFile(path, maximumBytes, label, 0o600n);
+  try {
+    rejectDuplicateJsonKeys(file.text, label);
+    return Object.freeze({
+      value: JSON.parse(file.text),
+      identity: file.identity,
+      byteLength: Buffer.byteLength(file.text, "utf8"),
+      sha256: sha256(file.text)
+    });
+  } catch (error) {
+    if (error instanceof CheckoutLifecycleError) throw error;
+    fail("invalid-registry", `${label} is not valid JSON: ${error.message}`);
+  }
+}
+
 function revalidatePathIdentity(path, expected, label, kind = "file") {
   const metadata = lstatSync(path, { bigint: true });
   const expectedKind = kind === "directory" ? metadata.isDirectory() : metadata.isFile();
@@ -315,12 +395,14 @@ function writeJsonExclusive(path, value, expectedParentIdentity = undefined) {
 }
 
 function defaultRun(command, args, options = {}) {
+  const stdoutFd = options.stdoutFd;
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: "utf8",
     env: options.env ?? process.env,
+    input: options.input,
     maxBuffer: MAXIMUM_COMMAND_OUTPUT_BYTES,
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: [options.input === undefined ? "ignore" : "pipe", stdoutFd === undefined ? "pipe" : stdoutFd, "pipe"]
   });
   if (result.error !== undefined) fail("command-failed", `${command} could not start: ${result.error.message}`);
   const normalized = Object.freeze({ status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" });
@@ -346,7 +428,9 @@ function commonGit(run, paths, repository, args, options = {}) {
   return run("git", ["--git-dir", repository.commonGitDirectory, ...args], {
     cwd: paths.root,
     allowFailure: options.allowFailure,
-    env: options.env
+    env: options.env,
+    stdoutFd: options.stdoutFd,
+    input: options.input
   });
 }
 
@@ -508,6 +592,114 @@ function parseWorktreeList(output) {
   return Object.freeze(records);
 }
 
+function parseRefList(output, objectFormat, label, options = {}) {
+  if (typeof output !== "string" || !["sha1", "sha256"].includes(objectFormat)) {
+    fail("invalid-archive", `${label} is malformed.`);
+  }
+  const oidLength = objectFormat === "sha1" ? 40 : 64;
+  const refs =
+    output === ""
+      ? []
+      : output
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const space = line.indexOf(" ");
+            const oid = space === -1 ? "" : line.slice(0, space);
+            const ref = space === -1 ? "" : line.slice(space + 1);
+            if (
+              oid.length !== oidLength ||
+              !/^[0-9a-f]+$/u.test(oid) ||
+              !(
+                ref.startsWith("refs/") ||
+                (options.allowHead === true && ref === "HEAD") ||
+                (options.allowWorktreeHeads === true && /^worktrees\/[A-Za-z0-9._-]{1,240}\/HEAD$/u.test(ref)) ||
+                (options.allowArchivePseudorefs === true &&
+                  (ref === "ORIG_HEAD" || /^worktrees\/[A-Za-z0-9._-]{1,240}\/ORIG_HEAD$/u.test(ref)))
+              ) ||
+              Buffer.byteLength(ref, "utf8") > 4096 ||
+              [...ref].some((character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127)
+            ) {
+              fail("invalid-archive", `${label} contains an invalid reference.`);
+            }
+            return Object.freeze({ oid, ref });
+          });
+  if (
+    refs.length < 1 ||
+    refs.length > MAXIMUM_ARCHIVE_REFS ||
+    new Set(refs.map((item) => item.ref)).size !== refs.length
+  ) {
+    fail("invalid-archive", `${label} contains duplicate, missing, or too many references.`);
+  }
+  return Object.freeze([...refs].sort((left, right) => Buffer.compare(Buffer.from(left.ref), Buffer.from(right.ref))));
+}
+
+function refsReceipt(refs) {
+  const canonical = refs.map(({ oid, ref }) => `${oid} ${ref}`).join("\n") + "\n";
+  return Object.freeze({ count: refs.length, sha256: sha256(canonical) });
+}
+
+function parseBundleHeader(path, expectedObjectFormat) {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const chunks = [];
+    let length = 0;
+    let headerEnd = -1;
+    while (length < MAXIMUM_BUNDLE_HEADER_BYTES && (headerEnd === -1 || length < headerEnd + 6)) {
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, MAXIMUM_BUNDLE_HEADER_BYTES - length));
+      const count = readSync(descriptor, buffer, 0, buffer.length, length);
+      if (count === 0) break;
+      chunks.push(buffer.subarray(0, count));
+      length += count;
+      headerEnd = Buffer.concat(chunks).indexOf("\n\n");
+    }
+    const bytes = Buffer.concat(chunks);
+    headerEnd = bytes.indexOf("\n\n");
+    if (
+      headerEnd === -1 ||
+      bytes.length < headerEnd + 6 ||
+      bytes.subarray(headerEnd + 2, headerEnd + 6).toString() !== "PACK"
+    ) {
+      fail("invalid-archive", "The Git bundle has no bounded complete header or pack payload.");
+    }
+    let text;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, headerEnd));
+    } catch {
+      fail("invalid-archive", "The Git bundle header is not valid UTF-8.");
+    }
+    const lines = text.split("\n");
+    const signature = lines.shift();
+    const version = signature === "# v2 git bundle" ? 2 : signature === "# v3 git bundle" ? 3 : 0;
+    if (version === 0) fail("invalid-archive", "The Git bundle version is unsupported.");
+    const capabilities = [];
+    const referenceLines = [];
+    let prerequisiteCount = 0;
+    for (const line of lines) {
+      if (line.startsWith("@")) capabilities.push(line.slice(1));
+      else if (line.startsWith("-")) prerequisiteCount += 1;
+      else referenceLines.push(line);
+    }
+    if (prerequisiteCount !== 0) fail("archive-not-self-contained", "The Git bundle has prerequisites.");
+    const expectedCapability = `object-format=${expectedObjectFormat}`;
+    if (
+      (version === 2 && (expectedObjectFormat !== "sha1" || capabilities.length !== 0)) ||
+      (version === 3 && (capabilities.length !== 1 || capabilities[0] !== expectedCapability))
+    ) {
+      fail("archive-not-self-contained", "The Git bundle has an unexpected object format or capability.");
+    }
+    const refs = parseRefList(`${referenceLines.join("\n")}\n`, expectedObjectFormat, "Git bundle header", {
+      allowHead: true,
+      allowWorktreeHeads: true,
+      allowArchivePseudorefs: true
+    });
+    return Object.freeze({ version, objectFormat: expectedObjectFormat, capabilities, prerequisiteCount, refs });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 function parseStatus(output) {
   return Object.freeze(
     output
@@ -533,6 +725,39 @@ function configuredContentFilterKeys(output) {
   );
 }
 
+function unsafeArchiveConfigKeys(output) {
+  return Object.freeze(
+    output
+      .split("\0")
+      .filter(Boolean)
+      .map((key) => key.toLowerCase())
+      .filter(
+        (key) =>
+          key === "extensions.partialclone" ||
+          /^remote\..+\.(?:promisor|partialclonefilter)$/u.test(key) ||
+          /^filter\..+\.(?:clean|process|required)$/u.test(key)
+      )
+  );
+}
+
+function entryExistsNoFollow(path, label) {
+  try {
+    lstatSync(path, { bigint: true });
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    fail("archive-not-eligible", `${label} could not be inspected safely: ${error.message}`);
+  }
+}
+
+function decimalBigInt(value, label) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!/^(?:0|[1-9][0-9]{0,39})$/u.test(trimmed)) {
+    fail("archive-not-eligible", `${label} is malformed.`);
+  }
+  return BigInt(trimmed);
+}
+
 function belongsToGeneratedRoot(path, roots) {
   const normalized = path.endsWith("/") ? path.slice(0, -1) : path;
   return roots.some((root) => normalized === root || normalized.startsWith(`${root}/`));
@@ -553,6 +778,86 @@ function readDirectoryBounded(path, maximumEntries, label) {
   return entries;
 }
 
+function captureVerificationRepository(path, expectedIdentity) {
+  revalidatePathIdentity(path, expectedIdentity, "Verification repository", "directory");
+  const records = [];
+  let fileCount = 0;
+  let directoryCount = 0;
+  let byteLength = 0n;
+
+  function visit(directoryPath, relativePath, depth) {
+    if (depth > MAXIMUM_VERIFICATION_DEPTH) {
+      fail("unsafe-archive", "The verification repository is nested too deeply.");
+    }
+    const metadata = lstatSync(directoryPath, { bigint: true });
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !currentUserOwns(metadata) ||
+      realpathSync(directoryPath) !== resolve(directoryPath)
+    ) {
+      fail("unsafe-archive", "The verification repository contains an unsafe directory.");
+    }
+    directoryCount += 1;
+    if (directoryCount + fileCount > MAXIMUM_VERIFICATION_FILES) {
+      fail("unsafe-archive", "The verification repository contains too many entries.");
+    }
+    const directoryIdentity = identityOf(metadata);
+    records.push(`d\0${relativePath}\0${directoryIdentity.device}\0${directoryIdentity.inode}\n`);
+    const entries = readDirectoryBounded(directoryPath, MAXIMUM_VERIFICATION_FILES, "The verification repository").sort(
+      (left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name))
+    );
+    for (const item of entries) {
+      if ([...item.name].some((character) => character.charCodeAt(0) === 0)) {
+        fail("unsafe-archive", "The verification repository contains an invalid path.");
+      }
+      const childPath = join(directoryPath, item.name);
+      const childRelative = relativePath === "" ? item.name : `${relativePath}/${item.name}`;
+      if (item.isDirectory() && !item.isSymbolicLink()) {
+        visit(childPath, childRelative, depth + 1);
+        continue;
+      }
+      if (!item.isFile() || item.isSymbolicLink()) {
+        fail("unsafe-archive", "The verification repository contains a symlink or special file.");
+      }
+      let descriptor;
+      try {
+        descriptor = openSync(childPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        try {
+          fsyncSync(descriptor);
+        } catch (error) {
+          if (process.platform !== "win32" || !["EINVAL", "EPERM"].includes(error.code)) throw error;
+        }
+        const receipt = hashDescriptor(descriptor, `Verification repository file ${childRelative}`);
+        revalidatePathIdentity(childPath, receipt.identity, `Verification repository file ${childRelative}`);
+        fileCount += 1;
+        byteLength += BigInt(receipt.byteLength);
+        if (directoryCount + fileCount > MAXIMUM_VERIFICATION_FILES) {
+          fail("unsafe-archive", "The verification repository contains too many entries.");
+        }
+        records.push(
+          `f\0${childRelative}\0${receipt.identity.device}\0${receipt.identity.inode}\0${receipt.byteLength}\0${receipt.sha256}\n`
+        );
+      } finally {
+        if (descriptor !== undefined) closeSync(descriptor);
+      }
+    }
+    fsyncDirectory(directoryPath);
+    revalidatePathIdentity(directoryPath, directoryIdentity, "Verification repository directory", "directory");
+  }
+
+  visit(path, "", 0);
+  revalidatePathIdentity(path, expectedIdentity, "Verification repository", "directory");
+  return Object.freeze({
+    path,
+    identity: expectedIdentity,
+    directoryCount,
+    fileCount,
+    byteLength: byteLength.toString(),
+    sha256: sha256(records.join(""))
+  });
+}
+
 function processIsAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -571,7 +876,8 @@ function normalizePaths(root) {
     entries: join(managerRoot, "entries"),
     checkouts: join(managerRoot, "checkouts"),
     locks: join(managerRoot, "locks"),
-    retirements: join(managerRoot, "retirements")
+    retirements: join(managerRoot, "retirements"),
+    archives: join(managerRoot, "archives")
   });
 }
 
@@ -607,6 +913,16 @@ export function createCheckoutManager(options = {}) {
     revalidatePathIdentity(paths.retirements, identity, paths.retirements, "directory");
   }
 
+  function initializeArchiveJournal() {
+    const identity = managedIdentities.get(paths.archives);
+    if (identity === undefined) {
+      managedIdentities.set(paths.archives, ensurePrivateDirectory(paths.archives));
+      return;
+    }
+    assertPrivateDirectory(paths.archives, paths.archives);
+    revalidatePathIdentity(paths.archives, identity, paths.archives, "directory");
+  }
+
   function checkoutPathFor(slug) {
     assertSlug(slug);
     const path = resolve(paths.checkouts, slug);
@@ -640,6 +956,15 @@ export function createCheckoutManager(options = {}) {
     assertSlug(slug);
     assertGeneration(generation);
     return join(paths.retirements, `${slug}.${generation}.json`);
+  }
+
+  function archiveAttemptPath(slug, generation, attempt) {
+    assertSlug(slug);
+    assertGeneration(generation);
+    if (!Number.isSafeInteger(attempt) || attempt < 1 || attempt > MAXIMUM_ARCHIVE_ATTEMPTS) {
+      fail("invalid-archive", "The archive attempt is out of range.");
+    }
+    return join(paths.archives, `${slug}.${generation}.${attempt}`);
   }
 
   function validateLockClaim(value, generation, label) {
@@ -1611,6 +1936,1082 @@ export function createCheckoutManager(options = {}) {
     return evidence;
   }
 
+  function readRetirementPlan(entry) {
+    initializeRetirementJournal();
+    const path = retirementPath(entry.slug, entry.generation);
+    if (!existsSync(path)) fail("retirement-evidence-missing", "Retirement evidence must be recorded first.");
+    const loaded = readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, `Retirement evidence for ${entry.slug}`);
+    validateRetirementEvidence(loaded.value, entry);
+    return Object.freeze({
+      path,
+      identity: loaded.identity,
+      byteLength: loaded.byteLength,
+      sha256: loaded.sha256,
+      value: loaded.value
+    });
+  }
+
+  function revalidateRetirementPlan(plan, entry) {
+    revalidatePathIdentity(plan.path, plan.identity, `Retirement evidence for ${entry.slug}`);
+    const current = readRetirementPlan(entry);
+    if (
+      !sameIdentity(current.identity, plan.identity) ||
+      current.byteLength !== plan.byteLength ||
+      current.sha256 !== plan.sha256 ||
+      !isDeepStrictEqual(current.value, plan.value)
+    ) {
+      fail("registry-changed", "The retirement evidence changed while the archive was prepared.");
+    }
+  }
+
+  function requireCommonArchiveCommand(args, label, options = {}) {
+    const result = commonGit(run, paths, repository, args, {
+      allowFailure: true,
+      env: auditGitEnvironment(),
+      stdoutFd: options.stdoutFd,
+      input: options.input
+    });
+    if (result.status !== 0) fail("archive-command-failed", `${label} failed.`);
+    return result;
+  }
+
+  function requireArchiveGitCommand(gitDirectory, args, label, options = {}) {
+    const result = run("git", ["--git-dir", gitDirectory, ...args], {
+      cwd: options.cwd ?? paths.root,
+      allowFailure: true,
+      env: auditGitEnvironment(),
+      input: options.input
+    });
+    if (result.status !== 0) fail("archive-command-failed", `${label} failed.`);
+    return result;
+  }
+
+  function requireStandaloneArchiveGitCommand(args, cwd, label) {
+    const result = run("git", args, {
+      cwd,
+      allowFailure: true,
+      env: auditGitEnvironment()
+    });
+    if (result.status !== 0) fail("archive-command-failed", `${label} failed.`);
+    return result;
+  }
+
+  function archiveFreeSpace(objectDiskBytes) {
+    let filesystem;
+    try {
+      filesystem = statfsSync(paths.root, { bigint: true });
+    } catch (error) {
+      fail("archive-not-eligible", `Archive free space could not be inspected: ${error.message}`);
+    }
+    if (filesystem.bsize <= 0n || filesystem.bavail < 0n) {
+      fail("archive-not-eligible", "Archive free space reporting is malformed.");
+    }
+    const availableBytes = filesystem.bsize * filesystem.bavail;
+    const requiredBytes = objectDiskBytes * ARCHIVE_SPACE_MULTIPLIER + ARCHIVE_SPACE_RESERVE_BYTES;
+    if (availableBytes < requiredBytes) {
+      fail(
+        "archive-space-insufficient",
+        `The archive needs a conservative ${requiredBytes}-byte free-space budget; ${availableBytes} bytes are available.`
+      );
+    }
+    return Object.freeze({
+      objectDiskBytes: objectDiskBytes.toString(),
+      multiplier: Number(ARCHIVE_SPACE_MULTIPLIER),
+      reserveBytes: ARCHIVE_SPACE_RESERVE_BYTES.toString(),
+      requiredBytes: requiredBytes.toString(),
+      availableBytes: availableBytes.toString()
+    });
+  }
+
+  function captureOrigHead(gitDirectory, ref, objectIdLength, label) {
+    const path = join(gitDirectory, "ORIG_HEAD");
+    if (!entryExistsNoFollow(path, `${label} ORIG_HEAD`)) return null;
+    const file = readBoundedFile(path, 256, `${label} ORIG_HEAD`);
+    const match = new RegExp(`^([0-9a-f]{${objectIdLength}})\\n?$`, "u").exec(file.text);
+    if (match === null) fail("archive-not-eligible", `${label} ORIG_HEAD is malformed.`);
+    return Object.freeze({
+      oid: match[1],
+      ref,
+      state: Object.freeze({
+        path,
+        identity: file.identity,
+        byteLength: Buffer.byteLength(file.text, "utf8"),
+        sha256: sha256(file.text)
+      })
+    });
+  }
+
+  function captureTargetAdminState(entry, objectIdLength) {
+    const adminPath = entry.checkout.gitAdmin.path;
+    revalidatePathIdentity(adminPath, entry.checkout.gitAdmin.identity, "Target Git admin", "directory");
+    const allowedFiles = new Set(["COMMIT_EDITMSG", "HEAD", "ORIG_HEAD", "commondir", "gitdir", "index"]);
+    const allowedDirectories = new Set(["logs", "refs"]);
+    const records = [];
+    const entries = readDirectoryBounded(adminPath, 32, "The target Git admin directory").sort((left, right) =>
+      Buffer.compare(Buffer.from(left.name), Buffer.from(right.name))
+    );
+    for (const item of entries) {
+      const path = join(adminPath, item.name);
+      const metadata = lstatSync(path, { bigint: true });
+      if (item.isSymbolicLink() || !currentUserOwns(metadata)) {
+        fail("archive-not-eligible", "The target Git admin directory contains an unsafe entry.");
+      }
+      if (item.isFile() && allowedFiles.has(item.name)) {
+        if (!metadata.isFile() || metadata.nlink !== 1n) {
+          fail("archive-not-eligible", "The target Git admin directory contains an unsafe file.");
+        }
+        const identity = identityOf(metadata);
+        records.push(
+          `f\0${item.name}\0${identity.device}\0${identity.inode}\0${metadata.size}\0${metadata.mtimeNs}\0${metadata.ctimeNs}\n`
+        );
+        continue;
+      }
+      if (item.isDirectory() && allowedDirectories.has(item.name)) {
+        if (!metadata.isDirectory() || realpathSync(path) !== resolve(path)) {
+          fail("archive-not-eligible", "The target Git admin directory contains an unsafe directory.");
+        }
+        const identity = identityOf(metadata);
+        records.push(`d\0${item.name}\0${identity.device}\0${identity.inode}\n`);
+        continue;
+      }
+      fail(
+        "archive-not-eligible",
+        `Unsupported operation or private metadata exists in the target Git admin directory: ${item.name}.`
+      );
+    }
+
+    const privateRefsPath = join(adminPath, "refs");
+    if (
+      entryExistsNoFollow(privateRefsPath, "The target private-ref directory") &&
+      readDirectoryBounded(privateRefsPath, 1, "The target private-ref directory").length !== 0
+    ) {
+      fail("archive-not-eligible", "Private target-worktree refs would not survive cleanup.");
+    }
+
+    const logsPath = join(adminPath, "logs");
+    const reflogObjectIds = [];
+    let reflogEntryCount = 0;
+    if (entryExistsNoFollow(logsPath, "The target reflog directory")) {
+      const logEntries = readDirectoryBounded(logsPath, 2, "The target reflog directory");
+      if (
+        logEntries.length !== 1 ||
+        logEntries[0].name !== "HEAD" ||
+        !logEntries[0].isFile() ||
+        logEntries[0].isSymbolicLink()
+      ) {
+        fail("archive-not-eligible", "The target reflog directory contains unsupported state.");
+      }
+      const reflog = readBoundedFile(join(logsPath, "HEAD"), MAXIMUM_ARCHIVE_REFLOG_BYTES, "Target HEAD reflog");
+      const lines = reflog.text === "" ? [] : reflog.text.split("\n");
+      if (lines.at(-1) !== "") fail("archive-not-eligible", "The target HEAD reflog is malformed.");
+      lines.pop();
+      if (lines.length > MAXIMUM_ARCHIVE_REFLOG_ENTRIES) {
+        fail("archive-not-eligible", "The target HEAD reflog contains too many entries.");
+      }
+      const pattern = new RegExp(`^([0-9a-f]{${objectIdLength}}) ([0-9a-f]{${objectIdLength}}) .+$`, "u");
+      const zero = "0".repeat(objectIdLength);
+      for (const line of lines) {
+        const match = pattern.exec(line);
+        if (match === null) fail("archive-not-eligible", "The target HEAD reflog is malformed.");
+        if (match[1] !== zero) reflogObjectIds.push(match[1]);
+        if (match[2] !== zero) reflogObjectIds.push(match[2]);
+      }
+      reflogEntryCount = lines.length;
+      records.push(
+        `l\0logs/HEAD\0${reflog.identity.device}\0${reflog.identity.inode}\0${Buffer.byteLength(reflog.text, "utf8")}\0${sha256(reflog.text)}\n`
+      );
+    }
+    revalidatePathIdentity(adminPath, entry.checkout.gitAdmin.identity, "Target Git admin", "directory");
+    return Object.freeze({
+      sha256: sha256(records.join("")),
+      reflogEntryCount,
+      reflogObjectIds: Object.freeze([...new Set(reflogObjectIds)].sort())
+    });
+  }
+
+  function resolveArchiveCommitIds(objectIds, objectFormat, label, requireEveryObject) {
+    const unique = [...new Set(objectIds)].sort();
+    if (unique.length === 0) return Object.freeze([]);
+    const resolved = requireCommonArchiveCommand(
+      ["--no-pager", "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+      label,
+      { input: `${unique.map((oid) => `${oid}^{commit}`).join("\n")}\n` }
+    ).stdout.split("\n");
+    resolved.pop();
+    if (resolved.length !== unique.length) fail("archive-not-eligible", `${label} returned malformed output.`);
+    const expectedLength = objectFormat === "sha1" ? 40 : 64;
+    const commitIds = [];
+    for (const line of resolved) {
+      const match = /^([0-9a-f]+) commit (?:0|[1-9][0-9]*)$/u.exec(line);
+      if (match === null || match[1].length !== expectedLength) {
+        if (requireEveryObject) fail("archive-not-eligible", `${label} contains a missing or non-commit object.`);
+        continue;
+      }
+      commitIds.push(match[1]);
+    }
+    return Object.freeze([...new Set(commitIds)].sort());
+  }
+
+  function assertTargetReflogReachable(reflogObjectIds, bundleHeads, objectFormat) {
+    const reflogCommits = resolveArchiveCommitIds(
+      reflogObjectIds,
+      objectFormat,
+      "Target HEAD reflog object inspection",
+      true
+    );
+    if (reflogCommits.length === 0) return;
+    const rootCommits = resolveArchiveCommitIds(
+      bundleHeads.map(({ oid }) => oid),
+      objectFormat,
+      "Recovery-root commit inspection",
+      false
+    );
+    if (rootCommits.length === 0) fail("archive-not-eligible", "The recovery archive has no commit root.");
+    const unreachable = requireCommonArchiveCommand(
+      ["--no-pager", "rev-list", "--max-count=1", "--stdin"],
+      "Target HEAD reflog reachability inspection",
+      { input: `${reflogCommits.join("\n")}\n${rootCommits.map((oid) => `^${oid}`).join("\n")}\n` }
+    ).stdout.trim();
+    if (unreachable !== "") {
+      fail("archive-not-eligible", "The target HEAD reflog is the only recovery path to one or more commits.");
+    }
+  }
+
+  function captureRepositoryArchiveState(entry, expectedGit) {
+    if (!SHA_PATTERN.test(expectedGit?.head) || !SHA_PATTERN.test(expectedGit?.headTree)) {
+      fail("archive-not-eligible", "The retirement plan has no valid Git head to archive.");
+    }
+    const objectFormat = requireCommonArchiveCommand(
+      ["--no-pager", "rev-parse", "--show-object-format"],
+      "Git object-format inspection"
+    ).stdout.trim();
+    if (!["sha1", "sha256"].includes(objectFormat)) {
+      fail("archive-not-eligible", "The repository object format is unsupported.");
+    }
+    const shallow = requireCommonArchiveCommand(
+      ["--no-pager", "rev-parse", "--is-shallow-repository"],
+      "Git shallow-repository inspection"
+    ).stdout.trim();
+    if (shallow !== "false") fail("archive-not-eligible", "A shallow repository cannot produce this recovery archive.");
+    const configNames = requireCommonArchiveCommand(
+      ["--no-pager", "config", "--local", "--null", "--name-only", "--list"],
+      "Git archive configuration inspection"
+    ).stdout;
+    const unsafeConfigKeys = unsafeArchiveConfigKeys(configNames);
+    if (unsafeConfigKeys.length !== 0) {
+      fail(
+        "archive-not-eligible",
+        "Partial-clone, promisor, or content-filter configuration cannot be archived safely."
+      );
+    }
+    const config = requireCommonArchiveCommand(
+      ["--no-pager", "config", "--local", "--null", "--list"],
+      "Git archive configuration capture"
+    ).stdout;
+    const prohibitedObjectMetadata = [
+      [join(repository.commonGitDirectory, "info", "grafts"), "Git grafts"],
+      [join(repository.commonGitDirectory, "objects", "info", "alternates"), "Git object alternates"],
+      [join(repository.commonGitDirectory, "objects", "info", "http-alternates"), "Git HTTP object alternates"]
+    ];
+    for (const [path, label] of prohibitedObjectMetadata) {
+      if (entryExistsNoFollow(path, label)) {
+        fail("archive-not-eligible", `${label} are unsupported by the recovery archive.`);
+      }
+    }
+    const packDirectory = join(repository.commonGitDirectory, "objects", "pack");
+    let packStateSha256 = sha256("");
+    let promisorMarkerCount = 0;
+    if (entryExistsNoFollow(packDirectory, "The Git pack directory")) {
+      const packMetadata = lstatSync(packDirectory, { bigint: true });
+      if (
+        !packMetadata.isDirectory() ||
+        packMetadata.isSymbolicLink() ||
+        !currentUserOwns(packMetadata) ||
+        realpathSync(packDirectory) !== resolve(packDirectory)
+      ) {
+        fail("archive-not-eligible", "The Git pack directory is unsafe.");
+      }
+      const packRecords = [];
+      const packEntries = readDirectoryBounded(
+        packDirectory,
+        MAXIMUM_ARCHIVE_PACK_FILES,
+        "The Git pack directory"
+      ).sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
+      for (const item of packEntries) {
+        const path = join(packDirectory, item.name);
+        const metadata = lstatSync(path, { bigint: true });
+        if (!metadata.isFile() || metadata.isSymbolicLink() || !currentUserOwns(metadata)) {
+          fail("archive-not-eligible", "The Git pack directory contains an unsafe entry.");
+        }
+        if (item.name.toLowerCase().endsWith(".promisor")) promisorMarkerCount += 1;
+        const identity = identityOf(metadata);
+        packRecords.push(`${item.name}\0${identity.device}\0${identity.inode}\0${metadata.size}\n`);
+      }
+      packStateSha256 = sha256(packRecords.join(""));
+    }
+    if (promisorMarkerCount !== 0) {
+      fail("archive-not-eligible", "A promisor pack cannot be used for a self-contained recovery archive.");
+    }
+    const refs = parseRefList(
+      requireCommonArchiveCommand(
+        ["--no-pager", "for-each-ref", "--sort=refname", "--format=%(objectname) %(refname)", "refs/"],
+        "Git reference inspection"
+      ).stdout,
+      objectFormat,
+      "Repository references"
+    );
+    const branchRef = `refs/heads/${entry.branch}`;
+    const branch = refs.find((item) => item.ref === branchRef);
+    if (branch?.oid !== expectedGit.head) {
+      fail("archive-not-eligible", "The checkout branch no longer points to the head recorded for retirement.");
+    }
+    const commonHead = requireCommonArchiveCommand(
+      ["--no-pager", "rev-parse", "--verify", "HEAD"],
+      "Git common HEAD inspection"
+    ).stdout.trim();
+    const expectedLength = objectFormat === "sha1" ? 40 : 64;
+    if (commonHead.length !== expectedLength || !/^[0-9a-f]+$/u.test(commonHead)) {
+      fail("archive-not-eligible", "The Git common HEAD is malformed.");
+    }
+    const symbolic = commonGit(run, paths, repository, ["--no-pager", "symbolic-ref", "--quiet", "HEAD"], {
+      allowFailure: true,
+      env: auditGitEnvironment()
+    });
+    if (![0, 1].includes(symbolic.status)) fail("archive-command-failed", "Git common HEAD inspection failed.");
+    const commonHeadTarget = symbolic.status === 0 ? symbolic.stdout.trim() : null;
+    if (commonHeadTarget !== null && !commonHeadTarget.startsWith("refs/")) {
+      fail("archive-not-eligible", "The Git common HEAD target is malformed.");
+    }
+    const linkedHeads = [];
+    const worktreeGitDirectories = [
+      { path: repository.commonGitDirectory, label: "main worktree", refPrefix: "", target: false }
+    ];
+    const worktreeAdminRoot = join(repository.commonGitDirectory, "worktrees");
+    if (existsSync(worktreeAdminRoot)) {
+      const rootMetadata = lstatSync(worktreeAdminRoot, { bigint: true });
+      if (
+        !rootMetadata.isDirectory() ||
+        rootMetadata.isSymbolicLink() ||
+        !currentUserOwns(rootMetadata) ||
+        realpathSync(worktreeAdminRoot) !== worktreeAdminRoot
+      ) {
+        fail("archive-not-eligible", "The Git linked-worktree registry is unsafe.");
+      }
+      for (const item of readDirectoryBounded(
+        worktreeAdminRoot,
+        MAXIMUM_WORKTREE_RECORDS,
+        "The Git worktree registry"
+      )) {
+        if (!item.isDirectory() || item.isSymbolicLink() || !/^[A-Za-z0-9._-]{1,240}$/u.test(item.name)) {
+          fail("archive-not-eligible", "The Git linked-worktree registry is malformed.");
+        }
+        const adminPath = join(worktreeAdminRoot, item.name);
+        const adminMetadata = lstatSync(adminPath, { bigint: true });
+        if (
+          !adminMetadata.isDirectory() ||
+          adminMetadata.isSymbolicLink() ||
+          !currentUserOwns(adminMetadata) ||
+          realpathSync(adminPath) !== adminPath
+        ) {
+          fail("archive-not-eligible", "A Git linked-worktree entry is unsafe.");
+        }
+        worktreeGitDirectories.push({
+          path: adminPath,
+          label: `linked worktree ${item.name}`,
+          refPrefix: `worktrees/${item.name}/`,
+          target: adminPath === entry.checkout.gitAdmin.path
+        });
+        const ref = `worktrees/${item.name}/HEAD`;
+        const oid = requireCommonArchiveCommand(
+          ["--no-pager", "rev-parse", "--verify", ref],
+          "Git linked-worktree HEAD inspection"
+        ).stdout.trim();
+        if (oid.length !== expectedLength || !/^[0-9a-f]+$/u.test(oid)) {
+          fail("archive-not-eligible", "A Git linked-worktree HEAD is malformed.");
+        }
+        linkedHeads.push(Object.freeze({ oid, ref }));
+      }
+    }
+    if (worktreeGitDirectories.filter(({ target }) => target).length !== 1) {
+      fail("archive-not-eligible", "The target Git admin directory is not registered exactly once.");
+    }
+    const pseudorefs = [];
+    for (const gitDirectory of worktreeGitDirectories) {
+      const origHead = captureOrigHead(
+        gitDirectory.path,
+        `${gitDirectory.refPrefix}ORIG_HEAD`,
+        expectedLength,
+        gitDirectory.label
+      );
+      if (origHead !== null) pseudorefs.push(origHead);
+      const privateRefsOutput = requireArchiveGitCommand(
+        gitDirectory.path,
+        [
+          "--no-pager",
+          "for-each-ref",
+          "--sort=refname",
+          "--format=%(objectname) %(refname)",
+          "refs/worktree/",
+          "refs/bisect/",
+          "refs/rewritten/"
+        ],
+        `Private ref inspection for ${gitDirectory.label}`
+      ).stdout;
+      if (privateRefsOutput !== "") {
+        parseRefList(privateRefsOutput, objectFormat, `Private refs for ${gitDirectory.label}`);
+        fail("archive-not-eligible", `Private refs exist for ${gitDirectory.label} and would not survive cleanup.`);
+      }
+    }
+    linkedHeads.sort((left, right) => Buffer.compare(Buffer.from(left.ref), Buffer.from(right.ref)));
+    pseudorefs.sort((left, right) => Buffer.compare(Buffer.from(left.ref), Buffer.from(right.ref)));
+    const targetAdminState = captureTargetAdminState(entry, expectedLength);
+    const bundleHeads = Object.freeze(
+      [
+        ...refs,
+        Object.freeze({ oid: commonHead, ref: "HEAD" }),
+        ...linkedHeads,
+        ...pseudorefs.map(({ oid, ref }) => Object.freeze({ oid, ref }))
+      ].sort((left, right) => Buffer.compare(Buffer.from(left.ref), Buffer.from(right.ref)))
+    );
+    if (new Set(bundleHeads.map(({ ref }) => ref)).size !== bundleHeads.length) {
+      fail("archive-not-eligible", "Recovery roots contain duplicate names.");
+    }
+    assertTargetReflogReachable(targetAdminState.reflogObjectIds, bundleHeads, objectFormat);
+    const objectDiskBytes = decimalBigInt(
+      requireCommonArchiveCommand(
+        ["--no-pager", "rev-list", "--disk-usage", "--objects", "--all", ...pseudorefs.map(({ ref }) => ref)],
+        "Reachable Git object-size inspection"
+      ).stdout,
+      "Reachable Git object size"
+    );
+    return Object.freeze({
+      objectFormat,
+      shallow: false,
+      branchRef,
+      refs,
+      refsReceipt: refsReceipt(refs),
+      commonHead: Object.freeze({ oid: commonHead, symbolicTarget: commonHeadTarget }),
+      linkedHeads: Object.freeze(linkedHeads),
+      pseudorefs: Object.freeze(pseudorefs),
+      pseudorefsReceipt: refsReceipt(pseudorefs),
+      bundleHeads,
+      bundleHeadsReceipt: refsReceipt(bundleHeads),
+      safety: Object.freeze({
+        configSha256: sha256(config),
+        configNamesSha256: sha256(configNames),
+        unsafeConfigKeyCount: unsafeConfigKeys.length,
+        graftsPresent: false,
+        alternatesPresent: false,
+        httpAlternatesPresent: false,
+        promisorMarkerCount,
+        packStateSha256,
+        privateRefCount: 0,
+        targetAdminStateSha256: targetAdminState.sha256,
+        targetReflogEntryCount: targetAdminState.reflogEntryCount,
+        unreachableTargetReflogCommitCount: 0
+      }),
+      objectDiskBytes
+    });
+  }
+
+  function archiveAttempts(slug, generation) {
+    const entries = readDirectoryBounded(paths.archives, MAXIMUM_ARCHIVE_DIRECTORIES, "The archive journal");
+    const attempts = [];
+    for (const item of entries) {
+      const match = ARCHIVE_ATTEMPT_PATTERN.exec(item.name);
+      if (!item.isDirectory() || item.isSymbolicLink() || match === null) {
+        fail("invalid-archive", "The archive journal contains an unknown entry.");
+      }
+      if (match[1] === slug && Number(match[2]) === generation) {
+        const attempt = Number(match[3]);
+        if (attempt < 1 || attempt > MAXIMUM_ARCHIVE_ATTEMPTS) {
+          fail("invalid-archive", "The archive journal contains an invalid attempt.");
+        }
+        attempts.push(attempt);
+        if (existsSync(join(paths.archives, item.name, "complete.json"))) {
+          fail("archive-evidence-exists", "A completed recovery archive already exists.");
+        }
+      }
+    }
+    if (new Set(attempts).size !== attempts.length) fail("invalid-archive", "The archive journal is ambiguous.");
+    return attempts.sort((left, right) => left - right);
+  }
+
+  function createArchiveAttempt(slug, generation) {
+    const prior = archiveAttempts(slug, generation);
+    const attempt = (prior.at(-1) ?? 0) + 1;
+    if (attempt > MAXIMUM_ARCHIVE_ATTEMPTS) fail("archive-attempts-exhausted", "Too many archive attempts exist.");
+    const path = archiveAttemptPath(slug, generation, attempt);
+    const archiveRootIdentity = managedIdentities.get(paths.archives);
+    if (archiveRootIdentity === undefined) fail("unsafe-manager", "The archive journal was not initialized.");
+    revalidatePathIdentity(paths.archives, archiveRootIdentity, paths.archives, "directory");
+    try {
+      mkdirSync(path, { mode: 0o700 });
+      chmodSync(path, 0o700);
+    } catch (error) {
+      if (error.code === "EEXIST") fail("archive-changed", "The next archive attempt appeared concurrently.");
+      throw error;
+    }
+    fsyncDirectory(paths.archives);
+    const identity = assertPrivateDirectory(path, "Archive attempt directory");
+    revalidatePathIdentity(paths.archives, archiveRootIdentity, paths.archives, "directory");
+    return Object.freeze({ attempt, path, identity });
+  }
+
+  function createBundle(attempt, pseudorefs) {
+    const path = join(attempt.path, "archive.bundle");
+    revalidatePathIdentity(attempt.path, attempt.identity, "Archive attempt directory", "directory");
+    let descriptor;
+    try {
+      descriptor = openSync(
+        path,
+        constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0),
+        0o600
+      );
+      if (typeof process.getuid === "function") fchmodSync(descriptor, 0o600);
+      const empty = fstatSync(descriptor, { bigint: true });
+      if (
+        !empty.isFile() ||
+        empty.isSymbolicLink() ||
+        empty.nlink !== 1n ||
+        empty.size !== 0n ||
+        !currentUserOwns(empty) ||
+        (typeof process.getuid === "function" && (empty.mode & 0o777n) !== 0o600n)
+      ) {
+        fail("unsafe-archive", "The new bundle file is unsafe.");
+      }
+      const result = commonGit(
+        run,
+        paths,
+        repository,
+        [
+          "--no-pager",
+          "-c",
+          "core.fsmonitor=false",
+          "-c",
+          `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+          "-c",
+          "submodule.recurse=false",
+          "-c",
+          "pack.threads=1",
+          "-c",
+          "pack.window=4",
+          "-c",
+          "pack.depth=10",
+          "-c",
+          "pack.windowMemory=32m",
+          "-c",
+          "pack.deltaCacheSize=16m",
+          "-c",
+          "core.bigFileThreshold=16m",
+          "bundle",
+          "create",
+          "-q",
+          "-",
+          "--all",
+          ...pseudorefs.map(({ ref }) => ref)
+        ],
+        {
+          allowFailure: true,
+          env: auditGitEnvironment(),
+          stdoutFd: descriptor
+        }
+      );
+      fsyncSync(descriptor);
+      if (result.status !== 0) fail("archive-command-failed", "Git bundle creation failed.");
+      const receipt = hashDescriptor(descriptor, "Recovery bundle", 0o600n);
+      revalidatePathIdentity(path, receipt.identity, "Recovery bundle");
+      revalidatePathIdentity(attempt.path, attempt.identity, "Archive attempt directory", "directory");
+      return Object.freeze({ path, ...receipt });
+    } catch (error) {
+      if (error instanceof CheckoutLifecycleError) throw error;
+      fail("archive-command-failed", `The recovery bundle could not be created safely: ${error.message}`);
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
+      fsyncDirectory(attempt.path);
+    }
+  }
+
+  function createPrivateAttemptDirectory(attempt, name, label) {
+    const path = join(attempt.path, name);
+    revalidatePathIdentity(attempt.path, attempt.identity, "Archive attempt directory", "directory");
+    try {
+      mkdirSync(path, { mode: 0o700 });
+      chmodSync(path, 0o700);
+    } catch (error) {
+      if (error.code === "EEXIST") fail("archive-changed", `${label} appeared concurrently.`);
+      throw error;
+    }
+    fsyncDirectory(attempt.path);
+    const identity = assertPrivateDirectory(path, label);
+    revalidatePathIdentity(attempt.path, attempt.identity, "Archive attempt directory", "directory");
+    return Object.freeze({ path, identity });
+  }
+
+  function proveBundleRecovery(attempt, bundle, expectedHeads, objectFormat) {
+    const template = createPrivateAttemptDirectory(attempt, "verification-template", "Verification template");
+    const verification = createPrivateAttemptDirectory(attempt, "verification.git", "Verification repository");
+    requireStandaloneArchiveGitCommand(
+      [
+        "init",
+        "--bare",
+        "--quiet",
+        `--object-format=${objectFormat}`,
+        `--template=${template.path}`,
+        verification.path
+      ],
+      attempt.path,
+      "Verification repository initialization"
+    );
+    revalidatePathIdentity(template.path, template.identity, "Verification template", "directory");
+    if (readDirectoryBounded(template.path, 1, "The verification template").length !== 0) {
+      fail("archive-changed", "The empty verification template changed during initialization.");
+    }
+    revalidatePathIdentity(verification.path, verification.identity, "Verification repository", "directory");
+    const isBare = requireArchiveGitCommand(
+      verification.path,
+      ["--no-pager", "rev-parse", "--is-bare-repository"],
+      "Verification repository bare-state inspection"
+    ).stdout.trim();
+    const verifiedObjectFormat = requireArchiveGitCommand(
+      verification.path,
+      ["--no-pager", "rev-parse", "--show-object-format"],
+      "Verification repository object-format inspection"
+    ).stdout.trim();
+    if (isBare !== "true" || verifiedObjectFormat !== objectFormat) {
+      fail("invalid-archive", "The verification repository has the wrong format.");
+    }
+    const unbundle = requireArchiveGitCommand(
+      verification.path,
+      ["--no-pager", "bundle", "unbundle", bundle.path],
+      "Recovery bundle unbundle"
+    );
+    const unbundledHeads = parseRefList(unbundle.stdout, objectFormat, "Recovery bundle unbundle", {
+      allowHead: true,
+      allowWorktreeHeads: true,
+      allowArchivePseudorefs: true
+    });
+    if (!isDeepStrictEqual(unbundledHeads, expectedHeads)) {
+      fail("archive-ref-mismatch", "The recovery repository did not receive every advertised bundle head.");
+    }
+    const uniqueObjectIds = [...new Set(expectedHeads.map((head) => head.oid))].sort((left, right) =>
+      Buffer.compare(Buffer.from(left), Buffer.from(right))
+    );
+    const resolved = requireArchiveGitCommand(
+      verification.path,
+      ["--no-pager", "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+      "Recovery head resolution",
+      { input: `${uniqueObjectIds.join("\n")}\n` }
+    ).stdout;
+    const resolvedLines = resolved.split("\n").filter(Boolean);
+    const expectedObjectIdLength = objectFormat === "sha1" ? 40 : 64;
+    if (
+      resolvedLines.length !== uniqueObjectIds.length ||
+      resolvedLines.some((line, index) => {
+        const match = /^([0-9a-f]+) (blob|commit|tag|tree) (0|[1-9][0-9]*)$/u.exec(line);
+        return match === null || match[1].length !== expectedObjectIdLength || match[1] !== uniqueObjectIds[index];
+      })
+    ) {
+      fail("invalid-archive", "An advertised recovery head cannot be resolved in the verification repository.");
+    }
+    const rootRefs = Object.freeze(
+      uniqueObjectIds.map((oid, index) =>
+        Object.freeze({ oid, ref: `refs/openwrangler-recovery/${String(index).padStart(8, "0")}` })
+      )
+    );
+    requireArchiveGitCommand(verification.path, ["--no-pager", "update-ref", "--stdin"], "Recovery root publication", {
+      input: `${rootRefs.map(({ oid, ref }) => `create ${ref} ${oid}`).join("\n")}\n`
+    });
+    const publishedRoots = parseRefList(
+      requireArchiveGitCommand(
+        verification.path,
+        [
+          "--no-pager",
+          "for-each-ref",
+          "--sort=refname",
+          "--format=%(objectname) %(refname)",
+          "refs/openwrangler-recovery/"
+        ],
+        "Recovery root verification"
+      ).stdout,
+      objectFormat,
+      "Recovery roots"
+    );
+    if (!isDeepStrictEqual(publishedRoots, rootRefs)) {
+      fail("invalid-archive", "The verification repository did not retain every recovery root.");
+    }
+    requireArchiveGitCommand(
+      verification.path,
+      ["--no-pager", "pack-refs", "--all", "--prune"],
+      "Recovery root packing"
+    );
+    const packedRoots = parseRefList(
+      requireArchiveGitCommand(
+        verification.path,
+        [
+          "--no-pager",
+          "for-each-ref",
+          "--sort=refname",
+          "--format=%(objectname) %(refname)",
+          "refs/openwrangler-recovery/"
+        ],
+        "Packed recovery root verification"
+      ).stdout,
+      objectFormat,
+      "Packed recovery roots"
+    );
+    if (!isDeepStrictEqual(packedRoots, rootRefs)) {
+      fail("invalid-archive", "Packing changed the retained recovery roots.");
+    }
+    const fsck = requireArchiveGitCommand(
+      verification.path,
+      [
+        "--no-pager",
+        "fsck",
+        "--full",
+        "--strict",
+        "--no-reflogs",
+        "--no-progress",
+        "--no-dangling",
+        "--no-name-objects"
+      ],
+      "Recovery repository integrity check"
+    );
+    const repositoryReceipt = captureVerificationRepository(verification.path, verification.identity);
+    revalidatePathIdentity(template.path, template.identity, "Verification template", "directory");
+    if (readDirectoryBounded(template.path, 1, "The verification template").length !== 0) {
+      fail("archive-changed", "The verification template is no longer empty.");
+    }
+    return Object.freeze({
+      template,
+      repository: repositoryReceipt,
+      objectFormat,
+      advertisedHeads: refsReceipt(unbundledHeads),
+      resolvedObjects: Object.freeze({ count: uniqueObjectIds.length, sha256: sha256(resolved) }),
+      rootRefs: refsReceipt(rootRefs),
+      unbundle: Object.freeze({ stdoutSha256: sha256(unbundle.stdout), stderrSha256: sha256(unbundle.stderr) }),
+      fsck: Object.freeze({ stdoutSha256: sha256(fsck.stdout), stderrSha256: sha256(fsck.stderr) })
+    });
+  }
+
+  function validateArchiveFileReceipt(value, expectedPath, label) {
+    exactKeys(value, ["path", "identity", "byteLength", "sha256"], label);
+    validateIdentity(value.identity, `${label} identity`);
+    if (
+      value.path !== expectedPath ||
+      !Number.isSafeInteger(value.byteLength) ||
+      value.byteLength < 1 ||
+      !/^[0-9a-f]{64}$/u.test(value.sha256)
+    ) {
+      fail("invalid-archive", `${label} is malformed.`);
+    }
+  }
+
+  function validateArchiveReceipt(value, entry, attempt, plan) {
+    exactKeys(
+      value,
+      [
+        "protocol",
+        "slug",
+        "generation",
+        "attempt",
+        "source",
+        "archive",
+        "storage",
+        "git",
+        "verification",
+        "deferredChecks",
+        "authorizesCleanup"
+      ],
+      "Archive receipt"
+    );
+    if (
+      value.protocol !== ARCHIVE_RECEIPT_PROTOCOL ||
+      value.slug !== entry.slug ||
+      value.generation !== entry.generation ||
+      value.attempt !== attempt.attempt ||
+      value.authorizesCleanup !== false
+    ) {
+      fail("invalid-archive", "The archive receipt is malformed.");
+    }
+    exactKeys(value.source, ["entry", "retirementPlan"], "Archive source receipt");
+    if (!isDeepStrictEqual(value.source.entry, plan.value.source)) {
+      fail("invalid-archive", "The archive source entry does not match its retirement plan.");
+    }
+    validateArchiveFileReceipt(value.source.retirementPlan, plan.path, "Retirement plan file receipt");
+    if (
+      !sameIdentity(value.source.retirementPlan.identity, plan.identity) ||
+      value.source.retirementPlan.byteLength !== plan.byteLength ||
+      value.source.retirementPlan.sha256 !== plan.sha256
+    ) {
+      fail("invalid-archive", "The retirement plan file receipt changed.");
+    }
+    exactKeys(value.archive, ["directory", "bundle", "verification"], "Archive artifact receipt");
+    exactKeys(value.archive.directory, ["path", "identity"], "Archive directory receipt");
+    validateIdentity(value.archive.directory.identity, "Archive directory identity");
+    if (
+      value.archive.directory.path !== attempt.path ||
+      !sameIdentity(value.archive.directory.identity, attempt.identity)
+    ) {
+      fail("invalid-archive", "The archive directory receipt changed.");
+    }
+    validateArchiveFileReceipt(value.archive.bundle, join(attempt.path, "archive.bundle"), "Bundle file receipt");
+    exactKeys(value.archive.verification, ["template", "repository"], "Archive recovery repository receipt");
+    exactKeys(value.archive.verification.template, ["path", "identity"], "Archive verification template receipt");
+    validateIdentity(value.archive.verification.template.identity, "Archive verification template identity");
+    exactKeys(
+      value.archive.verification.repository,
+      ["path", "identity", "directoryCount", "fileCount", "byteLength", "sha256"],
+      "Archive verification repository receipt"
+    );
+    validateIdentity(value.archive.verification.repository.identity, "Archive verification repository identity");
+    if (
+      value.archive.verification.template.path !== join(attempt.path, "verification-template") ||
+      value.archive.verification.repository.path !== join(attempt.path, "verification.git") ||
+      !Number.isSafeInteger(value.archive.verification.repository.directoryCount) ||
+      value.archive.verification.repository.directoryCount < 1 ||
+      !Number.isSafeInteger(value.archive.verification.repository.fileCount) ||
+      value.archive.verification.repository.fileCount < 1 ||
+      typeof value.archive.verification.repository.byteLength !== "string" ||
+      !/^(?:0|[1-9][0-9]{0,39})$/u.test(value.archive.verification.repository.byteLength) ||
+      !/^[0-9a-f]{64}$/u.test(value.archive.verification.repository.sha256)
+    ) {
+      fail("invalid-archive", "The verification repository receipt is malformed.");
+    }
+    exactKeys(
+      value.storage,
+      ["objectDiskBytes", "multiplier", "reserveBytes", "requiredBytes", "availableBytes"],
+      "Archive storage receipt"
+    );
+    const storageFields = [
+      value.storage.objectDiskBytes,
+      value.storage.reserveBytes,
+      value.storage.requiredBytes,
+      value.storage.availableBytes
+    ];
+    if (
+      storageFields.some((field) => typeof field !== "string" || !/^(?:0|[1-9][0-9]{0,39})$/u.test(field)) ||
+      value.storage.multiplier !== Number(ARCHIVE_SPACE_MULTIPLIER) ||
+      BigInt(value.storage.requiredBytes) !==
+        BigInt(value.storage.objectDiskBytes) * ARCHIVE_SPACE_MULTIPLIER + BigInt(value.storage.reserveBytes) ||
+      BigInt(value.storage.reserveBytes) !== ARCHIVE_SPACE_RESERVE_BYTES ||
+      BigInt(value.storage.availableBytes) < BigInt(value.storage.requiredBytes)
+    ) {
+      fail("invalid-archive", "The archive storage receipt is malformed.");
+    }
+    exactKeys(
+      value.git,
+      [
+        "repository",
+        "objectFormat",
+        "shallow",
+        "branchRef",
+        "head",
+        "headTree",
+        "commonHead",
+        "refs",
+        "linkedHeads",
+        "pseudorefs",
+        "bundleHeads",
+        "safety"
+      ],
+      "Archive Git receipt"
+    );
+    exactKeys(value.git.repository, ["path", "identity"], "Archive repository receipt");
+    validateIdentity(value.git.repository.identity, "Archive repository identity");
+    exactKeys(value.git.commonHead, ["oid", "symbolicTarget"], "Archive common HEAD receipt");
+    exactKeys(value.git.refs, ["count", "sha256"], "Archive reference receipt");
+    exactKeys(value.git.linkedHeads, ["count", "sha256"], "Archive linked-worktree-head receipt");
+    exactKeys(value.git.pseudorefs, ["count", "sha256"], "Archive pseudoref receipt");
+    exactKeys(value.git.bundleHeads, ["count", "sha256"], "Archive bundle-head receipt");
+    exactKeys(
+      value.git.safety,
+      [
+        "configSha256",
+        "configNamesSha256",
+        "unsafeConfigKeyCount",
+        "graftsPresent",
+        "alternatesPresent",
+        "httpAlternatesPresent",
+        "promisorMarkerCount",
+        "packStateSha256",
+        "privateRefCount",
+        "targetAdminStateSha256",
+        "targetReflogEntryCount",
+        "unreachableTargetReflogCommitCount"
+      ],
+      "Archive repository safety receipt"
+    );
+    const objectIdLength = value.git.objectFormat === "sha256" ? 64 : 40;
+    if (
+      value.git.repository.path !== repository.commonGitDirectory ||
+      !sameIdentity(value.git.repository.identity, repository.identity) ||
+      !["sha1", "sha256"].includes(value.git.objectFormat) ||
+      value.git.shallow !== false ||
+      value.git.branchRef !== `refs/heads/${entry.branch}` ||
+      value.git.head !== plan.value.git.head ||
+      value.git.headTree !== plan.value.git.headTree ||
+      typeof value.git.commonHead.oid !== "string" ||
+      value.git.commonHead.oid.length !== objectIdLength ||
+      !/^[0-9a-f]+$/u.test(value.git.commonHead.oid) ||
+      !(
+        value.git.commonHead.symbolicTarget === null ||
+        (typeof value.git.commonHead.symbolicTarget === "string" &&
+          value.git.commonHead.symbolicTarget.startsWith("refs/"))
+      ) ||
+      !Number.isSafeInteger(value.git.refs.count) ||
+      value.git.refs.count < 1 ||
+      !/^[0-9a-f]{64}$/u.test(value.git.refs.sha256) ||
+      !Number.isSafeInteger(value.git.linkedHeads.count) ||
+      value.git.linkedHeads.count < 0 ||
+      !/^[0-9a-f]{64}$/u.test(value.git.linkedHeads.sha256) ||
+      !Number.isSafeInteger(value.git.pseudorefs.count) ||
+      value.git.pseudorefs.count < 0 ||
+      !/^[0-9a-f]{64}$/u.test(value.git.pseudorefs.sha256) ||
+      !Number.isSafeInteger(value.git.bundleHeads.count) ||
+      value.git.bundleHeads.count !==
+        value.git.refs.count + value.git.linkedHeads.count + value.git.pseudorefs.count + 1 ||
+      !/^[0-9a-f]{64}$/u.test(value.git.bundleHeads.sha256) ||
+      !/^[0-9a-f]{64}$/u.test(value.git.safety.configSha256) ||
+      !/^[0-9a-f]{64}$/u.test(value.git.safety.configNamesSha256) ||
+      value.git.safety.unsafeConfigKeyCount !== 0 ||
+      value.git.safety.graftsPresent !== false ||
+      value.git.safety.alternatesPresent !== false ||
+      value.git.safety.httpAlternatesPresent !== false ||
+      value.git.safety.promisorMarkerCount !== 0 ||
+      !/^[0-9a-f]{64}$/u.test(value.git.safety.packStateSha256) ||
+      value.git.safety.privateRefCount !== 0 ||
+      !/^[0-9a-f]{64}$/u.test(value.git.safety.targetAdminStateSha256) ||
+      !Number.isSafeInteger(value.git.safety.targetReflogEntryCount) ||
+      value.git.safety.targetReflogEntryCount < 0 ||
+      value.git.safety.targetReflogEntryCount > MAXIMUM_ARCHIVE_REFLOG_ENTRIES ||
+      value.git.safety.unreachableTargetReflogCommitCount !== 0
+    ) {
+      fail("invalid-archive", "The archive Git receipt is malformed.");
+    }
+    exactKeys(
+      value.verification,
+      ["header", "bundleVerify", "listHeads", "recovery", "eligibilitySha256"],
+      "Archive verification receipt"
+    );
+    exactKeys(
+      value.verification.header,
+      ["version", "objectFormat", "capabilities", "prerequisiteCount", "heads"],
+      "Bundle header receipt"
+    );
+    exactKeys(value.verification.header.heads, ["count", "sha256"], "Bundle header heads receipt");
+    exactKeys(value.verification.bundleVerify, ["stdoutSha256", "stderrSha256"], "Bundle verification command receipt");
+    exactKeys(value.verification.listHeads, ["count", "sha256"], "Bundle list-heads receipt");
+    exactKeys(
+      value.verification.recovery,
+      ["objectFormat", "advertisedHeads", "resolvedObjects", "rootRefs", "unbundle", "fsck"],
+      "Bundle recovery proof"
+    );
+    exactKeys(value.verification.recovery.advertisedHeads, ["count", "sha256"], "Recovered bundle heads");
+    exactKeys(value.verification.recovery.resolvedObjects, ["count", "sha256"], "Resolved recovery objects");
+    exactKeys(value.verification.recovery.rootRefs, ["count", "sha256"], "Published recovery roots");
+    exactKeys(value.verification.recovery.unbundle, ["stdoutSha256", "stderrSha256"], "Unbundle proof");
+    exactKeys(value.verification.recovery.fsck, ["stdoutSha256", "stderrSha256"], "Recovery fsck proof");
+    const expectedCapabilities =
+      value.verification.header.version === 2 ? [] : [`object-format=${value.git.objectFormat}`];
+    if (
+      ![2, 3].includes(value.verification.header.version) ||
+      value.verification.header.objectFormat !== value.git.objectFormat ||
+      !isDeepStrictEqual(value.verification.header.capabilities, expectedCapabilities) ||
+      value.verification.header.prerequisiteCount !== 0 ||
+      !isDeepStrictEqual(value.verification.header.heads, value.git.bundleHeads) ||
+      !isDeepStrictEqual(value.verification.listHeads, value.git.bundleHeads) ||
+      value.verification.recovery.objectFormat !== value.git.objectFormat ||
+      !isDeepStrictEqual(value.verification.recovery.advertisedHeads, value.git.bundleHeads) ||
+      !Number.isSafeInteger(value.verification.recovery.resolvedObjects.count) ||
+      value.verification.recovery.resolvedObjects.count < 1 ||
+      value.verification.recovery.resolvedObjects.count > value.git.bundleHeads.count ||
+      !/^[0-9a-f]{64}$/u.test(value.verification.recovery.resolvedObjects.sha256) ||
+      !Number.isSafeInteger(value.verification.recovery.rootRefs.count) ||
+      value.verification.recovery.rootRefs.count !== value.verification.recovery.resolvedObjects.count ||
+      !/^[0-9a-f]{64}$/u.test(value.verification.recovery.rootRefs.sha256) ||
+      !/^[0-9a-f]{64}$/u.test(value.verification.recovery.unbundle.stdoutSha256) ||
+      !/^[0-9a-f]{64}$/u.test(value.verification.recovery.unbundle.stderrSha256) ||
+      !/^[0-9a-f]{64}$/u.test(value.verification.recovery.fsck.stdoutSha256) ||
+      !/^[0-9a-f]{64}$/u.test(value.verification.recovery.fsck.stderrSha256) ||
+      !/^[0-9a-f]{64}$/u.test(value.verification.bundleVerify.stdoutSha256) ||
+      !/^[0-9a-f]{64}$/u.test(value.verification.bundleVerify.stderrSha256) ||
+      !/^[0-9a-f]{64}$/u.test(value.verification.eligibilitySha256)
+    ) {
+      fail("invalid-archive", "The archive verification receipt is malformed.");
+    }
+    exactKeys(value.deferredChecks, ["recovery", "processUse", "mounts"], "Archive deferred checks");
+    if (
+      value.deferredChecks.recovery !== "bundle-unbundled-and-fsck-verified" ||
+      value.deferredChecks.processUse !== "not-checked-recheck-required" ||
+      value.deferredChecks.mounts !== "not-checked-recheck-required"
+    ) {
+      fail("invalid-archive", "The archive deferred checks are malformed.");
+    }
+  }
+
+  function validateCompletion(value, entry, attempt, bundle, receipt, verification) {
+    exactKeys(
+      value,
+      [
+        "protocol",
+        "slug",
+        "generation",
+        "attempt",
+        "directory",
+        "bundle",
+        "receipt",
+        "verification",
+        "authorizesCleanup"
+      ],
+      "Archive completion"
+    );
+    if (
+      value.protocol !== ARCHIVE_COMPLETION_PROTOCOL ||
+      value.slug !== entry.slug ||
+      value.generation !== entry.generation ||
+      value.attempt !== attempt.attempt ||
+      value.authorizesCleanup !== false
+    ) {
+      fail("invalid-archive", "The archive completion marker is malformed.");
+    }
+    exactKeys(value.directory, ["path", "identity"], "Completed archive directory");
+    validateIdentity(value.directory.identity, "Completed archive directory identity");
+    if (value.directory.path !== attempt.path || !sameIdentity(value.directory.identity, attempt.identity)) {
+      fail("invalid-archive", "The completed archive directory changed.");
+    }
+    validateArchiveFileReceipt(value.bundle, bundle.path, "Completed bundle receipt");
+    validateArchiveFileReceipt(value.receipt, receipt.path, "Completed receipt file");
+    exactKeys(value.verification, ["template", "repository"], "Completed verification repository receipt");
+    if (
+      !isDeepStrictEqual(value.bundle, bundle) ||
+      !isDeepStrictEqual(value.receipt, receipt) ||
+      !isDeepStrictEqual(value.verification, verification)
+    ) {
+      fail("invalid-archive", "The completed archive files changed.");
+    }
+  }
+
+  function assertArchiveAttemptContents(attempt, expectedFiles, expectedDirectories = []) {
+    revalidatePathIdentity(attempt.path, attempt.identity, "Archive attempt directory", "directory");
+    const entries = readDirectoryBounded(attempt.path, 8, "The archive attempt");
+    const actualFiles = entries
+      .filter((item) => item.isFile() && !item.isSymbolicLink())
+      .map((item) => item.name)
+      .sort();
+    const actualDirectories = entries
+      .filter((item) => item.isDirectory() && !item.isSymbolicLink())
+      .map((item) => item.name)
+      .sort();
+    if (
+      entries.some((item) => item.isSymbolicLink() || (!item.isFile() && !item.isDirectory())) ||
+      !isDeepStrictEqual(actualFiles, [...expectedFiles].sort()) ||
+      !isDeepStrictEqual(actualDirectories, [...expectedDirectories].sort())
+    ) {
+      fail("archive-changed", "The archive attempt contains unexpected files.");
+    }
+  }
+
   function requestCleanup(entry, reason) {
     if (entry.state === "cleanup-pending") return entry;
     if (entry.state !== "active") fail("checkout-not-active", "Only an active checkout can request cleanup.");
@@ -1834,6 +3235,284 @@ export function createCheckoutManager(options = {}) {
       });
     },
 
+    archiveRetirement({ slug, ownerTask, expectedRevision, expectedGeneration }) {
+      assertSlug(slug);
+      assertGeneration(expectedGeneration);
+      return withLock(() => {
+        const entry = readEntry(slug);
+        assertOwnerRevision(entry, ownerTask, expectedRevision);
+        if (entry.generation !== expectedGeneration) {
+          fail("registry-changed", `Managed checkout ${slug} is no longer at the expected generation.`);
+        }
+        if (entry.state !== "cleanup-pending") {
+          fail("checkout-not-cleanup-pending", "Only a cleanup-pending checkout can be archived.");
+        }
+        const plan = readRetirementPlan(entry);
+        const firstEligibility = captureRetirementEvidence(entry);
+        if (!isDeepStrictEqual(firstEligibility, plan.value)) {
+          fail("retirement-evidence-stale", "The checkout no longer matches its retirement evidence.");
+        }
+        const firstGit = captureRepositoryArchiveState(entry, plan.value.git);
+        const storage = archiveFreeSpace(firstGit.objectDiskBytes);
+        initializeArchiveJournal();
+        const archiveRootIdentity = managedIdentities.get(paths.archives);
+        if (archiveRootIdentity === undefined) fail("unsafe-manager", "The archive journal was not initialized.");
+        const attempt = createArchiveAttempt(slug, entry.generation);
+        const bundle = createBundle(attempt, firstGit.pseudorefs);
+        hooks?.afterArchiveBundleWrite?.(entry, attempt, bundle);
+        const namedBundle = captureArchiveFile(bundle.path, "Recovery bundle");
+        if (
+          !isDeepStrictEqual(namedBundle, {
+            identity: bundle.identity,
+            byteLength: bundle.byteLength,
+            sha256: bundle.sha256
+          })
+        ) {
+          fail("archive-changed", "The recovery bundle changed after Git finished.");
+        }
+        hooks?.beforeArchiveHeaderParse?.(entry, attempt, bundle);
+        const header = parseBundleHeader(bundle.path, firstGit.objectFormat);
+        const headerHeads = refsReceipt(header.refs);
+        if (
+          !isDeepStrictEqual(headerHeads, firstGit.bundleHeadsReceipt) ||
+          !isDeepStrictEqual(header.refs, firstGit.bundleHeads)
+        ) {
+          fail("archive-ref-mismatch", "The Git bundle header does not contain the exact repository refs.");
+        }
+        const verification = requireCommonArchiveCommand(
+          ["--no-pager", "bundle", "verify", "-q", bundle.path],
+          "Git bundle verification"
+        );
+        const listHeadsOutput = requireCommonArchiveCommand(
+          ["--no-pager", "bundle", "list-heads", bundle.path],
+          "Git bundle head inspection"
+        ).stdout;
+        const listedRefs = parseRefList(listHeadsOutput, firstGit.objectFormat, "Git bundle list-heads", {
+          allowHead: true,
+          allowWorktreeHeads: true,
+          allowArchivePseudorefs: true
+        });
+        const listedHeads = refsReceipt(listedRefs);
+        if (
+          !isDeepStrictEqual(listedRefs, firstGit.bundleHeads) ||
+          !isDeepStrictEqual(listedHeads, firstGit.bundleHeadsReceipt)
+        ) {
+          fail("archive-ref-mismatch", "The verified Git bundle does not contain the exact repository refs.");
+        }
+        hooks?.beforeArchiveRecoveryProof?.(entry, attempt, bundle);
+        const recovery = proveBundleRecovery(attempt, bundle, firstGit.bundleHeads, firstGit.objectFormat);
+        const secondEligibility = captureRetirementEvidence(entry);
+        const secondGit = captureRepositoryArchiveState(entry, plan.value.git);
+        if (!isDeepStrictEqual(secondEligibility, firstEligibility) || !isDeepStrictEqual(secondGit, firstGit)) {
+          fail("checkout-changed", "The checkout or repository refs changed while the bundle was created.");
+        }
+        revalidateRetirementPlan(plan, entry);
+        const confirmedBundle = captureArchiveFile(bundle.path, "Recovery bundle");
+        if (!isDeepStrictEqual(confirmedBundle, namedBundle)) {
+          fail("archive-changed", "The recovery bundle changed while it was verified.");
+        }
+        assertArchiveAttemptContents(attempt, ["archive.bundle"], ["verification-template", "verification.git"]);
+        const eligibilitySha256 = sha256(JSON.stringify(firstEligibility));
+        const receiptValue = {
+          protocol: ARCHIVE_RECEIPT_PROTOCOL,
+          slug,
+          generation: entry.generation,
+          attempt: attempt.attempt,
+          source: {
+            entry: plan.value.source,
+            retirementPlan: {
+              path: plan.path,
+              identity: plan.identity,
+              byteLength: plan.byteLength,
+              sha256: plan.sha256
+            }
+          },
+          archive: {
+            directory: { path: attempt.path, identity: attempt.identity },
+            bundle: { path: bundle.path, ...confirmedBundle },
+            verification: {
+              template: recovery.template,
+              repository: recovery.repository
+            }
+          },
+          storage,
+          git: {
+            repository: { path: repository.commonGitDirectory, identity: repository.identity },
+            objectFormat: firstGit.objectFormat,
+            shallow: firstGit.shallow,
+            branchRef: firstGit.branchRef,
+            head: plan.value.git.head,
+            headTree: plan.value.git.headTree,
+            commonHead: firstGit.commonHead,
+            refs: firstGit.refsReceipt,
+            linkedHeads: refsReceipt(firstGit.linkedHeads),
+            pseudorefs: firstGit.pseudorefsReceipt,
+            bundleHeads: firstGit.bundleHeadsReceipt,
+            safety: firstGit.safety
+          },
+          verification: {
+            header: {
+              version: header.version,
+              objectFormat: header.objectFormat,
+              capabilities: header.capabilities,
+              prerequisiteCount: header.prerequisiteCount,
+              heads: headerHeads
+            },
+            bundleVerify: {
+              stdoutSha256: sha256(verification.stdout),
+              stderrSha256: sha256(verification.stderr)
+            },
+            listHeads: listedHeads,
+            recovery: {
+              objectFormat: recovery.objectFormat,
+              advertisedHeads: recovery.advertisedHeads,
+              resolvedObjects: recovery.resolvedObjects,
+              rootRefs: recovery.rootRefs,
+              unbundle: recovery.unbundle,
+              fsck: recovery.fsck
+            },
+            eligibilitySha256
+          },
+          deferredChecks: {
+            recovery: "bundle-unbundled-and-fsck-verified",
+            processUse: "not-checked-recheck-required",
+            mounts: "not-checked-recheck-required"
+          },
+          authorizesCleanup: false
+        };
+        validateArchiveReceipt(receiptValue, entry, attempt, plan);
+        hooks?.beforeArchiveReceiptWrite?.(entry, attempt, receiptValue);
+        const receiptPath = join(attempt.path, "receipt.json");
+        try {
+          writeJsonExclusive(receiptPath, receiptValue, attempt.identity);
+        } catch (error) {
+          if (error.code === "EEXIST") fail("archive-changed", "The archive receipt appeared concurrently.");
+          throw error;
+        }
+        const receiptFile = captureArchiveFile(receiptPath, "Archive receipt file");
+        const writtenReceipt = readJsonReceipt(receiptPath, MAXIMUM_ENTRY_BYTES, "Archive receipt");
+        validateArchiveReceipt(writtenReceipt.value, entry, attempt, plan);
+        if (!isDeepStrictEqual(writtenReceipt.value, receiptValue)) {
+          fail("archive-changed", "The archive receipt changed while it was recorded.");
+        }
+        assertArchiveAttemptContents(
+          attempt,
+          ["archive.bundle", "receipt.json"],
+          ["verification-template", "verification.git"]
+        );
+        hooks?.beforeArchiveCompletionWrite?.(entry, attempt, receiptValue);
+        const finalEligibility = captureRetirementEvidence(entry);
+        const finalGit = captureRepositoryArchiveState(entry, plan.value.git);
+        revalidateRetirementPlan(plan, entry);
+        if (!isDeepStrictEqual(finalEligibility, firstEligibility) || !isDeepStrictEqual(finalGit, firstGit)) {
+          fail("checkout-changed", "The checkout or repository refs changed before archive completion.");
+        }
+        const finalBundle = captureArchiveFile(bundle.path, "Recovery bundle");
+        const finalReceipt = captureArchiveFile(receiptPath, "Archive receipt file");
+        const finalVerificationRepository = captureVerificationRepository(
+          recovery.repository.path,
+          recovery.repository.identity
+        );
+        revalidatePathIdentity(
+          recovery.template.path,
+          recovery.template.identity,
+          "Verification template",
+          "directory"
+        );
+        if (
+          readDirectoryBounded(recovery.template.path, 1, "The verification template").length !== 0 ||
+          !isDeepStrictEqual(finalBundle, confirmedBundle) ||
+          !isDeepStrictEqual(finalReceipt, receiptFile) ||
+          !isDeepStrictEqual(finalVerificationRepository, recovery.repository)
+        ) {
+          fail("archive-changed", "The archive files changed before completion.");
+        }
+        const completionVerification = {
+          template: recovery.template,
+          repository: finalVerificationRepository
+        };
+        const completionValue = {
+          protocol: ARCHIVE_COMPLETION_PROTOCOL,
+          slug,
+          generation: entry.generation,
+          attempt: attempt.attempt,
+          directory: { path: attempt.path, identity: attempt.identity },
+          bundle: { path: bundle.path, ...finalBundle },
+          receipt: { path: receiptPath, ...finalReceipt },
+          verification: completionVerification,
+          authorizesCleanup: false
+        };
+        validateCompletion(
+          completionValue,
+          entry,
+          attempt,
+          completionValue.bundle,
+          completionValue.receipt,
+          completionVerification
+        );
+        const completionPath = join(attempt.path, "complete.json");
+        try {
+          writeJsonExclusive(completionPath, completionValue, attempt.identity);
+        } catch (error) {
+          if (error.code === "EEXIST") fail("archive-changed", "The completion marker appeared concurrently.");
+          throw error;
+        }
+        fsyncDirectory(attempt.path);
+        fsyncDirectory(paths.archives);
+        revalidatePathIdentity(paths.archives, archiveRootIdentity, paths.archives, "directory");
+        assertArchiveAttemptContents(
+          attempt,
+          ["archive.bundle", "receipt.json", "complete.json"],
+          ["verification-template", "verification.git"]
+        );
+        const completed = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Archive completion");
+        validateCompletion(
+          completed.value,
+          entry,
+          attempt,
+          completionValue.bundle,
+          completionValue.receipt,
+          completionVerification
+        );
+        if (!isDeepStrictEqual(completed.value, completionValue)) {
+          fail("archive-changed", "The completion marker changed while it was recorded.");
+        }
+        revalidatePathIdentity(completionPath, completed.identity, "Archive completion");
+        const completedBundle = captureArchiveFile(bundle.path, "Recovery bundle");
+        const completedReceipt = captureArchiveFile(receiptPath, "Archive receipt file");
+        const completedVerificationRepository = captureVerificationRepository(
+          recovery.repository.path,
+          recovery.repository.identity
+        );
+        revalidatePathIdentity(
+          recovery.template.path,
+          recovery.template.identity,
+          "Verification template",
+          "directory"
+        );
+        revalidateRetirementPlan(plan, entry);
+        if (
+          readDirectoryBounded(recovery.template.path, 1, "The verification template").length !== 0 ||
+          !isDeepStrictEqual(completedBundle, finalBundle) ||
+          !isDeepStrictEqual(completedReceipt, finalReceipt) ||
+          !isDeepStrictEqual(completedVerificationRepository, finalVerificationRepository)
+        ) {
+          fail("archive-changed", "The retained recovery proof changed after completion was recorded.");
+        }
+        return Object.freeze({
+          status: "recovery-archive-recorded",
+          slug,
+          ownerTask: entry.ownerTask,
+          revision: entry.revision,
+          generation: entry.generation,
+          attempt: attempt.attempt,
+          archivePath: bundle.path,
+          bundleSha256: bundle.sha256,
+          authorizesCleanup: false
+        });
+      });
+    },
+
     abandon({ slug, expectedOwnerTask, expectedHead, expectedRevision }) {
       assertSlug(slug);
       return withLock(() => {
@@ -1917,6 +3596,13 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       expectedRevision: parseRevision(values.revision),
       expectedGeneration: parseGeneration(values.generation)
     });
+  } else if (command === "archive-retirement") {
+    result = manager.archiveRetirement({
+      slug,
+      ownerTask: values.owner,
+      expectedRevision: parseRevision(values.revision),
+      expectedGeneration: parseGeneration(values.generation)
+    });
   } else if (command === "abandon") {
     result = manager.abandon({
       slug,
@@ -1924,7 +3610,9 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       expectedHead: values["expect-head"],
       expectedRevision: parseRevision(values.revision)
     });
-  } else fail("invalid-cli", "Use create, status, audit, handoff, finish, plan-retirement, or abandon.");
+  } else {
+    fail("invalid-cli", "Use create, status, audit, handoff, finish, plan-retirement, archive-retirement, or abandon.");
+  }
   (options.stdout ?? process.stdout).write(`${JSON.stringify(result, null, 2)}\n`);
   return result;
 }

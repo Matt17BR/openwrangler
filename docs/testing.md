@@ -31,6 +31,30 @@ Agent checkout lifecycle has a separate, small contract test:
   repository fails before another Git read. Recovery, process-use, and mount checks are explicitly deferred and must
   be rerun before any future movement. Planning performs no Git network operation. This command never moves a checkout,
   removes a worktree, deletes a ref, or authorizes cleanup.
+- `checkout:archive-retirement` streams `git bundle --all` through an exclusive file descriptor into a numbered private
+  attempt directory. Pack creation uses one thread, small delta windows and caches, plus a conservative free-space
+  preflight. No more than eight failed attempts are retained for one checkout generation.
+  The command stops on shallow or partial repositories, promisor packs, content filters, grafts, object alternates, or
+  private per-worktree refs that `--all` would miss. It binds the branch to the head captured by retirement planning,
+  so ordinary commits made after checkout creation remain valid. Main and linked-worktree `ORIG_HEAD` values become
+  explicit bundle roots. Unsupported target operation metadata fails closed, as does a target `HEAD` reflog that is the
+  only remaining route to a commit.
+
+  Header checks and `git bundle verify` are not the recovery proof. The command also unbundles into a new private bare
+  repository kept inside the attempt, publishes a deterministic verification ref for every unique advertised OID,
+  packs those refs, and runs `git fsck --full --strict` from those roots. The receipt and completion marker bind that
+  repository's file manifest. Tests cover post-creation commits, common and local-only refs (including a blob ref), a
+  unique linked-worktree `ORIG_HEAD`, reflog-only work, operation state, more than 4,096 recovery roots, recovery into
+  an empty repository, truncated pack data, prerequisites, interrupted attempts, ref races, grafts, private worktree
+  refs, partial-clone config, promisor markers, and planted files. The archive omits worktree files, repository
+  configuration, hooks, and unreachable objects; it refuses cleanup evidence when the target reflog would make that
+  omission lose a commit. It uses no network and does not move, remove, prune, rename, unlink, or change a source ref.
+  Process-use and mount checks stay pending, and no archive result authorizes cleanup.
+
+  Archive commands have no deadline until the lifecycle can own complete descendant trees with POSIX process groups and
+  Windows Job Objects. A direct-child timeout could leave `pack-objects` or `index-pack` running. External interruption
+  instead leaves the current numbered attempt untouched for review.
+
 - Automatic recursive purge is deliberately absent. Tests reproduce the valuable-file timing race, hidden tracked
   edits, child/root rebinding, partial Git-admin deletion, late unrelated-worktree branch attachment, entry-generation
   collision/rebinding, and operation-lock rebinding and verify that every byte remains. Registry state uses exclusive,
