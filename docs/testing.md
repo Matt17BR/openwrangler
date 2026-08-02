@@ -51,6 +51,19 @@ Agent checkout lifecycle has a separate, small contract test:
   omission lose a commit. It uses no network and does not move, remove, prune, rename, unlink, or change a source ref.
   Process-use and mount checks stay pending, and no archive result authorizes cleanup.
 
+- `checkout:quarantine-status` is a read-only parser for the future quarantine/restore journal. It accepts only a
+  private, canonical journal whose first intent is anchored to exactly one completed recovery archive. Each later
+  record must name its immediate predecessor's path, identity, byte length, and SHA-256; sequences, operation IDs,
+  paths, archive anchors, and intent/result transitions are checked independently. The reader enumerates before and
+  after parsing, rereads every record, then revalidates the source entry and completed archive before returning. Tests
+  cover direction-aware pre/post classification, partial backlink updates, impossible and ambiguous layouts, an
+  interrupted intent, hash-chain tampering, a changed
+  tail during the read, an archive changed after the initial anchor read, and a completion marker that tries to
+  authorize cleanup. All lifecycle mutations block when any journal for the slug is present, including an older
+  generation. A creating-entry regression proves status checks that history before reconciliation and leaves the entry
+  journal byte-for-byte unchanged. This layer has no journal writer, checkout mover, restore command, purge command,
+  process-use check, or mount check.
+
   Archive commands have no deadline until the lifecycle can own complete descendant trees with POSIX process groups and
   Windows Job Objects. A direct-child timeout could leave `pack-objects` or `index-pack` running. External interruption
   instead leaves the current numbered attempt untouched for review.
@@ -73,7 +86,8 @@ Agent checkout lifecycle has a separate, small contract test:
   Failure-evidence credential patterns receive at most 8 KiB per logical line. Longer lines containing a quote,
   URI user-info marker, or credential marker are omitted fail-closed; longer marker-free lines bypass the complex
   patterns. The maximum admitted 16 MiB hostile quoted and assignment cases also run in a child process capped to a
-  64 MiB V8 heap and an eight-second outer deadline, so a regression fails the test rather than exhausting the host.
+  64 MiB V8 heap, five seconds of measured CPU time, and an eight-second outer deadline. CPU time keeps the algorithmic
+  limit strict without counting time that a shared runner leaves the child unscheduled.
 - `npm run test:scripts:media` runs the PNG-heavy README-media contract alone, with one test file and a 1 GiB V8 heap ceiling. Pixel mismatches report only the first differing coordinate/channel rather than asking Node to render a multi-million-byte assertion diff. The required Linux `Contract tests` lane reaches it through `test:scripts:portable`.
 - `npm run test:scripts:native` runs only `scripts/windows-job-supervisor.native.test.mjs`: compile the checked-in supervisor, prove natural-exit descendant containment and bounded termination, reject malformed frames, and revalidate the compiled executable before launch. It is intentionally absent from macOS because the equivalent macOS path and lifecycle seams are portable contracts, while real macOS behavior remains covered by the unchanged native extension-host and packaged-editor jobs. The workflow regression enumerates the live `scripts/*.test.mjs` directory and requires these four groups to be pairwise disjoint with an exact complete union.
 - `npm run test:ts` covers shared models, extension helpers, reducers, and React behavior, including bounded automatic import detection, regular-file launch validation, exact resource-scoped `vscode-remote` URI propagation into Python environment selection, atomic final-marker renderer replay, pre-ack presentation-write rejection, pending-grid flush ordering, recovery-pull suppression once a marker arrives, failed marker delivery, one bounded active-panel renderer-startup reload with no hidden-panel or reload-loop churn, post-ack Code Preview reveal, page-revision write continuity, bounded visibility-aware pulls that continue through partial replays, stale acknowledgements, retained import failures, coalesced manual/native and concurrent-native import intents, busy-renderer view-state flushing, exactly-once native-action fallback, and command lifetime through the complete renderer-prepared import transaction. Native primary-launch acceptance treats any delimiter, encoding, header, or quote Quick Input as a failure; prompt interaction is reserved for explicit **Change Import Options** scenarios. Ordinary and V8-coverage Vitest runs share a four-worker ceiling from `vite.config.ts`; V8 coverage remapping has the same independent four-worker ceiling, and the real Python-environment smoke remains isolated at one worker. Individual Vitest cases retain a 15-second hard bound so concurrent jsdom/React initialization remains deterministic on hosted Windows runners without making hangs unbounded.

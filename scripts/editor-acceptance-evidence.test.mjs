@@ -1584,12 +1584,15 @@ test("maximum-size hostile redaction is bounded by a child heap and deadline", a
     import { redactEditorAcceptanceText } from ${JSON.stringify(moduleUrl)};
     const sourceLimit = ${EVIDENCE_SOURCE_LIMIT};
     const startedAt = Date.now();
+    const startedCpu = process.cpuUsage();
     for (const prefix of ['"', 'password="', 'password=']) {
       const source = prefix + 'a'.repeat(sourceLimit - prefix.length);
       if (redactEditorAcceptanceText(source) !== undefined) process.exit(2);
     }
+    const cpu = process.cpuUsage(startedCpu);
     process.stdout.write(JSON.stringify({
       elapsedMs: Date.now() - startedAt,
+      cpuMs: (cpu.user + cpu.system) / 1_000,
       heapUsed: process.memoryUsage().heapUsed
     }));
   `;
@@ -1618,7 +1621,7 @@ test("maximum-size hostile redaction is bounded by a child heap and deadline", a
   assert.equal(signal, null, stderr);
   assert.equal(exitCode, 0, stderr);
   const metrics = JSON.parse(stdout);
-  assert.ok(metrics.elapsedMs < 5_000, `Hostile redaction took ${metrics.elapsedMs} ms.`);
+  assert.ok(metrics.cpuMs < 5_000, `Hostile redaction used ${metrics.cpuMs} ms of CPU time.`);
   assert.ok(metrics.heapUsed < 64 * 1024 * 1024, `Hostile redaction used ${metrics.heapUsed} heap bytes.`);
 });
 

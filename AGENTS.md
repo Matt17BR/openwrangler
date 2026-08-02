@@ -135,6 +135,24 @@ deadline requires POSIX process-group and Windows Job Object ownership. An exter
 attempt in place. Neither a completed archive nor an interrupted attempt authorizes movement or cleanup. Process-use
 and mount checks remain separate review steps.
 
+The quarantine journal is currently read-only. `npm run checkout:quarantine-status -- <slug>` validates any retained
+journal against the exact completed archive, then reports its latest intent or classified result. Records are
+append-only, numbered, hash-chained, and bound to one checkout generation, one derived original path, and one derived
+quarantine path. The classifier distinguishes direction-relative `pre` and `post` layouts from `partial` and
+`indeterminate` layouts, but it never reads the filesystem or authorizes an action. Until a later platform-owned mover
+and fresh reconciliation pass exist, any quarantine journal retained for the slug blocks create, handoff, finish,
+retirement planning, archive creation, and abandon, even when it names an older entry generation. Status checks that
+guard before adopting an interrupted create, so a journal cannot be hidden by reconciliation. There is no quarantine
+or restore command in this version.
+Every status keeps `authorizesCleanup: false`; process-use and mount checks remain deferred.
+
+Do not reuse this reader as a mover preflight. Its missing-root result and recorded pre/post classifications are status
+only. A future writer must add durable root initialization, a fresh platform-owned filesystem/Git observation, and
+process-use and mount proofs before any move. The current final reread detects changes during its bounded scan; it does
+not claim to exclude same-UID interference after the scan returns, which is safe only because every journal state
+blocks mutation. Historical-generation directories are checked for safe names and private directory identity, but
+only the current generation's records receive the full anchor and chain audit.
+
 Automatic purge is not implemented. JavaScript's path-based recursive removal cannot safely survive a child-directory
 rebind, and Git/network child ownership needs a platform helper before cleanup can be automated. Keep pending entries
 until that reviewed helper exists or a maintainer completes an explicit audit and manual cleanup. `checkout:abandon`
