@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -7,9 +16,12 @@ import {
   DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
   DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
   DATA_WRANGLER_STUDY_PRODUCTS,
+  buildDataWranglerStudyManifest,
   createEmptyStudyMilestones,
   createStudyFragmentIdentity,
-  digestStudyValue
+  digestStudyValue,
+  inspectDataWranglerStudyTrialIntents,
+  validateDataWranglerStudyFragment
 } from "./data-wrangler-comparison-study.mjs";
 import {
   DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
@@ -24,7 +36,11 @@ import {
   createPublicUiReceiptContext
 } from "./data-wrangler-public-ui-receipts.mjs";
 import {
+  DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL,
+  createManifestBoundDataWranglerPolarsUnsupportedFragment,
+  dataWranglerStudyExecutionLockPath,
   parseDataWranglerComparisonStudyArguments,
+  runNextDataWranglerComparisonStudyTrial,
   runDataWranglerComparisonStudy
 } from "./run-data-wrangler-comparison-study.mjs";
 
@@ -48,6 +64,16 @@ test("study command arguments are explicit and reject missing or repeated paths"
     /only once/u
   );
   assert.throws(() => parseDataWranglerComparisonStudyArguments(["launch"], "/work"), /Usage/u);
+  for (const selector of ["--product", "--engine", "--format"]) {
+    assert.throws(
+      () =>
+        parseDataWranglerComparisonStudyArguments(
+          ["status", "--manifest", "manifest.json", "--fragments", "fragments", selector, "forbidden"],
+          "/work"
+        ),
+      /Unknown or incomplete study argument/u
+    );
+  }
 });
 
 test("CLI specification and fragment inputs reject symlinks and directory-entry swaps", async (t) => {
@@ -255,7 +281,299 @@ test("plan recovers an exact linked publication and creates only a private outpu
   });
 });
 
-function studySpecification() {
+test("run-next selects only pending zero, publishes one fragment, and reloads a retry attempt", async () => {
+  await withDirectory(async (directory) => {
+    const paths = planStudy(directory);
+    const observed = [];
+    const executeTrial = async ({ manifest, scheduleEntry, executionIndex }) => {
+      observed.push({ id: scheduleEntry.id, attempt: scheduleEntry.attempt, executionIndex });
+      return preActionInvalidFragment(manifest, scheduleEntry, executionIndex);
+    };
+
+    const first = await runNextDataWranglerComparisonStudyTrial(paths, { executeTrial });
+    assert.equal(first.status, "recorded");
+    assert.equal(first.output.executionIndex, 0);
+    assert.equal(first.output.scheduleEntryId, observed[0].id);
+    assert.deepEqual(observed[0], {
+      id: first.output.scheduleEntryId,
+      attempt: 0,
+      executionIndex: 0
+    });
+
+    const firstStatus = runDataWranglerComparisonStudy(
+      ["status", "--manifest", paths.manifestPath, "--fragments", paths.fragmentsDirectory],
+      { cwd: directory }
+    );
+    assert.equal(firstStatus.output.fragmentCount, 1);
+    assert.equal(firstStatus.output.pending[0].id, observed[0].id);
+    assert.equal(firstStatus.output.pending[0].attempt, 1);
+
+    const second = await runNextDataWranglerComparisonStudyTrial(paths, { executeTrial });
+    assert.equal(second.output.executionIndex, 1);
+    assert.deepEqual(observed[1], { id: observed[0].id, attempt: 1, executionIndex: 1 });
+    const secondStatus = runDataWranglerComparisonStudy(
+      ["status", "--manifest", paths.manifestPath, "--fragments", paths.fragmentsDirectory],
+      { cwd: directory }
+    );
+    assert.equal(secondStatus.output.fragmentCount, 2);
+    assert.equal(secondStatus.output.pending[0].id, observed[0].id);
+    assert.equal(secondStatus.output.pending[0].attempt, 2);
+    assert.equal(existsSync(dataWranglerStudyExecutionLockPath(paths.manifestPath)), false);
+  });
+});
+
+test("run-next keeps one exclusive Linux execution owner across asynchronous trial work", async () => {
+  await withDirectory(async (directory) => {
+    const paths = planStudy(directory);
+    let releaseTrial;
+    let markStarted;
+    const started = new Promise((resolveStarted) => {
+      markStarted = resolveStarted;
+    });
+    const held = new Promise((resolveHeld) => {
+      releaseTrial = resolveHeld;
+    });
+    const first = runNextDataWranglerComparisonStudyTrial(paths, {
+      executeTrial: async ({ manifest, scheduleEntry, executionIndex }) => {
+        markStarted();
+        await held;
+        return preActionInvalidFragment(manifest, scheduleEntry, executionIndex);
+      }
+    });
+    await started;
+    let contenderInvoked = false;
+    await assert.rejects(
+      runNextDataWranglerComparisonStudyTrial(paths, {
+        executeTrial: async () => {
+          contenderInvoked = true;
+          throw new Error("contender must not execute");
+        }
+      }),
+      /already owns the Linux execution lock/u
+    );
+    assert.equal(contenderInvoked, false);
+    releaseTrial();
+    await first;
+  });
+});
+
+test("run-next recovers only a proven-dead exact Linux lock owner", async (t) => {
+  await t.test("owner from a prior boot", async () => {
+    await withDirectory(async (directory) => {
+      const paths = planStudy(directory);
+      const current = currentLinuxLockOwner();
+      const priorBootId = `${current.bootId.startsWith("0") ? "1" : "0"}${current.bootId.slice(1)}`;
+      writeExecutionLock(paths.manifestPath, {
+        ...current,
+        bootId: priorBootId
+      });
+      const result = await runNextDataWranglerComparisonStudyTrial(paths, {
+        executeTrial: async ({ manifest, scheduleEntry, executionIndex }) =>
+          preActionInvalidFragment(manifest, scheduleEntry, executionIndex)
+      });
+      assert.equal(result.status, "recorded");
+      assert.equal(existsSync(dataWranglerStudyExecutionLockPath(paths.manifestPath)), false);
+    });
+  });
+
+  await t.test("absent exact PID on the current boot", async () => {
+    await withDirectory(async (directory) => {
+      const paths = planStudy(directory);
+      const current = currentLinuxLockOwner();
+      writeExecutionLock(paths.manifestPath, { ...current, pid: 2_147_483_647, startTimeTicks: "1" });
+      const result = await runNextDataWranglerComparisonStudyTrial(paths, {
+        executeTrial: async ({ manifest, scheduleEntry, executionIndex }) =>
+          preActionInvalidFragment(manifest, scheduleEntry, executionIndex)
+      });
+      assert.equal(result.status, "recorded");
+    });
+  });
+});
+
+test("run-next fails closed for a live or ambiguous durable lock owner", async (t) => {
+  await t.test("live exact PID and start time", async () => {
+    await withDirectory(async (directory) => {
+      const paths = planStudy(directory);
+      writeExecutionLock(paths.manifestPath, currentLinuxLockOwner());
+      await assert.rejects(
+        runNextDataWranglerComparisonStudyTrial(paths, {
+          executeTrial: async () => assert.fail("live-lock contender executed")
+        }),
+        new RegExp(`PID ${process.pid} with start time`, "u")
+      );
+      assert.equal(existsSync(dataWranglerStudyExecutionLockPath(paths.manifestPath)), true);
+    });
+  });
+
+  await t.test("malformed owner record", async () => {
+    await withDirectory(async (directory) => {
+      const paths = planStudy(directory);
+      writeFileSync(dataWranglerStudyExecutionLockPath(paths.manifestPath), "{}\n", { mode: 0o600 });
+      await assert.rejects(
+        runNextDataWranglerComparisonStudyTrial(paths, {
+          executeTrial: async () => assert.fail("ambiguous-lock contender executed")
+        }),
+        /ownership is ambiguous/u
+      );
+      assert.equal(existsSync(dataWranglerStudyExecutionLockPath(paths.manifestPath)), true);
+    });
+  });
+});
+
+test("run-next retries a pre-authorization crash and halts after a post-authorization crash", async (t) => {
+  await t.test("pre-authorization crash", async () => {
+    await withDirectory(async (directory) => {
+      const paths = planStudy(directory);
+      let lateAuthorize;
+      await assert.rejects(
+        runNextDataWranglerComparisonStudyTrial(paths, {
+          executeTrial: async ({ authorizeAction }) => {
+            lateAuthorize = authorizeAction;
+            throw new Error("injected pre-authorization crash");
+          }
+        }),
+        /injected pre-authorization crash/u
+      );
+      assert.throws(lateAuthorize, /no longer available/u);
+      const retried = await runNextDataWranglerComparisonStudyTrial(paths, {
+        executeTrial: async ({ manifest, scheduleEntry, executionIndex }) =>
+          preActionInvalidFragment(manifest, scheduleEntry, executionIndex)
+      });
+      assert.equal(retried.output.attempt, 0);
+      const inspection = inspectDataWranglerStudyTrialIntents({
+        directory: paths.intentsDirectory,
+        manifest: paths.manifest,
+        fragments: [retried.output]
+      });
+      assert.equal(inspection.authorizedCount, 0);
+      assert.equal(inspection.abandonedPreparedCount, 2);
+    });
+  });
+
+  await t.test("post-authorization crash", async () => {
+    await withDirectory(async (directory) => {
+      const paths = planStudy(directory);
+      await assert.rejects(
+        runNextDataWranglerComparisonStudyTrial(paths, {
+          executeTrial: async ({ authorizeAction }) => {
+            authorizeAction();
+            throw new Error("injected post-authorization crash");
+          }
+        }),
+        /injected post-authorization crash/u
+      );
+      let retried = false;
+      await assert.rejects(
+        runNextDataWranglerComparisonStudyTrial(paths, {
+          executeTrial: async () => {
+            retried = true;
+            throw new Error("must remain blocked");
+          }
+        }),
+        /authorized action without a published result/u
+      );
+      assert.equal(retried, false);
+    });
+  });
+});
+
+test("manifest-declared Data Wrangler Polars unavailability produces a launch-free fragment", () => {
+  const manifest = runDataWranglerComparisonStudyManifest("unavailable");
+  const unavailableEntry = manifest.schedule.find(
+    (entry) => entry.product === "data-wrangler" && entry.engine === "polars"
+  );
+  const scheduleEntry = {
+    ...unavailableEntry,
+    attempt: 0,
+    effectiveBlockId: `${unavailableEntry.blockId}~a00`
+  };
+  const fragment = createManifestBoundDataWranglerPolarsUnsupportedFragment({
+    manifest,
+    scheduleEntry,
+    executionIndex: scheduleEntry.sequence,
+    recordedAtUtc: "2026-08-02T11:00:00.000Z",
+    fragmentId: "44444444-4444-4444-8444-444444444444"
+  });
+  assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
+  assert.equal(fragment.outcome.status, "unsupported");
+  assert.equal(fragment.outcome.actionStarted, false);
+  assert.equal(fragment.processProofs, null);
+  assert.equal(fragment.resourceObservation, null);
+  assert.equal(fragment.cleanupProof, null);
+});
+
+function planStudy(directory, dataWranglerPolarsAvailability = "available") {
+  const specificationPath = resolve(directory, "spec.json");
+  const manifestPath = resolve(directory, "manifest.json");
+  const fragmentsDirectory = resolve(directory, "fragments");
+  const intentsDirectory = resolve(directory, "intents");
+  writeFileSync(specificationPath, JSON.stringify(studySpecification(dataWranglerPolarsAvailability)));
+  const planned = runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
+    cwd: directory
+  });
+  return { manifestPath, fragmentsDirectory, intentsDirectory, manifest: planned.output };
+}
+
+function runDataWranglerComparisonStudyManifest(dataWranglerPolarsAvailability) {
+  return buildDataWranglerStudyManifest(studySpecification(dataWranglerPolarsAvailability));
+}
+
+function preActionInvalidFragment(manifest, scheduleEntry, executionIndex) {
+  return {
+    ...createStudyFragmentIdentity({
+      manifest,
+      scheduleEntry,
+      executionIndex,
+      attempt: scheduleEntry.attempt,
+      recordedAtUtc: "2026-08-02T11:00:00.000Z"
+    }),
+    outcome: {
+      status: "pre-action-invalid",
+      reasonClass: "setup",
+      actionStarted: false,
+      correctness: "not-reached",
+      timeout: null,
+      unsupported: null
+    },
+    milestones: createEmptyStudyMilestones(),
+    cacheProof: null,
+    engineEvidence: null,
+    environmentGate: failedEnvironmentGate(manifest),
+    sourceLoad: {
+      status: "not-reached",
+      durationMs: null,
+      includedInInlineTiming: scheduleEntry.kind === "cold"
+    },
+    uiEvidence: null,
+    processProofs: null,
+    resourceObservation: null,
+    cleanupProof: null,
+    trialProvenance: null
+  };
+}
+
+function currentLinuxLockOwner() {
+  const stat = readFileSync(`/proc/${process.pid}/stat`, "utf8");
+  const closingParenthesis = stat.lastIndexOf(")");
+  const fields = stat
+    .slice(closingParenthesis + 2)
+    .trim()
+    .split(/\s+/u);
+  return {
+    protocol: DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL,
+    pid: process.pid,
+    startTimeTicks: fields[19],
+    bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
+    token: "55555555-5555-4555-8555-555555555555",
+    acquiredAtUtc: "2026-08-02T11:00:00.000Z"
+  };
+}
+
+function writeExecutionLock(manifestPath, record) {
+  writeFileSync(dataWranglerStudyExecutionLockPath(manifestPath), JSON.stringify(record), { mode: 0o600 });
+}
+
+function studySpecification(dataWranglerPolarsAvailability = "available") {
   const editor = {
     id: "Microsoft.VisualStudioCode",
     version: "1.130.0",
@@ -269,7 +587,11 @@ function studySpecification() {
   const capabilityContext = publicUiContext("22222222-2222-4222-8222-222222222222", editor, fixtures[0]);
   const controlContext = publicUiContext("33333333-3333-4333-8333-333333333333", editor, fixtures[0]);
   const capabilityReceipt = createDataWranglerPolarsCapabilityReceipt(
-    publicUiEvidence(DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND, capabilityContext, "available"),
+    publicUiEvidence(
+      DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
+      capabilityContext,
+      dataWranglerPolarsAvailability === "available" ? "available" : "unsupported"
+    ),
     capabilityContext
   );
   const controlReceipt = createNeitherProductControlReceipt(
@@ -356,7 +678,7 @@ function studySpecification() {
         {
           product: "data-wrangler",
           engine: "polars",
-          availability: "available",
+          availability: dataWranglerPolarsAvailability,
           method: "public-capability",
           timed: false,
           fixtureId: fixtures[0].id,
@@ -591,9 +913,16 @@ function failedEnvironmentGate(manifest) {
 
 function withDirectory(callback) {
   const directory = mkdtempSync(resolve(tmpdir(), "ow-study-command-"));
+  let result;
   try {
-    return callback(directory);
-  } finally {
+    result = callback(directory);
+  } catch (error) {
     rmSync(directory, { recursive: true, force: true });
+    throw error;
   }
+  if (result && typeof result.then === "function") {
+    return Promise.resolve(result).finally(() => rmSync(directory, { recursive: true, force: true }));
+  }
+  rmSync(directory, { recursive: true, force: true });
+  return result;
 }

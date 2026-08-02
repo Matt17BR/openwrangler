@@ -1,16 +1,35 @@
 #!/usr/bin/env node
 
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
+import { createServer } from "node:net";
+import { basename, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  assertNoIndeterminateDataWranglerStudyAction,
+  authorizeDataWranglerStudyTrialAction,
   buildDataWranglerStudyManifest,
   buildDataWranglerStudyResult,
   canonicalStudyJson,
+  createEmptyStudyMilestones,
   createOrLoadDataWranglerStudyFinalizationIntent,
+  createStudyFragmentIdentity,
   digestStudyValue,
   loadDataWranglerStudyFragments,
   pendingDataWranglerStudyTrials,
+  prepareDataWranglerStudyTrialIntent,
   publishDataWranglerStudyFragment,
   readDataWranglerStudyManifestPublication,
   validateDataWranglerStudyFragment,
@@ -19,6 +38,13 @@ import {
 } from "./data-wrangler-comparison-study.mjs";
 
 const MAX_INPUT_BYTES = 32 * 1024 * 1024;
+const MAX_EXECUTION_LOCK_BYTES = 4 * 1024;
+const EXECUTION_LOCK_SUFFIX = ".run-next.lock";
+const EXECUTION_LOCK_SOCKET_PREFIX = "openwrangler-study-run-next-";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const NON_NEGATIVE_INTEGER_TEXT = /^(?:0|[1-9]\d*)$/u;
+
+export const DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL = "openwrangler-data-wrangler-study-execution-lock-v1";
 
 function usage() {
   return [
@@ -162,6 +188,687 @@ function readBoundedJson(path, label, { faultInjector } = {}) {
   } catch {
     throw new TypeError(`${label} is not valid JSON.`);
   }
+}
+
+function sameFilesystemIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameLockMetadata(left, right) {
+  return (
+    sameFilesystemIdentity(left, right) &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs &&
+    left.mode === right.mode &&
+    left.uid === right.uid &&
+    left.gid === right.gid &&
+    left.nlink === right.nlink
+  );
+}
+
+function currentUserOwns(metadata) {
+  return typeof process.getuid === "function" && metadata.uid === BigInt(process.getuid());
+}
+
+function assertPrivateLockParent(metadata) {
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    !currentUserOwns(metadata) ||
+    (metadata.mode & 0o777n) !== 0o700n
+  ) {
+    throw new TypeError("Study execution-lock parent must be one owned mode-0700 directory.");
+  }
+}
+
+function assertPrivateLockFile(metadata) {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    !currentUserOwns(metadata) ||
+    (metadata.mode & 0o777n) !== 0o600n ||
+    metadata.nlink !== 1n ||
+    metadata.size < 1n ||
+    metadata.size > BigInt(MAX_EXECUTION_LOCK_BYTES)
+  ) {
+    throw new TypeError("Study execution lock is not one private, bounded, singly linked regular file.");
+  }
+}
+
+function openPrivateLockParent(path) {
+  const parentPath = resolve(path);
+  const before = lstatSync(parentPath, { bigint: true });
+  assertPrivateLockParent(before);
+  const descriptor = openSync(parentPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    assertPrivateLockParent(opened);
+    if (!sameFilesystemIdentity(before, opened)) {
+      throw new TypeError("Study execution-lock parent changed while it opened.");
+    }
+    return { descriptor, identity: opened, path: parentPath };
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+}
+
+function verifyPrivateLockParent(lease) {
+  const opened = fstatSync(lease.descriptor, { bigint: true });
+  const named = lstatSync(lease.path, { bigint: true });
+  assertPrivateLockParent(opened);
+  assertPrivateLockParent(named);
+  if (!sameFilesystemIdentity(opened, lease.identity) || !sameFilesystemIdentity(named, lease.identity)) {
+    throw new TypeError("Study execution-lock parent identity changed while the lock was held.");
+  }
+}
+
+function anchoredLockPath(parentDescriptor, name) {
+  return `/proc/self/fd/${parentDescriptor}/${name}`;
+}
+
+function readExactLockDescriptor(descriptor, size) {
+  const expectedBytes = Number(size);
+  const bytes = Buffer.alloc(expectedBytes + 1);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+    if (count === 0) break;
+    offset += count;
+  }
+  if (offset !== expectedBytes) {
+    throw new TypeError("Study execution lock changed size while it was read.");
+  }
+  return bytes.subarray(0, offset).toString("utf8");
+}
+
+function exactObjectKeys(value, keys) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join("\0") === [...keys].sort().join("\0")
+  );
+}
+
+function validateExecutionLockRecord(record) {
+  if (
+    !exactObjectKeys(record, ["protocol", "pid", "startTimeTicks", "bootId", "token", "acquiredAtUtc"]) ||
+    record.protocol !== DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL ||
+    !Number.isSafeInteger(record.pid) ||
+    record.pid < 1 ||
+    !NON_NEGATIVE_INTEGER_TEXT.test(record.startTimeTicks ?? "") ||
+    !UUID.test(record.bootId ?? "") ||
+    !UUID.test(record.token ?? "") ||
+    typeof record.acquiredAtUtc !== "string" ||
+    !record.acquiredAtUtc.endsWith("Z") ||
+    !Number.isFinite(Date.parse(record.acquiredAtUtc))
+  ) {
+    throw new TypeError("Study execution lock owner record is malformed; ownership is ambiguous.");
+  }
+  return record;
+}
+
+function readExecutionLockRecord(parentLease, name) {
+  const path = anchoredLockPath(parentLease.descriptor, name);
+  const before = lstatSync(path, { bigint: true });
+  assertPrivateLockFile(before);
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    assertPrivateLockFile(opened);
+    if (!sameLockMetadata(before, opened)) {
+      throw new TypeError("Study execution lock changed while it opened; ownership is ambiguous.");
+    }
+    const text = readExactLockDescriptor(descriptor, opened.size);
+    const after = fstatSync(descriptor, { bigint: true });
+    const named = lstatSync(path, { bigint: true });
+    if (!sameLockMetadata(opened, after) || !sameLockMetadata(after, named)) {
+      throw new TypeError("Study execution lock changed while it was read; ownership is ambiguous.");
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new TypeError("Study execution lock owner record is not valid JSON; ownership is ambiguous.");
+    }
+    return { record: validateExecutionLockRecord(parsed), identity: opened };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function readLinuxBootId() {
+  const value = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  if (!UUID.test(value)) {
+    throw new TypeError("Linux boot identity is unavailable or malformed.");
+  }
+  return value.toLowerCase();
+}
+
+function parseLinuxProcessIdentity(text, pid) {
+  if (typeof text !== "string" || text.length === 0 || text.length > 16 * 1024) {
+    throw new TypeError(`Linux process identity for PID ${pid} is missing or too large.`);
+  }
+  const closingParenthesis = text.lastIndexOf(")");
+  if (!text.startsWith(`${pid} (`) || closingParenthesis <= 0) {
+    throw new TypeError(`Linux process identity for PID ${pid} is malformed.`);
+  }
+  const fields = text
+    .slice(closingParenthesis + 2)
+    .trim()
+    .split(/\s+/u);
+  const state = fields[0];
+  const startTimeTicks = fields[19];
+  if (!/^\S$/u.test(state ?? "") || !NON_NEGATIVE_INTEGER_TEXT.test(startTimeTicks ?? "")) {
+    throw new TypeError(`Linux process identity for PID ${pid} is malformed.`);
+  }
+  return { state, startTimeTicks };
+}
+
+function readLinuxProcessIdentity(pid) {
+  try {
+    return parseLinuxProcessIdentity(readFileSync(`/proc/${pid}/stat`, "utf8"), pid);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ESRCH") return null;
+    throw error;
+  }
+}
+
+function executionLockSocketAddress(scope) {
+  const digest = createHash("sha256").update(scope).digest("hex");
+  return `\0${EXECUTION_LOCK_SOCKET_PREFIX}${digest}`;
+}
+
+async function acquireExecutionSocket(scope, createSocketServer = createServer) {
+  const server = createSocketServer();
+  await new Promise((resolveListen, rejectListen) => {
+    const onError = (error) => {
+      server.off("listening", onListening);
+      if (error?.code === "EADDRINUSE") {
+        rejectListen(new Error("Another run-next study execution already owns the Linux execution lock."));
+      } else {
+        rejectListen(error);
+      }
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolveListen();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(executionLockSocketAddress(scope));
+  });
+  return server;
+}
+
+async function closeExecutionSocket(server) {
+  if (server === undefined) return;
+  await new Promise((resolveClose, rejectClose) => {
+    server.close((error) => (error ? rejectClose(error) : resolveClose()));
+  });
+}
+
+function classifyExecutionLockOwner(record, currentBootId, processIdentityReader) {
+  if (record.bootId.toLowerCase() !== currentBootId.toLowerCase()) {
+    return "dead";
+  }
+  let observed;
+  try {
+    observed = processIdentityReader(record.pid);
+  } catch (error) {
+    throw new TypeError("Study execution lock owner cannot be inspected unambiguously.", { cause: error });
+  }
+  if (observed === null || observed.startTimeTicks !== record.startTimeTicks) {
+    return "dead";
+  }
+  if (["X", "x", "Z"].includes(observed.state)) {
+    return "dead";
+  }
+  return "live";
+}
+
+function removeProvenDeadExecutionLock(parentLease, name, inspected) {
+  const path = anchoredLockPath(parentLease.descriptor, name);
+  const named = lstatSync(path, { bigint: true });
+  if (!sameLockMetadata(named, inspected.identity)) {
+    throw new TypeError("Study execution lock changed before stale recovery; ownership is ambiguous.");
+  }
+  unlinkSync(path);
+  fsyncSync(parentLease.descriptor);
+}
+
+function createExecutionLockFile(parentLease, name, record) {
+  validateExecutionLockRecord(record);
+  const path = anchoredLockPath(parentLease.descriptor, name);
+  const descriptor = openSync(
+    path,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+    0o600
+  );
+  try {
+    fchmodSync(descriptor, 0o600);
+    writeFileSync(descriptor, canonicalStudyJson(record), { encoding: "utf8" });
+    fsyncSync(descriptor);
+    const identity = fstatSync(descriptor, { bigint: true });
+    assertPrivateLockFile(identity);
+    fsyncSync(parentLease.descriptor);
+    return { descriptor, identity };
+  } catch (error) {
+    try {
+      closeSync(descriptor);
+    } catch {
+      // Preserve the original failure; the named lock remains fail-closed.
+    }
+    throw error;
+  }
+}
+
+function releaseExecutionLockFile(parentLease, name, held) {
+  const path = anchoredLockPath(parentLease.descriptor, name);
+  const opened = fstatSync(held.descriptor, { bigint: true });
+  const named = lstatSync(path, { bigint: true });
+  assertPrivateLockFile(opened);
+  assertPrivateLockFile(named);
+  if (!sameLockMetadata(opened, held.identity) || !sameLockMetadata(named, held.identity)) {
+    throw new TypeError("Study execution lock identity changed while it was held; it was not removed.");
+  }
+  const retained = readExecutionLockRecord(parentLease, name);
+  if (
+    !sameLockMetadata(retained.identity, held.identity) ||
+    canonicalStudyJson(retained.record) !== canonicalStudyJson(held.record)
+  ) {
+    throw new TypeError("Study execution lock owner changed while it was held; it was not removed.");
+  }
+  unlinkSync(path);
+  fsyncSync(parentLease.descriptor);
+}
+
+export function dataWranglerStudyExecutionLockPath(manifestPath) {
+  const target = resolve(manifestPath);
+  return resolve(dirname(target), `.${basename(target)}${EXECUTION_LOCK_SUFFIX}`);
+}
+
+async function acquireDataWranglerStudyExecutionLock(
+  manifestPath,
+  {
+    platform = process.platform,
+    pid = process.pid,
+    now = () => new Date(),
+    tokenFactory = randomUUID,
+    bootIdReader = readLinuxBootId,
+    processIdentityReader = readLinuxProcessIdentity,
+    createSocketServer = createServer
+  } = {}
+) {
+  if (platform !== "linux") {
+    throw new Error("Data Wrangler study run-next execution is supported only on Linux.");
+  }
+  if (!Number.isSafeInteger(pid) || pid < 1) {
+    throw new TypeError("Study execution lock PID must be positive.");
+  }
+  const lockPath = dataWranglerStudyExecutionLockPath(manifestPath);
+  const parentLease = openPrivateLockParent(dirname(lockPath));
+  let socket;
+  let held;
+  try {
+    socket = await acquireExecutionSocket(
+      `${parentLease.identity.dev}:${parentLease.identity.ino}:${basename(lockPath)}`,
+      createSocketServer
+    );
+    const bootId = bootIdReader();
+    if (!UUID.test(bootId ?? "")) {
+      throw new TypeError("Linux boot identity is unavailable or malformed.");
+    }
+    const self = processIdentityReader(pid);
+    if (
+      self === null ||
+      !NON_NEGATIVE_INTEGER_TEXT.test(self.startTimeTicks ?? "") ||
+      !/^\S$/u.test(self.state ?? "") ||
+      ["X", "x", "Z"].includes(self.state)
+    ) {
+      throw new TypeError("The run-next process identity cannot be proven before lock acquisition.");
+    }
+    const name = basename(lockPath);
+    try {
+      held = createExecutionLockFile(parentLease, name, {
+        protocol: DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL,
+        pid,
+        startTimeTicks: self.startTimeTicks,
+        bootId: bootId.toLowerCase(),
+        token: tokenFactory(),
+        acquiredAtUtc: now().toISOString()
+      });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const existing = readExecutionLockRecord(parentLease, name);
+      if (classifyExecutionLockOwner(existing.record, bootId, processIdentityReader) !== "dead") {
+        throw new Error(
+          `Another run-next study execution owns the lock as PID ${existing.record.pid} with start time ${existing.record.startTimeTicks}.`
+        );
+      }
+      removeProvenDeadExecutionLock(parentLease, name, existing);
+      held = createExecutionLockFile(parentLease, name, {
+        protocol: DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL,
+        pid,
+        startTimeTicks: self.startTimeTicks,
+        bootId: bootId.toLowerCase(),
+        token: tokenFactory(),
+        acquiredAtUtc: now().toISOString()
+      });
+    }
+    held.record = readExecutionLockRecord(parentLease, name).record;
+    verifyPrivateLockParent(parentLease);
+    return {
+      async release() {
+        const errors = [];
+        try {
+          verifyPrivateLockParent(parentLease);
+          releaseExecutionLockFile(parentLease, basename(lockPath), held);
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          closeSync(held.descriptor);
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          verifyPrivateLockParent(parentLease);
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          closeSync(parentLease.descriptor);
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await closeExecutionSocket(socket);
+        } catch (error) {
+          errors.push(error);
+        }
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) throw new AggregateError(errors, "Study execution lock did not release cleanly.");
+      }
+    };
+  } catch (error) {
+    const cleanupErrors = [];
+    if (held !== undefined) {
+      try {
+        closeSync(held.descriptor);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    try {
+      closeSync(parentLease.descriptor);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    try {
+      await closeExecutionSocket(socket);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (cleanupErrors.length === 0) throw error;
+    throw new AggregateError([error, ...cleanupErrors], "Study execution lock acquisition failed during cleanup.");
+  }
+}
+
+async function withDataWranglerStudyExecutionLock(manifestPath, callback, options = {}) {
+  const lock = await acquireDataWranglerStudyExecutionLock(manifestPath, options);
+  let result;
+  let operationError;
+  try {
+    result = await callback();
+  } catch (error) {
+    operationError = error;
+  }
+  let releaseError;
+  try {
+    await lock.release();
+  } catch (error) {
+    releaseError = error;
+  }
+  if (operationError !== undefined && releaseError !== undefined) {
+    throw new AggregateError(
+      [operationError, releaseError],
+      "Study run-next failed and its execution lock was not released."
+    );
+  }
+  if (operationError !== undefined) throw operationError;
+  if (releaseError !== undefined) throw releaseError;
+  return result;
+}
+
+function requireRunNextPath(value, label) {
+  if (typeof value !== "string" || value.length === 0 || /[\0\r\n]/u.test(value)) {
+    throw new TypeError(`${label} must be one non-empty filesystem path.`);
+  }
+  return resolve(value);
+}
+
+function isoTimestamp(now, label) {
+  if (typeof now !== "function") {
+    throw new TypeError("Study run-next clock must be a function.");
+  }
+  const value = now();
+  if (!(value instanceof Date) || !Number.isFinite(value.valueOf())) {
+    throw new TypeError(`${label} clock did not return a valid Date.`);
+  }
+  return value.toISOString();
+}
+
+function fragmentLedgerDigest(fragments) {
+  return digestStudyValue(fragments.map((fragment) => digestStudyValue(fragment)));
+}
+
+function manifestDeclaresDataWranglerPolarsUnavailable(manifest, entry) {
+  if (entry.product !== "data-wrangler" || entry.engine !== "polars") return false;
+  const capability = manifest.provenance.capabilities.find(
+    (candidate) => candidate.product === "data-wrangler" && candidate.engine === "polars"
+  );
+  return capability?.availability === "unavailable";
+}
+
+export function createManifestBoundDataWranglerPolarsUnsupportedFragment({
+  manifest,
+  scheduleEntry,
+  executionIndex,
+  recordedAtUtc,
+  fragmentId
+}) {
+  const fragment = {
+    ...createStudyFragmentIdentity({
+      manifest,
+      scheduleEntry,
+      executionIndex,
+      attempt: scheduleEntry.attempt,
+      recordedAtUtc
+    }),
+    outcome: {
+      status: "unsupported",
+      reasonClass: null,
+      actionStarted: false,
+      correctness: "not-reached",
+      timeout: null,
+      unsupported: { publicSurface: "unavailable", comparability: "non-comparable" }
+    },
+    milestones: createEmptyStudyMilestones(),
+    cacheProof: null,
+    sourceLoad: {
+      status: "not-reached",
+      durationMs: null,
+      includedInInlineTiming: scheduleEntry.kind === "cold"
+    },
+    engineEvidence: null,
+    environmentGate: null,
+    uiEvidence: null,
+    processProofs: null,
+    resourceObservation: null,
+    cleanupProof: null,
+    trialProvenance: null
+  };
+  if (fragmentId !== undefined) fragment.fragmentId = fragmentId;
+  return validateDataWranglerStudyFragment(fragment, manifest);
+}
+
+export async function runNextDataWranglerComparisonStudyTrial(
+  { manifestPath, fragmentsDirectory, intentsDirectory } = {},
+  {
+    executeTrial,
+    now = () => new Date(),
+    runIdFactory = randomUUID,
+    fragmentIdFactory = randomUUID,
+    lockOptions = {},
+    readOptions = {},
+    publicationOptions = {}
+  } = {}
+) {
+  const resolvedManifestPath = requireRunNextPath(manifestPath, "Study run-next manifest");
+  const resolvedFragmentsDirectory = requireRunNextPath(fragmentsDirectory, "Study run-next fragment directory");
+  const resolvedIntentsDirectory = requireRunNextPath(intentsDirectory, "Study run-next intent directory");
+  if (typeof runIdFactory !== "function" || typeof fragmentIdFactory !== "function") {
+    throw new TypeError("Study run-next identity factories must be functions.");
+  }
+
+  return await withDataWranglerStudyExecutionLock(
+    resolvedManifestPath,
+    async () => {
+      const manifest = readDataWranglerStudyManifestPublication(resolvedManifestPath, readOptions.manifest);
+      const manifestSha256 = digestStudyValue(manifest);
+      const fragments = loadDataWranglerStudyFragments(resolvedFragmentsDirectory, manifest, readOptions.fragments);
+      assertNoIndeterminateDataWranglerStudyAction({
+        directory: resolvedIntentsDirectory,
+        manifest,
+        fragments,
+        options: readOptions.intents
+      });
+      const next = pendingDataWranglerStudyTrials(manifest, fragments)[0];
+      if (next === undefined) {
+        return { command: "run-next", status: "complete", receipt: null, output: null };
+      }
+
+      const prepared = prepareDataWranglerStudyTrialIntent({
+        directory: resolvedIntentsDirectory,
+        manifest,
+        fragments,
+        runId: runIdFactory(),
+        preparedAtUtc: isoTimestamp(now, "Study trial preparation"),
+        options: publicationOptions.intentPreparation
+      });
+      let authorization;
+      let acceptingAuthorization = true;
+      const authorizeAction = (...arguments_) => {
+        if (arguments_.length !== 0) {
+          throw new TypeError("Study product-action authorization accepts no arguments.");
+        }
+        if (!acceptingAuthorization) {
+          throw new Error("Study product-action authorization is no longer available for this execution.");
+        }
+        if (authorization !== undefined) {
+          throw new Error("Study product action may be authorized only once.");
+        }
+        const currentManifest = readDataWranglerStudyManifestPublication(resolvedManifestPath, readOptions.manifest);
+        const currentFragments = loadDataWranglerStudyFragments(
+          resolvedFragmentsDirectory,
+          currentManifest,
+          readOptions.fragments
+        );
+        if (
+          digestStudyValue(currentManifest) !== manifestSha256 ||
+          fragmentLedgerDigest(currentFragments) !== fragmentLedgerDigest(fragments)
+        ) {
+          throw new Error("Study ledger changed before product-action authorization.");
+        }
+        authorization = authorizeDataWranglerStudyTrialAction({
+          directory: resolvedIntentsDirectory,
+          manifest,
+          fragments,
+          preparedIntent: prepared.intent,
+          authorizedAtUtc: isoTimestamp(now, "Study product-action authorization"),
+          options: publicationOptions.actionAuthorization
+        });
+        return structuredClone(authorization);
+      };
+
+      let fragment;
+      try {
+        if (manifestDeclaresDataWranglerPolarsUnavailable(manifest, next)) {
+          fragment = createManifestBoundDataWranglerPolarsUnsupportedFragment({
+            manifest,
+            scheduleEntry: next,
+            executionIndex: fragments.length,
+            recordedAtUtc: isoTimestamp(now, "Study unsupported trial"),
+            fragmentId: fragmentIdFactory()
+          });
+        } else {
+          if (typeof executeTrial !== "function") {
+            throw new TypeError("Study run-next requires an executeTrial function for a supported entry.");
+          }
+          fragment = await executeTrial({
+            manifest: structuredClone(manifest),
+            scheduleEntry: structuredClone(next),
+            executionIndex: fragments.length,
+            preparedIntent: structuredClone(prepared.intent),
+            authorizeAction
+          });
+        }
+      } finally {
+        acceptingAuthorization = false;
+      }
+
+      if (fragment?.outcome?.actionStarted === true && authorization === undefined) {
+        acceptingAuthorization = true;
+        try {
+          authorizeAction();
+        } finally {
+          acceptingAuthorization = false;
+        }
+        throw new Error("Study executor reported a product action without durable authorization.");
+      }
+      if (authorization !== undefined && fragment?.outcome?.actionStarted !== true) {
+        throw new Error("Study executor authorized a product action without retaining action-started evidence.");
+      }
+      validateDataWranglerStudyFragment(fragment, manifest);
+
+      const currentManifest = readDataWranglerStudyManifestPublication(resolvedManifestPath, readOptions.manifest);
+      const currentFragments = loadDataWranglerStudyFragments(
+        resolvedFragmentsDirectory,
+        currentManifest,
+        readOptions.fragments
+      );
+      if (
+        digestStudyValue(currentManifest) !== manifestSha256 ||
+        fragmentLedgerDigest(currentFragments) !== fragmentLedgerDigest(fragments)
+      ) {
+        throw new Error("Study ledger changed while the trial was executing; its fragment was not published.");
+      }
+      const receipt = publishDataWranglerStudyFragment(
+        resolvedFragmentsDirectory,
+        fragment,
+        manifest,
+        publicationOptions.fragment
+      );
+      const published = loadDataWranglerStudyFragments(resolvedFragmentsDirectory, manifest, readOptions.fragments);
+      if (
+        published.length !== fragments.length + 1 ||
+        canonicalStudyJson(published.at(-1)) !== canonicalStudyJson(fragment)
+      ) {
+        throw new Error("Study run-next did not publish one exact fragment.");
+      }
+      assertNoIndeterminateDataWranglerStudyAction({
+        directory: resolvedIntentsDirectory,
+        manifest,
+        fragments: published,
+        options: readOptions.intents
+      });
+      return { command: "run-next", status: "recorded", receipt, output: fragment };
+    },
+    { ...lockOptions, now: lockOptions.now ?? now }
+  );
 }
 
 export function runDataWranglerComparisonStudy(
