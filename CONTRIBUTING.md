@@ -14,6 +14,13 @@ npm test
 
 Set `OPEN_WRANGLER_PYTHON` when the development interpreter is not `.venv/bin/python`.
 
+## Writing for people
+
+Read [`docs/writing-style.md`](docs/writing-style.md) before editing the README, changelog, issues, pull request text,
+release notes, registry listings, screenshots, or other public copy. Lead with the user-visible change, keep
+architecture and test proofs in their own documents, and use a concrete commit subject. Public text needs a real
+editorial read; do not rely on an AI detector or a word list.
+
 ## Pull requests
 
 - Target `release/1.x` only for v1 maintenance fixes. Target `main` for v2 work and shared development. After a v1
@@ -23,6 +30,7 @@ Set `OPEN_WRANGLER_PYTHON` when the development interpreter is not `.venv/bin/py
 - Add or update tests with every behavior change.
 - Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable generated-code coverage for every editing-capable engine.
 - Update the documentation listed in the `AGENTS.md` matrix.
+- Review user-facing text and pull request summaries against `docs/writing-style.md`.
 - Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
 - Push independently green branch commits before opening a pull request when early review is not needed. Opening a draft pull request intentionally starts the complete PR evidence set; required jobs must never be conditionally skipped for drafts.
