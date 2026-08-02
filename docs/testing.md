@@ -677,6 +677,17 @@ be finished before this command can produce study evidence. The implementation f
 [`pidfd_send_signal`](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html); sample timestamps use
 [`process.hrtime.bigint()`](https://nodejs.org/api/process.html#processhrtimebigint).
 
+The Node supervisor client can be passed directly to `runEditorAcceptancePhase` as its `spawnProcess` function. It
+recomputes the payload argument, environment, policy, and complete invocation digests before launch. The client accepts
+exactly two bounded canonical frames on file descriptor 3, checks the live supervisor and editor identities, and waits
+for the terminal census before it reports completion. A stale receipt, third frame, changed executable, reused PID, or
+process that remains after cleanup invalidates the run.
+
+Timing coordination uses two private sibling files for requests and acknowledgements. Each canonical envelope carries
+the protocol version, run ID, phase, sequence, handshake kind, and a monotonic timestamp. The controller consumes both
+files after every acknowledgement. Unknown fields, stale sequences, replaced file identities, and acknowledgements
+whose timestamp predates the request fail the handshake.
+
 ## Performance fixtures
 
 `npm run benchmark:runtime` is the canonical strict native-Polars release benchmark. It creates deterministic 100k×50 CSV and 1M×20 Parquet fixtures under ignored `tmp/performance`. Before timing, it validates exact dimensions, ordered Int64 schema, and deterministic sentinel values in every column; an invalid or partial fixture is atomically regenerated. Validation reads the source, so the harness then requires Linux to accept a per-file `posix_fadvise(POSIX_FADV_DONTNEED)` eviction before the first direct open and again immediately before the canonical stdio open. The stdio cold-source open is the release-gated first-usable-grid boundary at 3s/5s; missing eviction proof fails strict mode. Every timed open requests the first 16 columns, matching the shipped default; timed cache-miss pages rotate across real horizontal blocks, including nonzero offsets. `projectedGridColumns` records the resolved width, while the report records every sampled column offset and validates the returned stable IDs. `pageCache.maxBytes` is the maximum total retained cache weight observed during the run, not the byte size of one response. The report separately retains the first direct open and the median of later fresh-manager opens against a warm OS source cache (`warmSourceReopenMedianMs`). Direct `SessionManager` cache timing is explicitly named `directRuntimeCachedPageP95Ms` and `directRuntimeCacheMissPageP95Ms`; it is not presented as editor or transport latency. A second measurement spawns the real standalone Python runtime with the selected backend already imported, sends canonical protocol-v2 newline-delimited JSON envelopes over stdin, parses stdout envelopes, and records `stdioTransport.cacheMissPageP95Ms`. Its isolated benchmark bootstrap leaves canonical stdin/stdout behavior unchanged and wraps only the selected engine's production `header_stats` call, emitting entry and exit timestamps on stderr from Python's process-wide monotonic clock. The interactive cache-miss page is sent only after the entry event, and strict mode requires its completed write timestamp to fall inside that measured call interval; the report retains both signed timing margins around the send. A completed-before-send or otherwise unproven interval is an inconclusive release failure rather than a pass.
