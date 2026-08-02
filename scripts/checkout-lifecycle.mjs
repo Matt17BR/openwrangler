@@ -30,6 +30,7 @@ const RETIREMENT_PLAN_PROTOCOL = "openwrangler-retirement-plan-v1";
 const RETIREMENT_CHECKS_PROTOCOL = "openwrangler-retirement-deferred-checks-v1";
 const ARCHIVE_RECEIPT_PROTOCOL = "openwrangler-checkout-archive-v1";
 const ARCHIVE_COMPLETION_PROTOCOL = "openwrangler-checkout-archive-completion-v1";
+const QUARANTINE_EVENT_PROTOCOL = "openwrangler-checkout-quarantine-event-v1";
 const MAXIMUM_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_BUNDLE_HEADER_BYTES = 4 * 1024 * 1024;
 const ARCHIVE_SPACE_MULTIPLIER = 8n;
@@ -48,6 +49,7 @@ const MAXIMUM_WORKTREE_RECORDS = 4096;
 const MAXIMUM_WORKTREE_FIELDS = 16;
 const MAXIMUM_WORKTREE_FIELD_BYTES = 8192;
 const MAXIMUM_ARCHIVE_ATTEMPTS = 8;
+const MAXIMUM_QUARANTINE_RECORDS = 128;
 const MAXIMUM_ARCHIVE_DIRECTORIES = MAXIMUM_ENTRIES * MAXIMUM_ARCHIVE_ATTEMPTS;
 const MAXIMUM_ARCHIVE_REFS = 32_768;
 const MAXIMUM_ARCHIVE_PACK_FILES = 16_384;
@@ -63,6 +65,9 @@ const IDENTITY_PATTERN = /^(?:0|[1-9][0-9]{0,39})$/u;
 const ENTRY_FILE_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})\.json$/u;
 const LOCK_FILE_PATTERN = /^([1-9][0-9]{0,8})\.(claim|release)\.json$/u;
 const ARCHIVE_ATTEMPT_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})\.([1-8])$/u;
+const QUARANTINE_JOURNAL_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})$/u;
+const QUARANTINE_RECORD_PATTERN =
+  /^([0-9]{8})\.(quarantine-intent|quarantine-result|restore-intent|restore-result)\.([0-9a-f]{32})\.json$/u;
 
 export class CheckoutLifecycleError extends Error {
   constructor(code, message) {
@@ -105,6 +110,100 @@ function exactKeys(value, keys, label) {
   ) {
     fail("invalid-registry", `${label} has unknown or missing fields.`);
   }
+}
+
+function quarantineExactKeys(value, keys, label) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")
+  ) {
+    fail("invalid-quarantine-observation", `${label} has unknown or missing fields.`);
+  }
+}
+
+function validateObservedRoot(value, label) {
+  quarantineExactKeys(value, ["present", "identityMatches"], label);
+  if (
+    typeof value.present !== "boolean" ||
+    typeof value.identityMatches !== "boolean" ||
+    (!value.present && value.identityMatches)
+  ) {
+    fail("invalid-quarantine-observation", `${label} is malformed.`);
+  }
+}
+
+/**
+ * Classifies one already-collected quarantine/restore observation without
+ * reading the filesystem, invoking Git, or authorizing a follow-up action.
+ */
+export function classifyQuarantineObservation(observation) {
+  quarantineExactKeys(
+    observation,
+    [
+      "direction",
+      "original",
+      "quarantine",
+      "worktreeRegistry",
+      "checkoutGitFile",
+      "adminBacklink",
+      "repositoryStateMatches"
+    ],
+    "Quarantine observation"
+  );
+  if (!["quarantine", "restore"].includes(observation.direction)) {
+    fail("invalid-quarantine-observation", "Quarantine observation direction is malformed.");
+  }
+  validateObservedRoot(observation.original, "Observed original root");
+  validateObservedRoot(observation.quarantine, "Observed quarantine root");
+  const locations = [observation.worktreeRegistry, observation.checkoutGitFile, observation.adminBacklink];
+  if (
+    locations.some((value) => !["original", "quarantine", "missing", "other"].includes(value)) ||
+    typeof observation.repositoryStateMatches !== "boolean"
+  ) {
+    fail("invalid-quarantine-observation", "Quarantine observation links are malformed.");
+  }
+
+  const finish = (state, location, reason) => Object.freeze({ state, location, reason, authorizesCleanup: false });
+  const { original, quarantine, direction } = observation;
+  const originalOnly = original.present && !quarantine.present && original.identityMatches;
+  const quarantineOnly = quarantine.present && !original.present && quarantine.identityMatches;
+  if (
+    !observation.repositoryStateMatches ||
+    locations.includes("other") ||
+    (original.present && !original.identityMatches) ||
+    (quarantine.present && !quarantine.identityMatches) ||
+    (!originalOnly && !quarantineOnly)
+  ) {
+    return finish("indeterminate", "unknown", "identity-or-repository-mismatch");
+  }
+
+  const rootLocation = originalOnly ? "original" : "quarantine";
+  if (![rootLocation, "missing"].includes(observation.checkoutGitFile)) {
+    return finish("indeterminate", "unknown", "git-file-on-absent-root");
+  }
+  if (locations.every((value) => value === rootLocation)) {
+    const isPre =
+      (direction === "quarantine" && rootLocation === "original") ||
+      (direction === "restore" && rootLocation === "quarantine");
+    return finish(isPre ? "pre" : "post", `${rootLocation}-coherent`, "coherent");
+  }
+  if (locations.every((value) => value === "missing")) {
+    return finish("indeterminate", "unknown", "all-links-missing");
+  }
+  const otherLocation = rootLocation === "original" ? "quarantine" : "original";
+  if (
+    observation.checkoutGitFile === rootLocation &&
+    observation.worktreeRegistry === otherLocation &&
+    observation.adminBacklink === otherLocation
+  ) {
+    return finish("partial", rootLocation, `${direction}-rename-before-backlink`);
+  }
+  if (locations.every((value) => [rootLocation, otherLocation, "missing"].includes(value))) {
+    return finish("partial", rootLocation, `${direction}-backlinks-incomplete`);
+  }
+  return finish("indeterminate", "unknown", "unrecognized-layout");
 }
 
 function boundedPrintable(value, maximum, label) {
@@ -877,7 +976,9 @@ function normalizePaths(root) {
     checkouts: join(managerRoot, "checkouts"),
     locks: join(managerRoot, "locks"),
     retirements: join(managerRoot, "retirements"),
-    archives: join(managerRoot, "archives")
+    archives: join(managerRoot, "archives"),
+    quarantines: join(managerRoot, "quarantines"),
+    quarantinedCheckouts: join(managerRoot, "quarantined-checkouts")
   });
 }
 
@@ -1521,6 +1622,7 @@ export function createCheckoutManager(options = {}) {
 
   function reconcileCreating(entry) {
     if (entry.state !== "creating") return entry;
+    assertNoQuarantineHistoryForSlug(entry.slug);
     const checkoutPath = checkoutPathFor(entry.slug);
     const present = existsSync(checkoutPath);
     const record = worktreeRecord(checkoutPath, true);
@@ -3012,6 +3114,403 @@ export function createCheckoutManager(options = {}) {
     }
   }
 
+  function optionalPrivateDirectory(path, label) {
+    try {
+      lstatSync(path, { bigint: true });
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      fail("unsafe-manager", `${label} could not be inspected safely: ${error.message}`);
+    }
+    return assertPrivateDirectory(path, label);
+  }
+
+  function readRetirementPlanForAnchor(entry) {
+    const rootIdentity = optionalPrivateDirectory(paths.retirements, "The retirement journal");
+    if (rootIdentity === null) {
+      fail("retirement-evidence-missing", "Retirement evidence for the quarantine anchor is missing.");
+    }
+    const path = retirementPath(entry.slug, entry.generation);
+    const loaded = readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, `Retirement evidence for ${entry.slug}`);
+    validateRetirementEvidence(loaded.value, entry);
+    revalidatePathIdentity(path, loaded.identity, `Retirement evidence for ${entry.slug}`);
+    revalidatePathIdentity(paths.retirements, rootIdentity, "The retirement journal", "directory");
+    return Object.freeze({ path, ...loaded });
+  }
+
+  function readCompletedArchiveAnchor(entry) {
+    const rootIdentity = optionalPrivateDirectory(paths.archives, "The archive journal");
+    if (rootIdentity === null) fail("archive-evidence-missing", "A completed recovery archive is required.");
+    const matches = [];
+    for (const item of readDirectoryBounded(paths.archives, MAXIMUM_ARCHIVE_DIRECTORIES, "The archive journal")) {
+      const match = ARCHIVE_ATTEMPT_PATTERN.exec(item.name);
+      if (!item.isDirectory() || item.isSymbolicLink() || match === null) {
+        fail("invalid-archive", "The archive journal contains an unknown entry.");
+      }
+      const path = join(paths.archives, item.name);
+      const identity = assertPrivateDirectory(path, `Archive attempt ${item.name}`);
+      if (match[1] === entry.slug && Number(match[2]) === entry.generation) {
+        matches.push(
+          Object.freeze({
+            attempt: Number(match[3]),
+            path,
+            identity,
+            completed: existsSync(join(path, "complete.json"))
+          })
+        );
+      }
+    }
+    const completedAttempts = matches.filter(({ completed }) => completed);
+    if (completedAttempts.length !== 1) {
+      fail("invalid-archive", "Exactly one completed recovery archive must anchor a quarantine journal.");
+    }
+    const attempt = completedAttempts[0];
+    if (matches.some((candidate) => candidate.attempt > attempt.attempt)) {
+      fail("invalid-archive", "An archive attempt follows the completed recovery archive.");
+    }
+    assertArchiveAttemptContents(
+      attempt,
+      ["archive.bundle", "receipt.json", "complete.json"],
+      ["verification-template", "verification.git"]
+    );
+    const plan = readRetirementPlanForAnchor(entry);
+    const bundle = {
+      path: join(attempt.path, "archive.bundle"),
+      ...captureArchiveFile(join(attempt.path, "archive.bundle"), "Recovery bundle")
+    };
+    const receiptPath = join(attempt.path, "receipt.json");
+    const receipt = readJsonReceipt(receiptPath, MAXIMUM_ENTRY_BYTES, "Archive receipt");
+    validateArchiveReceipt(receipt.value, entry, attempt, plan);
+    const receiptFile = {
+      path: receiptPath,
+      identity: receipt.identity,
+      byteLength: receipt.byteLength,
+      sha256: receipt.sha256
+    };
+    const verification = {
+      template: receipt.value.archive.verification.template,
+      repository: captureVerificationRepository(
+        receipt.value.archive.verification.repository.path,
+        receipt.value.archive.verification.repository.identity
+      )
+    };
+    revalidatePathIdentity(
+      verification.template.path,
+      verification.template.identity,
+      "Verification template",
+      "directory"
+    );
+    if (readDirectoryBounded(verification.template.path, 1, "The verification template").length !== 0) {
+      fail("archive-changed", "The verification template is no longer empty.");
+    }
+    if (
+      !isDeepStrictEqual(bundle, receipt.value.archive.bundle) ||
+      !isDeepStrictEqual(verification.repository, receipt.value.archive.verification.repository)
+    ) {
+      fail("archive-changed", "The completed recovery archive no longer matches its receipt.");
+    }
+    const completionPath = join(attempt.path, "complete.json");
+    const completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Archive completion");
+    validateCompletion(completion.value, entry, attempt, bundle, receiptFile, verification);
+    const anchor = Object.freeze({
+      attempt: attempt.attempt,
+      directory: Object.freeze({ path: attempt.path, identity: attempt.identity }),
+      completion: Object.freeze({
+        path: completionPath,
+        identity: completion.identity,
+        byteLength: completion.byteLength,
+        sha256: completion.sha256
+      }),
+      receipt: Object.freeze(receiptFile),
+      bundle: Object.freeze(bundle)
+    });
+    const finalBundle = { path: bundle.path, ...captureArchiveFile(bundle.path, "Recovery bundle") };
+    const finalPlan = readJsonReceipt(plan.path, MAXIMUM_ENTRY_BYTES, `Retirement evidence for ${entry.slug}`);
+    const finalReceipt = readJsonReceipt(receiptPath, MAXIMUM_ENTRY_BYTES, "Archive receipt");
+    const finalCompletion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Archive completion");
+    if (
+      !isDeepStrictEqual(finalBundle, bundle) ||
+      !sameIdentity(finalPlan.identity, plan.identity) ||
+      finalPlan.byteLength !== plan.byteLength ||
+      finalPlan.sha256 !== plan.sha256 ||
+      !isDeepStrictEqual(finalPlan.value, plan.value) ||
+      !sameIdentity(finalReceipt.identity, receipt.identity) ||
+      finalReceipt.byteLength !== receipt.byteLength ||
+      finalReceipt.sha256 !== receipt.sha256 ||
+      !isDeepStrictEqual(finalReceipt.value, receipt.value) ||
+      !sameIdentity(finalCompletion.identity, completion.identity) ||
+      finalCompletion.byteLength !== completion.byteLength ||
+      finalCompletion.sha256 !== completion.sha256 ||
+      !isDeepStrictEqual(finalCompletion.value, completion.value)
+    ) {
+      fail("archive-changed", "The completed recovery archive changed while its anchor was read.");
+    }
+    revalidatePathIdentity(attempt.path, attempt.identity, "Archive attempt directory", "directory");
+    revalidatePathIdentity(paths.archives, rootIdentity, "The archive journal", "directory");
+    return anchor;
+  }
+
+  function validateQuarantineDeferredChecks(value) {
+    exactKeys(value, ["recovery", "processUse", "mounts"], "Quarantine deferred checks");
+    if (
+      value.recovery !== "completed-archive-revalidated" ||
+      value.processUse !== "not-checked-recheck-required" ||
+      value.mounts !== "not-checked-recheck-required"
+    ) {
+      fail("invalid-quarantine-journal", "Quarantine deferred checks are malformed.");
+    }
+  }
+
+  function validateQuarantinePrevious(value, previous) {
+    exactKeys(
+      value,
+      ["sequence", "kind", "operationId", "path", "identity", "byteLength", "sha256"],
+      "Previous quarantine record"
+    );
+    validateIdentity(value.identity, "Previous quarantine record identity");
+    if (
+      value.sequence !== previous.sequence ||
+      value.kind !== previous.kind ||
+      value.operationId !== previous.operationId ||
+      value.path !== previous.path ||
+      !sameIdentity(value.identity, previous.identity) ||
+      value.byteLength !== previous.byteLength ||
+      value.sha256 !== previous.sha256
+    ) {
+      fail("invalid-quarantine-journal", "The quarantine journal hash chain is broken.");
+    }
+  }
+
+  function quarantineRecordReceipt(record) {
+    return Object.freeze({
+      sequence: record.sequence,
+      kind: record.kind,
+      operationId: record.operationId,
+      path: record.path,
+      identity: record.loaded.identity,
+      byteLength: record.loaded.byteLength,
+      sha256: record.loaded.sha256
+    });
+  }
+
+  function validateQuarantineRecord(record, entry, previous, archiveAnchor, originalPath, quarantinePath) {
+    const result = record.kind.endsWith("-result");
+    exactKeys(
+      record.loaded.value,
+      [
+        "protocol",
+        "kind",
+        "slug",
+        "entryGeneration",
+        "sequence",
+        "operationId",
+        "previous",
+        "anchor",
+        "originalPath",
+        "quarantinePath",
+        "deferredChecks",
+        "authorizesCleanup",
+        ...(result ? ["observation", "classification"] : [])
+      ],
+      `Quarantine record ${record.sequence}`
+    );
+    const value = record.loaded.value;
+    if (
+      value.protocol !== QUARANTINE_EVENT_PROTOCOL ||
+      value.kind !== record.kind ||
+      value.slug !== entry.slug ||
+      value.entryGeneration !== entry.generation ||
+      value.sequence !== record.sequence ||
+      value.operationId !== record.operationId ||
+      value.authorizesCleanup !== false ||
+      value.originalPath !== originalPath ||
+      value.quarantinePath !== quarantinePath ||
+      !isDeepStrictEqual(value.anchor, archiveAnchor)
+    ) {
+      fail("invalid-quarantine-journal", `Quarantine record ${record.sequence} is malformed.`);
+    }
+    validateQuarantineDeferredChecks(value.deferredChecks);
+    if (previous === undefined) {
+      if (value.previous !== null || record.kind !== "quarantine-intent") {
+        fail("invalid-quarantine-journal", "The quarantine journal must begin with one quarantine intent.");
+      }
+    } else {
+      validateQuarantinePrevious(value.previous, quarantineRecordReceipt(previous));
+    }
+    if (result) {
+      const direction = record.kind.startsWith("quarantine-") ? "quarantine" : "restore";
+      if (value.observation?.direction !== direction) {
+        fail("invalid-quarantine-journal", "A quarantine result has the wrong observation direction.");
+      }
+      const classification = classifyQuarantineObservation(value.observation);
+      if (!isDeepStrictEqual(value.classification, classification)) {
+        fail("invalid-quarantine-journal", "A quarantine result has an invalid classification.");
+      }
+    }
+  }
+
+  function allowedQuarantineIntent(previous) {
+    if (previous.kind === "quarantine-result") {
+      if (previous.loaded.value.classification.state === "pre") return "quarantine-intent";
+      if (previous.loaded.value.classification.state === "post") return "restore-intent";
+    }
+    if (previous.kind === "restore-result") {
+      if (previous.loaded.value.classification.state === "pre") return "restore-intent";
+      if (previous.loaded.value.classification.state === "post") return "quarantine-intent";
+    }
+    return null;
+  }
+
+  function readQuarantineOverlay(entry) {
+    const rootIdentity = optionalPrivateDirectory(paths.quarantines, "The quarantine journal");
+    if (rootIdentity === null) {
+      return Object.freeze({ state: "none", authorizesCleanup: false });
+    }
+    let currentDirectory = null;
+    for (const item of readDirectoryBounded(paths.quarantines, MAXIMUM_ENTRIES, "The quarantine journal")) {
+      const match = QUARANTINE_JOURNAL_PATTERN.exec(item.name);
+      if (!item.isDirectory() || item.isSymbolicLink() || match === null) {
+        fail("invalid-quarantine-journal", "The quarantine journal contains an unknown entry.");
+      }
+      const path = join(paths.quarantines, item.name);
+      const identity = assertPrivateDirectory(path, `Quarantine journal ${item.name}`);
+      if (match[1] === entry.slug && Number(match[2]) === entry.generation) {
+        currentDirectory = Object.freeze({ path, identity });
+      }
+    }
+    if (currentDirectory === null) {
+      revalidatePathIdentity(paths.quarantines, rootIdentity, "The quarantine journal", "directory");
+      return Object.freeze({ state: "none", authorizesCleanup: false });
+    }
+    const archiveAnchor = readCompletedArchiveAnchor(entry);
+    const initialNames = readDirectoryBounded(
+      currentDirectory.path,
+      MAXIMUM_QUARANTINE_RECORDS,
+      `Quarantine journal for ${entry.slug}`
+    )
+      .map((item) => {
+        const match = QUARANTINE_RECORD_PATTERN.exec(item.name);
+        if (!item.isFile() || item.isSymbolicLink() || match === null) {
+          fail("invalid-quarantine-journal", "The quarantine journal contains an unknown record.");
+        }
+        return Object.freeze({ name: item.name, sequence: Number(match[1]), kind: match[2], operationId: match[3] });
+      })
+      .sort((left, right) => left.sequence - right.sequence);
+    if (initialNames.length === 0) fail("invalid-quarantine-journal", "The quarantine journal is empty.");
+    const records = [];
+    const operationIds = new Set();
+    const originalPath = checkoutPathFor(entry.slug);
+    const quarantinePath = join(
+      paths.quarantinedCheckouts,
+      `${entry.slug}.${entry.generation}.${initialNames[0].operationId}`
+    );
+    for (const [index, named] of initialNames.entries()) {
+      if (
+        named.sequence !== index + 1 ||
+        named.name !== `${String(index + 1).padStart(8, "0")}.${named.kind}.${named.operationId}.json`
+      ) {
+        fail("invalid-quarantine-journal", "The quarantine journal contains a sequence gap or noncanonical name.");
+      }
+      const path = join(currentDirectory.path, named.name);
+      const loaded = readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, `Quarantine record ${named.sequence}`);
+      const record = Object.freeze({ ...named, path, loaded });
+      const previous = records.at(-1);
+      if (named.kind.endsWith("-intent")) {
+        if (operationIds.has(named.operationId))
+          fail("invalid-quarantine-journal", "A quarantine operation ID was reused.");
+        operationIds.add(named.operationId);
+        const allowed = previous === undefined ? "quarantine-intent" : allowedQuarantineIntent(previous);
+        if (named.kind !== allowed)
+          fail("invalid-quarantine-journal", "The quarantine journal state transition is invalid.");
+      } else {
+        const expectedKind = previous?.kind.replace("-intent", "-result");
+        if (previous === undefined || named.kind !== expectedKind || named.operationId !== previous.operationId) {
+          fail("invalid-quarantine-journal", "A quarantine result does not immediately follow its intent.");
+        }
+      }
+      validateQuarantineRecord(record, entry, previous, archiveAnchor, originalPath, quarantinePath);
+      records.push(record);
+    }
+    hooks?.afterQuarantineRecordsRead?.(entry, records);
+    const finalNames = readDirectoryBounded(
+      currentDirectory.path,
+      MAXIMUM_QUARANTINE_RECORDS,
+      `Quarantine journal for ${entry.slug}`
+    )
+      .map((item) => item.name)
+      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    const expectedNames = initialNames
+      .map(({ name }) => name)
+      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    if (!isDeepStrictEqual(finalNames, expectedNames))
+      fail("registry-changed", "The quarantine journal changed while it was read.");
+    for (const record of records) {
+      const reread = readJsonReceipt(record.path, MAXIMUM_ENTRY_BYTES, `Quarantine record ${record.sequence}`);
+      if (
+        !sameIdentity(reread.identity, record.loaded.identity) ||
+        reread.byteLength !== record.loaded.byteLength ||
+        reread.sha256 !== record.loaded.sha256 ||
+        !isDeepStrictEqual(reread.value, record.loaded.value)
+      ) {
+        fail("registry-changed", "The quarantine journal changed while it was read.");
+      }
+    }
+    const finalArchiveAnchor = readCompletedArchiveAnchor(entry);
+    if (!isDeepStrictEqual(finalArchiveAnchor, archiveAnchor)) {
+      fail("archive-changed", "The completed recovery archive changed while the quarantine journal was read.");
+    }
+    verifyEntrySnapshot(entry);
+    const finalEntry = readEntry(entry.slug);
+    if (!isDeepStrictEqual(finalEntry, entry)) {
+      fail("registry-changed", "The managed checkout entry changed while the quarantine journal was read.");
+    }
+    verifyEntrySnapshot(finalEntry);
+    revalidatePathIdentity(
+      currentDirectory.path,
+      currentDirectory.identity,
+      "The checkout quarantine journal",
+      "directory"
+    );
+    revalidatePathIdentity(paths.quarantines, rootIdentity, "The quarantine journal", "directory");
+    const latest = records.at(-1);
+    const classification = latest.kind.endsWith("-result") ? latest.loaded.value.classification : null;
+    const state =
+      classification === null
+        ? "intent-pending"
+        : classification.location === "original-coherent"
+          ? "original"
+          : classification.location === "quarantine-coherent"
+            ? "quarantined"
+            : classification.state;
+    return Object.freeze({
+      state,
+      latestKind: latest.kind,
+      sequence: latest.sequence,
+      operationId: latest.operationId,
+      originalPath,
+      quarantinePath,
+      classification,
+      archive: archiveAnchor,
+      deferredChecks: latest.loaded.value.deferredChecks,
+      authorizesCleanup: false
+    });
+  }
+
+  function assertNoQuarantineHistoryForSlug(slug) {
+    const rootIdentity = optionalPrivateDirectory(paths.quarantines, "The quarantine journal");
+    if (rootIdentity === null) return;
+    for (const item of readDirectoryBounded(paths.quarantines, MAXIMUM_ENTRIES, "The quarantine journal")) {
+      const match = QUARANTINE_JOURNAL_PATTERN.exec(item.name);
+      if (!item.isDirectory() || item.isSymbolicLink() || match === null) {
+        fail("invalid-quarantine-journal", "The quarantine journal contains an unknown entry.");
+      }
+      assertPrivateDirectory(join(paths.quarantines, item.name), `Quarantine journal ${item.name}`);
+      if (match[1] === slug) {
+        fail("quarantine-overlay-active", `Managed checkout ${slug} has retained quarantine history.`);
+      }
+    }
+    revalidatePathIdentity(paths.quarantines, rootIdentity, "The quarantine journal", "directory");
+  }
+
   function requestCleanup(entry, reason) {
     if (entry.state === "cleanup-pending") return entry;
     if (entry.state !== "active") fail("checkout-not-active", "Only an active checkout can request cleanup.");
@@ -3066,6 +3565,7 @@ export function createCheckoutManager(options = {}) {
       boundedPrintable(base, 512, "Base revision");
       const roots = normalizeGeneratedRoots(generatedRoots);
       return withLock(() => {
+        assertNoQuarantineHistoryForSlug(slug);
         const checkoutPath = checkoutPathFor(slug);
         if (registryFiles().some((file) => file.slug === slug) || existsSync(checkoutPath))
           fail("checkout-exists", `Checkout ${slug} exists.`);
@@ -3117,9 +3617,12 @@ export function createCheckoutManager(options = {}) {
       return withLock(() =>
         Object.freeze(
           listEntrySlugs(slug).map((entrySlug) => {
-            const entry = reconcileCreating(readEntry(entrySlug));
+            const current = readEntry(entrySlug);
+            if (current.state === "creating") assertNoQuarantineHistoryForSlug(current.slug);
+            const entry = reconcileCreating(current);
             const checkoutPath = checkoutPathFor(entry.slug);
             const record = worktreeRecord(checkoutPath);
+            const quarantine = readQuarantineOverlay(entry);
             return Object.freeze({
               slug: entry.slug,
               state: entry.state,
@@ -3130,7 +3633,8 @@ export function createCheckoutManager(options = {}) {
               present: existsSync(checkoutPath),
               registered: record !== undefined,
               head: record?.HEAD ?? null,
-              cleanupReviewRequired: ["cleanup-pending", "abandoned-review-required"].includes(entry.state)
+              cleanupReviewRequired: ["cleanup-pending", "abandoned-review-required"].includes(entry.state),
+              quarantine
             });
           })
         )
@@ -3145,14 +3649,38 @@ export function createCheckoutManager(options = {}) {
         revalidatePathIdentity(path, identity, path, "directory");
       }
       revalidatePathIdentity(repository.commonGitDirectory, repository.identity, "Git common directory", "directory");
-      return auditEntry(readEntry(slug));
+      const entry = readEntry(slug);
+      return Object.freeze({ ...auditEntry(entry), quarantine: readQuarantineOverlay(entry) });
+    },
+
+    quarantineStatus(slug = undefined) {
+      if (slug !== undefined) assertSlug(slug);
+      initializeManager(false);
+      for (const [path, identity] of managedIdentities) {
+        assertPrivateDirectory(path, path);
+        revalidatePathIdentity(path, identity, path, "directory");
+      }
+      revalidatePathIdentity(repository.commonGitDirectory, repository.identity, "Git common directory", "directory");
+      return Object.freeze(
+        listEntrySlugs(slug).map((entrySlug) => {
+          const entry = readEntry(entrySlug);
+          return Object.freeze({
+            slug: entry.slug,
+            generation: entry.generation,
+            entryState: entry.state,
+            quarantine: readQuarantineOverlay(entry)
+          });
+        })
+      );
     },
 
     handoff({ slug, ownerTask, nextOwnerTask, expectedRevision }) {
       assertSlug(slug);
       assertOwner(nextOwnerTask, "next owner");
       return withLock(() => {
-        const entry = reconcileCreating(readEntry(slug));
+        const current = readEntry(slug);
+        assertNoQuarantineHistoryForSlug(slug);
+        const entry = reconcileCreating(current);
         assertOwnerRevision(entry, ownerTask, expectedRevision);
         if (entry.state === "creating") fail("checkout-not-active", "An incomplete create cannot be handed off.");
         const next = appendEntry(entry, { ...entry, ownerTask: nextOwnerTask, revision: entry.revision + 1 });
@@ -3168,7 +3696,9 @@ export function createCheckoutManager(options = {}) {
     finish({ slug, ownerTask, expectedRevision }) {
       assertSlug(slug);
       return withLock(() => {
-        let entry = reconcileCreating(readEntry(slug));
+        let entry = readEntry(slug);
+        assertNoQuarantineHistoryForSlug(slug);
+        entry = reconcileCreating(entry);
         assertOwnerRevision(entry, ownerTask, expectedRevision);
         if (entry.state !== "active" && entry.state !== "cleanup-pending") {
           fail("checkout-not-active", "An incomplete create cannot request cleanup.");
@@ -3183,6 +3713,7 @@ export function createCheckoutManager(options = {}) {
       assertGeneration(expectedGeneration);
       return withLock(() => {
         const entry = readEntry(slug);
+        assertNoQuarantineHistoryForSlug(slug);
         assertOwnerRevision(entry, ownerTask, expectedRevision);
         if (entry.generation !== expectedGeneration) {
           fail("registry-changed", `Managed checkout ${slug} is no longer at the expected generation.`);
@@ -3240,6 +3771,7 @@ export function createCheckoutManager(options = {}) {
       assertGeneration(expectedGeneration);
       return withLock(() => {
         const entry = readEntry(slug);
+        assertNoQuarantineHistoryForSlug(slug);
         assertOwnerRevision(entry, ownerTask, expectedRevision);
         if (entry.generation !== expectedGeneration) {
           fail("registry-changed", `Managed checkout ${slug} is no longer at the expected generation.`);
@@ -3517,6 +4049,7 @@ export function createCheckoutManager(options = {}) {
       assertSlug(slug);
       return withLock(() => {
         let entry = readEntry(slug);
+        assertNoQuarantineHistoryForSlug(slug);
         assertOwnerRevision(entry, expectedOwnerTask, expectedRevision);
         if (expectedHead === "absent") {
           entry = requestAbandonedReview(entry);
@@ -3580,6 +4113,7 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
     });
   } else if (command === "status") result = manager.status(slug);
   else if (command === "audit") result = manager.audit(slug);
+  else if (command === "quarantine-status") result = manager.quarantineStatus(slug);
   else if (command === "handoff") {
     result = manager.handoff({
       slug,
@@ -3611,7 +4145,10 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       expectedRevision: parseRevision(values.revision)
     });
   } else {
-    fail("invalid-cli", "Use create, status, audit, handoff, finish, plan-retirement, archive-retirement, or abandon.");
+    fail(
+      "invalid-cli",
+      "Use create, status, audit, quarantine-status, handoff, finish, plan-retirement, archive-retirement, or abandon."
+    );
   }
   (options.stdout ?? process.stdout).write(`${JSON.stringify(result, null, 2)}\n`);
   return result;

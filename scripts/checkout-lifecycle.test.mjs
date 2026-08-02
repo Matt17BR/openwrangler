@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -15,7 +17,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { CheckoutLifecycleError, createCheckoutManager, normalizeWorktreeRegistryPath } from "./checkout-lifecycle.mjs";
+import {
+  CheckoutLifecycleError,
+  classifyQuarantineObservation,
+  createCheckoutManager,
+  normalizeWorktreeRegistryPath
+} from "./checkout-lifecycle.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "checkout-lifecycle.mjs");
 
@@ -146,6 +153,410 @@ function managerTreeBytes(fixture) {
 function lifecycleError(callback, code) {
   assert.throws(callback, (error) => error instanceof CheckoutLifecycleError && error.code === code);
 }
+
+function fileReceipt(path) {
+  const bytes = readFileSync(path);
+  const metadata = lstatSync(path, { bigint: true });
+  return {
+    path,
+    identity: { device: metadata.dev.toString(), inode: metadata.ino.toString() },
+    byteLength: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex")
+  };
+}
+
+function archiveForQuarantine(fixture, slug, options = {}) {
+  const managed = options.manager ?? manager(fixture, { run: fixtureRun() });
+  const checkout = create(fixture, slug, { manager: managed });
+  managed.finish({ slug, ownerTask: `/root/${slug}`, expectedRevision: 1 });
+  const cleanup = entry(fixture, slug);
+  managed.planRetirement({
+    slug,
+    ownerTask: `/root/${slug}`,
+    expectedRevision: 1,
+    expectedGeneration: cleanup.generation
+  });
+  const archived = managed.archiveRetirement({
+    slug,
+    ownerTask: `/root/${slug}`,
+    expectedRevision: 1,
+    expectedGeneration: cleanup.generation
+  });
+  const attemptPath = dirname(archived.archivePath);
+  const completionPath = join(attemptPath, "complete.json");
+  const completion = JSON.parse(readFileSync(completionPath, "utf8"));
+  return {
+    managed,
+    checkout,
+    cleanup,
+    attemptPath,
+    anchor: {
+      attempt: archived.attempt,
+      directory: completion.directory,
+      completion: fileReceipt(completionPath),
+      receipt: completion.receipt,
+      bundle: completion.bundle
+    }
+  };
+}
+
+function createQuarantineJournal(fixture, archived, operationId = "1".repeat(32)) {
+  mkdirSync(archived.managed.paths.quarantines, { mode: 0o700 });
+  const journalPath = join(
+    archived.managed.paths.quarantines,
+    `${archived.cleanup.slug}.${archived.cleanup.generation}`
+  );
+  mkdirSync(journalPath, { mode: 0o700 });
+  return {
+    journalPath,
+    operationId,
+    originalPath: archived.checkout.checkoutPath,
+    quarantinePath: join(
+      archived.managed.paths.quarantinedCheckouts,
+      `${archived.cleanup.slug}.${archived.cleanup.generation}.${operationId}`
+    )
+  };
+}
+
+function createEmptyQuarantineHistory(managed, slug, generation) {
+  mkdirSync(managed.paths.quarantines, { mode: 0o700 });
+  const path = join(managed.paths.quarantines, `${slug}.${generation}`);
+  mkdirSync(path, { mode: 0o700 });
+  return path;
+}
+
+function appendQuarantineRecord(archived, journal, kind, observation = undefined, operationId = journal.operationId) {
+  const names = readdirSync(journal.journalPath).sort();
+  const sequence = names.length + 1;
+  let previous = null;
+  if (names.length > 0) {
+    const priorPath = join(journal.journalPath, names.at(-1));
+    const prior = JSON.parse(readFileSync(priorPath, "utf8"));
+    previous = {
+      sequence: prior.sequence,
+      kind: prior.kind,
+      operationId: prior.operationId,
+      ...fileReceipt(priorPath)
+    };
+  }
+  const value = {
+    protocol: "openwrangler-checkout-quarantine-event-v1",
+    kind,
+    slug: archived.cleanup.slug,
+    entryGeneration: archived.cleanup.generation,
+    sequence,
+    operationId,
+    previous,
+    anchor: archived.anchor,
+    originalPath: journal.originalPath,
+    quarantinePath: journal.quarantinePath,
+    deferredChecks: {
+      recovery: "completed-archive-revalidated",
+      processUse: "not-checked-recheck-required",
+      mounts: "not-checked-recheck-required"
+    },
+    authorizesCleanup: false,
+    ...(observation === undefined ? {} : { observation, classification: classifyQuarantineObservation(observation) })
+  };
+  const path = join(journal.journalPath, `${String(sequence).padStart(8, "0")}.${kind}.${operationId}.json`);
+  writeFileSync(path, `${JSON.stringify(value)}\n`, { flag: "wx", mode: 0o600 });
+  return { path, value };
+}
+
+function quarantineObservation(direction, root, links = {}) {
+  return {
+    direction,
+    original: { present: root === "original", identityMatches: root === "original" },
+    quarantine: { present: root === "quarantine", identityMatches: root === "quarantine" },
+    worktreeRegistry: links.worktreeRegistry ?? root,
+    checkoutGitFile: links.checkoutGitFile ?? root,
+    adminBacklink: links.adminBacklink ?? root,
+    repositoryStateMatches: links.repositoryStateMatches ?? true
+  };
+}
+
+test("quarantine observation classification is direction-aware and fails closed", () => {
+  for (const [direction, root, state, location] of [
+    ["quarantine", "original", "pre", "original-coherent"],
+    ["quarantine", "quarantine", "post", "quarantine-coherent"],
+    ["restore", "quarantine", "pre", "quarantine-coherent"],
+    ["restore", "original", "post", "original-coherent"]
+  ]) {
+    assert.deepEqual(classifyQuarantineObservation(quarantineObservation(direction, root)), {
+      state,
+      location,
+      reason: "coherent",
+      authorizesCleanup: false
+    });
+  }
+  assert.equal(
+    classifyQuarantineObservation(
+      quarantineObservation("quarantine", "quarantine", {
+        worktreeRegistry: "original",
+        checkoutGitFile: "quarantine",
+        adminBacklink: "original"
+      })
+    ).state,
+    "partial"
+  );
+  assert.equal(
+    classifyQuarantineObservation(
+      quarantineObservation("restore", "original", {
+        worktreeRegistry: "missing",
+        checkoutGitFile: "original",
+        adminBacklink: "quarantine"
+      })
+    ).reason,
+    "restore-backlinks-incomplete"
+  );
+  for (const observation of [
+    {
+      ...quarantineObservation("quarantine", "original"),
+      original: { present: true, identityMatches: true },
+      quarantine: { present: true, identityMatches: true }
+    },
+    {
+      ...quarantineObservation("quarantine", "original"),
+      original: { present: false, identityMatches: false }
+    },
+    {
+      ...quarantineObservation("quarantine", "original"),
+      original: { present: true, identityMatches: false }
+    },
+    quarantineObservation("quarantine", "original", { repositoryStateMatches: false }),
+    quarantineObservation("quarantine", "original", {
+      worktreeRegistry: "other",
+      checkoutGitFile: "other",
+      adminBacklink: "other"
+    }),
+    quarantineObservation("quarantine", "original", {
+      worktreeRegistry: "missing",
+      checkoutGitFile: "missing",
+      adminBacklink: "missing"
+    }),
+    quarantineObservation("quarantine", "original", { checkoutGitFile: "quarantine" })
+  ]) {
+    assert.equal(classifyQuarantineObservation(observation).state, "indeterminate");
+  }
+  lifecycleError(
+    () => classifyQuarantineObservation({ ...quarantineObservation("quarantine", "original"), extra: true }),
+    "invalid-quarantine-observation"
+  );
+  lifecycleError(
+    () =>
+      classifyQuarantineObservation({
+        ...quarantineObservation("quarantine", "original"),
+        original: { present: false, identityMatches: true }
+      }),
+    "invalid-quarantine-observation"
+  );
+});
+
+test("quarantine journal status is read-only and every lifecycle mutation blocks", () => {
+  withRepository((fixture) => {
+    const archived = archiveForQuarantine(fixture, "quarantine-guard");
+    const journal = createQuarantineJournal(fixture, archived);
+    appendQuarantineRecord(archived, journal, "quarantine-intent");
+    const entryCount = entryHistory(fixture, "quarantine-guard").length;
+    const checkoutBytes = readFileSync(join(archived.checkout.checkoutPath, "README.md"));
+    const status = archived.managed.quarantineStatus("quarantine-guard")[0];
+    assert.equal(status.quarantine.state, "intent-pending");
+    assert.equal(status.quarantine.authorizesCleanup, false);
+    assert.equal(status.quarantine.archive.bundle.sha256, archived.anchor.bundle.sha256);
+    assert.equal(archived.managed.status("quarantine-guard")[0].quarantine.state, "intent-pending");
+    assert.equal(archived.managed.audit("quarantine-guard").quarantine.state, "intent-pending");
+
+    const mutations = [
+      () =>
+        archived.managed.handoff({
+          slug: "quarantine-guard",
+          ownerTask: "/root/quarantine-guard",
+          nextOwnerTask: "/root/next",
+          expectedRevision: 1
+        }),
+      () =>
+        archived.managed.finish({
+          slug: "quarantine-guard",
+          ownerTask: "/root/quarantine-guard",
+          expectedRevision: 1
+        }),
+      () =>
+        archived.managed.planRetirement({
+          slug: "quarantine-guard",
+          ownerTask: "/root/quarantine-guard",
+          expectedRevision: 1,
+          expectedGeneration: archived.cleanup.generation
+        }),
+      () =>
+        archived.managed.archiveRetirement({
+          slug: "quarantine-guard",
+          ownerTask: "/root/quarantine-guard",
+          expectedRevision: 1,
+          expectedGeneration: archived.cleanup.generation
+        }),
+      () =>
+        archived.managed.abandon({
+          slug: "quarantine-guard",
+          expectedOwnerTask: "/root/quarantine-guard",
+          expectedHead: archived.cleanup.checkout.head,
+          expectedRevision: 1
+        }),
+      () =>
+        archived.managed.create({
+          slug: "quarantine-guard",
+          ownerTask: "/root/recreate",
+          branch: "agent/recreate"
+        })
+    ];
+    for (const mutation of mutations) lifecycleError(mutation, "quarantine-overlay-active");
+    assert.equal(entryHistory(fixture, "quarantine-guard").length, entryCount);
+    assert.deepEqual(readFileSync(join(archived.checkout.checkoutPath, "README.md")), checkoutBytes);
+  });
+});
+
+test("historical quarantine journals block every lifecycle mutation for the slug", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture);
+    const checkout = create(fixture, "historical-guard", { manager: managed });
+    const current = entry(fixture, "historical-guard");
+    assert(current.generation > 1);
+    createEmptyQuarantineHistory(managed, "historical-guard", current.generation - 1);
+    const beforeEntries = registryBytes(fixture);
+    const checkoutBytes = readFileSync(join(checkout.checkoutPath, "README.md"));
+    const mutations = [
+      () =>
+        managed.handoff({
+          slug: "historical-guard",
+          ownerTask: "/root/historical-guard",
+          nextOwnerTask: "/root/next",
+          expectedRevision: 1
+        }),
+      () => managed.finish({ slug: "historical-guard", ownerTask: "/root/historical-guard", expectedRevision: 1 }),
+      () =>
+        managed.planRetirement({
+          slug: "historical-guard",
+          ownerTask: "/root/historical-guard",
+          expectedRevision: 1,
+          expectedGeneration: current.generation
+        }),
+      () =>
+        managed.archiveRetirement({
+          slug: "historical-guard",
+          ownerTask: "/root/historical-guard",
+          expectedRevision: 1,
+          expectedGeneration: current.generation
+        }),
+      () =>
+        managed.abandon({
+          slug: "historical-guard",
+          expectedOwnerTask: "/root/historical-guard",
+          expectedHead: current.checkout.head,
+          expectedRevision: 1
+        }),
+      () => managed.create({ slug: "historical-guard", ownerTask: "/root/recreate", branch: "agent/recreate" })
+    ];
+    for (const mutation of mutations) lifecycleError(mutation, "quarantine-overlay-active");
+    assert.deepEqual(registryBytes(fixture), beforeEntries);
+    assert.deepEqual(readFileSync(join(checkout.checkoutPath, "README.md")), checkoutBytes);
+  });
+});
+
+test("status cannot reconcile a creating entry that has quarantine history", () => {
+  withRepository((fixture) => {
+    const interrupted = manager(fixture, { hooks: { afterGitBeforeActive: () => assert.fail("shutdown") } });
+    assert.throws(
+      () =>
+        interrupted.create({
+          slug: "creating-quarantine",
+          branch: "agent/creating-quarantine",
+          ownerTask: "/root/creating-quarantine"
+        }),
+      /shutdown/u
+    );
+    const beforeEntries = registryBytes(fixture);
+    const beforeLength = entryHistory(fixture, "creating-quarantine").length;
+    createEmptyQuarantineHistory(interrupted, "creating-quarantine", 1);
+    lifecycleError(() => manager(fixture).status("creating-quarantine"), "quarantine-overlay-active");
+    assert.deepEqual(registryBytes(fixture), beforeEntries);
+    assert.equal(entryHistory(fixture, "creating-quarantine").length, beforeLength);
+    assert.equal(entry(fixture, "creating-quarantine").state, "creating");
+  });
+});
+
+test("quarantine journal enforces its hash chain, transitions, and archive anchor", () => {
+  withRepository((fixture) => {
+    const archived = archiveForQuarantine(fixture, "quarantine-chain");
+    const journal = createQuarantineJournal(fixture, archived);
+    const intent = appendQuarantineRecord(archived, journal, "quarantine-intent");
+    appendQuarantineRecord(archived, journal, "quarantine-result", quarantineObservation("quarantine", "quarantine"));
+    assert.equal(archived.managed.quarantineStatus("quarantine-chain")[0].quarantine.state, "quarantined");
+    const restoreId = "2".repeat(32);
+    appendQuarantineRecord(archived, journal, "restore-intent", undefined, restoreId);
+    assert.equal(archived.managed.quarantineStatus("quarantine-chain")[0].quarantine.state, "intent-pending");
+    appendQuarantineRecord(
+      archived,
+      journal,
+      "restore-result",
+      quarantineObservation("restore", "original"),
+      restoreId
+    );
+    assert.equal(archived.managed.quarantineStatus("quarantine-chain")[0].quarantine.state, "original");
+    writeFileSync(intent.path, `${JSON.stringify(intent.value)} \n`);
+    lifecycleError(() => archived.managed.quarantineStatus("quarantine-chain"), "invalid-quarantine-journal");
+  });
+
+  withRepository((fixture) => {
+    const archived = archiveForQuarantine(fixture, "quarantine-race");
+    const journal = createQuarantineJournal(fixture, archived);
+    const intent = appendQuarantineRecord(archived, journal, "quarantine-intent");
+    let mutate = true;
+    const racing = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        afterQuarantineRecordsRead() {
+          if (!mutate) return;
+          mutate = false;
+          writeFileSync(intent.path, `${JSON.stringify(intent.value)} \n`);
+        }
+      }
+    });
+    lifecycleError(() => racing.quarantineStatus("quarantine-race"), "registry-changed");
+  });
+
+  withRepository((fixture) => {
+    const archived = archiveForQuarantine(fixture, "quarantine-anchor");
+    const journal = createQuarantineJournal(fixture, archived);
+    appendQuarantineRecord(archived, journal, "quarantine-intent");
+    const completionPath = archived.anchor.completion.path;
+    const completion = JSON.parse(readFileSync(completionPath, "utf8"));
+    completion.authorizesCleanup = true;
+    writeFileSync(completionPath, `${JSON.stringify(completion)}\n`);
+    lifecycleError(() => archived.managed.quarantineStatus("quarantine-anchor"), "invalid-archive");
+  });
+});
+
+test("quarantine status revalidates its archive anchor after reading the journal", () => {
+  withRepository((fixture) => {
+    const archived = archiveForQuarantine(fixture, "quarantine-anchor-race");
+    const journal = createQuarantineJournal(fixture, archived);
+    appendQuarantineRecord(archived, journal, "quarantine-intent");
+    const completionPath = archived.anchor.completion.path;
+    let mutate = true;
+    const racing = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        afterQuarantineRecordsRead() {
+          if (!mutate) return;
+          mutate = false;
+          const completion = JSON.parse(readFileSync(completionPath, "utf8"));
+          completion.authorizesCleanup = true;
+          writeFileSync(completionPath, `${JSON.stringify(completion)}\n`);
+        }
+      }
+    });
+    lifecycleError(() => racing.quarantineStatus("quarantine-anchor-race"), "invalid-archive");
+  });
+});
 
 test("audit is byte-stable and status explicitly reconciles an interrupted create", () => {
   withRepository((fixture) => {

@@ -51,6 +51,19 @@ Agent checkout lifecycle has a separate, small contract test:
   omission lose a commit. It uses no network and does not move, remove, prune, rename, unlink, or change a source ref.
   Process-use and mount checks stay pending, and no archive result authorizes cleanup.
 
+- `checkout:quarantine-status` is a read-only parser for the future quarantine/restore journal. It accepts only a
+  private, canonical journal whose first intent is anchored to exactly one completed recovery archive. Each later
+  record must name its immediate predecessor's path, identity, byte length, and SHA-256; sequences, operation IDs,
+  paths, archive anchors, and intent/result transitions are checked independently. The reader enumerates before and
+  after parsing, rereads every record, then revalidates the source entry and completed archive before returning. Tests
+  cover direction-aware pre/post classification, partial backlink updates, impossible and ambiguous layouts, an
+  interrupted intent, hash-chain tampering, a changed
+  tail during the read, an archive changed after the initial anchor read, and a completion marker that tries to
+  authorize cleanup. All lifecycle mutations block when any journal for the slug is present, including an older
+  generation. A creating-entry regression proves status checks that history before reconciliation and leaves the entry
+  journal byte-for-byte unchanged. This layer has no journal writer, checkout mover, restore command, purge command,
+  process-use check, or mount check.
+
   Archive commands have no deadline until the lifecycle can own complete descendant trees with POSIX process groups and
   Windows Job Objects. A direct-child timeout could leave `pack-objects` or `index-pack` running. External interruption
   instead leaves the current numbered attempt untouched for review.
