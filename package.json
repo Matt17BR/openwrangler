@@ -122,6 +122,7 @@
     "test:webview-acceptance:run": "npm run brand:render-check && npm run verify:readme-media && npm run test:visual && npm run test:accessibility",
     "benchmark:runtime": "node scripts/run-heavy-local-command.mjs benchmark:runtime -- node scripts/run-python.mjs python/benchmarks/runtime_performance.py --strict --fixture-dir tmp/performance --json-out tmp/performance/report.json",
     "comparison:feasibility:smoke": "node scripts/run-data-wrangler-comparison.mjs",
+    "checkout:bootstrap": "node scripts/checkout-lifecycle.mjs bootstrap",
     "checkout:create": "node scripts/checkout-lifecycle.mjs create",
     "checkout:status": "node scripts/checkout-lifecycle.mjs status",
     "checkout:audit": "node scripts/checkout-lifecycle.mjs audit",

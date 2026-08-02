@@ -8,6 +8,7 @@ import {
   fchmodSync,
   fstatSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -17,7 +18,7 @@ import {
   statfsSync,
   writeFileSync
 } from "node:fs";
-import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 
@@ -31,6 +32,7 @@ const RETIREMENT_CHECKS_PROTOCOL = "openwrangler-retirement-deferred-checks-v1";
 const ARCHIVE_RECEIPT_PROTOCOL = "openwrangler-checkout-archive-v1";
 const ARCHIVE_COMPLETION_PROTOCOL = "openwrangler-checkout-archive-completion-v1";
 const QUARANTINE_EVENT_PROTOCOL = "openwrangler-checkout-quarantine-event-v1";
+const MANAGER_BOOTSTRAP_PROTOCOL = "openwrangler-checkout-manager-bootstrap-v1";
 const MAXIMUM_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_BUNDLE_HEADER_BYTES = 4 * 1024 * 1024;
 const ARCHIVE_SPACE_MULTIPLIER = 8n;
@@ -50,6 +52,9 @@ const MAXIMUM_WORKTREE_FIELDS = 16;
 const MAXIMUM_WORKTREE_FIELD_BYTES = 8192;
 const MAXIMUM_ARCHIVE_ATTEMPTS = 8;
 const MAXIMUM_QUARANTINE_RECORDS = 128;
+const MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS = 8;
+const MAXIMUM_MANAGER_REPOSITORY_ENTRIES = 1_000_000;
+const MAXIMUM_MANAGER_REPOSITORY_DEPTH = 16;
 const MAXIMUM_ARCHIVE_DIRECTORIES = MAXIMUM_ENTRIES * MAXIMUM_ARCHIVE_ATTEMPTS;
 const MAXIMUM_ARCHIVE_REFS = 32_768;
 const MAXIMUM_ARCHIVE_PACK_FILES = 16_384;
@@ -68,6 +73,9 @@ const ARCHIVE_ATTEMPT_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9]
 const QUARANTINE_JOURNAL_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})$/u;
 const QUARANTINE_RECORD_PATTERN =
   /^([0-9]{8})\.(quarantine-intent|quarantine-result|restore-intent|restore-result)\.([0-9a-f]{32})\.json$/u;
+const MANAGER_BOOTSTRAP_ATTEMPT_PATTERN = /^[0-9]{8}-[0-9a-f]{32}$/u;
+const MANAGER_BOOTSTRAP_SLOT_PATTERN = /^slot-([0-9]{8})$/u;
+const MANAGER_REMOTE_FETCH = "+refs/heads/*:refs/remotes/origin/*";
 
 export class CheckoutLifecycleError extends Error {
   constructor(code, message) {
@@ -260,14 +268,14 @@ function ensurePrivateDirectory(path) {
   return assertPrivateDirectory(path, path);
 }
 
-function readBoundedFile(path, maximumBytes, label, privateMode = undefined) {
+function readBoundedFile(path, maximumBytes, label, privateMode = undefined, expectedLinks = 1n) {
   let descriptor;
   try {
     descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const before = fstatSync(descriptor, { bigint: true });
     if (
       !before.isFile() ||
-      before.nlink !== 1n ||
+      before.nlink !== expectedLinks ||
       !currentUserOwns(before) ||
       before.size > BigInt(maximumBytes) ||
       (privateMode !== undefined && typeof process.getuid === "function" && (before.mode & 0o777n) !== privateMode)
@@ -435,8 +443,8 @@ function rejectDuplicateJsonKeys(text, label) {
   if (offset !== text.length) fail("invalid-registry", `${label} contains trailing JSON content.`);
 }
 
-function readJson(path, maximumBytes, label, privateMode = 0o600n) {
-  const file = readBoundedFile(path, maximumBytes, label, privateMode);
+function readJson(path, maximumBytes, label, privateMode = 0o600n, expectedLinks = 1n) {
+  const file = readBoundedFile(path, maximumBytes, label, privateMode, expectedLinks);
   try {
     rejectDuplicateJsonKeys(file.text, label);
     return Object.freeze({ value: JSON.parse(file.text), identity: file.identity });
@@ -511,10 +519,21 @@ function defaultRun(command, args, options = {}) {
   return normalized;
 }
 
-function discoverRepository(run, cwd) {
-  const topLevel = resolve(run("git", ["rev-parse", "--show-toplevel"], { cwd }).stdout.trim());
+function withPrivateUmask(callback) {
+  if (typeof process.umask !== "function") return callback();
+  const previous = process.umask(0o077);
+  try {
+    return callback();
+  } finally {
+    process.umask(previous);
+  }
+}
+
+function discoverRawRepository(run, cwd) {
+  const environment = auditGitEnvironment();
+  const topLevel = resolve(run("git", ["rev-parse", "--show-toplevel"], { cwd, env: environment }).stdout.trim());
   const commonGitDirectory = realpathSync(
-    run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd }).stdout.trim()
+    run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, env: environment }).stdout.trim()
   );
   const metadata = lstatSync(commonGitDirectory, { bigint: true });
   if (!metadata.isDirectory() || metadata.isSymbolicLink() || !currentUserOwns(metadata)) {
@@ -523,18 +542,732 @@ function discoverRepository(run, cwd) {
   return Object.freeze({ topLevel, commonGitDirectory, identity: identityOf(metadata) });
 }
 
-function commonGit(run, paths, repository, args, options = {}) {
-  return run("git", ["--git-dir", repository.commonGitDirectory, ...args], {
-    cwd: paths.root,
-    allowFailure: options.allowFailure,
-    env: options.env,
-    stdoutFd: options.stdoutFd,
-    input: options.input
+function bootstrapLayout(topLevel) {
+  const root = join(topLevel, "tmp", "agent-checkouts", "manager");
+  const attempts = join(root, "attempts");
+  return Object.freeze({
+    root,
+    attempts,
+    receipt: join(attempts, "current.json")
   });
 }
 
+function inspectBootstrapJournal(attemptsPath) {
+  const entries = readDirectoryBounded(
+    attemptsPath,
+    MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS * 2 + 1,
+    "Checkout manager bootstrap attempts"
+  );
+  const slots = new Map();
+  const attempts = new Map();
+  let currentReceipts = 0;
+  for (const item of entries) {
+    if (item.name === "current.json") {
+      if (!item.isFile() || item.isSymbolicLink()) {
+        fail("invalid-manager-bootstrap", "The fixed checkout manager receipt is not a regular file.");
+      }
+      currentReceipts += 1;
+      continue;
+    }
+    const slotMatch = MANAGER_BOOTSTRAP_SLOT_PATTERN.exec(item.name);
+    if (slotMatch !== null) {
+      const generation = Number(slotMatch[1]);
+      if (
+        generation < 1 ||
+        generation > MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS ||
+        !item.isDirectory() ||
+        item.isSymbolicLink() ||
+        slots.has(generation)
+      ) {
+        fail("invalid-manager-bootstrap", "The checkout manager bootstrap slot journal is malformed.");
+      }
+      const slotPath = join(attemptsPath, item.name);
+      const identity = assertPrivateDirectory(slotPath, "Checkout manager bootstrap slot");
+      if (readDirectoryBounded(slotPath, 1, "Checkout manager bootstrap slot").length !== 0) {
+        fail("invalid-manager-bootstrap", "A checkout manager bootstrap slot is not empty.");
+      }
+      slots.set(generation, Object.freeze({ path: slotPath, identity }));
+      continue;
+    }
+    const attemptMatch = MANAGER_BOOTSTRAP_ATTEMPT_PATTERN.exec(item.name);
+    if (!item.isDirectory() || item.isSymbolicLink() || attemptMatch === null) {
+      fail("invalid-manager-bootstrap", "The checkout manager attempt journal contains an unknown entry.");
+    }
+    const generation = Number(item.name.slice(0, 8));
+    if (generation < 1 || generation > MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS || attempts.has(generation)) {
+      fail("invalid-manager-bootstrap", "The checkout manager bootstrap attempt journal is malformed.");
+    }
+    const attemptPath = join(attemptsPath, item.name);
+    attempts.set(
+      generation,
+      Object.freeze({ name: item.name, path: attemptPath, identity: assertPrivateDirectory(attemptPath, item.name) })
+    );
+  }
+  if (
+    currentReceipts > 1 ||
+    slots.size > MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS ||
+    attempts.size > slots.size ||
+    [...slots.keys()].sort((left, right) => left - right).some((generation, index) => generation !== index + 1) ||
+    [...attempts.keys()].some((generation) => !slots.has(generation))
+  ) {
+    fail("invalid-manager-bootstrap", "The checkout manager bootstrap attempt journal is incomplete or ambiguous.");
+  }
+  return Object.freeze({ entries, slots, attempts, currentReceipts });
+}
+
+function pathEntryExists(path) {
+  try {
+    lstatSync(path, { bigint: true });
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    fail("unsafe-manager-bootstrap", "The checkout manager bootstrap path could not be inspected safely.");
+  }
+}
+
+function validateManagerRemoteUrl(value) {
+  boundedPrintable(value, 4096, "Manager remote URL");
+  if (/\s/u.test(value) || value.includes("#") || value.includes("?")) {
+    fail("unsafe-manager-remote", "The repository remote is not safe to record in a private manager receipt.");
+  }
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//u.exec(value)?.[1]?.toLowerCase();
+  if (scheme !== undefined) {
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      fail("unsafe-manager-remote", "The repository remote URL is malformed.");
+    }
+    if (parsed.password !== "" || (["http", "https"].includes(scheme) && parsed.username !== "")) {
+      fail("unsafe-manager-remote", "Credential-bearing repository remotes cannot be recorded.");
+    }
+  }
+  return value;
+}
+
+function managerGit(run, repositoryPath, args, label) {
+  let result;
+  try {
+    result = withPrivateUmask(() =>
+      run("git", ["--git-dir", repositoryPath, ...args], {
+        cwd: dirname(repositoryPath),
+        allowFailure: true,
+        env: auditGitEnvironment()
+      })
+    );
+  } catch {
+    fail("manager-bootstrap-command-failed", `${label} could not start.`);
+  }
+  if (result.status !== 0) fail("manager-bootstrap-command-failed", `${label} failed.`);
+  return result.stdout;
+}
+
+function managerGitProbe(run, repositoryPath, args) {
+  try {
+    return run("git", ["--git-dir", repositoryPath, ...args], {
+      cwd: dirname(repositoryPath),
+      allowFailure: true,
+      env: auditGitEnvironment()
+    });
+  } catch {
+    fail("unsafe-manager-bootstrap", "The checkout manager repository could not be inspected.");
+  }
+}
+
+function assertSelfContainedManagerRepository(run, repositoryPath, expectedRemote, expectedObjectFormat) {
+  const metadata = lstatSync(repositoryPath, { bigint: true });
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    !currentUserOwns(metadata) ||
+    (typeof process.getuid === "function" && (metadata.mode & 0o777n) !== 0o700n) ||
+    realpathSync(repositoryPath) !== resolve(repositoryPath)
+  ) {
+    fail("unsafe-manager-bootstrap", "The checkout manager repository is not one private bare repository.");
+  }
+  inspectManagerRepositoryTree(repositoryPath, false);
+  const bare = managerGitProbe(run, repositoryPath, ["rev-parse", "--is-bare-repository"]);
+  const shallow = managerGitProbe(run, repositoryPath, ["rev-parse", "--is-shallow-repository"]);
+  const objectFormat = managerGitProbe(run, repositoryPath, ["rev-parse", "--show-object-format"]);
+  if (
+    bare.status !== 0 ||
+    bare.stdout.trim() !== "true" ||
+    shallow.status !== 0 ||
+    shallow.stdout.trim() !== "false" ||
+    objectFormat.status !== 0 ||
+    !["sha1", "sha256"].includes(objectFormat.stdout.trim()) ||
+    (expectedObjectFormat !== undefined && objectFormat.stdout.trim() !== expectedObjectFormat)
+  ) {
+    fail("unsafe-manager-bootstrap", "The checkout manager repository has an unsupported object layout.");
+  }
+  for (const path of [
+    join(repositoryPath, "shallow"),
+    join(repositoryPath, "objects", "info", "alternates"),
+    join(repositoryPath, "objects", "info", "http-alternates")
+  ]) {
+    if (pathEntryExists(path)) {
+      fail("unsafe-manager-bootstrap", "The checkout manager repository is shallow or uses object alternates.");
+    }
+  }
+  const partial = managerGitProbe(run, repositoryPath, [
+    "config",
+    "--get-regexp",
+    "^(extensions\\.partialclone|remote\\..*\\.(promisor|partialclonefilter))$"
+  ]);
+  if (![0, 1].includes(partial.status) || partial.status === 0 || partial.stdout !== "") {
+    fail("unsafe-manager-bootstrap", "The checkout manager repository uses partial or promisor objects.");
+  }
+  const packPath = join(repositoryPath, "objects", "pack");
+  if (
+    readDirectoryBounded(packPath, MAXIMUM_MANAGER_REPOSITORY_ENTRIES, "The checkout manager pack directory").some(
+      (item) => item.name.endsWith(".promisor")
+    )
+  ) {
+    fail("unsafe-manager-bootstrap", "The checkout manager repository contains a promisor pack.");
+  }
+  const remote = managerGitProbe(run, repositoryPath, ["remote", "get-url", "origin"]);
+  const fetch = managerGitProbe(run, repositoryPath, ["config", "--get-all", "remote.origin.fetch"]);
+  if (
+    remote.status !== 0 ||
+    remote.stdout.trim() !== expectedRemote ||
+    fetch.status !== 0 ||
+    fetch.stdout.trim() !== MANAGER_REMOTE_FETCH
+  ) {
+    fail("manager-bootstrap-drift", "The checkout manager origin changed.");
+  }
+  return Object.freeze({ identity: identityOf(metadata), objectFormat: objectFormat.stdout.trim() });
+}
+
+function validateManagerReceipt(receiptPath, rawRepository, run, route) {
+  const receipt = readJson(receiptPath, MAXIMUM_ENTRY_BYTES, "Checkout manager bootstrap receipt", 0o600n, 2n);
+  exactKeys(
+    receipt.value,
+    [
+      "protocol",
+      "source",
+      "root",
+      "attempts",
+      "allocation",
+      "attempt",
+      "repository",
+      "state",
+      "template",
+      "remote",
+      "objectFormat"
+    ],
+    "Checkout manager bootstrap receipt"
+  );
+  const value = receipt.value;
+  exactKeys(
+    value.source,
+    ["topLevel", "topLevelIdentity", "commonGitDirectory", "commonGitIdentity", "refsSha256"],
+    "Manager source"
+  );
+  exactKeys(value.root, ["path", "identity"], "Manager root");
+  exactKeys(value.attempts, ["path", "identity"], "Manager attempts directory");
+  exactKeys(value.allocation, ["path", "identity"], "Manager bootstrap allocation");
+  exactKeys(value.attempt, ["name", "path", "identity"], "Manager bootstrap attempt");
+  exactKeys(value.repository, ["path", "identity"], "Manager repository");
+  exactKeys(value.state, ["path", "identity"], "Manager state");
+  exactKeys(value.template, ["path", "identity"], "Manager template");
+  exactKeys(value.remote, ["name", "url", "fetch"], "Manager remote");
+  for (const [identity, label] of [
+    [value.source.topLevelIdentity, "Manager source root identity"],
+    [value.source.commonGitIdentity, "Manager source Git identity"],
+    [value.root.identity, "Manager root identity"],
+    [value.attempts.identity, "Manager attempts identity"],
+    [value.allocation.identity, "Manager allocation identity"],
+    [value.attempt.identity, "Manager attempt identity"],
+    [value.repository.identity, "Manager repository identity"],
+    [value.state.identity, "Manager state identity"],
+    [value.template.identity, "Manager template identity"]
+  ]) {
+    validateIdentity(identity, label);
+  }
+  const attemptsPath = dirname(value.attempt.path);
+  const rootPath = dirname(attemptsPath);
+  const generation = Number(value.attempt.name.slice(0, 8));
+  const expectedAllocationPath = join(attemptsPath, `slot-${String(generation).padStart(8, "0")}`);
+  const expectedReceiptPath = join(value.attempt.path, "receipt.json");
+  const fixedReceiptPath = join(attemptsPath, "current.json");
+  const expectedLayout = {
+    repository: join(value.attempt.path, "repository.git"),
+    state: join(value.attempt.path, "state"),
+    template: join(value.attempt.path, "template")
+  };
+  const receiptPaths = [
+    value.source.topLevel,
+    value.source.commonGitDirectory,
+    value.root.path,
+    value.attempts.path,
+    value.allocation.path,
+    value.attempt.path,
+    value.repository.path,
+    value.state.path,
+    value.template.path
+  ];
+  if (
+    value.protocol !== MANAGER_BOOTSTRAP_PROTOCOL ||
+    value.root.path !== rootPath ||
+    value.attempts.path !== attemptsPath ||
+    rootPath !== join(value.source.topLevel, "tmp", "agent-checkouts", "manager") ||
+    !MANAGER_BOOTSTRAP_ATTEMPT_PATTERN.test(value.attempt.name) ||
+    !Number.isSafeInteger(generation) ||
+    generation < 1 ||
+    generation > MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS ||
+    value.allocation.path !== expectedAllocationPath ||
+    value.attempt.path !== join(attemptsPath, value.attempt.name) ||
+    basename(attemptsPath) !== "attempts" ||
+    (route === "source" ? receiptPath !== fixedReceiptPath : receiptPath !== expectedReceiptPath) ||
+    value.repository.path !== expectedLayout.repository ||
+    value.state.path !== expectedLayout.state ||
+    value.template.path !== expectedLayout.template ||
+    value.remote.name !== "origin" ||
+    value.remote.fetch !== MANAGER_REMOTE_FETCH ||
+    receiptPaths.some((path) => typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path) ||
+    !/^[0-9a-f]{64}$/u.test(value.source.refsSha256) ||
+    !["sha1", "sha256"].includes(value.objectFormat)
+  ) {
+    fail("invalid-manager-bootstrap", "The checkout manager bootstrap receipt does not match its fixed layout.");
+  }
+  validateManagerRemoteUrl(value.remote.url);
+  const rootIdentity = assertPrivateDirectory(rootPath, "Checkout manager root");
+  const attemptsIdentity = assertPrivateDirectory(attemptsPath, "Checkout manager attempts directory");
+  const allocationIdentity = assertPrivateDirectory(value.allocation.path, "Checkout manager bootstrap allocation");
+  const attemptIdentity = assertPrivateDirectory(value.attempt.path, "Checkout manager attempt");
+  if (
+    !sameIdentity(rootIdentity, value.root.identity) ||
+    !sameIdentity(attemptsIdentity, value.attempts.identity) ||
+    !sameIdentity(allocationIdentity, value.allocation.identity) ||
+    !sameIdentity(attemptIdentity, value.attempt.identity)
+  ) {
+    fail("manager-bootstrap-drift", "The checkout manager directory chain changed.");
+  }
+  const journal = inspectBootstrapJournal(attemptsPath);
+  if (
+    journal.currentReceipts !== 1 ||
+    journal.attempts.get(generation)?.name !== value.attempt.name ||
+    !sameIdentity(journal.slots.get(generation)?.identity, value.allocation.identity)
+  ) {
+    fail("invalid-manager-bootstrap", "The checkout manager attempt journal is incomplete or ambiguous.");
+  }
+  const receiptMetadata = lstatSync(receiptPath, { bigint: true });
+  const attemptReceipt = readJson(expectedReceiptPath, MAXIMUM_ENTRY_BYTES, "Manager attempt receipt", 0o600n, 2n);
+  const fixedReceipt = readJson(fixedReceiptPath, MAXIMUM_ENTRY_BYTES, "Manager fixed receipt", 0o600n, 2n);
+  if (
+    receiptMetadata.nlink !== 2n ||
+    !sameIdentity(attemptReceipt.identity, fixedReceipt.identity) ||
+    !isDeepStrictEqual(attemptReceipt.value, fixedReceipt.value)
+  ) {
+    fail("manager-bootstrap-drift", "The checkout manager receipt lost its exact publication link.");
+  }
+  revalidatePathIdentity(expectedReceiptPath, attemptReceipt.identity, "Manager attempt receipt");
+  revalidatePathIdentity(fixedReceiptPath, fixedReceipt.identity, "Manager fixed receipt");
+  revalidatePathIdentity(
+    expectedLayout.repository,
+    value.repository.identity,
+    "Checkout manager repository",
+    "directory"
+  );
+  const stateIdentity = assertPrivateDirectory(expectedLayout.state, "Checkout manager state");
+  if (!sameIdentity(stateIdentity, value.state.identity)) {
+    fail("manager-bootstrap-drift", "The checkout manager state changed filesystem identity.");
+  }
+  const templateIdentity = assertPrivateDirectory(value.template.path, "Checkout manager empty template");
+  if (
+    !sameIdentity(templateIdentity, value.template.identity) ||
+    readDirectoryBounded(value.template.path, 1, "Checkout manager empty template").length !== 0
+  ) {
+    fail("manager-bootstrap-drift", "The checkout manager empty template changed.");
+  }
+  const managerRepository = assertSelfContainedManagerRepository(
+    run,
+    expectedLayout.repository,
+    value.remote.url,
+    value.objectFormat
+  );
+  if (!sameIdentity(managerRepository.identity, value.repository.identity)) {
+    fail("manager-bootstrap-drift", "The checkout manager repository changed filesystem identity.");
+  }
+  if (route === "source") {
+    if (
+      rawRepository.topLevel !== value.source.topLevel ||
+      rawRepository.commonGitDirectory !== value.source.commonGitDirectory ||
+      !sameIdentity(rawRepository.identity, value.source.commonGitIdentity)
+    ) {
+      fail("manager-bootstrap-drift", "The source repository no longer matches the checkout manager receipt.");
+    }
+    if (readSourceRemote(run, rawRepository.topLevel) !== value.remote.url) {
+      fail("manager-bootstrap-drift", "The source repository origin no longer matches the checkout manager.");
+    }
+    revalidatePathIdentity(value.source.topLevel, value.source.topLevelIdentity, "Manager source root", "directory");
+  } else if (rawRepository.commonGitDirectory !== expectedLayout.repository) {
+    fail("manager-bootstrap-drift", "The child checkout is not backed by the recorded checkout manager.");
+  }
+  revalidatePathIdentity(receiptPath, receipt.identity, "Checkout manager bootstrap receipt");
+  return Object.freeze({
+    topLevel: route === "child" ? rawRepository.topLevel : expectedLayout.repository,
+    commonGitDirectory: expectedLayout.repository,
+    identity: managerRepository.identity,
+    managerRoot: expectedLayout.state,
+    bootstrapReceipt: receiptPath,
+    managerRemote: value.remote.url,
+    sourceRepository:
+      route === "source"
+        ? Object.freeze({
+            topLevel: value.source.topLevel,
+            topLevelIdentity: value.source.topLevelIdentity,
+            commonGitDirectory: value.source.commonGitDirectory,
+            commonGitIdentity: value.source.commonGitIdentity
+          })
+        : undefined
+  });
+}
+
+function discoverRepository(run, cwd, allowBootstrapRoute = true) {
+  const rawRepository = discoverRawRepository(run, cwd);
+  if (!allowBootstrapRoute) return rawRepository;
+  const siblingReceipt = join(dirname(rawRepository.commonGitDirectory), "receipt.json");
+  const sourceLayout = bootstrapLayout(rawRepository.topLevel);
+  const sourceReceipt = sourceLayout.receipt;
+  const commonParent = dirname(rawRepository.commonGitDirectory);
+  const hasExactSiblingLayout =
+    basename(rawRepository.commonGitDirectory) === "repository.git" &&
+    MANAGER_BOOTSTRAP_ATTEMPT_PATTERN.test(basename(commonParent)) &&
+    basename(dirname(commonParent)) === "attempts";
+  const hasSibling = hasExactSiblingLayout && pathEntryExists(siblingReceipt);
+  const hasSource = sourceReceipt !== siblingReceipt && pathEntryExists(sourceReceipt);
+  if (hasSibling && hasSource) {
+    fail("ambiguous-manager-bootstrap", "Both source and child checkout manager receipts are present.");
+  }
+  if (hasSibling) return validateManagerReceipt(siblingReceipt, rawRepository, run, "child");
+  if (hasSource) return validateManagerReceipt(sourceReceipt, rawRepository, run, "source");
+  if (pathEntryExists(sourceLayout.attempts)) {
+    const journal = inspectBootstrapJournal(sourceLayout.attempts);
+    if (journal.entries.length > 0) {
+      fail("manager-bootstrap-incomplete", "A checkout manager bootstrap attempt exists without a published receipt.");
+    }
+  }
+  return rawRepository;
+}
+
+function runBootstrapCommand(run, args, cwd, label) {
+  let result;
+  try {
+    result = withPrivateUmask(() => run("git", args, { cwd, allowFailure: true, env: auditGitEnvironment() }));
+  } catch {
+    fail("manager-bootstrap-command-failed", `${label} could not start.`);
+  }
+  if (result.status !== 0) fail("manager-bootstrap-command-failed", `${label} failed.`);
+  return result.stdout;
+}
+
+function inspectManagerRepositoryTree(path, privatize) {
+  let entries = 0;
+  const visit = (directory, depth, expectedIdentity = undefined) => {
+    if (depth > MAXIMUM_MANAGER_REPOSITORY_DEPTH) {
+      fail("unsafe-manager-bootstrap", "The checkout manager repository is nested too deeply.");
+    }
+    const directoryMetadata = lstatSync(directory, { bigint: true });
+    const directoryIdentity = identityOf(directoryMetadata);
+    if (
+      !directoryMetadata.isDirectory() ||
+      directoryMetadata.isSymbolicLink() ||
+      !currentUserOwns(directoryMetadata) ||
+      realpathSync(directory) !== resolve(directory) ||
+      (expectedIdentity !== undefined && !sameIdentity(directoryIdentity, expectedIdentity))
+    ) {
+      fail("unsafe-manager-bootstrap", "The checkout manager repository contains an unsafe directory.");
+    }
+    if (privatize) chmodSync(directory, 0o700);
+    else if (typeof process.getuid === "function" && (directoryMetadata.mode & 0o022n) !== 0n) {
+      fail(
+        "unsafe-manager-bootstrap",
+        "The checkout manager repository contains a group- or world-writable directory."
+      );
+    }
+    revalidatePathIdentity(directory, directoryIdentity, "Checkout manager repository directory", "directory");
+    for (const item of readDirectoryBounded(
+      directory,
+      MAXIMUM_MANAGER_REPOSITORY_ENTRIES,
+      "The checkout manager repository"
+    )) {
+      entries += 1;
+      if (entries > MAXIMUM_MANAGER_REPOSITORY_ENTRIES) {
+        fail("unsafe-manager-bootstrap", "The checkout manager repository contains too many entries.");
+      }
+      const child = join(directory, item.name);
+      const metadata = lstatSync(child, { bigint: true });
+      const childIdentity = identityOf(metadata);
+      if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+        visit(child, depth + 1, childIdentity);
+      } else if (
+        !metadata.isFile() ||
+        metadata.isSymbolicLink() ||
+        !currentUserOwns(metadata) ||
+        metadata.nlink !== 1n
+      ) {
+        fail("unsafe-manager-bootstrap", "The checkout manager repository contains a link or special file.");
+      } else if (privatize) chmodSync(child, 0o600);
+      else if (typeof process.getuid === "function" && (metadata.mode & 0o022n) !== 0n) {
+        fail("unsafe-manager-bootstrap", "The checkout manager repository contains a group- or world-writable file.");
+      }
+      if (!metadata.isDirectory()) {
+        revalidatePathIdentity(child, childIdentity, "Checkout manager repository file");
+      }
+    }
+    if (privatize) fsyncDirectory(directory);
+    revalidatePathIdentity(directory, directoryIdentity, "Checkout manager repository directory", "directory");
+  };
+  const rootIdentity = identityOf(lstatSync(path, { bigint: true }));
+  visit(path, 0, rootIdentity);
+  revalidatePathIdentity(path, rootIdentity, "Checkout manager repository root", "directory");
+}
+
+function privatizeManagerRepository(path) {
+  inspectManagerRepositoryTree(path, true);
+}
+
+function readSourceRemote(run, sourcePath) {
+  const value = runBootstrapCommand(
+    run,
+    ["-C", sourcePath, "remote", "get-url", "origin"],
+    sourcePath,
+    "Remote inspection"
+  ).trim();
+  return validateManagerRemoteUrl(value);
+}
+
+function readSourceRefsSha256(run, sourcePath) {
+  const refs = runBootstrapCommand(
+    run,
+    ["-C", sourcePath, "show-ref", "--head", "--dereference"],
+    sourcePath,
+    "Source reference inspection"
+  );
+  return sha256(refs);
+}
+
+function assertOrdinaryBootstrapSource(repository) {
+  const sourceMetadata = lstatSync(repository.topLevel, { bigint: true });
+  const dotGit = join(repository.topLevel, ".git");
+  const gitMetadata = lstatSync(dotGit, { bigint: true });
+  if (
+    !sourceMetadata.isDirectory() ||
+    sourceMetadata.isSymbolicLink() ||
+    !currentUserOwns(sourceMetadata) ||
+    realpathSync(repository.topLevel) !== repository.topLevel ||
+    !gitMetadata.isDirectory() ||
+    gitMetadata.isSymbolicLink() ||
+    realpathSync(dotGit) !== repository.commonGitDirectory
+  ) {
+    fail(
+      "invalid-manager-bootstrap-source",
+      "Bootstrap must run from the ordinary source checkout, not a linked worktree."
+    );
+  }
+  return identityOf(sourceMetadata);
+}
+
+function assertSourceUnchanged(run, before, remote) {
+  let after;
+  try {
+    after = discoverRawRepository(run, before.topLevel);
+  } catch {
+    fail("manager-bootstrap-drift", "The source repository could not be revalidated during bootstrap.");
+  }
+  const rootMetadata = lstatSync(after.topLevel, { bigint: true });
+  if (
+    after.topLevel !== before.topLevel ||
+    after.commonGitDirectory !== before.commonGitDirectory ||
+    !sameIdentity(after.identity, before.identity) ||
+    !sameIdentity(identityOf(rootMetadata), before.topLevelIdentity) ||
+    readSourceRefsSha256(run, after.topLevel) !== before.refsSha256 ||
+    readSourceRemote(run, after.topLevel) !== remote
+  ) {
+    fail("manager-bootstrap-drift", "The source repository changed during checkout manager bootstrap.");
+  }
+}
+
+/**
+ * Creates a private, self-contained bare repository and manager state. Failed
+ * attempts are retained and a complete attempt is published through one
+ * no-replace hard link to its immutable receipt.
+ */
+export function bootstrapCheckoutManager(options = {}) {
+  const run = options.run ?? defaultRun;
+  let source;
+  try {
+    source = discoverRawRepository(run, options.repositoryPath ?? options.cwd ?? process.cwd());
+  } catch {
+    fail("manager-bootstrap-command-failed", "The source repository could not be inspected.");
+  }
+  const sourceTopLevelIdentity = assertOrdinaryBootstrapSource(source);
+  const sourceSnapshot = Object.freeze({
+    ...source,
+    topLevelIdentity: sourceTopLevelIdentity,
+    refsSha256: readSourceRefsSha256(run, source.topLevel)
+  });
+  const layout = bootstrapLayout(source.topLevel);
+  if (pathEntryExists(layout.receipt)) {
+    fail("manager-bootstrap-exists", "A checkout manager bootstrap is already published.");
+  }
+  const remote = readSourceRemote(run, source.topLevel);
+  const rootIdentity = ensurePrivateDirectory(layout.root);
+  const attemptsIdentity = ensurePrivateDirectory(layout.attempts);
+  revalidatePathIdentity(layout.root, rootIdentity, "Checkout manager bootstrap root", "directory");
+  const prior = inspectBootstrapJournal(layout.attempts);
+  if (prior.currentReceipts !== 0) {
+    fail("manager-bootstrap-exists", "A checkout manager bootstrap is already published.");
+  }
+  options.hooks?.afterBootstrapAttemptsRead?.({
+    attemptsPath: layout.attempts,
+    attempts: Object.freeze([...prior.attempts.values()].map((item) => item.name).sort())
+  });
+  const token = (options.tokenFactory ?? randomToken)();
+  if (!/^[0-9a-f]{32}$/u.test(token)) fail("unsafe-manager-bootstrap", "The bootstrap attempt token is malformed.");
+  let generation;
+  let allocationPath;
+  for (let candidate = 1; candidate <= MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS; candidate += 1) {
+    const candidatePath = join(layout.attempts, `slot-${String(candidate).padStart(8, "0")}`);
+    try {
+      mkdirSync(candidatePath, { mode: 0o700 });
+      chmodSync(candidatePath, 0o700);
+      fsyncDirectory(layout.attempts);
+      generation = candidate;
+      allocationPath = candidatePath;
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") {
+        fail("manager-bootstrap-allocation-failed", "A checkout manager bootstrap slot could not be claimed.");
+      }
+    }
+  }
+  if (generation === undefined || allocationPath === undefined) {
+    fail("manager-bootstrap-attempts-exhausted", "Too many retained checkout manager bootstrap attempts exist.");
+  }
+  const allocationIdentity = assertPrivateDirectory(allocationPath, "Checkout manager bootstrap allocation");
+  if (readDirectoryBounded(allocationPath, 1, "Checkout manager bootstrap allocation").length !== 0) {
+    fail("unsafe-manager-bootstrap", "The claimed checkout manager bootstrap slot is not empty.");
+  }
+  const attemptName = `${String(generation).padStart(8, "0")}-${token}`;
+  const attemptPath = join(layout.attempts, attemptName);
+  mkdirSync(attemptPath, { mode: 0o700 });
+  chmodSync(attemptPath, 0o700);
+  fsyncDirectory(layout.attempts);
+  const attemptIdentity = assertPrivateDirectory(attemptPath, "Checkout manager bootstrap attempt");
+  const repositoryPath = join(attemptPath, "repository.git");
+  const statePath = join(attemptPath, "state");
+  const templatePath = join(attemptPath, "template");
+  const templateIdentity = ensurePrivateDirectory(templatePath);
+  runBootstrapCommand(
+    run,
+    [
+      "clone",
+      "--bare",
+      "--quiet",
+      "--no-local",
+      "--no-hardlinks",
+      `--template=${templatePath}`,
+      "--origin",
+      "origin",
+      source.topLevel,
+      repositoryPath
+    ],
+    attemptPath,
+    "Bare repository seed"
+  );
+  options.hooks?.afterBootstrapClone?.({ attemptPath, repositoryPath, statePath, source: sourceSnapshot });
+  privatizeManagerRepository(repositoryPath);
+  managerGit(run, repositoryPath, ["config", "remote.origin.url", remote], "Manager remote configuration");
+  managerGit(
+    run,
+    repositoryPath,
+    ["config", "--replace-all", "remote.origin.fetch", MANAGER_REMOTE_FETCH],
+    "Manager fetch configuration"
+  );
+  privatizeManagerRepository(repositoryPath);
+  const seeded = assertSelfContainedManagerRepository(run, repositoryPath, remote);
+  managerGit(run, repositoryPath, ["fsck", "--strict", "--full", "--no-dangling"], "Manager repository verification");
+  const stateIdentity = ensurePrivateDirectory(statePath);
+  for (const name of ["entries", "checkouts", "locks"]) ensurePrivateDirectory(join(statePath, name));
+  assertSourceUnchanged(run, sourceSnapshot, remote);
+  options.hooks?.beforeBootstrapReceipt?.({ attemptPath, repositoryPath, statePath, source: sourceSnapshot });
+  const attemptReceiptPath = join(attemptPath, "receipt.json");
+  const receiptValue = {
+    protocol: MANAGER_BOOTSTRAP_PROTOCOL,
+    source: {
+      topLevel: source.topLevel,
+      topLevelIdentity: sourceTopLevelIdentity,
+      commonGitDirectory: source.commonGitDirectory,
+      commonGitIdentity: source.identity,
+      refsSha256: sourceSnapshot.refsSha256
+    },
+    root: { path: layout.root, identity: rootIdentity },
+    attempts: { path: layout.attempts, identity: attemptsIdentity },
+    allocation: { path: allocationPath, identity: allocationIdentity },
+    attempt: { name: attemptName, path: attemptPath, identity: attemptIdentity },
+    repository: { path: repositoryPath, identity: seeded.identity },
+    state: { path: statePath, identity: stateIdentity },
+    template: { path: templatePath, identity: templateIdentity },
+    remote: { name: "origin", url: remote, fetch: MANAGER_REMOTE_FETCH },
+    objectFormat: seeded.objectFormat
+  };
+  writeJsonExclusive(attemptReceiptPath, receiptValue, attemptIdentity);
+  revalidatePathIdentity(repositoryPath, seeded.identity, "Seeded manager repository", "directory");
+  revalidatePathIdentity(statePath, stateIdentity, "Seeded manager state", "directory");
+  assertSourceUnchanged(run, sourceSnapshot, remote);
+  options.hooks?.beforeBootstrapPublish?.({ attemptPath, repositoryPath, statePath, source: sourceSnapshot });
+  assertSourceUnchanged(run, sourceSnapshot, remote);
+  const finalRepository = assertSelfContainedManagerRepository(run, repositoryPath, remote, seeded.objectFormat);
+  if (!sameIdentity(finalRepository.identity, seeded.identity)) {
+    fail("manager-bootstrap-drift", "The seeded checkout manager repository changed before publication.");
+  }
+  managerGit(run, repositoryPath, ["fsck", "--strict", "--full", "--no-dangling"], "Final manager verification");
+  revalidatePathIdentity(statePath, stateIdentity, "Seeded manager state", "directory");
+  revalidatePathIdentity(layout.attempts, attemptsIdentity, "Checkout manager attempt journal", "directory");
+  revalidatePathIdentity(allocationPath, allocationIdentity, "Checkout manager bootstrap allocation", "directory");
+  revalidatePathIdentity(attemptPath, attemptIdentity, "Checkout manager bootstrap attempt", "directory");
+  const finalAttemptReceipt = readJson(attemptReceiptPath, MAXIMUM_ENTRY_BYTES, "Manager attempt receipt");
+  if (!isDeepStrictEqual(finalAttemptReceipt.value, receiptValue)) {
+    fail("manager-bootstrap-drift", "The checkout manager receipt changed before publication.");
+  }
+  try {
+    linkSync(attemptReceiptPath, layout.receipt);
+  } catch (error) {
+    if (error.code === "EEXIST") {
+      fail("manager-bootstrap-changed", "Another checkout manager receipt is already published.");
+    }
+    fail("manager-bootstrap-publish-failed", "The checkout manager receipt could not be published.");
+  }
+  fsyncDirectory(layout.attempts);
+  const published = validateManagerReceipt(layout.receipt, source, run, "source");
+  return Object.freeze({
+    status: "checkout-manager-bootstrapped",
+    repositoryPath: published.commonGitDirectory,
+    statePath: published.managerRoot,
+    receiptPath: published.bootstrapReceipt
+  });
+}
+
+function commonGit(run, paths, repository, args, options = {}) {
+  return withPrivateUmask(() =>
+    run("git", ["--git-dir", repository.commonGitDirectory, ...args], {
+      cwd: paths.root,
+      allowFailure: options.allowFailure,
+      env: options.env ?? auditGitEnvironment(),
+      stdoutFd: options.stdoutFd,
+      input: options.input
+    })
+  );
+}
+
 function checkoutGit(run, paths, checkoutPath, args, options = {}) {
-  return run("git", ["-C", checkoutPath, ...args], { cwd: paths.root, allowFailure: options.allowFailure });
+  return run("git", ["-C", checkoutPath, ...args], {
+    cwd: paths.root,
+    allowFailure: options.allowFailure,
+    env: options.env ?? auditGitEnvironment()
+  });
 }
 
 function auditGitEnvironment() {
@@ -984,15 +1717,103 @@ function normalizePaths(root) {
 
 export function createCheckoutManager(options = {}) {
   const run = options.run ?? defaultRun;
-  const repository = discoverRepository(run, options.repositoryPath ?? options.cwd ?? process.cwd());
+  const repository = discoverRepository(
+    run,
+    options.repositoryPath ?? options.cwd ?? process.cwd(),
+    options.managerRoot === undefined
+  );
   const paths = normalizePaths(
-    options.managerRoot ?? join(dirname(repository.commonGitDirectory), "tmp", "agent-checkouts")
+    options.managerRoot ??
+      repository.managerRoot ??
+      join(dirname(repository.commonGitDirectory), "tmp", "agent-checkouts")
   );
   const tokenFactory = options.tokenFactory ?? randomToken;
   const isProcessAlive = options.isProcessAlive ?? processIsAlive;
   const hooks = options.hooks;
   const entryIdentities = new WeakMap();
   const managedIdentities = new Map();
+
+  function validateRoutedSource() {
+    const expected = repository.sourceRepository;
+    if (expected === undefined) return undefined;
+    let current;
+    try {
+      current = discoverRawRepository(run, expected.topLevel);
+    } catch {
+      fail("manager-source-changed", "The source repository could not be revalidated before checkout creation.");
+    }
+    const topLevelMetadata = lstatSync(current.topLevel, { bigint: true });
+    if (
+      current.topLevel !== expected.topLevel ||
+      current.commonGitDirectory !== expected.commonGitDirectory ||
+      !sameIdentity(current.identity, expected.commonGitIdentity) ||
+      !sameIdentity(identityOf(topLevelMetadata), expected.topLevelIdentity) ||
+      readSourceRemote(run, current.topLevel) !== repository.managerRemote
+    ) {
+      fail("manager-source-changed", "The source repository changed before checkout creation.");
+    }
+    return current;
+  }
+
+  function resolveCreateBase(base) {
+    const source = validateRoutedSource();
+    if (source === undefined) {
+      return checkoutGit(run, paths, repository.topLevel, ["rev-parse", "--verify", `${base}^{commit}`]).stdout.trim();
+    }
+    const before = checkoutGit(run, paths, source.topLevel, [
+      "rev-parse",
+      "--verify",
+      `${base}^{commit}`
+    ]).stdout.trim();
+    if (!SHA_PATTERN.test(before)) fail("manager-source-changed", "The source base revision is malformed.");
+    const synchronized = commonGit(
+      run,
+      paths,
+      repository,
+      [
+        "-c",
+        "protocol.file.allow=always",
+        "-c",
+        "maintenance.auto=false",
+        "-c",
+        `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+        "fetch",
+        "--quiet",
+        "--force",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--no-recurse-submodules",
+        source.topLevel,
+        `+${before}:refs/openwrangler/source-base`
+      ],
+      { allowFailure: true, env: auditGitEnvironment() }
+    );
+    if (synchronized.status !== 0) {
+      fail("manager-source-sync-failed", "The local source commit could not be copied into the checkout manager.");
+    }
+    const afterSource = validateRoutedSource();
+    const after = checkoutGit(run, paths, afterSource.topLevel, [
+      "rev-parse",
+      "--verify",
+      `${base}^{commit}`
+    ]).stdout.trim();
+    if (after !== before) fail("manager-source-changed", "The source base changed while the manager was synchronized.");
+    const managerCommit = commonGit(run, paths, repository, ["rev-parse", "--verify", `${before}^{commit}`], {
+      env: auditGitEnvironment()
+    }).stdout.trim();
+    if (managerCommit !== before) fail("manager-source-sync-failed", "The checkout manager received the wrong commit.");
+    const verified = assertSelfContainedManagerRepository(run, repository.commonGitDirectory, repository.managerRemote);
+    if (!sameIdentity(verified.identity, repository.identity)) {
+      fail("manager-bootstrap-drift", "The checkout manager repository changed during source synchronization.");
+    }
+    managerGit(
+      run,
+      repository.commonGitDirectory,
+      ["fsck", "--strict", "--full", "--no-dangling"],
+      "Synchronized manager verification"
+    );
+    return before;
+  }
 
   function initializeManager(allowCreate) {
     if (managedIdentities.size > 0) return;
@@ -3571,8 +4392,11 @@ export function createCheckoutManager(options = {}) {
           fail("checkout-exists", `Checkout ${slug} exists.`);
         const selectedBranch = branch ?? `agent/${slug}-${tokenFactory().slice(0, 8)}`;
         if (
-          run("git", ["check-ref-format", "--branch", selectedBranch], { cwd: paths.root, allowFailure: true })
-            .status !== 0
+          run("git", ["check-ref-format", "--branch", selectedBranch], {
+            cwd: paths.root,
+            allowFailure: true,
+            env: auditGitEnvironment()
+          }).status !== 0
         ) {
           fail("invalid-branch", "The managed branch name is invalid.");
         }
@@ -3586,11 +4410,7 @@ export function createCheckoutManager(options = {}) {
         if (branchCheck.status === 0) fail("branch-exists", `Branch ${selectedBranch} already exists.`);
         if (branchCheck.status !== 1) fail("command-failed", `Git could not inspect branch ${selectedBranch}.`);
         commonGit(run, paths, repository, ["remote", "get-url", remote]);
-        const baseCommit = checkoutGit(run, paths, repository.topLevel, [
-          "rev-parse",
-          "--verify",
-          `${base}^{commit}`
-        ]).stdout.trim();
+        const baseCommit = resolveCreateBase(base);
         let entry = writeInitialEntry({
           protocol: ENTRY_PROTOCOL,
           slug,
@@ -4100,6 +4920,11 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
     }
   });
   const [command, slug] = positionals;
+  if (command === "bootstrap") {
+    const result = bootstrapCheckoutManager(options);
+    (options.stdout ?? process.stdout).write(`${JSON.stringify(result, null, 2)}\n`);
+    return result;
+  }
   const manager = createCheckoutManager(options);
   let result;
   if (command === "create") {
@@ -4147,7 +4972,7 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
   } else {
     fail(
       "invalid-cli",
-      "Use create, status, audit, quarantine-status, handoff, finish, plan-retirement, archive-retirement, or abandon."
+      "Use bootstrap, create, status, audit, quarantine-status, handoff, finish, plan-retirement, archive-retirement, or abandon."
     );
   }
   (options.stdout ?? process.stdout).write(`${JSON.stringify(result, null, 2)}\n`);
