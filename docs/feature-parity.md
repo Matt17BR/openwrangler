@@ -674,8 +674,8 @@ Grid status and profile vocabulary, 2026-07-31:
 - Row-block navigation now follows the scrolling table in a slim, non-sticky status bar. Transparent Previous and
   Next Codicon buttons retain their exact accessible names and native disabled behavior, while a separate polite,
   atomic **Visible rows** status announces only `Rows 1\u2013200 of 100,000` or `No rows`; experimental PySpark
-  appends its explicit progressive-traversal label and uses `total not counted` until terminal promotion. The escape
-  denotes the rendered U+2013 en dash.
+  instead says that the total appears after the last page until terminal promotion. Exact ranges use the same plain
+  `Rows … of …` copy for every engine. The escape denotes the rendered U+2013 en dash.
 - The selected-column surface is now visibly **Column profiles** and exposes the encompassing accessible name
   **Column profiles and filters**. Its established region and tab IDs, deterministic Close focus, Escape handling,
   exact opener restoration, and Column / Dataset / Filters ownership remain unchanged.

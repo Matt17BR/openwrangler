@@ -9283,11 +9283,11 @@ async function captureReleasedJupyterPySparkPicker(
       "Filtering the PySpark picker must leave one unambiguous visible dataframe row."
     );
 
-    const expectedDetail = "Viewing only · Bounded progressive open · Requires PySpark 4.2.x";
+    const expectedDetail = "Viewing only · First page loads without counting rows · PySpark 4.2.x required";
     const rowText = (await row.innerText()).replace(/\s+/gu, " ").trim();
     assert.match(rowText, /spark_classic_frame/u);
     assert.match(rowText, /PySpark Classic · DataFrame/u);
-    for (const phrase of ["Viewing only", "Bounded progressive open", "Requires PySpark 4.2.x"]) {
+    for (const phrase of ["Viewing only", "First page loads without counting rows", "PySpark 4.2.x required"]) {
       assert.ok(rowText.includes(phrase), `The PySpark picker row must visibly explain ${phrase}.`);
     }
     const detail = row.getByText(expectedDetail, { exact: true }).first();
@@ -10214,7 +10214,7 @@ async function captureReleasedJupyterPySparkLive(
     assert.equal(await loadedRows.count(), 1, "The PySpark media scene must expose one visible-row status.");
     assert.match(
       (await loadedRows.innerText()).trim(),
-      /^Rows 1\u2013\d+ · total not counted · progressive Spark traversal$/u,
+      /^Rows 1\u2013\d+ · total appears after the last page$/u,
       "The PySpark media scene must label its progressive live total honestly."
     );
     const gridBox = await gridScroller.boundingBox();

@@ -1132,13 +1132,11 @@ export function DataGrid({
             : page.totalRows === null
               ? `Rows ${(page.offset + 1).toLocaleString()}\u2013${(
                   page.offset + page.rows.length
-                ).toLocaleString()} · total not counted · progressive Spark traversal`
+                ).toLocaleString()} · total appears after the last page`
               : `Rows ${(page.offset + 1).toLocaleString()}\u2013${Math.min(
                   page.offset + page.rows.length,
                   page.totalRows
-                ).toLocaleString()} of ${page.totalRows.toLocaleString()}${
-                  metadata.backend === "pyspark" ? " · progressive Spark traversal" : ""
-                }`}
+                ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
         </span>
         <button
           type="button"

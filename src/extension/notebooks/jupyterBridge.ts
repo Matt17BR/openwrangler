@@ -140,7 +140,7 @@ function notebookVariableQuickPickItem(variable: NotebookVariableDescriptor): No
   const presentation = notebookVariablePresentation(variable.type);
   const detail =
     variable.backend === "pyspark"
-      ? "Viewing only · Bounded progressive open · Requires PySpark 4.2.x"
+      ? "Viewing only · First page loads without counting rows · PySpark 4.2.x required"
       : variable.backend === "duckdb"
         ? `${variable.type} · Live viewing-only session`
         : `${variable.type} · Live notebook session`;

@@ -2395,8 +2395,7 @@ export function App() {
                     <strong>{sessionOpenProgressHeading(sessionOpenProgress)}</strong>
                     {sessionOpenProgress === "preparingSparkView" && (
                       <p>
-                        Preparing a bounded first page in Spark. Open Wrangler does not run a full row count while
-                        opening; the exact total appears if paging reaches the end.
+                        Loading the first page without counting every row… The exact total appears after the last page.
                       </p>
                     )}
                   </>

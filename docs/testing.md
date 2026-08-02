@@ -288,8 +288,8 @@ enter the gallery only after VS Code and Cursor both capture them from the same 
 
 The released-Jupyter variable-picker capture uses a fixed 1440 × 900 viewport and rejects every partially visible
 option row or clipped label, type description, and detail. The independent PySpark picker scene filters to
-`spark_classic_frame`, verifies the complete **Viewing only**, **Bounded progressive open**, and
-**Requires PySpark 4.2.x** detail, captures exactly one visible match, and dismisses the picker without selecting or
+`spark_classic_frame`, verifies the complete **Viewing only**, **First page loads without counting rows**, and
+**PySpark 4.2.x required** detail, captures exactly one visible match, and dismisses the picker without selecting or
 opening that variable.
 
 These images are release evidence for the exact VSIX supplied to that packaged-editor run. Capture them only after the candidate source is integrated and packaged; never carry an older commit's images forward as if they represented the current UI. The capture is optional and never mutates baselines automatically.

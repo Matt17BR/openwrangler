@@ -1416,7 +1416,10 @@ export class SessionCoordinator implements vscode.Disposable {
       const filterChanged = !sameFilterModel(previousFilterModel, response.metadata.filterModel);
       const revisionChanged = response.revision !== requestRuntimeRevision;
       const planChanged = response.kind === "stepPreview" || response.kind === "planUpdated";
-      const stateChanged = filterChanged || revisionChanged || planChanged;
+      const shapeChanged =
+        !isDeepStrictEqual(session.metadata.shape, response.metadata.shape) ||
+        !isDeepStrictEqual(session.metadata.filteredShape, response.metadata.filteredShape);
+      const stateChanged = filterChanged || revisionChanged || planChanged || shapeChanged;
       const nextViewState = reconcileViewingState(
         {
           ...gridState(session.viewState),

@@ -23,8 +23,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   total, the protocol and UI say that the total is not counted. Paging remains contiguous after that promotion,
   retains only a bounded boundary history, and rejects an observed boundary change with reopen guidance. Recovery
   rebuilds a saved viewport through at most 16 contiguous page requests and otherwise resets only that viewport to
-  row zero, retaining its confirmed filter, sort, widths, and selection. This does not claim that Spark gives an
-  unordered dataframe a deterministic global order; PySpark remains experimental and viewing-only.
+  row zero, retaining its confirmed filter, sort, widths, and selection. A terminal page now publishes its exact
+  shape even when no filter, revision, or plan changed. User copy simply explains that the first page loads without
+  counting every row and that the total appears after the last page. This does not claim that Spark gives an unordered
+  dataframe a deterministic global order; PySpark remains experimental and viewing-only.
 - Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
   kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
   serialization, nested lease inheritance, and automatic crash release.

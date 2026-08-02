@@ -328,6 +328,130 @@ describe("SessionCoordinator", () => {
     expect(coordinator.diagnostics().sessionCount).toBe(0);
   });
 
+  it("commits a terminal PySpark page's exact shape without a filter, revision, or plan change", async () => {
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "terminal_spark_frame",
+      variableName: "terminal_spark_frame",
+      uri: "file:///workspace/terminal-spark.ipynb"
+    };
+    const schema = [
+      { id: "c:value", name: "value", position: 0, rawType: "bigint", type: "integer" as const, nullable: false }
+    ];
+    const makeRows = (offset: number, count: number) =>
+      Array.from({ length: count }, (_, position) => {
+        const rowNumber = offset + position;
+        return {
+          id: `r:terminal-spark:${rowNumber}`,
+          rowNumber,
+          values: [
+            {
+              raw: String(rowNumber),
+              display: String(rowNumber),
+              kind: "integer" as const,
+              isNull: false,
+              isNaN: false
+            }
+          ]
+        };
+      });
+    const initialMetadata: SessionMetadata = {
+      ...openedResponse("terminal-spark-runtime", "pyspark").metadata,
+      sessionId: "terminal-spark-runtime",
+      backend: "pyspark",
+      mode: "viewing",
+      source,
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: null, columns: 1 },
+      filteredShape: { rows: null, columns: 1 },
+      schema,
+      filterModel: { filters: [], sort: [] },
+      steps: []
+    };
+    const exactMetadata: SessionMetadata = {
+      ...initialMetadata,
+      shape: { rows: 120, columns: 1 },
+      filteredShape: { rows: 120, columns: 1 }
+    };
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        return {
+          kind: "sessionOpened",
+          metadata: initialMetadata,
+          page: {
+            offset: 0,
+            limit: 100,
+            totalRows: null,
+            hasMore: true,
+            columnIds: ["c:value"],
+            rows: makeRows(0, 100)
+          },
+          summaries: []
+        };
+      }
+      if (request.kind === "getPage") {
+        return {
+          kind: "page",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          metadata: exactMetadata,
+          page: {
+            offset: 100,
+            limit: 100,
+            totalRows: 120,
+            columnIds: ["c:value"],
+            rows: makeRows(100, 20)
+          }
+        };
+      }
+      throw new Error(`Unexpected terminal PySpark request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request({
+      ...openRequest,
+      source,
+      backend: "pyspark",
+      mode: "viewing"
+    });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the terminal PySpark fixture to open.");
+
+    const terminal = await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "terminal-spark-page",
+      offset: 100,
+      limit: 100,
+      ...columnWindow,
+      filterModel: { filters: [], sort: [] }
+    });
+
+    expect(terminal).toMatchObject({
+      kind: "page",
+      revision: opened.metadata.revision,
+      metadata: {
+        sessionId: opened.metadata.sessionId,
+        shape: { rows: 120, columns: 1 },
+        filteredShape: { rows: 120, columns: 1 },
+        filterModel: { filters: [], sort: [] },
+        steps: []
+      },
+      page: { offset: 100, totalRows: 120 }
+    });
+    expect(coordinator.activeSession()?.metadata).toMatchObject({
+      shape: { rows: 120, columns: 1 },
+      filteredShape: { rows: 120, columns: 1 }
+    });
+  });
+
   it("rebinds an invalidated PySpark variable without losing the confirmed compound view", async () => {
     const source = {
       kind: "notebookVariable" as const,

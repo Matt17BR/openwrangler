@@ -251,7 +251,7 @@ describe("DataGrid", () => {
 
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "-1");
     expect(screen.getByRole("status", { name: "Visible rows" })).toHaveTextContent(
-      "Rows 1\u20132 · total not counted · progressive Spark traversal"
+      "Rows 1\u20132 · total appears after the last page"
     );
     fireEvent.click(screen.getByRole("button", { name: "Next block" }));
     expect(onPage).toHaveBeenCalledWith(2);
@@ -294,6 +294,8 @@ describe("DataGrid", () => {
       `[data-grid-row="${currentOffset}"][data-grid-column="0"]`
     );
     expect(firstCell).not.toBeNull();
+    expect(screen.getByRole("status", { name: "Visible rows" })).toHaveTextContent("Rows 401\u2013600 of 10,000");
+    expect(screen.getByRole("status", { name: "Visible rows" })).not.toHaveTextContent("Spark");
     fireEvent.keyDown(firstCell!, { key: "End", ctrlKey: true });
     expect(onPage).toHaveBeenCalledWith(currentOffset + largeGridPageSize);
   });
@@ -2092,9 +2094,8 @@ describe("App file import options", () => {
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "preparingSparkView" });
     expect(status).toHaveTextContent("Preparing PySpark 4.2 (viewing only)");
-    expect(status).toHaveTextContent("Preparing a bounded first page in Spark");
-    expect(status).toHaveTextContent("does not run a full row count while opening");
-    expect(status).toHaveTextContent("exact total appears if paging reaches the end");
+    expect(status).toHaveTextContent("Loading the first page without counting every row");
+    expect(status).toHaveTextContent("The exact total appears after the last page");
     expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "untrusted-stage" });
@@ -2106,7 +2107,7 @@ describe("App file import options", () => {
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "openingNotebookVariable" });
     expect(status).toHaveTextContent("Opening the live notebook variable");
-    expect(status).not.toHaveTextContent("bounded first page");
+    expect(status).not.toHaveTextContent("without counting every row");
     expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
   });
 
