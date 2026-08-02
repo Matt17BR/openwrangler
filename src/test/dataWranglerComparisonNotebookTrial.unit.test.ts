@@ -211,10 +211,10 @@ function successDependencies(events: string[]): NotebookTrialFlowDependencies & 
     },
     async waitForWorkbenchAndScroll(immediatelyAfterReady) {
       events.push("workbench-grid-ready");
-      clock = 40;
+      events.push("workbench-scroll-correctness");
+      clock = 45;
       events.push("workbench-ready-boundary");
       immediatelyAfterReady();
-      events.push("workbench-scroll-correctness");
       return {
         newlySelectedProductEditor: true,
         grid: {
@@ -346,7 +346,7 @@ describe("one-trial notebook comparison flow", () => {
       inlineActionNanoseconds: "1012000000",
       inlineReadyNanoseconds: "1020000000",
       workbenchActionNanoseconds: "1030000000",
-      workbenchReadyNanoseconds: "1040000000",
+      workbenchReadyNanoseconds: "1045000000",
       profileActionNanoseconds: "1050000000",
       firstProfileReadyNanoseconds: "1060000000",
       profilesCompleteNanoseconds: "1109000000"
@@ -377,7 +377,7 @@ describe("one-trial notebook comparison flow", () => {
     ]);
     expect(events.indexOf("bridge:workbench-baseline:ack")).toBeLessThan(events.indexOf("open-center-owned"));
     expect(events.indexOf("bridge:profile-baseline:ack")).toBeLessThan(events.indexOf("profile-center-owned"));
-    expect(events.indexOf("workbench-ready-boundary")).toBeLessThan(events.indexOf("workbench-scroll-correctness"));
+    expect(events.indexOf("workbench-scroll-correctness")).toBeLessThan(events.indexOf("workbench-ready-boundary"));
     expect(events.indexOf("restore-first-rows")).toBeLessThan(events.indexOf("profile-center-owned"));
     expect(events.indexOf("verify:after-workbench")).toBeLessThan(events.indexOf("bridge:cleanup-census:request"));
     expect(events.at(-1)).toBe("bridge:cleanup-census:ack");
@@ -656,7 +656,7 @@ describe("one-trial notebook comparison flow", () => {
     expect(receipt).toMatchObject({
       status: "failed",
       failure: { stage: "profiles", kind: "timeout" },
-      milestones: { inlineActionMs: 2, workbenchActionMs: 20, workbenchReadyMs: 30, profileActionMs: 40 },
+      milestones: { inlineActionMs: 2, workbenchActionMs: 20, workbenchReadyMs: 35, profileActionMs: 40 },
       profiles: { completedColumnCount: 3 }
     });
     expect(receipt.profiles?.columns.map(({ column }) => column)).toEqual(["c00", "c01", "c02"]);

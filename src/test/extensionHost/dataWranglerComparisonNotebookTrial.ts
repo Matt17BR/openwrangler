@@ -2700,9 +2700,6 @@ function createRealNotebookTrialDependencies(
       );
       assert.equal(await frameChainIsVisibleAndPointerUsable(gridFrame), true);
       const workbench = await comparisonWorkbenchReadiness(page, sourceTab, true);
-      assert.ok(Date.now() <= workbenchDeadline, "Workbench readiness exceeded its fixed 60000 ms window.");
-      immediatelyAfterReady();
-      recordProgress("comparison-study:workbench-ready");
       const fullShape = await requireCompleteGridShape(gridFrame, readiness.grid, captured.definition.fixture);
       const observedEngineLabel = await gridFrame.evaluate(observeNotebookTrialEngineLabel);
       if (product === "open-wrangler") {
@@ -2714,6 +2711,9 @@ function createRealNotebookTrialDependencies(
       }
       const engineLabel = product === "open-wrangler" ? observedEngineLabel : "not-shown";
       const scroll = await exerciseNotebookTrialGridScroll(gridFrame);
+      assert.ok(Date.now() <= workbenchDeadline, "Workbench readiness exceeded its fixed 60000 ms window.");
+      immediatelyAfterReady();
+      recordProgress("comparison-study:workbench-ready");
       return {
         newlySelectedProductEditor: true,
         grid: readiness.grid,
