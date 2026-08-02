@@ -554,18 +554,38 @@ test("retirement archive packs more than 4096 recovery roots before retaining ve
     });
     let input = "";
     for (let index = 0; index < 4100; index += 1) {
-      const ref = `refs/recovery/many/${String(index).padStart(4, "0")}`;
       const message = `root-${index}`;
-      input += `commit ${ref}\nauthor Checkout Test <checkout@example.invalid> 0 +0000\ncommitter Checkout Test <checkout@example.invalid> 0 +0000\ndata ${Buffer.byteLength(message, "utf8")}\n${message}\n`;
+      input += `blob\nmark :${index + 1}\ndata ${Buffer.byteLength(message, "utf8")}\n${message}\n`;
     }
     input += "done\n";
-    const imported = spawnSync("git", ["fast-import", "--quiet"], {
+    const marksPath = join(fixture.root, "many-root.marks");
+    const imported = spawnSync("git", ["fast-import", "--quiet", `--export-marks=${marksPath}`], {
       cwd: fixture.repository,
       encoding: "utf8",
       input,
       maxBuffer: 4 * 1024 * 1024
     });
     assert.equal(imported.status, 0, imported.stderr);
+    const objectIds = readFileSync(marksPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const match = /^:([1-9][0-9]*) ([0-9a-f]+)$/u.exec(line);
+        assert.ok(match, `Malformed fast-import mark: ${line}`);
+        return { mark: Number(match[1]), oid: match[2] };
+      })
+      .sort((left, right) => left.mark - right.mark);
+    assert.equal(objectIds.length, 4100);
+    const refsInput = objectIds
+      .map(({ oid }, index) => `create refs/recovery/many/${String(index).padStart(4, "0")} ${oid}\n`)
+      .join("");
+    const refs = spawnSync("git", ["update-ref", "--stdin"], {
+      cwd: fixture.repository,
+      encoding: "utf8",
+      input: refsInput,
+      maxBuffer: 4 * 1024 * 1024
+    });
+    assert.equal(refs.status, 0, refs.stderr);
 
     const result = managed.archiveRetirement({
       slug: "archive-many-roots",
