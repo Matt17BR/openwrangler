@@ -27,6 +27,31 @@ export function isDocumentationOnlyChangeSet({ eventName, changedPaths }) {
   return changedPaths.length > 0 && changedPaths.every((path) => isDocumentationOnlyPath(path));
 }
 
+export function parsePullRequestDraft({ eventName, value }) {
+  if (eventName === "pull_request") {
+    if (value === "true") return true;
+    if (value === "false") return false;
+    throw new Error("Pull-request draft state must be exactly true or false.");
+  }
+  if (value !== undefined && value !== "") {
+    throw new Error("Non-pull-request events must not carry pull-request draft state.");
+  }
+  return false;
+}
+
+export function classifyCiChange({ eventName, changedPaths, pullRequestDraft }) {
+  if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
+  const draftPullRequest = parsePullRequestDraft({ eventName, value: pullRequestDraft });
+  const documentationOnly = isDocumentationOnlyChangeSet({ eventName, changedPaths });
+  const lightweightOnly = documentationOnly || draftPullRequest;
+  return {
+    documentationOnly,
+    draftPullRequest,
+    lightweightOnly,
+    releasedJupyterRequired: eventName === "pull_request" && !lightweightOnly
+  };
+}
+
 export function parseChangedPathBuffer(buffer) {
   if (!Buffer.isBuffer(buffer)) throw new TypeError("Changed paths must be provided as a Buffer.");
   if (buffer.length === 0) return [];
@@ -44,10 +69,10 @@ export function parseChangedPathBuffer(buffer) {
   return paths;
 }
 
-export function requiresReleasedJupyter({ eventName, changedPaths }) {
+export function requiresReleasedJupyter({ eventName, changedPaths, pullRequestDraft }) {
   if (eventName === "push") return false;
   if (eventName !== "pull_request") throw new Error(`Unsupported CI event: ${eventName || "missing"}.`);
-  return !isDocumentationOnlyChangeSet({ eventName, changedPaths });
+  return classifyCiChange({ eventName, changedPaths, pullRequestDraft }).releasedJupyterRequired;
 }
 
 function readPullRequestPaths({ baseSha, headSha }) {
@@ -76,13 +101,22 @@ function main(environment) {
     eventName === "pull_request"
       ? readPullRequestPaths({ baseSha: environment.CI_BASE_SHA, headSha: environment.CI_HEAD_SHA })
       : [];
-  const documentationOnly = isDocumentationOnlyChangeSet({ eventName, changedPaths });
-  const releasedJupyterRequired = eventName === "pull_request" && !documentationOnly;
+  const classification = classifyCiChange({
+    eventName,
+    changedPaths,
+    pullRequestDraft: environment.CI_PR_DRAFT
+  });
   const outputPath = environment.GITHUB_OUTPUT;
   if (!outputPath) throw new Error("GITHUB_OUTPUT is required.");
   appendFileSync(
     outputPath,
-    `documentation_only=${documentationOnly}\nreleased_jupyter_required=${releasedJupyterRequired}\n`,
+    [
+      `documentation_only=${classification.documentationOnly}`,
+      `draft_pull_request=${classification.draftPullRequest}`,
+      `lightweight_only=${classification.lightweightOnly}`,
+      `released_jupyter_required=${classification.releasedJupyterRequired}`,
+      ""
+    ].join("\n"),
     "utf8"
   );
 }

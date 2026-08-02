@@ -3,6 +3,7 @@ name: Cross-platform runtime
 on:
   pull_request:
     branches: [main, release/1.x]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   workflow_dispatch:
   push:
     branches: [main, release/1.x]
@@ -23,6 +24,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
+      draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
+      lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -36,6 +39,7 @@ jobs:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_PR_DRAFT: ${{ github.event.pull_request.draft }}
 
   runtime:
     needs: classify
@@ -55,34 +59,44 @@ jobs:
           ${{
             needs.classify.result != 'success' ||
             (needs.classify.outputs.documentation_only != 'true' &&
-             needs.classify.outputs.documentation_only != 'false')
+             needs.classify.outputs.documentation_only != 'false') ||
+            (needs.classify.outputs.draft_pull_request != 'true' &&
+             needs.classify.outputs.draft_pull_request != 'false') ||
+            (needs.classify.outputs.lightweight_only != 'true' &&
+             needs.classify.outputs.lightweight_only != 'false') ||
+            (needs.classify.outputs.lightweight_only == 'true' &&
+             needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.draft_pull_request == 'false') ||
+            (needs.classify.outputs.lightweight_only == 'false' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.draft_pull_request == 'true'))
           }}
         run: exit 1
-      - name: Preserve required documentation-only context
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only == 'true' }}
-        run: echo "Runtime source is unchanged; this matrix cell preserves its required check context."
+      - name: Preserve required lightweight context
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'true' }}
+        run: echo "Full runtime evidence is deferred; this matrix cell preserves its required check context."
       - uses: actions/checkout@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
       - uses: actions/setup-node@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
         with:
           node-version: 22
           cache: npm
       - uses: actions/setup-python@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: npm ci
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
       - run: python -m pip install --upgrade pip
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
       - run: python -m pip install -e "python[dev]"
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
       - run: npm run test:python-environment-smoke
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
       - run: python -m pytest python/tests -q
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
@@ -100,19 +114,29 @@ jobs:
           ${{
             needs.classify.result != 'success' ||
             (needs.classify.outputs.documentation_only != 'true' &&
-             needs.classify.outputs.documentation_only != 'false')
+             needs.classify.outputs.documentation_only != 'false') ||
+            (needs.classify.outputs.draft_pull_request != 'true' &&
+             needs.classify.outputs.draft_pull_request != 'false') ||
+            (needs.classify.outputs.lightweight_only != 'true' &&
+             needs.classify.outputs.lightweight_only != 'false') ||
+            (needs.classify.outputs.lightweight_only == 'true' &&
+             needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.draft_pull_request == 'false') ||
+            (needs.classify.outputs.lightweight_only == 'false' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.draft_pull_request == 'true'))
           }}
         run: exit 1
-      - name: Preserve required documentation-only context
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only == 'true' }}
-        run: echo "Dependency guards are unchanged; this matrix cell preserves its required check context."
+      - name: Preserve required lightweight context
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'true' }}
+        run: echo "Full dependency-guard evidence is deferred; this matrix cell preserves its required check context."
       - uses: actions/checkout@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
       - uses: actions/setup-python@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install pytest
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
       - run: python -m pytest python/tests/test_dependency_guard.py -q
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
