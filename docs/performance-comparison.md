@@ -59,9 +59,10 @@ The fixture generator creates synthetic, redistributable sources with stable sen
 - a 100,000-row by 50-column CSV; and
 - a 1,000,000-row by 20-column Parquet file.
 
-Every sample validates the fixture SHA-256, dimensions, ordered column names, dtypes, and sentinel cells. A private
-notebook loads the source into one named Pandas or Polars dataframe in an untimed setup cell. The measured expression
-cell only evaluates that already-resident variable, isolating notebook preview latency from CSV/Parquet parsing. A
+Every trial checks the fixture ID and SHA-256, the file's stable identity, its dimensions and full ordered schema, and
+three sentinel cells. A private notebook loads the source into one named Pandas or Polars dataframe in an untimed setup
+cell. The measured expression cell only evaluates that already-resident variable, isolating notebook preview latency
+from CSV/Parquet parsing. A
 separate diagnostic duration records source loading, but it is not folded into the preview comparison. Shape, exact
 Python type/module, fixture ID/hash, and three deterministic sentinels are verified in an ordinary visible notebook
 cell before timing and again after the workbench closes. No local work data, pickle, external network dataset, or
@@ -99,19 +100,19 @@ Start at the first public action that exposes the profiling or summary UI. Drive
 navigation in canonical schema order. For every integer fixture column `cNN`, require the final type, missing count of
 zero, minimum `NN`, and maximum `rowCount - 1 + NN`; loading placeholders do not count as final. Exact distinct
 evidence is either the integer `rowCount`, an unqualified exact `100%` field, or both. A visible approximation or
-sampling label can finish the timing, but it is a correctness oracle only when its displayed confidence/error interval
-contains `rowCount`. An approximate point without such an interval is excluded from correctness while exact type,
-missing count, minimum, and maximum remain required. It is always recorded as `sampled`/`approximate`, not
-exact-equivalent. Stop after every column has supplied its final profile. Record the first useful `c00` profile and
-complete traversal relative both to profile activation and to the original workbench-open click so background work
-that began earlier cannot appear free.
+sampling label can finish the timing. It counts toward correctness only when its displayed confidence or error interval
+contains `rowCount`. Record a displayed approximate point without an interval as `approximate-unqualified`. Exclude it
+from the distinct-count check and the semantic-equivalence claim. Exact type, missing count, minimum, and maximum are
+still required. Stop after every column has supplied its final profile. Record the first useful `c00`
+profile and complete traversal relative both to profile activation and to the original workbench-open click so
+background work that began earlier cannot appear free.
 
 This is an end-to-end public-UI comparison, not a private request benchmark. The final report must disclose that
 Open Wrangler profiles progressively/on demand and whether Data Wrangler was observed to profile eagerly. Histograms
 are not a common correctness oracle because products may use different sampling and binning. If profiles are exact in
-one product and sampled or approximate in the other, retain both timings but label them semantically non-equivalent.
-If a product has no public way to establish completion for every column, report the limitation instead of inventing a
-private completion signal.
+one product and sampled or approximate in the other, retain both timings and disclose the mismatch in that cell's
+result. If a product has no public way to establish completion for every column, report the limitation instead of
+inventing a private completion signal.
 
 ## Sampling design
 
@@ -139,21 +140,26 @@ private completion signal.
   row restoration, source verification, result publication, and controlled cleanup. The first useful profile is a
   milestone, not a separate timeout.
 
-Preserve every planned trial, block, order, and outcome. There is no trimming, winsorization, slow-sample deletion, or
-automatic retry after a product action. A harness failure before that action invalidates the whole pair, retains its
-audit record, and reruns both products under a new block ID. A product timeout/error after the action is a valid result
-and is never replaced. Report success-only summaries together with failure and timeout counts.
+Keep every planned trial, block, order, and outcome. Do not trim slow samples or retry after a product action.
 
-The immutable schedule and provenance digest are written before the first trial. Every trial publishes one exclusive,
-atomic fragment only after cleanup and input revalidation. An interrupted study resumes only missing schedule entries;
+If the first product fails before its action, keep that fragment and skip the unmatched second run. Do not add a
+placeholder. Start both products again under a new block ID. If the second product fails before its action, keep both
+fragments and start both products again under a new block ID.
+
+A timeout or error after the action is a result and is never replaced. Timing and memory summaries use successful
+fragments only. The report still shows failure and timeout counts.
+
+The immutable schedule and provenance digest are written before the first trial. Every trial publishes one fragment
+after cleanup and input revalidation. Publication is exclusive and atomic. The final result is rebuilt from those raw
+fragments and must match their hashes before publication. An interrupted study resumes only missing schedule entries;
 it cannot overwrite an outcome or mix another candidate, fixture, editor, environment, or method revision. Pair-level
-reruns append new correlated block IDs and retain the invalidated pair. This makes laptop shutdown recoverable without
-turning partial results into a complete report.
+reruns append new correlated block IDs and retain the invalidated pair. If the laptop shuts down, the next run continues
+from those fragments and cannot mistake partial work for a complete report.
 
-Median and p95 use Hyndman-Fan type-7 interpolation; for ten ordered values p95 is
-`x9 + 0.55 * (x10 - x9)`. Publish raw JSON observations, schedule seed, cache proof, correctness status, and every
-milestone timestamp. Any invalid observation names one bounded reason class (fixture, setup, correctness, obstruction,
-timeout, cleanup, or resource sampling), never raw logs or private paths.
+Median and p95 use Hyndman-Fan type-7 interpolation. For ten ordered values, p95 is
+`x9 + 0.55 * (x10 - x9)`. The raw JSON binds each observation to its block ID and includes the schedule seed, cache
+proof, correctness status, and milestone times. Invalid observations use one fixed reason class. They do not include
+raw logs or private paths.
 
 ## Memory
 
@@ -193,7 +199,8 @@ failure rather than a hand-picked lower value.
 
 For every successful warm pair and journey define `d_i = OW_i - DW_i` and `r_i = OW_i / DW_i`. The study triggers
 investigation when at least seven of ten `d_i` values are positive, `median(r_i) >= 1.20`, and `median(d_i)` reaches the
-journey's absolute threshold:
+journey's absolute threshold. The same first-profile and complete-profile durations measured from the original workbench
+click are descriptive context; they do not add another regression gate. The absolute thresholds are:
 
 - inline output: 500 ms;
 - workbench open: 750 ms;

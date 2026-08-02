@@ -13,6 +13,7 @@ import {
   publishDataWranglerStudyFragment,
   validateDataWranglerStudyFragment,
   validateDataWranglerStudyManifest,
+  validateDataWranglerStudyResultEvidence,
   writeDataWranglerStudyJsonExclusive
 } from "./data-wrangler-comparison-study.mjs";
 
@@ -118,6 +119,7 @@ export function runDataWranglerComparisonStudy(argv, { cwd = process.cwd(), now 
   if (!result.accounting.allPlannedPairsComplete) {
     throw new Error("Study result cannot be finalized while planned pair work remains.");
   }
+  validateDataWranglerStudyResultEvidence({ manifest, fragments, result });
   return {
     command: options.command,
     receipt: writeDataWranglerStudyJsonExclusive(options.out, result),

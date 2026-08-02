@@ -587,23 +587,56 @@ npm run comparison:study -- record --manifest tmp/comparison-study/manifest.json
 npm run comparison:study -- finalize --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --out tmp/comparison-study/result.json
 ```
 
-The on-disk formats are `openwrangler-data-wrangler-study-manifest-v1`,
-`openwrangler-data-wrangler-study-fragment-v1`, `openwrangler-data-wrangler-study-result-v1`, and
-`openwrangler-linux-pss-observation-v1`. Validators reject unknown fields and mismatched manifest, schedule, product,
-attempt, and fragment identities.
+The ledger has four versioned formats: manifest, fragment, result, and Linux PSS observation. Their protocol IDs begin
+with `openwrangler-data-wrangler-study-` or `openwrangler-linux-pss-observation-`. Each validator rejects unknown fields
+and identities that do not match the manifest or fixed schedule.
 
-`plan` writes the manifest once. Its fixed seed produces ten paired warm blocks for each Pandas/Polars and CSV/Parquet
-cell. Each product runs first five times. One cold AB pair and one cold BA pair follow for each cell. `record` checks a
-versioned fragment against that manifest and will not overwrite an attempt already on disk. `status` returns only the
-work still missing. When both products fail the pre-action environment gate, their fragments stay in the ledger and
-the next status call returns a new correlated attempt. A shutdown can therefore leave a half-pair, but it cannot erase
-completed work or turn it into a complete result. `finalize` refuses to write a result while planned work remains.
+The manifest records the machine, CPU policy, AC power, fixture volume, display, extension inventory, editor templates,
+Python environment, control profile, and untimed Data Wrangler Polars capability check. These records do not contain
+local paths.
 
-The result uses Hyndman-Fan type-7 median and p95. It keeps the paired differences and ratios used by the registered
-latency and memory checks. On Linux, resource sampling reads `/proc/<pid>/smaps_rollup` every 200 ms. It walks the
-isolated editor's descendants, checks each PID's start time before and after the read, and assigns every process to one
-category. PSS is the comparison measure; RSS is diagnostic. The notebook UI driver must be finished before this
-command can produce study evidence.
+`plan` writes the manifest once. Its fixed seed creates ten paired warm blocks for each engine and format. Each product
+runs first five times. One cold AB pair and one cold BA pair follow for every cell.
+
+`record` accepts only the next scheduled fragment and never overwrites an attempt. `status` returns the missing work.
+Pre-action failures follow two rules:
+
+- If the first product fails, keep that fragment and skip the unmatched second run. Do not add a placeholder.
+- If the second product fails, keep the first result and the second failure.
+
+The next `status` call schedules both products under a new attempt. This also makes an interrupted half-pair safe to
+resume.
+
+`finalize` stops if planned work remains. It then rebuilds the result from the manifest and raw fragments and requires
+an exact match before writing the file. Changing an observation and its summary cannot bypass the fragment hashes.
+
+The result uses Hyndman-Fan type-7 median and p95. It keeps each successful observation plus the paired difference and
+ratio used by the latency and memory checks. Correctness, cleanup, and sampling failures stay in the counts but do not
+enter those summaries.
+
+Every measured fragment identifies its exact fixture and process tree. It includes source-cache proof, source-load
+duration, visible notebook values, the observed workbench engine, and the source check after the trial. Successful
+fragments must also contain a valid resource observation and end with an empty owned process tree. A failed pre-launch
+gate has no cache, engine, process, resource, or cleanup evidence.
+
+The environment gate records complete ten-second attempts as one-second intervals. It covers the pinned CPU set, CPU
+and memory pressure, swap, thermal counters, AC power, governors, display, and machine provenance.
+
+The public UI receipt contains the source shape, a small set of expected visible values, scroll checks, and canonical
+profile columns. Profile checks require integer type, minimum, maximum, no missing values, and either an exact distinct
+value or an approximate interval containing the row count. The receipt contains no DOM, logs, selectors, paths, or
+free-form text.
+
+The deadlines are 45 seconds for inline output, 60 seconds for the workbench, and 135 seconds for complete profiling.
+A timeout keeps its `>= deadline` bound and failure count but never substitutes that bound into paired calculations. If
+Data Wrangler has no public Polars surface, the cell is marked unavailable and release-incomplete without a launch or
+timing sample.
+
+On Linux, the sampler reads `/proc/<pid>/smaps_rollup` every 200 ms. It verifies PID start times and assigns each editor
+descendant to one process category. A valid observation needs at least five gap-free samples and a terminal receipt at
+the first sample after the two-second quiescence target. The result keeps missed-sample and process-count ranges. PSS is
+the comparison measure; RSS is diagnostic. The notebook UI driver must be finished before this command can produce
+study evidence.
 
 ## Performance fixtures
 
