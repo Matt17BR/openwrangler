@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { delimiter, resolve } from "node:path";
+import { repositoryPythonEnvironment } from "./repository-python-environment.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const candidates = [
@@ -22,10 +23,7 @@ const executable =
   }) ?? "python3";
 const result = spawnSync(executable, process.argv.slice(2), {
   cwd: root,
-  env: {
-    ...process.env,
-    PYTHONPATH: resolve(root, "python")
-  },
+  env: repositoryPythonEnvironment(resolve(root, "python")),
   stdio: "inherit"
 });
 

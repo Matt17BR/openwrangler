@@ -3,6 +3,14 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 
-for (const directory of ["dist", "dist-test", "media", "python/build"]) {
+for (const directory of [
+  "dist",
+  "dist-test",
+  "media",
+  "python/build",
+  "tmp/screenshots",
+  "tmp/screenshots-actual",
+  "tmp/screenshots-diff"
+]) {
   rmSync(resolve(root, directory), { force: true, recursive: true });
 }

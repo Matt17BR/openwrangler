@@ -45,6 +45,7 @@ import {
   createEditorAcceptancePrivateRootReceipt,
   removeEditorAcceptancePrivateRoot
 } from "./packaged-editor-orchestration.mjs";
+import { repositoryPythonNoBytecodeEnvironment } from "./repository-python-environment.mjs";
 import {
   assertInstalledPerformanceEvidenceGate,
   assertInstalledPerformanceReleaseGate,
@@ -1311,7 +1312,7 @@ export async function runInstalledPerformance(options, environment = process.env
       ],
       {
         cwd: root,
-        env: createEditorAcceptanceEnvironment(environment),
+        env: repositoryPythonNoBytecodeEnvironment(createEditorAcceptanceEnvironment(environment)),
         maxBuffer: 64 * 1024,
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 120_000,
