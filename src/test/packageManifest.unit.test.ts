@@ -16,10 +16,13 @@ interface MenuContribution {
 }
 
 interface WalkthroughStep {
+  id?: string;
+  title?: string;
   description?: string;
 }
 
 interface PackageManifest {
+  description?: string;
   activationEvents?: string[];
   contributes?: {
     configuration?: {
@@ -50,11 +53,36 @@ interface PackageManifest {
       id?: string;
       requiresMessaging?: string;
     }>;
-    walkthroughs?: Array<{ steps?: WalkthroughStep[] }>;
+    walkthroughs?: Array<{
+      id?: string;
+      title?: string;
+      description?: string;
+      steps?: WalkthroughStep[];
+    }>;
   };
 }
 
 const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8")) as PackageManifest;
+
+describe("Marketplace and walkthrough copy", () => {
+  it("states the native engines and experimental notebook boundaries directly", () => {
+    expect(manifest.description).toBe(
+      "Open files and notebook variables, then clean and export data in VS Code and Cursor. " +
+        "Pandas and Polars are native. " +
+        "DuckDB and PySpark are experimental; their notebook sessions are viewing-only."
+    );
+
+    const walkthrough = manifest.contributes?.walkthroughs?.find((candidate) => candidate.id === "gettingStarted");
+    expect(walkthrough?.description).toContain("Filters and cleaning steps do not overwrite the source.");
+    expect(walkthrough?.description).toContain(
+      "DuckDB and PySpark are experimental; their notebook sessions are viewing-only."
+    );
+    expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
+      "Pandas, Polars, DuckDB, or PySpark"
+    );
+    expect(walkthrough?.steps?.find((step) => step.id === "export")?.description).toContain("new CSV or Parquet file");
+  });
+});
 
 describe("operation command contributions", () => {
   it("contributes a generic no-argument start-operation entry point", () => {

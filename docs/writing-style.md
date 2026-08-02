@@ -2,10 +2,23 @@
 
 Write as a maintainer explaining the product to another developer. The reader needs facts, not a sales rhythm.
 
-This guide applies to the README, user and contributor documentation, the changelog, GitHub issues, pull requests,
-commit subjects, release notes, Marketplace and Open VSX listings, screenshot captions, and image alt text. Architecture,
-security, test, release, and performance specifications can use formal language when the wording carries a precise
-contract. Their introductions and summaries should still be direct.
+This guide applies to every public surface:
+
+- README
+- user documentation
+- contributor documentation
+- changelog
+- GitHub issues
+- pull requests
+- commit subjects and `git log`
+- release notes
+- Marketplace listings
+- Open VSX listings
+- screenshot captions
+- image alt text
+
+Architecture, security, test, release, and performance specifications can use formal language when the wording carries
+a precise contract. Their introductions and summaries should still be direct.
 
 ## Public copy
 
