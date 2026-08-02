@@ -16,6 +16,12 @@ import {
   type NotebookTrialFlowDependencies,
   type NotebookTrialVerificationEvidence
 } from "./extensionHost/dataWranglerComparisonNotebookTrial";
+import {
+  DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+  DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
+  type DataWranglerStudyBridgeKind,
+  type DataWranglerStudyControlBridge
+} from "./extensionHost/dataWranglerStudyControlBridge";
 
 type Mutable<T> = T extends readonly (infer Item)[]
   ? Mutable<Item>[]
@@ -93,17 +99,58 @@ function verification(
   };
 }
 
+function fakeControlBridge(events: string[], currentClock: () => number): DataWranglerStudyControlBridge {
+  let sequence = 0;
+  let previousAcknowledgement = 0n;
+  return {
+    async exchange(kind: DataWranglerStudyBridgeKind) {
+      events.push(`bridge:${kind}:request`);
+      const candidate = 1_000_000_000n + BigInt(currentClock()) * 1_000_000n + BigInt(sequence * 2 + 1);
+      const requestTime = candidate > previousAcknowledgement ? candidate : previousAcknowledgement + 1n;
+      const acknowledgementTime = requestTime + 1n;
+      const correlation = {
+        runId: "12345678-1234-4123-8123-123456789abc",
+        phase: "comparison-study-open-wrangler-trial",
+        sequence,
+        kind
+      } as const;
+      const request = {
+        protocol: DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
+        ...correlation,
+        monotonicNanoseconds: requestTime.toString()
+      } as const;
+      const acknowledgement = {
+        protocol: DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+        ...correlation,
+        monotonicNanoseconds: acknowledgementTime.toString()
+      } as const;
+      previousAcknowledgement = acknowledgementTime;
+      sequence += 1;
+      events.push(`bridge:${kind}:ack`);
+      return { request, acknowledgement };
+    },
+    nextSequence() {
+      return sequence;
+    },
+    close() {}
+  };
+}
+
 function successDependencies(events: string[]): NotebookTrialFlowDependencies & {
   readonly currentClock: () => number;
   readonly setClock: (value: number) => void;
 } {
   let clock = 0;
+  const currentClock = (): number => clock;
+  const controlBridge = fakeControlBridge(events, currentClock);
   return {
     product: "open-wrangler",
     study: STUDY,
     now: () => clock,
+    monotonicNanoseconds: () => 1_000_000_000n + BigInt(clock) * 1_000_000n,
     timeOriginUnixMs: 1_750_000_000_000,
-    currentClock: () => clock,
+    controlBridge,
+    currentClock,
     setClock: (value) => {
       clock = value;
     },
@@ -279,6 +326,31 @@ describe("one-trial notebook comparison flow", () => {
       kind: "driver-local-performance-time-origin",
       authoritativeForStudy: false
     });
+    expect(receipt.controlBridge).toMatchObject({
+      clock: "process-hrtime-bigint",
+      authoritativeForStudy: true,
+      requestProtocol: DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
+      acknowledgementProtocol: DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL
+    });
+    expect(receipt.controlBridge.exchanges.map(({ request }) => request.kind)).toEqual([
+      "source-verified",
+      "measurement-ready",
+      "sampling-origin",
+      "inline-baseline",
+      "workbench-baseline",
+      "profile-baseline",
+      "sampling-stop",
+      "cleanup-census"
+    ]);
+    expect(receipt.absoluteMilestones).toEqual({
+      inlineActionNanoseconds: "1012000000",
+      inlineReadyNanoseconds: "1020000000",
+      workbenchActionNanoseconds: "1030000000",
+      workbenchReadyNanoseconds: "1040000000",
+      profileActionNanoseconds: "1050000000",
+      firstProfileReadyNanoseconds: "1060000000",
+      profilesCompleteNanoseconds: "1109000000"
+    });
     expect(receipt.finalization).toEqual({
       closeAttempted: true,
       closeStatus: "succeeded",
@@ -292,6 +364,7 @@ describe("one-trial notebook comparison flow", () => {
       ["run-cell-center-owned", "run-cell-boundary-callback", "run-cell-pointer-click"]
     );
     expect(events.indexOf("run-cell-pointer-click")).toBeLessThan(events.indexOf("inline-wait-start"));
+    expect(events.indexOf("bridge:inline-baseline:ack")).toBeLessThan(events.indexOf("run-cell-center-owned"));
     expect(events.slice(events.indexOf("open-center-owned"), events.indexOf("open-pointer-click") + 1)).toEqual([
       "open-center-owned",
       "open-boundary-callback",
@@ -302,10 +375,12 @@ describe("one-trial notebook comparison flow", () => {
       "profile-boundary-callback",
       "profile-pointer-click"
     ]);
+    expect(events.indexOf("bridge:workbench-baseline:ack")).toBeLessThan(events.indexOf("open-center-owned"));
+    expect(events.indexOf("bridge:profile-baseline:ack")).toBeLessThan(events.indexOf("profile-center-owned"));
     expect(events.indexOf("workbench-ready-boundary")).toBeLessThan(events.indexOf("workbench-scroll-correctness"));
     expect(events.indexOf("restore-first-rows")).toBeLessThan(events.indexOf("profile-center-owned"));
-    expect(events.at(-2)).toBe("verify:after-workbench");
-    expect(events.at(-1)).toBe("exact:after after-workbench verification");
+    expect(events.indexOf("verify:after-workbench")).toBeLessThan(events.indexOf("bridge:cleanup-census:request"));
+    expect(events.at(-1)).toBe("bridge:cleanup-census:ack");
     expect(() => validateDataWranglerNotebookTrialPhaseReceipt(receipt)).not.toThrow();
   });
 
@@ -340,6 +415,35 @@ describe("one-trial notebook comparison flow", () => {
     expect(events).not.toContain("close-product-restore-notebook");
     expect(events).not.toContain("verify:after-workbench");
     expect(events.some((event) => event.startsWith("profile:"))).toBe(false);
+  });
+
+  it("does not click Run Cell until the inline baseline acknowledgement returns", async () => {
+    const events: string[] = [];
+    const base = successDependencies(events);
+    const immediateBridge = base.controlBridge;
+    let releaseInlineBaseline!: () => void;
+    const inlineBaselineReleased = new Promise<void>((resolve) => {
+      releaseInlineBaseline = resolve;
+    });
+    const controlBridge: DataWranglerStudyControlBridge = {
+      async exchange(kind) {
+        if (kind === "inline-baseline") {
+          events.push("bridge:inline-baseline:waiting-for-parent");
+          await inlineBaselineReleased;
+        }
+        return immediateBridge.exchange(kind);
+      },
+      nextSequence: () => immediateBridge.nextSequence(),
+      close: () => immediateBridge.close()
+    };
+    const pending = executeDataWranglerNotebookTrialFlow({ ...base, controlBridge });
+    await vi.waitFor(() => expect(events).toContain("bridge:inline-baseline:waiting-for-parent"));
+    expect(events).not.toContain("run-cell-center-owned");
+    expect(events).not.toContain("run-cell-pointer-click");
+    releaseInlineBaseline();
+    const receipt = await pending;
+    expect(receipt.status).toBe("success");
+    expect(events.indexOf("bridge:inline-baseline:ack")).toBeLessThan(events.indexOf("run-cell-center-owned"));
   });
 
   it("stops inline readiness only after both the stable surface and fresh cell completion", async () => {
@@ -394,6 +498,17 @@ describe("one-trial notebook comparison flow", () => {
     expect(receipt.sourceLoad.durationMs).toBeLessThanOrEqual(
       receipt.milestones.inlineReadyMs! - receipt.milestones.inlineActionMs!
     );
+    expect(receipt.controlBridge.exchanges.map(({ request }) => request.kind)).toEqual([
+      "source-verified",
+      "cold-cache-evicted",
+      "measurement-ready",
+      "sampling-origin",
+      "inline-baseline",
+      "workbench-baseline",
+      "profile-baseline",
+      "sampling-stop",
+      "cleanup-census"
+    ]);
   });
 
   it("returns a bounded partial receipt when an available inline action times out", async () => {
@@ -541,6 +656,25 @@ describe("one-trial notebook comparison flow", () => {
         })
       )
     ).toThrow(/path-free/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          value.absoluteMilestones.workbenchActionNanoseconds = value.absoluteMilestones.inlineActionNanoseconds;
+        })
+      )
+    ).toThrow(/non-decreasing prefix/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          const inlineBaseline = value.controlBridge.exchanges.find(
+            ({ request }) => request.kind === "inline-baseline"
+          )!;
+          inlineBaseline.acknowledgement.monotonicNanoseconds = (
+            BigInt(value.absoluteMilestones.inlineActionNanoseconds!) + 1n
+          ).toString();
+        })
+      )
+    ).toThrow(/out of order|acknowledgement/u);
   });
 });
 

@@ -26,6 +26,16 @@ import {
   releasedNotebookExecutionFailureMessage,
   releasedNotebookOutputClassification
 } from "./releasedNotebookFailure";
+import {
+  DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+  DATA_WRANGLER_STUDY_BRIDGE_KINDS,
+  DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
+  createDataWranglerStudyControlBridgeFromEnvironment,
+  validateDataWranglerStudyBridgeEnvelope,
+  type DataWranglerStudyBridgeExchange,
+  type DataWranglerStudyBridgeKind,
+  type DataWranglerStudyControlBridge
+} from "./dataWranglerStudyControlBridge";
 
 export const DATA_WRANGLER_NOTEBOOK_TRIAL_PHASE_PROTOCOL = "openwrangler-data-wrangler-notebook-trial-phase-v1";
 export const DATA_WRANGLER_NOTEBOOK_PROTOCOL = "openwrangler-data-wrangler-notebook-v1";
@@ -171,6 +181,16 @@ export interface NotebookTrialMilestones {
   readonly profilesCompleteMs: number | null;
 }
 
+export interface NotebookTrialAbsoluteMilestones {
+  readonly inlineActionNanoseconds: string | null;
+  readonly inlineReadyNanoseconds: string | null;
+  readonly workbenchActionNanoseconds: string | null;
+  readonly workbenchReadyNanoseconds: string | null;
+  readonly profileActionNanoseconds: string | null;
+  readonly firstProfileReadyNanoseconds: string | null;
+  readonly profilesCompleteNanoseconds: string | null;
+}
+
 export interface DataWranglerNotebookTrialPhaseReceipt {
   readonly protocol: typeof DATA_WRANGLER_NOTEBOOK_TRIAL_PHASE_PROTOCOL;
   readonly locale: typeof DATA_WRANGLER_STUDY_REQUIRED_LOCALE;
@@ -218,19 +238,29 @@ export interface DataWranglerNotebookTrialPhaseReceipt {
     readonly timeOriginUnixMs: number;
     readonly authoritativeForStudy: false;
   };
+  readonly controlBridge: {
+    readonly clock: "process-hrtime-bigint";
+    readonly authoritativeForStudy: true;
+    readonly requestProtocol: typeof DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL;
+    readonly acknowledgementProtocol: typeof DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL;
+    readonly exchanges: readonly DataWranglerStudyBridgeExchange[];
+  };
   readonly finalization: {
     readonly closeAttempted: true;
     readonly closeStatus: "succeeded" | "failed";
     readonly afterVerification: "matched" | "failed";
   };
   readonly milestones: NotebookTrialMilestones;
+  readonly absoluteMilestones: NotebookTrialAbsoluteMilestones;
 }
 
 export interface NotebookTrialFlowDependencies {
   readonly product: ProductKey;
   readonly study: NotebookTrialDefinition;
   readonly now: () => number;
+  readonly monotonicNanoseconds: () => bigint;
   readonly timeOriginUnixMs: number;
+  readonly controlBridge: DataWranglerStudyControlBridge;
   readonly publicSurfaceAvailability?: "available" | "unavailable";
   assertExactNotebook(checkpoint: string): void;
   selectKernel(): Promise<void>;
@@ -275,6 +305,30 @@ export async function executeDataWranglerNotebookTrialFlow(
     firstProfileReadyMs: null,
     profilesCompleteMs: null
   };
+  const absoluteMilestones: {
+    -readonly [Key in keyof NotebookTrialAbsoluteMilestones]: NotebookTrialAbsoluteMilestones[Key];
+  } = {
+    inlineActionNanoseconds: null,
+    inlineReadyNanoseconds: null,
+    workbenchActionNanoseconds: null,
+    workbenchReadyNanoseconds: null,
+    profileActionNanoseconds: null,
+    firstProfileReadyNanoseconds: null,
+    profilesCompleteNanoseconds: null
+  };
+  const exchanges: DataWranglerStudyBridgeExchange[] = [];
+  const exchangeControl = async (kind: DataWranglerStudyBridgeKind): Promise<DataWranglerStudyBridgeExchange> => {
+    const exchange = await dependencies.controlBridge.exchange(kind);
+    exchanges.push(exchange);
+    return exchange;
+  };
+  const absoluteNow = (): string => {
+    const value = dependencies.monotonicNanoseconds();
+    if (typeof value !== "bigint" || value <= 0n) {
+      throw new Error("Notebook trial absolute milestone clock must return a positive bigint.");
+    }
+    return value.toString();
+  };
   const exact = (checkpoint: string): void => dependencies.assertExactNotebook(checkpoint);
 
   exact("before kernel selection");
@@ -287,6 +341,8 @@ export async function executeDataWranglerNotebookTrialFlow(
   const before = await dependencies.executeVerification("before-timing");
   exact("after before-timing verification");
   assertVerificationMatchesStudy(before, dependencies.study, "before-timing");
+  await exchangeControl("source-verified");
+  if (dependencies.study.kind === "cold") await exchangeControl("cold-cache-evicted");
   const baselineExactActionCount = await dependencies.countExactInlineActions();
   exact("after inline action baseline");
   assert.equal(baselineExactActionCount, 0, "The measured cell requires zero retained exact product actions.");
@@ -336,8 +392,16 @@ export async function executeDataWranglerNotebookTrialFlow(
       workbench: workbenchEvidence,
       profiles: profileEvidence,
       clock,
+      controlBridge: {
+        clock: "process-hrtime-bigint",
+        authoritativeForStudy: true,
+        requestProtocol: DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
+        acknowledgementProtocol: DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+        exchanges: [...exchanges]
+      },
       finalization,
-      milestones
+      milestones,
+      absoluteMilestones
     });
 
   let stage: NotebookTrialFailureStage = "run-cell-preparation";
@@ -353,6 +417,9 @@ export async function executeDataWranglerNotebookTrialFlow(
       action: null,
       sentinelsVisibleWithAction: false
     };
+    await exchangeControl("measurement-ready");
+    await exchangeControl("sampling-origin");
+    await exchangeControl("inline-baseline");
 
     stage = dependencies.study.kind === "cold" ? "source-load" : "inline";
     let resolveMeasuredBoundary!: () => void;
@@ -363,6 +430,8 @@ export async function executeDataWranglerNotebookTrialFlow(
     });
     let measuredBoundaryReached = false;
     let measuredCompletionMs: number | undefined;
+    let measuredCompletionNanoseconds: string | undefined;
+    let inlineSurfaceReadyNanoseconds: string | undefined;
     let coldSourceStartedAt: number | undefined;
     const measuredCompletion = dependencies
       .executeMeasured(
@@ -371,11 +440,13 @@ export async function executeDataWranglerNotebookTrialFlow(
           measuredBoundaryReached = true;
           coldSourceStartedAt = dependencies.now();
           milestones.inlineActionMs = mark();
+          absoluteMilestones.inlineActionNanoseconds = absoluteNow();
           resolveMeasuredBoundary();
         },
         () => {
           assert.equal(measuredCompletionMs, undefined, "Measured cell completion may be recorded only once.");
           measuredCompletionMs = mark();
+          measuredCompletionNanoseconds = absoluteNow();
           if (dependencies.study.kind === "cold") {
             assert.notEqual(coldSourceStartedAt, undefined, "Cold source loading began without its Run Cell boundary.");
             sourceLoad.status = "measured";
@@ -400,6 +471,7 @@ export async function executeDataWranglerNotebookTrialFlow(
         assert.equal(inlineReadyRecorded, false, "Inline readiness may be recorded only once.");
         inlineReadyRecorded = true;
         inlineSurfaceReadyMs = mark();
+        inlineSurfaceReadyNanoseconds = absoluteNow();
       }),
       measuredCompletion
     ]);
@@ -409,6 +481,13 @@ export async function executeDataWranglerNotebookTrialFlow(
     assert.notEqual(measuredCompletionMs, undefined, "The successful inline surface omitted measured-cell completion.");
     assert.notEqual(inlineSurfaceReadyMs, undefined);
     milestones.inlineReadyMs = Math.max(measuredCompletionMs as number, inlineSurfaceReadyMs as number);
+    assert.notEqual(measuredCompletionNanoseconds, undefined);
+    assert.notEqual(inlineSurfaceReadyNanoseconds, undefined);
+    absoluteMilestones.inlineReadyNanoseconds = (
+      BigInt(measuredCompletionNanoseconds as string) >= BigInt(inlineSurfaceReadyNanoseconds as string)
+        ? measuredCompletionNanoseconds
+        : inlineSurfaceReadyNanoseconds
+    ) as string;
     inline = {
       ...inline,
       surfaceKind: inlineAction.surfaceKind,
@@ -417,10 +496,12 @@ export async function executeDataWranglerNotebookTrialFlow(
     };
 
     stage = "workbench-open";
+    await exchangeControl("workbench-baseline");
     let workbenchActionMs: number | undefined;
     const clickedAction = await dependencies.clickInlineAction(() => {
       assert.equal(workbenchActionMs, undefined, "The exact Open action pointer boundary may be recorded only once.");
       workbenchActionMs = mark();
+      absoluteMilestones.workbenchActionNanoseconds = absoluteNow();
     });
     assert.notEqual(workbenchActionMs, undefined, "The exact Open action never reached its physical pointer boundary.");
     milestones.workbenchActionMs = workbenchActionMs as number;
@@ -429,6 +510,7 @@ export async function executeDataWranglerNotebookTrialFlow(
       assert.equal(workbenchReadyRecorded, false, "Workbench readiness may be recorded only once.");
       workbenchReadyRecorded = true;
       milestones.workbenchReadyMs = mark();
+      absoluteMilestones.workbenchReadyNanoseconds = absoluteNow();
     });
     assert.equal(workbenchReadyRecorded, true, "The successful workbench omitted its exact readiness boundary.");
     stage = "grid-restoration";
@@ -445,10 +527,12 @@ export async function executeDataWranglerNotebookTrialFlow(
     };
 
     stage = "profiles";
+    await exchangeControl("profile-baseline");
     let profileActionMs: number | undefined;
     const profileAction = await dependencies.activateProfiles(() => {
       assert.equal(profileActionMs, undefined, "The profiling action pointer boundary may be recorded only once.");
       profileActionMs = mark();
+      absoluteMilestones.profileActionNanoseconds = absoluteNow();
     });
     assert.notEqual(profileActionMs, undefined, "The profiling action never reached its physical pointer boundary.");
     milestones.profileActionMs = profileActionMs as number;
@@ -474,14 +558,21 @@ export async function executeDataWranglerNotebookTrialFlow(
           `Profile ${comparisonColumnName(index)} readiness may be recorded only once.`
         );
         profileReadyRecorded = true;
-        if (index === 0) milestones.firstProfileReadyMs = mark();
-        if (index === dependencies.study.fixture.columns - 1) milestones.profilesCompleteMs = mark();
+        if (index === 0) {
+          milestones.firstProfileReadyMs = mark();
+          absoluteMilestones.firstProfileReadyNanoseconds = absoluteNow();
+        }
+        if (index === dependencies.study.fixture.columns - 1) {
+          milestones.profilesCompleteMs = mark();
+          absoluteMilestones.profilesCompleteNanoseconds = absoluteNow();
+        }
       });
       assert.equal(profileReadyRecorded, true, `Profile ${comparisonColumnName(index)} omitted its readiness boundary.`);
       assert.equal(evidence.column, comparisonColumnName(index));
       profileColumns.push(evidence);
       updateProfiles();
     }
+    await exchangeControl("sampling-stop");
     stage = "after-verification";
     await dependencies.closeProductEditorAndRestoreNotebook();
     finalization.closeStatus = "succeeded";
@@ -490,6 +581,7 @@ export async function executeDataWranglerNotebookTrialFlow(
     exact("after after-workbench verification");
     assertVerificationMatchesStudy(after, dependencies.study, "after-workbench");
     finalization.afterVerification = "matched";
+    await exchangeControl("cleanup-census");
     return receipt("success", null);
   } catch (error) {
     const originalFailure =
@@ -536,8 +628,10 @@ export function validateDataWranglerNotebookTrialPhaseReceipt(value: unknown): D
       "workbench",
       "profiles",
       "clock",
+      "controlBridge",
       "finalization",
-      "milestones"
+      "milestones",
+      "absoluteMilestones"
     ],
     "Notebook trial phase receipt"
   );
@@ -606,6 +700,9 @@ export function validateDataWranglerNotebookTrialPhaseReceipt(value: unknown): D
   }
 
   const milestones = validateTrialMilestones(receipt.milestones, receipt.status);
+  const absoluteMilestones = validateTrialAbsoluteMilestones(receipt.absoluteMilestones, receipt.status);
+  const controlBridge = validateTrialControlBridge(receipt.controlBridge, study, receipt.status);
+  assertBridgeTimingBoundaries(controlBridge, absoluteMilestones, receipt.status);
   if (study.kind === "warm" && sourceLoad.status !== "measured") {
     fail("A warm notebook trial must retain its completed setup-cell load boundary.");
   }
@@ -1086,6 +1183,173 @@ function validateDistinctEvidence(value: unknown, rows: number, index: number): 
     return;
   }
   fail(`Notebook trial profile column ${index} has unknown distinct semantics.`);
+}
+
+function validateTrialAbsoluteMilestones(value: unknown, status: unknown): NotebookTrialAbsoluteMilestones {
+  const milestones = requireRecord(value, "Notebook trial absolute milestones");
+  const keys = [
+    "inlineActionNanoseconds",
+    "inlineReadyNanoseconds",
+    "workbenchActionNanoseconds",
+    "workbenchReadyNanoseconds",
+    "profileActionNanoseconds",
+    "firstProfileReadyNanoseconds",
+    "profilesCompleteNanoseconds"
+  ] as const;
+  exactKeys(milestones, keys, "Notebook trial absolute milestones");
+  let previous = 0n;
+  let sawNull = false;
+  for (const key of keys) {
+    const item = milestones[key];
+    if (item === null) {
+      sawNull = true;
+      continue;
+    }
+    if (typeof item !== "string" || !/^[1-9]\d{0,29}$/u.test(item) || sawNull || BigInt(item) < previous) {
+      fail("Notebook trial absolute milestones must form one positive non-decreasing prefix.");
+    }
+    previous = BigInt(item);
+  }
+  if (status === "success") {
+    if (
+      sawNull ||
+      BigInt(milestones.inlineReadyNanoseconds as string) <= BigInt(milestones.inlineActionNanoseconds as string) ||
+      BigInt(milestones.workbenchReadyNanoseconds as string) <=
+        BigInt(milestones.workbenchActionNanoseconds as string) ||
+      BigInt(milestones.firstProfileReadyNanoseconds as string) <=
+        BigInt(milestones.profileActionNanoseconds as string) ||
+      BigInt(milestones.profilesCompleteNanoseconds as string) <
+        BigInt(milestones.firstProfileReadyNanoseconds as string)
+    ) {
+      fail("A successful notebook trial requires positive absolute action-to-readiness durations.");
+    }
+  }
+  return value as NotebookTrialAbsoluteMilestones;
+}
+
+function validateTrialControlBridge(
+  value: unknown,
+  study: NotebookTrialDefinition,
+  status: unknown
+): DataWranglerNotebookTrialPhaseReceipt["controlBridge"] {
+  const bridge = requireRecord(value, "Notebook trial control bridge");
+  exactKeys(
+    bridge,
+    ["clock", "authoritativeForStudy", "requestProtocol", "acknowledgementProtocol", "exchanges"],
+    "Notebook trial control bridge"
+  );
+  if (
+    bridge.clock !== "process-hrtime-bigint" ||
+    bridge.authoritativeForStudy !== true ||
+    bridge.requestProtocol !== DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL ||
+    bridge.acknowledgementProtocol !== DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL ||
+    !Array.isArray(bridge.exchanges) ||
+    bridge.exchanges.length > DATA_WRANGLER_STUDY_BRIDGE_KINDS.length
+  ) {
+    fail("Notebook trial control-bridge evidence is invalid.");
+  }
+  const exchanges: DataWranglerStudyBridgeExchange[] = [];
+  let runId: string | undefined;
+  let phase: string | undefined;
+  let previousAcknowledgement = 0n;
+  const expected: DataWranglerStudyBridgeKind[] = [
+    "source-verified",
+    ...(study.kind === "cold" ? (["cold-cache-evicted"] as const) : []),
+    "measurement-ready",
+    "sampling-origin",
+    "inline-baseline",
+    "workbench-baseline",
+    "profile-baseline",
+    "sampling-stop",
+    "cleanup-census"
+  ];
+  for (const [index, item] of bridge.exchanges.entries()) {
+    const exchange = requireRecord(item, `Notebook trial control exchange ${index}`);
+    exactKeys(exchange, ["request", "acknowledgement"], `Notebook trial control exchange ${index}`);
+    const request = validateDataWranglerStudyBridgeEnvelope(
+      exchange.request,
+      DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL
+    );
+    const acknowledgement = validateDataWranglerStudyBridgeEnvelope(
+      exchange.acknowledgement,
+      DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL
+    );
+    if (
+      request.sequence !== index ||
+      acknowledgement.runId !== request.runId ||
+      acknowledgement.phase !== request.phase ||
+      acknowledgement.sequence !== request.sequence ||
+      acknowledgement.kind !== request.kind ||
+      request.kind !== expected[index] ||
+      BigInt(request.monotonicNanoseconds) <= previousAcknowledgement ||
+      BigInt(acknowledgement.monotonicNanoseconds) < BigInt(request.monotonicNanoseconds)
+    ) {
+      fail(`Notebook trial control exchange ${index} is stale, out of order, or clock-regressed.`);
+    }
+    if (runId !== undefined && (request.runId !== runId || request.phase !== phase)) {
+      fail("Notebook trial control exchanges changed trial correlation.");
+    }
+    runId = request.runId;
+    phase = request.phase;
+    previousAcknowledgement = BigInt(acknowledgement.monotonicNanoseconds);
+    exchanges.push({ request, acknowledgement });
+  }
+  if (exchanges.length > 0 && exchanges[0]?.request.kind !== "source-verified") {
+    fail("Notebook trial control evidence must begin with source verification.");
+  }
+  if (status === "success") {
+    if (exchanges.length !== expected.length) {
+      fail("A successful notebook trial requires the exact control-bridge sequence.");
+    }
+  }
+  return {
+    clock: "process-hrtime-bigint",
+    authoritativeForStudy: true,
+    requestProtocol: DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
+    acknowledgementProtocol: DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+    exchanges
+  };
+}
+
+function assertBridgeTimingBoundaries(
+  bridge: DataWranglerNotebookTrialPhaseReceipt["controlBridge"],
+  milestones: NotebookTrialAbsoluteMilestones,
+  status: unknown
+): void {
+  const exchange = (kind: DataWranglerStudyBridgeKind): DataWranglerStudyBridgeExchange | undefined =>
+    bridge.exchanges.find((candidate) => candidate.request.kind === kind);
+  const assertAcknowledgedBefore = (kind: DataWranglerStudyBridgeKind, milestone: string | null): void => {
+    const boundary = exchange(kind);
+    if (
+      milestone !== null &&
+      (boundary === undefined || BigInt(milestone) <= BigInt(boundary.acknowledgement.monotonicNanoseconds))
+    ) {
+      fail(`Notebook trial action crossed the ${kind} boundary before its acknowledgement.`);
+    }
+  };
+  assertAcknowledgedBefore("inline-baseline", milestones.inlineActionNanoseconds);
+  assertAcknowledgedBefore("workbench-baseline", milestones.workbenchActionNanoseconds);
+  assertAcknowledgedBefore("profile-baseline", milestones.profileActionNanoseconds);
+  const samplingOrigin = exchange("sampling-origin");
+  const inlineBaseline = exchange("inline-baseline");
+  if (
+    inlineBaseline !== undefined &&
+    (samplingOrigin === undefined ||
+      BigInt(inlineBaseline.request.monotonicNanoseconds) < BigInt(samplingOrigin.acknowledgement.monotonicNanoseconds))
+  ) {
+    fail("Notebook trial inline baseline predates the sampling-origin acknowledgement.");
+  }
+  const samplingStop = exchange("sampling-stop");
+  if (
+    milestones.profilesCompleteNanoseconds !== null &&
+    (samplingStop === undefined ||
+      BigInt(samplingStop.request.monotonicNanoseconds) < BigInt(milestones.profilesCompleteNanoseconds))
+  ) {
+    fail("Notebook trial sampling stopped before all profiles completed.");
+  }
+  if (status === "success" && exchange("cleanup-census") === undefined) {
+    fail("A successful notebook trial requires its post-close cleanup census.");
+  }
 }
 
 function validateTrialMilestones(value: unknown, status: unknown): NotebookTrialMilestones {
@@ -2167,34 +2431,52 @@ export async function run(): Promise<DataWranglerNotebookTrialPhaseReceipt> {
     DATA_WRANGLER_STUDY_REQUIRED_LOCALE,
     "The notebook study driver requires VS Code launched with --locale=en."
   );
-  recordProgress("comparison-study:workbench-connect");
-  const { page } = await connectToEditorWorkbench();
-  await waitForWorkbenchReady(page);
-  recordProgress("comparison-study:notebook-capture");
-  const captured = await captureStudyNotebook();
-  const dependencies = createRealNotebookTrialDependencies(product, page, captured, publicSurfaceAvailability);
+  const controlBridge = createDataWranglerStudyControlBridgeFromEnvironment();
+  let dependencies: (NotebookTrialFlowDependencies & { dispose(): Promise<void> }) | undefined;
   let result: DataWranglerNotebookTrialPhaseReceipt | undefined;
   let primaryError: unknown;
   let cleanupError: unknown;
+  let bridgeCloseError: unknown;
   try {
+    recordProgress("comparison-study:workbench-connect");
+    const { page } = await connectToEditorWorkbench();
+    await waitForWorkbenchReady(page);
+    recordProgress("comparison-study:notebook-capture");
+    const captured = await captureStudyNotebook();
+    dependencies = createRealNotebookTrialDependencies(
+      product,
+      page,
+      captured,
+      publicSurfaceAvailability,
+      controlBridge
+    );
     result = await executeDataWranglerNotebookTrialFlow(dependencies);
   } catch (error) {
     primaryError = error;
   } finally {
+    if (dependencies !== undefined) {
+      try {
+        await dependencies.dispose();
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
     try {
-      await dependencies.dispose();
+      controlBridge.close();
     } catch (error) {
-      cleanupError = error;
+      bridgeCloseError = error;
     }
   }
-  if (primaryError !== undefined && cleanupError !== undefined) {
+  const errors = [primaryError, cleanupError, bridgeCloseError].filter((error) => error !== undefined);
+  if (errors.length > 1) {
     throw new AggregateError(
-      [primaryError, cleanupError],
-      "Notebook trial failed and its interaction handles did not close."
+      errors,
+      "Notebook trial failed or its interaction and control-bridge resources did not close."
     );
   }
   if (primaryError !== undefined) throw primaryError;
   if (cleanupError !== undefined) throw cleanupError;
+  if (bridgeCloseError !== undefined) throw bridgeCloseError;
   assert.ok(result, "Notebook trial completed without its strict phase receipt.");
   recordProgress("comparison-study:phase-receipt");
   return result;
@@ -2204,7 +2486,8 @@ function createRealNotebookTrialDependencies(
   product: ProductKey,
   page: Page,
   captured: CapturedStudyNotebook,
-  publicSurfaceAvailability: "available"
+  publicSurfaceAvailability: "available",
+  controlBridge: DataWranglerStudyControlBridge
 ): NotebookTrialFlowDependencies & { dispose(): Promise<void> } {
   let inlineTarget: NotebookTrialActionTarget | undefined;
   let inlineObservation: InlineActionObservation | undefined;
@@ -2246,7 +2529,9 @@ function createRealNotebookTrialDependencies(
     product,
     study: captured.definition,
     now: () => performance.now(),
+    monotonicNanoseconds: process.hrtime.bigint,
     timeOriginUnixMs: performance.timeOrigin,
+    controlBridge,
     publicSurfaceAvailability,
     assertExactNotebook: captured.assertExact,
     async selectKernel() {
