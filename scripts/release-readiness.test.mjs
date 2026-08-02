@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -51,6 +51,7 @@ import {
 } from "./release-readiness.mjs";
 
 const namespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
+const repositoryRoot = resolve(import.meta.dirname, "..");
 const stablePackage = {
   name: "openwrangler",
   displayName: "Open Wrangler",
@@ -1180,6 +1181,53 @@ test("strictly streams and validates the complete shared VSIX inventory", async 
     result.writeUInt32LE((result.readUInt32LE(centralOffset + 16) ^ 0xffffffff) >>> 0, centralOffset + 16);
   });
   await assert.rejects(inspectVsixArchive(wrongCrc), /failed CRC-32 validation/u);
+});
+
+test("verify-vsix rejects each shipped-document source mismatch end to end", async (context) => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "ow-verify-vsix-documents-"));
+  context.after(() => rmSync(temporaryRoot, { force: true, recursive: true }));
+
+  const sourcePackage = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8"));
+  const baseEntries = releaseVsixEntries(sourcePackage);
+  baseEntries.set("extension.vsixmanifest", manifest({ version: sourcePackage.version }));
+  for (const [source, archive] of [
+    ["README.md", "extension/readme.md"],
+    ["CHANGELOG.md", "extension/changelog.md"],
+    ["LICENSE", "extension/LICENSE.txt"],
+    ["THIRD_PARTY_NOTICES.md", "extension/THIRD_PARTY_NOTICES.md"]
+  ]) {
+    baseEntries.set(archive, readFileSync(resolve(repositoryRoot, source)));
+  }
+
+  const verifier = resolve(repositoryRoot, "scripts", "verify-vsix.mjs");
+  const validPath = join(temporaryRoot, "valid.vsix");
+  writeFileSync(validPath, await createReleaseVsixBuffer({ entries: baseEntries }), { flag: "wx", mode: 0o600 });
+  const validResult = spawnSync(process.execPath, [verifier, validPath], {
+    cwd: repositoryRoot,
+    encoding: "utf8"
+  });
+  assert.equal(validResult.status, 0, validResult.stderr);
+
+  for (const [archive, source] of [
+    ["extension/readme.md", "README.md"],
+    ["extension/changelog.md", "CHANGELOG.md"],
+    ["extension/LICENSE.txt", "LICENSE"],
+    ["extension/THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"]
+  ]) {
+    const driftedEntries = new Map(baseEntries);
+    driftedEntries.set(archive, Buffer.concat([driftedEntries.get(archive), Buffer.from("drift")]));
+    const candidate = join(temporaryRoot, `${source.replaceAll("/", "-")}.vsix`);
+    writeFileSync(candidate, await createReleaseVsixBuffer({ entries: driftedEntries }), {
+      flag: "wx",
+      mode: 0o600
+    });
+    const result = spawnSync(process.execPath, [verifier, candidate], {
+      cwd: repositoryRoot,
+      encoding: "utf8"
+    });
+    assert.notEqual(result.status, 0, `${source} drift unexpectedly passed verify-vsix.`);
+    assert.match(result.stderr, new RegExp(`Packaged ${archive.replaceAll(".", "\\.")} must exactly match`));
+  }
 });
 
 test("rejects symlinked and hard-linked stable VSIX candidates", async (context) => {
