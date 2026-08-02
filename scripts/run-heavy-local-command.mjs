@@ -38,13 +38,13 @@ function leaseAddress(endpoint) {
   return "path" in endpoint ? `pipe:${endpoint.path}` : `tcp:${endpoint.host}:${endpoint.port}`;
 }
 
-function repositoryScope() {
+function repositoryScope(environment = process.env) {
   const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   const repository = typeof manifest.repository === "string" ? manifest.repository : manifest.repository?.url;
   if (typeof manifest.name !== "string" || typeof repository !== "string") {
     throw new Error("The heavy-command guard requires a package name and repository URL.");
   }
-  return process.env[LEASE_SCOPE] ?? `${manifest.name}\n${repository}`;
+  return environment[LEASE_SCOPE] ?? `${manifest.name}\n${repository}`;
 }
 
 function normalizedCommand(command) {
@@ -138,32 +138,52 @@ function signalChildTree(child, signal) {
   }
 }
 
-export async function runHeavyLocalCommand(argv = process.argv.slice(2)) {
-  const { label, command } = parseHeavyCommandArguments(argv);
-  const scope = repositoryScope();
-  const endpoint = heavyCommandLeaseEndpoint(scope);
+export async function withHeavyLocalCommandLease(
+  label,
+  callback,
+  {
+    environment = process.env,
+    scope = repositoryScope(environment),
+    platform = process.platform,
+    tokenFactory = randomUUID
+  } = {}
+) {
+  if (typeof label !== "string" || label.trim().length === 0 || typeof callback !== "function") {
+    throw new TypeError("A heavy-command lease requires one label and callback.");
+  }
+  const endpoint = heavyCommandLeaseEndpoint(scope, platform);
   const address = leaseAddress(endpoint);
-  const inheritedToken = process.env[LEASE_TOKEN];
+  const inheritedToken = environment[LEASE_TOKEN];
   if (
     inheritedToken &&
     /^[0-9a-f-]{36}$/u.test(inheritedToken) &&
-    process.env[LEASE_ADDRESS] === address &&
+    environment[LEASE_ADDRESS] === address &&
     (await verifyInheritedLease(endpoint, inheritedToken))
   ) {
-    return await runChild(command, process.env);
+    return await callback(environment);
   }
 
-  const token = randomUUID();
+  const token = tokenFactory();
+  if (typeof token !== "string" || !/^[0-9a-f-]{36}$/u.test(token)) {
+    throw new TypeError("A heavy-command lease token must be one UUID.");
+  }
   const server = await acquireLease(endpoint, token, label);
   try {
-    return await runChild(command, {
-      ...process.env,
+    return await callback({
+      ...environment,
       [LEASE_TOKEN]: token,
       [LEASE_ADDRESS]: address
     });
   } finally {
-    await new Promise((resolveClose) => server.close(resolveClose));
+    await new Promise((resolveClose, rejectClose) => {
+      server.close((error) => (error === undefined ? resolveClose() : rejectClose(error)));
+    });
   }
+}
+
+export async function runHeavyLocalCommand(argv = process.argv.slice(2)) {
+  const { label, command } = parseHeavyCommandArguments(argv);
+  return await withHeavyLocalCommandLease(label, (environment) => runChild(command, environment));
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
