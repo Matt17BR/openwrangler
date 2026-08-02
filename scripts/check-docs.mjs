@@ -7,6 +7,7 @@ import { inspectReleaseWorkflow, inspectStableCandidateWorkflow } from "./releas
 import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
+import { inspectPublicWriting } from "./public-writing.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const forbiddenDashSearch = spawnSync(
@@ -64,7 +65,8 @@ const required = [
   "docs/feature-parity.md",
   "docs/reference.md",
   "docs/releasing.md",
-  "docs/testing.md"
+  "docs/testing.md",
+  "docs/writing-style.md"
 ];
 
 const missing = required.filter((file) => !existsSync(resolve(root, file)));
@@ -77,6 +79,15 @@ const packageLockSource = readFileSync(resolve(root, "package-lock.json"), "utf8
 const packageJson = JSON.parse(packageJsonSource);
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
 const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
+const publicWritingProblems = inspectPublicWriting({
+  agentGuide: readFileSync(resolve(root, "AGENTS.md"), "utf8"),
+  contributing: readFileSync(resolve(root, "CONTRIBUTING.md"), "utf8"),
+  pullRequestTemplate: readFileSync(resolve(root, ".github/pull_request_template.md"), "utf8"),
+  styleGuide: readFileSync(resolve(root, "docs/writing-style.md"), "utf8")
+});
+if (publicWritingProblems.length > 0) {
+  throw new Error(`Public writing guidance is disconnected:\n- ${publicWritingProblems.join("\n- ")}`);
+}
 const trackedEvidencePaths = new Set(
   execFileSync("git", ["ls-files", "-z", "--"], {
     cwd: root,

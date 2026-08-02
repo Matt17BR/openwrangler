@@ -1,5 +1,13 @@
 # Releasing
 
+## Release copy
+
+Review the changelog, pull request titles, generated GitHub notes, and registry text with
+[`docs/writing-style.md`](writing-style.md) before publication. GitHub builds release notes from merged pull requests,
+so a vague or promotional pull request title becomes vague or promotional release copy. Keep the detailed acceptance
+proof in this document and `docs/testing.md`; release notes should tell users what changed and mention only the limits
+they need to act on.
+
 ## Version policy
 
 Numeric `0.<odd-minor>.x` releases are the historical preview bands, and numeric `1.99.x` is reserved for Open Wrangler 2 previews. Both require `package.json.preview` to be `true`; `0.<even-minor>.x`, stable `1.x` versions outside `1.99.x`, and `2.0.0` or later require it to be `false`. The exact `1.99.x` reservation does not reclassify historical stable `1.1.x` releases or broader `1.x` numbers. Workflow metadata and direct stable readiness use the same numeric classifier, so a preview-band release cannot pass stable readiness and a stable number cannot masquerade as a Marketplace pre-release. The same classifier assigns stable v1 versions to protected `release/1.x`; historical v0, `1.99.x` previews, and v2 or later versions belong to protected `main`. Preview publication is candidate-first and manually dispatched from the exact protected `main` commit; merely pushing a tag never starts it. The live `release/1.x` ruleset and publishing-environment policy are active; the first `1.99.x` preview still requires a successful validation-only candidate before public promotion. Stable publication uses the separately protected, manually dispatched `.github/workflows/stable-release.yml`, which consumes one provenance-bound artifact set after complete stable acceptance and never rebuilds it. Do not encode the channel in a hyphenated manifest version. GitHub marks preview releases as prereleases, Open VSX receives matching pre-release metadata, and the Visual Studio Marketplace receives VSCE's matching `--pre-release` marker. A public, tagged, or published `1.0.0` is allowed only after every in-scope feature-parity row is Done and all automated and manual gates pass. The narrow evidence-only bridge may temporarily carry intended `1.0.0` metadata while its exact two performance rows remain `Partial`, but its generated README states that it is not a stable release and its artifact protocol is non-promotable. Update `package.json`, `python/openwrangler_runtime/version.py`, `CHANGELOG.md`, and parity evidence in the same pull request. The Python package reads its version from `version.py`, and `npm run docs:check` rejects any extension/runtime mismatch or misleading release narrative.
