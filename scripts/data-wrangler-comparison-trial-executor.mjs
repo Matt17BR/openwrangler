@@ -748,6 +748,9 @@ export async function executeDataWranglerComparisonTrial(
   };
 
   const authorizeMeasuredAction = () => {
+    if (preActionProofError !== undefined || controlAbort.signal.aborted) {
+      throw new Error("Comparison trial product-action authorization is closed after a pre-action failure.");
+    }
     if (authorizationAttempted || actionPreparationAttempted) {
       throw new Error("Comparison trial product-action preparation was attempted more than once.");
     }

@@ -471,7 +471,8 @@ test("sampler setup failure retains launch proof without inventing a resource ob
   assert.equal(JSON.stringify(result).includes("private sampler setup detail"), false);
 });
 
-test("a failed pre-action snapshot returns determinate evidence after verified cleanup", async () => {
+test("a failed pre-action snapshot closes authorization before abort handlers and returns determinate evidence", async () => {
+  let durableAuthorizationCalls = 0;
   const harness = createHarness({
     runEditorPhase: () => Object.freeze({ protocol: "test-notebook-phase-v1", status: "failed" }),
     createProcessEvidence: ({ events }) =>
@@ -496,6 +497,10 @@ test("a failed pre-action snapshot returns determinate evidence after verified c
         options.signal.addEventListener(
           "abort",
           () => {
+            assert.throws(
+              () => options.authorizeAction(),
+              /product-action authorization is closed after a pre-action failure/u
+            );
             events.push("control-aborted");
             resolve(
               Object.freeze({
@@ -515,7 +520,15 @@ test("a failed pre-action snapshot returns determinate evidence after verified c
     completeTerminalEvidence: () => ({ cleanupProof: {}, trialProvenance: {} })
   });
 
-  const result = await executeDataWranglerComparisonTrial(input(), harness.dependencies);
+  const result = await executeDataWranglerComparisonTrial(
+    input({
+      authorizeAction() {
+        durableAuthorizationCalls += 1;
+        return Object.freeze({ protocol: "test-authorization-v1" });
+      }
+    }),
+    harness.dependencies
+  );
 
   assert.equal(result.status, "pre-action-process-proof-failure");
   assert.equal(result.notebookPhaseReceipt, null);
@@ -523,6 +536,7 @@ test("a failed pre-action snapshot returns determinate evidence after verified c
   assert.equal(result.actionAuthorized, false);
   assert.equal(result.authorizationAttempted, false);
   assert.equal(result.authorizationOutcome, "not-attempted");
+  assert.equal(durableAuthorizationCalls, 0);
   assert.deepEqual(result.processProofs, {
     editorRoot: { pid: 41, startTimeTicks: "410", capturedAtLaunch: true },
     configuredKernel: null,
