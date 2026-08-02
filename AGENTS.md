@@ -92,6 +92,10 @@ The coordinating agent creates task isolation with
 `npm run checkout:create -- <slug> --owner <canonical-task-name>`. Add `--generated-root node_modules`, or another
 exact top-level directory, only when Git ignores that directory and it is absent from the new checkout. The manager
 creates a registered worktree below `tmp/agent-checkouts`; do not create another full clone or unmanaged worktree.
+Repository Python commands use `scripts/repository-python-environment.mjs` so routine checks do not leave ignored
+bytecode inside a managed checkout. New development-time Python launchers must use the same helper. Do not run an
+editable Python install from a managed checkout; it leaves package metadata in the source tree. Use `run-python.mjs`
+with an existing development environment, or install into a run-owned environment outside the checkout.
 
 Put the slug, owner, revision, branch, and path in the task handoff. Transfer ownership with
 `npm run checkout:handoff -- <slug> --owner <old-task> --to <new-task> --revision <n>`. A restart does not abandon a

@@ -46,6 +46,7 @@ import {
   createEditorAcceptancePrivateRootReceipt,
   removeEditorAcceptancePrivateRoot
 } from "./packaged-editor-orchestration.mjs";
+import { repositoryPythonNoBytecodeEnvironment } from "./repository-python-environment.mjs";
 import { acquirePinnedVSCodeClient } from "./remote-workspace-acquisition.mjs";
 import {
   readBoundedJson,
@@ -1437,7 +1438,7 @@ function generateComparisonFixtures({ pythonReceipt, fixtureRoot, environment })
     ],
     {
       cwd: root,
-      env: createEditorAcceptanceEnvironment(environment),
+      env: repositoryPythonNoBytecodeEnvironment(createEditorAcceptanceEnvironment(environment)),
       maxBuffer: 64 * 1024,
       stdio: "ignore",
       timeout: 120_000,

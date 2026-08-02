@@ -14,7 +14,10 @@ Agent checkout lifecycle has a separate, small contract test:
 - `npm run test:checkout-lifecycle` creates disposable repositories and worktrees. Its focused cases cover restart
   recovery, a real child-process mutex conflict, owner handoff, the real CLI finishing from its own checkout, exact
   filesystem and Git-admin receipts, dirty/untracked retention, assume-unchanged and skip-worktree flags, generated
-  child and checkout-root replacement, partial Git-admin state, and unrelated worktree branches.
+  child and checkout-root replacement, partial Git-admin state, unrelated worktree branches, and the shared Python
+  child environment that prevents routine checks from leaving ignored bytecode in managed checkouts.
+- `npm run clean` removes build output and the known screenshot harness output directories. Run it after inspecting a
+  local visual failure so those generated artifacts do not block checkout retirement.
 - `checkout:status` reports the current owner and revision without deciding that a dead process or old timestamp has
   abandoned a task. It is also the explicit command that may adopt a fully registered interrupted create.
   `checkout:handoff` changes both owner and revision explicitly.
@@ -207,7 +210,7 @@ By-example tests must exercise every candidate family, deterministic tie orderin
 The CI coverage lane installs exact `pyspark[connect]==4.2.0`, Pandas `>=2.2,<3.0`, and Temurin Java 17, verifies those runtimes, and then runs the complete instrumented Python suite. That full-suite coverage is the authoritative pull-request PySpark runtime evidence. Use the following two-file command only for focused local iteration:
 
 ```bash
-python -m pytest -q python/tests/test_pyspark_engine.py python/tests/test_engine_registry.py
+node scripts/run-python.mjs -m pytest -q python/tests/test_pyspark_engine.py python/tests/test_engine_registry.py
 ```
 
 `test_pyspark_engine.py` parametrizes the same native viewing contract across a real classic `local[2]` Spark session and Spark Connect's local `remote("local[2]")` mode. It exercises DataFrame detection, schema and typed cells, indexed projected pages, basic/advanced filters, multi-column sorts, summaries, statistics, bounded distinct values, duplicate/private-name and streaming rejection, and exactly-once unpersist without stopping the user's Spark session. Replacement tests stop or rebind the exact live source before a cached-window request and require correlated invalidation before any stale block can return. Focused fake-kernel host tests capture representative discovery, bootstrap, open, page, and close executions and prove that each receives a fresh never-cancel token, that post-dispatch UI disposal and host deadlines do not interrupt the kernel, that a late correlated session open is closed once on its exact originating kernel, and that a terminal cleanup error retires only its exact session mapping. There is intentionally no **Cancel opening** action: Jupyter token cancellation sends a kernel interrupt, and PySpark's default SIGINT handler may call `SparkContext.cancelAllJobs()` for unrelated user work. Nested struct fields that duplicate or collide without case must fail before indexing because their JSON object representation would lose data. Reordered maps and nested maps must share one native canonical profile key in both modes, equal nested signed-zero values must not split groups, and their displayed representative must be deterministic. String, binary, array, map, and struct pages and profile values must fail the Spark-side UTF-8 preflight before oversized terminal values can cross into Python. Separate tests enforce exact page/profile protocol-byte boundaries, complex-value node and nesting limits, exact nested decimal decoding, and terminal profile projections that exclude private group keys. Conversion methods such as `toPandas`, `toArrow`, `mapInPandas`, and `mapInArrow` are replaced with hard failures; page/value bounds and fixed-size aggregate results are asserted directly.
@@ -223,7 +226,7 @@ The Pandas/Polars suites remain the Data Wrangler parity baseline. DuckDB accept
 Recorded on 2026-07-16, the engine-specific command was:
 
 ```bash
-.venv/bin/python -m pytest -q python/tests/test_duckdb_engine.py
+node scripts/run-python.mjs -m pytest -q python/tests/test_duckdb_engine.py
 ```
 
 It passed 5 tests covering lazy and hardened CSV/TSV/Parquet/JSONL reads, explicit Excel and encoding diagnostics, typed pages, filters/sorts, summaries/statistics/values, concurrent page/profile reads, all 27 runtime operations, standalone executable generated-code equality, CSV/Parquet exports, cleanup, and a `SessionManager` preview/apply/profile/export/close flow. Relation conversion methods for Pandas, Polars, and Arrow are replaced with hard failures during native-path tests.
@@ -231,13 +234,13 @@ It passed 5 tests covering lazy and hardened CSV/TSV/Parquet/JSONL reads, explic
 The focused integration command was:
 
 ```bash
-.venv/bin/python -m pytest -q python/tests/test_duckdb_engine.py python/tests/test_engine_registry.py python/tests/test_engine_lifecycle.py python/tests/test_typed_cells.py python/tests/test_performance_backends.py
+node scripts/run-python.mjs -m pytest -q python/tests/test_duckdb_engine.py python/tests/test_engine_registry.py python/tests/test_engine_lifecycle.py python/tests/test_typed_cells.py python/tests/test_performance_backends.py
 ```
 
 It passed 41 tests. The complete Python regression command also passed 236 tests in 11.59 seconds:
 
 ```bash
-.venv/bin/python -m pytest -q python/tests
+node scripts/run-python.mjs -m pytest -q python/tests
 ```
 
 These runtime results are complemented by the installed-package acceptance below: DuckDB CSV/TSV/JSONL/Parquet inputs, view queries, progressive profiles, representative operation groups, generated/edited code, exports, backend-specific persistence, injected restart/replay, multiple simultaneous sessions, disposal, themes/accessibility, dependency decline, and source safety pass in isolated VS Code and Cursor profiles. Focused notebook tests additionally require a connection-private in-memory relation, exact-origin paging/profiling, MIME-v2 capture, deterministic reference release, and hard failures for Pandas/Polars/Arrow conversions plus every editing/export entry point. Before DuckDB can move beyond preview, add its full semantic edge matrix, installed VS Code/Cursor Jupyter evidence, large mixed/nested fixtures, cross-platform CI evidence, and repeated full-size performance reports. Excel and `.duckdb` database/catalog/table browsing remain deferred and must not appear in a supported-fixture checklist.
@@ -647,7 +650,7 @@ and no trimming.
 Direct invocation accepts `--backend polars`, `--backend pandas`, or `--backend duckdb`. Every report names the selected backend and records backend package versions, Python/Open Wrangler runtime versions, machine and source provenance, native frame types, lazy-frame evidence, and sampled RSS/peak-RSS boundaries for the driver and standalone process. It also states that the measurements cover direct Python runtime and protocol-v2 stdio work, not VS Code, Cursor, webview, or editor first paint. Pandas and DuckDB runs are diagnostic only: `benchmarkMetadata.releaseLimitsApplyToBackend` remains `polars`, `selectedBackendIsReleaseGated` is false, and non-Polars `--strict` runs deliberately fail instead of producing a misleading release pass. The focused smoke form is:
 
 ```bash
-.venv/bin/python python/benchmarks/runtime_performance.py --smoke --backend duckdb --json-out tmp/performance/duckdb-smoke.json
+node scripts/run-python.mjs python/benchmarks/runtime_performance.py --smoke --backend duckdb --json-out tmp/performance/duckdb-smoke.json
 ```
 
 For a proven active interval, strict mode compares the response-completion gap with half the lower-tail uncontented cache-miss baseline. This demonstrates substantial response overlap even when CPU contention makes callbacks co-complete; a gap consistent with a page starting only after statistics finishes sets `sameSessionContentionObserved=true` and fails release. Unit coverage fixes both sides of the threshold, completed-before-send and not-yet-started intervals, and the malformed event ordering. The smoke subprocess covers the real bootstrap event framing without applying release-size timing gates.

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
 import prettier from "prettier";
+import { repositoryPythonEnvironment } from "./repository-python-environment.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
@@ -110,10 +111,9 @@ function loadOperationCatalog() {
     const result = spawnSync(executable, command, {
       cwd: root,
       encoding: "utf8",
-      env: {
-        ...process.env,
-        PYTHONPATH: [resolve(root, "python"), process.env.PYTHONPATH].filter(Boolean).join(delimiter)
-      }
+      env: repositoryPythonEnvironment(
+        [resolve(root, "python"), process.env.PYTHONPATH].filter(Boolean).join(delimiter)
+      )
     });
     if (result.status === 0) return JSON.parse(result.stdout);
   }

@@ -114,6 +114,7 @@ test("Marketplace recovery runs only for an exact single-parent reviewed infrast
     "scripts/release-metadata.mjs",
     "scripts/remote-workspace-acquisition.mjs",
     "scripts/remote-workspace-contract.mjs",
+    "scripts/repository-python-environment.mjs",
     "scripts/run-installed-performance.mjs",
     "scripts/strict-json.mjs",
     "scripts/verify-canonical-release-artifact.mjs",
