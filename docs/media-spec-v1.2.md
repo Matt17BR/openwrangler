@@ -145,7 +145,13 @@ documented capability, comes from another VSIX, contains internal setup content,
 After GitHub and both registries have rendered a release README, install the lockfile-pinned Chromium and run
 `npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"` from the
 exact released source checkout. The SHA must be lowercase 40-hex and the version must be semantic without a leading
-`v`. The verifier byte-compares the exact source README and package version, requires both registries to show that
-version and all surfaces to show the expected content and immutable representative image URLs, then byte-compares
-every public PNG and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. The hero and representative
-detail must expose at least two natural image pixels for every rendered CSS pixel on all three surfaces.
+`v`. Starting with `1.2.1`, the verifier byte-compares the exact source README and package version; rejects an
+undeclared media series; pre-stats a bounded inventory before any full file read; checks all 46 PNGs for chunk CRC,
+ordered structure, complete decode, exact 2× dimensions, standard sRGB, per-file and total budgets, and immutable
+remote bytes; and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. Every one of the 18 rendered README
+images must retain its exact reviewed `src`/`currentSrc`, natural dimensions, and at least two natural pixels per
+rendered CSS pixel. A promotion with the contract on its version-owned caller branch runs this after registry
+verification, with forty fresh-context attempts at thirty-second intervals inside a thirty-minute public-propagation
+window. Only typed stale/unavailable registry observations retry; deterministic contract failures stop immediately.
+The check can fail workflow success but cannot undo the public writes it observes. `main` covers previews; stable
+coverage additionally requires an explicit reviewed backport to `release/1.x`.

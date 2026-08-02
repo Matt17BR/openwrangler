@@ -78,11 +78,18 @@ npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --ver
 ```
 
 The verifier requires the remote README at that exact commit to byte-match the reviewed local README and its
-`package.json` version to match the supplied version. It then requires the two registries to show that exact version,
-all three surfaces to render the expected README content, and each representative image to use the immutable raw URL
-from that README before proving its bytes and DPR 2 density. A mutable default-branch GitHub page is never accepted.
-Registry propagation remains a post-publication observation and must not make an otherwise deterministic pull-request
-lane depend on live pages.
+`package.json` version to match the supplied version. Before reading any PNG, it bounds the inventory's entry count,
+depth, relative-path bytes, individual file size, and cumulative size. Every declared file must then pass chunk CRC,
+IHDR/IDAT ordering, complete decode, exact 2× dimensions, standard sRGB, and immutable-byte checks. The two registries
+must show the exact version, all three surfaces must render the expected README content, and all 18 displayed images
+must retain the reviewed raw URL, natural dimensions, and DPR-2 density. A mutable default-branch GitHub page is never
+accepted. This versioned contract starts at `1.2.1`; an older exact release recovery skips both browser installation
+and this check so a new media inventory cannot invalidate historical publication.
+
+This is necessarily a post-publication observation gate: GitHub and registry writes have already occurred before
+their public rendering can be inspected. A failure marks the promotion workflow failed and requires remediation or a
+new release, but it cannot undo or roll back already-public immutable release or registry bytes. It never makes a
+deterministic pull-request lane depend on registry pages.
 
 `.github/workflows/stable-candidate.yml` owns the hosted installed-performance evidence bridge. A manual dispatch accepts exactly intended version `1.0.0` from a `release/1.0-evidence-*` branch whose exact event SHA is a clean descendant of `origin/main`, packages the production VSIX once, and publishes an atomic VSIX/checksum/provenance set in the evidence-only mode described above. The bounded provenance binds `Matt17BR.openwrangler`, the extension version, intended tag, exact source commit, and VSIX digest and size, but its distinct protocol and role make the complete set deliberately non-promotable. A matching checksum without that provenance is insufficient, and the ordinary stable intake rejects the evidence-only provenance.
 
@@ -181,14 +188,34 @@ The Microsoft pipeline, its fixed service connection, and its exclusive-lock env
 
 Both release workflows call this workflow directly after their GitHub release job. This direct call is required because [events created with the repository `GITHUB_TOKEN` do not start another workflow run, except for `workflow_dispatch` and `repository_dispatch`](https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-when-your-workflow-runs/triggering-a-workflow#triggering-a-workflow-from-a-workflow). The `release: published` trigger remains useful for a release created manually or by an external principal.
 
-The called promotion job declares `environment: publishing`; therefore its two secret-bearing steps receive that environment's `OVSX_PAT` without granting the caller blanket secret inheritance. This follows GitHub's [reusable-workflow environment-secret behavior](https://docs.github.com/en/actions/how-tos/sharing-automations/reusing-workflows#using-inputs-and-secrets-in-a-reusable-workflow). Only `ovsx verify-pat` and `ovsx publish` receive the token. The workflow revalidates the release before each publisher boundary, rejects a conflicting existing version, publishes the downloaded VSIX with lockfile-pinned `ovsx --skip-duplicate`, and then polls for up to fifteen minutes for Open VSX to expose matching channel metadata, `Matt17BR` publisher identity, checksum, downloadable bytes, and the exact packaged gallery icon. Both the reusable promotion job and the stable final job reserve additional bounded timeout room for that public propagation check.
+The called promotion job declares `environment: publishing`; therefore its two secret-bearing steps receive that environment's `OVSX_PAT` without granting the caller blanket secret inheritance. This follows GitHub's [reusable-workflow environment-secret behavior](https://docs.github.com/en/actions/how-tos/sharing-automations/reusing-workflows#using-inputs-and-secrets-in-a-reusable-workflow). Only `ovsx verify-pat` and `ovsx publish` receive the token. The workflow revalidates the release before each publisher boundary, rejects a conflicting existing version, publishes the downloaded VSIX with lockfile-pinned `ovsx --skip-duplicate`, and then polls for up to fifteen minutes for Open VSX to expose matching channel metadata, `Matt17BR` publisher identity, checksum, downloadable bytes, and the exact packaged gallery icon.
+
+For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the reusable promotion job installs the
+lockfile-pinned Chromium and verifies the exact release checkout's complete public-media inventory. All 46 declared
+PNGs must retain their exact 2× dimensions, standard sRGB declaration, file and aggregate budgets, valid chunk/decode
+structure, and immutable remote bytes. Every one of the 18 README images must then render from its exact reviewed URL
+without DPR-2 upscaling on GitHub, Visual Studio Marketplace, and Open VSX. Registry observations receive at most
+forty fresh browser contexts at thirty-second intervals inside one thirty-minute propagation deadline; network fetches
+are bounded to sixty seconds, one browser attempt to three minutes, per-page and per-image operations to their
+configured Playwright deadlines, and context cleanup to ten seconds. Exact-source, inventory, malformed-image,
+dimension, DPR, and other deterministic contract failures stop immediately. Only explicitly classified stale or
+unavailable Marketplace/Open VSX observations retry. The media step receives only the source commit and version,
+never `OVSX_PAT`.
+
+The reusable workflow file referenced by a caller is resolved from that caller's branch. Merging this contract to
+`main` therefore protects preview promotion only. Before claiming stable coverage or publishing stable `1.2.1`,
+backport the same workflow, scripts, inventory, tests, and documentation in one reviewed commit to protected
+`release/1.x`; stable coverage begins only after that backport lands. The post-public check can fail workflow success,
+but it cannot retract the GitHub, Open VSX, or Marketplace writes it observes. The reusable promotion job and stable
+final job reserve explicit timeout room for both public checks.
 
 To recover an existing exact GitHub Release, dispatch **Promote GitHub release to Open VSX** from protected `main`
-with `release_tag=v<version>`. Historical backfill is supported only when that release's canonical asset and
-provenance format remains compatible with the current verifier; incompatibility fails rather than weakening
-validation. Repeating the dispatch is safe only when the registry already serves identical bytes; a conflict fails
-without replacement. Do not dispatch from an old release tag, because historical releases intentionally do not
-contain the reviewed automation.
+with `release_tag=v<version>`. Historical backfill is supported only when that release's canonical artifact and
+provenance format remains compatible with the current registry verifier; incompatibility fails rather than weakening
+validation. The public-media contract is independently skipped below `1.2.1`, so a later screenshot inventory cannot
+break an otherwise valid historical recovery. Repeating the dispatch is safe only when the registry already serves
+identical bytes; a conflict fails without replacement. Do not dispatch from an old release tag, because historical
+releases intentionally do not contain the reviewed automation.
 
 ### Automatic Microsoft Marketplace promotion
 
