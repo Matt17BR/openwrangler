@@ -309,7 +309,7 @@ visual lane runs that check before README media can change. The rich DuckDB Parq
 still come from the lockfile-pinned Chromium capture harness and the same production webview bundle.
 The same contract requires explicit logical image dimensions, lossless PNG plus sRGB output, no resize path, a
 2 MiB per-file ceiling, and a 32 MiB complete-inventory ceiling. After a release README reaches GitHub, Visual
-Studio Marketplace, and Open VSX, check out its exact source and run:
+Studio Marketplace, and Open VSX, check out its exact source and run this one-attempt diagnostic:
 
 ```bash
 RELEASE_SOURCE_SHA="0123456789abcdef0123456789abcdef01234567" # replace with the released source commit
@@ -317,10 +317,29 @@ RELEASE_VERSION="1.2.1" # replace with the released semantic version, without v
 npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"
 ```
 
-The check rejects a mutable GitHub branch, a source/version mismatch, stale registry versions or README content, and
-representative images whose rendered `src` or `currentSrc` is not the exact immutable raw URL in the reviewed README.
-Only after those bindings hold does it verify remote bytes and the hero/detail DPR 2 density. Registry propagation
-remains a post-publication observation rather than a pull-request gate.
+The check rejects a mutable GitHub branch, source/version mismatch, undeclared media series, missing or orphaned
+inventory entries, stale registry versions or README content, and any displayed image whose rendered `src` or
+`currentSrc` is not the exact immutable raw URL in the reviewed README. Before reading a PNG, traversal caps the
+inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 46
+declared PNGs then require valid chunk CRCs, one ordered IHDR/sRGB/IDAT/IEND structure, a successful full decode, exact
+dimensions, sRGB, and immutable remote equality. All 18 README images are checked at DPR 2 on each of the three public
+surfaces. The hero and histogram remain explicitly named representative requirements in addition to the exact
+18-image contract.
+
+The versioned gate begins with `1.2.1`; older recovery runs skip browser installation and public-media verification.
+For protected versions, the workflow invocation adds `--source-root release-source` and `--wait-for-propagation`.
+The retry controller is injected and directly tested: a deterministic error stops after one attempt, typed stale or
+unavailable registry observations exhaust the exact attempt/delay count, and every retry owns and closes a distinct
+context. At most forty attempts are separated by thirty seconds inside a thirty-minute total deadline. Each fetch is
+bounded to sixty seconds, each render attempt to three minutes, per-page/image work to explicit Playwright defaults,
+and context cleanup to ten seconds. Local, exact-source, inventory, immutable-byte, GitHub-source, malformed-image,
+dimension, and harness validation run once or fail immediately; only explicitly classified Marketplace/Open VSX
+propagation observations retry.
+
+The main-branch merge protects preview promotion. Because a locally referenced reusable workflow is loaded from its
+caller branch, stable promotion is not covered until the same contract is explicitly reviewed and backported to
+protected `release/1.x`. Registry rendering is post-publication evidence: it can fail the promotion workflow but
+cannot undo already-public GitHub or registry writes, and it is not a pull-request browser gate.
 
 Before any editor process starts, ordinary packaged runs probe the selected interpreter for supported Python
 3.10 through 3.14 plus Pandas, Polars, DuckDB, and OpenPyXL. Local runs should set `OPEN_WRANGLER_TEST_PYTHON` to an
