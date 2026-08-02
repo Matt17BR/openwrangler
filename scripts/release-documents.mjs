@@ -78,7 +78,9 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 
 ${README_EDITOR_SUPPORT}
 
-Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
+Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It uses your configured Python path,
+selected environment, or a supported system interpreter. If a required Python package is missing, Open Wrangler
+lists it and asks before installing anything.
 
 ${README_TRUST_REQUIREMENT}
 

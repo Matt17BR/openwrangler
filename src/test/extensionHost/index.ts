@@ -435,7 +435,9 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
-  assert.match(extension.packageJSON.description, /open-source dataframe wrangler/i);
+  assert.match(extension.packageJSON.description, /Open files and notebook variables/u);
+  assert.match(extension.packageJSON.description, /Pandas and Polars are native/u);
+  assert.match(extension.packageJSON.description, /DuckDB and PySpark are experimental/u);
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
