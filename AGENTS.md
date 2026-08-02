@@ -96,6 +96,8 @@ slows the feedback loop, and can exhaust the developer machine without improving
 Public memory-intensive commands acquire one shared lease across clones and worktrees. If one reports that another
 Open Wrangler command is active, wait for that command instead of bypassing the wrapper, invoking a `:run`/`:prepare`
 continuation directly, or launching a duplicate to poll it. Resume a yielded live execution through its exact session.
+Never decode a gallery of full-resolution PNG files in one long-lived Node process or launch two media comparisons in
+parallel. Use `npm run inspect:media-changes`; it holds the shared lease and starts one heap-bounded decoder per image.
 Run the complete serial list below for a release candidate or when a change genuinely spans every listed boundary;
 otherwise run `npm run check`, the focused tests for the changed owner, and the relevant UI/editor scenario. Hosted CI
 still requires every blocking product, platform, accessibility, security, and packaged-editor lane before merge.
