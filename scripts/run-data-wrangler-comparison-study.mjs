@@ -665,11 +665,19 @@ function fragmentLedgerDigest(fragments) {
   return digestStudyValue(fragments.map((fragment) => digestStudyValue(fragment)));
 }
 
-function manifestDeclaresDataWranglerPolarsUnavailable(manifest, entry) {
+export function manifestDeclaresDataWranglerPolarsUnavailable(manifest, entry) {
   if (entry.product !== "data-wrangler" || entry.engine !== "polars") return false;
+  const fixture = manifest.fixtures.find((candidate) => candidate.format === entry.format);
+  if (fixture === undefined) {
+    throw new TypeError("The scheduled Data Wrangler Polars entry has no matching fixture.");
+  }
   const capability = manifest.provenance.capabilities.find(
-    (candidate) => candidate.product === "data-wrangler" && candidate.engine === "polars"
+    (candidate) =>
+      candidate.product === "data-wrangler" && candidate.engine === "polars" && candidate.fixtureId === fixture.id
   );
+  if (capability === undefined) {
+    throw new TypeError("The scheduled Data Wrangler Polars entry has no matching capability receipt.");
+  }
   return capability?.availability === "unavailable";
 }
 

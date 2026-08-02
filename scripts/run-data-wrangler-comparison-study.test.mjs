@@ -39,6 +39,7 @@ import {
   DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL,
   createManifestBoundDataWranglerPolarsUnsupportedFragment,
   dataWranglerStudyExecutionLockPath,
+  manifestDeclaresDataWranglerPolarsUnavailable,
   parseDataWranglerComparisonStudyArguments,
   runNextDataWranglerComparisonStudyTrial,
   runDataWranglerComparisonStudy
@@ -502,6 +503,23 @@ test("manifest-declared Data Wrangler Polars unavailability produces a launch-fr
   assert.equal(fragment.cleanupProof, null);
 });
 
+test("Data Wrangler Polars availability is matched to the scheduled file format", () => {
+  for (const [availability, expectedCsv, expectedParquet] of [
+    [{ "csv-100k-50": "available", "parquet-1m-20": "unavailable" }, false, true],
+    [{ "csv-100k-50": "unavailable", "parquet-1m-20": "available" }, true, false]
+  ]) {
+    const manifest = runDataWranglerComparisonStudyManifest(availability);
+    const csvEntry = manifest.schedule.find(
+      (entry) => entry.product === "data-wrangler" && entry.engine === "polars" && entry.format === "csv"
+    );
+    const parquetEntry = manifest.schedule.find(
+      (entry) => entry.product === "data-wrangler" && entry.engine === "polars" && entry.format === "parquet"
+    );
+    assert.equal(manifestDeclaresDataWranglerPolarsUnavailable(manifest, csvEntry), expectedCsv);
+    assert.equal(manifestDeclaresDataWranglerPolarsUnavailable(manifest, parquetEntry), expectedParquet);
+  }
+});
+
 function planStudy(directory, dataWranglerPolarsAvailability = "available") {
   const specificationPath = resolve(directory, "spec.json");
   const manifestPath = resolve(directory, "manifest.json");
@@ -584,16 +602,32 @@ function studySpecification(dataWranglerPolarsAvailability = "available") {
     studyFixture("csv-100k-50", "csv", 100_000, 50, digest("6"), "6001"),
     studyFixture("parquet-1m-20", "parquet", 1_000_000, 20, digest("7"), "7001")
   ];
-  const capabilityContext = publicUiContext("22222222-2222-4222-8222-222222222222", editor, fixtures[0]);
-  const controlContext = publicUiContext("33333333-3333-4333-8333-333333333333", editor, fixtures[0]);
-  const capabilityReceipt = createDataWranglerPolarsCapabilityReceipt(
-    publicUiEvidence(
-      DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
-      capabilityContext,
-      dataWranglerPolarsAvailability === "available" ? "available" : "unsupported"
-    ),
-    capabilityContext
+  const capabilityContexts = fixtures.map((fixture, index) =>
+    publicUiContext(
+      index === 0 ? "22222222-2222-4222-8222-222222222222" : "44444444-4444-4444-8444-444444444444",
+      editor,
+      fixture
+    )
   );
+  const controlContext = publicUiContext("33333333-3333-4333-8333-333333333333", editor, fixtures[0]);
+  const availabilityFor = (fixture) =>
+    typeof dataWranglerPolarsAvailability === "string"
+      ? dataWranglerPolarsAvailability
+      : dataWranglerPolarsAvailability[fixture.id];
+  const capabilityReceipts = fixtures.map((fixture, index) => {
+    const availability = availabilityFor(fixture);
+    if (!["available", "unavailable"].includes(availability)) {
+      throw new TypeError(`Missing test capability for ${fixture.id}.`);
+    }
+    return createDataWranglerPolarsCapabilityReceipt(
+      publicUiEvidence(
+        DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
+        capabilityContexts[index],
+        availability === "available" ? "available" : "unsupported"
+      ),
+      capabilityContexts[index]
+    );
+  });
   const controlReceipt = createNeitherProductControlReceipt(
     publicUiEvidence(NEITHER_PRODUCT_CONTROL_RECEIPT_KIND, controlContext, "neither-product-control"),
     controlContext
@@ -674,19 +708,20 @@ function studySpecification(dataWranglerPolarsAvailability = "available") {
         publicWarmupCompleted: true,
         targetStateAbsent: true
       })),
-      capabilities: [
-        {
+      capabilities: fixtures.map((fixture, index) => {
+        const receipt = capabilityReceipts[index];
+        return {
           product: "data-wrangler",
           engine: "polars",
-          availability: dataWranglerPolarsAvailability,
+          availability: availabilityFor(fixture),
           method: "public-capability",
           timed: false,
-          fixtureId: fixtures[0].id,
-          context: capabilityContext,
-          receiptSha256: digestStudyValue(capabilityReceipt),
-          receipt: capabilityReceipt
-        }
-      ],
+          fixtureId: fixture.id,
+          context: capabilityContexts[index],
+          receiptSha256: digestStudyValue(receipt),
+          receipt
+        };
+      }),
       controlProfile: {
         method: "neither-product",
         fixtureId: fixtures[0].id,
