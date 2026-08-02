@@ -18,9 +18,10 @@ Agent checkout lifecycle has a separate, small contract test:
   child environment that prevents routine checks from leaving ignored bytecode in managed checkouts. Bootstrap cases
   use local disposable remotes only. They cover interrupted attempts, atomic no-replace receipt publication, exact
   source/child routing, concurrent bootstrap races, source and remote drift, real bare worktree creation, and rejection
-  of shallow, alternate, partial, promisor, symlinked, or hard-linked object stores. A source-advance case proves that
-  create copies the newly committed local base into the bare repository and checks out that exact commit without
-  contacting `origin`.
+  of shallow, alternate, partial, promisor, symlinked, or hard-linked object stores. The manager root stays mode
+  `0700`; ordinary Git-created files below it may follow the caller's umask without making a valid worktree unreadable
+  to the lifecycle manager. A source-advance case proves that create copies the newly committed local base into the
+  bare repository and checks out that exact commit without contacting `origin`.
 - `npm run checkout:bootstrap` is explicit and runs only from the ordinary source checkout. It makes a standalone bare
   clone from the local source, records a normal `origin` fetch refspec, and runs strict `fsck` without contacting
   `origin`. Source-side create commands synchronize only the exact locally resolved base commit, then repeat the

@@ -979,13 +979,10 @@ function inspectManagerRepositoryTree(path, privatize) {
     ) {
       fail("unsafe-manager-bootstrap", "The checkout manager repository contains an unsafe directory.");
     }
+    // The root is mode 0700. Git may still apply the caller's umask to files it
+    // creates below that boundary, so later reads validate ownership and type
+    // instead of requiring every worktree index to remain mode 0600.
     if (privatize) chmodSync(directory, 0o700);
-    else if (typeof process.getuid === "function" && (directoryMetadata.mode & 0o022n) !== 0n) {
-      fail(
-        "unsafe-manager-bootstrap",
-        "The checkout manager repository contains a group- or world-writable directory."
-      );
-    }
     revalidatePathIdentity(directory, directoryIdentity, "Checkout manager repository directory", "directory");
     for (const item of readDirectoryBounded(
       directory,
@@ -1009,9 +1006,6 @@ function inspectManagerRepositoryTree(path, privatize) {
       ) {
         fail("unsafe-manager-bootstrap", "The checkout manager repository contains a link or special file.");
       } else if (privatize) chmodSync(child, 0o600);
-      else if (typeof process.getuid === "function" && (metadata.mode & 0o022n) !== 0n) {
-        fail("unsafe-manager-bootstrap", "The checkout manager repository contains a group- or world-writable file.");
-      }
       if (!metadata.isDirectory()) {
         revalidatePathIdentity(child, childIdentity, "Checkout manager repository file");
       }

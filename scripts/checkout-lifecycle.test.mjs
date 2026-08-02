@@ -169,6 +169,7 @@ test("bootstrap publishes one self-contained bare manager and routes source and 
     assert.equal(fromSource.paths.root, published.statePath);
     const first = create(fixture, "bare-source", { manager: fromSource });
     assert.equal(git(first.checkoutPath, "rev-parse", "HEAD"), advancedHead);
+    chmodSync(git(first.checkoutPath, "rev-parse", "--git-path", "index"), 0o664);
     assert.equal(defaultManager(fixture).status("bare-source")[0].state, "active");
 
     const fromChild = createCheckoutManager({ repositoryPath: first.checkoutPath, run: fixtureRun(behavior) });
