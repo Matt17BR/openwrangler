@@ -109,6 +109,15 @@ itself authorization to delete anything.
 `checkout:audit` does not acquire the lifecycle mutex, append registry state, or adopt an interrupted create.
 `checkout:status` is the explicit recovery command that may adopt a fully registered interrupted create.
 
+After review, `npm run checkout:plan-retirement -- <slug> --owner <task> --revision <n> --generation <n>` may append a
+separate private evidence receipt while leaving the checkout `cleanup-pending`. It requires two matching clean reads
+and binds the source entry, checkout and Git-admin identities, worktree registry, status, index stages, and index
+flags. Evidence commands bind the linked-worktree common-directory file, use the exact recorded Git admin/worktree
+paths, reject tracked gitlinks and configured external content filters, strip inherited Git routing/config variables,
+disable replacement objects, hooks, and filesystem monitors, and forbid lazy object fetching. The receipt records that
+recovery, process-use, and mount checks were not performed and must be proven before any future movement.
+Planning does not move or delete anything and never authorizes either action.
+
 Automatic purge is not implemented. JavaScript's path-based recursive removal cannot safely survive a child-directory
 rebind, and Git/network child ownership needs a platform helper before cleanup can be automated. Keep pending entries
 until that reviewed helper exists or a maintainer completes an explicit audit and manual cleanup. `checkout:abandon`
