@@ -27,6 +27,10 @@ import {
 } from "./data-wrangler-public-ui-receipts.mjs";
 import {
   DATA_WRANGLER_COMPARISON_TRIAL_CONTROL_PROTOCOL,
+  validateDataWranglerComparisonTrialControlReceipt
+} from "./data-wrangler-comparison-trial-control.mjs";
+import {
+  normalizeDataWranglerComparisonPreNotebookFailureFragment,
   normalizeDataWranglerComparisonTrialFragment
 } from "./data-wrangler-comparison-trial-fragment.mjs";
 
@@ -129,38 +133,78 @@ function bridgeExchange(kind, sequence, requestMs, acknowledgementMs) {
 
 function bridgeFor(kind, stoppedMs, failureStage = null) {
   const plan = [["source-verified", -900, -899]];
+  if (kind === "cold") plan.push(["cold-cache-evicted", -850, -849]);
   if (failureStage !== "run-cell-preparation") plan.push(["measurement-ready", -800, -799]);
   if (failureStage !== "run-cell-preparation") {
-    plan.push(["sampling-origin", -1, 0], ["inline-baseline", 100, 101]);
+    plan.push(["sampling-origin", -1, 0], ["inline-baseline", 100, 803]);
   }
   if (!["run-cell-preparation", "source-load", "inline"].includes(failureStage)) {
-    plan.push(["workbench-baseline", 1_500, 1_501]);
+    plan.push(["workbench-baseline", 1_500, 1_603]);
   }
-  if (
-    !["run-cell-preparation", "source-load", "inline", "workbench-open", "grid-restoration"].includes(
-      failureStage
-    )
-  ) {
-    plan.push(["profile-baseline", 2_500, 2_501]);
+  if (!["run-cell-preparation", "source-load", "inline", "workbench-open", "grid-restoration"].includes(failureStage)) {
+    plan.push(["profile-baseline", 2_500, 2_603]);
   }
   if (failureStage === null) {
-    plan.push(["sampling-stop", 3_031, stoppedMs], ["cleanup-census", stoppedMs + 1, stoppedMs + 2]);
+    plan.push(["sampling-stop", 3_030, stoppedMs], ["cleanup-census", stoppedMs + 1, stoppedMs + 2]);
   }
   return plan.map(([bridgeKind, request, acknowledgement], index) =>
     bridgeExchange(bridgeKind, index, request, acknowledgement)
   );
 }
 
-function parentControlReceipt({ entry, fragmentIdentity, exchanges, resourceObservation }) {
+function stableBaselineReceipt(exchange, resourceObservation) {
+  const requestTime = BigInt(exchange.request.monotonicNanoseconds);
+  const firstEligible = resourceObservation.samples.findIndex(
+    (sample) => BigInt(sample.endedMonotonicNanoseconds) >= requestTime
+  );
+  const lastSampleIndex = Math.max(4, firstEligible);
+  const firstSampleIndex = lastSampleIndex - 4;
+  const samples = resourceObservation.samples.slice(firstSampleIndex, lastSampleIndex + 1);
+  const sample = samples.at(-1);
+  const totals = samples.map((candidate) => candidate.totalPssBytes);
+  const medianPssBytes = [...totals].sort((left, right) => left - right)[2];
+  return {
+    protocol: "openwrangler-linux-pss-baseline-ack-v1",
+    sampleIndex: lastSampleIndex,
+    sampleElapsedMs: sample.elapsedMs,
+    sampleScheduledMonotonicNanoseconds: sample.scheduledMonotonicNanoseconds,
+    sampleStartedMonotonicNanoseconds: sample.startedMonotonicNanoseconds,
+    sampleEndedMonotonicNanoseconds: sample.endedMonotonicNanoseconds,
+    stableBaseline: {
+      sampleCount: 5,
+      firstSampleIndex,
+      lastSampleIndex,
+      firstStartedMonotonicNanoseconds: samples[0].startedMonotonicNanoseconds,
+      lastEndedMonotonicNanoseconds: sample.endedMonotonicNanoseconds,
+      medianPssBytes,
+      rangePssBytes: Math.max(...totals) - Math.min(...totals),
+      maximumRangePssBytes: Math.max(64 * 1024 * 1024, medianPssBytes * 0.05)
+    }
+  };
+}
+
+function controlFailureStage(phaseFailureStage) {
+  return {
+    "run-cell-preparation": "measurement-ready",
+    "source-load": "workbench-baseline",
+    inline: "workbench-baseline",
+    "workbench-open": "profile-baseline",
+    "grid-restoration": "profile-baseline",
+    profiles: "sampling-stop",
+    "after-verification": "cleanup-census"
+  }[phaseFailureStage];
+}
+
+function parentControlReceipt({ entry, fragmentIdentity, exchanges, resourceObservation, phaseReceipt, cacheProof }) {
   const byKind = new Map(exchanges.map((exchange) => [exchange.request.kind, exchange]));
-  const baseline = (kind, authorization = null) => {
+  const baseline = (kind) => {
     const exchange = byKind.get(kind);
     return exchange === undefined
       ? null
       : {
-          exchange,
-          baseline: { protocol: "openwrangler-linux-pss-baseline-ack-v1", stableBaseline: {} },
-          ...(authorization === null ? {} : { authorization })
+          request: exchange.request,
+          acknowledgement: exchange.acknowledgement,
+          receipt: stableBaselineReceipt(exchange, resourceObservation)
         };
   };
   const authorization = byKind.has("inline-baseline")
@@ -175,27 +219,32 @@ function parentControlReceipt({ entry, fragmentIdentity, exchanges, resourceObse
   const samplingStopExchange = byKind.get("sampling-stop");
   return {
     protocol: DATA_WRANGLER_COMPARISON_TRIAL_CONTROL_PROTOCOL,
+    status: phaseReceipt.status,
     runId: RUN_ID,
     phase: PHASE,
     cacheState: entry.kind,
-    sourceVerified: byKind.get("source-verified") ?? null,
-    coldCacheEvicted: byKind.get("cold-cache-evicted") ?? null,
-    coldCacheProof: null,
-    measurementReady: byKind.get("measurement-ready") ?? null,
-    samplingOrigin: byKind.get("sampling-origin") ?? null,
+    failure:
+      phaseReceipt.status === "success"
+        ? null
+        : { stage: controlFailureStage(phaseReceipt.failure.stage), kind: "aborted" },
+    completedExchanges: exchanges,
+    pendingRequest: null,
+    abandonedRequest: null,
+    coldCacheProof: entry.kind === "cold" && byKind.has("cold-cache-evicted") ? structuredClone(cacheProof) : null,
     baselines: {
-      inline: baseline("inline-baseline", authorization),
+      inline: baseline("inline-baseline"),
       workbench: baseline("workbench-baseline"),
       profile: baseline("profile-baseline")
     },
+    authorization,
     samplingStop:
       samplingStopExchange === undefined
         ? null
         : {
-            exchange: samplingStopExchange,
+            request: samplingStopExchange.request,
+            acknowledgement: samplingStopExchange.acknowledgement,
             terminalTargetMonotonicNanoseconds: resourceObservation.terminalBoundary.targetMonotonicNanoseconds
           },
-    cleanupCensus: byKind.get("cleanup-census") ?? null,
     resourceObservation
   };
 }
@@ -248,28 +297,34 @@ function phaseReceipt({ entry, fixture, status = "success", failure = null, valu
       status: failure?.stage === "source-load" ? "failed" : "measured",
       durationMs: failure?.stage === "source-load" ? null : 5,
       includedInInlineTiming: entry.kind === "cold",
-      measurementBoundary: entry.kind === "cold" ? "run-cell-pointer-to-cell-completion" : "setup-cell-start-to-completion"
+      measurementBoundary:
+        entry.kind === "cold" ? "run-cell-pointer-to-cell-completion" : "setup-cell-start-to-completion"
     },
-    inline: values.inlineActionNanoseconds === null
-      ? null
-      : {
-          evidenceWindowMs: 45_000,
-          baselineExactActionCount: 0,
-          genericHostHtmlAcceptedAsProductPreview: false,
-          runCellAction: action("Execute Cell"),
-          surfaceKind: inlineReady
-            ? entry.product === "open-wrangler"
-              ? "open-wrangler-renderer"
-              : "data-wrangler-action-on-host-output"
-            : null,
-          action: inlineReady
-            ? action(entry.product === "open-wrangler" ? "Open in Open Wrangler" : 'Open "study_frame" in Data Wrangler')
-            : null,
-          sentinelsVisibleWithAction: inlineReady
-        },
+    inline:
+      values.inlineActionNanoseconds === null
+        ? null
+        : {
+            evidenceWindowMs: 45_000,
+            baselineExactActionCount: 0,
+            genericHostHtmlAcceptedAsProductPreview: false,
+            runCellAction: action("Execute Cell"),
+            surfaceKind: inlineReady
+              ? entry.product === "open-wrangler"
+                ? "open-wrangler-renderer"
+                : "data-wrangler-action-on-host-output"
+              : null,
+            action: inlineReady
+              ? action(
+                  entry.product === "open-wrangler" ? "Open in Open Wrangler" : 'Open "study_frame" in Data Wrangler'
+                )
+              : null,
+            sentinelsVisibleWithAction: inlineReady
+          },
     workbench: workbenchReady
       ? {
-          action: action(entry.product === "open-wrangler" ? "Open in Open Wrangler" : 'Open "study_frame" in Data Wrangler'),
+          action: action(
+            entry.product === "open-wrangler" ? "Open in Open Wrangler" : 'Open "study_frame" in Data Wrangler'
+          ),
           newlySelectedProductEditor: true,
           grid: {
             rootRole: "grid",
@@ -306,16 +361,27 @@ function phaseReceipt({ entry, fixture, status = "success", failure = null, valu
       : null,
     profiles: profileStarted
       ? {
-          action: action(entry.product === "open-wrangler" ? "Column profiles and filters" : "c00 integer", entry.product === "open-wrangler" ? "button" : "columnheader"),
+          action: action(
+            entry.product === "open-wrangler" ? "Column profiles and filters" : "c00 integer",
+            entry.product === "open-wrangler" ? "button" : "columnheader"
+          ),
           firstUsefulColumn: "c00",
           expectedColumnCount: fixture.columns,
           completedColumnCount: profileCount,
           canonicalOrder: true,
           rowValuesIncluded: false,
-          columns: profileColumns(profileCount, fixture.rows, entry.product === "data-wrangler" ? "approximate" : "exact")
+          columns: profileColumns(
+            profileCount,
+            fixture.rows,
+            entry.product === "data-wrangler" ? "approximate" : "exact"
+          )
         }
       : null,
-    clock: { kind: "driver-local-performance-time-origin", timeOriginUnixMs: 1_800_000_000_000, authoritativeForStudy: false },
+    clock: {
+      kind: "driver-local-performance-time-origin",
+      timeOriginUnixMs: 1_800_000_000_000,
+      authoritativeForStudy: false
+    },
     controlBridge: {
       clock: "process-hrtime-bigint",
       authoritativeForStudy: true,
@@ -329,11 +395,20 @@ function phaseReceipt({ entry, fixture, status = "success", failure = null, valu
   };
 }
 
-function trialInput({ product = "open-wrangler", failure = null, profileCount, malformedActionMs } = {}) {
+function trialInput({
+  product = "open-wrangler",
+  kind = "warm",
+  failure = null,
+  profileCount,
+  malformedActionMs
+} = {}) {
   const manifest = fixtures.studyManifest();
   const entry = manifest.schedule.find(
     (candidate) =>
-      candidate.product === product && candidate.engine === "pandas" && candidate.format === "csv" && candidate.kind === "warm"
+      candidate.product === product &&
+      candidate.engine === "pandas" &&
+      candidate.format === "csv" &&
+      candidate.kind === kind
   );
   const fixture = fixtures.fixtureForEntry(manifest, entry);
   const actionStarted = failure?.stage !== "run-cell-preparation";
@@ -386,6 +461,7 @@ function trialInput({ product = "open-wrangler", failure = null, profileCount, m
     recordedAtUtc: "2026-08-02T11:00:00.000Z"
   });
   const cleanupProof = fixtures.studyCleanupProof(processProofs);
+  const cacheProof = fixtures.studyCacheProof(manifest, entry);
   const sourceVerificationReceipt = fixtures.studyEngineEvidence(
     manifest,
     entry,
@@ -396,13 +472,15 @@ function trialInput({ product = "open-wrangler", failure = null, profileCount, m
     scheduleEntry: entry,
     fragmentIdentity,
     environmentGate: fixtures.studyEnvironmentGate(manifest, "passed"),
-    cacheProof: fixtures.studyCacheProof(manifest, entry),
+    cacheProof,
     notebookPhaseReceipt: phase,
     controlReceipt: parentControlReceipt({
       entry,
       fragmentIdentity,
       exchanges: structuredClone(phase.controlBridge.exchanges),
-      resourceObservation
+      resourceObservation,
+      phaseReceipt: phase,
+      cacheProof
     }),
     resourceObservation,
     supervisorLaunchReceipt: structuredClone(resourceObservation.ownershipTracker),
@@ -411,6 +489,25 @@ function trialInput({ product = "open-wrangler", failure = null, profileCount, m
     cleanupProof,
     sourceVerificationReceipt,
     trialProvenance: fixtures.studyTrialProvenance(manifest, entry, processProofs)
+  };
+}
+
+function preNotebookFailureInput({ classification = "premature-exit", kind = "warm" } = {}) {
+  const input = trialInput({ kind, failure: { stage: "run-cell-preparation", kind: "error" } });
+  return {
+    manifest: input.manifest,
+    scheduleEntry: input.scheduleEntry,
+    fragmentIdentity: input.fragmentIdentity,
+    outerEditorFailure: { status: "failed", classification },
+    environmentGate: input.environmentGate,
+    cacheProof: input.cacheProof,
+    controlReceipt: input.controlReceipt,
+    resourceObservation: input.resourceObservation,
+    supervisorLaunchReceipt: input.supervisorLaunchReceipt,
+    supervisorTerminalReceipt: input.supervisorTerminalReceipt,
+    processProofs: input.processProofs,
+    cleanupProof: input.cleanupProof,
+    trialProvenance: input.trialProvenance
   };
 }
 
@@ -424,6 +521,14 @@ test("normalizes a successful trial through the manifest fragment validator", ()
   assert.equal(fragment.milestones.inlineActionMs, 1_000);
 });
 
+test("binds a cold trial to the controller's verified cache proof", () => {
+  const input = trialInput({ kind: "cold" });
+  const fragment = normalizeDataWranglerComparisonTrialFragment(input);
+  assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
+  assert.equal(fragment.cacheProof.requestedState, "evicted");
+  assert.deepEqual(input.controlReceipt.coldCacheProof, fragment.cacheProof);
+});
+
 test("keeps Data Wrangler's unlabelled workbench engine unverified", () => {
   const input = trialInput({ product: "data-wrangler" });
   const fragment = normalizeDataWranglerComparisonTrialFragment(input);
@@ -435,10 +540,7 @@ test("keeps Data Wrangler's unlabelled workbench engine unverified", () => {
 test("rejects an unknown inline surface rather than assigning it to a product", () => {
   const input = trialInput();
   input.notebookPhaseReceipt.inline.surfaceKind = "unknown-renderer";
-  assert.throws(
-    () => normalizeDataWranglerComparisonTrialFragment(input),
-    /unknown surface kind/u
-  );
+  assert.throws(() => normalizeDataWranglerComparisonTrialFragment(input), /unknown surface kind/u);
 });
 
 test("records an inline timeout without inventing readiness", () => {
@@ -459,6 +561,27 @@ test("records a pre-action setup failure with no product evidence", () => {
   assert.equal(fragment.engineEvidence, null);
 });
 
+test("retains an explicitly abandoned next request outside the notebook exchange prefix", () => {
+  const input = trialInput({ failure: { stage: "run-cell-preparation", kind: "error" } });
+  const request = bridgeExchange("measurement-ready", 1, -800, -799).request;
+  input.controlReceipt.abandonedRequest = {
+    request,
+    abandonment: {
+      protocol: "openwrangler-data-wrangler-study-bridge-abandonment-v1",
+      runId: request.runId,
+      phase: request.phase,
+      sequence: request.sequence,
+      kind: request.kind,
+      requestMonotonicNanoseconds: request.monotonicNanoseconds,
+      abandonedMonotonicNanoseconds: atMs(-799)
+    }
+  };
+  assert.deepEqual(validateDataWranglerComparisonTrialControlReceipt(input.controlReceipt), input.controlReceipt);
+  const fragment = normalizeDataWranglerComparisonTrialFragment(input);
+  assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
+  assert.equal(fragment.outcome.status, "pre-action-invalid");
+});
+
 test("retains completed profiles when later profile traversal fails", () => {
   const input = trialInput({ failure: { stage: "profiles", kind: "error" }, profileCount: 3 });
   const fragment = normalizeDataWranglerComparisonTrialFragment(input);
@@ -474,4 +597,140 @@ test("rejects an action at or before its acknowledged baseline", () => {
     () => normalizeDataWranglerComparisonTrialFragment(input),
     /strictly after its baseline acknowledgement/u
   );
+});
+
+test("normalizes a post-launch failure without inventing a notebook receipt", () => {
+  const input = preNotebookFailureInput();
+  const fragment = normalizeDataWranglerComparisonPreNotebookFailureFragment(input);
+  assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
+  assert.equal(fragment.outcome.status, "pre-action-invalid");
+  assert.equal(fragment.outcome.reasonClass, "setup");
+  assert.deepEqual(fragment.milestones, {
+    inlineActionMs: null,
+    inlineReadyMs: null,
+    workbenchActionMs: null,
+    workbenchReadyMs: null,
+    profileActionMs: null,
+    firstProfileReadyMs: null,
+    profilesCompleteMs: null,
+    samplingStoppedMs: null
+  });
+  assert.deepEqual(fragment.sourceLoad, {
+    status: "not-reached",
+    durationMs: null,
+    includedInInlineTiming: false
+  });
+  assert.equal(fragment.uiEvidence, null);
+  assert.equal(fragment.engineEvidence, null);
+  assert.equal("notebookPhaseReceipt" in fragment, false);
+});
+
+test("rejects malformed and contradictory controller evidence", async (t) => {
+  await t.test("unknown controller fields", () => {
+    const input = trialInput();
+    input.controlReceipt.extra = true;
+    assert.throws(() => normalizeDataWranglerComparisonTrialFragment(input), /missing or unknown fields/u);
+  });
+
+  await t.test("parent and notebook status mismatch", () => {
+    const input = trialInput();
+    input.controlReceipt.status = "failed";
+    input.controlReceipt.failure = { stage: "cleanup-census", kind: "aborted" };
+    assert.throws(() => normalizeDataWranglerComparisonTrialFragment(input), /statuses do not match/u);
+  });
+
+  await t.test("completed exchange mismatch", () => {
+    const input = trialInput({ failure: { stage: "inline", kind: "timeout" } });
+    input.notebookPhaseReceipt.controlBridge.exchanges.pop();
+    assert.throws(() => normalizeDataWranglerComparisonTrialFragment(input), /bridge exchanges do not match/u);
+  });
+
+  await t.test("failure boundary mismatch", () => {
+    const input = trialInput({ failure: { stage: "inline", kind: "timeout" } });
+    input.controlReceipt.failure.stage = "profile-baseline";
+    assert.throws(
+      () => normalizeDataWranglerComparisonTrialFragment(input),
+      /does not match the notebook failure boundary/u
+    );
+  });
+});
+
+test("pre-notebook normalization rejects authorization, action ambiguity, and missing outer evidence", async (t) => {
+  await t.test("abandoned request after durable authorization", () => {
+    const input = preNotebookFailureInput();
+    const authorized = trialInput({ failure: { stage: "inline", kind: "error" } });
+    const inlineExchange = authorized.controlReceipt.completedExchanges.pop();
+    authorized.controlReceipt.failure = { stage: "inline-baseline", kind: "aborted" };
+    authorized.controlReceipt.baselines.inline.acknowledgement = null;
+    authorized.controlReceipt.abandonedRequest = {
+      request: inlineExchange.request,
+      abandonment: {
+        protocol: "openwrangler-data-wrangler-study-bridge-abandonment-v1",
+        runId: inlineExchange.request.runId,
+        phase: inlineExchange.request.phase,
+        sequence: inlineExchange.request.sequence,
+        kind: inlineExchange.request.kind,
+        requestMonotonicNanoseconds: inlineExchange.request.monotonicNanoseconds,
+        abandonedMonotonicNanoseconds: atMs(804)
+      }
+    };
+    assert.deepEqual(
+      validateDataWranglerComparisonTrialControlReceipt(authorized.controlReceipt),
+      authorized.controlReceipt
+    );
+    input.controlReceipt = authorized.controlReceipt;
+    input.resourceObservation = authorized.resourceObservation;
+    input.supervisorLaunchReceipt = authorized.supervisorLaunchReceipt;
+    assert.throws(
+      () => normalizeDataWranglerComparisonPreNotebookFailureFragment(input),
+      /cannot retain product-action authorization/u
+    );
+  });
+
+  await t.test("acknowledged inline fence", () => {
+    const input = preNotebookFailureInput();
+    const authorized = trialInput({ failure: { stage: "inline", kind: "error" } });
+    authorized.controlReceipt.authorization = null;
+    assert.throws(
+      () =>
+        normalizeDataWranglerComparisonPreNotebookFailureFragment({
+          ...input,
+          controlReceipt: authorized.controlReceipt
+        }),
+      /Acknowledged inline baseline has no durable action authorization/u
+    );
+  });
+
+  await t.test("no outer failure classification", () => {
+    const input = preNotebookFailureInput();
+    delete input.outerEditorFailure.classification;
+    assert.throws(() => normalizeDataWranglerComparisonPreNotebookFailureFragment(input), /missing or unknown fields/u);
+  });
+
+  await t.test("path-bearing outer failure classification", () => {
+    const input = preNotebookFailureInput({ classification: "tmp/failure" });
+    assert.throws(() => normalizeDataWranglerComparisonPreNotebookFailureFragment(input), /classification is invalid/u);
+  });
+
+  await t.test("cold launch before verified cache eviction", () => {
+    const input = preNotebookFailureInput({ kind: "cold" });
+    input.controlReceipt.completedExchanges.pop();
+    input.controlReceipt.failure = { stage: "cold-cache-evicted", kind: "timeout" };
+    input.controlReceipt.coldCacheProof = null;
+    input.cacheProof = null;
+    assert.deepEqual(validateDataWranglerComparisonTrialControlReceipt(input.controlReceipt), input.controlReceipt);
+    assert.throws(
+      () => normalizeDataWranglerComparisonPreNotebookFailureFragment(input),
+      /without verified cache eviction cannot be published/u
+    );
+  });
+
+  await t.test("no notebook phase receipt on the main path", () => {
+    const input = trialInput();
+    delete input.notebookPhaseReceipt;
+    assert.throws(
+      () => normalizeDataWranglerComparisonTrialFragment(input),
+      /Notebook phase receipt must be an object/u
+    );
+  });
 });

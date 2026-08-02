@@ -4,9 +4,7 @@ import {
   digestStudyValue,
   validateDataWranglerStudyFragment
 } from "./data-wrangler-comparison-study.mjs";
-
-export const DATA_WRANGLER_COMPARISON_TRIAL_CONTROL_PROTOCOL =
-  "openwrangler-data-wrangler-comparison-trial-control-v1";
+import { validateDataWranglerComparisonTrialControlReceipt } from "./data-wrangler-comparison-trial-control.mjs";
 
 const ABSOLUTE_MILESTONES = Object.freeze([
   "inlineActionNanoseconds",
@@ -29,6 +27,7 @@ const BRIDGE_ORDER = Object.freeze([
   "cleanup-census"
 ]);
 const NANOSECONDS = /^[1-9]\d{0,29}$/u;
+const OUTER_FAILURE_CLASSIFICATION = /^[a-z][a-z0-9-]{0,63}$/u;
 
 function fail(message) {
   throw new TypeError(message);
@@ -86,29 +85,12 @@ function fixtureForEntry(manifest, scheduleEntry) {
   return fixture;
 }
 
-function orderedControlExchanges(controlReceipt, scheduleEntry) {
-  const baseline = (name) => controlReceipt.baselines?.[name]?.exchange ?? null;
-  return [
-    controlReceipt.sourceVerified,
-    ...(scheduleEntry.kind === "cold" ? [controlReceipt.coldCacheEvicted] : []),
-    controlReceipt.measurementReady,
-    controlReceipt.samplingOrigin,
-    baseline("inline"),
-    baseline("workbench"),
-    baseline("profile"),
-    controlReceipt.samplingStop?.exchange ?? null,
-    controlReceipt.cleanupCensus
-  ].filter((exchange) => exchange !== null && exchange !== undefined);
-}
-
 function bridgeExchanges(controlReceipt, phaseReceipt, scheduleEntry) {
-  const retainedExchanges = orderedControlExchanges(controlReceipt, scheduleEntry);
+  const retainedExchanges = controlReceipt.completedExchanges;
   if (!sameValue(retainedExchanges, phaseReceipt.controlBridge.exchanges)) {
     fail("The parent and notebook bridge exchanges do not match.");
   }
-  const expectedPrefix = BRIDGE_ORDER.filter(
-    (kind) => scheduleEntry.kind === "cold" || kind !== "cold-cache-evicted"
-  );
+  const expectedPrefix = BRIDGE_ORDER.filter((kind) => scheduleEntry.kind === "cold" || kind !== "cold-cache-evicted");
   let previousAcknowledgement = 0n;
   const exchanges = new Map();
   retainedExchanges.forEach((exchange, index) => {
@@ -128,10 +110,7 @@ function bridgeExchanges(controlReceipt, phaseReceipt, scheduleEntry) {
       fail("Trial bridge exchanges are stale, reordered, or do not form the expected prefix.");
     }
     const requestedAt = nanoseconds(request.monotonicNanoseconds, "Trial bridge request timestamp");
-    const acknowledgedAt = nanoseconds(
-      acknowledgement.monotonicNanoseconds,
-      "Trial bridge acknowledgement timestamp"
-    );
+    const acknowledgedAt = nanoseconds(acknowledgement.monotonicNanoseconds, "Trial bridge acknowledgement timestamp");
     if (requestedAt < previousAcknowledgement || acknowledgedAt < requestedAt) {
       fail("Trial bridge timestamps are not monotonic.");
     }
@@ -141,7 +120,7 @@ function bridgeExchanges(controlReceipt, phaseReceipt, scheduleEntry) {
   return exchanges;
 }
 
-function authoritativeMilestones(phaseReceipt, resourceObservation, exchanges, controlReceipt) {
+function authoritativeMilestones(phaseReceipt, resourceObservation, exchanges) {
   exactKeys(phaseReceipt.absoluteMilestones, ABSOLUTE_MILESTONES, "Notebook absolute milestones");
   const originExchange = exchanges.get("sampling-origin");
   const origin = nanoseconds(resourceObservation.clock.originNanoseconds, "Resource sampling origin");
@@ -168,9 +147,9 @@ function authoritativeMilestones(phaseReceipt, resourceObservation, exchanges, c
   for (const [absoluteKey, relativeKey] of Object.entries(mapping)) {
     const value =
       absoluteKey === "samplingStoppedNanoseconds"
-        ? controlReceipt.samplingStop === null || controlReceipt.samplingStop === undefined
+        ? !exchanges.has("sampling-stop")
           ? null
-          : resourceObservation.samples.at(-1)?.endedMonotonicNanoseconds ?? null
+          : (resourceObservation.samples.at(-1)?.endedMonotonicNanoseconds ?? null)
         : phaseReceipt.absoluteMilestones[absoluteKey];
     milestones[relativeKey] = value === null ? null : elapsedMilliseconds(value, origin, `Trial ${absoluteKey}`);
   }
@@ -191,7 +170,7 @@ function authoritativeMilestones(phaseReceipt, resourceObservation, exchanges, c
 }
 
 function verifyAuthorization(controlReceipt, scheduleEntry, fragmentIdentity, milestones, exchanges, phaseReceipt) {
-  const authorization = controlReceipt.baselines?.inline?.authorization ?? null;
+  const authorization = controlReceipt.authorization;
   if (milestones.inlineActionMs === null) {
     if (authorization !== null) fail("A trial without a product action cannot retain action authorization.");
     return;
@@ -212,6 +191,42 @@ function verifyAuthorization(controlReceipt, scheduleEntry, fragmentIdentity, mi
   const action = nanoseconds(phaseReceipt.absoluteMilestones.inlineActionNanoseconds, "Trial inline action");
   if (baseline === undefined || action <= baseline.acknowledgement) {
     fail("The inline action did not follow durable authorization and its acknowledged baseline.");
+  }
+}
+
+function expectedControllerFailureStage(phaseFailure) {
+  return {
+    "run-cell-preparation": "measurement-ready",
+    "source-load": "workbench-baseline",
+    inline: "workbench-baseline",
+    "workbench-open": "profile-baseline",
+    "grid-restoration": "profile-baseline",
+    profiles: "sampling-stop",
+    "after-verification": "cleanup-census"
+  }[phaseFailure.stage];
+}
+
+function validateStatusAndFailureAgreement(controlReceipt, phaseReceipt) {
+  if (controlReceipt.status !== phaseReceipt.status) {
+    fail("The parent control and notebook phase statuses do not match.");
+  }
+  if (phaseReceipt.status === "success") {
+    if (phaseReceipt.failure !== null || controlReceipt.failure !== null) {
+      fail("A successful trial cannot retain failure evidence.");
+    }
+    return;
+  }
+  const phaseFailure = requireRecord(phaseReceipt.failure, "Notebook phase failure");
+  const controlFailure = requireRecord(controlReceipt.failure, "Trial control failure");
+  const expectedStage = expectedControllerFailureStage(phaseFailure);
+  if (expectedStage === undefined || controlFailure.stage !== expectedStage) {
+    fail("The parent control failure does not match the notebook failure boundary.");
+  }
+  if (
+    controlReceipt.abandonedRequest !== null &&
+    controlReceipt.abandonedRequest.request.kind !== controlFailure.stage
+  ) {
+    fail("The abandoned request does not match the failed notebook boundary.");
   }
 }
 
@@ -286,14 +301,42 @@ function workbenchEvidence(phaseReceipt, fixture, milestones, timeoutJourney) {
 }
 
 function distinctEvidence(evidence) {
-  const empty = { count: null, percent: null, displayedPoint: null, displayedUnit: null, lowerBound: null, upperBound: null };
+  const empty = {
+    count: null,
+    percent: null,
+    displayedPoint: null,
+    displayedUnit: null,
+    lowerBound: null,
+    upperBound: null
+  };
   if (evidence.semantics === "exact") {
-    return { ...empty, semantics: "exact", count: evidence.count, percent: evidence.percent, includedInCorrectness: true, includedInSemanticEquivalence: true };
+    return {
+      ...empty,
+      semantics: "exact",
+      count: evidence.count,
+      percent: evidence.percent,
+      includedInCorrectness: true,
+      includedInSemanticEquivalence: true
+    };
   }
   if (evidence.semantics === "approximate") {
-    return { ...empty, semantics: "approximate", lowerBound: evidence.lowerBound, upperBound: evidence.upperBound, includedInCorrectness: true, includedInSemanticEquivalence: true };
+    return {
+      ...empty,
+      semantics: "approximate",
+      lowerBound: evidence.lowerBound,
+      upperBound: evidence.upperBound,
+      includedInCorrectness: true,
+      includedInSemanticEquivalence: true
+    };
   }
-  return { ...empty, semantics: "approximate-unqualified", displayedPoint: evidence.displayedPoint, displayedUnit: evidence.displayedUnit, includedInCorrectness: false, includedInSemanticEquivalence: false };
+  return {
+    ...empty,
+    semantics: "approximate-unqualified",
+    displayedPoint: evidence.displayedPoint,
+    displayedUnit: evidence.displayedUnit,
+    includedInCorrectness: false,
+    includedInSemanticEquivalence: false
+  };
 }
 
 function profileEvidence(phaseReceipt, fixture, milestones, timeoutJourney) {
@@ -360,9 +403,32 @@ function failureReason(phaseReceipt, timeout) {
 
 function outcomeForPhase(phaseReceipt, milestones, resourceObservation, cleanupProof) {
   if (phaseReceipt.status === "success") {
-    if (!resourceObservation.valid) return { status: "product-failure", reasonClass: "resource-sampling", actionStarted: true, correctness: "passed", timeout: null, unsupported: null };
-    if (cleanupProof.status !== "complete") return { status: "product-failure", reasonClass: "cleanup", actionStarted: true, correctness: "passed", timeout: null, unsupported: null };
-    return { status: "success", reasonClass: null, actionStarted: true, correctness: "passed", timeout: null, unsupported: null };
+    if (!resourceObservation.valid)
+      return {
+        status: "product-failure",
+        reasonClass: "resource-sampling",
+        actionStarted: true,
+        correctness: "passed",
+        timeout: null,
+        unsupported: null
+      };
+    if (cleanupProof.status !== "complete")
+      return {
+        status: "product-failure",
+        reasonClass: "cleanup",
+        actionStarted: true,
+        correctness: "passed",
+        timeout: null,
+        unsupported: null
+      };
+    return {
+      status: "success",
+      reasonClass: null,
+      actionStarted: true,
+      correctness: "passed",
+      timeout: null,
+      unsupported: null
+    };
   }
   const actionStarted = milestones.inlineActionMs !== null;
   const timeout = timeoutForFailure(phaseReceipt, milestones);
@@ -386,9 +452,11 @@ function sourceLoadForPhase(phaseReceipt) {
 }
 
 function validateControlBinding(controlReceipt, scheduleEntry, phaseReceipt, cacheProof) {
+  const firstExchange = phaseReceipt.controlBridge.exchanges[0];
   if (
-    controlReceipt.runId !== phaseReceipt.controlBridge.exchanges[0]?.request.runId ||
-    controlReceipt.phase !== phaseReceipt.controlBridge.exchanges[0]?.request.phase ||
+    firstExchange === undefined ||
+    controlReceipt.runId !== firstExchange.request.runId ||
+    controlReceipt.phase !== firstExchange.request.phase ||
     controlReceipt.cacheState !== scheduleEntry.kind
   ) {
     fail("The parent control receipt does not match the notebook trial and scheduled cache state.");
@@ -402,14 +470,13 @@ function validateControlBinding(controlReceipt, scheduleEntry, phaseReceipt, cac
     fail("The notebook source-load boundary does not match the scheduled warm or cold trial.");
   }
   if (scheduleEntry.kind === "cold") {
-    if (
-      controlReceipt.coldCacheEvicted !== null &&
-      controlReceipt.coldCacheEvicted !== undefined &&
-      !sameValue(controlReceipt.coldCacheProof, cacheProof)
-    ) {
+    const cacheEvictionCompleted = controlReceipt.completedExchanges.some(
+      (exchange) => exchange.request.kind === "cold-cache-evicted"
+    );
+    if (cacheEvictionCompleted && !sameValue(controlReceipt.coldCacheProof, cacheProof)) {
       fail("The cold-cache control proof does not match the fragment cache proof.");
     }
-  } else if (controlReceipt.coldCacheEvicted !== null || controlReceipt.coldCacheProof !== null) {
+  } else if (controlReceipt.coldCacheProof !== null) {
     fail("A warm trial cannot retain a cold-cache control receipt.");
   }
 }
@@ -431,15 +498,15 @@ function sourceReceiptForPhase(sourceVerificationReceipt, phaseReceipt) {
  */
 export function normalizeDataWranglerComparisonTrialFragment(
   input,
-  { validateFragment = validateDataWranglerStudyFragment } = {}
+  {
+    validateControlReceipt = validateDataWranglerComparisonTrialControlReceipt,
+    validateFragment = validateDataWranglerStudyFragment
+  } = {}
 ) {
   const manifest = requireRecord(input.manifest, "Study manifest");
   const scheduleEntry = requireRecord(input.scheduleEntry, "Study schedule entry");
   const phaseReceipt = requireRecord(input.notebookPhaseReceipt, "Notebook phase receipt");
-  const controlReceipt = requireRecord(input.controlReceipt, "Trial control receipt");
-  if (controlReceipt.protocol !== DATA_WRANGLER_COMPARISON_TRIAL_CONTROL_PROTOCOL) {
-    fail("Trial control protocol is invalid.");
-  }
+  const controlReceipt = validateControlReceipt(requireRecord(input.controlReceipt, "Trial control receipt"));
   if (
     phaseReceipt.product !== scheduleEntry.product ||
     phaseReceipt.study.engine !== scheduleEntry.engine ||
@@ -448,13 +515,14 @@ export function normalizeDataWranglerComparisonTrialFragment(
   ) {
     fail("Notebook phase evidence does not match the scheduled trial.");
   }
+  validateStatusAndFailureAgreement(controlReceipt, phaseReceipt);
   validateControlBinding(controlReceipt, scheduleEntry, phaseReceipt, input.cacheProof);
   const resourceObservation = requireRecord(input.resourceObservation, "Trial resource observation");
   if (!sameValue(controlReceipt.resourceObservation, resourceObservation)) {
     fail("The supplied PSS observation does not match the parent control receipt.");
   }
   const exchanges = bridgeExchanges(controlReceipt, phaseReceipt, scheduleEntry);
-  const milestones = authoritativeMilestones(phaseReceipt, resourceObservation, exchanges, controlReceipt);
+  const milestones = authoritativeMilestones(phaseReceipt, resourceObservation, exchanges);
   verifyAuthorization(controlReceipt, scheduleEntry, input.fragmentIdentity, milestones, exchanges, phaseReceipt);
   if (!sameValue(input.supervisorLaunchReceipt, resourceObservation.ownershipTracker)) {
     fail("Resource sampling is not bound to the supervisor launch receipt.");
@@ -465,9 +533,7 @@ export function normalizeDataWranglerComparisonTrialFragment(
   const timeout = timeoutForFailure(phaseReceipt, milestones);
   const fixture = fixtureForEntry(manifest, scheduleEntry);
   const actionStarted = milestones.inlineActionMs !== null;
-  const sourceReceipt = actionStarted
-    ? sourceReceiptForPhase(input.sourceVerificationReceipt, phaseReceipt)
-    : null;
+  const sourceReceipt = actionStarted ? sourceReceiptForPhase(input.sourceVerificationReceipt, phaseReceipt) : null;
   const workbenchEngine =
     milestones.workbenchReadyMs === null || phaseReceipt.workbench?.engineLabel === "not-shown"
       ? "unverified"
@@ -507,6 +573,112 @@ export function normalizeDataWranglerComparisonTrialFragment(
     processProofs: structuredClone(input.processProofs),
     resourceObservation: structuredClone(resourceObservation),
     cleanupProof: structuredClone(input.cleanupProof),
+    trialProvenance: structuredClone(input.trialProvenance)
+  };
+  return validateFragment(fragment, manifest);
+}
+
+function preNotebookFailureReason(classification, controlReceipt) {
+  if (classification === "cleanup-failure") return "cleanup";
+  if (
+    ["sampler-invalid", "collector-mismatch", "clock-mismatch", "resource-sampling"].includes(
+      controlReceipt.failure.kind
+    )
+  ) {
+    return "resource-sampling";
+  }
+  return "setup";
+}
+
+function validatePreNotebookControlReceipt(controlReceipt) {
+  if (controlReceipt.status !== "failed" || controlReceipt.failure === null) {
+    fail("A pre-notebook fragment requires a failed trial control receipt.");
+  }
+  if (controlReceipt.authorization !== null) {
+    fail("A pre-notebook failure cannot retain product-action authorization.");
+  }
+  if (controlReceipt.completedExchanges.some((exchange) => exchange.request.kind === "inline-baseline")) {
+    fail("A pre-notebook failure cannot follow an acknowledged product-action fence.");
+  }
+  if (controlReceipt.abandonedRequest?.request.kind === "sampling-stop") {
+    fail("A pre-notebook failure cannot retain an ambiguous started action.");
+  }
+}
+
+/**
+ * Records an editor failure that happened after launch but before the notebook
+ * phase could publish a receipt. It carries no reconstructed notebook or UI
+ * evidence; only independently retained controller, process, and cleanup
+ * receipts cross this boundary.
+ */
+export function normalizeDataWranglerComparisonPreNotebookFailureFragment(
+  input,
+  {
+    validateControlReceipt = validateDataWranglerComparisonTrialControlReceipt,
+    validateFragment = validateDataWranglerStudyFragment
+  } = {}
+) {
+  const manifest = requireRecord(input.manifest, "Study manifest");
+  const scheduleEntry = requireRecord(input.scheduleEntry, "Study schedule entry");
+  const outerFailure = requireRecord(input.outerEditorFailure, "Outer editor failure");
+  exactKeys(outerFailure, ["status", "classification"], "Outer editor failure");
+  if (
+    outerFailure.status !== "failed" ||
+    typeof outerFailure.classification !== "string" ||
+    !OUTER_FAILURE_CLASSIFICATION.test(outerFailure.classification)
+  ) {
+    fail("The outer editor failure classification is invalid.");
+  }
+  const controlReceipt = validateControlReceipt(requireRecord(input.controlReceipt, "Trial control receipt"));
+  validatePreNotebookControlReceipt(controlReceipt);
+  if (controlReceipt.cacheState !== scheduleEntry.kind) {
+    fail("The failed trial control receipt does not match the scheduled cache state.");
+  }
+  if (scheduleEntry.kind === "cold") {
+    const cacheEvictionCompleted = controlReceipt.completedExchanges.some(
+      (exchange) => exchange.request.kind === "cold-cache-evicted"
+    );
+    if (!cacheEvictionCompleted) {
+      fail("A launched cold failure without verified cache eviction cannot be published by the current study schema.");
+    }
+    if (!sameValue(controlReceipt.coldCacheProof, input.cacheProof)) {
+      fail("The cold-cache control proof does not match the pre-notebook fragment cache proof.");
+    }
+  }
+  const resourceObservation = requireRecord(input.resourceObservation, "Trial resource observation");
+  const cleanupProof = requireRecord(input.cleanupProof, "Trial cleanup proof");
+  if (!sameValue(controlReceipt.resourceObservation, resourceObservation)) {
+    fail("The supplied PSS observation does not match the failed trial control receipt.");
+  }
+  if (!sameValue(input.supervisorLaunchReceipt, resourceObservation.ownershipTracker)) {
+    fail("Resource sampling is not bound to the supervisor launch receipt.");
+  }
+  if (!sameValue(input.supervisorTerminalReceipt, cleanupProof.supervisorTerminalReceipt)) {
+    fail("Cleanup is not bound to the supervisor terminal receipt.");
+  }
+  const fragment = {
+    ...structuredClone(input.fragmentIdentity),
+    outcome: {
+      status: "pre-action-invalid",
+      reasonClass: preNotebookFailureReason(outerFailure.classification, controlReceipt),
+      actionStarted: false,
+      correctness: "not-reached",
+      timeout: null,
+      unsupported: null
+    },
+    milestones: createEmptyStudyMilestones(),
+    cacheProof: structuredClone(input.cacheProof),
+    sourceLoad: {
+      status: "not-reached",
+      durationMs: null,
+      includedInInlineTiming: scheduleEntry.kind === "cold"
+    },
+    engineEvidence: null,
+    environmentGate: structuredClone(input.environmentGate),
+    uiEvidence: null,
+    processProofs: structuredClone(input.processProofs),
+    resourceObservation: structuredClone(resourceObservation),
+    cleanupProof: structuredClone(cleanupProof),
     trialProvenance: structuredClone(input.trialProvenance)
   };
   return validateFragment(fragment, manifest);
