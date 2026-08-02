@@ -30,12 +30,17 @@ export function resultEnvironmentKey(jobId) {
 export function requireCiResults({
   requiredResults,
   documentationOnly,
+  draftPullRequest,
+  lightweightOnly,
   releasedJupyterResult,
   releasedJupyterRequired,
   remoteResult,
   remoteRequired
 }) {
   const failures = [];
+  if (lightweightOnly !== (documentationOnly || draftPullRequest)) {
+    failures.push("lightweight classifier is inconsistent with documentation and draft state");
+  }
   for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
     const result = requiredResults[jobId];
     if (result !== "success") {
@@ -43,7 +48,7 @@ export function requireCiResults({
     }
   }
 
-  const expectedProductResult = documentationOnly ? "skipped" : "success";
+  const expectedProductResult = lightweightOnly ? "skipped" : "success";
   for (const jobId of PRODUCT_CI_JOBS) {
     const result = requiredResults[jobId];
     if (result !== expectedProductResult) {
@@ -51,9 +56,9 @@ export function requireCiResults({
     }
   }
 
-  const expectedReleasedJupyterResult = !documentationOnly && releasedJupyterRequired ? "success" : "skipped";
-  if (documentationOnly && releasedJupyterRequired) {
-    failures.push("released-jupyter classifier is inconsistent with documentation-only mode");
+  const expectedReleasedJupyterResult = !lightweightOnly && releasedJupyterRequired ? "success" : "skipped";
+  if (lightweightOnly && releasedJupyterRequired) {
+    failures.push("released-jupyter classifier is inconsistent with lightweight mode");
   }
   if (releasedJupyterResult !== expectedReleasedJupyterResult) {
     failures.push(
@@ -61,9 +66,9 @@ export function requireCiResults({
     );
   }
 
-  const expectedRemoteResult = !documentationOnly && remoteRequired ? "success" : "skipped";
-  if (documentationOnly && remoteRequired) {
-    failures.push("remote-workspace classifier is inconsistent with documentation-only mode");
+  const expectedRemoteResult = !lightweightOnly && remoteRequired ? "success" : "skipped";
+  if (lightweightOnly && remoteRequired) {
+    failures.push("remote-workspace classifier is inconsistent with lightweight mode");
   }
   if (remoteResult !== expectedRemoteResult) {
     failures.push(`${OPTIONAL_CI_JOB}=${remoteResult ?? "missing"} (expected ${expectedRemoteResult})`);
@@ -71,6 +76,11 @@ export function requireCiResults({
 
   if (failures.length > 0) {
     throw new Error(`Required CI did not pass: ${failures.join(", ")}.`);
+  }
+  if (draftPullRequest) {
+    throw new Error(
+      "Draft pull request passed fast feedback; mergeable validation is deferred until ready_for_review reruns full CI."
+    );
   }
 }
 
@@ -87,6 +97,8 @@ function main(environment) {
   requireCiResults({
     requiredResults,
     documentationOnly: parseRequiredFlag(environment.DOCUMENTATION_ONLY, "DOCUMENTATION_ONLY"),
+    draftPullRequest: parseRequiredFlag(environment.DRAFT_PULL_REQUEST, "DRAFT_PULL_REQUEST"),
+    lightweightOnly: parseRequiredFlag(environment.LIGHTWEIGHT_ONLY, "LIGHTWEIGHT_ONLY"),
     releasedJupyterResult: environment[resultEnvironmentKey(CONDITIONAL_CI_JOB)],
     releasedJupyterRequired: parseRequiredFlag(environment.RELEASED_JUPYTER_REQUIRED, "RELEASED_JUPYTER_REQUIRED"),
     remoteResult: environment[resultEnvironmentKey(OPTIONAL_CI_JOB)],

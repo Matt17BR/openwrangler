@@ -3,6 +3,7 @@ name: CodeQL
 on:
   pull_request:
     branches: [main, release/1.x]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main, release/1.x]
   schedule:
@@ -24,6 +25,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
+      draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
+      lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -37,6 +40,7 @@ jobs:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_PR_DRAFT: ${{ github.event.pull_request.draft }}
 
   analyze:
     name: Analyze (${{ matrix.language }})
@@ -53,21 +57,31 @@ jobs:
           ${{
             needs.classify.result != 'success' ||
             (needs.classify.outputs.documentation_only != 'true' &&
-             needs.classify.outputs.documentation_only != 'false')
+             needs.classify.outputs.documentation_only != 'false') ||
+            (needs.classify.outputs.draft_pull_request != 'true' &&
+             needs.classify.outputs.draft_pull_request != 'false') ||
+            (needs.classify.outputs.lightweight_only != 'true' &&
+             needs.classify.outputs.lightweight_only != 'false') ||
+            (needs.classify.outputs.lightweight_only == 'true' &&
+             needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.draft_pull_request == 'false') ||
+            (needs.classify.outputs.lightweight_only == 'false' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.draft_pull_request == 'true'))
           }}
         run: exit 1
-      - name: Preserve required documentation-only context
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only == 'true' }}
-        run: echo "CodeQL inputs are unchanged; this language cell preserves its required check context."
+      - name: Preserve required lightweight context
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'true' }}
+        run: echo "Full CodeQL analysis is deferred; this language cell preserves its required check context."
       - uses: actions/checkout@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
       - uses: github/codeql-action/init@v4
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
         with:
           config-file: ./.github/codeql-config.yml
           languages: ${{ matrix.language }}
           queries: security-extended
       - uses: github/codeql-action/analyze@v4
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.documentation_only != 'true' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
         with:
           category: "/language:${{ matrix.language }}"
