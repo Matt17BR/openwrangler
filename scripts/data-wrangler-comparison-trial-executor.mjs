@@ -1,0 +1,448 @@
+import { isAbsolute } from "node:path";
+import { runEditorAcceptancePhase } from "./editor-acceptance.mjs";
+import { createDataWranglerComparisonProcessEvidence } from "./data-wrangler-comparison-process-evidence.mjs";
+import { controlDataWranglerComparisonMeasuredTrial } from "./data-wrangler-comparison-trial-control.mjs";
+import { createLinuxStudySupervisorSpawnAdapter } from "./linux-study-supervisor-client.mjs";
+import { LinuxPssTreeSampler } from "./linux-pss-sampler.mjs";
+
+export const DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL =
+  "openwrangler-data-wrangler-comparison-trial-executor-v1";
+
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const PHASE = /^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/u;
+const FAILURE_CLASSIFICATION = /^[a-z][a-z0-9-]{0,63}$/u;
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateInput(input) {
+  if (!isRecord(input)) throw new TypeError("Comparison trial executor input must be an object.");
+  if (!UUID_V4.test(input.runId ?? "") || !PHASE.test(input.phase ?? "")) {
+    throw new TypeError("Comparison trial executor correlation fields are invalid.");
+  }
+  if (!["warm", "cold"].includes(input.cacheState)) {
+    throw new TypeError("Comparison trial executor cache state must be warm or cold.");
+  }
+  if (!["open-wrangler", "data-wrangler"].includes(input.product)) {
+    throw new TypeError("Comparison trial executor product is invalid.");
+  }
+  if (
+    typeof input.requestPath !== "string" ||
+    !isAbsolute(input.requestPath) ||
+    typeof input.acknowledgementPath !== "string" ||
+    !isAbsolute(input.acknowledgementPath) ||
+    input.requestPath === input.acknowledgementPath
+  ) {
+    throw new TypeError("Comparison trial executor requires distinct absolute bridge paths.");
+  }
+  if (
+    !isRecord(input.selectedKernel) ||
+    typeof input.selectedKernel.name !== "string" ||
+    typeof input.selectedKernel.displayName !== "string"
+  ) {
+    throw new TypeError("Comparison trial executor requires the selected kernelspec identity.");
+  }
+  for (const [value, label] of [
+    [input.editorPhaseOptions, "editor phase"],
+    [input.supervisorOptions, "supervisor"],
+    [input.processEvidenceOptions, "process evidence"]
+  ]) {
+    if (!isRecord(value)) throw new TypeError(`Comparison trial executor ${label} options must be an object.`);
+  }
+  if (input.samplerOptions !== undefined && !isRecord(input.samplerOptions)) {
+    throw new TypeError("Comparison trial executor sampler options must be an object.");
+  }
+  if (typeof input.authorizeAction !== "function") {
+    throw new TypeError("Comparison trial executor requires a synchronous action authorizer.");
+  }
+  return input;
+}
+
+function validateDependencies(dependencies) {
+  if (!isRecord(dependencies)) throw new TypeError("Comparison trial executor dependencies must be an object.");
+  for (const [name, value] of Object.entries(dependencies)) {
+    if (name === "editorRunnerDependencies" || name === "controlDependencies") continue;
+    if (typeof value !== "function") {
+      throw new TypeError(`Comparison trial executor dependency ${name} must be a function.`);
+    }
+  }
+  if (dependencies.editorRunnerDependencies !== undefined && !isRecord(dependencies.editorRunnerDependencies)) {
+    throw new TypeError("Comparison trial editor-runner dependencies must be an object.");
+  }
+  if (dependencies.controlDependencies !== undefined && !isRecord(dependencies.controlDependencies)) {
+    throw new TypeError("Comparison trial control dependencies must be an object.");
+  }
+}
+
+function createDeferred() {
+  let resolvePromise;
+  let rejectPromise;
+  let settled = false;
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  void promise.catch(() => {});
+  return Object.freeze({
+    promise,
+    resolve(value) {
+      if (settled) return;
+      settled = true;
+      resolvePromise(value);
+    },
+    reject(error) {
+      if (settled) return;
+      settled = true;
+      rejectPromise(error);
+    }
+  });
+}
+
+function settled(promise) {
+  return Promise.resolve(promise).then(
+    (value) => Object.freeze({ status: "fulfilled", value }),
+    (reason) => Object.freeze({ status: "rejected", reason })
+  );
+}
+
+function boundedFailureClassification(error, fallback) {
+  const candidates = [error?.kind, error?.code, error?.name];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const normalized = candidate
+      .replace(/([a-z0-9])([A-Z])/gu, "$1-$2")
+      .replace(/[^a-zA-Z0-9]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .toLowerCase();
+    if (FAILURE_CLASSIFICATION.test(normalized)) return normalized;
+  }
+  return fallback;
+}
+
+function defaultCreateSampler({ launchReceipt, classify, samplerOptions }) {
+  return new LinuxPssTreeSampler({
+    ...(samplerOptions ?? {}),
+    supervisorPid: launchReceipt.supervisor.pid,
+    supervisorStartTimeTicks: launchReceipt.supervisor.startTimeTicks,
+    editorRootPid: launchReceipt.editorRoot.pid,
+    editorRootStartTimeTicks: launchReceipt.editorRoot.startTimeTicks,
+    ownershipReceipt: launchReceipt,
+    classify
+  });
+}
+
+function defaultSignalSupervisor(adapter) {
+  const child = adapter.child();
+  if (!child || typeof child.kill !== "function") {
+    throw new Error("The Linux study supervisor child is unavailable for termination.");
+  }
+  child.kill("SIGTERM");
+}
+
+function validateAdapter(adapter) {
+  if (
+    !isRecord(adapter) ||
+    typeof adapter.spawnProcess !== "function" ||
+    typeof adapter.waitForLaunch !== "function" ||
+    typeof adapter.waitForCompletion !== "function" ||
+    typeof adapter.child !== "function"
+  ) {
+    throw new TypeError("Comparison trial executor received a malformed supervisor adapter.");
+  }
+  return adapter;
+}
+
+function rawEvidence({
+  input,
+  notebookPhaseReceipt,
+  controlReceipt,
+  cacheProof,
+  processProofs,
+  launchReceipt,
+  supervisorCompletion,
+  outerEditorFailure,
+  actionAuthorized
+}) {
+  return Object.freeze({
+    protocol: DATA_WRANGLER_COMPARISON_TRIAL_EXECUTOR_PROTOCOL,
+    status: notebookPhaseReceipt === null ? "pre-notebook-failure" : "evidence",
+    runId: input.runId,
+    phase: input.phase,
+    cacheState: input.cacheState,
+    product: input.product,
+    actionAuthorized,
+    notebookPhaseReceipt,
+    controlReceipt,
+    cacheProof,
+    processProofs,
+    launchReceipt,
+    supervisorCompletion,
+    outerEditorFailure
+  });
+}
+
+async function completeAfterSetupFailure({
+  input,
+  adapter,
+  editorSettlement,
+  launchReceipt,
+  cacheProof,
+  failure,
+  signalSupervisor
+}) {
+  let signalError;
+  try {
+    await signalSupervisor(adapter, "post-launch-setup-failure");
+  } catch (error) {
+    signalError = error;
+  }
+  const [editor, completion] = await Promise.all([editorSettlement, settled(adapter.waitForCompletion())]);
+  if (signalError !== undefined || completion.status === "rejected") {
+    throw new AggregateError(
+      [failure, signalError, completion.status === "rejected" ? completion.reason : undefined].filter(Boolean),
+      "Comparison trial setup failed and verified supervisor cleanup did not complete."
+    );
+  }
+  if (editor.status === "fulfilled") {
+    throw new AggregateError(
+      [failure],
+      "Comparison trial setup failed after launch but the editor returned unsupported notebook evidence."
+    );
+  }
+  return rawEvidence({
+    input,
+    notebookPhaseReceipt: null,
+    controlReceipt: null,
+    cacheProof,
+    processProofs: null,
+    launchReceipt,
+    supervisorCompletion: completion.value,
+    outerEditorFailure: Object.freeze({
+      status: "failed",
+      classification: boundedFailureClassification(failure, "post-launch-setup-failure")
+    }),
+    actionAuthorized: false
+  });
+}
+
+/**
+ * Run one already-prepared study trial. This function coordinates evidence
+ * collection only; it does not normalize or publish a study fragment.
+ */
+export async function executeDataWranglerComparisonTrial(
+  inputValue,
+  {
+    createSupervisorAdapter = createLinuxStudySupervisorSpawnAdapter,
+    runEditorPhase = runEditorAcceptancePhase,
+    createProcessEvidence = createDataWranglerComparisonProcessEvidence,
+    createSampler = defaultCreateSampler,
+    controlTrial = controlDataWranglerComparisonMeasuredTrial,
+    prepareSourceCache,
+    signalSupervisor = defaultSignalSupervisor,
+    editorRunnerDependencies = {},
+    controlDependencies = {}
+  } = {}
+) {
+  const input = validateInput(inputValue);
+  const dependencies = {
+    createSupervisorAdapter,
+    runEditorPhase,
+    createProcessEvidence,
+    createSampler,
+    controlTrial,
+    prepareSourceCache,
+    signalSupervisor,
+    editorRunnerDependencies,
+    controlDependencies
+  };
+  validateDependencies(dependencies);
+
+  let cacheProof = null;
+  if (input.cacheState === "warm") {
+    cacheProof = await prepareSourceCache({ cacheState: "warm" });
+  }
+
+  const adapter = validateAdapter(createSupervisorAdapter(input.supervisorOptions));
+  const spawnObserved = createDeferred();
+  const editorPromise = Promise.resolve().then(() =>
+    runEditorPhase(
+      { ...input.editorPhaseOptions, runId: input.runId, phase: input.phase },
+      {
+        ...editorRunnerDependencies,
+        spawnProcess(...arguments_) {
+          try {
+            const child = adapter.spawnProcess(...arguments_);
+            spawnObserved.resolve(child);
+            return child;
+          } catch (error) {
+            spawnObserved.reject(error);
+            throw error;
+          }
+        }
+      }
+    )
+  );
+  const editorSettlement = settled(editorPromise);
+  const spawnOrEditor = await Promise.race([
+    spawnObserved.promise.then(() => "spawned"),
+    editorSettlement.then(() => "editor-settled")
+  ]);
+  if (spawnOrEditor !== "spawned") {
+    const editor = await editorSettlement;
+    if (editor.status === "rejected") throw editor.reason;
+    throw new Error("Comparison trial editor phase settled without launching its supervisor.");
+  }
+
+  let launchReceipt;
+  try {
+    launchReceipt = await adapter.waitForLaunch();
+  } catch (error) {
+    const editor = await editorSettlement;
+    if (editor.status === "rejected") {
+      throw new AggregateError([error, editor.reason], "Comparison trial supervisor launch was not verified.");
+    }
+    throw error;
+  }
+
+  let processEvidence;
+  let sampler;
+  try {
+    processEvidence = createProcessEvidence({
+      ...input.processEvidenceOptions,
+      launchReceipt,
+      product: input.product,
+      expectedKernel: input.selectedKernel
+    });
+    if (
+      !isRecord(processEvidence) ||
+      typeof processEvidence.classify !== "function" ||
+      typeof processEvidence.snapshotProcessProofs !== "function"
+    ) {
+      throw new TypeError("Comparison trial process-evidence factory returned a malformed value.");
+    }
+    sampler = createSampler({
+      launchReceipt,
+      classify: processEvidence.classify,
+      samplerOptions: input.samplerOptions
+    });
+  } catch (error) {
+    return completeAfterSetupFailure({
+      input,
+      adapter,
+      editorSettlement,
+      launchReceipt,
+      cacheProof,
+      failure: error,
+      signalSupervisor
+    });
+  }
+
+  const controlAbort = new AbortController();
+  let actionAuthorized = false;
+  let processProofs = null;
+  const authorizeMeasuredAction = () => {
+    if (actionAuthorized) throw new Error("Comparison trial product action was authorized more than once.");
+    const proofs = processEvidence.snapshotProcessProofs({ selectedKernel: input.selectedKernel });
+    if (!isRecord(proofs) || (proofs && typeof proofs.then === "function")) {
+      throw new TypeError("Comparison trial process proofs must be captured synchronously before authorization.");
+    }
+    const authorization = input.authorizeAction();
+    if (authorization && typeof authorization.then === "function") {
+      throw new TypeError("Comparison trial product-action authorization must be synchronous.");
+    }
+    processProofs = proofs;
+    actionAuthorized = true;
+    return authorization;
+  };
+
+  const evictColdCache = async ({ request }) => {
+    const proof = await prepareSourceCache({ cacheState: "cold", request });
+    cacheProof = proof;
+    return proof;
+  };
+  const controlPromise = Promise.resolve().then(() =>
+    controlTrial(
+      {
+        requestPath: input.requestPath,
+        acknowledgementPath: input.acknowledgementPath,
+        runId: input.runId,
+        phase: input.phase,
+        cacheState: input.cacheState,
+        sampler,
+        authorizeAction: authorizeMeasuredAction,
+        signal: controlAbort.signal
+      },
+      {
+        ...controlDependencies,
+        ...(input.cacheState === "cold" ? { evictColdCache } : {})
+      }
+    )
+  );
+  const controlSettlement = settled(controlPromise);
+  const first = await Promise.race([
+    editorSettlement.then((outcome) => ({ owner: "editor", outcome })),
+    controlSettlement.then((outcome) => ({ owner: "control", outcome }))
+  ]);
+
+  let earlySignalError;
+  if (first.owner === "editor") {
+    if (first.outcome.status === "rejected" || first.outcome.value?.status === "failed") {
+      controlAbort.abort("editor-phase-finished-without-a-successful-notebook-receipt");
+    }
+  } else if (
+    first.outcome.status === "rejected" ||
+    (first.outcome.value?.status === "failed" && first.outcome.value.abandonedRequest === null)
+  ) {
+    try {
+      await signalSupervisor(adapter, "trial-control-failed-before-a-retained-abandonment");
+    } catch (error) {
+      earlySignalError = error;
+    }
+  }
+
+  const [editor, control] = await Promise.all([editorSettlement, controlSettlement]);
+  const completion = await adapter.waitForCompletion();
+  const notebookPhaseReceipt = editor.status === "fulfilled" ? editor.value : null;
+  const controlReceipt = control.status === "fulfilled" ? control.value : null;
+
+  if (control.status === "rejected") {
+    throw new AggregateError(
+      [control.reason, earlySignalError, ...(editor.status === "rejected" ? [editor.reason] : [])].filter(Boolean),
+      "Comparison trial control failed without publishable raw evidence."
+    );
+  }
+  if (actionAuthorized && notebookPhaseReceipt === null) {
+    throw new AggregateError(
+      [editor.reason],
+      "Comparison trial authorized a product action but lost its notebook evidence; the trial must not be retried."
+    );
+  }
+  if (notebookPhaseReceipt === null) {
+    return rawEvidence({
+      input,
+      notebookPhaseReceipt: null,
+      controlReceipt,
+      cacheProof,
+      processProofs,
+      launchReceipt,
+      supervisorCompletion: completion,
+      outerEditorFailure: Object.freeze({
+        status: "failed",
+        classification: boundedFailureClassification(editor.reason, "editor-phase-failure")
+      }),
+      actionAuthorized: false
+    });
+  }
+  return rawEvidence({
+    input,
+    notebookPhaseReceipt,
+    controlReceipt,
+    cacheProof,
+    processProofs,
+    launchReceipt,
+    supervisorCompletion: completion,
+    outerEditorFailure: null,
+    actionAuthorized
+  });
+}
