@@ -98,6 +98,24 @@ worktrees keep using their own Git common directory when no bootstrap receipt ex
 worktree, it copies the exact locally resolved base commit into the bare manager without contacting `origin`, then
 rechecks the self-contained object store. A command from an existing child uses that child's current commit as before.
 
+Old standalone task clones below the bootstrap source's `tmp/codex-checkpoints` directory are not managed worktrees.
+Inspect one by slug with `npm run checkout:legacy-audit -- <slug>` and declare only exact ignored generated content with
+`--generated-root <path>` or `--generated-file <path>`. The command derives the candidate path from the signed bootstrap
+receipt; it never accepts an arbitrary checkout path. It requires a clean, complete standalone repository, runs strict
+full `git fsck`, and accounts for every ignored leaf against the declared list. It also rejects includes, external
+attributes/excludes, filters, split or sparse indexes, worktree-local config, operation state, and private refs before
+it can trust the worktree. Before Git starts, the audit validates the candidate's administrative paths and copies its
+config, index, and refs into a bounded private snapshot. Later Git probes use that snapshot and the already validated
+object directory, so a concurrent config change cannot start a filter. The snapshot is removed after the audit.
+The audit pins the object directory, not every object byte. Another process owned by the same user could still replace
+an object during the read. That is safe at this stage because the record cannot move or delete anything; the recovery
+archive must read and verify every object again before a checkout can move.
+`npm run checkout:legacy-adopt -- <slug> --owner <task> ...` records two matching full audits, then repeats that audit
+after the final test/review hook immediately before publishing an append-only review record. It does not register,
+move, archive, or delete the clone. `npm run checkout:legacy-status -- [slug]` reports both published records and
+interrupted attempts. None of these commands authorizes movement or cleanup. Do not run adoption against a real
+candidate until its allowlist and inclusion in the cleanup batch have been reviewed.
+
 The coordinating agent creates task isolation with
 `npm run checkout:create -- <slug> --owner <canonical-task-name>`. Add `--generated-root node_modules`, or another
 exact top-level directory, only when Git ignores that directory and it is absent from the new checkout. The manager

@@ -24,7 +24,9 @@ import {
   bootstrapCheckoutManager,
   classifyQuarantineObservation,
   createCheckoutManager,
-  normalizeWorktreeRegistryPath
+  normalizeWorktreeRegistryPath,
+  requireSynchronousLifecycleResult,
+  validateLegacyIndexStages
 } from "./checkout-lifecycle.mjs";
 import {
   repositoryPythonEnvironment,
@@ -63,6 +65,13 @@ test("repository Python child environments disable bytecode without case-variant
   );
 });
 
+test("the synchronous lifecycle lock guard rejects Promises and thenables", () => {
+  const value = { status: "complete" };
+  assert.equal(requireSynchronousLifecycleResult(value), value);
+  lifecycleError(() => requireSynchronousLifecycleResult(Promise.resolve(value)), "async-lifecycle-operation");
+  lifecycleError(() => requireSynchronousLifecycleResult({ then() {} }), "async-lifecycle-operation");
+});
+
 function git(cwd, ...args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
@@ -97,6 +106,7 @@ function fixtureRun(behavior = {}) {
     if (!options.allowFailure) {
       assert.equal(normalized.status, 0, `${command} ${args.join(" ")} failed: ${normalized.stderr}`);
     }
+    if (command === "git") behavior.afterGit?.({ args: [...args], options, result: normalized });
     if (command === "git" && args.includes("worktree") && args.includes("list") && behavior.worktreeTransform) {
       return Object.freeze({ ...normalized, stdout: behavior.worktreeTransform(normalized.stdout) });
     }
@@ -142,6 +152,33 @@ function create(fixture, slug, options = {}) {
     branch: `agent/${slug}`,
     ownerTask: options.ownerTask ?? `/root/${slug}`,
     generatedRoots: options.generatedRoots ?? []
+  });
+}
+
+function legacyCandidate(fixture, slug, options = {}) {
+  const parent = join(fixture.repository, "tmp", "codex-checkpoints");
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const checkout = join(parent, slug);
+  git(fixture.root, "clone", "-q", fixture.repository, checkout);
+  git(checkout, "config", "user.name", "Checkout Test");
+  git(checkout, "config", "user.email", "checkout@example.invalid");
+  mkdirSync(join(checkout, "node_modules", "example"), { recursive: true });
+  writeFileSync(join(checkout, "node_modules", "example", "index.js"), "generated dependency\n");
+  writeFileSync(join(checkout, "fixture.ignored"), "generated artifact\n");
+  options.configure?.(checkout);
+  return checkout;
+}
+
+function fileSnapshot(path) {
+  const metadata = lstatSync(path, { bigint: true });
+  return Object.freeze({
+    device: metadata.dev.toString(),
+    inode: metadata.ino.toString(),
+    size: metadata.size.toString(),
+    mode: metadata.mode.toString(),
+    mtimeNs: metadata.mtimeNs.toString(),
+    ctimeNs: metadata.ctimeNs.toString(),
+    sha256: createHash("sha256").update(readFileSync(path)).digest("hex")
   });
 }
 
@@ -191,6 +228,629 @@ test("bootstrap publishes one self-contained bare manager and routes source and 
     assert.equal(
       behavior.networkCommands[0].some((item) => /^https?:|^ssh:|^[^/]+@[^:]+:/u.test(item)),
       false
+    );
+  });
+});
+
+test("legacy audit is read-only and accounts for every declared ignored leaf", () => {
+  withRepository((fixture) => {
+    const published = bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "1".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-audit");
+    const indexPath = join(checkout, ".git", "index");
+    const indexBefore = fileSnapshot(indexPath);
+    const readmeBefore = fileSnapshot(join(checkout, "README.md"));
+    const evidence = defaultManager(fixture).legacyAudit({
+      slug: "legacy-audit",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+
+    assert.equal(evidence.state, "adopted-review-required");
+    assert.equal(evidence.source.checkout, checkout);
+    assert.equal(evidence.git.head, git(checkout, "rev-parse", "HEAD"));
+    assert.deepEqual(Object.keys(evidence.git.fsck).sort(), ["mode", "stderrSha256", "stdoutSha256"]);
+    assert.equal(evidence.git.fsck.mode, "strict-full-no-dangling");
+    assert.equal(evidence.git.ignoredCount, 2);
+    assert.deepEqual(evidence.generated.allowlist, [
+      { kind: "file", path: "fixture.ignored" },
+      { kind: "directory", path: "node_modules" }
+    ]);
+    assert.equal(evidence.generated.inventory.entryCount, 4);
+    assert.equal(evidence.authorizesMove, false);
+    assert.equal(evidence.authorizesCleanup, false);
+    assert.deepEqual(fileSnapshot(indexPath), indexBefore);
+    assert.deepEqual(fileSnapshot(join(checkout, "README.md")), readmeBefore);
+    assert.equal(existsSync(join(published.statePath, "legacy-adoptions")), false);
+  });
+});
+
+test("legacy adoption records two identical audits in an append-only review journal", () => {
+  withRepository((fixture) => {
+    const published = bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "2".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-adopt");
+    const managed = defaultManager(fixture, { tokenFactory: () => "3".repeat(32) });
+    const child = managed.create({
+      slug: "legacy-status-child",
+      branch: "agent/legacy-status-child",
+      ownerTask: "/root/legacy-status-child"
+    });
+    const result = managed.legacyAdopt({
+      slug: "legacy-adopt",
+      ownerTask: "/root/legacy-adopt",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+
+    assert.equal(result.status, "adopted-review-required");
+    assert.equal(result.evidence.source.checkout, checkout);
+    assert.equal(result.evidence.source.bootstrapPublication.path, published.receiptPath);
+    assert.match(result.evidence.source.bootstrapPublication.sha256, /^[0-9a-f]{64}$/u);
+    assert.equal(result.authorizesMove, false);
+    assert.equal(result.authorizesCleanup, false);
+    const attempt = join(managed.paths.legacyAdoptionAttempts, "legacy-adopt.00000001");
+    const completion = lstatSync(join(attempt, "complete.json"), { bigint: true });
+    const entry = lstatSync(join(managed.paths.legacyAdoptionEntries, "legacy-adopt.json"), { bigint: true });
+    assert.equal(completion.nlink, 2n);
+    assert.equal(completion.dev, entry.dev);
+    assert.equal(completion.ino, entry.ino);
+    assert.deepEqual(managed.legacyStatus("legacy-adopt"), [
+      {
+        slug: "legacy-adopt",
+        state: "adopted-review-required",
+        generation: 1,
+        ownerTask: "/root/legacy-adopt",
+        checkout,
+        head: result.evidence.git.head,
+        generatedInventorySha256: result.evidence.generated.inventory.sha256,
+        attempts: [{ generation: 1, state: "published-review-required" }],
+        authorizesMove: false,
+        authorizesCleanup: false
+      }
+    ]);
+    assert.deepEqual(
+      createCheckoutManager({ repositoryPath: child.checkoutPath }).legacyStatus("legacy-adopt"),
+      managed.legacyStatus("legacy-adopt")
+    );
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "legacy-adopt",
+          ownerTask: "/root/legacy-adopt",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-adoption-exists"
+    );
+  });
+});
+
+test("legacy adoption retains an interrupted request when the candidate changes between audits", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "4".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-changing");
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "5".repeat(32),
+      hooks: {
+        afterFirstLegacyAudit() {
+          writeFileSync(join(checkout, "node_modules", "late.js"), "appeared after first audit\n");
+        }
+      }
+    });
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "legacy-changing",
+          ownerTask: "/root/legacy-changing",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-checkout-changed"
+    );
+    const attempt = join(managed.paths.legacyAdoptionAttempts, "legacy-changing.00000001");
+    assert.equal(existsSync(join(attempt, "request.json")), true);
+    assert.equal(existsSync(join(attempt, "complete.json")), false);
+    assert.equal(existsSync(join(managed.paths.legacyAdoptionEntries, "legacy-changing.json")), false);
+    assert.deepEqual(managed.legacyStatus("legacy-changing")[0].attempts, [
+      { generation: 1, state: "requested-review-required" }
+    ]);
+  });
+});
+
+test("legacy adoption repeats the full audit after the final publication hook", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "a".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-publish-race");
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "b".repeat(32),
+      hooks: {
+        beforeLegacyAdoptionPublish() {
+          writeFileSync(join(checkout, "node_modules", "publication-race.js"), "late generated file\n");
+        }
+      }
+    });
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "legacy-publish-race",
+          ownerTask: "/root/legacy-publish-race",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-checkout-changed"
+    );
+    const attempt = join(managed.paths.legacyAdoptionAttempts, "legacy-publish-race.00000001");
+    assert.equal(existsSync(join(attempt, "complete.json")), true);
+    assert.equal(existsSync(join(managed.paths.legacyAdoptionEntries, "legacy-publish-race.json")), false);
+    assert.deepEqual(managed.legacyStatus("legacy-publish-race")[0].attempts, [
+      { generation: 1, state: "completed-unpublished-review-required" }
+    ]);
+  });
+});
+
+test("legacy adoption detects a candidate identity change after hard-link publication", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "c".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-post-publish-race");
+    const retained = join(fixture.root, "retained-legacy-post-publish-race");
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "d".repeat(32),
+      hooks: {
+        afterLegacyAdoptionPublish() {
+          renameSync(checkout, retained);
+          mkdirSync(checkout, { mode: 0o700 });
+        }
+      }
+    });
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "legacy-post-publish-race",
+          ownerTask: "/root/legacy-post-publish-race",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "registry-changed"
+    );
+    assert.equal(existsSync(join(retained, "README.md")), true);
+    assert.equal(existsSync(join(managed.paths.legacyAdoptionEntries, "legacy-post-publish-race.json")), true);
+  });
+});
+
+test("legacy adoption preflights persistent JSON size before writing a record", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "e".repeat(32)
+    });
+    legacyCandidate(fixture, "legacy-record-cap");
+    const generatedRoots = Array.from(
+      { length: 64 },
+      (_, index) => `generated-${String(index).padStart(2, "0")}-${"x".repeat(1005)}`
+    );
+    const managed = defaultManager(fixture, { tokenFactory: () => "f".repeat(32) });
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "legacy-record-cap",
+          ownerTask: "/root/legacy-record-cap",
+          generatedRoots
+        }),
+      "legacy-adoption-record-too-large"
+    );
+    const attempt = join(managed.paths.legacyAdoptionAttempts, "legacy-record-cap.00000001");
+    assert.deepEqual(readdirSync(attempt), []);
+    assert.deepEqual(managed.legacyStatus("legacy-record-cap")[0].attempts, [
+      { generation: 1, state: "allocated-review-required" }
+    ]);
+  });
+});
+
+test("legacy audit rejects undeclared ignored content, untracked work, and tracked generated roots", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "6".repeat(32)
+    });
+    const undeclared = legacyCandidate(fixture, "legacy-undeclared", {
+      configure(checkout) {
+        writeFileSync(join(checkout, "extra.ignored"), "not declared\n");
+      }
+    });
+    const untracked = legacyCandidate(fixture, "legacy-untracked", {
+      configure(checkout) {
+        writeFileSync(join(checkout, "untracked.txt"), "not ignored\n");
+      }
+    });
+    const tracked = legacyCandidate(fixture, "legacy-tracked", {
+      configure(checkout) {
+        writeFileSync(join(checkout, "node_modules", "tracked.js"), "tracked despite ignore\n");
+        git(checkout, "add", "-f", "node_modules/tracked.js");
+        git(checkout, "commit", "-q", "-m", "Track generated-looking content");
+      }
+    });
+    const managed = defaultManager(fixture);
+    for (const [slug, checkout] of [
+      ["legacy-undeclared", undeclared],
+      ["legacy-untracked", untracked],
+      ["legacy-tracked", tracked]
+    ]) {
+      assert.equal(existsSync(checkout), true);
+      lifecycleError(
+        () =>
+          managed.legacyAudit({
+            slug,
+            generatedRoots: ["node_modules"],
+            generatedFiles: ["fixture.ignored"]
+          }),
+        "legacy-audit-not-eligible"
+      );
+    }
+  });
+});
+
+test("legacy audit rejects local includes before an external clean filter can start", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "1".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-filter-include");
+    writeFileSync(join(checkout, ".gitattributes"), "README.md filter=sentinel\n");
+    git(checkout, "add", ".gitattributes");
+    git(checkout, "commit", "-q", "-m", "Add filter attributes");
+    const sentinel = join(fixture.root, "filter-started");
+    const filterScript = join(fixture.root, "filter-sentinel.cjs");
+    const includedConfig = join(fixture.root, "included-filter.config");
+    writeFileSync(filterScript, "require('node:fs').writeFileSync(process.argv[2], 'started\\n');\n");
+    git(
+      fixture.root,
+      "config",
+      "--file",
+      includedConfig,
+      "filter.sentinel.clean",
+      `"${process.execPath}" "${filterScript}" "${sentinel}"`
+    );
+    git(checkout, "config", "--local", "include.path", includedConfig);
+    const behavior = {};
+    lifecycleError(
+      () =>
+        defaultManager(fixture, { run: fixtureRun(behavior) }).legacyAudit({
+          slug: "legacy-filter-include",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-audit-not-eligible"
+    );
+    assert.equal(existsSync(sentinel), false);
+    assert.equal(
+      behavior.gitCalls.some(({ args }) => args.includes("diff-files") || args.includes("status")),
+      false
+    );
+  });
+});
+
+test("legacy audit pins configuration before a raced clean filter can start", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "1".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-filter-race");
+    writeFileSync(join(checkout, ".gitattributes"), "README.md filter=sentinel\n");
+    git(checkout, "add", ".gitattributes");
+    git(checkout, "commit", "-q", "-m", "Add filter attributes");
+    const sentinel = join(fixture.root, "raced-filter-started");
+    const filterScript = join(fixture.root, "raced-filter-sentinel.cjs");
+    writeFileSync(filterScript, "require('node:fs').writeFileSync(process.argv[2], 'started\\n');\n");
+    let configCaptures = 0;
+    const behavior = {
+      afterGit({ args }) {
+        if (!args.includes("config") || !args.includes("--local") || !args.includes("--list")) return;
+        configCaptures += 1;
+        if (configCaptures !== 2) return;
+        git(
+          checkout,
+          "config",
+          "--local",
+          "filter.sentinel.clean",
+          `"${process.execPath}" "${filterScript}" "${sentinel}"`
+        );
+        writeFileSync(join(checkout, "README.md"), "changed after pinned configuration\n");
+      }
+    };
+    const managed = defaultManager(fixture, { run: fixtureRun(behavior) });
+    lifecycleError(
+      () =>
+        managed.legacyAudit({
+          slug: "legacy-filter-race",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-audit-not-eligible"
+    );
+    assert.equal(configCaptures, 2);
+    assert.equal(existsSync(sentinel), false);
+    assert.equal(
+      readdirSync(managed.paths.root).some((name) => name.startsWith(".legacy-audit-")),
+      false
+    );
+  });
+});
+
+test("legacy audit rejects external Git administration before starting Git", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "2".repeat(32)
+    });
+    const cases = [
+      ["objects", "directory"],
+      ["refs", "directory"],
+      ["logs", "directory"],
+      ["index", "file"],
+      ["config", "file"]
+    ];
+    for (const [name, kind] of cases) {
+      const slug = `legacy-external-${name}`;
+      const checkout = legacyCandidate(fixture, slug);
+      const source = join(checkout, ".git", name);
+      const external = join(fixture.root, `${slug}-${name}`);
+      renameSync(source, external);
+      symlinkSync(external, source, kind === "directory" ? "dir" : "file");
+      const behavior = {};
+      const managed = defaultManager(fixture, { run: fixtureRun(behavior) });
+      behavior.gitCalls.length = 0;
+      lifecycleError(
+        () =>
+          managed.legacyAudit({
+            slug,
+            generatedRoots: ["node_modules"],
+            generatedFiles: ["fixture.ignored"]
+          }),
+        "legacy-audit-not-eligible"
+      );
+      assert.deepEqual(behavior.gitCalls, []);
+      assert.equal(
+        readdirSync(managed.paths.root).some((entry) => entry.startsWith(".legacy-audit-")),
+        false
+      );
+    }
+  });
+});
+
+test("legacy audit rejects external attributes, excludes, and worktree-local configuration", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "2".repeat(32)
+    });
+    const cases = [
+      ["legacy-attributes-config", "core.attributesFile", join(fixture.root, "attributes")],
+      ["legacy-excludes-config", "core.excludesFile", join(fixture.root, "excludes")],
+      ["legacy-split-config", "core.splitIndex", "true"]
+    ];
+    for (const [slug, key, value] of cases) {
+      const checkout = legacyCandidate(fixture, slug);
+      git(checkout, "config", "--local", key, value);
+      lifecycleError(
+        () =>
+          defaultManager(fixture).legacyAudit({
+            slug,
+            generatedRoots: ["node_modules"],
+            generatedFiles: ["fixture.ignored"]
+          }),
+        "legacy-audit-not-eligible"
+      );
+    }
+    const conditionalInclude = legacyCandidate(fixture, "legacy-conditional-include");
+    git(
+      conditionalInclude,
+      "config",
+      "--local",
+      `includeIf.gitdir:${conditionalInclude}/.path`,
+      join(fixture.root, "conditional.config")
+    );
+    lifecycleError(
+      () =>
+        defaultManager(fixture).legacyAudit({
+          slug: "legacy-conditional-include",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-audit-not-eligible"
+    );
+    const worktree = legacyCandidate(fixture, "legacy-worktree-config");
+    git(worktree, "config", "--local", "extensions.worktreeConfig", "true");
+    git(worktree, "config", "--worktree", "openwrangler.test", "true");
+    assert.equal(existsSync(join(worktree, ".git", "config.worktree")), true);
+    lifecycleError(
+      () =>
+        defaultManager(fixture).legacyAudit({
+          slug: "legacy-worktree-config",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-audit-not-eligible"
+    );
+  });
+});
+
+test("legacy audit rejects split-index files and a retained split-index extension", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "3".repeat(32)
+    });
+    const fileCheckout = legacyCandidate(fixture, "legacy-split-file");
+    writeFileSync(join(fileCheckout, ".git", `sharedindex.${"a".repeat(40)}`), "unexpected shared index\n");
+    lifecycleError(
+      () =>
+        defaultManager(fixture).legacyAudit({
+          slug: "legacy-split-file",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-audit-not-eligible"
+    );
+
+    const extensionCheckout = legacyCandidate(fixture, "legacy-split-extension");
+    git(extensionCheckout, "update-index", "--split-index");
+    const sharedIndex = git(extensionCheckout, "rev-parse", "--path-format=absolute", "--shared-index-path");
+    assert.notEqual(sharedIndex, "");
+    rmSync(sharedIndex);
+    lifecycleError(
+      () =>
+        defaultManager(fixture).legacyAudit({
+          slug: "legacy-split-extension",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-audit-not-eligible"
+    );
+  });
+});
+
+test("legacy audit rejects operation metadata, private refs, and directory index entries", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "4".repeat(32)
+    });
+    for (const [index, namespace] of ["refs/worktree/", "refs/bisect/", "refs/rewritten/"].entries()) {
+      const slug = `legacy-private-ref-${index}`;
+      const checkout = legacyCandidate(fixture, slug);
+      git(checkout, "update-ref", `${namespace}guard`, "HEAD");
+      lifecycleError(
+        () =>
+          defaultManager(fixture).legacyAudit({
+            slug,
+            generatedRoots: ["node_modules"],
+            generatedFiles: ["fixture.ignored"]
+          }),
+        "legacy-audit-not-eligible"
+      );
+    }
+
+    const bisect = legacyCandidate(fixture, "legacy-bisect-state");
+    writeFileSync(join(bisect, ".git", "BISECT_START"), "main\n");
+    lifecycleError(
+      () =>
+        defaultManager(fixture).legacyAudit({
+          slug: "legacy-bisect-state",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-audit-not-eligible"
+    );
+
+    lifecycleError(
+      () => validateLegacyIndexStages(`040000 ${"a".repeat(40)} 0\tvirtual-directory\0`),
+      "legacy-audit-not-eligible"
+    );
+  });
+});
+
+test("legacy audit runs strict full fsck and rejects an unreachable corrupt object", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "5".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-corrupt-object");
+    const objectDirectory = join(checkout, ".git", "objects", "aa");
+    mkdirSync(objectDirectory, { mode: 0o700 });
+    writeFileSync(join(objectDirectory, "a".repeat(38)), "not a valid loose Git object\n");
+    lifecycleError(
+      () =>
+        defaultManager(fixture).legacyAudit({
+          slug: "legacy-corrupt-object",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-audit-not-eligible"
+    );
+  });
+});
+
+test("legacy audit derives its path from the bootstrap receipt and rejects unsafe allowlists", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "7".repeat(32)
+    });
+    legacyCandidate(fixture, "legacy-derived");
+    const managed = defaultManager(fixture);
+    lifecycleError(
+      () =>
+        managed.legacyAudit({
+          slug: "legacy-derived",
+          generatedRoots: ["../node_modules"],
+          generatedFiles: []
+        }),
+      "invalid-legacy-generated-path"
+    );
+    lifecycleError(
+      () =>
+        managed.legacyAudit({
+          slug: "legacy-derived",
+          generatedRoots: ["A/b", "a"],
+          generatedFiles: []
+        }),
+      "invalid-legacy-generated-path"
+    );
+    for (const unsafe of [".GIT/config", "cache.", "cache ", "cache:stream"]) {
+      lifecycleError(
+        () =>
+          managed.legacyAudit({
+            slug: "legacy-derived",
+            generatedRoots: [unsafe]
+          }),
+        "invalid-legacy-generated-path"
+      );
+    }
+    lifecycleError(
+      () =>
+        managed.legacyAudit({
+          slug: "legacy-derived",
+          generatedRoots: ["Node_Modules"],
+          generatedFiles: ["node_modules/example/index.js"]
+        }),
+      "invalid-legacy-generated-path"
+    );
+    lifecycleError(
+      () =>
+        managed.legacyAudit({
+          slug: "legacy-derived",
+          generatedRoots: ["node_modules", "node_modules/example"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "invalid-legacy-generated-path"
+    );
+    const unbootstrapped = manager(fixture);
+    create(fixture, "manager-initializer", { manager: unbootstrapped });
+    lifecycleError(
+      () =>
+        unbootstrapped.legacyAudit({
+          slug: "legacy-derived",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-bootstrap-required"
     );
   });
 });
@@ -2685,6 +3345,50 @@ test("the real CLI plans and archives a finished checkout without deleting it", 
     assert.equal(archived.status, "recovery-archive-recorded");
     assert.equal(existsSync(join(dirname(archived.archivePath), "complete.json")), true);
     assert.equal(readFileSync(join(checkout.checkoutPath, "README.md"), "utf8"), "fixture\n");
+  });
+});
+
+test("the real CLI audits, adopts, and reports one legacy checkout without moving it", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "8".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-cli");
+    const commonArgs = ["legacy-cli", "--generated-root", "node_modules", "--generated-file", "fixture.ignored"];
+    const audit = spawnSync(process.execPath, [SCRIPT, "legacy-audit", ...commonArgs], {
+      cwd: fixture.repository,
+      encoding: "utf8"
+    });
+    assert.equal(audit.status, 0, audit.stderr);
+    assert.equal(JSON.parse(audit.stdout).source.checkout, checkout);
+    const adopt = spawnSync(process.execPath, [SCRIPT, "legacy-adopt", ...commonArgs, "--owner", "/root/legacy-cli"], {
+      cwd: fixture.repository,
+      encoding: "utf8"
+    });
+    assert.equal(adopt.status, 0, adopt.stderr);
+    assert.equal(JSON.parse(adopt.stdout).status, "adopted-review-required");
+    const status = spawnSync(process.execPath, [SCRIPT, "legacy-status", "legacy-cli"], {
+      cwd: fixture.repository,
+      encoding: "utf8"
+    });
+    assert.equal(status.status, 0, status.stderr);
+    assert.equal(JSON.parse(status.stdout)[0].state, "adopted-review-required");
+    for (const args of [
+      ["legacy-status", "legacy-cli", "extra"],
+      ["legacy-status", "legacy-cli", "--owner", "/root/irrelevant"],
+      ["legacy-audit", "legacy-cli", "--revision", "1"],
+      ["bootstrap", "unexpected"]
+    ]) {
+      const invalid = spawnSync(process.execPath, [SCRIPT, ...args], {
+        cwd: fixture.repository,
+        encoding: "utf8"
+      });
+      assert.equal(invalid.status, 1);
+      assert.match(invalid.stderr, /^invalid-cli:/u);
+      assert.equal(invalid.stdout, "");
+    }
+    assert.equal(existsSync(checkout), true);
   });
 });
 
