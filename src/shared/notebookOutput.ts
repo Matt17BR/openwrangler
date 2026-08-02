@@ -1,4 +1,4 @@
-import type { ColumnSummary, GridPage, SessionMetadata } from "./protocol";
+import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata } from "./protocol";
 import { isOpenWranglerResponse } from "./protocolValidation";
 
 export const OPEN_WRANGLER_MIME_V2 = "application/vnd.openwrangler.viewer.v2+json";
@@ -115,7 +115,7 @@ function hasCanonicalCapturedRows(page: GridPage): boolean {
   });
 }
 
-function isCanonicalSavedOutput(metadata: SessionMetadata, page: GridPage): boolean {
+function isCanonicalSavedOutput(metadata: SessionMetadata, page: LiveGridPage): page is GridPage {
   const source = metadata.source;
   const capabilities = metadata.capabilities;
   return (
@@ -139,6 +139,9 @@ function isCanonicalSavedOutput(metadata: SessionMetadata, page: GridPage): bool
     metadata.latestStepInputSchema === undefined &&
     metadata.filterModel.filters.length === 0 &&
     metadata.filterModel.sort.length === 0 &&
+    metadata.shape.rows !== null &&
+    metadata.filteredShape.rows !== null &&
+    page.totalRows !== null &&
     metadata.shape.rows === metadata.filteredShape.rows &&
     metadata.filteredShape.rows === page.totalRows &&
     metadata.shape.columns === metadata.schema.length &&

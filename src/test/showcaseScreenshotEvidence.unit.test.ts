@@ -52,7 +52,7 @@ describe("wide-schema showcase evidence", () => {
     expect(extensionHost).toContain('packagedScreenshotFileName(editor, "filter-result", "dark")');
     expect(extensionHost).toContain("The filter-result grid must show only complete visible rows.");
     expect(extensionHost).toContain('"notebook-pyspark-picker"');
-    expect(extensionHost).toContain("Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x");
+    expect(extensionHost).toContain("Viewing only · First page loads without counting rows · PySpark 4.2.x required");
     expect(extensionHost).toContain("The notebook-variable capture must show only complete rows.");
     expect(extensionHost.indexOf("await captureReleasedJupyterPySparkPicker(")).toBeLessThan(
       extensionHost.indexOf(

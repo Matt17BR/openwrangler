@@ -149,9 +149,11 @@ Choose Notebook Preview Provider**.
   </tr>
 </table>
 
-DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's Spark session and may scan and index
-data for paging, so large or remote dataframes can be expensive to open. Open Wrangler does not install PySpark or
-manage cluster authentication.
+DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's Spark session. The first page loads
+without counting or caching the entire dataframe, and the exact row total appears after the last page. Pages must be
+visited in order because Spark does not guarantee a global row order for an unordered dataframe. If a page boundary
+changes, Open Wrangler asks you to reopen the variable. Open Wrangler does not install PySpark, manage cluster
+authentication, or stop the Spark session.
 
 ## Export
 

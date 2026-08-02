@@ -532,8 +532,12 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /\| DuckDB, experimental\s+\|/u);
   assert.doesNotMatch(readme, /\| DuckDB, preview/u);
   assert.match(readme, /Pickle files are not supported because opening one can run arbitrary code/u);
-  assert.match(readme, /large or remote dataframes can be expensive to open/u);
-  assert.match(readme, /does not install PySpark or\s+manage cluster authentication/u);
+  assert.match(
+    readme,
+    /first page loads\s+without counting or caching the entire dataframe[\s\S]{0,120}exact row total appears after the last page/u
+  );
+  assert.match(readme, /Pages must be\s+visited in order because Spark does not guarantee a global row order/u);
+  assert.match(readme, /does not install PySpark, manage cluster\s+authentication, or stop the Spark session/u);
   assert.match(
     readme,
     /\*\*Next in v1:\*\*[\s\S]{0,220}#36[\s\S]{0,220}#86[\s\S]{0,220}#91[\s\S]{0,180}currently\s+experimental/u

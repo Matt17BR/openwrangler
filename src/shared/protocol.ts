@@ -3,8 +3,10 @@ export * from "./protocol.generated";
 import type {
   ColumnVisualization,
   DataBackend,
-  OpenWranglerRequest,
   DatasetStats,
+  GridPage,
+  LiveGridPage,
+  OpenWranglerRequest,
   SessionSource,
   TypedCellKind
 } from "./protocol.generated";
@@ -34,6 +36,33 @@ export function dataBackendLabel(backend: DataBackend): string {
 
 export function isSessionBoundRequest(request: OpenWranglerRequest): request is SessionBoundRequest {
   return "sessionId" in request;
+}
+
+export function isExactRowCount(value: number | null): value is number {
+  return value !== null;
+}
+
+export function liveGridPageHasMore(page: LiveGridPage): boolean {
+  return page.totalRows === null ? page.hasMore : page.offset + page.rows.length < page.totalRows;
+}
+
+export function isExactGridPage(page: LiveGridPage): page is GridPage {
+  return page.totalRows !== null;
+}
+
+/**
+ * Return the finite virtual-scroll runway for a live page without presenting it
+ * as an exact dataset count. Unknown Spark pages expose only one additional
+ * block, so the user can move forward progressively without an unbounded fake
+ * scrollbar.
+ */
+export function liveGridLogicalRowExtent(page: LiveGridPage): number {
+  if (page.totalRows !== null) return page.totalRows;
+  return Math.min(Number.MAX_SAFE_INTEGER, page.offset + page.rows.length + page.limit);
+}
+
+export function formatSessionRowCount(rows: number | null): string {
+  return rows === null ? "Not counted" : rows.toLocaleString();
 }
 
 export function typedCellKind(value: unknown, isNull: boolean, isNaN: boolean): TypedCellKind {

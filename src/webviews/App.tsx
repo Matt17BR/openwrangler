@@ -14,13 +14,14 @@ import type {
   DataDiff,
   OpenWranglerResponse,
   GridPage,
+  LiveGridPage,
   OperationKind,
   SessionMetadata,
   StepInspectionResponse,
   TransformStep,
   ValuesResponse
 } from "../shared/protocol";
-import { dataBackendLabel } from "../shared/protocol";
+import { dataBackendLabel, formatSessionRowCount, isExactGridPage } from "../shared/protocol";
 import {
   compactFilterModel,
   emptyFilterModel,
@@ -63,7 +64,7 @@ function canRestoreFocusTo(target: HTMLElement | null | undefined): target is HT
 
 export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
-  const [page, setPage] = useState<GridPage | undefined>();
+  const [page, setPage] = useState<LiveGridPage | undefined>();
   const [summaries, setSummaries] = useState<ColumnSummary[]>([]);
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
   const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
@@ -104,7 +105,7 @@ export function App() {
   const pendingRendererSynchronizationRef = useRef<RendererSynchronizationMessage | undefined>(undefined);
   const acknowledgedRendererSynchronizationId = useRef<string | undefined>(undefined);
   const metadataRef = useRef<SessionMetadata | undefined>(undefined);
-  const pageRef = useRef<GridPage | undefined>(undefined);
+  const pageRef = useRef<LiveGridPage | undefined>(undefined);
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
   const pendingStepInspectionRef = useRef<PendingStepInspection | undefined>(undefined);
   const stepInspectionTargetRef = useRef<PendingStepInspection | undefined>(undefined);
@@ -218,7 +219,7 @@ export function App() {
     setMetadata(next);
   }, []);
 
-  const storePage = useCallback((next: GridPage | undefined) => {
+  const storePage = useCallback((next: LiveGridPage | undefined) => {
     pageRef.current = next;
     setPage(next);
   }, []);
@@ -1318,7 +1319,9 @@ export function App() {
                   response.metadata.draftReplacesStepId === undefined
                     ? previous.metadata.schema
                     : (response.metadata.latestStepInputSchema ?? previous.metadata.schema),
-                ...(response.metadata.draftReplacesStepId === undefined && previous.page.offset === response.page.offset
+                ...(response.metadata.draftReplacesStepId === undefined &&
+                previous.page.offset === response.page.offset &&
+                isExactGridPage(previous.page)
                   ? { page: previous.page }
                   : {})
               }
@@ -1977,13 +1980,15 @@ export function App() {
   const installDependencyDisabled = runtimeDependencyInstallPending || importOptionsPending;
   const visibleShape = metadata ? (displayMetadata ?? metadata).filteredShape : undefined;
   const visibleShapeText = visibleShape
-    ? `${visibleShape.rows.toLocaleString()} × ${visibleShape.columns.toLocaleString()}`
+    ? visibleShape.rows === null
+      ? `${visibleShape.columns.toLocaleString()} columns · rows not counted`
+      : `${visibleShape.rows.toLocaleString()} × ${visibleShape.columns.toLocaleString()}`
     : "Preparing session";
   const visibleShapeTitle = visibleShape
-    ? `${visibleShape.rows.toLocaleString()} ${visibleShape.rows === 1 ? "row" : "rows"} × ${visibleShape.columns.toLocaleString()} ${visibleShape.columns === 1 ? "column" : "columns"}`
+    ? `${formatSessionRowCount(visibleShape.rows)} ${visibleShape.rows === 1 ? "row" : "rows"} × ${visibleShape.columns.toLocaleString()} ${visibleShape.columns === 1 ? "column" : "columns"}`
     : undefined;
   const visibleShapeLabel = visibleShape
-    ? `${visibleShape.rows.toLocaleString()} ${visibleShape.rows === 1 ? "row" : "rows"} by ${visibleShape.columns.toLocaleString()} ${visibleShape.columns === 1 ? "column" : "columns"}`
+    ? `${formatSessionRowCount(visibleShape.rows)} ${visibleShape.rows === 1 ? "row" : "rows"} by ${visibleShape.columns.toLocaleString()} ${visibleShape.columns === 1 ? "column" : "columns"}`
     : undefined;
 
   if (foregroundError && !metadata) {
@@ -2390,9 +2395,7 @@ export function App() {
                     <strong>{sessionOpenProgressHeading(sessionOpenProgress)}</strong>
                     {sessionOpenProgress === "preparingSparkView" && (
                       <p>
-                        Opening scans, indexes, and caches the complete PySpark DataFrame so the grid has stable row
-                        positions and an exact row total. To protect unrelated Spark jobs, this kernel operation is
-                        allowed to finish even if you close the view.
+                        Loading the first page without counting every row… The exact total appears after the last page.
                       </p>
                     )}
                   </>
@@ -2570,7 +2573,7 @@ interface ConfirmedView {
 interface ConfirmedViewState {
   view: ConfirmedView;
   metadata: SessionMetadata;
-  page: GridPage;
+  page: LiveGridPage;
   columnWindow: ColumnWindow;
   summaries: ColumnSummary[];
   columnValues: ReadonlyMap<string, ValuesResponse>;
@@ -2711,7 +2714,7 @@ export function alignedColumnWindow(range: VisibleColumnRange, totalColumns: num
 
 function columnWindowFromPage(
   metadata: SessionMetadata,
-  page: GridPage,
+  page: LiveGridPage,
   fallback: ColumnWindow = initialColumnWindow()
 ): ColumnWindow {
   if (!metadata.schema.length) return { offset: 0, limit: Math.max(1, fallback.limit) };
@@ -2772,7 +2775,7 @@ function isSessionOpenProgressStage(value: unknown): value is SessionOpenProgres
   return typeof value === "string" && (SESSION_OPEN_PROGRESS_STAGES as readonly string[]).includes(value);
 }
 
-function pageCoversColumnWindow(metadata: SessionMetadata, page: GridPage, window: ColumnWindow): boolean {
+function pageCoversColumnWindow(metadata: SessionMetadata, page: LiveGridPage, window: ColumnWindow): boolean {
   if (!metadata.schema.length) return page.columnIds.length === 0;
   const expectedIds = metadata.schema
     .slice(window.offset, Math.min(metadata.schema.length, window.offset + window.limit))

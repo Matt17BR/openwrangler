@@ -47,6 +47,7 @@ import {
 import type {
   ColumnReference,
   GridPage,
+  LiveGridPage,
   OpenWranglerRequest,
   OpenWranglerResponse,
   FilterModel,
@@ -364,7 +365,7 @@ function columnReferenceAt(metadata: SessionMetadata, position: number): ColumnR
   return { id: column.id, name: column.name };
 }
 
-function gridColumnCells(page: GridPage, columnId: string): GridPage["rows"][number]["values"] {
+function gridColumnCells(page: LiveGridPage, columnId: string): GridPage["rows"][number]["values"] {
   const position = page.columnIds.indexOf(columnId);
   assert.notEqual(position, -1, `Expected projected page column ${columnId}.`);
   return page.rows.map((row) => {
@@ -374,7 +375,7 @@ function gridColumnCells(page: GridPage, columnId: string): GridPage["rows"][num
   });
 }
 
-function gridColumnDisplays(page: GridPage, columnId: string): string[] {
+function gridColumnDisplays(page: LiveGridPage, columnId: string): string[] {
   return gridColumnCells(page, columnId).map((value) => value.display);
 }
 
@@ -2835,7 +2836,8 @@ async function assertReleasedPySparkPanelAndQueries(
   );
   assert.equal(first.kind, "page");
   if (first.kind !== "page") throw new Error(`The PySpark ${variant} filtered page did not resolve.`);
-  assert.equal(first.page.totalRows, 2);
+  assert.equal(first.page.totalRows, null);
+  assert.equal("hasMore" in first.page && first.page.hasMore, true);
   assert.deepEqual(first.metadata.filterModel, filterModel);
   const recordId = first.metadata.schema.find((column) => column.name === "record_id");
   const amount = first.metadata.schema.find((column) => column.name === "amount");
@@ -2859,6 +2861,7 @@ async function assertReleasedPySparkPanelAndQueries(
   );
   assert.equal(second.kind, "page");
   if (second.kind !== "page") throw new Error(`The PySpark ${variant} second page did not resolve.`);
+  assert.equal(second.page.totalRows, 2);
   assert.deepEqual(gridColumnDisplays(second.page, recordId.id), ["3"]);
 
   const summary = await withBoundedAcceptancePromise(
@@ -6853,6 +6856,7 @@ async function exercisePackagedFirstUseInteractionJourney(
       const active = testing.activeSession();
       return (
         active?.viewState.filterModel.filters.length === 1 &&
+        active.metadata.filteredShape.rows !== null &&
         active.metadata.filteredShape.rows > 0 &&
         active.metadata.filteredShape.rows < PACKAGED_FIRST_USE_ROW_COUNT
       );
@@ -9279,11 +9283,11 @@ async function captureReleasedJupyterPySparkPicker(
       "Filtering the PySpark picker must leave one unambiguous visible dataframe row."
     );
 
-    const expectedDetail = "Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x";
+    const expectedDetail = "Viewing only · First page loads without counting rows · PySpark 4.2.x required";
     const rowText = (await row.innerText()).replace(/\s+/gu, " ").trim();
     assert.match(rowText, /spark_classic_frame/u);
     assert.match(rowText, /PySpark Classic · DataFrame/u);
-    for (const phrase of ["Viewing only", "Full-frame open (scan, index, cache)", "Requires PySpark 4.2.x"]) {
+    for (const phrase of ["Viewing only", "First page loads without counting rows", "PySpark 4.2.x required"]) {
       assert.ok(rowText.includes(phrase), `The PySpark picker row must visibly explain ${phrase}.`);
     }
     const detail = row.getByText(expectedDetail, { exact: true }).first();
@@ -10210,8 +10214,8 @@ async function captureReleasedJupyterPySparkLive(
     assert.equal(await loadedRows.count(), 1, "The PySpark media scene must expose one visible-row status.");
     assert.match(
       (await loadedRows.innerText()).trim(),
-      /^Rows 1\u2013\d+ of 100,000$/u,
-      "The PySpark media scene must show the live 100,000-row source."
+      /^Rows 1\u2013\d+ · total appears after the last page$/u,
+      "The PySpark media scene must label its progressive live total honestly."
     );
     const gridBox = await gridScroller.boundingBox();
     const rowHeaderBox = await app.locator("th.rowHeader").first().boundingBox();
@@ -14795,7 +14799,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
 
     let structuralRevision = active.metadata.revision;
     let structuralMetadata = active.metadata;
-    let structuralPage: GridPage | undefined;
+    let structuralPage: LiveGridPage | undefined;
     let structuralClone: ColumnReference | undefined;
     let structuralCombined: ColumnReference | undefined;
     let structuralLength: ColumnReference | undefined;

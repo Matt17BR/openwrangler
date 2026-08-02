@@ -1,4 +1,4 @@
-from .base import AmbiguousViewColumnError, DataFrameEngine, EngineCapabilities, EngineError
+from .base import AmbiguousViewColumnError, DataFrameEngine, EngineCapabilities, EngineError, SessionDataShape
 from .duckdb_engine import DuckDBEngine
 from .pandas_engine import PandasEngine
 from .polars_engine import PolarsEngine
@@ -15,6 +15,7 @@ __all__ = [
     "PandasEngine",
     "PolarsEngine",
     "PySparkEngine",
+    "SessionDataShape",
     "UnsupportedDataFrameError",
     "default_engine_registry",
 ]

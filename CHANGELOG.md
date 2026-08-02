@@ -17,6 +17,16 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   unknown paths fail into full CI, and public/accepted evidence under `docs/images/**`, `docs/media-gallery.md`, or
   `docs/media-spec-*` remains full-matrix so PNG quality cannot bypass its visual checks.
   Directly protected CodeQL and cross-platform check names remain present through classification-only carrier cells.
+- Replaced PySpark's full-frame open job with bounded progressive paging. The first grid no longer runs
+  `zipWithIndex`, a global row count, or a complete Spark cache fill. Row-byte lengths and guarded values now share
+  one bounded terminal action instead of a separate validation action. Until a terminal block confirms the exact
+  total, the protocol and UI say that the total is not counted. Paging remains contiguous after that promotion,
+  retains only a bounded boundary history, and rejects an observed boundary change with reopen guidance. Recovery
+  rebuilds a saved viewport through at most 16 contiguous page requests and otherwise resets only that viewport to
+  row zero, retaining its confirmed filter, sort, widths, and selection. A terminal page now publishes its exact
+  shape even when no filter, revision, or plan changed. User copy simply explains that the first page loads without
+  counting every row and that the total appears after the last page. This does not claim that Spark gives an unordered
+  dataframe a deterministic global order; PySpark remains experimental and viewing-only.
 - Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
   kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
   serialization, nested lease inheritance, and automatic crash release.
@@ -430,7 +440,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
-- Added an experimental, viewing-only PySpark 4.2 live-notebook path for Classic and local Spark Connect DataFrames. Grid projection, filtering, sorting, counts, profiles, and bounded value/page collection stay native to Spark; the adapter never converts through a local dataframe engine, never performs an unbounded collection, and unpersists only its owned indexed child without stopping the user Spark session. Real packaged VS Code acceptance now covers Jupyter Variables launch, filtering, sorting, paging, profiling, deterministic Classic kernel restart and replay, local Connect, cleanup, and Restricted Mode denial. Editing, exports, saved-output formatting, external or authenticated Spark Connect servers, cancellation, and generated-code insertion remain outside this preview.
+- Added an experimental, viewing-only PySpark 4.2 live-notebook path for Classic and local Spark Connect DataFrames. Grid projection, filtering, sorting, counts, profiles, and bounded value/page collection stay native to Spark; the adapter never converts through a local dataframe engine, never performs an unbounded collection, and releases only its owned logical-plan references without stopping the user Spark session. Real packaged VS Code acceptance now covers Jupyter Variables launch, filtering, sorting, paging, profiling, deterministic Classic kernel restart and replay, local Connect, cleanup, and Restricted Mode denial. Editing, exports, saved-output formatting, external or authenticated Spark Connect servers, cancellation, and generated-code insertion remain outside this preview.
 
 ### Changed
 

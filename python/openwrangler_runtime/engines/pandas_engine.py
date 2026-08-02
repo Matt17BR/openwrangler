@@ -18,6 +18,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    SessionDataShape,
     SummaryColumnProjection,
     boolean_visualization,
     bound_column_name,
@@ -122,7 +123,7 @@ class PandasEngine(DataFrameEngine):
             return
         raise EngineError(f"Unsupported Pandas export format: {format_name}")
 
-    def shape(self, frame: Any) -> dict[str, int]:
+    def shape(self, frame: Any) -> SessionDataShape:
         df = self.normalize(frame)
         return {"rows": int(df.shape[0]), "columns": len(self._visible_positions(df))}
 

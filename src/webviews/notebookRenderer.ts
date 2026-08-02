@@ -53,7 +53,7 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
 
   const title = document.createElement("span");
   const sourceLabel = boundedText(payload.metadata.source.label, INLINE_LABEL_CHARACTERS);
-  title.textContent = `Open Wrangler preview: ${sourceLabel.text} (${payload.metadata.backend}) - ${payload.metadata.shape.rows} x ${payload.metadata.shape.columns}`;
+  title.textContent = `Open Wrangler preview: ${sourceLabel.text} (${payload.metadata.backend}) - ${payload.metadata.shape.rows ?? "unknown"} x ${payload.metadata.shape.columns}`;
   applyTruncationDescription(title, sourceLabel, "Source label");
   header.appendChild(title);
 

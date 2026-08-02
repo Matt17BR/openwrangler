@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import { isActiveColumnFilter, viewSortModelSignature } from "../shared/filterModel";
 import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
-import { dataBackendLabel } from "../shared/protocol";
+import { dataBackendLabel, formatSessionRowCount } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
@@ -745,7 +745,7 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
     ),
     new ViewNode(
       "Shape",
-      `${metadata.filteredShape.rows.toLocaleString()} × ${metadata.filteredShape.columns.toLocaleString()}`,
+      `${formatSessionRowCount(metadata.filteredShape.rows)} × ${metadata.filteredShape.columns.toLocaleString()}`,
       "symbol-array"
     ),
     new ViewNode("Columns", metadata.schema.length.toLocaleString(), "list-tree"),

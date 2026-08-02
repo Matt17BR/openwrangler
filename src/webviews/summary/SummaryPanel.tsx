@@ -1,5 +1,6 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ColumnSchema, ColumnSummary, SessionMetadata, ValueCount } from "../../shared/protocol";
+import { formatSessionRowCount } from "../../shared/protocol";
 import { formatNumericSummaryNumber, numericExtremumDisplay } from "../numericSummary";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
 
@@ -311,13 +312,13 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
       </header>
       <dl className="summaryStatGrid dataSummaryStats">
         <dt>Rows</dt>
-        <dd>{metadata?.filteredShape.rows.toLocaleString() ?? "Loading"}</dd>
+        <dd>{metadata ? formatSessionRowCount(metadata.filteredShape.rows) : "Loading"}</dd>
         <dt>Columns</dt>
         <dd>{metadata?.filteredShape.columns.toLocaleString() ?? "Loading"}</dd>
         {metadata && metadata.shape.rows !== metadata.filteredShape.rows && (
           <>
             <dt>Rows before filters</dt>
-            <dd>{metadata.shape.rows.toLocaleString()}</dd>
+            <dd>{formatSessionRowCount(metadata.shape.rows)}</dd>
           </>
         )}
       </dl>
@@ -351,7 +352,7 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
                     <span title={item.column}>{item.column}</span>
                     <meter
                       min={0}
-                      max={metadata?.filteredShape.rows ?? 1}
+                      max={metadata?.filteredShape.rows ?? Math.max(1, ...missingByColumn.map((value) => value.count))}
                       value={item.count}
                       aria-label={`${item.column}: ${item.count.toLocaleString()} missing`}
                     />

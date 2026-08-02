@@ -8,8 +8,10 @@ import type {
   ColumnVisualization,
   DataDiff,
   GridPage,
+  LiveGridPage,
   SessionMetadata
 } from "../../shared/protocol";
+import { liveGridLogicalRowExtent, liveGridPageHasMore } from "../../shared/protocol";
 import type { SortDirection, SortRule } from "../../shared/filterModel";
 import {
   ambiguousViewColumnMessage,
@@ -30,7 +32,7 @@ import { NumericHistogram } from "../visualizations/NumericHistogram";
 
 interface DataGridProps {
   metadata: SessionMetadata;
-  page: GridPage;
+  page: LiveGridPage;
   summaries: ColumnSummary[];
   pageSize: number;
   defaultColumnWidth: number;
@@ -71,6 +73,8 @@ interface ProgrammaticViewportTarget {
 
 interface ScrollInputs {
   busy: boolean;
+  contiguousOnly: boolean;
+  currentOffset: number;
   onPage(offset: number): void;
   pageSize: number;
   reportViewState(state: GridViewState): void;
@@ -86,6 +90,16 @@ const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVis
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
 const ignoreColumnRevealSignal = (): void => undefined;
+
+export function requestedGridPageOffset(
+  desiredOffset: number,
+  currentOffset: number,
+  pageSize: number,
+  contiguousOnly: boolean
+): number {
+  if (!contiguousOnly) return desiredOffset;
+  return Math.max(0, Math.max(currentOffset - pageSize, Math.min(desiredOffset, currentOffset + pageSize)));
+}
 
 export function DataGrid({
   metadata,
@@ -116,6 +130,8 @@ export function DataGrid({
   onVisibleSummaryColumnsChange,
   onViewStateChange = ignoreViewStateChange
 }: DataGridProps) {
+  const logicalRowExtent = liveGridLogicalRowExtent(page);
+  const hasMoreRows = liveGridPageHasMore(page);
   const summaryByColumnId = useMemo(
     () => new Map(summaries.map((summary) => [summary.columnId, summary])),
     [summaries]
@@ -151,10 +167,12 @@ export function DataGrid({
   const restorationRef = useRef({ viewState, metadata, page, pageSize });
   const scrollInputsRef = useRef<ScrollInputs>({
     busy,
+    contiguousOnly: metadata.backend === "pyspark",
+    currentOffset: page.offset,
     onPage,
     pageSize,
     reportViewState: ignoreViewStateChange,
-    totalRows: page.totalRows
+    totalRows: logicalRowExtent
   });
   useLayoutEffect(() => {
     restorationRef.current = { viewState, metadata, page, pageSize };
@@ -215,12 +233,14 @@ export function DataGrid({
   useLayoutEffect(() => {
     scrollInputsRef.current = {
       busy,
+      contiguousOnly: metadata.backend === "pyspark",
+      currentOffset: page.offset,
       onPage,
       pageSize,
       reportViewState,
-      totalRows: page.totalRows
+      totalRows: logicalRowExtent
     };
-  }, [busy, onPage, page.totalRows, pageSize, reportViewState]);
+  }, [busy, logicalRowExtent, metadata.backend, onPage, page.offset, pageSize, reportViewState]);
 
   useLayoutEffect(() => {
     if (previousViewContext.current === logicalViewContext) return;
@@ -232,7 +252,7 @@ export function DataGrid({
     const selectedColumnId = metadata.schema[column]?.id;
     const authoritativeRestorePending = appliedViewStateRestoreVersion.current !== viewStateRestoreVersion;
     const firstVisibleRow = authoritativeRestorePending
-      ? Math.max(0, Math.min(viewStateRef.current.viewport.firstVisibleRow, Math.max(0, page.totalRows - 1)))
+      ? Math.max(0, Math.min(viewStateRef.current.viewport.firstVisibleRow, Math.max(0, logicalRowExtent - 1)))
       : page.offset;
     setFocusedCell({
       row: authoritativeRestorePending ? firstVisibleRow : (page.rows[0]?.rowNumber ?? page.offset),
@@ -241,7 +261,7 @@ export function DataGrid({
     const scroller = scrollerRef.current;
     if (!scroller) return;
     const scrollTop = scrollTopForLogicalRow(
-      createRowScrollModel(page.totalRows, scroller.clientHeight),
+      createRowScrollModel(logicalRowExtent, scroller.clientHeight),
       firstVisibleRow
     );
     const scrollLeft = viewStateRef.current.viewport.scrollLeft;
@@ -268,7 +288,7 @@ export function DataGrid({
     metadata.schema,
     page.offset,
     page.rows,
-    page.totalRows,
+    logicalRowExtent,
     reportViewState,
     viewStateRestoreVersion,
     writeProgrammaticViewport
@@ -278,19 +298,17 @@ export function DataGrid({
     const restoration = restorationRef.current;
     const scroller = scrollerRef.current;
     if (!scroller) return;
+    const restorationRowExtent = liveGridLogicalRowExtent(restoration.page);
     const row = Math.max(
       0,
-      Math.min(restoration.viewState.viewport.firstVisibleRow, Math.max(0, restoration.page.totalRows - 1))
+      Math.min(restoration.viewState.viewport.firstVisibleRow, Math.max(0, restorationRowExtent - 1))
     );
     const column = selectedColumnPosition(restoration.metadata.schema, restoration.viewState.selectedColumnId);
     requestedOffset.current = restoration.page.offset;
     focusRequested.current = false;
     preserveGridFocusAfterScroll.current = false;
     setFocusedCell({ row, column });
-    const scrollTop = scrollTopForLogicalRow(
-      createRowScrollModel(restoration.page.totalRows, scroller.clientHeight),
-      row
-    );
+    const scrollTop = scrollTopForLogicalRow(createRowScrollModel(restorationRowExtent, scroller.clientHeight), row);
     const scrollLeft = restoration.viewState.viewport.scrollLeft;
     writeProgrammaticViewport(scroller, { firstVisibleRow: row, scrollTop, scrollLeft });
     setViewport({
@@ -312,6 +330,8 @@ export function DataGrid({
     if (!scroller) return;
     const {
       busy: scrollBusy,
+      contiguousOnly,
+      currentOffset,
       onPage: requestPage,
       pageSize: blockSize,
       reportViewState,
@@ -349,7 +369,8 @@ export function DataGrid({
     const gridOwnsFocus = document.hasFocus() && scroller.contains(document.activeElement);
     preserveGridFocusAfterScroll.current = !focusRequested.current && gridOwnsFocus;
     const requestBlockForRow = (row: number): void => {
-      const offset = Math.floor(row / blockSize) * blockSize;
+      const desiredOffset = Math.floor(row / blockSize) * blockSize;
+      const offset = requestedGridPageOffset(desiredOffset, currentOffset, blockSize, contiguousOnly);
       if (scrollBusy || offset === requestedOffset.current || offset >= totalRows) return;
       requestedOffset.current = offset;
       preserveGridFocusAfterScroll.current = false;
@@ -564,7 +585,7 @@ export function DataGrid({
 
   useEffect(() => {
     updateViewportFromScroller();
-  }, [busy, page.totalRows, pageSize, updateViewportFromScroller, viewStateRestoreVersion]);
+  }, [busy, logicalRowExtent, pageSize, updateViewportFromScroller, viewStateRestoreVersion]);
 
   const widths = useMemo(
     () => metadata.schema.map((column) => viewState.columnWidths[column.id] ?? defaultColumnWidth),
@@ -588,7 +609,7 @@ export function DataGrid({
     filters: metadata.filterModel.filters,
     sort: metadata.filterModel.sort
   })}`;
-  const rowScrollModel = createRowScrollModel(page.totalRows, viewport.height);
+  const rowScrollModel = createRowScrollModel(logicalRowExtent, viewport.height);
   const globalFirstRow = viewport.firstVisibleRow;
   const physicallyAvailableOverscanRows = Math.floor(viewport.scrollTop / gridRowHeight);
   const localStart = Math.max(
@@ -882,8 +903,9 @@ export function DataGrid({
   const goToPage = (offset: number, restoreFocus = false) => {
     if (busy) return;
     interruptColumnReveal();
-    const bounded = Math.max(0, Math.min(offset, Math.max(0, page.totalRows - 1)));
-    const block = Math.floor(bounded / pageSize) * pageSize;
+    const bounded = Math.max(0, Math.min(offset, Math.max(0, logicalRowExtent - 1)));
+    const desiredBlock = Math.floor(bounded / pageSize) * pageSize;
+    const block = requestedGridPageOffset(desiredBlock, page.offset, pageSize, metadata.backend === "pyspark");
     requestedOffset.current = block;
     if (restoreFocus) {
       preserveGridFocusAfterScroll.current = false;
@@ -892,7 +914,7 @@ export function DataGrid({
     setFocusedCell((current) => ({ row: bounded, column: current.column }));
     const scroller = scrollerRef.current;
     if (scroller) {
-      const scrollTop = scrollTopForLogicalRow(createRowScrollModel(page.totalRows, scroller.clientHeight), bounded);
+      const scrollTop = scrollTopForLogicalRow(createRowScrollModel(logicalRowExtent, scroller.clientHeight), bounded);
       const scrollLeft = scroller.scrollLeft;
       programmaticViewportTarget.current = { firstVisibleRow: bounded, scrollTop, scrollLeft };
       scroller.scrollTop = scrollTop;
@@ -958,7 +980,7 @@ export function DataGrid({
           style={{ width: rowHeaderWidth + sum(widths), minWidth: rowHeaderWidth + sum(widths) }}
           aria-busy={busy || projecting}
           aria-label={`Data grid for ${metadata.source.label}`}
-          aria-rowcount={page.totalRows + 1}
+          aria-rowcount={page.totalRows === null ? -1 : page.totalRows + 1}
           aria-colcount={metadata.schema.length + 1}
         >
           <colgroup>
@@ -1061,7 +1083,7 @@ export function DataGrid({
                         reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       }}
                       onKeyDown={(event) =>
-                        navigateGrid(event, row.rowNumber, column.position, metadata.schema.length, page.totalRows)
+                        navigateGrid(event, row.rowNumber, column.position, metadata.schema.length, logicalRowExtent)
                       }
                     >
                       {renderedCell}
@@ -1093,7 +1115,7 @@ export function DataGrid({
           type="button"
           className="gridNavigationButton"
           aria-label="Next block"
-          disabled={busy || page.offset + pageSize >= page.totalRows}
+          disabled={busy || !hasMoreRows}
           onClick={() => goToPage(page.offset + pageSize)}
         >
           <span className="codicon codicon-chevron-right" aria-hidden="true" />
@@ -1107,10 +1129,14 @@ export function DataGrid({
         >
           {page.totalRows === 0
             ? "No rows"
-            : `Rows ${(page.offset + 1).toLocaleString()}\u2013${Math.min(
-                page.offset + page.rows.length,
-                page.totalRows
-              ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
+            : page.totalRows === null
+              ? `Rows ${(page.offset + 1).toLocaleString()}\u2013${(
+                  page.offset + page.rows.length
+                ).toLocaleString()} · total appears after the last page`
+              : `Rows ${(page.offset + 1).toLocaleString()}\u2013${Math.min(
+                  page.offset + page.rows.length,
+                  page.totalRows
+                ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
         </span>
         <button
           type="button"
@@ -1165,7 +1191,7 @@ export function DataGrid({
     if (scroller) {
       firstVisibleRow = Math.max(0, nextRow - Math.floor(pageRowCount / 2));
       const scrollTop = scrollTopForLogicalRow(
-        createRowScrollModel(page.totalRows, scroller.clientHeight),
+        createRowScrollModel(logicalRowExtent, scroller.clientHeight),
         firstVisibleRow
       );
       programmaticViewportTarget.current = {
@@ -1224,7 +1250,7 @@ interface GridDiffPresentation {
 
 function buildDiffPresentation(
   diff: DataDiff | undefined,
-  page: GridPage,
+  page: LiveGridPage,
   schema: ColumnSchema[],
   beforePage: GridPage | undefined,
   beforeSchema: ColumnSchema[] | undefined
