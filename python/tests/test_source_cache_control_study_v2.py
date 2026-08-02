@@ -35,11 +35,15 @@ def test_study_v2_proof_binds_source_controller_and_running_interpreter(
     monkeypatch.setattr(source_cache_control, "_advise_dont_need", lambda _descriptor: None)
     monkeypatch.setattr(source_cache_control, "_resident_page_count", lambda *_arguments: next(resident_counts))
 
-    controller = Path(source_cache_control.__file__)
+    controller = Path(cast(str, source_cache_control.__file__))
     controller_descriptor = os.open(controller, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    python_descriptor = os.open("/proc/self/exe", os.O_RDONLY)
+    source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        result = prepare_study_v2_source_cache(source, mode, controller_descriptor)
+        result = prepare_study_v2_source_cache(source_descriptor, mode, controller_descriptor, python_descriptor)
     finally:
+        os.close(source_descriptor)
+        os.close(python_descriptor)
         os.close(controller_descriptor)
     source_metadata = source.stat()
     expected_source_identity = {
@@ -96,12 +100,16 @@ def test_study_v2_rejects_controller_drift_after_cache_preparation(
     monkeypatch.setattr(
         source_cache_control, "_controller_descriptor_receipt", lambda _descriptor: next(controller_receipts)
     )
-    monkeypatch.setattr(source_cache_control, "_running_interpreter_receipt", lambda: interpreter)
+    monkeypatch.setattr(source_cache_control, "_running_interpreter_receipt", lambda _descriptor: interpreter)
     monkeypatch.setattr(source_cache_control, "_sync_file_data", lambda _descriptor: None)
     monkeypatch.setattr(source_cache_control, "_resident_page_count", lambda *_arguments: next(resident_counts))
 
-    with pytest.raises(ValueError, match="controller changed"):
-        prepare_study_v2_source_cache(source, "warm", 3)
+    source_descriptor = os.open(source, os.O_RDONLY)
+    try:
+        with pytest.raises(ValueError, match="controller changed"):
+            prepare_study_v2_source_cache(source_descriptor, "warm", 3, 4)
+    finally:
+        os.close(source_descriptor)
 
 
 def test_study_v2_rejects_a_descriptor_that_is_not_the_running_controller(tmp_path: Path) -> None:
@@ -110,10 +118,14 @@ def test_study_v2_rejects_a_descriptor_that_is_not_the_running_controller(tmp_pa
     decoy = tmp_path / "source_cache_control.py"
     decoy.write_text("raise SystemExit(1)\n", encoding="utf-8")
     descriptor = os.open(decoy, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    python_descriptor = os.open("/proc/self/exe", os.O_RDONLY)
+    source_descriptor = os.open(source, os.O_RDONLY)
     try:
         with pytest.raises(ValueError, match="does not match the running controller"):
-            prepare_study_v2_source_cache(source, "warm", descriptor)
+            prepare_study_v2_source_cache(source_descriptor, "warm", descriptor, python_descriptor)
     finally:
+        os.close(source_descriptor)
+        os.close(python_descriptor)
         os.close(descriptor)
 
 
@@ -137,26 +149,32 @@ def test_study_v2_cli_is_path_free_and_v1_remains_the_default(tmp_path: Path) ->
     assert "pythonExecutable" not in v1_result
 
     controller_descriptor = os.open(script, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    python_descriptor = os.open("/proc/self/exe", os.O_RDONLY)
+    source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         v2 = subprocess.run(
             [
-                sys.executable,
-                str(script),
-                "--source",
-                str(source),
+                f"/proc/self/fd/{python_descriptor}",
+                f"/proc/self/fd/{controller_descriptor}",
+                "--source-fd",
+                str(source_descriptor),
                 "--mode",
                 "warm",
                 "--contract",
                 "study-v2",
                 "--controller-fd",
                 str(controller_descriptor),
+                "--python-fd",
+                str(python_descriptor),
             ],
             check=True,
             capture_output=True,
             text=True,
-            pass_fds=(controller_descriptor,),
+            pass_fds=(controller_descriptor, python_descriptor, source_descriptor),
         )
     finally:
+        os.close(source_descriptor)
+        os.close(python_descriptor)
         os.close(controller_descriptor)
     v2_result = json.loads(v2.stdout)
     assert v2_result["protocol"] == "openwrangler-source-cache-proof-study-v2"

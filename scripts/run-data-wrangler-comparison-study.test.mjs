@@ -89,10 +89,48 @@ function loadActionStartedFragmentFixture() {
 
 const actionStartedFragmentFixture = loadActionStartedFragmentFixture();
 
+function planArguments(specificationPath, manifestPath) {
+  const root = resolve(specificationPath, "..");
+  return [
+    "plan",
+    "--spec",
+    specificationPath,
+    "--out",
+    manifestPath,
+    "--cache-controller",
+    resolve(root, "source-cache-control.py"),
+    "--python",
+    resolve(root, "python")
+  ];
+}
+
+function captureSpecificationCacheToolchain() {
+  return structuredClone(studySpecification().provenance.cacheToolchain);
+}
+
 test("study command arguments are explicit and reject missing or repeated paths", () => {
   assert.deepEqual(
-    parseDataWranglerComparisonStudyArguments(["plan", "--spec", "spec.json", "--out", "manifest.json"], "/work"),
-    { command: "plan", spec: "/work/spec.json", out: "/work/manifest.json" }
+    parseDataWranglerComparisonStudyArguments(
+      [
+        "plan",
+        "--spec",
+        "spec.json",
+        "--out",
+        "manifest.json",
+        "--cache-controller",
+        "source-cache.py",
+        "--python",
+        "python"
+      ],
+      "/work"
+    ),
+    {
+      command: "plan",
+      spec: "/work/spec.json",
+      out: "/work/manifest.json",
+      cacheController: "/work/source-cache.py",
+      python: "/work/python"
+    }
   );
   assert.throws(
     () => parseDataWranglerComparisonStudyArguments(["plan", "--spec", "spec.json"], "/work"),
@@ -128,10 +166,10 @@ test("CLI specification and fragment inputs reject symlinks and directory-entry 
       symlinkSync(realSpecification, linkedSpecification);
       assert.throws(
         () =>
-          runDataWranglerComparisonStudy(
-            ["plan", "--spec", linkedSpecification, "--out", resolve(directory, "manifest.json")],
-            { cwd: directory }
-          ),
+          runDataWranglerComparisonStudy(planArguments(linkedSpecification, resolve(directory, "manifest.json")), {
+            cwd: directory,
+            captureCacheToolchain: captureSpecificationCacheToolchain
+          }),
         /bounded, singly linked regular JSON file/u
       );
     });
@@ -144,20 +182,18 @@ test("CLI specification and fragment inputs reject symlinks and directory-entry 
       writeFileSync(specification, JSON.stringify(studySpecification()));
       assert.throws(
         () =>
-          runDataWranglerComparisonStudy(
-            ["plan", "--spec", specification, "--out", resolve(directory, "manifest.json")],
-            {
-              cwd: directory,
-              inputReadOptions: {
-                faultInjector: (point, label) => {
-                  if (point === "file-opened" && label === "Study specification") {
-                    renameSync(specification, displaced);
-                    writeFileSync(specification, JSON.stringify(studySpecification()));
-                  }
+          runDataWranglerComparisonStudy(planArguments(specification, resolve(directory, "manifest.json")), {
+            cwd: directory,
+            captureCacheToolchain: captureSpecificationCacheToolchain,
+            inputReadOptions: {
+              faultInjector: (point, label) => {
+                if (point === "file-opened" && label === "Study specification") {
+                  renameSync(specification, displaced);
+                  writeFileSync(specification, JSON.stringify(studySpecification()));
                 }
               }
             }
-          ),
+          }),
         /Study specification changed while it was read/u
       );
     });
@@ -171,7 +207,10 @@ test("CLI specification and fragment inputs reject symlinks and directory-entry 
         const realFragment = resolve(directory, "real-fragment.json");
         const fragment = resolve(directory, "fragment.json");
         writeFileSync(specification, JSON.stringify(studySpecification()));
-        runDataWranglerComparisonStudy(["plan", "--spec", specification, "--out", manifest], { cwd: directory });
+        runDataWranglerComparisonStudy(planArguments(specification, manifest), {
+          cwd: directory,
+          captureCacheToolchain: captureSpecificationCacheToolchain
+        });
         writeFileSync(realFragment, "{}\n");
         if (mode === "symlink") {
           symlinkSync(realFragment, fragment);
@@ -220,13 +259,15 @@ test("plan, record, and status preserve one immutable manifest and append-only f
     const fragments = resolve(directory, "fragments");
     writeFileSync(specificationPath, JSON.stringify(studySpecification()));
 
-    const planned = runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
-      cwd: directory
+    const planned = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
+      cwd: directory,
+      captureCacheToolchain: captureSpecificationCacheToolchain
     });
     assert.equal(planned.output.schedule.length, 96);
     assert.equal(JSON.parse(readFileSync(manifestPath, "utf8")).studyId, planned.output.studyId);
-    const repeatedPlan = runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
-      cwd: directory
+    const repeatedPlan = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
+      cwd: directory,
+      captureCacheToolchain: captureSpecificationCacheToolchain
     });
     assert.deepEqual(repeatedPlan.output, planned.output);
     assert.equal(repeatedPlan.receipt.status, "complete");
@@ -250,6 +291,7 @@ test("plan, record, and status preserve one immutable manifest and append-only f
       },
       milestones: createEmptyStudyMilestones(),
       cacheProof: null,
+      sourceCopy: null,
       engineEvidence: null,
       environmentGate: failedEnvironmentGate(planned.output),
       sourceLoad: { status: "not-reached", durationMs: null, includedInInlineTiming: false },
@@ -287,6 +329,47 @@ test("plan, record, and status preserve one immutable manifest and append-only f
   });
 });
 
+test("plan captures the actual cache toolchain and rejects caller-supplied drift", () => {
+  withDirectory((directory) => {
+    const specificationPath = resolve(directory, "spec.json");
+    const manifestPath = resolve(directory, "manifest.json");
+    const controllerPath = resolve(directory, "source-cache-control.py");
+    const pythonPath = resolve(directory, "python");
+    const observed = captureSpecificationCacheToolchain();
+    const specification = studySpecification();
+    delete specification.provenance.cacheToolchain;
+    writeFileSync(specificationPath, JSON.stringify(specification));
+    let captured;
+    const planned = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
+      cwd: directory,
+      captureCacheToolchain(options) {
+        captured = options;
+        return observed;
+      }
+    });
+    assert.deepEqual(captured, {
+      controllerPath,
+      pythonExecutablePath: pythonPath
+    });
+    assert.deepEqual(planned.output.provenance.cacheToolchain, observed);
+
+    const mismatchedSpecificationPath = resolve(directory, "mismatched-spec.json");
+    const mismatchedManifestPath = resolve(directory, "mismatched-manifest.json");
+    const mismatched = studySpecification();
+    mismatched.provenance.cacheToolchain.controller.sha256 = "9".repeat(64);
+    writeFileSync(mismatchedSpecificationPath, JSON.stringify(mismatched));
+    assert.throws(
+      () =>
+        runDataWranglerComparisonStudy(planArguments(mismatchedSpecificationPath, mismatchedManifestPath), {
+          cwd: directory,
+          captureCacheToolchain: () => observed
+        }),
+      /does not match the plan-time observed files/u
+    );
+    assert.equal(existsSync(mismatchedManifestPath), false);
+  });
+});
+
 test("plan recovers an exact linked publication and creates only a private output directory", () => {
   withDirectory((directory) => {
     const studyDirectory = resolve(directory, "study");
@@ -296,8 +379,9 @@ test("plan recovers an exact linked publication and creates only a private outpu
 
     assert.throws(
       () =>
-        runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
+        runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
           cwd: directory,
+          captureCacheToolchain: captureSpecificationCacheToolchain,
           publicationOptions: {
             manifest: {
               faultInjector: (point) => {
@@ -314,8 +398,9 @@ test("plan recovers an exact linked publication and creates only a private outpu
 
     assert.equal(lstatSync(studyDirectory).mode & 0o777, 0o700);
     assert.equal(lstatSync(manifestPath).nlink, 2);
-    const recovered = runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
-      cwd: directory
+    const recovered = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
+      cwd: directory,
+      captureCacheToolchain: captureSpecificationCacheToolchain
     });
     assert.equal(recovered.receipt.status, "recovered");
     assert.equal(lstatSync(manifestPath).nlink, 1);
@@ -703,8 +788,9 @@ function planStudy(directory, dataWranglerPolarsAvailability = "available") {
   const fragmentsDirectory = resolve(directory, "fragments");
   const intentsDirectory = resolve(directory, "intents");
   writeFileSync(specificationPath, JSON.stringify(studySpecification(dataWranglerPolarsAvailability)));
-  const planned = runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
-    cwd: directory
+  const planned = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
+    cwd: directory,
+    captureCacheToolchain: captureSpecificationCacheToolchain
   });
   return { manifestPath, fragmentsDirectory, intentsDirectory, manifest: planned.output };
 }
@@ -732,6 +818,7 @@ function preActionInvalidFragment(manifest, scheduleEntry, executionIndex) {
     },
     milestones: createEmptyStudyMilestones(),
     cacheProof: null,
+    sourceCopy: null,
     engineEvidence: null,
     environmentGate: failedEnvironmentGate(manifest),
     sourceLoad: {
@@ -941,6 +1028,29 @@ function studySpecification(dataWranglerPolarsAvailability = "available") {
       },
       commonExtensions: DATA_WRANGLER_STUDY_COMMON_EXTENSIONS.map((extension) => ({ ...extension })),
       comparisonDriver: studyComparisonDriverReceipt(),
+      cacheToolchain: {
+        protocol: "openwrangler-data-wrangler-comparison-cache-toolchain-v1",
+        controller: {
+          sha256: digest("0"),
+          filesystemIdentity: {
+            device: "8",
+            inode: "44",
+            sizeBytes: 15_000,
+            mtimeNs: "1000000000"
+          }
+        },
+        pythonExecutable: {
+          implementation: "CPython",
+          version: "3.12.10",
+          sha256: digest("4"),
+          filesystemIdentity: {
+            device: "8",
+            inode: "43",
+            sizeBytes: 6_000_000,
+            mtimeNs: "1000000000"
+          }
+        }
+      },
       templates: DATA_WRANGLER_STUDY_PRODUCTS.map((product, index) => ({
         product,
         configuredOnlyReceiptSha256: digest(String(index + 1)),

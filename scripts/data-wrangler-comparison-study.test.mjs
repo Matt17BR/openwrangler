@@ -47,6 +47,8 @@ import {
   publishDataWranglerStudyFragment,
   summarizeStudyMetric,
   type7Quantile,
+  validateDataWranglerComparisonCacheBinding,
+  validateDataWranglerComparisonSourceCopyBinding,
   validateDataWranglerStudyFragment,
   validateDataWranglerStudyManifest,
   validateDataWranglerStudyResult,
@@ -226,6 +228,14 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
   const manifest = studyManifest();
   assert.equal(manifest.protocol, DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL);
   assert.equal(validateDataWranglerStudyManifest(manifest), manifest);
+  assert.throws(
+    () =>
+      validateDataWranglerStudyManifest({
+        ...manifest,
+        protocol: "openwrangler-data-wrangler-study-manifest-v1"
+      }),
+    /manifest protocol/u
+  );
   assert.match(digestStudyValue(manifest), /^[0-9a-f]{64}$/u);
   assert.deepEqual(
     manifest.provenance.capabilities.map((capability) => capability.fixtureId),
@@ -288,6 +298,20 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
   assert.throws(
     () => validateDataWranglerStudyManifest(mismatchedSupervisorPythonHash),
     /exact manifest-pinned Python executable/u
+  );
+
+  const mismatchedCachePythonPatch = structuredClone(manifest);
+  mismatchedCachePythonPatch.provenance.cacheToolchain.pythonExecutable.version = "3.12.9";
+  assert.throws(
+    () => validateDataWranglerStudyManifest(mismatchedCachePythonPatch),
+    /source-cache Python does not match/u
+  );
+
+  const mismatchedCachePythonHash = structuredClone(manifest);
+  mismatchedCachePythonHash.provenance.cacheToolchain.pythonExecutable.sha256 = "b".repeat(64);
+  assert.throws(
+    () => validateDataWranglerStudyManifest(mismatchedCachePythonHash),
+    /source-cache Python does not match/u
   );
 
   const changedAffinity = structuredClone(manifest);
@@ -368,6 +392,40 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
 
   const extra = { ...manifest, marketingWinner: "Open Wrangler" };
   assert.throws(() => validateDataWranglerStudyManifest(extra), /missing or unknown fields/u);
+});
+
+test("pure source and cache binding validators pin the manifest fixture, copy, and toolchain", () => {
+  const manifest = studyManifest();
+  const scheduleEntry = manifest.schedule[0];
+  const sourceCopy = studySourceCopy(manifest, scheduleEntry, 0, 0);
+  const cacheProof = studyCacheProof(manifest, scheduleEntry, sourceCopy);
+  assert.equal(validateDataWranglerComparisonSourceCopyBinding({ sourceCopy, manifest, scheduleEntry }), sourceCopy);
+  assert.equal(
+    validateDataWranglerComparisonCacheBinding({ cacheProof, sourceCopy, manifest, scheduleEntry }),
+    cacheProof
+  );
+
+  const wrongFixture = structuredClone(sourceCopy);
+  wrongFixture.canonicalReceipt.sha256 = "0".repeat(64);
+  assert.throws(
+    () => validateDataWranglerComparisonSourceCopyBinding({ sourceCopy: wrongFixture, manifest, scheduleEntry }),
+    /does not match its distinct immutable fixture input/u
+  );
+
+  const wrongCopy = structuredClone(cacheProof);
+  wrongCopy.proof.sourceFilesystemIdentityAfter.inode = "999999";
+  assert.throws(
+    () => validateDataWranglerComparisonCacheBinding({ cacheProof: wrongCopy, sourceCopy, manifest, scheduleEntry }),
+    /does not bind the exact private copy/u
+  );
+
+  const wrongToolchain = structuredClone(cacheProof);
+  wrongToolchain.toolchain.controller.sha256 = "9".repeat(64);
+  assert.throws(
+    () =>
+      validateDataWranglerComparisonCacheBinding({ cacheProof: wrongToolchain, sourceCopy, manifest, scheduleEntry }),
+    /manifest-pinned controller and Python toolchain/u
+  );
 });
 
 test("append-only fragments resume a half pair and accept only an exact completed retry", () => {
@@ -631,6 +689,14 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
   const fragment = successFragment(manifest, manifest.schedule[0], 0, 25);
   assert.equal(fragment.protocol, DATA_WRANGLER_STUDY_FRAGMENT_PROTOCOL);
   assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
+  assert.throws(
+    () =>
+      validateDataWranglerStudyFragment(
+        { ...fragment, protocol: "openwrangler-data-wrangler-study-fragment-v1" },
+        manifest
+      ),
+    /fragment protocol/u
+  );
 
   const fractionalMilestones = successFragment(manifest, manifest.schedule[0], 0, 25.125);
   assert.equal(validateDataWranglerStudyFragment(fractionalMilestones, manifest), fractionalMilestones);
@@ -910,8 +976,44 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
   );
 
   const wrongCache = structuredClone(fragment);
-  wrongCache.cacheProof.requestedState = "evicted";
+  wrongCache.cacheProof.proof.requestedState = "evicted";
   assert.throws(() => validateDataWranglerStudyFragment(wrongCache, manifest), /scheduled warm\/cold/u);
+
+  const missingSourceCopy = structuredClone(fragment);
+  missingSourceCopy.sourceCopy = null;
+  assert.throws(
+    () => validateDataWranglerStudyFragment(missingSourceCopy, manifest),
+    /requires its private source-copy/u
+  );
+
+  const aliasedSourceCopy = structuredClone(fragment);
+  aliasedSourceCopy.sourceCopy.copyReceipt.filesystemIdentity = structuredClone(
+    aliasedSourceCopy.sourceCopy.canonicalReceipt.filesystemIdentity
+  );
+  assert.throws(() => validateDataWranglerStudyFragment(aliasedSourceCopy, manifest), /distinct immutable fixture/u);
+
+  const wrongSourceCopyDigest = structuredClone(fragment);
+  wrongSourceCopyDigest.sourceCopy.copyReceipt.sha256 = digest("0");
+  assert.throws(
+    () => validateDataWranglerStudyFragment(wrongSourceCopyDigest, manifest),
+    /distinct immutable fixture/u
+  );
+
+  const wrongSourceCopyCleanup = structuredClone(fragment);
+  wrongSourceCopyCleanup.sourceCopy.cleanup.copyReceipt.filesystemIdentity.inode = "9999";
+  assert.throws(() => validateDataWranglerStudyFragment(wrongSourceCopyCleanup, manifest), /copied inode/u);
+
+  const missingSourceCopyProvenance = structuredClone(fragment);
+  delete missingSourceCopyProvenance.trialProvenance.sourceCopyAfter;
+  assert.throws(
+    () => validateDataWranglerStudyFragment(missingSourceCopyProvenance, manifest),
+    /missing or unknown fields/u
+  );
+
+  const wrongCachePageCount = structuredClone(fragment);
+  wrongCachePageCount.cacheProof.proof.totalPages += 1;
+  wrongCachePageCount.cacheProof.proof.residentPagesAfter += 1;
+  assert.throws(() => validateDataWranglerStudyFragment(wrongCachePageCount, manifest), /private copy byte size/u);
 
   const missingActionCache = structuredClone(fragment);
   missingActionCache.cacheProof = null;
@@ -951,13 +1053,13 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
   assert.throws(() => validateDataWranglerStudyFragment(changedSourceIdentity, manifest), /source postcheck/u);
 
   const wrongCacheFixture = structuredClone(fragment);
-  wrongCacheFixture.cacheProof.fixtureId =
-    wrongCacheFixture.cacheProof.fixtureId === "parquet-1m-20" ? "csv-100k-50" : "parquet-1m-20";
-  assert.throws(() => validateDataWranglerStudyFragment(wrongCacheFixture, manifest), /exact manifest fixture/u);
+  wrongCacheFixture.cacheProof.proof.sourceFilesystemIdentityBefore.inode =
+    wrongCacheFixture.sourceCopy.canonicalReceipt.filesystemIdentity.inode;
+  assert.throws(() => validateDataWranglerStudyFragment(wrongCacheFixture, manifest), /exact private copy/u);
 
   const changedCacheIdentity = structuredClone(fragment);
-  changedCacheIdentity.cacheProof.filesystemIdentityAfter.inode = "9999";
-  assert.throws(() => validateDataWranglerStudyFragment(changedCacheIdentity, manifest), /stable filesystem identity/u);
+  changedCacheIdentity.cacheProof.proof.sourceFilesystemIdentityAfter.inode = "9999";
+  assert.throws(() => validateDataWranglerStudyFragment(changedCacheIdentity, manifest), /exact private copy/u);
 
   const wrongEditorRoot = structuredClone(fragment);
   wrongEditorRoot.processProofs.editorRoot.pid = 999;
@@ -999,7 +1101,11 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
   const gateFailure = preActionInvalidFragment(manifest, manifest.schedule[0], 0, 0);
   assert.equal(gateFailure.cacheProof, null);
   assert.equal(validateDataWranglerStudyFragment(gateFailure, manifest), gateFailure);
-  gateFailure.cacheProof = studyCacheProof(manifest, manifest.schedule[0]);
+  gateFailure.cacheProof = studyCacheProof(
+    manifest,
+    manifest.schedule[0],
+    studySourceCopy(manifest, manifest.schedule[0], 0, 0)
+  );
   assert.throws(() => validateDataWranglerStudyFragment(gateFailure, manifest), /cannot follow/u);
 
   const overloadedGate = structuredClone(fragment);
@@ -2171,6 +2277,19 @@ function studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, owner
     },
     commonExtensions: DATA_WRANGLER_STUDY_COMMON_EXTENSIONS.map((extension) => ({ ...extension })),
     comparisonDriver: studyComparisonDriverReceipt(),
+    cacheToolchain: {
+      protocol: "openwrangler-data-wrangler-comparison-cache-toolchain-v1",
+      controller: {
+        sha256: digest("0"),
+        filesystemIdentity: {
+          device: "8",
+          inode: "44",
+          sizeBytes: 15_000,
+          mtimeNs: "1000000000"
+        }
+      },
+      pythonExecutable: structuredClone(ownershipTracker.pythonExecutable)
+    },
     templates: DATA_WRANGLER_STUDY_PRODUCTS.map((product, index) => ({
       product,
       configuredOnlyReceiptSha256: digest(String(index + 1)),
@@ -2278,6 +2397,7 @@ function successFragment(manifest, scheduleEntry, attempt, duration, executionIn
   };
   const processProofs = studyProcessProofs(manifest, scheduleEntry.product, executionIndex, attempt);
   const cleanupProof = studyCleanupProof(processProofs);
+  const sourceCopy = studySourceCopy(manifest, scheduleEntry, executionIndex, attempt);
   return {
     ...createStudyFragmentIdentity({
       manifest,
@@ -2295,19 +2415,20 @@ function successFragment(manifest, scheduleEntry, attempt, duration, executionIn
       unsupported: null
     },
     milestones,
-    cacheProof: studyCacheProof(manifest, scheduleEntry),
+    sourceCopy,
+    cacheProof: studyCacheProof(manifest, scheduleEntry, sourceCopy),
     sourceLoad: {
       status: "measured",
       durationMs: scheduleEntry.kind === "cold" ? Math.max(1, duration / 2) : 5,
       includedInInlineTiming: scheduleEntry.kind === "cold"
     },
-    engineEvidence: studyEngineEvidence(manifest, scheduleEntry, scheduleEntry.engine),
+    engineEvidence: studyEngineEvidence(manifest, scheduleEntry, sourceCopy, scheduleEntry.engine),
     environmentGate: studyEnvironmentGate(manifest, "passed"),
     uiEvidence: successfulUiEvidence(manifest, scheduleEntry),
     processProofs,
     resourceObservation: studyResourceObservation(milestones.profilesCompleteMs + 2_000, processProofs),
     cleanupProof,
-    trialProvenance: studyTrialProvenance(manifest, scheduleEntry, processProofs)
+    trialProvenance: studyTrialProvenance(manifest, scheduleEntry, processProofs, sourceCopy)
   };
 }
 
@@ -2350,6 +2471,7 @@ function deadlineBoundaryFragment(manifest, scheduleEntry) {
 function timeoutFragment(manifest, scheduleEntry, executionIndex) {
   const deadlineMs = DATA_WRANGLER_STUDY_DEADLINES_MS["inline-preview"];
   const processProofs = studyProcessProofs(manifest, scheduleEntry.product, executionIndex, 0);
+  const sourceCopy = studySourceCopy(manifest, scheduleEntry, executionIndex, 0);
   return {
     ...createStudyFragmentIdentity({
       manifest,
@@ -2372,13 +2494,14 @@ function timeoutFragment(manifest, scheduleEntry, executionIndex) {
       unsupported: null
     },
     milestones: { ...createEmptyStudyMilestones(), inlineActionMs: 1_000 },
-    cacheProof: studyCacheProof(manifest, scheduleEntry),
+    sourceCopy,
+    cacheProof: studyCacheProof(manifest, scheduleEntry, sourceCopy),
     sourceLoad: {
       status: scheduleEntry.kind === "warm" ? "measured" : "not-reached",
       durationMs: scheduleEntry.kind === "warm" ? 5 : null,
       includedInInlineTiming: scheduleEntry.kind === "cold"
     },
-    engineEvidence: studyEngineEvidence(manifest, scheduleEntry, "unverified", "not-reached"),
+    engineEvidence: studyEngineEvidence(manifest, scheduleEntry, sourceCopy, "unverified", "not-reached"),
     environmentGate: studyEnvironmentGate(manifest, "passed"),
     uiEvidence: {
       inline: { status: "timed-out" },
@@ -2392,7 +2515,7 @@ function timeoutFragment(manifest, scheduleEntry, executionIndex) {
     processProofs,
     resourceObservation: studyResourceObservation(1_000 + deadlineMs, processProofs),
     cleanupProof: studyCleanupProof(processProofs),
-    trialProvenance: studyTrialProvenance(manifest, scheduleEntry, processProofs)
+    trialProvenance: studyTrialProvenance(manifest, scheduleEntry, processProofs, sourceCopy)
   };
 }
 
@@ -2414,6 +2537,7 @@ function unsupportedFragment(manifest, scheduleEntry, executionIndex) {
       unsupported: { publicSurface: "unavailable", comparability: "non-comparable" }
     },
     milestones: createEmptyStudyMilestones(),
+    sourceCopy: null,
     cacheProof: null,
     sourceLoad: {
       status: "not-reached",
@@ -2448,6 +2572,7 @@ function preActionInvalidFragment(manifest, scheduleEntry, attempt, executionInd
       unsupported: null
     },
     milestones: createEmptyStudyMilestones(),
+    sourceCopy: null,
     cacheProof: null,
     sourceLoad: {
       status: "not-reached",
@@ -2566,7 +2691,7 @@ function studyGateAttempt(manifest, index, passed) {
   };
 }
 
-function studyEngineEvidence(manifest, scheduleEntry, workbenchEngine, observedAfterTrial = "verified") {
+function studyEngineEvidence(manifest, scheduleEntry, sourceCopy, workbenchEngine, observedAfterTrial = "verified") {
   const fixture = fixtureForEntry(manifest, scheduleEntry);
   const receipt = {
     engine: scheduleEntry.engine,
@@ -2578,8 +2703,9 @@ function studyEngineEvidence(manifest, scheduleEntry, workbenchEngine, observedA
     schema: structuredClone(fixture.schema),
     sentinelsBefore: structuredClone(fixture.sentinels),
     sentinelsAfter: observedAfterTrial === "verified" ? structuredClone(fixture.sentinels) : null,
-    filesystemIdentityBefore: structuredClone(fixture.filesystemIdentity),
-    filesystemIdentityAfter: observedAfterTrial === "verified" ? structuredClone(fixture.filesystemIdentity) : null,
+    filesystemIdentityBefore: structuredClone(sourceCopy.copyReceipt.filesystemIdentity),
+    filesystemIdentityAfter:
+      observedAfterTrial === "verified" ? structuredClone(sourceCopy.copyReceipt.filesystemIdentity) : null,
     observedBeforeAction: true,
     observedAfterTrial
   };
@@ -2695,24 +2821,56 @@ function studyPreviewEvidence() {
   };
 }
 
-function studyCacheProof(manifest, scheduleEntry) {
+function studyCacheProof(manifest, scheduleEntry, sourceCopy) {
   const resident = scheduleEntry.kind === "warm";
-  const fixture = fixtureForEntry(manifest, scheduleEntry);
   return {
-    protocol: "openwrangler-source-cache-proof-v1",
-    requestedState: resident ? "resident" : "evicted",
-    fdatasyncApplied: true,
-    adviceAccepted: !resident,
-    verification: "linux-mincore",
-    pageSizeBytes: 4_096,
-    totalPages: 10,
-    residentPagesBefore: 4,
-    residentPagesAfter: resident ? 10 : 0,
-    fixtureId: fixture.id,
-    fixtureSha256: fixture.sha256,
-    filesystemIdentityBefore: structuredClone(fixture.filesystemIdentity),
-    filesystemIdentityAfter: structuredClone(fixture.filesystemIdentity),
-    verified: true
+    protocol: "openwrangler-data-wrangler-comparison-cache-controller-v1",
+    toolchain: structuredClone(manifest.provenance.cacheToolchain),
+    proof: {
+      protocol: "openwrangler-source-cache-proof-study-v2",
+      requestedState: resident ? "resident" : "evicted",
+      fdatasyncApplied: true,
+      adviceAccepted: !resident,
+      verification: "linux-mincore",
+      pageSizeBytes: 4_096,
+      totalPages: Math.ceil(sourceCopy.copyReceipt.filesystemIdentity.sizeBytes / 4_096),
+      residentPagesBefore: 4,
+      residentPagesAfter: resident ? Math.ceil(sourceCopy.copyReceipt.filesystemIdentity.sizeBytes / 4_096) : 0,
+      identityStable: true,
+      verified: true,
+      sourceFilesystemIdentityBefore: structuredClone(sourceCopy.copyReceipt.filesystemIdentity),
+      sourceFilesystemIdentityAfter: structuredClone(sourceCopy.copyReceipt.filesystemIdentity),
+      controller: structuredClone(manifest.provenance.cacheToolchain.controller),
+      pythonExecutable: structuredClone(manifest.provenance.cacheToolchain.pythonExecutable)
+    }
+  };
+}
+
+function studySourceCopy(manifest, scheduleEntry, executionIndex, attempt) {
+  const fixture = fixtureForEntry(manifest, scheduleEntry);
+  const canonicalReceipt = {
+    sha256: fixture.sha256,
+    filesystemIdentity: structuredClone(fixture.filesystemIdentity)
+  };
+  const copyReceipt = {
+    sha256: fixture.sha256,
+    filesystemIdentity: {
+      ...structuredClone(fixture.filesystemIdentity),
+      inode: String(900_000 + executionIndex * 100 + attempt)
+    }
+  };
+  return {
+    protocol: "openwrangler-data-wrangler-comparison-source-copy-v1",
+    byteIdentical: true,
+    mode: "0600",
+    canonicalReceipt,
+    copyReceipt,
+    verifiedAfterProcessTreeEmpty: true,
+    cleanup: {
+      protocol: "openwrangler-data-wrangler-comparison-source-copy-v1",
+      removed: true,
+      copyReceipt: structuredClone(copyReceipt)
+    }
   };
 }
 
@@ -2776,7 +2934,7 @@ function reuseTrialProcessIdentities(target, source) {
   }
 }
 
-function studyTrialProvenance(manifest, scheduleEntry, processProofs) {
+function studyTrialProvenance(manifest, scheduleEntry, processProofs, sourceCopy) {
   const candidate = {
     sha256: manifest.candidate.sha256,
     filesystemIdentity: structuredClone(manifest.candidate.filesystemIdentity)
@@ -2810,6 +2968,20 @@ function studyTrialProvenance(manifest, scheduleEntry, processProofs) {
     pythonAfter: structuredClone(python),
     fixtureBefore: structuredClone(fixtureReceipt),
     fixtureAfter: structuredClone(fixtureReceipt),
+    sourceCopyBefore: {
+      protocol: sourceCopy.protocol,
+      byteIdentical: sourceCopy.byteIdentical,
+      mode: sourceCopy.mode,
+      canonicalReceipt: structuredClone(sourceCopy.canonicalReceipt),
+      copyReceipt: structuredClone(sourceCopy.copyReceipt)
+    },
+    sourceCopyAfter: {
+      protocol: sourceCopy.protocol,
+      byteIdentical: sourceCopy.byteIdentical,
+      mode: sourceCopy.mode,
+      canonicalReceipt: structuredClone(sourceCopy.canonicalReceipt),
+      copyReceipt: structuredClone(sourceCopy.copyReceipt)
+    },
     editorProcess: {
       pid: processProofs.editorRoot.pid,
       startTimeTicks: processProofs.editorRoot.startTimeTicks

@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
+  readSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -20,7 +22,8 @@ import {
   DATA_WRANGLER_COMPARISON_SOURCE_COPY_PROTOCOL,
   assertDataWranglerComparisonSourceCopy,
   cleanupDataWranglerComparisonSourceCopy,
-  createDataWranglerComparisonSourceCopy
+  createDataWranglerComparisonSourceCopy,
+  withDataWranglerComparisonSourceCopyDescriptor
 } from "./data-wrangler-comparison-source-copy.mjs";
 
 const linuxTest = process.platform === "linux" ? test : test.skip;
@@ -79,6 +82,35 @@ linuxTest("creates one exclusive mode-0600 byte-identical copy with authentic di
     assert.equal(sourceAfter.dev, sourceBefore.dev);
     assert.equal(sourceAfter.ino, sourceBefore.ino);
     assert.throws(() => cleanupDataWranglerComparisonSourceCopy(handle), /unknown or already settled/u);
+  } finally {
+    removeFixture(current.root);
+  }
+});
+
+linuxTest("descriptor borrowing exposes only the pinned copy and blocks concurrent cleanup", () => {
+  const current = fixture();
+  try {
+    const handle = createDataWranglerComparisonSourceCopy({
+      canonicalPath: current.source,
+      privateRoot: current.privateRoot,
+      name: "source.csv"
+    });
+    const result = withDataWranglerComparisonSourceCopyDescriptor(handle, ({ descriptor, receipt }) => {
+      const metadata = fstatSync(descriptor, { bigint: true });
+      assert.equal(metadata.dev.toString(), receipt.filesystemIdentity.device);
+      assert.equal(metadata.ino.toString(), receipt.filesystemIdentity.inode);
+      const bytes = Buffer.alloc(current.sourceBytes.length);
+      assert.equal(readSync(descriptor, bytes, 0, bytes.length, 0), bytes.length);
+      assert.deepEqual(bytes, current.sourceBytes);
+      assert.throws(() => cleanupDataWranglerComparisonSourceCopy(handle), /descriptor is still in use/u);
+      assert.throws(
+        () => withDataWranglerComparisonSourceCopyDescriptor(handle, () => undefined),
+        /descriptor is already in use/u
+      );
+      return "completed";
+    });
+    assert.equal(result, "completed");
+    assert.equal(cleanupDataWranglerComparisonSourceCopy(handle).removed, true);
   } finally {
     removeFixture(current.root);
   }

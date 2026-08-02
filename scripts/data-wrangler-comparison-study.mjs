@@ -18,20 +18,25 @@ import {
 } from "./data-wrangler-public-ui-receipts.mjs";
 import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
 import {
+  DATA_WRANGLER_COMPARISON_CACHE_CONTROLLER_PROTOCOL,
+  DATA_WRANGLER_COMPARISON_CACHE_TOOLCHAIN_PROTOCOL
+} from "./data-wrangler-comparison-cache-controller.mjs";
+import { DATA_WRANGLER_COMPARISON_SOURCE_COPY_PROTOCOL } from "./data-wrangler-comparison-source-copy.mjs";
+import {
   digestDurableJsonValue,
   publishDurableStudyJsonExclusive,
   recoverDurableStudyJsonPublication
 } from "./durable-study-json.mjs";
 
 export const DATA_WRANGLER_STUDY_METHOD_PROTOCOL = "openwrangler-data-wrangler-study-method-v1";
-export const DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL = "openwrangler-data-wrangler-study-manifest-v1";
-export const DATA_WRANGLER_STUDY_FRAGMENT_PROTOCOL = "openwrangler-data-wrangler-study-fragment-v1";
-export const DATA_WRANGLER_STUDY_RESULT_PROTOCOL = "openwrangler-data-wrangler-study-result-v1";
+export const DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL = "openwrangler-data-wrangler-study-manifest-v2";
+export const DATA_WRANGLER_STUDY_FRAGMENT_PROTOCOL = "openwrangler-data-wrangler-study-fragment-v2";
+export const DATA_WRANGLER_STUDY_RESULT_PROTOCOL = "openwrangler-data-wrangler-study-result-v2";
 export const DATA_WRANGLER_STUDY_RESOURCE_PROTOCOL = "openwrangler-linux-pss-observation-v1";
 export const DATA_WRANGLER_STUDY_SEED = 0x4f575231;
 export const DATA_WRANGLER_STUDY_WARM_PAIRS_PER_CELL = 10;
 export const DATA_WRANGLER_STUDY_SCHEDULE_SHA256 = "3fcf79fa323c60e256fddaf62c0a1454ea2077c5b6158ba93e1dfddd43adaa64";
-export const DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL = "openwrangler-source-cache-proof-v1";
+export const DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL = "openwrangler-source-cache-proof-study-v2";
 export const DATA_WRANGLER_STUDY_FINALIZATION_INTENT_PROTOCOL =
   "openwrangler-data-wrangler-study-finalization-intent-v1";
 export const DATA_WRANGLER_STUDY_TRIAL_INTENT_PROTOCOL = "openwrangler-data-wrangler-study-trial-intent-v1";
@@ -398,6 +403,36 @@ function validateFilesystemIdentity(identity, label) {
     }
   }
   assertInteger(identity.sizeBytes, `${label} size`, { minimum: 1 });
+}
+
+function validateImmutableFileReceipt(receipt, label) {
+  exactKeys(receipt, ["sha256", "filesystemIdentity"], label);
+  assertString(receipt.sha256, SHA256, `${label} SHA-256`);
+  validateFilesystemIdentity(receipt.filesystemIdentity, `${label} filesystem identity`);
+}
+
+function validateCacheToolchain(toolchain, python) {
+  exactKeys(toolchain, ["protocol", "controller", "pythonExecutable"], "Study source-cache toolchain provenance");
+  if (toolchain.protocol !== DATA_WRANGLER_COMPARISON_CACHE_TOOLCHAIN_PROTOCOL) {
+    fail("Study source-cache toolchain protocol is invalid.");
+  }
+  validateImmutableFileReceipt(toolchain.controller, "Study source-cache controller");
+  exactKeys(
+    toolchain.pythonExecutable,
+    ["implementation", "version", "sha256", "filesystemIdentity"],
+    "Study source-cache Python executable"
+  );
+  if (
+    toolchain.pythonExecutable.implementation !== "CPython" ||
+    toolchain.pythonExecutable.version !== python.version ||
+    toolchain.pythonExecutable.sha256 !== python.executableSha256
+  ) {
+    fail("Study source-cache Python does not match the manifest-pinned interpreter.");
+  }
+  validateFilesystemIdentity(
+    toolchain.pythonExecutable.filesystemIdentity,
+    "Study source-cache Python filesystem identity"
+  );
 }
 
 function expectedFixtureSentinels(rows, columns) {
@@ -964,6 +999,7 @@ function validateStudyProvenance(provenance, manifestContext) {
       "zoom",
       "commonExtensions",
       "comparisonDriver",
+      "cacheToolchain",
       "templates",
       "capabilities",
       "controlProfile",
@@ -982,6 +1018,7 @@ function validateStudyProvenance(provenance, manifestContext) {
   validateStudyZoom(provenance.zoom);
   validateStudyCommonExtensions(provenance.commonExtensions);
   validateComparisonDriverReceipt(provenance.comparisonDriver);
+  validateCacheToolchain(provenance.cacheToolchain, manifestContext.python);
   validateStudyTemplates(provenance.templates);
   const capabilityCaptureIds = validateCapabilityReceipts(provenance.capabilities, manifestContext);
   validateControlProfile(provenance.controlProfile, manifestContext);
@@ -1225,6 +1262,171 @@ function fixtureForStudyEntry(manifest, entry) {
   return fixture;
 }
 
+function sameFilesystemObject(left, right) {
+  return left.device === right.device && left.inode === right.inode;
+}
+
+function sourceCopyCore(copy) {
+  return {
+    protocol: copy.protocol,
+    byteIdentical: copy.byteIdentical,
+    mode: copy.mode,
+    canonicalReceipt: copy.canonicalReceipt,
+    copyReceipt: copy.copyReceipt
+  };
+}
+
+/** Bind an in-memory or durable private-copy receipt to one manifest fixture. */
+export function validateDataWranglerComparisonSourceCopyBinding({ sourceCopy, manifest, scheduleEntry }) {
+  if (sourceCopy === null || typeof sourceCopy !== "object" || Array.isArray(sourceCopy)) {
+    fail("Study private source-copy binding requires one receipt object.");
+  }
+  if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
+    fail("Study private source-copy binding requires one manifest.");
+  }
+  if (scheduleEntry === null || typeof scheduleEntry !== "object" || Array.isArray(scheduleEntry)) {
+    fail("Study private source-copy binding requires one schedule entry.");
+  }
+  if (
+    sourceCopy.protocol !== DATA_WRANGLER_COMPARISON_SOURCE_COPY_PROTOCOL ||
+    sourceCopy.byteIdentical !== true ||
+    sourceCopy.mode !== "0600"
+  ) {
+    fail("Study private source-copy state is invalid.");
+  }
+  validateImmutableFileReceipt(sourceCopy.canonicalReceipt, "Study canonical source");
+  validateImmutableFileReceipt(sourceCopy.copyReceipt, "Study private source copy");
+  const fixture = fixtureForStudyEntry(manifest, scheduleEntry);
+  if (
+    sourceCopy.canonicalReceipt.sha256 !== fixture.sha256 ||
+    canonicalStudyJson(sourceCopy.canonicalReceipt.filesystemIdentity) !==
+      canonicalStudyJson(fixture.filesystemIdentity) ||
+    sourceCopy.copyReceipt.sha256 !== sourceCopy.canonicalReceipt.sha256 ||
+    sourceCopy.copyReceipt.filesystemIdentity.sizeBytes !== sourceCopy.canonicalReceipt.filesystemIdentity.sizeBytes ||
+    sameFilesystemObject(sourceCopy.copyReceipt.filesystemIdentity, sourceCopy.canonicalReceipt.filesystemIdentity)
+  ) {
+    fail("Study private source copy does not match its distinct immutable fixture input.");
+  }
+  return sourceCopy;
+}
+
+/** Bind one cache result to the manifest toolchain and exact private copy. */
+export function validateDataWranglerComparisonCacheBinding({ cacheProof, sourceCopy, manifest, scheduleEntry }) {
+  validateDataWranglerComparisonSourceCopyBinding({ sourceCopy, manifest, scheduleEntry });
+  exactKeys(cacheProof, ["protocol", "toolchain", "proof"], "Study source-cache proof");
+  if (cacheProof.protocol !== DATA_WRANGLER_COMPARISON_CACHE_CONTROLLER_PROTOCOL) {
+    fail("Study source-cache proof protocol is invalid.");
+  }
+  if (canonicalStudyJson(cacheProof.toolchain) !== canonicalStudyJson(manifest.provenance.cacheToolchain)) {
+    fail("Study source-cache proof does not use the manifest-pinned controller and Python toolchain.");
+  }
+  const cache = cacheProof.proof;
+  exactKeys(
+    cache,
+    [
+      "protocol",
+      "requestedState",
+      "fdatasyncApplied",
+      "adviceAccepted",
+      "verification",
+      "pageSizeBytes",
+      "totalPages",
+      "residentPagesBefore",
+      "residentPagesAfter",
+      "identityStable",
+      "verified",
+      "sourceFilesystemIdentityBefore",
+      "sourceFilesystemIdentityAfter",
+      "controller",
+      "pythonExecutable"
+    ],
+    "Study source-cache controller proof"
+  );
+  if (cache.protocol !== DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL) {
+    fail("Study source-cache controller protocol is invalid.");
+  }
+  validateFilesystemIdentity(cache.sourceFilesystemIdentityBefore, "Study source-cache identity before preparation");
+  validateFilesystemIdentity(cache.sourceFilesystemIdentityAfter, "Study source-cache identity after preparation");
+  if (
+    canonicalStudyJson(cache.sourceFilesystemIdentityBefore) !==
+      canonicalStudyJson(sourceCopy.copyReceipt.filesystemIdentity) ||
+    canonicalStudyJson(cache.sourceFilesystemIdentityAfter) !==
+      canonicalStudyJson(sourceCopy.copyReceipt.filesystemIdentity) ||
+    canonicalStudyJson(cache.controller) !== canonicalStudyJson(cacheProof.toolchain.controller) ||
+    canonicalStudyJson(cache.pythonExecutable) !== canonicalStudyJson(cacheProof.toolchain.pythonExecutable)
+  ) {
+    fail("Study source-cache proof does not bind the exact private copy and pinned toolchain.");
+  }
+  const expectedState = scheduleEntry.kind === "warm" ? "resident" : "evicted";
+  if (cache.requestedState !== expectedState || cache.verification !== "linux-mincore") {
+    fail("Study source-cache proof does not match the scheduled warm/cold Linux boundary.");
+  }
+  assertBoolean(cache.fdatasyncApplied, "Study source-cache fdatasync proof");
+  assertBoolean(cache.adviceAccepted, "Study source-cache advisory proof");
+  assertBoolean(cache.identityStable, "Study source-cache identity proof");
+  assertInteger(cache.pageSizeBytes, "Study source-cache page size", { minimum: 1 });
+  assertInteger(cache.totalPages, "Study source-cache page count", { minimum: 1 });
+  for (const [key, label] of [
+    ["residentPagesBefore", "before"],
+    ["residentPagesAfter", "after"]
+  ]) {
+    assertInteger(cache[key], `Study source-cache resident pages ${label}`);
+    if (cache[key] > cache.totalPages) fail("Study source-cache residency cannot exceed its total page count.");
+  }
+  assertBoolean(cache.verified, "Study source-cache verification result");
+  const expectedTotalPages = Math.ceil(sourceCopy.copyReceipt.filesystemIdentity.sizeBytes / cache.pageSizeBytes);
+  if (cache.totalPages !== expectedTotalPages) {
+    fail("Study source-cache page count does not match the private copy byte size.");
+  }
+  const expectedAfter = expectedState === "resident" ? cache.totalPages : 0;
+  const verified =
+    cache.fdatasyncApplied &&
+    cache.identityStable &&
+    cache.adviceAccepted === (expectedState === "evicted") &&
+    cache.residentPagesAfter === expectedAfter;
+  if (cache.verified !== verified) {
+    fail("Study source-cache verification result does not match its retained evidence.");
+  }
+  return cacheProof;
+}
+
+function validateSourceCopy(copy, entry, fragment, manifest) {
+  if (copy === null) {
+    if (!fragmentSkippedEditorLaunch(fragment)) {
+      fail("A launched study fragment requires its private source-copy receipt.");
+    }
+    return;
+  }
+  if (fragmentSkippedEditorLaunch(fragment)) {
+    fail("A launch-free study fragment cannot claim a private source copy.");
+  }
+  exactKeys(
+    copy,
+    [
+      "protocol",
+      "byteIdentical",
+      "mode",
+      "canonicalReceipt",
+      "copyReceipt",
+      "verifiedAfterProcessTreeEmpty",
+      "cleanup"
+    ],
+    "Study private source-copy receipt"
+  );
+  if (copy.verifiedAfterProcessTreeEmpty !== true) {
+    fail("Study private source-copy state is invalid.");
+  }
+  validateDataWranglerComparisonSourceCopyBinding({ sourceCopy: copy, manifest, scheduleEntry: entry });
+  exactKeys(copy.cleanup, ["protocol", "removed", "copyReceipt"], "Study private source-copy cleanup");
+  if (
+    copy.cleanup.protocol !== DATA_WRANGLER_COMPARISON_SOURCE_COPY_PROTOCOL ||
+    copy.cleanup.removed !== true ||
+    canonicalStudyJson(copy.cleanup.copyReceipt) !== canonicalStudyJson(copy.copyReceipt)
+  ) {
+    fail("Study private source-copy cleanup does not match the copied inode.");
+  }
+}
+
 function validateCacheProof(proof, entry, fragment, manifest) {
   if (proof === null) {
     if (entry.kind === "cold" && fragmentFailedBeforeResourceSampling(fragment)) return;
@@ -1239,67 +1441,17 @@ function validateCacheProof(proof, entry, fragment, manifest) {
   if (fragment.outcome.status === "unsupported" || fragment.environmentGate?.passed === false) {
     fail("Source-cache preparation cannot follow an unsupported surface or failed pre-source-cache gate.");
   }
-  exactKeys(
-    proof,
-    [
-      "protocol",
-      "requestedState",
-      "fdatasyncApplied",
-      "adviceAccepted",
-      "verification",
-      "pageSizeBytes",
-      "totalPages",
-      "residentPagesBefore",
-      "residentPagesAfter",
-      "fixtureId",
-      "fixtureSha256",
-      "filesystemIdentityBefore",
-      "filesystemIdentityAfter",
-      "verified"
-    ],
-    "Study source-cache proof"
-  );
-  if (proof.protocol !== DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL) {
-    fail("Study source-cache proof protocol is invalid.");
+  if (fragment.sourceCopy === null) {
+    fail("Study source-cache proof requires its private source copy.");
   }
-  const fixture = fixtureForStudyEntry(manifest, entry);
-  validateFilesystemIdentity(proof.filesystemIdentityBefore, "Study source-cache identity before preparation");
-  validateFilesystemIdentity(proof.filesystemIdentityAfter, "Study source-cache identity after preparation");
-  if (
-    proof.fixtureId !== fixture.id ||
-    proof.fixtureSha256 !== fixture.sha256 ||
-    canonicalStudyJson(proof.filesystemIdentityBefore) !== canonicalStudyJson(fixture.filesystemIdentity) ||
-    canonicalStudyJson(proof.filesystemIdentityAfter) !== canonicalStudyJson(fixture.filesystemIdentity)
-  ) {
-    fail("Study source-cache proof does not bind the exact manifest fixture and stable filesystem identity.");
-  }
-  const expectedState = entry.kind === "warm" ? "resident" : "evicted";
-  if (proof.requestedState !== expectedState || proof.verification !== "linux-mincore") {
-    fail("Study source-cache proof does not match the scheduled warm/cold Linux boundary.");
-  }
-  assertBoolean(proof.fdatasyncApplied, "Study source-cache fdatasync proof");
-  assertBoolean(proof.adviceAccepted, "Study source-cache advisory proof");
-  assertInteger(proof.pageSizeBytes, "Study source-cache page size", { minimum: 1 });
-  assertInteger(proof.totalPages, "Study source-cache page count", { minimum: 1 });
-  for (const [key, label] of [
-    ["residentPagesBefore", "before"],
-    ["residentPagesAfter", "after"]
-  ]) {
-    assertInteger(proof[key], `Study source-cache resident pages ${label}`);
-    if (proof[key] > proof.totalPages) {
-      fail("Study source-cache residency cannot exceed its total page count.");
-    }
-  }
-  assertBoolean(proof.verified, "Study source-cache verification result");
-  const expectedAfter = expectedState === "resident" ? proof.totalPages : 0;
-  const verified =
-    proof.fdatasyncApplied &&
-    proof.adviceAccepted === (expectedState === "evicted") &&
-    proof.residentPagesAfter === expectedAfter;
-  if (proof.verified !== verified) {
-    fail("Study source-cache verification result does not match its retained evidence.");
-  }
-  if (fragment.outcome.actionStarted && !proof.verified) {
+  validateDataWranglerComparisonCacheBinding({
+    cacheProof: proof,
+    sourceCopy: fragment.sourceCopy,
+    manifest,
+    scheduleEntry: entry
+  });
+  const cache = proof.proof;
+  if (fragment.outcome.actionStarted && !cache.verified) {
     fail("A product action cannot start without verified source-cache preparation.");
   }
 }
@@ -1389,7 +1541,9 @@ function validateEngineEvidence(evidence, entry, fragment, manifest) {
     receipt.columnCount !== fixture.columns ||
     canonicalStudyJson(receipt.schema) !== canonicalStudyJson(fixture.schema) ||
     canonicalStudyJson(receipt.sentinelsBefore) !== canonicalStudyJson(fixture.sentinels) ||
-    canonicalStudyJson(receipt.filesystemIdentityBefore) !== canonicalStudyJson(fixture.filesystemIdentity) ||
+    fragment.sourceCopy === null ||
+    canonicalStudyJson(receipt.filesystemIdentityBefore) !==
+      canonicalStudyJson(fragment.sourceCopy.copyReceipt.filesystemIdentity) ||
     receipt.observedBeforeAction !== true ||
     !["verified", "not-reached"].includes(receipt.observedAfterTrial)
   ) {
@@ -1399,7 +1553,8 @@ function validateEngineEvidence(evidence, entry, fragment, manifest) {
   if (
     (postcheckVerified &&
       (canonicalStudyJson(receipt.sentinelsAfter) !== canonicalStudyJson(fixture.sentinels) ||
-        canonicalStudyJson(receipt.filesystemIdentityAfter) !== canonicalStudyJson(fixture.filesystemIdentity))) ||
+        canonicalStudyJson(receipt.filesystemIdentityAfter) !==
+          canonicalStudyJson(fragment.sourceCopy.copyReceipt.filesystemIdentity))) ||
     (!postcheckVerified && (receipt.sentinelsAfter !== null || receipt.filesystemIdentityAfter !== null))
   ) {
     fail("Study visible source postcheck does not prove the registered sentinels and stable filesystem identity.");
@@ -3080,6 +3235,8 @@ function validateTrialProvenance(provenance, fragment, entry, manifest) {
       "pythonAfter",
       "fixtureBefore",
       "fixtureAfter",
+      "sourceCopyBefore",
+      "sourceCopyAfter",
       "editorProcess",
       "kernelProcess",
       "revalidatedAfterCleanup"
@@ -3153,6 +3310,13 @@ function validateTrialProvenance(provenance, fragment, entry, manifest) {
   ) {
     fail("Study trial fixture receipt does not match the exact stable manifest fixture.");
   }
+  if (
+    fragment.sourceCopy === null ||
+    canonicalStudyJson(provenance.sourceCopyBefore) !== canonicalStudyJson(sourceCopyCore(fragment.sourceCopy)) ||
+    canonicalStudyJson(provenance.sourceCopyAfter) !== canonicalStudyJson(sourceCopyCore(fragment.sourceCopy))
+  ) {
+    fail("Study trial provenance does not match its private source-copy receipt.");
+  }
   if (fragment.processProofs === null) {
     fail("Study trial provenance requires the correlated fresh editor identity.");
   }
@@ -3214,6 +3378,7 @@ export function validateDataWranglerStudyFragment(fragment, manifest) {
       "recordedAtUtc",
       "outcome",
       "milestones",
+      "sourceCopy",
       "cacheProof",
       "sourceLoad",
       "engineEvidence",
@@ -3314,6 +3479,7 @@ export function validateDataWranglerStudyFragment(fragment, manifest) {
   }
   validateMilestones(fragment.milestones, fragment.outcome.status, fragment.outcome.timeout);
   validateEnvironmentGate(fragment.environmentGate, fragment, manifest);
+  validateSourceCopy(fragment.sourceCopy, entry, fragment, manifest);
   validateCacheProof(fragment.cacheProof, entry, fragment, manifest);
   validateSourceLoad(fragment.sourceLoad, entry, fragment);
   validateEngineEvidence(fragment.engineEvidence, entry, fragment, manifest);

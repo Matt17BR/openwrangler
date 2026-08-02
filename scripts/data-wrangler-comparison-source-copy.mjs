@@ -539,6 +539,7 @@ export function createDataWranglerComparisonSourceCopy({
     copyReceipt,
     rootDescriptor,
     copyDescriptor,
+    borrowed: false,
     settled: false
   });
   return handle;
@@ -560,6 +561,65 @@ export function assertDataWranglerComparisonSourceCopy(handle) {
 }
 
 /**
+ * Run one synchronous operation with the exact retained copy descriptor.
+ *
+ * The descriptor is deliberately exposed only inside this callback. The
+ * callback may pass it to a synchronous child process, but it may not retain
+ * asynchronous work after returning. Both the descriptor and its public name
+ * are revalidated before and after the operation.
+ */
+export function withDataWranglerComparisonSourceCopyDescriptor(handle, operation) {
+  const state = leases.get(handle);
+  if (state === undefined || state.settled) {
+    fail("The comparison source-copy lease is unknown or already settled.");
+  }
+  if (typeof operation !== "function") {
+    fail("The comparison source-copy descriptor operation must be a function.");
+  }
+  if (state.borrowed) {
+    fail("The comparison source-copy descriptor is already in use.");
+  }
+  assertRootState(state);
+  assertCanonicalState(state);
+  assertCopyState(state);
+  state.borrowed = true;
+  let result;
+  let operationError;
+  try {
+    result = operation(
+      Object.freeze({
+        descriptor: state.copyDescriptor,
+        receipt: handle.copyReceipt
+      })
+    );
+    if (result && typeof result.then === "function") {
+      fail("The comparison source-copy descriptor operation must finish synchronously.");
+    }
+  } catch (error) {
+    operationError = error;
+  }
+  state.borrowed = false;
+  let validationError;
+  try {
+    assertRootState(state);
+    assertCanonicalState(state);
+    assertCopyState(state);
+  } catch (error) {
+    validationError = error;
+  }
+  if (operationError !== undefined || validationError !== undefined) {
+    if (operationError !== undefined && validationError !== undefined) {
+      throw new AggregateError(
+        [operationError, validationError],
+        "The private comparison source operation failed and its retained lease changed."
+      );
+    }
+    throw operationError ?? validationError;
+  }
+  return result;
+}
+
+/**
  * Remove only the exact private inode created by this module.
  *
  * Any uncertain root, source, or copy identity closes the lease but leaves all
@@ -573,6 +633,9 @@ export function cleanupDataWranglerComparisonSourceCopy(handle, { faultInjector 
   }
   if (faultInjector !== undefined && typeof faultInjector !== "function") {
     fail("The comparison source-copy cleanup fault injector must be a function.");
+  }
+  if (state.borrowed) {
+    fail("The comparison source-copy descriptor is still in use.");
   }
   state.settled = true;
   let operationError;

@@ -49,6 +49,15 @@ const STUDY: NotebookTrialDefinition = {
   kernel: {
     name: "openwrangler-study-cpython-312-trial",
     displayName: "Open Wrangler study CPython 3.12 (private trial)"
+  },
+  sourceReceipt: {
+    sha256: "a".repeat(64),
+    filesystemIdentity: {
+      device: "2049",
+      inode: "3001",
+      sizeBytes: 1_000_000,
+      mtimeNs: "1754100000000000000"
+    }
   }
 };
 
@@ -96,7 +105,30 @@ function verification(
     integerDtypeMatched: true,
     sentinelsMatched: true,
     objectTokenContinuous: kind === "warm" ? true : null,
-    rowDataIncluded: false
+    rowDataIncluded: false,
+    observedSource: {
+      file: {
+        sha256: STUDY.fixture.sha256,
+        filesystemIdentity: {
+          device: "2049",
+          inode: "3001",
+          sizeBytes: 1_000_000,
+          mtimeNs: "1754100000000000000"
+        }
+      },
+      semanticClass: "dataframe",
+      rowCount: STUDY.fixture.rows,
+      columnCount: STUDY.fixture.columns,
+      schema: Array.from({ length: STUDY.fixture.columns }, (_value, index) => ({
+        name: `c${String(index).padStart(2, "0")}`,
+        dtype: "int64" as const
+      })),
+      sentinels: [
+        { rowIndex: 0, column: "c00", value: 0 },
+        { rowIndex: 1, column: "c01", value: 2 },
+        { rowIndex: 99_999, column: "c49", value: 100_048 }
+      ]
+    }
   };
 }
 
@@ -490,7 +522,8 @@ describe("one-trial notebook comparison flow", () => {
   });
 
   it("measures a cold source load inside the inline timing boundary", async () => {
-    const base = successDependencies([]);
+    const events: string[] = [];
+    const base = successDependencies(events);
     const receipt = await executeDataWranglerNotebookTrialFlow({
       ...base,
       study: { ...STUDY, kind: "cold" },
@@ -520,6 +553,8 @@ describe("one-trial notebook comparison flow", () => {
       "sampling-stop",
       "cleanup-census"
     ]);
+    expect(events.indexOf("bridge:source-verified:ack")).toBeLessThan(events.indexOf("bridge:cold-cache-evicted:ack"));
+    expect(events.indexOf("bridge:cold-cache-evicted:ack")).toBeLessThan(events.indexOf("run-cell-pointer-click"));
   });
 
   it("returns a bounded partial receipt when an available inline action times out", async () => {
@@ -685,6 +720,20 @@ describe("one-trial notebook comparison flow", () => {
     expect(() =>
       validateDataWranglerNotebookTrialPhaseReceipt(
         mutate((value) => {
+          Object.assign(value, { protocol: "openwrangler-data-wrangler-notebook-trial-phase-v1" });
+        })
+      )
+    ).toThrow(/protocol is invalid/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          value.study.sourceReceipt.filesystemIdentity.inode = "3002";
+        })
+      )
+    ).toThrow(/notebook-bound private source copy/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
           value.inline!.runCellAction.accessibleName = "Run Cell";
         })
       )
@@ -733,6 +782,27 @@ describe("one-trial notebook comparison flow", () => {
         })
       )
     ).toThrow(/engine label/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          value.verification.before.observedSource.file.sha256 = "0".repeat(64);
+        })
+      )
+    ).toThrow(/observed source file and dataframe contract/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          value.verification.before.observedSource.sentinels[1]!.value = 3;
+        })
+      )
+    ).toThrow(/engine-observed sentinel values/u);
+    expect(() =>
+      validateDataWranglerNotebookTrialPhaseReceipt(
+        mutate((value) => {
+          value.verification.after!.observedSource.file.filesystemIdentity.inode = "3002";
+        })
+      )
+    ).toThrow(/notebook-bound private source copy|observed source identity/u);
     expect(() =>
       validateDataWranglerNotebookTrialPhaseReceipt(
         mutate((value) => {

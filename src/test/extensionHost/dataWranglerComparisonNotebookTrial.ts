@@ -37,9 +37,9 @@ import {
   type DataWranglerStudyControlBridge
 } from "./dataWranglerStudyControlBridge";
 
-export const DATA_WRANGLER_NOTEBOOK_TRIAL_PHASE_PROTOCOL = "openwrangler-data-wrangler-notebook-trial-phase-v1";
-export const DATA_WRANGLER_NOTEBOOK_PROTOCOL = "openwrangler-data-wrangler-notebook-v1";
-export const DATA_WRANGLER_NOTEBOOK_VERIFICATION_PROTOCOL = "openwrangler-data-wrangler-notebook-verification-v1";
+export const DATA_WRANGLER_NOTEBOOK_TRIAL_PHASE_PROTOCOL = "openwrangler-data-wrangler-notebook-trial-phase-v2";
+export const DATA_WRANGLER_NOTEBOOK_PROTOCOL = "openwrangler-data-wrangler-notebook-v2";
+export const DATA_WRANGLER_NOTEBOOK_VERIFICATION_PROTOCOL = "openwrangler-data-wrangler-notebook-verification-v2";
 export const DATA_WRANGLER_NOTEBOOK_VERIFICATION_MARKER = "OPENWRANGLER_STUDY_VERIFICATION:";
 export const DATA_WRANGLER_STUDY_REQUIRED_LOCALE = "en";
 export const DATA_WRANGLER_STUDY_INLINE_ACTION_WINDOW_MS = 45_000;
@@ -114,6 +114,15 @@ export interface NotebookTrialDefinition {
     readonly name: string;
     readonly displayName: string;
   };
+  readonly sourceReceipt: {
+    readonly sha256: string;
+    readonly filesystemIdentity: {
+      readonly device: string;
+      readonly inode: string;
+      readonly sizeBytes: number;
+      readonly mtimeNs: string;
+    };
+  };
 }
 
 export interface NotebookTrialVerificationEvidence {
@@ -127,6 +136,22 @@ export interface NotebookTrialVerificationEvidence {
   readonly sentinelsMatched: true;
   readonly objectTokenContinuous: true | null;
   readonly rowDataIncluded: false;
+  readonly observedSource: {
+    readonly file: {
+      readonly sha256: string;
+      readonly filesystemIdentity: {
+        readonly device: string;
+        readonly inode: string;
+        readonly sizeBytes: number;
+        readonly mtimeNs: string;
+      };
+    };
+    readonly semanticClass: "dataframe";
+    readonly rowCount: number;
+    readonly columnCount: number;
+    readonly schema: readonly { readonly name: string; readonly dtype: "int64" }[];
+    readonly sentinels: readonly { readonly rowIndex: number; readonly column: string; readonly value: number }[];
+  };
 }
 
 export interface NotebookTrialActionEvidence {
@@ -678,7 +703,7 @@ export function validateDataWranglerNotebookTrialPhaseReceipt(value: unknown): D
   const studyRecord = requireRecord(receipt.study, "Notebook trial study");
   exactKeys(
     studyRecord,
-    ["engine", "format", "kind", "fixture", "kernel", "pythonImplementation", "pythonVersion"],
+    ["engine", "format", "kind", "fixture", "kernel", "sourceReceipt", "pythonImplementation", "pythonVersion"],
     "Notebook trial study"
   );
   const study = validateTrialDefinition(studyRecord) as NotebookTrialDefinition;
@@ -688,9 +713,9 @@ export function validateDataWranglerNotebookTrialPhaseReceipt(value: unknown): D
 
   const verification = requireRecord(receipt.verification, "Notebook trial verification");
   exactKeys(verification, ["before", "after"], "Notebook trial verification");
-  const before = validateNormalizedVerification(verification.before, "before-timing");
+  const before = validateNormalizedVerification(verification.before, "before-timing", study);
   const after =
-    verification.after === null ? null : validateNormalizedVerification(verification.after, "after-workbench");
+    verification.after === null ? null : validateNormalizedVerification(verification.after, "after-workbench", study);
   assertVerificationMatchesStudy(before, study, "before-timing");
   if (after) assertVerificationMatchesStudy(after, study, "after-workbench");
   if (
@@ -698,9 +723,10 @@ export function validateDataWranglerNotebookTrialPhaseReceipt(value: unknown): D
     before.pythonImplementation !== studyRecord.pythonImplementation ||
     (after !== null &&
       (after.pythonVersion !== studyRecord.pythonVersion ||
-        after.pythonImplementation !== studyRecord.pythonImplementation))
+        after.pythonImplementation !== studyRecord.pythonImplementation)) ||
+    (after !== null && JSON.stringify(after.observedSource) !== JSON.stringify(before.observedSource))
   ) {
-    fail("Notebook trial verification changed its configured Python identity.");
+    fail("Notebook trial verification changed its configured Python or observed source identity.");
   }
 
   const inline = receipt.inline === null ? null : requireRecord(receipt.inline, "Notebook trial inline evidence");
@@ -827,7 +853,7 @@ export function validateDataWranglerNotebookTrialPhaseReceipt(value: unknown): D
 
 function validateTrialDefinition(value: unknown): NotebookTrialDefinition {
   const study = requireRecord(value, "Notebook trial definition");
-  const allowed = ["engine", "format", "kind", "fixture", "kernel"];
+  const allowed = ["engine", "format", "kind", "fixture", "kernel", "sourceReceipt"];
   const keys = Object.keys(study);
   if (keys.includes("pythonImplementation") || keys.includes("pythonVersion")) {
     exactKeys(study, [...allowed, "pythonImplementation", "pythonVersion"], "Notebook trial definition");
@@ -863,12 +889,27 @@ function validateTrialDefinition(value: unknown): NotebookTrialDefinition {
   ) {
     fail("Notebook trial kernel display name must be bounded, path-free, and identify CPython 3.12.");
   }
+  const sourceReceipt = requireRecord(study.sourceReceipt, "Notebook trial source receipt");
+  exactKeys(sourceReceipt, ["sha256", "filesystemIdentity"], "Notebook trial source receipt");
+  const sourceIdentity = requireRecord(sourceReceipt.filesystemIdentity, "Notebook trial source filesystem identity");
+  exactKeys(sourceIdentity, ["device", "inode", "sizeBytes", "mtimeNs"], "Notebook trial source filesystem identity");
+  if (
+    sourceReceipt.sha256 !== fixture.sha256 ||
+    !isStringMatching(sourceIdentity.device, /^\d+$/u) ||
+    !isStringMatching(sourceIdentity.inode, /^\d+$/u) ||
+    !Number.isSafeInteger(sourceIdentity.sizeBytes) ||
+    (sourceIdentity.sizeBytes as number) <= 0 ||
+    !isStringMatching(sourceIdentity.mtimeNs, /^\d+$/u)
+  ) {
+    fail("Notebook trial source receipt does not match the registered fixture.");
+  }
   return value as unknown as NotebookTrialDefinition;
 }
 
 function validateNormalizedVerification(
   value: unknown,
-  expectedPhase: NotebookTrialVerificationEvidence["phase"]
+  expectedPhase: NotebookTrialVerificationEvidence["phase"],
+  study: NotebookTrialDefinition
 ): NotebookTrialVerificationEvidence {
   const evidence = requireRecord(value, `Notebook ${expectedPhase} verification`);
   exactKeys(
@@ -883,7 +924,8 @@ function validateNormalizedVerification(
       "integerDtypeMatched",
       "sentinelsMatched",
       "objectTokenContinuous",
-      "rowDataIncluded"
+      "rowDataIncluded",
+      "observedSource"
     ],
     `Notebook ${expectedPhase} verification`
   );
@@ -901,7 +943,66 @@ function validateNormalizedVerification(
   ) {
     fail(`Notebook ${expectedPhase} verification is incomplete or includes row data.`);
   }
+  validateObservedSource(evidence.observedSource, study, `Notebook ${expectedPhase} observed source`);
   return value as NotebookTrialVerificationEvidence;
+}
+
+function validateObservedSource(
+  value: unknown,
+  study: NotebookTrialDefinition,
+  label: string
+): NotebookTrialVerificationEvidence["observedSource"] {
+  const observed = requireRecord(value, label);
+  exactKeys(observed, ["file", "semanticClass", "rowCount", "columnCount", "schema", "sentinels"], label);
+  const file = requireRecord(observed.file, `${label} file`);
+  exactKeys(file, ["sha256", "filesystemIdentity"], `${label} file`);
+  const identity = requireRecord(file.filesystemIdentity, `${label} filesystem identity`);
+  exactKeys(identity, ["device", "inode", "sizeBytes", "mtimeNs"], `${label} filesystem identity`);
+  if (
+    file.sha256 !== study.fixture.sha256 ||
+    file.sha256 !== study.sourceReceipt.sha256 ||
+    !isStringMatching(identity.device, /^\d+$/u) ||
+    !isStringMatching(identity.inode, /^\d+$/u) ||
+    !Number.isSafeInteger(identity.sizeBytes) ||
+    (identity.sizeBytes as number) <= 0 ||
+    !isStringMatching(identity.mtimeNs, /^\d+$/u) ||
+    observed.semanticClass !== "dataframe" ||
+    observed.rowCount !== study.fixture.rows ||
+    observed.columnCount !== study.fixture.columns
+  ) {
+    fail(`${label} does not match the observed source file and dataframe contract.`);
+  }
+  if (
+    identity.device !== study.sourceReceipt.filesystemIdentity.device ||
+    identity.inode !== study.sourceReceipt.filesystemIdentity.inode ||
+    identity.sizeBytes !== study.sourceReceipt.filesystemIdentity.sizeBytes ||
+    identity.mtimeNs !== study.sourceReceipt.filesystemIdentity.mtimeNs
+  ) {
+    fail(`${label} does not match the notebook-bound private source copy.`);
+  }
+  if (!Array.isArray(observed.schema) || observed.schema.length !== study.fixture.columns) {
+    fail(`${label} omitted part of the observed dataframe schema.`);
+  }
+  observed.schema.forEach((value, index) => {
+    const column = requireRecord(value, `${label} schema column`);
+    exactKeys(column, ["name", "dtype"], `${label} schema column`);
+    if (column.name !== comparisonColumnName(index) || column.dtype !== "int64") {
+      fail(`${label} schema does not match the engine-observed Int64 fixture.`);
+    }
+  });
+  const expectedSentinels = [
+    { rowIndex: 0, column: "c00", value: 0 },
+    { rowIndex: 1, column: "c01", value: 2 },
+    {
+      rowIndex: study.fixture.rows - 1,
+      column: comparisonColumnName(study.fixture.columns - 1),
+      value: study.fixture.rows + study.fixture.columns - 2
+    }
+  ];
+  if (JSON.stringify(observed.sentinels) !== JSON.stringify(expectedSentinels)) {
+    fail(`${label} does not contain the engine-observed sentinel values.`);
+  }
+  return value as NotebookTrialVerificationEvidence["observedSource"];
 }
 
 export function validateDataWranglerComparisonSentinelRows(value: unknown, rows: number): void {
@@ -919,6 +1020,7 @@ function assertVerificationMatchesStudy(
   study: NotebookTrialDefinition,
   phase: NotebookTrialVerificationEvidence["phase"]
 ): void {
+  validateObservedSource(evidence.observedSource, study, `Notebook ${phase} observed source`);
   if (
     evidence.phase !== phase ||
     (study.kind === "warm" ? evidence.objectTokenContinuous !== true : evidence.objectTokenContinuous !== null)
@@ -2885,6 +2987,7 @@ function decodeStudyNotebookDefinition(notebook: vscode.NotebookDocument): Noteb
       "kind",
       "kernel",
       "fixture",
+      "sourceReceipt",
       "sourceEnvironmentVariable",
       "outputsMustRemainPathFree"
     ],
@@ -2902,7 +3005,8 @@ function decodeStudyNotebookDefinition(notebook: vscode.NotebookDocument): Noteb
     format: study.format,
     kind: study.kind,
     fixture: study.fixture,
-    kernel: study.kernel
+    kernel: study.kernel,
+    sourceReceipt: study.sourceReceipt
   });
   const kernelspec = requireRecord(metadata.kernelspec, "Study notebook kernelspec");
   if (
@@ -3283,7 +3387,8 @@ function readStudyVerification(
       "integerDtypeMatched",
       "sentinelsMatched",
       "objectTokenContinuous",
-      "rowDataIncluded"
+      "rowDataIncluded",
+      "observedSource"
     ],
     "Study verification output"
   );
@@ -3294,6 +3399,7 @@ function readStudyVerification(
   const configuredKernel = requireRecord(raw.configuredKernel, "Study verification kernel");
   exactKeys(configuredKernel, ["name", "displayName"], "Study verification kernel");
   validateDataWranglerComparisonSentinelRows(raw.sentinelRows, study.fixture.rows);
+  const observedSource = validateObservedSource(raw.observedSource, study, "Study verification observed source");
   if (
     raw.protocol !== DATA_WRANGLER_NOTEBOOK_VERIFICATION_PROTOCOL ||
     raw.phase !== phase ||
@@ -3312,6 +3418,8 @@ function readStudyVerification(
     raw.dtypes.length !== study.fixture.columns ||
     raw.dtypes.some((dtype) => dtype !== expectedDtype) ||
     raw.integerDtypeSemantic !== "signed-64-bit" ||
+    JSON.stringify(observedSource.schema.map(({ name }) => name)) !== JSON.stringify(raw.columns) ||
+    JSON.stringify(observedSource.schema.map(() => expectedDtype)) !== JSON.stringify(raw.dtypes) ||
     raw.classMatched !== true ||
     raw.shapeMatched !== true ||
     raw.columnsMatched !== true ||
@@ -3333,7 +3441,8 @@ function readStudyVerification(
     integerDtypeMatched: true,
     sentinelsMatched: true,
     objectTokenContinuous: study.kind === "warm" ? true : null,
-    rowDataIncluded: false
+    rowDataIncluded: false,
+    observedSource
   };
 }
 

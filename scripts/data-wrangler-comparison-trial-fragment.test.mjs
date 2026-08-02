@@ -80,7 +80,7 @@ function loadStudyFixtures() {
     createNeitherProductControlReceipt,
     createPublicUiReceiptContext
   };
-  const fixtureSource = `const { ${Object.keys(context).join(", ")} } = globalThis.__fixtureDeps;\nconst digest = (value) => value.repeat(64);\n${source.slice(start)}\n;globalThis.__studyFixtures = { studyManifest, studyEnvironmentGate, studyCacheProof, studyProcessProofs, studyTrialProvenance, studyCleanupProof, studyResourceObservation, studyEngineEvidence, fixtureForEntry, pssMonotonicNanoseconds };`;
+  const fixtureSource = `const { ${Object.keys(context).join(", ")} } = globalThis.__fixtureDeps;\nconst digest = (value) => value.repeat(64);\n${source.slice(start)}\n;globalThis.__studyFixtures = { studyManifest, studyEnvironmentGate, studyCacheProof, studySourceCopy, studyProcessProofs, studyTrialProvenance, studyCleanupProof, studyResourceObservation, studyEngineEvidence, fixtureForEntry, pssMonotonicNanoseconds };`;
   globalThis.__fixtureDeps = context;
   try {
     vm.runInThisContext(fixtureSource, { filename: "study-fragment-test-fixtures.mjs" });
@@ -283,7 +283,7 @@ function phaseReceipt({ entry, fixture, status = "success", failure = null, valu
   const profileStarted = values.profileActionNanoseconds !== null;
   const exchanges = bridgeFor(entry.kind, values.samplingStoppedMs, failure?.stage ?? null);
   return {
-    protocol: "openwrangler-data-wrangler-notebook-trial-phase-v1",
+    protocol: "openwrangler-data-wrangler-notebook-trial-phase-v2",
     locale: "en",
     product: entry.product,
     status,
@@ -429,6 +429,7 @@ function executorReceipt({
   launchReceipt,
   terminalReceipt,
   cleanupProof,
+  sourceCopy,
   trialProvenance,
   outerEditorFailure = null
 }) {
@@ -466,7 +467,7 @@ function executorReceipt({
       terminalReceipt,
       exit: { code: 0, signal: null, error: undefined }
     },
-    terminalEvidence: { cleanupProof, trialProvenance },
+    terminalEvidence: { cleanupProof, sourceCopy, trialProvenance },
     outerEditorFailure
   };
 }
@@ -537,10 +538,12 @@ function trialInput({
     recordedAtUtc: "2026-08-02T11:00:00.000Z"
   });
   const cleanupProof = fixtures.studyCleanupProof(processProofs);
-  const cacheProof = fixtures.studyCacheProof(manifest, entry);
+  const sourceCopy = fixtures.studySourceCopy(manifest, entry, entry.sequence, 0);
+  const cacheProof = fixtures.studyCacheProof(manifest, entry, sourceCopy);
   const sourceVerificationReceipt = fixtures.studyEngineEvidence(
     manifest,
     entry,
+    sourceCopy,
     entry.product === "data-wrangler" ? "unverified" : entry.engine
   ).sourceVerification.receipt;
   const prepared = preparedIntent(manifest, entry, fragmentIdentity);
@@ -552,7 +555,7 @@ function trialInput({
     phaseReceipt: phase,
     cacheProof
   });
-  const trialProvenance = fixtures.studyTrialProvenance(manifest, entry, processProofs);
+  const trialProvenance = fixtures.studyTrialProvenance(manifest, entry, processProofs, sourceCopy);
   const executor = executorReceipt({
     entry,
     prepared,
@@ -563,6 +566,7 @@ function trialInput({
     launchReceipt: structuredClone(resourceObservation.ownershipTracker),
     terminalReceipt: structuredClone(cleanupProof.supervisorTerminalReceipt),
     cleanupProof,
+    sourceCopy,
     trialProvenance
   });
   return {
@@ -580,6 +584,7 @@ function trialInput({
     supervisorTerminalReceipt: structuredClone(cleanupProof.supervisorTerminalReceipt),
     processProofs,
     cleanupProof,
+    sourceCopy,
     sourceVerificationReceipt,
     trialProvenance
   };
@@ -605,6 +610,7 @@ function preNotebookFailureInput({ classification = "premature-exit", kind = "wa
     supervisorTerminalReceipt: input.supervisorTerminalReceipt,
     processProofs: input.processProofs,
     cleanupProof: input.cleanupProof,
+    sourceCopy: input.sourceCopy,
     trialProvenance: input.trialProvenance
   };
 }
@@ -670,7 +676,8 @@ async function executeFixtureReceipt(input, { preNotebookFailure = false } = {})
     },
     {
       createSupervisorAdapter: () => adapter,
-      runEditorPhase: async (_options, { spawnProcess }) => {
+      runEditorPhase: async (_options, { prepareWarmSourceCacheBeforeLaunch, spawnProcess }) => {
+        if (prepareWarmSourceCacheBeforeLaunch) await prepareWarmSourceCacheBeforeLaunch();
         spawnProcess("code", [], {});
         if (preNotebookFailure) {
           await stopEditor.promise;
@@ -723,7 +730,12 @@ function launchOnlyTerminalEvidence(input) {
   ];
   const trialProvenance = structuredClone(input.trialProvenance);
   trialProvenance.kernelProcess = null;
-  return { processProofs, cleanupProof, trialProvenance };
+  return {
+    processProofs,
+    cleanupProof,
+    sourceCopy: structuredClone(input.sourceCopy),
+    trialProvenance
+  };
 }
 
 async function executeSetupFailureReceipt(input, boundary) {
@@ -764,7 +776,8 @@ async function executeSetupFailureReceipt(input, boundary) {
     },
     {
       createSupervisorAdapter: () => adapter,
-      runEditorPhase: async (_options, { spawnProcess }) => {
+      runEditorPhase: async (_options, { prepareWarmSourceCacheBeforeLaunch, spawnProcess }) => {
+        if (prepareWarmSourceCacheBeforeLaunch) await prepareWarmSourceCacheBeforeLaunch();
         spawnProcess("code", [], {});
         await stopEditor.promise;
         throw new Error("private editor shutdown detail");
@@ -785,6 +798,7 @@ async function executeSetupFailureReceipt(input, boundary) {
       signalSupervisor: async () => stopEditor.resolve(),
       completeTerminalEvidence: async () => ({
         cleanupProof: terminal.cleanupProof,
+        sourceCopy: terminal.sourceCopy,
         trialProvenance: terminal.trialProvenance
       })
     }
@@ -828,7 +842,8 @@ async function executePreActionProcessProofFailureReceipt(input) {
     },
     {
       createSupervisorAdapter: () => adapter,
-      runEditorPhase: async (_options, { spawnProcess }) => {
+      runEditorPhase: async (_options, { prepareWarmSourceCacheBeforeLaunch, spawnProcess }) => {
+        if (prepareWarmSourceCacheBeforeLaunch) await prepareWarmSourceCacheBeforeLaunch();
         spawnProcess("code", [], {});
         return { protocol: "test-notebook-phase-v1", status: "failed" };
       },
@@ -849,6 +864,7 @@ async function executePreActionProcessProofFailureReceipt(input) {
       signalSupervisor: async () => {},
       completeTerminalEvidence: async () => ({
         cleanupProof: terminal.cleanupProof,
+        sourceCopy: terminal.sourceCopy,
         trialProvenance: terminal.trialProvenance
       })
     }
@@ -953,7 +969,7 @@ test("binds a cold trial to the controller's verified cache proof", () => {
   const input = trialInput({ kind: "cold" });
   const fragment = normalizeDataWranglerComparisonTrialFragment(input);
   assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
-  assert.equal(fragment.cacheProof.requestedState, "evicted");
+  assert.equal(fragment.cacheProof.proof.requestedState, "evicted");
   assert.deepEqual(input.controlReceipt.coldCacheProof, fragment.cacheProof);
 });
 

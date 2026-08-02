@@ -76,13 +76,23 @@ The fixture generator creates synthetic, redistributable sources with stable sen
 - a 1,000,000-row by 20-column Parquet file.
 
 Every trial checks the fixture ID and SHA-256, the file's stable identity, its dimensions and full ordered schema, and
-three sentinel cells. A private notebook loads the source into one named Pandas or Polars dataframe in an untimed setup
-cell. The measured expression cell only evaluates that already-resident variable, isolating notebook preview latency
-from CSV/Parquet parsing. A
-separate diagnostic duration records source loading, but it is not folded into the preview comparison. Shape, exact
-Python type/module, fixture ID/hash, and three deterministic sentinels are verified in an ordinary visible notebook
-cell before timing and again after the workbench closes. No local work data, pickle, external network dataset, or
-user path is permitted.
+three sentinel cells. Once the environment gate passes, the runner makes one byte-for-byte copy in that trial's
+private directory. The original fixture is never passed to either product. The notebook, cache preparation, and both
+workbenches see only the copy.
+
+The copy is created through pinned, no-follow file descriptors with mode `0600`. Its receipt contains the SHA-256 and
+file identity of both the original and the copy, and the two inodes must differ. The runner checks that receipt again
+immediately before it authorizes the product action. After the measured process tree is empty, it checks the original
+and copy once more, records the same path-free receipt in the trial provenance, and removes only the exact copied
+inode. If any identity is uncertain, it leaves the file in place for review. A restart after a recorded product action
+does not create another copy or rerun the trial.
+
+A private notebook loads the copied source into one named Pandas or Polars dataframe in an untimed setup cell. The
+measured expression cell only evaluates that already-resident variable, isolating notebook preview latency from
+CSV/Parquet parsing. A separate diagnostic duration records source loading, but it is not folded into the preview
+comparison. Shape, exact Python type/module, fixture ID/hash, and three deterministic sentinels are verified in an
+ordinary visible notebook cell before timing and again after the workbench closes. No local work data, pickle,
+external network dataset, or user path is permitted.
 
 ## Readiness boundaries
 
@@ -153,13 +163,19 @@ inventing a private completion signal.
   kernel. There is no per-trial warm-up. No target variable or measured workbench survives from another trial.
 - Use a fixed published seed to counterbalance product order so each product runs first exactly five times per cell.
   Interleave cells by repetition so thermal and time drift cannot consistently favor one engine or dataset.
-- Prove the source pages resident immediately before notebook setup for the primary warm study, then load the target
-  dataframe in the untimed setup cell. Record one AB and one BA descriptive cold-source block per cell using fresh
-  clones of the configured-only template. Those cold blocks prove source-page eviction immediately before a measured
-  cell that loads and evaluates the dataframe, so their `loadAndPreviewMs` is deliberately different from the primary
-  preloaded-variable `inlinePreviewMs`. They do not enter the ten-sample warm distribution. “Cold” describes target
-  source pages, target variable, process, and kernel. It does not mean OS boot, package installation, or never-activated extensions.
-  Package installation and dependency provisioning remain outside timing.
+- Prove the private copy's pages resident immediately before notebook setup for the primary warm study, then load the
+  target dataframe in the untimed setup cell. The manifest pins the cache-controller bytes and the exact CPython
+  executable, version, hash, and file identity used to run it. Each cache proof repeats those toolchain receipts and
+  the copy's file identity before and after preparation. The plan command derives the toolchain receipts from the
+  supplied files; it never trusts a receipt copied into the specification. Cache preparation executes the retained
+  controller, interpreter, and private source through inherited descriptors, so renaming a path after the files are
+  opened cannot switch any of the three inputs. Record one AB and one BA descriptive cold-source block per cell using
+  fresh clones of the configured-only template. Those cold blocks prove page eviction on the copy
+  immediately before a measured cell that loads and evaluates the dataframe, so their `loadAndPreviewMs` is
+  deliberately different from the primary preloaded-variable `inlinePreviewMs`. They do not enter the ten-sample
+  warm distribution. “Cold” describes target source pages, target variable, process, and kernel. It does not mean OS
+  boot, package installation, or never-activated extensions. Package installation and dependency provisioning remain
+  outside timing.
 - Use fixed editor dimensions, zoom, theme, viewport, row-page size, and visible notebook/output layout.
 - Apply predeclared 45-second inline, 60-second workbench, and 135-second complete-profile deadlines. Their 240-second
   total reserves 60 seconds inside the native editor phase's 300-second ceiling for setup, accepted baseline windows,

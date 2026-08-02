@@ -13,9 +13,9 @@ import {
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
-export const DATA_WRANGLER_COMPARISON_NOTEBOOK_PROTOCOL = "openwrangler-data-wrangler-notebook-v1";
+export const DATA_WRANGLER_COMPARISON_NOTEBOOK_PROTOCOL = "openwrangler-data-wrangler-notebook-v2";
 export const DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_PROTOCOL =
-  "openwrangler-data-wrangler-notebook-verification-v1";
+  "openwrangler-data-wrangler-notebook-verification-v2";
 export const DATA_WRANGLER_COMPARISON_NOTEBOOK_VERIFICATION_MARKER = "OPENWRANGLER_STUDY_VERIFICATION:";
 export const DATA_WRANGLER_COMPARISON_SOURCE_ENVIRONMENT_VARIABLE = "OPEN_WRANGLER_STUDY_SOURCE";
 
@@ -42,7 +42,7 @@ function exactKeys(value, expected, label) {
 }
 
 function validateOptions(options) {
-  exactKeys(options, ["engine", "format", "kind", "fixture", "kernel"], "Comparison notebook options");
+  exactKeys(options, ["engine", "format", "kind", "fixture", "kernel", "sourceReceipt"], "Comparison notebook options");
   if (!["pandas", "polars"].includes(options.engine)) {
     fail("Comparison notebook engine must be pandas or polars.");
   }
@@ -66,7 +66,32 @@ function validateOptions(options) {
     fail("Comparison fixture SHA-256 is invalid.");
   }
   validateKernel(options.kernel);
+  validateSourceReceipt(options.sourceReceipt);
   return options;
+}
+
+function validateSourceReceipt(sourceReceipt) {
+  exactKeys(sourceReceipt, ["sha256", "filesystemIdentity"], "Comparison notebook source receipt");
+  exactKeys(
+    sourceReceipt.filesystemIdentity,
+    ["device", "inode", "sizeBytes", "mtimeNs"],
+    "Comparison notebook source filesystem identity"
+  );
+  const identity = sourceReceipt.filesystemIdentity;
+  if (
+    typeof sourceReceipt.sha256 !== "string" ||
+    !SHA256.test(sourceReceipt.sha256) ||
+    typeof identity.device !== "string" ||
+    !/^\d+$/u.test(identity.device) ||
+    typeof identity.inode !== "string" ||
+    !/^\d+$/u.test(identity.inode) ||
+    !Number.isSafeInteger(identity.sizeBytes) ||
+    identity.sizeBytes <= 0 ||
+    typeof identity.mtimeNs !== "string" ||
+    !/^\d+$/u.test(identity.mtimeNs)
+  ) {
+    fail("Comparison notebook source receipt is invalid.");
+  }
 }
 
 function validateKernel(kernel) {
@@ -123,7 +148,7 @@ function loaderExpression(engine, format) {
     : "_ow_engine.read_parquet(source_path)";
 }
 
-function setupSource({ engine, format, kind, fixture, kernel }) {
+function setupSource({ engine, format, kind, fixture, kernel, sourceReceipt }) {
   const moduleName = engine === "pandas" ? "pandas" : "polars";
   const expectedModule = engine === "pandas" ? "pandas.core.frame" : "polars.dataframe.frame";
   const exactDtype = engine === "pandas" ? "int64" : "Int64";
@@ -143,6 +168,7 @@ _OW_VERIFICATION_MARKER = ${pythonLiteral(DATA_WRANGLER_COMPARISON_NOTEBOOK_VERI
 _OW_SOURCE_ENV = ${pythonLiteral(DATA_WRANGLER_COMPARISON_SOURCE_ENVIRONMENT_VARIABLE)}
 _OW_FIXTURE_ID = ${pythonLiteral(fixture.id)}
 _OW_FIXTURE_SHA256 = ${pythonLiteral(fixture.sha256)}
+_OW_EXPECTED_SOURCE_RECEIPT = ${pythonLiteral(sourceReceipt)}
 _OW_ENGINE = ${pythonLiteral(engine)}
 _OW_KERNEL_NAME = ${pythonLiteral(kernel.name)}
 _OW_KERNEL_DISPLAY_NAME = ${pythonLiteral(kernel.displayName)}
@@ -155,11 +181,13 @@ _OW_EXACT_DTYPE = ${pythonLiteral(exactDtype)}
 _ow_study_source_path = _ow_os.environ.pop(_OW_SOURCE_ENV, None)
 _ow_python_implementation = _ow_platform.python_implementation()
 _ow_python_version = _ow_platform.python_version()
+_ow_source_file_receipt = None
 
 def _ow_setup_failure():
     raise AssertionError("The registered study source did not pass notebook setup.") from None
 
 def _ow_validate_study_source():
+    global _ow_source_file_receipt
     if _ow_python_implementation != "CPython" or not _ow_python_version.startswith("3.12."):
         _ow_setup_failure()
     if not isinstance(_ow_study_source_path, str) or not _ow_study_source_path:
@@ -167,12 +195,35 @@ def _ow_validate_study_source():
     digest = _ow_hashlib.sha256()
     try:
         with open(_ow_study_source_path, "rb") as source:
+            source_stat_before = _ow_os.fstat(source.fileno())
             while chunk := source.read(1024 * 1024):
                 digest.update(chunk)
+            source_stat_after = _ow_os.fstat(source.fileno())
     except Exception:
         _ow_setup_failure()
-    if digest.hexdigest() != _OW_FIXTURE_SHA256:
+    source_sha256 = digest.hexdigest()
+    source_receipt = {
+        "sha256": source_sha256,
+        "filesystemIdentity": {
+            "device": str(source_stat_before.st_dev),
+            "inode": str(source_stat_before.st_ino),
+            "sizeBytes": int(source_stat_before.st_size),
+            "mtimeNs": str(source_stat_before.st_mtime_ns),
+        },
+    }
+    stable_source = (
+        source_stat_before.st_dev == source_stat_after.st_dev
+        and source_stat_before.st_ino == source_stat_after.st_ino
+        and source_stat_before.st_size == source_stat_after.st_size
+        and source_stat_before.st_mtime_ns == source_stat_after.st_mtime_ns
+    )
+    if (
+        not stable_source
+        or source_sha256 != _OW_FIXTURE_SHA256
+        or source_receipt != _OW_EXPECTED_SOURCE_RECEIPT
+    ):
         _ow_setup_failure()
+    _ow_source_file_receipt = source_receipt
 
 def _ow_read_study_source():
     source_path = _ow_study_source_path
@@ -212,6 +263,20 @@ def _ow_verify_study_frame(frame, phase, require_object_token):
     object_token_continuous = (
         id(frame) == _ow_study_frame_object_token if require_object_token else None
     )
+    observed_schema = [
+        {"name": name, "dtype": "int64"}
+        for name, dtype in zip(actual_columns, actual_dtypes, strict=True)
+        if dtype == _OW_EXACT_DTYPE
+    ]
+    observed_sentinels = [
+        {"rowIndex": 0, "column": actual_columns[0], "value": int(value_at(0, 0))},
+        {"rowIndex": 1, "column": actual_columns[1], "value": int(value_at(1, 1))},
+        {
+            "rowIndex": _OW_ROWS - 1,
+            "column": actual_columns[-1],
+            "value": int(value_at(_OW_ROWS - 1, _OW_COLUMN_COUNT - 1)),
+        },
+    ]
     checks = (
         class_matched,
         shape_matched,
@@ -244,6 +309,14 @@ def _ow_verify_study_frame(frame, phase, require_object_token):
         "sentinelsMatched": sentinels_matched,
         "objectTokenContinuous": object_token_continuous,
         "rowDataIncluded": False,
+        "observedSource": {
+            "file": dict(_ow_source_file_receipt),
+            "semanticClass": "dataframe",
+            "rowCount": actual_shape[0],
+            "columnCount": actual_shape[1],
+            "schema": observed_schema,
+            "sentinels": observed_sentinels,
+        },
     }
 
 def _ow_emit_verification(frame, phase, require_object_token):
@@ -320,6 +393,7 @@ export function buildDataWranglerComparisonNotebook(options) {
           rows: fixture.rows,
           columns: fixture.columns
         },
+        sourceReceipt: structuredClone(validated.sourceReceipt),
         sourceEnvironmentVariable: DATA_WRANGLER_COMPARISON_SOURCE_ENVIRONMENT_VARIABLE,
         outputsMustRemainPathFree: true
       }

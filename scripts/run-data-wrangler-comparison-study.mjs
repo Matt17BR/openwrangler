@@ -39,6 +39,7 @@ import {
   DATA_WRANGLER_STUDY_TRIAL_INTENT_PROTOCOL
 } from "./data-wrangler-comparison-study.mjs";
 import { recoverDurableStudyJsonPublication } from "./durable-study-json.mjs";
+import { captureDataWranglerComparisonStudyV2Toolchain } from "./data-wrangler-comparison-cache-controller.mjs";
 
 const MAX_INPUT_BYTES = 32 * 1024 * 1024;
 const MAX_EXECUTION_LOCK_BYTES = 4 * 1024;
@@ -52,7 +53,7 @@ export const DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL = "openwrangler-data-wr
 function usage() {
   return [
     "Usage:",
-    "  node scripts/run-data-wrangler-comparison-study.mjs plan --spec <spec.json> --out <manifest.json>",
+    "  node scripts/run-data-wrangler-comparison-study.mjs plan --spec <spec.json> --out <manifest.json> --cache-controller <source_cache_control.py> --python <python>",
     "  node scripts/run-data-wrangler-comparison-study.mjs record --manifest <manifest.json> --fragments <dir> --fragment <fragment.json>",
     "  node scripts/run-data-wrangler-comparison-study.mjs status --manifest <manifest.json> --fragments <dir>",
     "  node scripts/run-data-wrangler-comparison-study.mjs finalize --manifest <manifest.json> --fragments <dir> --out <result.json>"
@@ -65,7 +66,7 @@ function parseArguments(argv, cwd = process.cwd()) {
     throw new TypeError(usage());
   }
   const allowed = {
-    plan: new Set(["--spec", "--out"]),
+    plan: new Set(["--spec", "--out", "--cache-controller", "--python"]),
     record: new Set(["--manifest", "--fragments", "--fragment"]),
     status: new Set(["--manifest", "--fragments"]),
     finalize: new Set(["--manifest", "--fragments", "--out"])
@@ -77,14 +78,14 @@ function parseArguments(argv, cwd = process.cwd()) {
     if (!allowed.has(flag) || value === undefined || value.startsWith("--")) {
       throw new TypeError(`Unknown or incomplete study argument ${flag ?? "<missing>"}.\n${usage()}`);
     }
-    const key = flag.slice(2);
+    const key = flag.slice(2).replace(/-([a-z])/gu, (_match, letter) => letter.toUpperCase());
     if (options[key] !== undefined) {
       throw new TypeError(`Study argument ${flag} may appear only once.`);
     }
     options[key] = resolve(cwd, value);
   }
   for (const flag of allowed) {
-    const key = flag.slice(2);
+    const key = flag.slice(2).replace(/-([a-z])/gu, (_match, letter) => letter.toUpperCase());
     if (options[key] === undefined) {
       throw new TypeError(`Study command ${command} requires ${flag}.`);
     }
@@ -708,6 +709,7 @@ export function createManifestBoundDataWranglerPolarsUnsupportedFragment({
       unsupported: { publicSurface: "unavailable", comparability: "non-comparable" }
     },
     milestones: createEmptyStudyMilestones(),
+    sourceCopy: null,
     cacheProof: null,
     sourceLoad: {
       status: "not-reached",
@@ -970,12 +972,44 @@ export async function runNextDataWranglerComparisonStudyTrial(
 
 export function runDataWranglerComparisonStudy(
   argv,
-  { cwd = process.cwd(), inputReadOptions = {}, now = () => new Date(), publicationOptions = {} } = {}
+  {
+    cwd = process.cwd(),
+    inputReadOptions = {},
+    now = () => new Date(),
+    publicationOptions = {},
+    captureCacheToolchain = captureDataWranglerComparisonStudyV2Toolchain
+  } = {}
 ) {
   const options = parseArguments(argv, cwd);
   if (options.command === "plan") {
     const specification = readBoundedJson(options.spec, "Study specification", inputReadOptions);
-    const manifest = buildDataWranglerStudyManifest(specification);
+    if (typeof captureCacheToolchain !== "function") {
+      throw new TypeError("Study plan cache-toolchain capture must be a function.");
+    }
+    const observedCacheToolchain = captureCacheToolchain({
+      controllerPath: options.cacheController,
+      pythonExecutablePath: options.python
+    });
+    const suppliedCacheToolchain = specification?.provenance?.cacheToolchain;
+    if (
+      suppliedCacheToolchain !== undefined &&
+      canonicalStudyJson(suppliedCacheToolchain) !== canonicalStudyJson(observedCacheToolchain)
+    ) {
+      throw new Error("Study specification source-cache toolchain does not match the plan-time observed files.");
+    }
+    const preparedSpecification = structuredClone(specification);
+    if (
+      preparedSpecification === null ||
+      typeof preparedSpecification !== "object" ||
+      Array.isArray(preparedSpecification) ||
+      preparedSpecification.provenance === null ||
+      typeof preparedSpecification.provenance !== "object" ||
+      Array.isArray(preparedSpecification.provenance)
+    ) {
+      throw new TypeError("Study specification provenance must be an object.");
+    }
+    preparedSpecification.provenance.cacheToolchain = structuredClone(observedCacheToolchain);
+    const manifest = buildDataWranglerStudyManifest(preparedSpecification);
     return {
       command: options.command,
       receipt: writeDataWranglerStudyJsonExclusive(options.out, manifest, publicationOptions.manifest),

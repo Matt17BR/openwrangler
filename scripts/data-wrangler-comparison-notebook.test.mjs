@@ -27,9 +27,25 @@ const KERNEL = Object.freeze({
   name: "openwrangler-study-cpython-312-trial",
   displayName: "Open Wrangler study CPython 3.12 (private trial)"
 });
+const SOURCE_RECEIPT = Object.freeze({
+  sha256: "a".repeat(64),
+  filesystemIdentity: Object.freeze({
+    device: "2049",
+    inode: "3001",
+    sizeBytes: 1_000_000,
+    mtimeNs: "1754100000000000000"
+  })
+});
 
 function options(engine, format, kind) {
-  return { engine, format, kind, fixture: FORMATS[format], kernel: KERNEL };
+  return {
+    engine,
+    format,
+    kind,
+    fixture: FORMATS[format],
+    kernel: KERNEL,
+    sourceReceipt: { ...SOURCE_RECEIPT, sha256: FORMATS[format].sha256 }
+  };
 }
 
 function cellSource(notebook, tag) {
@@ -50,6 +66,7 @@ test("the eight comparison notebooks are deterministic, path-free, and engine-na
         assert.equal(first.nbformat_minor, 5);
         assert.equal(first.metadata.openWranglerStudy.protocol, DATA_WRANGLER_COMPARISON_NOTEBOOK_PROTOCOL);
         assert.deepEqual(first.metadata.openWranglerStudy.kernel, KERNEL);
+        assert.deepEqual(first.metadata.openWranglerStudy.sourceReceipt, configuration.sourceReceipt);
         assert.equal(first.metadata.kernelspec.name, KERNEL.name);
         assert.equal(first.metadata.kernelspec.display_name, KERNEL.displayName);
         assert.equal(
@@ -97,7 +114,7 @@ test("cold measured cells load, assign, and return one native study_frame", () =
   }
 });
 
-test("verification receipts retain bounded observed class, shape, columns, dtype, and sentinel facts without row data", () => {
+test("verification receipts retain observed source facts and only the three registered sentinel values", () => {
   const notebook = buildDataWranglerComparisonNotebook(options("polars", "parquet", "warm"));
   const source = cellSource(notebook, "ow-study-setup");
   for (const check of [
@@ -115,7 +132,9 @@ test("verification receipts retain bounded observed class, shape, columns, dtype
     "sentinelsMatched",
     "objectTokenContinuous",
     "pythonImplementation",
-    "pythonVersion"
+    "pythonVersion",
+    "observedSource",
+    "filesystemIdentity"
   ]) {
     assert.match(source, new RegExp(`"${check}"`, "u"));
   }
@@ -125,6 +144,11 @@ test("verification receipts retain bounded observed class, shape, columns, dtype
   assert.match(source, /actual_dtypes = \[str\(dtype\) for dtype in frame\.dtypes\]/u);
   assert.match(source, /_OW_SENTINEL_ROWS = \(0, 1, _OW_ROWS \/\/ 2, _OW_ROWS - 1\)/u);
   assert.match(source, /value_at\(row, column\) == row \+ column/u);
+  assert.match(source, /"rowIndex": 1, "column": actual_columns\[1\], "value": int\(value_at\(1, 1\)\)/u);
+  assert.match(source, /source_sha256 = digest\.hexdigest\(\)/u);
+  assert.match(source, /source_stat_before = _ow_os\.fstat\(source\.fileno\(\)\)/u);
+  assert.match(source, /source_stat_after = _ow_os\.fstat\(source\.fileno\(\)\)/u);
+  assert.match(source, /source_receipt != _OW_EXPECTED_SOURCE_RECEIPT/u);
   assert.match(source, /"rowDataIncluded": False/u);
   assert.match(source, /_ow_platform\.python_implementation\(\)/u);
   assert.match(source, /_ow_python_implementation != "CPython"/u);
@@ -148,6 +172,25 @@ test("the notebook accepts no source path and resolves only the generic private 
     () => buildDataWranglerComparisonNotebook({ ...configuration, sourcePath: sourceCanary }),
     /missing or unknown fields/u
   );
+});
+
+test("the notebook rejects missing, malformed, and legacy source bindings", () => {
+  const configuration = options("pandas", "csv", "warm");
+  assert.throws(
+    () => buildDataWranglerComparisonNotebook({ ...configuration, sourceReceipt: undefined }),
+    /source receipt must be an object/u
+  );
+  assert.throws(
+    () =>
+      buildDataWranglerComparisonNotebook({
+        ...configuration,
+        sourceReceipt: { ...configuration.sourceReceipt, sha256: "b" }
+      }),
+    /source receipt is invalid/u
+  );
+  const notebook = buildDataWranglerComparisonNotebook(configuration);
+  notebook.metadata.openWranglerStudy.protocol = "openwrangler-data-wrangler-notebook-v1";
+  assert.notEqual(notebook.metadata.openWranglerStudy.protocol, DATA_WRANGLER_COMPARISON_NOTEBOOK_PROTOCOL);
 });
 
 test("the writer creates one exclusive 0600 notebook and retains no destination path in it", () => {

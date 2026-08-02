@@ -20,6 +20,7 @@ const SCHEDULE_ENTRY = Object.freeze({
   format: "csv",
   product: "open-wrangler"
 });
+const SOURCE_COPY_EVIDENCE = Object.freeze({ protocol: "test-source-copy-v1" });
 
 function preparedIntent(scheduleEntry = SCHEDULE_ENTRY) {
   return Object.freeze({
@@ -306,6 +307,7 @@ test("cold cache preparation stays behind the controller's source-verification f
 test("post-terminal cleanup and provenance evidence stays inside the executor receipt", async () => {
   const terminalEvidence = Object.freeze({
     cleanupProof: Object.freeze({ protocol: "test-cleanup-v1" }),
+    sourceCopy: SOURCE_COPY_EVIDENCE,
     trialProvenance: Object.freeze({ protocol: "test-provenance-v1" })
   });
   const harness = createHarness({
@@ -422,7 +424,7 @@ test("post-launch setup failure is path-free and waits for terminal cleanup", as
       throw new TypeError("private /proc setup detail");
     },
     signalSupervisor: () => stopEditor.resolve(),
-    completeTerminalEvidence: () => ({ cleanupProof: {}, trialProvenance: {} })
+    completeTerminalEvidence: () => ({ cleanupProof: {}, sourceCopy: SOURCE_COPY_EVIDENCE, trialProvenance: {} })
   });
 
   const result = await executeDataWranglerComparisonTrial(input(), harness.dependencies);
@@ -454,7 +456,7 @@ test("sampler setup failure retains launch proof without inventing a resource ob
       throw new Error("private editor failure detail");
     },
     signalSupervisor: () => stopEditor.resolve(),
-    completeTerminalEvidence: () => ({ cleanupProof: {}, trialProvenance: {} })
+    completeTerminalEvidence: () => ({ cleanupProof: {}, sourceCopy: SOURCE_COPY_EVIDENCE, trialProvenance: {} })
   });
   harness.dependencies.createSampler = () => {
     throw new Error("private sampler setup detail");
@@ -520,7 +522,7 @@ test("a failed pre-action snapshot closes authorization before abort handlers an
           { once: true }
         );
       }),
-    completeTerminalEvidence: () => ({ cleanupProof: {}, trialProvenance: {} })
+    completeTerminalEvidence: () => ({ cleanupProof: {}, sourceCopy: SOURCE_COPY_EVIDENCE, trialProvenance: {} })
   });
 
   const result = await executeDataWranglerComparisonTrial(
@@ -595,7 +597,7 @@ test("a product-action proof failure cannot fall through to durable authorizatio
       });
     },
     signalSupervisor: () => stopEditor.resolve(),
-    completeTerminalEvidence: () => ({ cleanupProof: {}, trialProvenance: {} })
+    completeTerminalEvidence: () => ({ cleanupProof: {}, sourceCopy: SOURCE_COPY_EVIDENCE, trialProvenance: {} })
   });
 
   const result = await executeDataWranglerComparisonTrial(

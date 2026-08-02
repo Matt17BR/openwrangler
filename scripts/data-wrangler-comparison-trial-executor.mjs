@@ -488,8 +488,16 @@ export function validateDataWranglerComparisonTrialExecutorReceipt(
     throw new TypeError("Comparison trial executor omitted launch or terminal supervisor evidence.");
   }
   if (value.terminalEvidence !== null) {
-    exactKeys(value.terminalEvidence, ["cleanupProof", "trialProvenance"], "Comparison trial terminal evidence");
-    if (!isRecord(value.terminalEvidence.cleanupProof) || !isRecord(value.terminalEvidence.trialProvenance)) {
+    exactKeys(
+      value.terminalEvidence,
+      ["cleanupProof", "sourceCopy", "trialProvenance"],
+      "Comparison trial terminal evidence"
+    );
+    if (
+      !isRecord(value.terminalEvidence.cleanupProof) ||
+      !isRecord(value.terminalEvidence.sourceCopy) ||
+      !isRecord(value.terminalEvidence.trialProvenance)
+    ) {
       throw new TypeError("Comparison trial terminal evidence is malformed.");
     }
   }
@@ -638,9 +646,7 @@ export async function executeDataWranglerComparisonTrial(
         spawnProcess(...arguments_) {
           try {
             if (input.cacheState === "warm" && (!warmCachePrepared || !isRecord(cacheProof))) {
-              throw new Error(
-                "Comparison trial refused to launch before its fresh warm-cache proof was retained."
-              );
+              throw new Error("Comparison trial refused to launch before its fresh warm-cache proof was retained.");
             }
             const child = adapter.spawnProcess(...arguments_);
             spawnObserved.resolve(child);

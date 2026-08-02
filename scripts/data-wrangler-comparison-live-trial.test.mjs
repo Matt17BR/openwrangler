@@ -5,12 +5,16 @@ import { resolve } from "node:path";
 import test, { after } from "node:test";
 import {
   collectDataWranglerComparisonCleanupProof,
-  prepareManifestBoundDataWranglerSourceCache,
+  completeDataWranglerComparisonTrialEvidence,
   reinspectDataWranglerComparisonActionAuthorization,
-  recordOnePreparedDataWranglerComparisonStudyTrial
+  recordOnePreparedDataWranglerComparisonStudyTrial as recordOnePreparedDataWranglerComparisonStudyTrialImplementation
 } from "./data-wrangler-comparison-live-trial.mjs";
 import { createDataWranglerComparisonDriverProfile } from "./data-wrangler-comparison-driver.mjs";
-import { digestStudyValue } from "./data-wrangler-comparison-study.mjs";
+import { DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL, digestStudyValue } from "./data-wrangler-comparison-study.mjs";
+import {
+  DATA_WRANGLER_COMPARISON_CACHE_CONTROLLER_PROTOCOL,
+  DATA_WRANGLER_COMPARISON_CACHE_TOOLCHAIN_PROTOCOL
+} from "./data-wrangler-comparison-cache-controller.mjs";
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 const FRAGMENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -42,6 +46,97 @@ const DRIVER_RECEIPT = Object.freeze({
   vsix: Object.freeze({ sha256: "f".repeat(64) }),
   journeyGraph: Object.freeze({ graphSha256: "e".repeat(64) })
 });
+const SOURCE_COPY_CORE = Object.freeze({
+  protocol: "openwrangler-data-wrangler-comparison-source-copy-v1",
+  canonicalPath: "/fixtures/source.csv",
+  copyPath: "/private/trial/source-copy.csv",
+  mode: "0600",
+  byteIdentical: true,
+  canonicalReceipt: Object.freeze({ sha256: FIXTURE_SHA256, filesystemIdentity: FIXTURE_IDENTITY }),
+  copyReceipt: Object.freeze({
+    sha256: FIXTURE_SHA256,
+    filesystemIdentity: Object.freeze({ ...FIXTURE_IDENTITY, inode: "20" })
+  })
+});
+const SOURCE_COPY_EVIDENCE = Object.freeze({
+  protocol: SOURCE_COPY_CORE.protocol,
+  byteIdentical: true,
+  mode: "0600",
+  canonicalReceipt: SOURCE_COPY_CORE.canonicalReceipt,
+  copyReceipt: SOURCE_COPY_CORE.copyReceipt,
+  verifiedAfterProcessTreeEmpty: true,
+  cleanup: Object.freeze({
+    protocol: SOURCE_COPY_CORE.protocol,
+    removed: true,
+    copyReceipt: SOURCE_COPY_CORE.copyReceipt
+  })
+});
+const CACHE_TOOLCHAIN = Object.freeze({
+  protocol: DATA_WRANGLER_COMPARISON_CACHE_TOOLCHAIN_PROTOCOL,
+  controller: Object.freeze({
+    sha256: "7".repeat(64),
+    filesystemIdentity: Object.freeze({ device: "1", inode: "30", sizeBytes: 1_000, mtimeNs: "31" })
+  }),
+  pythonExecutable: Object.freeze({
+    implementation: "CPython",
+    version: "3.12.11",
+    sha256: "8".repeat(64),
+    filesystemIdentity: Object.freeze({ device: "1", inode: "40", sizeBytes: 2_000, mtimeNs: "41" })
+  })
+});
+
+function cacheProof(kind = "warm") {
+  const totalPages = Math.ceil(SOURCE_COPY_CORE.copyReceipt.filesystemIdentity.sizeBytes / 4096);
+  return {
+    protocol: DATA_WRANGLER_COMPARISON_CACHE_CONTROLLER_PROTOCOL,
+    toolchain: CACHE_TOOLCHAIN,
+    proof: {
+      protocol: DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL,
+      requestedState: kind === "warm" ? "resident" : "evicted",
+      fdatasyncApplied: true,
+      adviceAccepted: kind === "cold",
+      verification: "linux-mincore",
+      pageSizeBytes: 4096,
+      totalPages,
+      residentPagesBefore: kind === "warm" ? 0 : totalPages,
+      residentPagesAfter: kind === "warm" ? totalPages : 0,
+      identityStable: true,
+      verified: true,
+      sourceFilesystemIdentityBefore: SOURCE_COPY_CORE.copyReceipt.filesystemIdentity,
+      sourceFilesystemIdentityAfter: SOURCE_COPY_CORE.copyReceipt.filesystemIdentity,
+      controller: CACHE_TOOLCHAIN.controller,
+      pythonExecutable: CACHE_TOOLCHAIN.pythonExecutable
+    }
+  };
+}
+
+function sourceCopyDependencies() {
+  return {
+    createSourceCopy(options) {
+      assert.deepEqual(options, {
+        canonicalPath: SOURCE_COPY_CORE.canonicalPath,
+        privateRoot: PROFILE_ROOT,
+        name: "source-copy.csv"
+      });
+      return SOURCE_COPY_CORE;
+    },
+    assertSourceCopy(value) {
+      assert.equal(value, SOURCE_COPY_CORE);
+      return value;
+    },
+    cleanupSourceCopy(value) {
+      assert.equal(value, SOURCE_COPY_CORE);
+      return SOURCE_COPY_EVIDENCE.cleanup;
+    }
+  };
+}
+
+function recordOnePreparedDataWranglerComparisonStudyTrial(value, options = {}) {
+  return recordOnePreparedDataWranglerComparisonStudyTrialImplementation(value, {
+    ...sourceCopyDependencies(),
+    ...options
+  });
+}
 
 function input(overrides = {}) {
   return {
@@ -51,7 +146,7 @@ function input(overrides = {}) {
     expectedProvenance: { protocol: "test-provenance-v1", comparisonDriver: DRIVER_RECEIPT },
     preparedTrial: {
       scheduleEntryId: "warm-000",
-      sourcePath: "/private/trial/source.csv",
+      sourcePath: SOURCE_COPY_CORE.canonicalPath,
       notebookPath: "/private/trial/study.ipynb",
       requestPath: "/private/trial/bridge/request.json",
       acknowledgementPath: "/private/trial/bridge/ack.json",
@@ -67,6 +162,10 @@ function input(overrides = {}) {
       supervisorOptions: { pythonExecutable: "/private/python" },
       processEvidenceOptions: { pythonExecutablePath: "/private/python" },
       samplerOptions: { procRoot: "/private/proc" },
+      sourceCopy: {
+        privateRoot: PROFILE_ROOT,
+        name: "source-copy.csv"
+      },
       sourceCache: {
         pythonExecutablePath: "/private/python",
         controlScriptPath: "/private/source-cache.py"
@@ -97,7 +196,7 @@ function context(overrides = {}) {
     kind: "warm"
   };
   const manifest = {
-    provenance: { comparisonDriver: DRIVER_RECEIPT },
+    provenance: { comparisonDriver: DRIVER_RECEIPT, cacheToolchain: CACHE_TOOLCHAIN },
     fixtures: [
       {
         id: "csv-100k-50",
@@ -138,6 +237,43 @@ function passedGate() {
   return { protocol: "test-gate-v1", passed: true };
 }
 
+function observedNotebookSource() {
+  return {
+    file: SOURCE_COPY_CORE.copyReceipt,
+    semanticClass: "dataframe",
+    rowCount: 100_000,
+    columnCount: 50,
+    schema: Array.from({ length: 50 }, (_value, index) => ({
+      name: `c${String(index).padStart(2, "0")}`,
+      dtype: "int64"
+    })),
+    sentinels: [
+      { rowIndex: 0, column: "c00", value: 0 },
+      { rowIndex: 1, column: "c01", value: 2 },
+      { rowIndex: 99_999, column: "c49", value: 100_048 }
+    ]
+  };
+}
+
+function notebookPhaseReceipt() {
+  const observedSource = observedNotebookSource();
+  return {
+    protocol: "test-notebook-v1",
+    status: "success",
+    study: {
+      engine: "pandas",
+      format: "csv",
+      kind: "warm",
+      fixture: { id: "csv-100k-50", sha256: FIXTURE_SHA256, rows: 100_000, columns: 50 },
+      sourceReceipt: SOURCE_COPY_CORE.copyReceipt
+    },
+    verification: {
+      before: { observedSource },
+      after: { observedSource: structuredClone(observedSource) }
+    }
+  };
+}
+
 function rawEvidence(overrides = {}) {
   return {
     protocol: "openwrangler-data-wrangler-comparison-trial-executor-v1",
@@ -162,7 +298,7 @@ function rawEvidence(overrides = {}) {
     actionAuthorized: true,
     authorizationAttempted: true,
     authorizationOutcome: "authorized",
-    notebookPhaseReceipt: { protocol: "test-notebook-v1", status: "success" },
+    notebookPhaseReceipt: notebookPhaseReceipt(),
     controlReceipt: {
       protocol: "test-control-v1",
       status: "success",
@@ -171,7 +307,7 @@ function rawEvidence(overrides = {}) {
         retainedOwnedIdentities: [{ pid: 100, startTimeTicks: "1000" }]
       }
     },
-    cacheProof: { protocol: "test-cache-v1" },
+    cacheProof: cacheProof(),
     processProofs: {
       protocol: "test-process-v1",
       editorRoot: { pid: 100, startTimeTicks: "1000" }
@@ -185,6 +321,7 @@ function rawEvidence(overrides = {}) {
     },
     terminalEvidence: {
       cleanupProof: { protocol: "test-cleanup-v1" },
+      sourceCopy: SOURCE_COPY_EVIDENCE,
       trialProvenance: { protocol: "test-trial-provenance-v1" }
     },
     outerEditorFailure: null,
@@ -197,6 +334,9 @@ function provenanceDependencies(events = []) {
     async captureTrialProvenanceBefore(value) {
       events.push("provenance-captured-before");
       assert.deepEqual(value.driverBefore, DRIVER_RECEIPT);
+      assert.equal(value.sourcePath, SOURCE_COPY_CORE.copyPath);
+      assert.equal(value.canonicalSourcePath, SOURCE_COPY_CORE.canonicalPath);
+      assert.deepEqual(value.sourceCopy.copyReceipt, SOURCE_COPY_CORE.copyReceipt);
       return { protocol: "test-provenance-before-v1" };
     },
     async revalidateTrialProvenanceAfter(value) {
@@ -205,10 +345,13 @@ function provenanceDependencies(events = []) {
       assert.deepEqual(value.driverBefore, DRIVER_RECEIPT);
       assert.deepEqual(value.driverAfter, DRIVER_RECEIPT);
       assert.equal(value.cleanupProof.status, "complete");
+      assert.deepEqual(value.sourceCopy.copyReceipt, SOURCE_COPY_CORE.copyReceipt);
       return {
         protocol: "test-trial-provenance-v1",
         driverBefore: value.driverBefore,
-        driverAfter: value.driverAfter
+        driverAfter: value.driverAfter,
+        sourceCopyBefore: value.sourceCopy,
+        sourceCopyAfter: value.sourceCopy
       };
     }
   };
@@ -267,6 +410,7 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
         columns: 50,
         sha256: FIXTURE_SHA256
       });
+      assert.deepEqual(options.sourceReceipt, SOURCE_COPY_CORE.copyReceipt);
       return { path, bytes: 100, mode: "0600" };
     },
     async executeTrial(executorInput, executorDependencies) {
@@ -277,7 +421,7 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
       assert.deepEqual(executorInput.editorPhaseOptions.comparisonStudyEnvironment, {
         requestPath: "/private/trial/bridge/request.json",
         acknowledgementPath: "/private/trial/bridge/ack.json",
-        sourcePath: "/private/trial/source.csv",
+        sourcePath: SOURCE_COPY_CORE.copyPath,
         publicSurfaceAvailability: "available"
       });
       assert.equal(executorInput.preparedIntent.runId, RUN_ID);
@@ -285,10 +429,11 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
       assert.equal(typeof executorInput.reinspectActionAuthorization, "function");
       assert.deepEqual(executorInput.reinspectActionAuthorization(), { status: "not-authorized" });
       let cache;
+      const supervisorOwnedSpawn = () => undefined;
       const phaseReceipt = await executorDependencies.runEditorPhase(
         { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
         {
-          spawnProcess: "supervisor-owned-spawn",
+          spawnProcess: supervisorOwnedSpawn,
           async prepareWarmSourceCacheBeforeLaunch() {
             cache = await executorDependencies.prepareSourceCache({ cacheState: "warm" });
             return cache;
@@ -296,7 +441,7 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
         }
       );
       assert.deepEqual(phaseReceipt, { protocol: "test-editor-phase-v1" });
-      assert.deepEqual(cache, { protocol: "test-cache-v1" });
+      assert.deepEqual(cache, cacheProof());
       events.push("supervisor-completed");
       const base = rawEvidence({ cacheProof: cache, terminalEvidence: null });
       const terminalEvidence = await executorDependencies.completeTerminalEvidence({
@@ -314,7 +459,7 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
       async runEditorPhase(options, dependencies) {
         events.push("editor-executed");
         assert.deepEqual(options.developmentPaths, []);
-        assert.equal(dependencies.spawnProcess, "supervisor-owned-spawn");
+        assert.equal(typeof dependencies.spawnProcess, "function");
         assert.deepEqual(dependencies.environment, LIVE_TRIAL_PROFILE.environment);
         return { protocol: "test-editor-phase-v1" };
       }
@@ -334,8 +479,9 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
     prepareSourceCache(options) {
       events.push("cache-prepared");
       assert.equal(options.cacheState, "warm");
-      assert.equal(options.fixture.id, "csv-100k-50");
-      return { protocol: "test-cache-v1" };
+      assert.equal(options.sourceCopy, SOURCE_COPY_CORE);
+      assert.equal(options.controllerPath, "/private/source-cache.py");
+      return cacheProof();
     },
     cleanupDependencies: {
       monotonicMilliseconds: () => cleanupClock,
@@ -353,6 +499,18 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
       assert.equal(value.fragmentIdentity.fragmentId, FRAGMENT_ID);
       assert.equal(value.environmentGate.passed, true);
       assert.equal(value.sourceVerificationReceipt.fixtureSha256, FIXTURE_SHA256);
+      assert.equal(value.sourceVerificationReceipt.schema.length, 50);
+      assert.deepEqual(value.sourceVerificationReceipt.schema[49], { name: "c49", dtype: "int64" });
+      assert.deepEqual(value.sourceVerificationReceipt.sentinelsBefore, [
+        { rowIndex: 0, column: "c00", value: 0 },
+        { rowIndex: 1, column: "c01", value: 2 },
+        { rowIndex: 99_999, column: "c49", value: 100_048 }
+      ]);
+      assert.notDeepEqual(value.sourceVerificationReceipt.schema, context().manifest.fixtures[0].schema);
+      assert.deepEqual(
+        value.sourceVerificationReceipt.filesystemIdentityBefore,
+        SOURCE_COPY_CORE.copyReceipt.filesystemIdentity
+      );
       assert.equal(value.executorReceipt.supervisorCompletion.terminalReceipt.protocol, "test-terminal-v1");
       assert.equal(value.executorReceipt.terminalEvidence.cleanupProof.observations.length, 2);
       assert.equal(value.executorReceipt.terminalEvidence.trialProvenance.protocol, "test-trial-provenance-v1");
@@ -556,7 +714,7 @@ test("terminal driver receipts survive a rejected measured editor phase", async 
         executorDependencies.runEditorPhase(
           { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
           {
-            spawnProcess: "supervisor-owned-spawn",
+            spawnProcess: () => undefined,
             prepareWarmSourceCacheBeforeLaunch: async () => ({ protocol: "test-cache-v1" })
           }
         ),
@@ -717,6 +875,28 @@ test("prepared output and bridge paths can never alias the immutable source", as
     ),
     /writable paths cannot alias study, source, or runtime inputs/u
   );
+  const sourceCopyPath = resolve(PROFILE_ROOT, prepared.sourceCopy.name);
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(
+      input({ preparedTrial: { ...prepared, notebookPath: sourceCopyPath } }),
+      {}
+    ),
+    /writable paths cannot alias/u
+  );
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(
+      input({ preparedTrial: { ...prepared, sourcePath: sourceCopyPath } }),
+      {}
+    ),
+    /writable paths cannot alias/u
+  );
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(
+      input({ preparedTrial: { ...prepared, sourceCopy: { ...prepared.sourceCopy, name: "." } } }),
+      {}
+    ),
+    /source-copy name is invalid/u
+  );
 });
 
 test("cleanup evidence rejects a reused PID instead of treating it as absence", async () => {
@@ -859,104 +1039,213 @@ test("authorization reinspection fails closed on a foreign unresolved action", (
   );
 });
 
-test("manifest-bound cache preparation proves the requested state and exact source identity", () => {
-  const calls = [];
-  const metadata = {
-    dev: 1n,
-    ino: 2n,
-    size: 100n,
-    mtimeNs: 3n,
-    uid: typeof process.getuid === "function" ? BigInt(process.getuid()) : 1n,
-    nlink: 1n,
-    isFile: () => true,
-    isSymbolicLink: () => false
-  };
-  const fixture = {
-    id: "csv-100k-50",
-    sha256: FIXTURE_SHA256,
-    filesystemIdentity: FIXTURE_IDENTITY
-  };
-  const proof = prepareManifestBoundDataWranglerSourceCache(
+test("private source cleanup starts only after the measured process tree is proven empty", async () => {
+  const events = [];
+  let clock = 0;
+  const terminal = await completeDataWranglerComparisonTrialEvidence(
     {
-      cacheState: "cold",
-      sourcePath: "/private/source.csv",
-      fixture,
-      pythonExecutablePath: "/private/python",
-      controlScriptPath: "/private/cache.py"
+      protocol: "openwrangler-data-wrangler-comparison-live-trial-v1",
+      manifest: { provenance: { comparisonDriver: DRIVER_RECEIPT } },
+      scheduleEntry: { id: "warm-000" },
+      preparedIntent: { runId: RUN_ID },
+      environmentGate: passedGate(),
+      provenanceBefore: { protocol: "test-before-v1" },
+      neutralDriverEvidence: { driverBefore: DRIVER_RECEIPT, driverAfter: DRIVER_RECEIPT },
+      sourceCopy: SOURCE_COPY_CORE,
+      rawEvidence: rawEvidence({ terminalEvidence: null })
     },
     {
-      lstat: () => metadata,
-      execFile(executable, arguments_, options) {
-        calls.push({ executable, arguments_, options });
-        return JSON.stringify({
-          protocol: "openwrangler-source-cache-proof-v1",
-          requestedState: "evicted",
-          fdatasyncApplied: true,
-          adviceAccepted: true,
-          verification: "linux-mincore",
-          pageSizeBytes: 4_096,
-          totalPages: 2,
-          residentPagesBefore: 2,
-          residentPagesAfter: 0,
-          identityStable: true,
-          verified: true
-        });
+      cleanupDependencies: {
+        monotonicMilliseconds: () => clock,
+        async wait(milliseconds) {
+          clock += milliseconds;
+        },
+        readProcessIdentity() {
+          events.push("tree-polled-empty");
+          return null;
+        }
+      },
+      assertSourceCopy(value) {
+        events.push("copy-revalidated");
+        return value;
+      },
+      async revalidateTrialProvenanceAfter(value) {
+        events.push("provenance-revalidated");
+        return {
+          driverBefore: value.driverBefore,
+          driverAfter: value.driverAfter,
+          sourceCopyBefore: value.sourceCopy,
+          sourceCopyAfter: value.sourceCopy
+        };
+      },
+      cleanupSourceCopy() {
+        events.push("copy-cleaned");
+        return SOURCE_COPY_EVIDENCE.cleanup;
       }
     }
   );
-
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].arguments_, ["/private/cache.py", "--source", "/private/source.csv", "--mode", "cold"]);
-  assert.equal(proof.fixtureId, fixture.id);
-  assert.equal(proof.fixtureSha256, fixture.sha256);
-  assert.deepEqual(proof.filesystemIdentityBefore, FIXTURE_IDENTITY);
-  assert.deepEqual(proof.filesystemIdentityAfter, FIXTURE_IDENTITY);
-  assert.equal(Object.hasOwn(proof, "identityStable"), false);
+  assert.deepEqual(events, [
+    "tree-polled-empty",
+    "tree-polled-empty",
+    "copy-revalidated",
+    "provenance-revalidated",
+    "copy-revalidated",
+    "copy-cleaned"
+  ]);
+  assert.deepEqual(terminal.sourceCopy, SOURCE_COPY_EVIDENCE);
 });
 
-test("cache preparation rejects a controller claim that does not match the measured state", () => {
-  const metadata = {
-    dev: 1n,
-    ino: 2n,
-    size: 100n,
-    mtimeNs: 3n,
-    uid: typeof process.getuid === "function" ? BigInt(process.getuid()) : 1n,
-    nlink: 1n,
-    isFile: () => true,
-    isSymbolicLink: () => false
-  };
-  assert.throws(
-    () =>
-      prepareManifestBoundDataWranglerSourceCache(
-        {
-          cacheState: "warm",
-          sourcePath: "/private/source.csv",
-          fixture: {
-            id: "csv-100k-50",
-            sha256: FIXTURE_SHA256,
-            filesystemIdentity: FIXTURE_IDENTITY
-          },
-          pythonExecutablePath: "/private/python",
-          controlScriptPath: "/private/cache.py"
-        },
-        {
-          lstat: () => metadata,
-          execFile: () =>
-            JSON.stringify({
-              protocol: "openwrangler-source-cache-proof-v1",
-              requestedState: "resident",
-              fdatasyncApplied: true,
-              adviceAccepted: false,
-              verification: "linux-mincore",
-              pageSizeBytes: 4_096,
-              totalPages: 2,
-              residentPagesBefore: 0,
-              residentPagesAfter: 1,
-              identityStable: true,
-              verified: true
-            })
-        }
-      ),
-    /did not prove the requested stable Linux cache state/u
+test("a failure before supervisor launch removes the still-verified private source copy", async () => {
+  let copyInspections = 0;
+  let copyCleanups = 0;
+  let executorStarted = false;
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(input(), {
+      withHeavyLease: fakeHeavyLease([]),
+      validateExecutorReceipt: acceptSyntheticExecutorReceipt,
+      ...provenanceDependencies(),
+      runNext: fakeRunNext([]),
+      runGate: async () => passedGate(),
+      createSourceCopy: () => SOURCE_COPY_CORE,
+      assertSourceCopy(value) {
+        copyInspections += 1;
+        assert.equal(value, SOURCE_COPY_CORE);
+        return value;
+      },
+      cleanupSourceCopy(value) {
+        copyCleanups += 1;
+        assert.equal(value, SOURCE_COPY_CORE);
+        return SOURCE_COPY_EVIDENCE.cleanup;
+      },
+      writeNotebook() {
+        throw new Error("injected notebook publication failure");
+      },
+      async executeTrial() {
+        executorStarted = true;
+        return assert.fail("a failed notebook publication reached the trial executor");
+      }
+    }),
+    /injected notebook publication failure/u
   );
+  assert.equal(copyInspections, 2);
+  assert.equal(copyCleanups, 1);
+  assert.equal(executorStarted, false);
+});
+
+test("an ambiguous supervisor launch never removes the private source copy", async () => {
+  let copyCleanups = 0;
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(input(), {
+      withHeavyLease: fakeHeavyLease([]),
+      validateExecutorReceipt: acceptSyntheticExecutorReceipt,
+      ...provenanceDependencies(),
+      runNext: fakeRunNext([]),
+      runGate: async () => passedGate(),
+      createSourceCopy: () => SOURCE_COPY_CORE,
+      assertSourceCopy: (value) => value,
+      cleanupSourceCopy() {
+        copyCleanups += 1;
+        return SOURCE_COPY_EVIDENCE.cleanup;
+      },
+      writeNotebook: (path) => ({ path, bytes: 100, mode: "0600" }),
+      async executeTrial(_executorInput, executorDependencies) {
+        await executorDependencies.runEditorPhase(
+          { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
+          {
+            spawnProcess() {
+              throw new Error("injected ambiguous supervisor launch");
+            },
+            async prepareWarmSourceCacheBeforeLaunch() {
+              return await executorDependencies.prepareSourceCache({ cacheState: "warm" });
+            }
+          }
+        );
+        return assert.fail("an ambiguous launch returned to the trial executor");
+      },
+      executorDependencies: {
+        async runEditorPhase(_options, dependencies) {
+          return await dependencies.spawnProcess();
+        }
+      },
+      neutralDriverDependencies: {
+        captureDriverReceipt: () => DRIVER_RECEIPT,
+        async installDriver() {},
+        async readInventory() {
+          return input().preparedTrial.neutralDriver.expectedExtensions;
+        }
+      },
+      prepareSourceCache: () => cacheProof()
+    }),
+    /injected ambiguous supervisor launch/u
+  );
+  assert.equal(copyCleanups, 0);
+});
+
+test("a fake cache receipt cannot reach durable action authorization", async () => {
+  let productAuthorizations = 0;
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(input(), {
+      withHeavyLease: fakeHeavyLease([]),
+      validateExecutorReceipt: acceptSyntheticExecutorReceipt,
+      ...provenanceDependencies(),
+      runNext: fakeRunNext(
+        [],
+        context({
+          authorizeAction() {
+            productAuthorizations += 1;
+            return { protocol: "unexpected-authorization" };
+          }
+        })
+      ),
+      runGate: async () => passedGate(),
+      writeNotebook: (path) => ({ path, bytes: 100, mode: "0600" }),
+      prepareSourceCache: () => ({ protocol: "test-cache-v1" }),
+      async executeTrial(executorInput, executorDependencies) {
+        await assert.rejects(
+          executorDependencies.prepareSourceCache({ cacheState: "warm" }),
+          /source-cache proof has missing or unknown fields/u
+        );
+        assert.throws(() => executorInput.authorizeAction(), /requires one manifest-bound source-cache proof/u);
+        throw new Error("fake cache receipt was blocked before product authorization");
+      }
+    }),
+    /fake cache receipt was blocked before product authorization/u
+  );
+  assert.equal(productAuthorizations, 0);
+});
+
+test("a private source-copy drift closes action authorization before the product click", async () => {
+  let inspections = 0;
+  let productAuthorizations = 0;
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(input(), {
+      withHeavyLease: fakeHeavyLease([]),
+      validateExecutorReceipt: acceptSyntheticExecutorReceipt,
+      ...provenanceDependencies(),
+      runNext: fakeRunNext(
+        [],
+        context({
+          authorizeAction() {
+            productAuthorizations += 1;
+            return { protocol: "unexpected-authorization" };
+          }
+        })
+      ),
+      runGate: async () => passedGate(),
+      writeNotebook: (path) => ({ path, bytes: 100, mode: "0600" }),
+      assertSourceCopy(value) {
+        inspections += 1;
+        if (inspections >= 2) throw new Error("private source copy changed identity");
+        return value;
+      },
+      async executeTrial(executorInput) {
+        executorInput.authorizeAction();
+        return assert.fail("copy drift reached product execution");
+      },
+      runNextOptions: {},
+      createSourceCopy: () => SOURCE_COPY_CORE
+    }),
+    /private source copy changed identity/u
+  );
+  assert.equal(productAuthorizations, 0);
 });

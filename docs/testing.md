@@ -581,11 +581,15 @@ land together.
 The study command manages the durable ledger; it does not drive the notebook UI yet:
 
 ```bash
-npm run comparison:study -- plan --spec tmp/comparison-study/spec.json --out tmp/comparison-study/manifest.json
+npm run comparison:study -- plan --spec tmp/comparison-study/spec.json --out tmp/comparison-study/manifest.json --cache-controller python/benchmarks/source_cache_control.py --python /absolute/path/to/cpython-3.12
 npm run comparison:study -- status --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments
 npm run comparison:study -- record --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --fragment tmp/comparison-study/next-fragment.json
 npm run comparison:study -- finalize --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --out tmp/comparison-study/result.json
 ```
+
+`plan` opens and identifies the supplied controller and CPython executable itself. It writes those observed receipts
+into the manifest and rejects a specification that claims a different toolchain. Later cache preparation executes
+those retained files through inherited descriptors and binds the result to the private fixture copy.
 
 The ledger has five versioned formats: manifest, fragment, finalization intent, result, and Linux PSS observation.
 Their protocol IDs begin with `openwrangler-data-wrangler-study-` or `openwrangler-linux-pss-observation-`. Each

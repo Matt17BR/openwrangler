@@ -586,6 +586,7 @@ export function normalizeDataWranglerComparisonTrialFragment(
     ...structuredClone(input.fragmentIdentity),
     outcome: outcomeForPhase(phaseReceipt, milestones, resourceObservation, cleanupProof),
     milestones,
+    sourceCopy: structuredClone(terminalEvidence.sourceCopy),
     cacheProof: structuredClone(executorReceipt.cacheProof),
     sourceLoad: sourceLoadForPhase(phaseReceipt),
     engineEvidence: actionStarted
@@ -673,6 +674,7 @@ function launchOnlyTerminalEvidence(executorReceipt) {
       ...structuredClone(retainedCleanupProof),
       supervisorLaunchReceipt: structuredClone(executorReceipt.launchReceipt)
     },
+    sourceCopy: structuredClone(requireRecord(terminalEvidence.sourceCopy, "Trial terminal source-copy evidence")),
     trialProvenance: structuredClone(terminalEvidence.trialProvenance)
   };
 }
@@ -761,6 +763,7 @@ export function normalizeDataWranglerComparisonPreNotebookFailureFragment(
       unsupported: null
     },
     milestones: createEmptyStudyMilestones(),
+    sourceCopy: structuredClone(terminalEvidence.sourceCopy),
     cacheProof: structuredClone(executorReceipt.cacheProof),
     sourceLoad: {
       status: "not-reached",
@@ -828,6 +831,7 @@ export function normalizeDataWranglerComparisonPostLaunchSetupFailureFragment(
       unsupported: null
     },
     milestones: createEmptyStudyMilestones(),
+    sourceCopy: structuredClone(terminalEvidence.sourceCopy),
     cacheProof: structuredClone(executorReceipt.cacheProof),
     sourceLoad: {
       status: "not-reached",
@@ -903,6 +907,7 @@ export function normalizeDataWranglerComparisonPreActionProcessProofFailureFragm
       unsupported: null
     },
     milestones: createEmptyStudyMilestones(),
+    sourceCopy: structuredClone(terminalEvidence.sourceCopy),
     cacheProof: structuredClone(executorReceipt.cacheProof),
     sourceLoad: {
       status: "not-reached",

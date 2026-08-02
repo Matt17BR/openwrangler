@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "
 import { dirname, isAbsolute, resolve } from "node:path";
 import {
   DATA_WRANGLER_COMPARISON_SOURCE_COPY_PROTOCOL,
-  assertDataWranglerComparisonSourceCopy
+  withDataWranglerComparisonSourceCopyDescriptor
 } from "./data-wrangler-comparison-source-copy.mjs";
 
 export const DATA_WRANGLER_COMPARISON_CACHE_CONTROLLER_PROTOCOL =
@@ -13,9 +13,13 @@ export const DATA_WRANGLER_COMPARISON_CACHE_TOOLCHAIN_PROTOCOL =
   "openwrangler-data-wrangler-comparison-cache-toolchain-v1";
 
 const STUDY_V2_PROOF_PROTOCOL = "openwrangler-source-cache-proof-study-v2";
+const STUDY_V2_TOOLCHAIN_PROTOCOL = "openwrangler-cache-toolchain-study-v2";
 const MAXIMUM_AUTHORITY_BYTES = 256 * 1024 * 1024;
 const MAXIMUM_OUTPUT_BYTES = 32 * 1024;
 const SHA256 = /^[0-9a-f]{64}$/u;
+const CHILD_CONTROLLER_PATH = "/proc/self/fd/3";
+const CHILD_PYTHON_PATH = "/proc/self/fd/4";
+const CHILD_SOURCE_DESCRIPTOR = 5;
 
 function fail(message, cause) {
   throw new Error(message, cause === undefined ? undefined : { cause });
@@ -259,15 +263,67 @@ function validateProof(proof, sourceCopy, cacheState, controller, pythonExecutab
   return proof;
 }
 
-function toolchainReceipt(controller, pythonExecutable) {
+function toolchainReceipt(controller, pythonExecutable, runtimePython) {
   return Object.freeze({
     protocol: DATA_WRANGLER_COMPARISON_CACHE_TOOLCHAIN_PROTOCOL,
     controller: controller.receipt,
-    pythonExecutable: pythonExecutable.receipt
+    pythonExecutable: Object.freeze({
+      implementation: runtimePython.implementation,
+      version: runtimePython.version,
+      ...pythonExecutable.receipt
+    })
   });
 }
 
-export function captureDataWranglerComparisonStudyV2Toolchain({ pythonExecutablePath, controllerPath }) {
+function runPinnedToolchainDescription(controller, pythonExecutable, spawn) {
+  const result = spawn(
+    CHILD_PYTHON_PATH,
+    [CHILD_CONTROLLER_PATH, "--contract", "toolchain-v2", "--controller-fd", "3", "--python-fd", "4"],
+    {
+      cwd: dirname(controller.path),
+      encoding: "utf8",
+      env: {
+        LANG: "C.UTF-8",
+        LC_ALL: "C.UTF-8",
+        PYTHONHASHSEED: "0",
+        PYTHONNOUSERSITE: "1",
+        PYTHONDONTWRITEBYTECODE: "1"
+      },
+      maxBuffer: MAXIMUM_OUTPUT_BYTES,
+      stdio: ["ignore", "pipe", "pipe", controller.descriptor, pythonExecutable.descriptor],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  );
+  if (result?.error !== undefined || result?.status !== 0 || result?.signal !== null || result?.stderr !== "") {
+    fail("The study-v2 toolchain probe did not exit cleanly.");
+  }
+  const description = parseProof(result.stdout);
+  exactKeys(description, ["protocol", "controller", "pythonExecutable"], "Study-v2 toolchain description");
+  exactKeys(description.controller, ["sha256", "filesystemIdentity"], "Study-v2 toolchain controller");
+  exactKeys(
+    description.pythonExecutable,
+    ["implementation", "version", "sha256", "filesystemIdentity"],
+    "Study-v2 toolchain Python"
+  );
+  if (
+    description.protocol !== STUDY_V2_TOOLCHAIN_PROTOCOL ||
+    description.pythonExecutable.implementation !== "CPython" ||
+    typeof description.pythonExecutable.version !== "string" ||
+    !sameJson(description.controller, controller.receipt) ||
+    description.pythonExecutable.sha256 !== pythonExecutable.receipt.sha256 ||
+    !sameJson(description.pythonExecutable.filesystemIdentity, pythonExecutable.receipt.filesystemIdentity)
+  ) {
+    fail("The running study-v2 toolchain does not match its host-pinned files.");
+  }
+  return description;
+}
+
+export function captureDataWranglerComparisonStudyV2Toolchain(
+  { pythonExecutablePath, controllerPath },
+  { spawn = spawnSync } = {}
+) {
+  if (spawn !== spawnSync && typeof spawn !== "function") fail("The study-v2 toolchain spawn seam must be a function.");
   const controller = openAuthority(controllerPath, "The study-v2 cache controller");
   let pythonExecutable;
   try {
@@ -282,7 +338,10 @@ export function captureDataWranglerComparisonStudyV2Toolchain({ pythonExecutable
   try {
     assertAuthority(controller, "The study-v2 cache controller");
     assertAuthority(pythonExecutable, "The study-v2 Python executable");
-    receipt = toolchainReceipt(controller, pythonExecutable);
+    const description = runPinnedToolchainDescription(controller, pythonExecutable, spawn);
+    assertAuthority(controller, "The study-v2 cache controller");
+    assertAuthority(pythonExecutable, "The study-v2 Python executable");
+    receipt = toolchainReceipt(controller, pythonExecutable, description.pythonExecutable);
   } catch (error) {
     operationError = error;
   }
@@ -315,79 +374,80 @@ export function runDataWranglerComparisonStudyV2CacheController(
     fail("The study-v2 cache fault injector must be a function.");
   }
 
-  assertDataWranglerComparisonSourceCopy(sourceCopy);
-  const controller = openAuthority(controllerPath, "The study-v2 cache controller");
-  let pythonExecutable;
-  try {
-    pythonExecutable = openAuthority(pythonExecutablePath, "The study-v2 Python executable");
-  } catch (error) {
-    closeSync(controller.descriptor);
-    throw error;
-  }
-  let operationError;
-  let result;
-  const closeErrors = [];
-  try {
-    faultInjector?.("before-spawn");
-    assertAuthority(controller, "The study-v2 cache controller");
-    assertAuthority(pythonExecutable, "The study-v2 Python executable");
-    assertDataWranglerComparisonSourceCopy(sourceCopy);
-    result = spawn(
-      pythonExecutable.path,
-      [
-        controller.path,
-        "--source",
-        sourceCopy.copyPath,
-        "--mode",
-        cacheState,
-        "--contract",
-        "study-v2",
-        "--controller-fd",
-        "3"
-      ],
-      {
-        cwd: dirname(sourceCopy.copyPath),
-        encoding: "utf8",
-        env: {
-          LANG: "C.UTF-8",
-          LC_ALL: "C.UTF-8",
-          PYTHONHASHSEED: "0",
-          PYTHONNOUSERSITE: "1",
-          PYTHONDONTWRITEBYTECODE: "1"
-        },
-        maxBuffer: MAXIMUM_OUTPUT_BYTES,
-        stdio: ["ignore", "pipe", "pipe", controller.descriptor],
-        timeout: 30_000,
-        windowsHide: true
-      }
-    );
-    faultInjector?.("after-spawn");
-    assertAuthority(controller, "The study-v2 cache controller");
-    assertAuthority(pythonExecutable, "The study-v2 Python executable");
-    assertDataWranglerComparisonSourceCopy(sourceCopy);
-    if (result?.error !== undefined || result?.status !== 0 || result?.signal !== null || result?.stderr !== "") {
-      fail("The study-v2 cache controller did not exit cleanly.");
-    }
-    result = validateProof(parseProof(result.stdout), sourceCopy, cacheState, controller, pythonExecutable);
-  } catch (error) {
-    operationError = error;
-  }
-  for (const authority of [pythonExecutable, controller]) {
+  return withDataWranglerComparisonSourceCopyDescriptor(sourceCopy, ({ descriptor: sourceDescriptor }) => {
+    const controller = openAuthority(controllerPath, "The study-v2 cache controller");
+    let pythonExecutable;
     try {
-      closeSync(authority.descriptor);
+      pythonExecutable = openAuthority(pythonExecutablePath, "The study-v2 Python executable");
     } catch (error) {
-      closeErrors.push(error);
+      closeSync(controller.descriptor);
+      throw error;
     }
-  }
-  if (operationError !== undefined || closeErrors.length > 0) {
-    throw new AggregateError(
-      operationError === undefined ? closeErrors : [operationError, ...closeErrors],
-      "Could not prove study-v2 cache preparation against the host-pinned toolchain."
-    );
-  }
-  return Object.freeze({
-    protocol: DATA_WRANGLER_COMPARISON_CACHE_CONTROLLER_PROTOCOL,
-    toolchain: toolchainReceipt(controller, pythonExecutable),
-    proof: Object.freeze(result)
+    let operationError;
+    let result;
+    const closeErrors = [];
+    try {
+      faultInjector?.("before-spawn");
+      assertAuthority(controller, "The study-v2 cache controller");
+      assertAuthority(pythonExecutable, "The study-v2 Python executable");
+      result = spawn(
+        CHILD_PYTHON_PATH,
+        [
+          CHILD_CONTROLLER_PATH,
+          "--source-fd",
+          String(CHILD_SOURCE_DESCRIPTOR),
+          "--mode",
+          cacheState,
+          "--contract",
+          "study-v2",
+          "--controller-fd",
+          "3",
+          "--python-fd",
+          "4"
+        ],
+        {
+          cwd: dirname(controller.path),
+          encoding: "utf8",
+          env: {
+            LANG: "C.UTF-8",
+            LC_ALL: "C.UTF-8",
+            PYTHONHASHSEED: "0",
+            PYTHONNOUSERSITE: "1",
+            PYTHONDONTWRITEBYTECODE: "1"
+          },
+          maxBuffer: MAXIMUM_OUTPUT_BYTES,
+          stdio: ["ignore", "pipe", "pipe", controller.descriptor, pythonExecutable.descriptor, sourceDescriptor],
+          timeout: 30_000,
+          windowsHide: true
+        }
+      );
+      faultInjector?.("after-spawn");
+      assertAuthority(controller, "The study-v2 cache controller");
+      assertAuthority(pythonExecutable, "The study-v2 Python executable");
+      if (result?.error !== undefined || result?.status !== 0 || result?.signal !== null || result?.stderr !== "") {
+        fail("The study-v2 cache controller did not exit cleanly.");
+      }
+      result = validateProof(parseProof(result.stdout), sourceCopy, cacheState, controller, pythonExecutable);
+    } catch (error) {
+      operationError = error;
+    }
+    for (const authority of [pythonExecutable, controller]) {
+      try {
+        closeSync(authority.descriptor);
+      } catch (error) {
+        closeErrors.push(error);
+      }
+    }
+    if (operationError !== undefined || closeErrors.length > 0) {
+      throw new AggregateError(
+        operationError === undefined ? closeErrors : [operationError, ...closeErrors],
+        "Could not prove study-v2 cache preparation against the host-pinned toolchain."
+      );
+    }
+    return Object.freeze({
+      protocol: DATA_WRANGLER_COMPARISON_CACHE_CONTROLLER_PROTOCOL,
+      toolchain: toolchainReceipt(controller, pythonExecutable, result.pythonExecutable),
+      proof: Object.freeze(result)
+    });
   });
 }

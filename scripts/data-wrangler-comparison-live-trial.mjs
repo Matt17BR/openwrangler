@@ -1,17 +1,17 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstatSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { runDataWranglerComparisonStudyV2CacheController } from "./data-wrangler-comparison-cache-controller.mjs";
 import { runDataWranglerComparisonNeutralDriverPhase } from "./data-wrangler-comparison-driver.mjs";
 import { writeDataWranglerComparisonNotebook } from "./data-wrangler-comparison-notebook.mjs";
 import {
-  DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL,
   createEmptyStudyMilestones,
   createStudyFragmentIdentity,
   digestStudyValue,
   inspectDataWranglerStudyTrialIntents,
   loadDataWranglerStudyFragments,
   readDataWranglerStudyManifestPublication,
+  validateDataWranglerComparisonCacheBinding,
+  validateDataWranglerComparisonSourceCopyBinding,
   validateDataWranglerStudyFragment
 } from "./data-wrangler-comparison-study.mjs";
 import {
@@ -29,6 +29,11 @@ import { runLinuxDataWranglerStudyGate } from "./linux-data-wrangler-study-gate.
 import { readLinuxProcessIdentity } from "./linux-study-supervisor-client.mjs";
 import { runNextDataWranglerComparisonStudyTrial } from "./run-data-wrangler-comparison-study.mjs";
 import { withHeavyLocalCommandLease } from "./run-heavy-local-command.mjs";
+import {
+  assertDataWranglerComparisonSourceCopy,
+  cleanupDataWranglerComparisonSourceCopy,
+  createDataWranglerComparisonSourceCopy
+} from "./data-wrangler-comparison-source-copy.mjs";
 
 export const DATA_WRANGLER_COMPARISON_LIVE_TRIAL_PROTOCOL = "openwrangler-data-wrangler-comparison-live-trial-v1";
 
@@ -37,7 +42,6 @@ const PHASE_BY_PRODUCT = Object.freeze({
   "data-wrangler": "comparison-study-data-wrangler-trial"
 });
 const SHA256 = /^[0-9a-f]{64}$/u;
-const MAXIMUM_CACHE_OUTPUT_BYTES = 16 * 1024;
 const CLEANUP_INTERVAL_MS = 200;
 const CLEANUP_DEADLINE_MS = 10_000;
 const MAXIMUM_CLEANUP_OBSERVATIONS = CLEANUP_DEADLINE_MS / CLEANUP_INTERVAL_MS + 1;
@@ -108,6 +112,7 @@ function validatePreparedTrial(value) {
       "editorPhaseOptions",
       "supervisorOptions",
       "processEvidenceOptions",
+      "sourceCopy",
       "sourceCache",
       "neutralDriver"
     ],
@@ -143,6 +148,19 @@ function validatePreparedTrial(value) {
   requireRecord(value.supervisorOptions, "Prepared supervisor options");
   requireRecord(value.processEvidenceOptions, "Prepared process-evidence options");
   if (value.samplerOptions !== undefined) requireRecord(value.samplerOptions, "Prepared sampler options");
+  const sourceCopy = requireRecord(value.sourceCopy, "Prepared source-copy options");
+  exactKeys(sourceCopy, ["privateRoot", "name"], "Prepared source-copy options");
+  absolutePath(sourceCopy.privateRoot, "Prepared source-copy private root");
+  if (
+    typeof sourceCopy.name !== "string" ||
+    sourceCopy.name.length === 0 ||
+    sourceCopy.name.length > 128 ||
+    sourceCopy.name === "." ||
+    sourceCopy.name === ".." ||
+    /[\0\r\n/\\]/u.test(sourceCopy.name)
+  ) {
+    fail("Prepared source-copy name is invalid.");
+  }
   const sourceCache = requireRecord(value.sourceCache, "Prepared source-cache options");
   exactKeys(sourceCache, ["pythonExecutablePath", "controlScriptPath"], "Prepared source-cache options");
   absolutePath(sourceCache.pythonExecutablePath, "Prepared source-cache Python");
@@ -167,6 +185,9 @@ function validatePreparedTrial(value) {
     fail("Prepared neutral-driver template is invalid.");
   }
   requireRecord(neutralDriver.profile, "Prepared neutral-driver profile");
+  if (neutralDriver.profile.privateRoot !== sourceCopy.privateRoot) {
+    fail("Prepared source-copy and neutral-driver roots must be the same private trial root.");
+  }
   return value;
 }
 
@@ -185,7 +206,9 @@ function validateInput(value) {
   }
   requireRecord(value.expectedProvenance, "Expected Linux gate provenance");
   const prepared = validatePreparedTrial(requireRecord(value.preparedTrial, "Prepared comparison trial"));
+  const sourceCopyPath = resolve(prepared.sourceCopy.privateRoot, prepared.sourceCopy.name);
   const writtenPaths = [
+    sourceCopyPath,
     prepared.notebookPath,
     `${prepared.notebookPath}.result.json`,
     prepared.requestPath,
@@ -199,7 +222,10 @@ function validateInput(value) {
     prepared.sourceCache.pythonExecutablePath,
     prepared.sourceCache.controlScriptPath
   ];
-  if (writtenPaths.some((path) => protectedPaths.includes(path))) {
+  if (
+    new Set(writtenPaths).size !== writtenPaths.length ||
+    writtenPaths.some((path) => protectedPaths.includes(path))
+  ) {
     fail("Prepared trial writable paths cannot alias study, source, or runtime inputs.");
   }
   return value;
@@ -209,15 +235,6 @@ function fixtureForEntry(manifest, scheduleEntry) {
   const fixture = manifest.fixtures.find((candidate) => candidate.format === scheduleEntry.format);
   if (fixture === undefined) fail("The prepared trial has no manifest fixture.");
   return fixture;
-}
-
-function fileIdentity(metadata) {
-  return {
-    device: metadata.dev.toString(),
-    inode: metadata.ino.toString(),
-    sizeBytes: Number(metadata.size),
-    mtimeNs: metadata.mtimeNs.toString()
-  };
 }
 
 function canonical(value) {
@@ -234,125 +251,6 @@ function canonical(value) {
 
 function sameValue(left, right) {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
-}
-
-function sourceMetadata(path, fixture, lstat) {
-  if (
-    typeof fixture.id !== "string" ||
-    fixture.id.length === 0 ||
-    !SHA256.test(fixture.sha256 ?? "") ||
-    !isRecord(fixture.filesystemIdentity)
-  ) {
-    fail("Source-cache fixture identity is invalid.");
-  }
-  const metadata = lstat(path, { bigint: true });
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size <= 0n ||
-    (typeof process.getuid === "function" && metadata.uid !== BigInt(process.getuid()))
-  ) {
-    fail("Prepared comparison source must be one current-user-owned, single-link regular file.");
-  }
-  const identity = fileIdentity(metadata);
-  if (!sameValue(identity, fixture.filesystemIdentity)) {
-    fail("Prepared comparison source does not match the manifest fixture identity.");
-  }
-  return identity;
-}
-
-function parseCacheOutput(value) {
-  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > MAXIMUM_CACHE_OUTPUT_BYTES) {
-    fail("Source-cache controller output is missing or too large.");
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    fail("Source-cache controller output is not valid JSON.");
-  }
-  exactKeys(
-    parsed,
-    [
-      "protocol",
-      "requestedState",
-      "fdatasyncApplied",
-      "adviceAccepted",
-      "verification",
-      "pageSizeBytes",
-      "totalPages",
-      "residentPagesBefore",
-      "residentPagesAfter",
-      "identityStable",
-      "verified"
-    ],
-    "Source-cache controller proof"
-  );
-  return parsed;
-}
-
-/**
- * Run the repository's cache controller and bind its path-free result to the
- * exact fixture identity recorded in the study manifest.
- */
-export function prepareManifestBoundDataWranglerSourceCache(
-  { cacheState, sourcePath, fixture, pythonExecutablePath, controlScriptPath },
-  { execFile = execFileSync, lstat = lstatSync } = {}
-) {
-  if (!["warm", "cold"].includes(cacheState)) fail("Source-cache state must be warm or cold.");
-  absolutePath(sourcePath, "Source-cache source");
-  absolutePath(pythonExecutablePath, "Source-cache Python");
-  absolutePath(controlScriptPath, "Source-cache controller");
-  requireRecord(fixture, "Source-cache fixture");
-  const before = sourceMetadata(sourcePath, fixture, lstat);
-  const raw = parseCacheOutput(
-    execFile(pythonExecutablePath, [controlScriptPath, "--source", sourcePath, "--mode", cacheState], {
-      encoding: "utf8",
-      maxBuffer: MAXIMUM_CACHE_OUTPUT_BYTES,
-      timeout: 30_000,
-      windowsHide: true
-    })
-  );
-  const after = sourceMetadata(sourcePath, fixture, lstat);
-  const expectedState = cacheState === "warm" ? "resident" : "evicted";
-  if (
-    raw.protocol !== DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL ||
-    raw.requestedState !== expectedState ||
-    raw.verification !== "linux-mincore" ||
-    raw.identityStable !== true ||
-    raw.verified !== true ||
-    raw.fdatasyncApplied !== true ||
-    raw.adviceAccepted !== (cacheState === "cold") ||
-    !Number.isSafeInteger(raw.pageSizeBytes) ||
-    raw.pageSizeBytes < 1 ||
-    !Number.isSafeInteger(raw.totalPages) ||
-    raw.totalPages < 1 ||
-    !Number.isSafeInteger(raw.residentPagesBefore) ||
-    raw.residentPagesBefore < 0 ||
-    raw.residentPagesBefore > raw.totalPages ||
-    !Number.isSafeInteger(raw.residentPagesAfter) ||
-    raw.residentPagesAfter !== (cacheState === "warm" ? raw.totalPages : 0) ||
-    !sameValue(before, after)
-  ) {
-    fail("Source-cache controller did not prove the requested stable Linux cache state.");
-  }
-  return Object.freeze({
-    protocol: raw.protocol,
-    requestedState: raw.requestedState,
-    fdatasyncApplied: raw.fdatasyncApplied,
-    adviceAccepted: raw.adviceAccepted,
-    verification: raw.verification,
-    pageSizeBytes: raw.pageSizeBytes,
-    totalPages: raw.totalPages,
-    residentPagesBefore: raw.residentPagesBefore,
-    residentPagesAfter: raw.residentPagesAfter,
-    fixtureId: fixture.id,
-    fixtureSha256: fixture.sha256,
-    filesystemIdentityBefore: before,
-    filesystemIdentityAfter: after,
-    verified: raw.verified
-  });
 }
 
 function gateFailureFragment({ manifest, scheduleEntry, executionIndex, environmentGate, fragmentId, recordedAtUtc }) {
@@ -374,6 +272,7 @@ function gateFailureFragment({ manifest, scheduleEntry, executionIndex, environm
       unsupported: null
     },
     milestones: createEmptyStudyMilestones(),
+    sourceCopy: null,
     cacheProof: null,
     sourceLoad: {
       status: "not-reached",
@@ -390,22 +289,74 @@ function gateFailureFragment({ manifest, scheduleEntry, executionIndex, environm
   };
 }
 
-function sourceVerificationReceipt(manifest, scheduleEntry) {
-  const fixture = fixtureForEntry(manifest, scheduleEntry);
+function observedNotebookSource(value, label) {
+  const observed = requireRecord(value, label);
+  exactKeys(observed, ["file", "semanticClass", "rowCount", "columnCount", "schema", "sentinels"], label);
+  const file = requireRecord(observed.file, `${label} file`);
+  exactKeys(file, ["sha256", "filesystemIdentity"], `${label} file`);
+  requireRecord(file.filesystemIdentity, `${label} filesystem identity`);
+  if (
+    typeof file.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(file.sha256) ||
+    observed.semanticClass !== "dataframe" ||
+    !Number.isSafeInteger(observed.rowCount) ||
+    observed.rowCount < 1 ||
+    !Number.isSafeInteger(observed.columnCount) ||
+    observed.columnCount < 2 ||
+    !Array.isArray(observed.schema) ||
+    observed.schema.length !== observed.columnCount ||
+    !Array.isArray(observed.sentinels) ||
+    observed.sentinels.length !== 3
+  ) {
+    fail(`${label} is incomplete or malformed.`);
+  }
+  return observed;
+}
+
+function sourceVerificationReceipt(phaseReceipt, scheduleEntry, sourceCopy) {
+  const phase = requireRecord(phaseReceipt, "Measured notebook phase receipt");
+  const study = requireRecord(phase.study, "Measured notebook study");
+  const fixture = requireRecord(study.fixture, "Measured notebook fixture");
+  const notebookSourceReceipt = requireRecord(study.sourceReceipt, "Measured notebook source receipt");
+  const verification = requireRecord(phase.verification, "Measured notebook verification");
+  exactKeys(verification, ["before", "after"], "Measured notebook verification");
+  const beforeReceipt = requireRecord(verification.before, "Measured notebook verification before action");
+  const before = observedNotebookSource(beforeReceipt.observedSource, "Measured notebook source before action");
+  const after =
+    verification.after === null
+      ? null
+      : observedNotebookSource(
+          requireRecord(verification.after, "Measured notebook verification after trial").observedSource,
+          "Measured notebook source after trial"
+        );
+  const copyReceipt = requireRecord(sourceCopy.copyReceipt, "Measured terminal source-copy receipt");
+  if (
+    study.engine !== scheduleEntry.engine ||
+    fixture.id !== (scheduleEntry.format === "csv" ? "csv-100k-50" : "parquet-1m-20") ||
+    before.file.sha256 !== fixture.sha256 ||
+    before.rowCount !== fixture.rows ||
+    before.columnCount !== fixture.columns ||
+    !sameValue(notebookSourceReceipt, copyReceipt) ||
+    !sameValue(before.file, copyReceipt) ||
+    (after !== null && !sameValue(after, before)) ||
+    sourceCopy.verifiedAfterProcessTreeEmpty !== true
+  ) {
+    fail("Measured notebook source verification does not match its engine-observed source copy.");
+  }
   return {
     engine: scheduleEntry.engine,
     fixtureId: fixture.id,
-    fixtureSha256: fixture.sha256,
-    semanticClass: "dataframe",
-    rowCount: fixture.rows,
-    columnCount: fixture.columns,
-    schema: structuredClone(fixture.schema),
-    sentinelsBefore: structuredClone(fixture.sentinels),
-    sentinelsAfter: structuredClone(fixture.sentinels),
-    filesystemIdentityBefore: structuredClone(fixture.filesystemIdentity),
-    filesystemIdentityAfter: structuredClone(fixture.filesystemIdentity),
+    fixtureSha256: before.file.sha256,
+    semanticClass: before.semanticClass,
+    rowCount: before.rowCount,
+    columnCount: before.columnCount,
+    schema: structuredClone(before.schema),
+    sentinelsBefore: structuredClone(before.sentinels),
+    sentinelsAfter: after === null ? null : structuredClone(after.sentinels),
+    filesystemIdentityBefore: structuredClone(before.file.filesystemIdentity),
+    filesystemIdentityAfter: after === null ? null : structuredClone(copyReceipt.filesystemIdentity),
     observedBeforeAction: true,
-    observedAfterTrial: "verified"
+    observedAfterTrial: after === null ? "not-reached" : "verified"
   };
 }
 
@@ -703,7 +654,12 @@ export async function collectDataWranglerComparisonCleanupProof(
 
 export async function completeDataWranglerComparisonTrialEvidence(
   value,
-  { revalidateTrialProvenanceAfter, cleanupDependencies = {} } = {}
+  {
+    revalidateTrialProvenanceAfter,
+    cleanupDependencies = {},
+    assertSourceCopy = assertDataWranglerComparisonSourceCopy,
+    cleanupSourceCopy = cleanupDataWranglerComparisonSourceCopy
+  } = {}
 ) {
   const input = requireRecord(value, "Measured trial completion input");
   exactKeys(
@@ -716,6 +672,7 @@ export async function completeDataWranglerComparisonTrialEvidence(
       "environmentGate",
       "provenanceBefore",
       "neutralDriverEvidence",
+      "sourceCopy",
       "rawEvidence"
     ],
     "Measured trial completion input"
@@ -738,27 +695,100 @@ export async function completeDataWranglerComparisonTrialEvidence(
   if (typeof revalidateTrialProvenanceAfter !== "function") {
     fail("Measured trial completion requires a post-cleanup provenance revalidator.");
   }
+  if (typeof assertSourceCopy !== "function" || typeof cleanupSourceCopy !== "function") {
+    fail("Measured trial completion requires source-copy revalidation and cleanup functions.");
+  }
   const cleanupProof = await collectDataWranglerComparisonCleanupProof(input.rawEvidence, cleanupDependencies);
-  const trialProvenance = structuredClone(
-    requireRecord(
-      await revalidateTrialProvenanceAfter({
-        protocol: DATA_WRANGLER_COMPARISON_LIVE_TRIAL_PROTOCOL,
-        manifest: structuredClone(input.manifest),
-        scheduleEntry: structuredClone(input.scheduleEntry),
-        preparedIntent: structuredClone(input.preparedIntent),
-        provenanceBefore: structuredClone(provenanceBefore),
-        driverBefore: structuredClone(driverBefore),
-        driverAfter: structuredClone(driverAfter),
-        cleanupProof: structuredClone(cleanupProof),
-        rawEvidence: structuredClone(input.rawEvidence)
-      }),
-      "Measured trial provenance after cleanup"
-    )
-  );
+  const liveSourceCopy = assertSourceCopy(input.sourceCopy);
+  let trialProvenance;
+  let provenanceError;
+  let sourceCleanup;
+  let cleanupError;
+  try {
+    trialProvenance = structuredClone(
+      requireRecord(
+        await revalidateTrialProvenanceAfter({
+          protocol: DATA_WRANGLER_COMPARISON_LIVE_TRIAL_PROTOCOL,
+          manifest: structuredClone(input.manifest),
+          scheduleEntry: structuredClone(input.scheduleEntry),
+          preparedIntent: structuredClone(input.preparedIntent),
+          provenanceBefore: structuredClone(provenanceBefore),
+          driverBefore: structuredClone(driverBefore),
+          driverAfter: structuredClone(driverAfter),
+          sourceCopy: {
+            protocol: liveSourceCopy.protocol,
+            byteIdentical: liveSourceCopy.byteIdentical,
+            mode: liveSourceCopy.mode,
+            canonicalReceipt: structuredClone(liveSourceCopy.canonicalReceipt),
+            copyReceipt: structuredClone(liveSourceCopy.copyReceipt)
+          },
+          cleanupProof: structuredClone(cleanupProof),
+          rawEvidence: structuredClone(input.rawEvidence)
+        }),
+        "Measured trial provenance after cleanup"
+      )
+    );
+  } catch (error) {
+    provenanceError = error;
+  }
+  try {
+    assertSourceCopy(liveSourceCopy);
+    sourceCleanup = cleanupSourceCopy(liveSourceCopy);
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (provenanceError !== undefined || cleanupError !== undefined) {
+    throw new AggregateError(
+      [provenanceError, cleanupError].filter((error) => error !== undefined),
+      "Could not finish private comparison source-copy evidence."
+    );
+  }
   if (!sameValue(trialProvenance.driverBefore, driverBefore) || !sameValue(trialProvenance.driverAfter, driverAfter)) {
     fail("Measured trial provenance omitted or changed its neutral-driver receipts.");
   }
-  return Object.freeze({ cleanupProof, trialProvenance });
+  return Object.freeze({
+    cleanupProof,
+    sourceCopy: Object.freeze({
+      protocol: liveSourceCopy.protocol,
+      byteIdentical: liveSourceCopy.byteIdentical,
+      mode: liveSourceCopy.mode,
+      canonicalReceipt: liveSourceCopy.canonicalReceipt,
+      copyReceipt: liveSourceCopy.copyReceipt,
+      verifiedAfterProcessTreeEmpty: true,
+      cleanup: sourceCleanup
+    }),
+    trialProvenance
+  });
+}
+
+async function withPrivateSourceCopyRecovery(
+  sourceCopy,
+  lifecycle,
+  operation,
+  { assertSourceCopy, cleanupSourceCopy }
+) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!lifecycle.supervisorLaunchAttempted && !lifecycle.cleanupAttempted) {
+      let cleanupError;
+      try {
+        assertSourceCopy(sourceCopy);
+        lifecycle.cleanupAttempted = true;
+        cleanupSourceCopy(sourceCopy);
+      } catch (candidate) {
+        cleanupError = candidate;
+      }
+      if (cleanupError !== undefined) {
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        throw new AggregateError(
+          [error, cleanupError],
+          `${originalMessage}; the comparison trial failed before launch and its private source copy could not be reconciled.`
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 function normalizationInput({ context, raw, environmentGate, fragmentIdentity }) {
@@ -776,7 +806,11 @@ function normalizationInput({ context, raw, environmentGate, fragmentIdentity })
   return {
     ...common,
     notebookPhaseReceipt: raw.notebookPhaseReceipt,
-    sourceVerificationReceipt: sourceVerificationReceipt(context.manifest, context.scheduleEntry)
+    sourceVerificationReceipt: sourceVerificationReceipt(
+      raw.notebookPhaseReceipt,
+      context.scheduleEntry,
+      requireRecord(raw.terminalEvidence?.sourceCopy, "Measured trial terminal source-copy evidence")
+    )
   };
 }
 
@@ -803,7 +837,12 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
     captureTrialProvenanceBefore,
     revalidateTrialProvenanceAfter,
     completeTerminalEvidence = completeDataWranglerComparisonTrialEvidence,
-    prepareSourceCache = prepareManifestBoundDataWranglerSourceCache,
+    createSourceCopy = createDataWranglerComparisonSourceCopy,
+    assertSourceCopy = assertDataWranglerComparisonSourceCopy,
+    cleanupSourceCopy = cleanupDataWranglerComparisonSourceCopy,
+    validateSourceCopyBinding = validateDataWranglerComparisonSourceCopyBinding,
+    validateCacheBinding = validateDataWranglerComparisonCacheBinding,
+    prepareSourceCache = runDataWranglerComparisonStudyV2CacheController,
     now = () => new Date(),
     fragmentIdFactory = randomUUID,
     gateDependencies = {},
@@ -832,6 +871,11 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
     [captureTrialProvenanceBefore, "pre-launch provenance capture"],
     [revalidateTrialProvenanceAfter, "post-cleanup provenance revalidation"],
     [completeTerminalEvidence, "cleanup and provenance finalizer"],
+    [createSourceCopy, "source-copy creator"],
+    [assertSourceCopy, "source-copy revalidator"],
+    [cleanupSourceCopy, "source-copy cleanup"],
+    [validateSourceCopyBinding, "manifest source-copy binding validator"],
+    [validateCacheBinding, "manifest cache binding validator"],
     [prepareSourceCache, "source-cache preparer"],
     [now, "clock"],
     [fragmentIdFactory, "fragment ID factory"]
@@ -890,206 +934,279 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
           }
 
           const fixture = fixtureForEntry(context.manifest, context.scheduleEntry);
-          const notebookReceipt = writeNotebook(prepared.notebookPath, {
-            engine: context.scheduleEntry.engine,
-            format: context.scheduleEntry.format,
-            kind: context.scheduleEntry.kind,
-            fixture: {
-              id: fixture.id,
-              format: fixture.format,
-              rows: fixture.rows,
-              columns: fixture.columns,
-              sha256: fixture.sha256
-            },
-            kernel: structuredClone(prepared.selectedKernel)
+          const sourceCopy = createSourceCopy({
+            canonicalPath: prepared.sourcePath,
+            privateRoot: prepared.sourceCopy.privateRoot,
+            name: prepared.sourceCopy.name
           });
-          if (
-            !isRecord(notebookReceipt) ||
-            notebookReceipt.path !== prepared.notebookPath ||
-            !Number.isSafeInteger(notebookReceipt.bytes) ||
-            notebookReceipt.bytes < 1 ||
-            notebookReceipt.mode !== "0600"
-          ) {
-            fail("Comparison notebook writer did not retain its exact private publication receipt.");
-          }
+          const sourceCopyLifecycle = {
+            supervisorLaunchAttempted: false,
+            cleanupAttempted: false
+          };
+          return await withPrivateSourceCopyRecovery(
+            sourceCopy,
+            sourceCopyLifecycle,
+            async () => {
+              assertSourceCopy(sourceCopy);
+              const validateCurrentSourceCopy = () =>
+                validateSourceCopyBinding({
+                  sourceCopy,
+                  manifest: context.manifest,
+                  scheduleEntry: context.scheduleEntry
+                });
+              validateCurrentSourceCopy();
+              let validatedCacheProof;
+              const notebookReceipt = writeNotebook(prepared.notebookPath, {
+                engine: context.scheduleEntry.engine,
+                format: context.scheduleEntry.format,
+                kind: context.scheduleEntry.kind,
+                fixture: {
+                  id: fixture.id,
+                  format: fixture.format,
+                  rows: fixture.rows,
+                  columns: fixture.columns,
+                  sha256: fixture.sha256
+                },
+                kernel: structuredClone(prepared.selectedKernel),
+                sourceReceipt: structuredClone(sourceCopy.copyReceipt)
+              });
+              if (
+                !isRecord(notebookReceipt) ||
+                notebookReceipt.path !== prepared.notebookPath ||
+                !Number.isSafeInteger(notebookReceipt.bytes) ||
+                notebookReceipt.bytes < 1 ||
+                notebookReceipt.mode !== "0600"
+              ) {
+                fail("Comparison notebook writer did not retain its exact private publication receipt.");
+              }
 
-          let provenanceBefore;
-          let capturedDriverBefore;
-          let neutralDriverEvidence;
-          const raw = validateRawEvidence(
-            await executeTrial(
-              {
-                runId: context.preparedIntent.runId,
-                phase,
-                cacheState: context.scheduleEntry.kind,
-                product: context.scheduleEntry.product,
-                preparedIntent: structuredClone(context.preparedIntent),
-                scheduleEntry: structuredClone(context.scheduleEntry),
-                requestPath: prepared.requestPath,
-                acknowledgementPath: prepared.acknowledgementPath,
-                selectedKernel: structuredClone(prepared.selectedKernel),
-                editorPhaseOptions: {
-                  ...structuredClone(prepared.editorPhaseOptions),
-                  workspace: prepared.notebookPath,
-                  phase,
-                  resultPath: `${prepared.notebookPath}.result.json`,
-                  comparisonStudyEnvironment: {
+              let provenanceBefore;
+              let capturedDriverBefore;
+              let neutralDriverEvidence;
+              const raw = validateRawEvidence(
+                await executeTrial(
+                  {
+                    runId: context.preparedIntent.runId,
+                    phase,
+                    cacheState: context.scheduleEntry.kind,
+                    product: context.scheduleEntry.product,
+                    preparedIntent: structuredClone(context.preparedIntent),
+                    scheduleEntry: structuredClone(context.scheduleEntry),
                     requestPath: prepared.requestPath,
                     acknowledgementPath: prepared.acknowledgementPath,
-                    sourcePath: prepared.sourcePath,
-                    publicSurfaceAvailability: prepared.publicSurfaceAvailability
-                  }
-                },
-                supervisorOptions: structuredClone(prepared.supervisorOptions),
-                processEvidenceOptions: structuredClone(prepared.processEvidenceOptions),
-                ...(prepared.samplerOptions === undefined
-                  ? {}
-                  : { samplerOptions: structuredClone(prepared.samplerOptions) }),
-                authorizeAction: context.authorizeAction,
-                reinspectActionAuthorization: context.reinspectActionAuthorization
-              },
-              {
-                ...executorDependencies,
-                runEditorPhase: async (phaseOptions, editorRunnerDependencies) => {
-                  const baseRunEditorPhase = executorDependencies.runEditorPhase ?? runEditorAcceptancePhase;
-                  if (typeof baseRunEditorPhase !== "function") {
-                    fail("Prepared editor phase runner must be a function.");
-                  }
-                  const expectedDriver = requireRecord(
-                    context.manifest?.provenance?.comparisonDriver,
-                    "Study manifest comparison driver"
-                  );
-                  const retainNeutralDriverEvidence = (value) => {
-                    const evidence = requireRecord(value, "Neutral-driver terminal evidence");
-                    const driverBefore = requireRecord(evidence.driverBefore, "Neutral-driver receipt before launch");
-                    const driverAfter = requireRecord(evidence.driverAfter, "Neutral-driver receipt after launch");
-                    if (
-                      !sameValue(driverBefore, capturedDriverBefore) ||
-                      !sameValue(driverBefore, expectedDriver) ||
-                      !sameValue(driverAfter, expectedDriver)
-                    ) {
-                      fail("Neutral-driver phase receipts do not match the measured launch or study manifest.");
-                    }
-                    neutralDriverEvidence = {
-                      driverBefore: structuredClone(driverBefore),
-                      driverAfter: structuredClone(driverAfter)
-                    };
-                  };
-                  const result = requireRecord(
-                    await runNeutralDriverPhase(
-                      {
-                        product: context.scheduleEntry.product,
-                        receipt: prepared.neutralDriver.receipt,
-                        expectedDriver,
-                        expectedExtensions: structuredClone(prepared.neutralDriver.expectedExtensions),
-                        expectedTemplate: structuredClone(prepared.neutralDriver.expectedTemplate),
-                        profile: prepared.neutralDriver.profile,
-                        editorPhaseOptions: phaseOptions
-                      },
-                      {
-                        ...neutralDriverDependencies,
-                        onAfterValidation: retainNeutralDriverEvidence,
-                        runPhase: async (neutralPhaseOptions, neutralPhaseDependencies) => {
-                          if (provenanceBefore !== undefined) {
-                            fail("Measured trial provenance before launch was captured more than once.");
-                          }
-                          const dependencies = requireRecord(
-                            neutralPhaseDependencies,
-                            "Neutral-driver phase dependencies"
-                          );
-                          capturedDriverBefore = structuredClone(
-                            requireRecord(dependencies.driverBefore, "Neutral driver before measured launch")
-                          );
-                          if (context.scheduleEntry.kind === "warm") {
-                            const prepareWarmSourceCacheBeforeLaunch =
-                              editorRunnerDependencies.prepareWarmSourceCacheBeforeLaunch;
-                            if (typeof prepareWarmSourceCacheBeforeLaunch !== "function") {
-                              fail("Warm measured trial omitted its executor-owned cache preparation hook.");
-                            }
-                            await prepareWarmSourceCacheBeforeLaunch();
-                          }
-                          provenanceBefore = structuredClone(
-                            requireRecord(
-                              await captureTrialProvenanceBefore({
-                                protocol: DATA_WRANGLER_COMPARISON_LIVE_TRIAL_PROTOCOL,
-                                manifest: structuredClone(context.manifest),
-                                scheduleEntry: structuredClone(context.scheduleEntry),
-                                preparedIntent: structuredClone(context.preparedIntent),
-                                sourcePath: prepared.sourcePath,
-                                notebookPath: prepared.notebookPath,
-                                driverBefore: structuredClone(capturedDriverBefore)
-                              }),
-                              "Measured trial provenance before launch"
-                            )
-                          );
-                          return await baseRunEditorPhase(neutralPhaseOptions, {
-                            ...editorRunnerDependencies,
-                            ...neutralPhaseDependencies
-                          });
-                        }
-                      }
-                    ),
-                    "Neutral-driver phase result"
-                  );
-                  retainNeutralDriverEvidence(result);
-                  return result.phaseResult;
-                },
-                completeTerminalEvidence: (terminalInput) =>
-                  completeTerminalEvidence(
-                    {
-                      protocol: DATA_WRANGLER_COMPARISON_LIVE_TRIAL_PROTOCOL,
-                      manifest: structuredClone(context.manifest),
-                      scheduleEntry: structuredClone(context.scheduleEntry),
-                      preparedIntent: structuredClone(context.preparedIntent),
-                      environmentGate: structuredClone(environmentGate),
-                      provenanceBefore: structuredClone(
-                        requireRecord(provenanceBefore, "Measured trial provenance before launch")
-                      ),
-                      neutralDriverEvidence: structuredClone(
-                        requireRecord(neutralDriverEvidence, "Measured trial neutral-driver evidence")
-                      ),
-                      rawEvidence: {
-                        launchReceipt: structuredClone(terminalInput.launchReceipt),
-                        supervisorCompletion: structuredClone(terminalInput.supervisorCompletion),
-                        processProofs: structuredClone(terminalInput.processProofs),
-                        notebookPhaseReceipt: structuredClone(terminalInput.notebookPhaseReceipt),
-                        controlReceipt: structuredClone(terminalInput.controlReceipt),
-                        cacheProof: structuredClone(terminalInput.cacheProof)
+                    selectedKernel: structuredClone(prepared.selectedKernel),
+                    editorPhaseOptions: {
+                      ...structuredClone(prepared.editorPhaseOptions),
+                      workspace: prepared.notebookPath,
+                      phase,
+                      resultPath: `${prepared.notebookPath}.result.json`,
+                      comparisonStudyEnvironment: {
+                        requestPath: prepared.requestPath,
+                        acknowledgementPath: prepared.acknowledgementPath,
+                        sourcePath: sourceCopy.copyPath,
+                        publicSurfaceAvailability: prepared.publicSurfaceAvailability
                       }
                     },
-                    {
-                      revalidateTrialProvenanceAfter,
-                      cleanupDependencies
+                    supervisorOptions: structuredClone(prepared.supervisorOptions),
+                    processEvidenceOptions: structuredClone(prepared.processEvidenceOptions),
+                    ...(prepared.samplerOptions === undefined
+                      ? {}
+                      : { samplerOptions: structuredClone(prepared.samplerOptions) }),
+                    authorizeAction: () => {
+                      assertSourceCopy(sourceCopy);
+                      validateCurrentSourceCopy();
+                      if (validatedCacheProof === undefined) {
+                        fail("Measured action authorization requires one manifest-bound source-cache proof.");
+                      }
+                      validateCacheBinding({
+                        cacheProof: validatedCacheProof,
+                        sourceCopy,
+                        manifest: context.manifest,
+                        scheduleEntry: context.scheduleEntry
+                      });
+                      return context.authorizeAction();
+                    },
+                    reinspectActionAuthorization: context.reinspectActionAuthorization
+                  },
+                  {
+                    ...executorDependencies,
+                    runEditorPhase: async (phaseOptions, editorRunnerDependencies) => {
+                      const baseRunEditorPhase = executorDependencies.runEditorPhase ?? runEditorAcceptancePhase;
+                      if (typeof baseRunEditorPhase !== "function") {
+                        fail("Prepared editor phase runner must be a function.");
+                      }
+                      const expectedDriver = requireRecord(
+                        context.manifest?.provenance?.comparisonDriver,
+                        "Study manifest comparison driver"
+                      );
+                      const retainNeutralDriverEvidence = (value) => {
+                        const evidence = requireRecord(value, "Neutral-driver terminal evidence");
+                        const driverBefore = requireRecord(
+                          evidence.driverBefore,
+                          "Neutral-driver receipt before launch"
+                        );
+                        const driverAfter = requireRecord(evidence.driverAfter, "Neutral-driver receipt after launch");
+                        if (
+                          !sameValue(driverBefore, capturedDriverBefore) ||
+                          !sameValue(driverBefore, expectedDriver) ||
+                          !sameValue(driverAfter, expectedDriver)
+                        ) {
+                          fail("Neutral-driver phase receipts do not match the measured launch or study manifest.");
+                        }
+                        neutralDriverEvidence = {
+                          driverBefore: structuredClone(driverBefore),
+                          driverAfter: structuredClone(driverAfter)
+                        };
+                      };
+                      const result = requireRecord(
+                        await runNeutralDriverPhase(
+                          {
+                            product: context.scheduleEntry.product,
+                            receipt: prepared.neutralDriver.receipt,
+                            expectedDriver,
+                            expectedExtensions: structuredClone(prepared.neutralDriver.expectedExtensions),
+                            expectedTemplate: structuredClone(prepared.neutralDriver.expectedTemplate),
+                            profile: prepared.neutralDriver.profile,
+                            editorPhaseOptions: phaseOptions
+                          },
+                          {
+                            ...neutralDriverDependencies,
+                            onAfterValidation: retainNeutralDriverEvidence,
+                            runPhase: async (neutralPhaseOptions, neutralPhaseDependencies) => {
+                              if (provenanceBefore !== undefined) {
+                                fail("Measured trial provenance before launch was captured more than once.");
+                              }
+                              const dependencies = requireRecord(
+                                neutralPhaseDependencies,
+                                "Neutral-driver phase dependencies"
+                              );
+                              capturedDriverBefore = structuredClone(
+                                requireRecord(dependencies.driverBefore, "Neutral driver before measured launch")
+                              );
+                              if (context.scheduleEntry.kind === "warm") {
+                                const prepareWarmSourceCacheBeforeLaunch =
+                                  editorRunnerDependencies.prepareWarmSourceCacheBeforeLaunch;
+                                if (typeof prepareWarmSourceCacheBeforeLaunch !== "function") {
+                                  fail("Warm measured trial omitted its executor-owned cache preparation hook.");
+                                }
+                                await prepareWarmSourceCacheBeforeLaunch();
+                              }
+                              provenanceBefore = structuredClone(
+                                requireRecord(
+                                  await captureTrialProvenanceBefore({
+                                    protocol: DATA_WRANGLER_COMPARISON_LIVE_TRIAL_PROTOCOL,
+                                    manifest: structuredClone(context.manifest),
+                                    scheduleEntry: structuredClone(context.scheduleEntry),
+                                    preparedIntent: structuredClone(context.preparedIntent),
+                                    canonicalSourcePath: prepared.sourcePath,
+                                    sourcePath: sourceCopy.copyPath,
+                                    sourceCopy: {
+                                      protocol: sourceCopy.protocol,
+                                      byteIdentical: sourceCopy.byteIdentical,
+                                      mode: sourceCopy.mode,
+                                      canonicalReceipt: structuredClone(sourceCopy.canonicalReceipt),
+                                      copyReceipt: structuredClone(sourceCopy.copyReceipt)
+                                    },
+                                    notebookPath: prepared.notebookPath,
+                                    driverBefore: structuredClone(capturedDriverBefore)
+                                  }),
+                                  "Measured trial provenance before launch"
+                                )
+                              );
+                              const spawnProcess = editorRunnerDependencies.spawnProcess;
+                              if (typeof spawnProcess !== "function") {
+                                fail("Measured editor phase omitted its supervisor-owned spawn function.");
+                              }
+                              return await baseRunEditorPhase(neutralPhaseOptions, {
+                                ...editorRunnerDependencies,
+                                ...neutralPhaseDependencies,
+                                spawnProcess(...arguments_) {
+                                  sourceCopyLifecycle.supervisorLaunchAttempted = true;
+                                  return spawnProcess(...arguments_);
+                                }
+                              });
+                            }
+                          }
+                        ),
+                        "Neutral-driver phase result"
+                      );
+                      retainNeutralDriverEvidence(result);
+                      return result.phaseResult;
+                    },
+                    completeTerminalEvidence: (terminalInput) =>
+                      completeTerminalEvidence(
+                        {
+                          protocol: DATA_WRANGLER_COMPARISON_LIVE_TRIAL_PROTOCOL,
+                          manifest: structuredClone(context.manifest),
+                          scheduleEntry: structuredClone(context.scheduleEntry),
+                          preparedIntent: structuredClone(context.preparedIntent),
+                          environmentGate: structuredClone(environmentGate),
+                          provenanceBefore: structuredClone(
+                            requireRecord(provenanceBefore, "Measured trial provenance before launch")
+                          ),
+                          neutralDriverEvidence: structuredClone(
+                            requireRecord(neutralDriverEvidence, "Measured trial neutral-driver evidence")
+                          ),
+                          sourceCopy,
+                          rawEvidence: {
+                            launchReceipt: structuredClone(terminalInput.launchReceipt),
+                            supervisorCompletion: structuredClone(terminalInput.supervisorCompletion),
+                            processProofs: structuredClone(terminalInput.processProofs),
+                            notebookPhaseReceipt: structuredClone(terminalInput.notebookPhaseReceipt),
+                            controlReceipt: structuredClone(terminalInput.controlReceipt),
+                            cacheProof: structuredClone(terminalInput.cacheProof)
+                          }
+                        },
+                        {
+                          revalidateTrialProvenanceAfter,
+                          cleanupDependencies,
+                          assertSourceCopy,
+                          cleanupSourceCopy(value) {
+                            sourceCopyLifecycle.cleanupAttempted = true;
+                            return cleanupSourceCopy(value);
+                          }
+                        }
+                      ),
+                    prepareSourceCache: async ({ cacheState }) => {
+                      const proof = await prepareSourceCache({
+                        sourceCopy,
+                        cacheState,
+                        pythonExecutablePath: prepared.sourceCache.pythonExecutablePath,
+                        controllerPath: prepared.sourceCache.controlScriptPath
+                      });
+                      validateCurrentSourceCopy();
+                      validateCacheBinding({
+                        cacheProof: proof,
+                        sourceCopy,
+                        manifest: context.manifest,
+                        scheduleEntry: context.scheduleEntry
+                      });
+                      validatedCacheProof = proof;
+                      return proof;
                     }
-                  ),
-                prepareSourceCache: ({ cacheState }) =>
-                  prepareSourceCache({
-                    cacheState,
-                    sourcePath: prepared.sourcePath,
-                    fixture,
-                    pythonExecutablePath: prepared.sourceCache.pythonExecutablePath,
-                    controlScriptPath: prepared.sourceCache.controlScriptPath
-                  })
+                  }
+                ),
+                context,
+                phase,
+                validateExecutorReceipt
+              );
+              const normalization = normalizationInput({
+                context,
+                raw,
+                environmentGate,
+                fragmentIdentity
+              });
+              if (raw.status === "evidence") return normalizeTrial(normalization);
+              if (raw.status === "post-launch-setup-failure") {
+                return normalizePostLaunchSetupFailure(normalization);
               }
-            ),
-            context,
-            phase,
-            validateExecutorReceipt
+              if (raw.status === "pre-action-process-proof-failure") {
+                return normalizePreActionProcessProofFailure(normalization);
+              }
+              return normalizePreNotebookFailure(normalization);
+            },
+            { assertSourceCopy, cleanupSourceCopy }
           );
-          const normalization = normalizationInput({
-            context,
-            raw,
-            environmentGate,
-            fragmentIdentity
-          });
-          if (raw.status === "evidence") return normalizeTrial(normalization);
-          if (raw.status === "post-launch-setup-failure") {
-            return normalizePostLaunchSetupFailure(normalization);
-          }
-          if (raw.status === "pre-action-process-proof-failure") {
-            return normalizePreActionProcessProofFailure(normalization);
-          }
-          return normalizePreNotebookFailure(normalization);
         }
       }
     )
