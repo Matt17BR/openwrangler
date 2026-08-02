@@ -3,11 +3,15 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -170,16 +174,30 @@ function legacyCandidate(fixture, slug, options = {}) {
 }
 
 function fileSnapshot(path) {
-  const metadata = lstatSync(path, { bigint: true });
-  return Object.freeze({
-    device: metadata.dev.toString(),
-    inode: metadata.ino.toString(),
-    size: metadata.size.toString(),
-    mode: metadata.mode.toString(),
-    mtimeNs: metadata.mtimeNs.toString(),
-    ctimeNs: metadata.ctimeNs.toString(),
-    sha256: createHash("sha256").update(readFileSync(path)).digest("hex")
-  });
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    assert.equal(before.isFile(), true);
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    assert.equal(after.dev, before.dev);
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.size, before.size);
+    assert.equal(after.mode, before.mode);
+    assert.equal(after.mtimeNs, before.mtimeNs);
+    assert.equal(after.ctimeNs, before.ctimeNs);
+    return Object.freeze({
+      device: before.dev.toString(),
+      inode: before.ino.toString(),
+      size: before.size.toString(),
+      mode: before.mode.toString(),
+      mtimeNs: before.mtimeNs.toString(),
+      ctimeNs: before.ctimeNs.toString(),
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 test("bootstrap publishes one self-contained bare manager and routes source and child commands to it", () => {
