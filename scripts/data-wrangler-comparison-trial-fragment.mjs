@@ -225,7 +225,13 @@ function normalizedPreview() {
   };
 }
 
-function inlineEvidence(phaseReceipt, fixture, product, controlProfileReceiptSha256, milestones, timeoutJourney) {
+function inlineSurfaceOwner(surfaceKind) {
+  if (surfaceKind === "open-wrangler-renderer") return "open-wrangler";
+  if (surfaceKind === "data-wrangler-action-on-host-output") return "host-jupyter";
+  fail("Inline readiness uses an unknown surface kind.");
+}
+
+function inlineEvidence(phaseReceipt, fixture, controlProfileReceiptSha256, milestones, timeoutJourney) {
   if (milestones.inlineReadyMs === null) {
     return { status: timeoutJourney === "inline-preview" ? "timed-out" : "failed" };
   }
@@ -239,7 +245,7 @@ function inlineEvidence(phaseReceipt, fixture, product, controlProfileReceiptSha
     cellCompleted: true,
     stableFrames: 2,
     preview: normalizedPreview(),
-    surfaceOwner: product,
+    surfaceOwner: inlineSurfaceOwner(phaseReceipt.inline.surfaceKind),
     controlProfileReceiptSha256,
     launchActionVisible: phaseReceipt.inline.action.visible,
     launchActionPointerUsable: phaseReceipt.inline.action.pointerUsable,
@@ -490,7 +496,6 @@ export function normalizeDataWranglerComparisonTrialFragment(
           inline: inlineEvidence(
             phaseReceipt,
             fixture,
-            scheduleEntry.product,
             manifest.provenance.controlProfile.receiptSha256,
             milestones,
             timeout?.journey ?? null

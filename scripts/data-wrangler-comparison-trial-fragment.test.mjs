@@ -419,6 +419,7 @@ test("normalizes a successful trial through the manifest fragment validator", ()
   const fragment = normalizeDataWranglerComparisonTrialFragment(input);
   assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
   assert.equal(fragment.outcome.status, "success");
+  assert.equal(fragment.uiEvidence.inline.surfaceOwner, "open-wrangler");
   assert.equal(fragment.engineEvidence.workbenchEngine, "pandas");
   assert.equal(fragment.milestones.inlineActionMs, 1_000);
 });
@@ -426,8 +427,18 @@ test("normalizes a successful trial through the manifest fragment validator", ()
 test("keeps Data Wrangler's unlabelled workbench engine unverified", () => {
   const input = trialInput({ product: "data-wrangler" });
   const fragment = normalizeDataWranglerComparisonTrialFragment(input);
+  assert.equal(fragment.uiEvidence.inline.surfaceOwner, "host-jupyter");
   assert.equal(fragment.engineEvidence.workbenchEngine, "unverified");
   assert.equal(fragment.engineEvidence.workbenchVerification, "not-observed");
+});
+
+test("rejects an unknown inline surface rather than assigning it to a product", () => {
+  const input = trialInput();
+  input.notebookPhaseReceipt.inline.surfaceKind = "unknown-renderer";
+  assert.throws(
+    () => normalizeDataWranglerComparisonTrialFragment(input),
+    /unknown surface kind/u
+  );
 });
 
 test("records an inline timeout without inventing readiness", () => {
