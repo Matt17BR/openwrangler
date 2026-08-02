@@ -904,6 +904,16 @@ function validateNormalizedVerification(
   return value as NotebookTrialVerificationEvidence;
 }
 
+export function validateDataWranglerComparisonSentinelRows(value: unknown, rows: number): void {
+  if (
+    !Number.isSafeInteger(rows) ||
+    rows < 3 ||
+    JSON.stringify(value) !== JSON.stringify([0, 1, Math.floor(rows / 2), rows - 1])
+  ) {
+    fail("Study verification output does not contain the exact row-1-inclusive sentinel contract.");
+  }
+}
+
 function assertVerificationMatchesStudy(
   evidence: NotebookTrialVerificationEvidence,
   study: NotebookTrialDefinition,
@@ -3283,6 +3293,7 @@ function readStudyVerification(
   exactKeys(actualClass, ["module", "name"], "Study verification class");
   const configuredKernel = requireRecord(raw.configuredKernel, "Study verification kernel");
   exactKeys(configuredKernel, ["name", "displayName"], "Study verification kernel");
+  validateDataWranglerComparisonSentinelRows(raw.sentinelRows, study.fixture.rows);
   if (
     raw.protocol !== DATA_WRANGLER_NOTEBOOK_VERIFICATION_PROTOCOL ||
     raw.phase !== phase ||
@@ -3301,8 +3312,6 @@ function readStudyVerification(
     raw.dtypes.length !== study.fixture.columns ||
     raw.dtypes.some((dtype) => dtype !== expectedDtype) ||
     raw.integerDtypeSemantic !== "signed-64-bit" ||
-    JSON.stringify(raw.sentinelRows) !==
-      JSON.stringify([0, Math.floor(study.fixture.rows / 2), study.fixture.rows - 1]) ||
     raw.classMatched !== true ||
     raw.shapeMatched !== true ||
     raw.columnsMatched !== true ||

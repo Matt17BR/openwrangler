@@ -9,6 +9,7 @@ import {
   observeNotebookTrialIntegerProfile,
   observeNotebookTrialPointerAction,
   observeNotebookTrialVisibleShape,
+  validateDataWranglerComparisonSentinelRows,
   validateDataWranglerNotebookTrialPhaseReceipt,
   type DataWranglerNotebookTrialPhaseReceipt,
   type NotebookTrialActionEvidence,
@@ -287,6 +288,16 @@ afterEach(() => {
 });
 
 describe("one-trial notebook comparison flow", () => {
+  it("requires the manifest's row-1 sentinel in every notebook verification receipt", () => {
+    expect(() => validateDataWranglerComparisonSentinelRows([0, 1, 50_000, 99_999], 100_000)).not.toThrow();
+    expect(() => validateDataWranglerComparisonSentinelRows([0, 50_000, 99_999], 100_000)).toThrow(
+      /row-1-inclusive sentinel contract/u
+    );
+    expect(() => validateDataWranglerComparisonSentinelRows([0, 2, 50_000, 99_999], 100_000)).toThrow(
+      /row-1-inclusive sentinel contract/u
+    );
+  });
+
   it("orders exact notebook work, pointer boundaries, real workbench proof, canonical profiles, and the after-check", async () => {
     const events: string[] = [];
     const receipt = await executeDataWranglerNotebookTrialFlow(successDependencies(events));

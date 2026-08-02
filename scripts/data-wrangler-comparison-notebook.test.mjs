@@ -123,6 +123,7 @@ test("verification receipts retain bounded observed class, shape, columns, dtype
   assert.match(source, /actual_shape == \[_OW_ROWS, _OW_COLUMN_COUNT\]/u);
   assert.match(source, /actual_columns == list\(_OW_COLUMNS\)/u);
   assert.match(source, /actual_dtypes = \[str\(dtype\) for dtype in frame\.dtypes\]/u);
+  assert.match(source, /_OW_SENTINEL_ROWS = \(0, 1, _OW_ROWS \/\/ 2, _OW_ROWS - 1\)/u);
   assert.match(source, /value_at\(row, column\) == row \+ column/u);
   assert.match(source, /"rowDataIncluded": False/u);
   assert.match(source, /_ow_platform\.python_implementation\(\)/u);
