@@ -10,7 +10,7 @@ import type {
   DataExportedResponse,
   ErrorResponse,
   FilterModel,
-  GridPage,
+  LiveGridPage,
   OpenSessionRequest,
   PageResponse,
   SessionMetadata,
@@ -85,6 +85,7 @@ interface QueuedSessionOperation {
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
 const RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
+const PYSPARK_VIEWPORT_RESTORE_PAGE_LIMIT = 16;
 
 class RuntimeStateRestoreError extends Error {}
 class ReconfigurationCancelledError extends Error {}
@@ -1989,7 +1990,8 @@ export class SessionCoordinator implements vscode.Disposable {
     assertCurrent?: () => void
   ): Promise<PageResponse> {
     const restoredPageSize = Math.max(1, pageSize);
-    const desiredOffset = Math.floor(view.viewport.firstVisibleRow / restoredPageSize) * restoredPageSize;
+    let desiredOffset = Math.floor(view.viewport.firstVisibleRow / restoredPageSize) * restoredPageSize;
+    let restoredView = view;
     const requestPage = async (offset: number, suffix: string = label): Promise<PageResponse> => {
       const pageRequest: SessionBoundRequest = {
         kind: "getPage",
@@ -2013,15 +2015,49 @@ export class SessionCoordinator implements vscode.Disposable {
       }
       return response;
     };
-    let page = await requestPage(desiredOffset);
-    if (page.page.totalRows > 0 && desiredOffset >= page.page.totalRows) {
+    let page: PageResponse;
+    if (session.metadata.backend === "pyspark" && desiredOffset > 0) {
+      // A recreated Spark plan has no predecessor anchors for a saved nonzero
+      // viewport. Re-establish them through bounded contiguous blocks instead
+      // of issuing an unsupported random offset and treating that predictable
+      // failure as a broken confirmed view.
+      page = await requestPage(0, `${label}-progressive-0`);
+      if (desiredOffset / restoredPageSize >= PYSPARK_VIEWPORT_RESTORE_PAGE_LIMIT) {
+        // A presentation-only viewport must not turn recovery into thousands
+        // of sequential Spark jobs. Retain the confirmed filter/sort, widths,
+        // and selection, but deliberately restart this far traversal at row 0.
+        desiredOffset = 0;
+        restoredView = {
+          ...view,
+          viewport: { ...view.viewport, firstVisibleRow: 0 }
+        };
+      } else {
+        while (page.page.totalRows === null && page.page.offset < desiredOffset) {
+          const nextOffset = Math.min(desiredOffset, page.page.offset + restoredPageSize);
+          page = await requestPage(nextOffset, `${label}-progressive-${nextOffset}`);
+        }
+      }
+    } else {
+      page = await requestPage(desiredOffset);
+    }
+    const restoredTotal = page.page.totalRows;
+    if (restoredTotal !== null && restoredTotal > 0 && desiredOffset >= restoredTotal) {
       assertCurrent?.();
-      const finalOffset = Math.floor((page.page.totalRows - 1) / restoredPageSize) * restoredPageSize;
-      page = await requestPage(finalOffset, `${label}-bounded`);
+      const finalOffset = Math.floor((restoredTotal - 1) / restoredPageSize) * restoredPageSize;
+      if (finalOffset !== page.page.offset) page = await requestPage(finalOffset, `${label}-bounded`);
+    }
+    if (session.metadata.backend === "pyspark" && page.page.offset !== desiredOffset) {
+      restoredView = {
+        ...restoredView,
+        viewport: { ...restoredView.viewport, firstVisibleRow: page.page.offset }
+      };
     }
     session.runtimeRevision = page.revision;
     session.metadata = page.metadata;
-    session.viewState = reconcileViewingState({ ...view, filterModel: page.metadata.filterModel }, page.metadata);
+    session.viewState = reconcileViewingState(
+      { ...restoredView, filterModel: page.metadata.filterModel },
+      page.metadata
+    );
     return page;
   }
 
@@ -2108,7 +2144,7 @@ export class SessionCoordinator implements vscode.Disposable {
       await this.restoreRuntimeState(
         candidate,
         persisted,
-        1,
+        session.metadata.backend === "pyspark" ? session.openRequest.pageSize : 1,
         session.openRequest.columnOffset,
         session.openRequest.columnLimit,
         recoveryFollowupOptions(options),
@@ -2132,6 +2168,10 @@ export class SessionCoordinator implements vscode.Disposable {
     // the runtime request queue. Preserve the latest user scroll, widths, and
     // selection rather than overwriting them with the pre-recovery snapshot.
     const latestGridPresentation = gridState(session.viewState);
+    const restoredPySparkViewportWasBound =
+      candidate.metadata.backend === "pyspark" &&
+      persisted.view !== undefined &&
+      !isDeepStrictEqual(candidate.viewState.viewport, persisted.view.viewport);
     session.runtimeId = candidate.runtimeId;
     session.runtimeRevision = candidate.runtimeRevision;
     session.metadata = candidate.metadata;
@@ -2139,7 +2179,11 @@ export class SessionCoordinator implements vscode.Disposable {
     session.draftPresentation = candidate.draftPresentation;
     session.draftBaseFilterModel = candidate.draftBaseFilterModel;
     session.viewState = reconcileViewingState(
-      { ...latestGridPresentation, filterModel: candidate.metadata.filterModel },
+      {
+        ...latestGridPresentation,
+        ...(restoredPySparkViewportWasBound ? { viewport: candidate.viewState.viewport } : {}),
+        filterModel: candidate.metadata.filterModel
+      },
       candidate.metadata
     );
     this.clearPublishedStepInspection(session);
@@ -2513,7 +2557,7 @@ function sessionOpenedResponseMismatch(
 }
 
 function projectedPageMismatch(
-  page: GridPage,
+  page: LiveGridPage,
   schema: readonly ColumnSchema[],
   request: { offset: number; limit: number; columnOffset: number; columnLimit: number },
   label = "page"
@@ -2655,7 +2699,10 @@ function reconcileViewingState(state: PersistedViewingState, metadata: SessionMe
   const columnWidths = Object.fromEntries(
     Object.entries(state.columnWidths).filter(([columnId]) => columnIds.has(columnId))
   );
-  const finalRow = Math.max(0, metadata.filteredShape.rows - 1);
+  const finalRow =
+    metadata.filteredShape.rows === null
+      ? state.viewport.firstVisibleRow
+      : Math.max(0, metadata.filteredShape.rows - 1);
   const selectedColumnId = state.selectedColumnId;
   return {
     columnWidths,

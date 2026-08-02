@@ -6,6 +6,7 @@ import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { persistedSessionState, persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import type { FilterModel } from "../shared/filterModel";
 import type {
+  GridPage,
   OpenWranglerRequest,
   OpenWranglerResponse,
   SessionMetadata,
@@ -353,8 +354,32 @@ describe("SessionCoordinator", () => {
         { column: "region", direction: "asc", nulls: "first" }
       ]
     };
+    const sparkRows = (offset: number, limit: number) =>
+      Array.from({ length: Math.min(limit, 500 - offset) }, (_, position) => {
+        const rowNumber = offset + position;
+        return {
+          id: `r:spark:${rowNumber}`,
+          rowNumber,
+          values: [
+            {
+              raw: `region-${rowNumber}`,
+              display: `region-${rowNumber}`,
+              kind: "string" as const,
+              isNull: false,
+              isNaN: false
+            },
+            {
+              raw: String(rowNumber),
+              display: String(rowNumber),
+              kind: "integer" as const,
+              isNull: false,
+              isNaN: false
+            }
+          ]
+        };
+      });
     const sparkOpened = (runtimeId: string): SessionOpenedResponse => {
-      const response = openedResponse(runtimeId, "pyspark");
+      const response: SessionOpenedResponse = openedResponse(runtimeId, "pyspark");
       response.metadata = {
         ...response.metadata,
         source,
@@ -367,19 +392,58 @@ describe("SessionCoordinator", () => {
           exportParquet: false,
           notebookInsert: false
         },
-        shape: { rows: 500, columns: 2 },
-        filteredShape: { rows: 500, columns: 2 },
+        shape: { rows: null, columns: 2 },
+        filteredShape: { rows: null, columns: 2 },
         schema,
         steps: []
       };
       response.page = {
         offset: 0,
         limit: 100,
-        totalRows: 500,
+        totalRows: null,
+        hasMore: true,
         columnIds: schema.map((column) => column.id),
-        rows: []
+        rows: sparkRows(0, 100)
       };
       return response;
+    };
+    const sparkPage = (
+      request: Extract<OpenWranglerRequest, { kind: "getPage" }>
+    ): Extract<OpenWranglerResponse, { kind: "page" }> => {
+      const rows = sparkRows(request.offset, request.limit);
+      const hasMore = request.offset + rows.length < 500;
+      const metadata = {
+        ...sparkOpened(request.sessionId).metadata,
+        filterModel: request.filterModel,
+        ...(hasMore
+          ? {}
+          : {
+              shape: { rows: 500, columns: 2 },
+              filteredShape: { rows: 500, columns: 2 }
+            })
+      };
+      return {
+        kind: "page",
+        revision: request.revision,
+        viewRequestId: request.viewRequestId,
+        metadata,
+        page: hasMore
+          ? {
+              offset: request.offset,
+              limit: request.limit,
+              totalRows: null,
+              hasMore: true,
+              columnIds: schema.map((column) => column.id),
+              rows
+            }
+          : {
+              offset: request.offset,
+              limit: request.limit,
+              totalRows: 500,
+              columnIds: schema.map((column) => column.id),
+              rows
+            }
+      };
     };
     let openCount = 0;
     let invalidated = false;
@@ -405,7 +469,7 @@ describe("SessionCoordinator", () => {
               viewRequestId: request.viewRequestId
             };
           }
-          return pageResponseForMetadata(request, sparkOpened(request.sessionId).metadata);
+          return sparkPage(request);
         }
         if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
         throw new Error(`Unexpected PySpark recovery request: ${request.kind}`);
@@ -421,18 +485,20 @@ describe("SessionCoordinator", () => {
     });
     if (opened.kind !== "sessionOpened") throw new Error("Expected the PySpark variable to open.");
 
-    await expect(
-      bridge.request({
-        kind: "getPage",
-        sessionId: opened.metadata.sessionId,
-        revision: opened.metadata.revision,
-        viewRequestId: "pyspark-confirm-view",
-        offset: 200,
-        limit: 100,
-        ...columnWindow,
-        filterModel
-      })
-    ).resolves.toMatchObject({ kind: "page", metadata: { filterModel } });
+    for (const offset of [0, 100, 200]) {
+      await expect(
+        bridge.request({
+          kind: "getPage",
+          sessionId: opened.metadata.sessionId,
+          revision: opened.metadata.revision,
+          viewRequestId: `pyspark-confirm-view-${offset}`,
+          offset,
+          limit: 100,
+          ...columnWindow,
+          filterModel
+        })
+      ).resolves.toMatchObject({ kind: "page", metadata: { filterModel } });
+    }
     await bridge.updateViewState?.(opened.metadata.sessionId, {
       selectedColumnId: "c:sales",
       columnWidths: { "c:region": 210, "c:sales": 180 },
@@ -479,13 +545,207 @@ describe("SessionCoordinator", () => {
         .map(([request]) => request)
         .filter((request): request is Extract<OpenWranglerRequest, { kind: "getPage" }> => request.kind === "getPage")
         .filter((request) => request.sessionId === "spark-runtime-2")
-        .map((request) => request.filterModel)
-    ).toEqual([filterModel, filterModel]);
+        .map((request) => ({ offset: request.offset, filterModel: request.filterModel }))
+    ).toEqual([
+      { offset: 0, filterModel },
+      { offset: 100, filterModel },
+      { offset: 200, filterModel },
+      { offset: 200, filterModel }
+    ]);
     await vi.waitFor(() => {
       expect(delegateRequest).toHaveBeenCalledWith(
         expect.objectContaining({ kind: "closeSession", sessionId: "spark-runtime-1" }),
         expect.any(Object)
       );
+    });
+  });
+
+  it.each([
+    {
+      label: "resets an over-cap PySpark recovery viewport without unbounded page replay",
+      firstVisibleRow: Number.MAX_SAFE_INTEGER,
+      replacementRows: null
+    },
+    {
+      label: "starts exact-total PySpark recovery at zero when the replacement source shrank",
+      firstVisibleRow: 240,
+      replacementRows: 20
+    }
+  ])("$label", async ({ firstVisibleRow, replacementRows }) => {
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "bounded_spark_frame",
+      variableName: "bounded_spark_frame",
+      uri: "file:///workspace/bounded-spark-recovery.ipynb"
+    };
+    const schema = [
+      { id: "c:value", name: "value", position: 0, rawType: "bigint", type: "integer" as const, nullable: false }
+    ];
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "desc", nulls: "last" }]
+    };
+    const rows = (offset: number, limit: number, totalRows: number | null) =>
+      Array.from(
+        {
+          length: totalRows === null ? limit : Math.min(limit, Math.max(0, totalRows - offset))
+        },
+        (_, position) => {
+          const rowNumber = offset + position;
+          return {
+            id: `r:bounded-spark:${rowNumber}`,
+            rowNumber,
+            values: [
+              {
+                raw: String(rowNumber),
+                display: String(rowNumber),
+                kind: "integer" as const,
+                isNull: false,
+                isNaN: false
+              }
+            ]
+          };
+        }
+      );
+    const metadataFor = (runtimeId: string, totalRows: number | null, model: FilterModel): SessionMetadata => ({
+      ...openedResponse(runtimeId, "pyspark").metadata,
+      sessionId: runtimeId,
+      backend: "pyspark",
+      mode: "viewing",
+      source,
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: totalRows, columns: 1 },
+      filteredShape: { rows: totalRows, columns: 1 },
+      schema,
+      filterModel: model,
+      steps: []
+    });
+    const pageFor = (offset: number, limit: number, totalRows: number | null): SessionOpenedResponse["page"] => {
+      const pageRows = rows(offset, limit, totalRows);
+      return totalRows === null
+        ? {
+            offset,
+            limit,
+            totalRows: null,
+            hasMore: true,
+            columnIds: ["c:value"],
+            rows: pageRows
+          }
+        : {
+            offset,
+            limit,
+            totalRows,
+            columnIds: ["c:value"],
+            rows: pageRows
+          };
+    };
+    const openedFor = (runtimeId: string, totalRows: number | null): SessionOpenedResponse => ({
+      kind: "sessionOpened",
+      metadata: metadataFor(runtimeId, totalRows, { filters: [], sort: [] }),
+      page: pageFor(0, 100, totalRows),
+      summaries: []
+    });
+    let openCount = 0;
+    let invalidated = false;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        return openedFor(
+          openCount === 1 ? "bounded-spark-runtime-1" : "bounded-spark-runtime-2",
+          openCount === 1 ? null : replacementRows
+        );
+      }
+      if (request.kind === "getPage") {
+        if (
+          request.sessionId === "bounded-spark-runtime-1" &&
+          request.viewRequestId === "bounded-spark-rebind" &&
+          !invalidated
+        ) {
+          invalidated = true;
+          return {
+            kind: "error",
+            code: "live_source_invalidated",
+            message: "The live PySpark variable was replaced.",
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
+        const totalRows = request.sessionId === "bounded-spark-runtime-2" ? replacementRows : null;
+        return {
+          kind: "page",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          metadata: metadataFor(request.sessionId, totalRows, request.filterModel),
+          page: pageFor(request.offset, request.limit, totalRows)
+        };
+      }
+      if (request.kind === "closeSession") {
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected bounded PySpark recovery request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request({
+      ...openRequest,
+      source,
+      backend: "pyspark",
+      mode: "viewing"
+    });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the bounded PySpark variable to open.");
+
+    await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "bounded-spark-confirm-view",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel
+    });
+    await bridge.updateViewState?.(opened.metadata.sessionId, {
+      selectedColumnId: "c:value",
+      columnWidths: { "c:value": 260 },
+      viewport: { firstVisibleRow, scrollLeft: 77 }
+    });
+
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "bounded-spark-rebind",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel
+      })
+    ).resolves.toMatchObject({ kind: "page", metadata: { filterModel } });
+
+    const replacementPages = delegateRequest.mock.calls
+      .map(([request]) => request)
+      .filter(
+        (request): request is Extract<OpenWranglerRequest, { kind: "getPage" }> =>
+          request.kind === "getPage" && request.sessionId === "bounded-spark-runtime-2"
+      );
+    expect(replacementPages.map((request) => request.offset)).toEqual([0, 0]);
+    expect(replacementPages.map((request) => request.filterModel)).toEqual([filterModel, filterModel]);
+    expect(coordinator.activeSession()).toMatchObject({
+      metadata: { filterModel },
+      viewState: {
+        selectedColumnId: "c:value",
+        columnWidths: { "c:value": 260 },
+        viewport: { firstVisibleRow: 0, scrollLeft: 77 }
+      }
     });
   });
 
@@ -1707,7 +1967,7 @@ describe("SessionCoordinator", () => {
             page: {
               offset: 0,
               limit: openRequest.pageSize,
-              totalRows: metadata.filteredShape.rows,
+              totalRows: exactRows(metadata),
               columnIds: metadata.schema.map((column) => column.id),
               rows: []
             }
@@ -5357,7 +5617,7 @@ describe("SessionCoordinator", () => {
         return {
           kind: "error",
           code: "session_cleanup_failed",
-          message: "The stopped Spark session could not unpersist its owned Open Wrangler frame.",
+          message: "The stopped Spark session could not release its owned Open Wrangler frame.",
           recoverable: false,
           sessionId: request.sessionId
         };
@@ -5638,10 +5898,12 @@ describe("SessionCoordinator", () => {
   });
 });
 
+type ExactSessionOpenedResponse = Omit<SessionOpenedResponse, "page"> & { page: GridPage };
+
 function openedResponse(
   sessionId = "runtime-session",
   backend: SessionMetadata["backend"] = "polars"
-): SessionOpenedResponse {
+): ExactSessionOpenedResponse {
   const metadata: SessionMetadata = {
     protocolVersion: 2,
     sessionId,
@@ -5699,11 +5961,11 @@ function projectedPage(
     { kind: "getPage" | "previewStep" | "applyDraft" | "discardDraft" | "undoStep" }
   >,
   metadata: SessionMetadata
-): SessionOpenedResponse["page"] {
+): GridPage {
   return {
     offset: request.offset,
     limit: request.limit,
-    totalRows: metadata.filteredShape.rows,
+    totalRows: exactRows(metadata),
     columnIds: metadata.schema
       .slice(request.columnOffset, request.columnOffset + request.columnLimit)
       .map((column) => column.id),
@@ -5728,13 +5990,19 @@ function pageResponseForMetadata(
     page: {
       offset: request.offset,
       limit: request.limit,
-      totalRows: metadata.filteredShape.rows,
+      totalRows: exactRows(metadata),
       columnIds: metadata.schema
         .slice(request.columnOffset, request.columnOffset + request.columnLimit)
         .map((column) => column.id),
       rows: []
     }
   };
+}
+
+function exactRows(metadata: SessionMetadata): number {
+  const rows = metadata.filteredShape.rows;
+  if (rows === null) throw new Error("This exact-page test fixture requires a known row count.");
+  return rows;
 }
 
 function stepPreviewResponse(

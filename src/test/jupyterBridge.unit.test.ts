@@ -1005,7 +1005,7 @@ describe("notebook command provenance", () => {
       expect.objectContaining({
         label: "spark_connect",
         description: "PySpark Connect · DataFrame",
-        detail: "Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x"
+        detail: "Viewing only · Bounded progressive open · Requires PySpark 4.2.x"
       })
     ]);
     const sparkItems = (items as readonly { description?: string; detail?: string }[]).filter((item) =>

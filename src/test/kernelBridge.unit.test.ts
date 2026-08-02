@@ -1320,7 +1320,7 @@ describe("kernel retry classification", () => {
         return {
           kind: "error",
           code: "session_cleanup_failed",
-          message: "The stopped Spark session could not unpersist its owned Open Wrangler frame.",
+          message: "The stopped Spark session could not release its owned Open Wrangler frame.",
           recoverable: false,
           sessionId: request.sessionId
         };

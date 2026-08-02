@@ -10,7 +10,7 @@ import polars as pl
 import pytest
 
 import openwrangler_runtime.session as session_runtime
-from openwrangler_runtime.engines import EngineError, EngineRegistry, PandasEngine, PolarsEngine
+from openwrangler_runtime.engines import EngineError, EngineRegistry, PandasEngine, PolarsEngine, SessionDataShape
 from openwrangler_runtime.engines.base import EngineCapabilities, SummaryColumnProjection
 from openwrangler_runtime.session import PAGE_CACHE_LIMIT, LiveSourceInvalidatedError, SessionManager
 
@@ -24,7 +24,7 @@ class CountingPandasEngine(PandasEngine):
         self.schema_calls = 0
         self.summary_calls = 0
 
-    def shape(self, frame: Any) -> dict[str, int]:
+    def shape(self, frame: Any) -> SessionDataShape:
         self.shape_calls += 1
         return super().shape(frame)
 

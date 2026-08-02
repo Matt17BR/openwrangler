@@ -8,6 +8,7 @@ import type {
   OpenWranglerResponse,
   RuntimeRequestEnvelope,
   RuntimeResponseEnvelope,
+  SessionDataShape,
   SessionMetadata,
   TransformColumnFilter,
   TransformSortRule,
@@ -362,7 +363,7 @@ function isSessionOpenedResponse(value: unknown): boolean {
     candidate !== undefined &&
     candidate.kind === "sessionOpened" &&
     isSessionMetadata(candidate.metadata) &&
-    isGridPage(candidate.page, candidate.metadata.schema) &&
+    isLiveGridPageForMetadata(candidate.page, candidate.metadata) &&
     isColumnSummaryArray(candidate.summaries, candidate.metadata.schema)
   );
 }
@@ -375,7 +376,7 @@ function isPageResponse(value: unknown): boolean {
     isNonNegativeInteger(candidate.revision) &&
     isNonEmptyString(candidate.viewRequestId) &&
     isSessionMetadata(candidate.metadata) &&
-    isGridPage(candidate.page, candidate.metadata.schema)
+    isLiveGridPageForMetadata(candidate.page, candidate.metadata)
   );
 }
 
@@ -544,8 +545,9 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     isOneOf(candidate.mode, ["viewing", "editing"]) &&
     isSessionSource(candidate.source) &&
     isSourceCapabilities(candidate.capabilities) &&
-    isDataShape(candidate.shape) &&
-    isDataShape(candidate.filteredShape) &&
+    isSessionDataShape(candidate.shape) &&
+    isSessionDataShape(candidate.filteredShape) &&
+    (candidate.backend === "pyspark" || (candidate.shape.rows !== null && candidate.filteredShape.rows !== null)) &&
     isColumnSchemaArray(candidate.schema) &&
     isFilterModel(candidate.filterModel) &&
     Array.isArray(candidate.steps) &&
@@ -640,6 +642,15 @@ function isSourceCapabilities(value: unknown): boolean {
 function isDataShape(value: unknown): boolean {
   const candidate = exactRecord(value, ["rows", "columns"]);
   return candidate !== undefined && isNonNegativeInteger(candidate.rows) && isNonNegativeInteger(candidate.columns);
+}
+
+function isSessionDataShape(value: unknown): value is SessionDataShape {
+  const candidate = exactRecord(value, ["rows", "columns"]);
+  return (
+    candidate !== undefined &&
+    (candidate.rows === null || isNonNegativeInteger(candidate.rows)) &&
+    isNonNegativeInteger(candidate.columns)
+  );
 }
 
 function isColumnSchema(value: unknown): boolean {
@@ -1254,7 +1265,45 @@ function isGridPage(value: unknown, schema?: readonly ColumnSchema[]): boolean {
     return false;
   }
   if (schema !== undefined && !isOrderedSchemaProjection(columnIds, schema)) return false;
-  return rows.every((row) => isDataRow(row, columnIds.length));
+  return (
+    candidate.offset + rows.length <= candidate.totalRows &&
+    rows.every(
+      (row, position) => isDataRow(row, columnIds.length) && row.rowNumber === Number(candidate.offset) + position
+    )
+  );
+}
+
+function isUnknownTotalGridPage(value: unknown, schema?: readonly ColumnSchema[]): boolean {
+  const candidate = exactRecord(value, ["offset", "limit", "totalRows", "hasMore", "columnIds", "rows"]);
+  if (candidate === undefined) return false;
+  const columnIds = candidate.columnIds;
+  const rows = candidate.rows;
+  if (
+    !isNonNegativeInteger(candidate.offset) ||
+    !isPositiveInteger(candidate.limit) ||
+    candidate.totalRows !== null ||
+    candidate.hasMore !== true ||
+    !isUniqueNonEmptyStringArray(columnIds) ||
+    !Array.isArray(rows) ||
+    rows.length !== candidate.limit
+  ) {
+    return false;
+  }
+  if (schema !== undefined && !isOrderedSchemaProjection(columnIds, schema)) return false;
+  return rows.every(
+    (row, position) => isDataRow(row, columnIds.length) && row.rowNumber === Number(candidate.offset) + position
+  );
+}
+
+function isLiveGridPageForMetadata(value: unknown, metadata: SessionMetadata): boolean {
+  if (isGridPage(value, metadata.schema)) {
+    return metadata.filteredShape.rows === (value as { totalRows: number }).totalRows;
+  }
+  return (
+    metadata.backend === "pyspark" &&
+    metadata.filteredShape.rows === null &&
+    isUnknownTotalGridPage(value, metadata.schema)
+  );
 }
 
 function isDataRow(value: unknown, expectedWidth?: number): boolean {
