@@ -27,6 +27,8 @@ jobs:
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
       draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
+      package_only: ${{ steps.classify.outputs.package_only }}
+      full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -62,26 +64,40 @@ jobs:
              needs.classify.outputs.draft_pull_request != 'false') ||
             (needs.classify.outputs.lightweight_only != 'true' &&
              needs.classify.outputs.lightweight_only != 'false') ||
+            (needs.classify.outputs.package_only != 'true' &&
+             needs.classify.outputs.package_only != 'false') ||
+            (needs.classify.outputs.full_matrix_required != 'true' &&
+             needs.classify.outputs.full_matrix_required != 'false') ||
             (needs.classify.outputs.lightweight_only == 'true' &&
              needs.classify.outputs.documentation_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false') ||
             (needs.classify.outputs.lightweight_only == 'false' &&
              (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true'))
+              needs.classify.outputs.draft_pull_request == 'true')) ||
+            (needs.classify.outputs.documentation_only == 'true' &&
+             needs.classify.outputs.package_only == 'true') ||
+            (needs.classify.outputs.full_matrix_required == 'true' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.package_only == 'true' ||
+              needs.classify.outputs.draft_pull_request == 'true')) ||
+            (needs.classify.outputs.full_matrix_required == 'false' &&
+             needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.package_only == 'false' &&
+             needs.classify.outputs.draft_pull_request == 'false')
           }}
         run: exit 1
-      - name: Preserve required lightweight context
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'true' }}
+      - name: Preserve required non-matrix context
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}
         run: echo "Full CodeQL analysis is deferred; this language cell preserves its required check context."
       - uses: actions/checkout@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
       - uses: github/codeql-action/init@v4
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         with:
           config-file: ./.github/codeql-config.yml
           languages: ${{ matrix.language }}
           queries: security-extended
       - uses: github/codeql-action/analyze@v4
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         with:
           category: "/language:${{ matrix.language }}"

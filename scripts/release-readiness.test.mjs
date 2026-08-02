@@ -1128,6 +1128,10 @@ test("strictly streams and validates the complete shared VSIX inventory", async 
   const payload = await inspectVsixArchive(valid);
   assert.equal(payload.archiveEntries.length, releaseVsixEntries().size);
   assert.deepEqual(JSON.parse(payload.packagedPackageJson), stablePackage);
+  assert.equal(payload.packagedReadme, `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`);
+  assert.equal(payload.packagedChangelog, "# Changelog\n");
+  assert.equal(payload.packagedLicense, "MIT License\n");
+  assert.equal(payload.packagedThirdPartyNotices, "# Third-party notices\n");
 
   await assert.rejects(
     inspectVsixArchive(

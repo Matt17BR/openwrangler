@@ -26,6 +26,8 @@ jobs:
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
       draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
+      package_only: ${{ steps.classify.outputs.package_only }}
+      full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -64,39 +66,53 @@ jobs:
              needs.classify.outputs.draft_pull_request != 'false') ||
             (needs.classify.outputs.lightweight_only != 'true' &&
              needs.classify.outputs.lightweight_only != 'false') ||
+            (needs.classify.outputs.package_only != 'true' &&
+             needs.classify.outputs.package_only != 'false') ||
+            (needs.classify.outputs.full_matrix_required != 'true' &&
+             needs.classify.outputs.full_matrix_required != 'false') ||
             (needs.classify.outputs.lightweight_only == 'true' &&
              needs.classify.outputs.documentation_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false') ||
             (needs.classify.outputs.lightweight_only == 'false' &&
              (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true'))
+              needs.classify.outputs.draft_pull_request == 'true')) ||
+            (needs.classify.outputs.documentation_only == 'true' &&
+             needs.classify.outputs.package_only == 'true') ||
+            (needs.classify.outputs.full_matrix_required == 'true' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.package_only == 'true' ||
+              needs.classify.outputs.draft_pull_request == 'true')) ||
+            (needs.classify.outputs.full_matrix_required == 'false' &&
+             needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.package_only == 'false' &&
+             needs.classify.outputs.draft_pull_request == 'false')
           }}
         run: exit 1
-      - name: Preserve required lightweight context
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'true' }}
+      - name: Preserve required non-matrix context
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}
         run: echo "Full runtime evidence is deferred; this matrix cell preserves its required check context."
       - uses: actions/checkout@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
       - uses: actions/setup-node@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         with:
           node-version: 22
           cache: npm
       - uses: actions/setup-python@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: npm ci
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
       - run: python -m pip install --upgrade pip
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
       - run: python -m pip install -e "python[dev]"
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
       - run: npm run test:python-environment-smoke
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
       - run: python -m pytest python/tests -q
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
@@ -119,24 +135,38 @@ jobs:
              needs.classify.outputs.draft_pull_request != 'false') ||
             (needs.classify.outputs.lightweight_only != 'true' &&
              needs.classify.outputs.lightweight_only != 'false') ||
+            (needs.classify.outputs.package_only != 'true' &&
+             needs.classify.outputs.package_only != 'false') ||
+            (needs.classify.outputs.full_matrix_required != 'true' &&
+             needs.classify.outputs.full_matrix_required != 'false') ||
             (needs.classify.outputs.lightweight_only == 'true' &&
              needs.classify.outputs.documentation_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false') ||
             (needs.classify.outputs.lightweight_only == 'false' &&
              (needs.classify.outputs.documentation_only == 'true' ||
-              needs.classify.outputs.draft_pull_request == 'true'))
+              needs.classify.outputs.draft_pull_request == 'true')) ||
+            (needs.classify.outputs.documentation_only == 'true' &&
+             needs.classify.outputs.package_only == 'true') ||
+            (needs.classify.outputs.full_matrix_required == 'true' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.package_only == 'true' ||
+              needs.classify.outputs.draft_pull_request == 'true')) ||
+            (needs.classify.outputs.full_matrix_required == 'false' &&
+             needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.package_only == 'false' &&
+             needs.classify.outputs.draft_pull_request == 'false')
           }}
         run: exit 1
-      - name: Preserve required lightweight context
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'true' }}
+      - name: Preserve required non-matrix context
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}
         run: echo "Full dependency-guard evidence is deferred; this matrix cell preserves its required check context."
       - uses: actions/checkout@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
       - uses: actions/setup-python@v6
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install pytest
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
       - run: python -m pytest python/tests/test_dependency_guard.py -q
-        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.lightweight_only == 'false' }}
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}

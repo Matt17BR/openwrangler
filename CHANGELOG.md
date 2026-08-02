@@ -7,9 +7,15 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Changed
 
 - Added bounded draft-pull-request feedback without weakening ready-PR evidence. Draft updates run the existing static
-  source lane plus lightweight carriers for directly protected matrix names, while the protected `validate` context
-  deliberately remains failed until `ready_for_review` reruns the complete matrix at the same commit. Missing,
+  source lane plus bounded carriers for directly protected matrix names, while the protected `validate` context
+  deliberately remains failed until `ready_for_review` reruns the required tier at the same commit. Missing,
   malformed, or contradictory path/draft classification fails closed; protected-branch pushes remain complete.
+- Added an exact package-only pull-request tier for non-empty changes limited to `README.md`, `CHANGELOG.md`, `LICENSE`,
+  and `THIRD_PARTY_NOTICES.md`. Ready changes build and inspect the canonical VSIX, require all four shipped documents
+  to match their source bytes, and run the focused lossless-media contracts without repeating unrelated engine/editor
+  matrices. Drafts still take precedence, mixed or unknown paths fail into full CI, and public/accepted evidence under
+  `docs/images/**`, `docs/media-gallery.md`, or `docs/media-spec-*` remains full-matrix so PNG quality cannot bypass its
+  visual checks.
 - Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
   kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
   serialization, nested lease inheritance, and automatic crash release.
@@ -72,8 +78,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
 - Made affected pull-request released-Jupyter acceptance consume and revalidate the same checksum-bound canonical
   VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
-  for ready product changes and to be skipped for documentation-only changes, draft feedback, or protected-branch
-  pushes. Draft `validate` remains deliberately failed; the separate weekly/manual workflow remains non-cancelling
+  for ready product changes and to be skipped for documentation-only or package-only changes, draft feedback, or
+  protected-branch pushes. Draft `validate` remains deliberately failed; the separate weekly/manual workflow remains non-cancelling
   ecosystem-drift evidence.
 - Unblocked the optional clean-room Data Wrangler comparison on current ipykernel launch syntax: the exact-runtime
   guard now accepts both separate and equals-style connection-file arguments, while bounded path-free command-shape
