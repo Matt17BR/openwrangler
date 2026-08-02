@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { CheckoutLifecycleError, createCheckoutManager } from "./checkout-lifecycle.mjs";
+import { CheckoutLifecycleError, createCheckoutManager, normalizeWorktreeRegistryPath } from "./checkout-lifecycle.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "checkout-lifecycle.mjs");
 
@@ -23,6 +23,35 @@ function git(cwd, ...args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
   return result.stdout.trim();
+}
+
+function fixtureRun(behavior = {}) {
+  return (command, args, options = {}) => {
+    if (command === "git") {
+      (behavior.gitCalls ??= []).push({ args: [...args], env: options.env });
+    }
+    if (command === "git" && ["fetch", "pull", "push", "ls-remote"].some((item) => args.includes(item))) {
+      (behavior.networkCommands ??= []).push([...args]);
+    }
+    const result = spawnSync(command, args, {
+      cwd: options.cwd,
+      encoding: "utf8",
+      env: options.env ?? process.env,
+      maxBuffer: 4 * 1024 * 1024
+    });
+    const normalized = Object.freeze({
+      status: result.status,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? ""
+    });
+    if (!options.allowFailure) {
+      assert.equal(normalized.status, 0, `${command} ${args.join(" ")} failed: ${normalized.stderr}`);
+    }
+    if (command === "git" && args.includes("worktree") && args.includes("list") && behavior.worktreeTransform) {
+      return Object.freeze({ ...normalized, stdout: behavior.worktreeTransform(normalized.stdout) });
+    }
+    return normalized;
+  };
 }
 
 function withRepository(callback) {
@@ -226,6 +255,566 @@ test("finish durably requests review and retains a file created at the former de
       { state: "cleanup-pending", review: true }
     );
     assert(result.audit.issues.includes("tracked-or-user-work-present"));
+  });
+});
+
+test("retirement planning appends exact clean evidence without touching the checkout", () => {
+  withRepository((fixture) => {
+    const behavior = {};
+    const managed = manager(fixture, { run: fixtureRun(behavior) });
+    const checkout = create(fixture, "retirement-ready", { manager: managed });
+    managed.finish({ slug: "retirement-ready", ownerTask: "/root/retirement-ready", expectedRevision: 1 });
+    const cleanup = entry(fixture, "retirement-ready");
+    const entryBytes = registryBytes(fixture);
+    const checkoutBytes = readFileSync(join(checkout.checkoutPath, "README.md"));
+    const gitFileBytes = readFileSync(join(checkout.checkoutPath, ".git"));
+    const backlinkBytes = readFileSync(join(cleanup.checkout.gitAdmin.path, "gitdir"));
+    behavior.gitCalls = [];
+
+    const result = managed.planRetirement({
+      slug: "retirement-ready",
+      ownerTask: "/root/retirement-ready",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    assert.equal(result.status, "retirement-evidence-recorded");
+    assert.equal(result.generation, cleanup.generation);
+    assert.equal(result.checkoutState, "cleanup-pending");
+    assert.equal(result.authorizesCleanup, false);
+    assert.deepEqual(
+      entryHistory(fixture, "retirement-ready").map((record) => record.state),
+      ["creating", "active", "cleanup-pending"]
+    );
+    assert.deepEqual(registryBytes(fixture), entryBytes);
+    const evidencePath = join(managed.paths.retirements, `retirement-ready.${cleanup.generation}.json`);
+    const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+    assert.deepEqual(evidence.source.cleanupRequest, cleanup.cleanupRequest);
+    assert.deepEqual(
+      {
+        generation: evidence.source.generation,
+        ownerTask: evidence.source.ownerTask,
+        revision: evidence.source.revision
+      },
+      { generation: cleanup.generation, ownerTask: cleanup.ownerTask, revision: cleanup.revision }
+    );
+    assert.deepEqual(evidence.checkout, cleanup.checkout);
+    assert.equal(evidence.git.head, git(checkout.checkoutPath, "rev-parse", "HEAD"));
+    assert.equal("recovery" in evidence, false);
+    assert.equal(evidence.authorizesCleanup, false);
+    assert.equal(evidence.deferredChecks.recovery, "not-checked-recheck-required");
+    assert.equal(evidence.deferredChecks.processUse, "not-checked-recheck-required");
+    assert.equal(evidence.deferredChecks.mounts, "not-checked-recheck-required");
+    assert.deepEqual(behavior.networkCommands ?? [], []);
+    assert(behavior.gitCalls.length > 0);
+    assert(
+      behavior.gitCalls.every((call) => call.env?.GIT_NO_LAZY_FETCH === "1"),
+      "every Git evidence command must disable partial-clone lazy fetching"
+    );
+    assert(
+      behavior.gitCalls
+        .filter((call) => call.args.includes("--work-tree"))
+        .every(
+          (call) =>
+            call.args.includes("core.fsmonitor=false") &&
+            call.args.some((argument) => argument.startsWith("core.hooksPath="))
+        ),
+      "checkout evidence commands must disable filesystem monitors and hooks"
+    );
+    assert.deepEqual(readFileSync(join(checkout.checkoutPath, "README.md")), checkoutBytes);
+    assert.deepEqual(readFileSync(join(checkout.checkoutPath, ".git")), gitFileBytes);
+    assert.deepEqual(readFileSync(join(cleanup.checkout.gitAdmin.path, "gitdir")), backlinkBytes);
+    assert.equal(git(checkout.checkoutPath, "status", "--porcelain"), "");
+  });
+});
+
+test("retirement planning cannot use inherited Git routing to hide dirty work", () => {
+  withRepository((fixture) => {
+    const behavior = {};
+    const managed = manager(fixture, { run: fixtureRun(behavior) });
+    const checkout = create(fixture, "git-env-routing", { manager: managed });
+    managed.finish({ slug: "git-env-routing", ownerTask: "/root/git-env-routing", expectedRevision: 1 });
+    writeFileSync(join(checkout.checkoutPath, "README.md"), "valuable dirty work\n");
+    const injected = {
+      GIT_DIR: join(fixture.repository, ".git"),
+      GIT_INDEX_FILE: join(fixture.repository, ".git", "index"),
+      GIT_WORK_TREE: fixture.repository,
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.fsmonitor",
+      GIT_CONFIG_VALUE_0: "false"
+    };
+    const previous = Object.fromEntries(Object.keys(injected).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, injected);
+    behavior.gitCalls = [];
+    try {
+      lifecycleError(
+        () =>
+          managed.planRetirement({
+            slug: "git-env-routing",
+            ownerTask: "/root/git-env-routing",
+            expectedRevision: 1,
+            expectedGeneration: entry(fixture, "git-env-routing").generation
+          }),
+        "retirement-not-eligible"
+      );
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    assert(behavior.gitCalls.length > 0);
+    assert(
+      behavior.gitCalls.every((call) =>
+        Object.keys(call.env ?? {}).every(
+          (name) => !name.toUpperCase().startsWith("GIT_") || !Object.hasOwn(injected, name)
+        )
+      )
+    );
+    assert.equal(readFileSync(join(checkout.checkoutPath, "README.md"), "utf8"), "valuable dirty work\n");
+  });
+});
+
+test("retirement planning ignores replacement refs that hide staged work", () => {
+  withRepository((fixture) => {
+    const behavior = {};
+    const managed = manager(fixture, { run: fixtureRun(behavior) });
+    const checkout = create(fixture, "replace-object", { manager: managed });
+    managed.finish({ slug: "replace-object", ownerTask: "/root/replace-object", expectedRevision: 1 });
+    const originalHead = git(checkout.checkoutPath, "rev-parse", "HEAD");
+    writeFileSync(join(checkout.checkoutPath, "README.md"), "staged work hidden by a replacement ref\n");
+    git(checkout.checkoutPath, "add", "README.md");
+    const stagedTree = git(checkout.checkoutPath, "write-tree");
+    const replacementCommit = git(
+      checkout.checkoutPath,
+      "commit-tree",
+      stagedTree,
+      "-p",
+      originalHead,
+      "-m",
+      "Replacement fixture"
+    );
+    git(checkout.checkoutPath, "replace", originalHead, replacementCommit);
+    assert.equal(git(checkout.checkoutPath, "status", "--porcelain"), "");
+    behavior.gitCalls = [];
+
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "replace-object",
+          ownerTask: "/root/replace-object",
+          expectedRevision: 1,
+          expectedGeneration: entry(fixture, "replace-object").generation
+        }),
+      "retirement-not-eligible"
+    );
+
+    assert(behavior.gitCalls.length > 0);
+    assert(behavior.gitCalls.every((call) => call.env?.GIT_NO_REPLACE_OBJECTS === "1"));
+    assert.equal(
+      readFileSync(join(checkout.checkoutPath, "README.md"), "utf8"),
+      "staged work hidden by a replacement ref\n"
+    );
+  });
+});
+
+test("retirement planning disables a configured filesystem-monitor hook", () => {
+  withRepository((fixture) => {
+    const behavior = {};
+    const managed = manager(fixture, { run: fixtureRun(behavior) });
+    create(fixture, "fsmonitor-hook", { manager: managed });
+    managed.finish({ slug: "fsmonitor-hook", ownerTask: "/root/fsmonitor-hook", expectedRevision: 1 });
+    const marker = join(fixture.root, "fsmonitor-ran");
+    const hook = join(fixture.root, process.platform === "win32" ? "fsmonitor.cmd" : "fsmonitor.sh");
+    const hookBody =
+      process.platform === "win32"
+        ? `@echo off\r\necho invoked>"${marker}"\r\nexit /b 1\r\n`
+        : `#!/bin/sh\nprintf invoked > '${marker.replaceAll("'", "'\\''")}'\nexit 1\n`;
+    writeFileSync(hook, hookBody, { mode: 0o700 });
+    chmodSync(hook, 0o700);
+    git(fixture.repository, "config", "core.fsmonitor", hook);
+    behavior.gitCalls = [];
+
+    const result = managed.planRetirement({
+      slug: "fsmonitor-hook",
+      ownerTask: "/root/fsmonitor-hook",
+      expectedRevision: 1,
+      expectedGeneration: entry(fixture, "fsmonitor-hook").generation
+    });
+
+    assert.equal(result.status, "retirement-evidence-recorded");
+    assert.equal(existsSync(marker), false);
+    assert(
+      behavior.gitCalls
+        .filter((call) => call.args.includes("--work-tree"))
+        .every((call) => call.args.includes("core.fsmonitor=false"))
+    );
+  });
+});
+
+test("retirement planning rejects external content filters before they can run", () => {
+  withRepository((fixture) => {
+    writeFileSync(join(fixture.repository, ".gitattributes"), "README.md filter=marker\n");
+    git(fixture.repository, "add", ".gitattributes");
+    git(fixture.repository, "commit", "-q", "-m", "Add filter fixture");
+    const behavior = {};
+    const managed = manager(fixture, { run: fixtureRun(behavior) });
+    create(fixture, "content-filter", { manager: managed });
+    managed.finish({ slug: "content-filter", ownerTask: "/root/content-filter", expectedRevision: 1 });
+    const marker = join(fixture.root, "content-filter-ran");
+    const filter = join(fixture.root, process.platform === "win32" ? "content-filter.cmd" : "content-filter.sh");
+    const filterBody =
+      process.platform === "win32"
+        ? `@echo off\r\necho invoked>"${marker}"\r\nmore\r\n`
+        : `#!/bin/sh\nprintf invoked > '${marker.replaceAll("'", "'\\''")}'\ncat\n`;
+    writeFileSync(filter, filterBody, { mode: 0o700 });
+    chmodSync(filter, 0o700);
+    git(fixture.repository, "config", "filter.marker.clean", filter);
+    git(fixture.repository, "config", "filter.marker.required", "true");
+    behavior.gitCalls = [];
+
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "content-filter",
+          ownerTask: "/root/content-filter",
+          expectedRevision: 1,
+          expectedGeneration: entry(fixture, "content-filter").generation
+        }),
+      "retirement-not-eligible"
+    );
+
+    assert.equal(existsSync(marker), false);
+    assert(
+      behavior.gitCalls.some(
+        (call) => call.args.includes("config") && call.args.includes("--name-only") && call.args.includes("--list")
+      )
+    );
+    assert.equal(
+      behavior.gitCalls.some((call) => call.args.includes("status") || call.args.includes("diff-files")),
+      false
+    );
+  });
+});
+
+test("retirement planning rejects a clean checkout containing a tracked gitlink", () => {
+  withRepository((fixture) => {
+    const head = git(fixture.repository, "rev-parse", "HEAD");
+    git(fixture.repository, "update-index", "--add", "--cacheinfo", `160000,${head},nested`);
+    git(fixture.repository, "commit", "-q", "-m", "Add gitlink fixture");
+    const managed = manager(fixture, { run: fixtureRun() });
+    create(fixture, "gitlink-checkout", { manager: managed });
+    managed.finish({ slug: "gitlink-checkout", ownerTask: "/root/gitlink-checkout", expectedRevision: 1 });
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "gitlink-checkout",
+          ownerTask: "/root/gitlink-checkout",
+          expectedRevision: 1,
+          expectedGeneration: entry(fixture, "gitlink-checkout").generation
+        }),
+      "retirement-not-eligible"
+    );
+  });
+});
+
+test("worktree registry paths accept Git for Windows separators without accepting dot segments", () => {
+  assert.equal(normalizeWorktreeRegistryPath("C:/repo/checkout", "win32"), "C:\\repo\\checkout");
+  assert.equal(
+    normalizeWorktreeRegistryPath("//server/share/repo/checkout", "win32"),
+    "\\\\server\\share\\repo\\checkout"
+  );
+  assert.equal(normalizeWorktreeRegistryPath("/repo/checkout", "linux"), "/repo/checkout");
+  lifecycleError(() => normalizeWorktreeRegistryPath("C:/repo/../checkout", "win32"), "invalid-worktree-registry");
+  lifecycleError(() => normalizeWorktreeRegistryPath("/repo/../checkout", "linux"), "invalid-worktree-registry");
+});
+
+test("retirement planning rejects stale ownership, state, and generation", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture);
+    const checkout = create(fixture, "retirement-guards", { manager: managed });
+    const activeGeneration = entry(fixture, "retirement-guards").generation;
+    const beforeActive = entryHistory(fixture, "retirement-guards").length;
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "retirement-guards",
+          ownerTask: "/root/retirement-guards",
+          expectedRevision: 1,
+          expectedGeneration: activeGeneration
+        }),
+      "checkout-not-cleanup-pending"
+    );
+    assert.equal(entryHistory(fixture, "retirement-guards").length, beforeActive);
+
+    managed.finish({ slug: "retirement-guards", ownerTask: "/root/retirement-guards", expectedRevision: 1 });
+    const cleanupGeneration = entry(fixture, "retirement-guards").generation;
+    for (const [ownerTask, revision, generation, code] of [
+      ["/root/other", 1, cleanupGeneration, "ownership-changed"],
+      ["/root/retirement-guards", 2, cleanupGeneration, "ownership-changed"],
+      ["/root/retirement-guards", 1, cleanupGeneration - 1, "registry-changed"]
+    ]) {
+      lifecycleError(
+        () =>
+          managed.planRetirement({
+            slug: "retirement-guards",
+            ownerTask,
+            expectedRevision: revision,
+            expectedGeneration: generation
+          }),
+        code
+      );
+    }
+    assert.equal(entry(fixture, "retirement-guards").state, "cleanup-pending");
+    assert.equal(existsSync(checkout.checkoutPath), true);
+  });
+});
+
+for (const [name, prepare] of [
+  ["untracked work", (path) => writeFileSync(join(path, "valuable.txt"), "valuable\n")],
+  [
+    "staged work",
+    (path) => {
+      writeFileSync(join(path, "README.md"), "staged valuable change\n");
+      git(path, "add", "README.md");
+    }
+  ],
+  [
+    "assume-unchanged work",
+    (path) => {
+      git(path, "update-index", "--assume-unchanged", "README.md");
+      writeFileSync(join(path, "README.md"), "hidden valuable change\n");
+    }
+  ],
+  [
+    "skip-worktree work",
+    (path) => {
+      git(path, "update-index", "--skip-worktree", "README.md");
+      writeFileSync(join(path, "README.md"), "hidden valuable change\n");
+    }
+  ]
+]) {
+  test(`retirement planning rejects ${name}`, () => {
+    withRepository((fixture) => {
+      const slug = `plan-${name.replaceAll(" ", "-")}`;
+      const managed = manager(fixture, { run: fixtureRun() });
+      const checkout = create(fixture, slug, { manager: managed });
+      managed.finish({ slug, ownerTask: `/root/${slug}`, expectedRevision: 1 });
+      const cleanupGeneration = entry(fixture, slug).generation;
+      prepare(checkout.checkoutPath);
+      lifecycleError(
+        () =>
+          managed.planRetirement({
+            slug,
+            ownerTask: `/root/${slug}`,
+            expectedRevision: 1,
+            expectedGeneration: cleanupGeneration
+          }),
+        "retirement-not-eligible"
+      );
+      assert.equal(entry(fixture, slug).state, "cleanup-pending");
+      assert.equal(existsSync(checkout.checkoutPath), true);
+    });
+  });
+}
+
+test("retirement planning rejects a checkout rebound between its two evidence reads", () => {
+  withRepository((fixture) => {
+    let checkout;
+    const retained = join(fixture.root, "retained-retirement-checkout");
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeRetirementEvidenceWrite() {
+          renameSync(checkout.checkoutPath, retained);
+          mkdirSync(checkout.checkoutPath);
+          writeFileSync(join(checkout.checkoutPath, "replacement.txt"), "replacement\n");
+        }
+      }
+    });
+    checkout = create(fixture, "plan-rebind", { manager: managed });
+    managed.finish({ slug: "plan-rebind", ownerTask: "/root/plan-rebind", expectedRevision: 1 });
+    const cleanupGeneration = entry(fixture, "plan-rebind").generation;
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "plan-rebind",
+          ownerTask: "/root/plan-rebind",
+          expectedRevision: 1,
+          expectedGeneration: cleanupGeneration
+        }),
+      "registry-changed"
+    );
+    assert.equal(readFileSync(join(retained, "README.md"), "utf8"), "fixture\n");
+    assert.equal(readFileSync(join(checkout.checkoutPath, "replacement.txt"), "utf8"), "replacement\n");
+    assert.equal(entry(fixture, "plan-rebind").state, "cleanup-pending");
+  });
+});
+
+test("retirement planning rejects nested and malformed worktree registry records", () => {
+  withRepository((fixture) => {
+    let checkout;
+    let injectNested = false;
+    const behavior = {
+      worktreeTransform(output) {
+        if (!injectNested) return output;
+        const head = git(checkout.checkoutPath, "rev-parse", "HEAD");
+        return `${output}worktree ${join(checkout.checkoutPath, "nested")}\0HEAD ${head}\0branch refs/heads/nested\0\0`;
+      }
+    };
+    const managed = manager(fixture, { run: fixtureRun(behavior) });
+    checkout = create(fixture, "nested-registry", { manager: managed });
+    managed.finish({ slug: "nested-registry", ownerTask: "/root/nested-registry", expectedRevision: 1 });
+    injectNested = true;
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "nested-registry",
+          ownerTask: "/root/nested-registry",
+          expectedRevision: 1,
+          expectedGeneration: entry(fixture, "nested-registry").generation
+        }),
+      "retirement-not-eligible"
+    );
+  });
+  withRepository((fixture) => {
+    let corrupt = false;
+    const behavior = { worktreeTransform: (output) => (corrupt ? output.slice(0, -1) : output) };
+    const managed = manager(fixture, { run: fixtureRun(behavior) });
+    create(fixture, "malformed-registry", { manager: managed });
+    managed.finish({ slug: "malformed-registry", ownerTask: "/root/malformed-registry", expectedRevision: 1 });
+    corrupt = true;
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "malformed-registry",
+          ownerTask: "/root/malformed-registry",
+          expectedRevision: 1,
+          expectedGeneration: entry(fixture, "malformed-registry").generation
+        }),
+      "invalid-worktree-registry"
+    );
+  });
+});
+
+test("retirement planning rejects source receipt changes", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeRetirementEvidenceWrite(record) {
+          const sourcePath = entryPaths(fixture, record.slug).at(-1);
+          writeFileSync(sourcePath, `${readFileSync(sourcePath, "utf8")} `);
+        }
+      }
+    });
+    create(fixture, "source-change", { manager: managed });
+    managed.finish({ slug: "source-change", ownerTask: "/root/source-change", expectedRevision: 1 });
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "source-change",
+          ownerTask: "/root/source-change",
+          expectedRevision: 1,
+          expectedGeneration: entry(fixture, "source-change").generation
+        }),
+      "checkout-changed"
+    );
+    assert.equal(readdirSync(join(fixture.managerRoot, "retirements")).length, 0);
+  });
+});
+
+test("retirement planning rejects a rebound journal before evidence publication", () => {
+  withRepository((fixture) => {
+    const retained = join(fixture.root, "retained-retirement-journal");
+    let rebound = false;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeRetirementEvidencePublish() {
+          renameSync(join(fixture.managerRoot, "retirements"), retained);
+          mkdirSync(join(fixture.managerRoot, "retirements"), { mode: 0o700 });
+          rebound = true;
+        }
+      }
+    });
+    create(fixture, "journal-rebind", { manager: managed });
+    managed.finish({ slug: "journal-rebind", ownerTask: "/root/journal-rebind", expectedRevision: 1 });
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "journal-rebind",
+          ownerTask: "/root/journal-rebind",
+          expectedRevision: 1,
+          expectedGeneration: entry(fixture, "journal-rebind").generation
+        }),
+      "registry-changed"
+    );
+    assert.equal(rebound, true);
+    assert.deepEqual(readdirSync(retained), []);
+    assert.deepEqual(readdirSync(join(fixture.managerRoot, "retirements")), []);
+  });
+});
+
+test("retirement planning rejects a rebound Git common-directory link", () => {
+  withRepository((fixture) => {
+    let commondirPath;
+    let retainedCommondir;
+    const otherRepository = join(fixture.root, "other-repository");
+    mkdirSync(otherRepository, { mode: 0o700 });
+    git(otherRepository, "init", "-q", "-b", "main");
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      hooks: {
+        beforeRetirementEvidenceWrite() {
+          renameSync(commondirPath, retainedCommondir);
+          writeFileSync(commondirPath, `${join(otherRepository, ".git")}\n`);
+        }
+      }
+    });
+    create(fixture, "commondir-rebind", { manager: managed });
+    managed.finish({ slug: "commondir-rebind", ownerTask: "/root/commondir-rebind", expectedRevision: 1 });
+    const cleanup = entry(fixture, "commondir-rebind");
+    commondirPath = join(cleanup.checkout.gitAdmin.path, "commondir");
+    retainedCommondir = join(cleanup.checkout.gitAdmin.path, "commondir.retained");
+    const originalBytes = readFileSync(commondirPath);
+
+    lifecycleError(
+      () =>
+        managed.planRetirement({
+          slug: "commondir-rebind",
+          ownerTask: "/root/commondir-rebind",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "retirement-not-eligible"
+    );
+
+    assert.deepEqual(readFileSync(retainedCommondir), originalBytes);
+    assert.equal(readFileSync(commondirPath, "utf8"), `${join(otherRepository, ".git")}\n`);
+    assert.deepEqual(readdirSync(join(fixture.managerRoot, "retirements")), []);
+  });
+});
+
+test("retirement evidence leaves the v2 entry history readable and unchanged", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    create(fixture, "v2-compatible", { manager: managed });
+    managed.finish({ slug: "v2-compatible", ownerTask: "/root/v2-compatible", expectedRevision: 1 });
+    const before = registryBytes(fixture);
+    const generation = entry(fixture, "v2-compatible").generation;
+    managed.planRetirement({
+      slug: "v2-compatible",
+      ownerTask: "/root/v2-compatible",
+      expectedRevision: 1,
+      expectedGeneration: generation
+    });
+    assert.deepEqual(registryBytes(fixture), before);
+    assert.equal(manager(fixture).status("v2-compatible")[0].state, "cleanup-pending");
+    assert.equal(
+      entryHistory(fixture, "v2-compatible").every((record) => record.protocol.endsWith("-v2")),
+      true
+    );
   });
 });
 

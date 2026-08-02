@@ -22,6 +22,15 @@ Agent checkout lifecycle has a separate, small contract test:
   later reviewed cleaner bounded evidence; it neither adopts an interrupted create nor authorizes deletion. Active
   `checkout:abandon` has the same conservative behavior. A pre-adoption abandon appends
   `abandoned-review-required`, including when the path, registration, and branch were absent when the command began.
+- `checkout:plan-retirement` writes a separate append-only receipt while the v2 checkout entry stays
+  `cleanup-pending`. Two matching reads must prove exact source and Git identities, an empty status, safe index flags,
+  no tracked gitlinks, and one unambiguous non-nested worktree record. Tests reject malformed or nested worktree
+  records, stale ownership/generation, dirty or rebound state, a changed source receipt, inherited Git path/index
+  redirects, configured filesystem-monitor hooks, and external clean/process filters before those filters can run.
+  Replacement-object fixtures cannot hide staged work, and rebinding a linked worktree's `commondir` file to another
+  repository fails before another Git read. Recovery, process-use, and mount checks are explicitly deferred and must
+  be rerun before any future movement. Planning performs no Git network operation. This command never moves a checkout,
+  removes a worktree, deletes a ref, or authorizes cleanup.
 - Automatic recursive purge is deliberately absent. Tests reproduce the valuable-file timing race, hidden tracked
   edits, child/root rebinding, partial Git-admin deletion, late unrelated-worktree branch attachment, entry-generation
   collision/rebinding, and operation-lock rebinding and verify that every byte remains. Registry state uses exclusive,

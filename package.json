@@ -127,6 +127,7 @@
     "checkout:audit": "node scripts/checkout-lifecycle.mjs audit",
     "checkout:handoff": "node scripts/checkout-lifecycle.mjs handoff",
     "checkout:finish": "node scripts/checkout-lifecycle.mjs finish",
+    "checkout:plan-retirement": "node scripts/checkout-lifecycle.mjs plan-retirement",
     "checkout:abandon": "node scripts/checkout-lifecycle.mjs abandon",
     "benchmark:installed": "node scripts/run-heavy-local-command.mjs benchmark:installed -- node scripts/run-installed-performance.mjs",
     "package": "node scripts/run-heavy-local-command.mjs package -- npm run package:run --",

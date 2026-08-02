@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -15,7 +15,7 @@ import {
   realpathSync,
   writeFileSync
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 
@@ -24,6 +24,8 @@ const LOCK_PROTOCOL = "openwrangler-checkout-operation-lock-v2";
 const LOCK_RELEASE_PROTOCOL = "openwrangler-checkout-operation-lock-release-v2";
 const RECEIPT_PROTOCOL = "openwrangler-checkout-receipt-v2";
 const CLEANUP_REQUEST_PROTOCOL = "openwrangler-cleanup-request-v2";
+const RETIREMENT_PLAN_PROTOCOL = "openwrangler-retirement-plan-v1";
+const RETIREMENT_CHECKS_PROTOCOL = "openwrangler-retirement-deferred-checks-v1";
 const MAXIMUM_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_ENTRY_BYTES = 64 * 1024;
 const MAXIMUM_LOCK_BYTES = 2048;
@@ -35,6 +37,9 @@ const MAXIMUM_LOCK_GENERATIONS = 16_384;
 const MAXIMUM_JSON_DEPTH = 64;
 const MAXIMUM_JSON_NODES = 4096;
 const MAXIMUM_GENERATED_ROOTS = 16;
+const MAXIMUM_WORKTREE_RECORDS = 4096;
+const MAXIMUM_WORKTREE_FIELDS = 16;
+const MAXIMUM_WORKTREE_FIELD_BYTES = 8192;
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const REMOTE_PATTERN = /^[A-Za-z0-9._-]{1,80}$/u;
 const GENERATED_ROOT_PATTERN = /^(?!\.\.?$)[A-Za-z0-9._-]{1,80}$/u;
@@ -57,6 +62,10 @@ function fail(code, message) {
 
 function randomToken() {
   return randomBytes(16).toString("hex");
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function currentUserOwns(metadata) {
@@ -287,15 +296,22 @@ function revalidatePathIdentity(path, expected, label, kind = "file") {
   }
 }
 
-function writeJsonExclusive(path, value) {
-  assertPrivateDirectory(dirname(path), dirname(path));
+function writeJsonExclusive(path, value, expectedParentIdentity = undefined) {
+  const parent = dirname(path);
+  assertPrivateDirectory(parent, parent);
+  if (expectedParentIdentity !== undefined) {
+    revalidatePathIdentity(parent, expectedParentIdentity, parent, "directory");
+  }
   writeFileSync(path, `${JSON.stringify(value)}\n`, {
     encoding: "utf8",
     flag: "wx",
     flush: true,
     mode: 0o600
   });
-  fsyncDirectory(dirname(path));
+  fsyncDirectory(parent);
+  if (expectedParentIdentity !== undefined) {
+    revalidatePathIdentity(parent, expectedParentIdentity, parent, "directory");
+  }
 }
 
 function defaultRun(command, args, options = {}) {
@@ -338,12 +354,43 @@ function checkoutGit(run, paths, checkoutPath, args, options = {}) {
   return run("git", ["-C", checkoutPath, ...args], { cwd: paths.root, allowFailure: options.allowFailure });
 }
 
-function auditCheckoutGit(run, paths, checkoutPath, args) {
-  return run("git", ["-C", checkoutPath, ...args], {
-    cwd: paths.root,
-    allowFailure: true,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" }
-  });
+function auditGitEnvironment() {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_"))
+  );
+  return {
+    ...env,
+    GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0"
+  };
+}
+
+function auditCheckoutGit(run, paths, checkoutPath, gitAdminPath, args) {
+  return run(
+    "git",
+    [
+      "--git-dir",
+      gitAdminPath,
+      "--work-tree",
+      checkoutPath,
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+      "-c",
+      "submodule.recurse=false",
+      ...args
+    ],
+    {
+      cwd: paths.root,
+      allowFailure: true,
+      env: auditGitEnvironment()
+    }
+  );
 }
 
 function assertSlug(slug) {
@@ -363,6 +410,12 @@ function assertOwner(ownerTask, label = "owner") {
 function assertRevision(revision) {
   if (!Number.isSafeInteger(revision) || revision < 1) {
     fail("invalid-revision", "The expected checkout revision must be a positive integer.");
+  }
+}
+
+function assertGeneration(generation) {
+  if (!Number.isSafeInteger(generation) || generation < 1 || generation > MAXIMUM_ENTRY_GENERATIONS) {
+    fail("invalid-generation", "The expected checkout generation must be a positive bounded integer.");
   }
 }
 
@@ -391,22 +444,66 @@ function isContained(root, candidate) {
   );
 }
 
+export function normalizeWorktreeRegistryPath(value, platform = process.platform) {
+  if (typeof value !== "string" || value === "") {
+    fail("invalid-worktree-registry", "Git returned a non-canonical worktree path.");
+  }
+  const pathApi = platform === "win32" ? win32 : posix;
+  const platformFormatted = platform === "win32" ? value.replaceAll("/", "\\") : value;
+  if (!pathApi.isAbsolute(platformFormatted) || pathApi.normalize(platformFormatted) !== platformFormatted) {
+    fail("invalid-worktree-registry", "Git returned a non-canonical worktree path.");
+  }
+  return platformFormatted;
+}
+
 function parseWorktreeList(output) {
+  if (typeof output !== "string" || output === "" || !output.endsWith("\0")) {
+    fail("invalid-worktree-registry", "Git returned a malformed worktree registry.");
+  }
   const records = [];
   let record;
-  for (const item of output.split("\0")) {
+  let fields = 0;
+  const finishRecord = () => {
+    if (record === undefined) fail("invalid-worktree-registry", "Git returned an empty worktree record.");
+    if (records.length === MAXIMUM_WORKTREE_RECORDS) {
+      fail("invalid-worktree-registry", "Git returned too many worktree records.");
+    }
+    records.push(Object.freeze(record));
+    record = undefined;
+  };
+  const items = output.split("\0");
+  items.pop();
+  for (const item of items) {
     if (item === "") {
-      if (record !== undefined) records.push(Object.freeze(record));
-      record = undefined;
+      finishRecord();
       continue;
+    }
+    if (Buffer.byteLength(item, "utf8") > MAXIMUM_WORKTREE_FIELD_BYTES) {
+      fail("invalid-worktree-registry", "Git returned a malformed worktree field.");
     }
     const space = item.indexOf(" ");
     const key = space === -1 ? item : item.slice(0, space);
     const value = space === -1 ? true : item.slice(space + 1);
     if (key === "worktree") {
-      if (record !== undefined) records.push(Object.freeze(record));
-      record = { path: resolve(value) };
-    } else if (record !== undefined) record[key] = value;
+      if (record !== undefined) {
+        fail("invalid-worktree-registry", "Git returned a worktree without a record separator.");
+      }
+      record = { path: normalizeWorktreeRegistryPath(value) };
+      fields = 1;
+      continue;
+    }
+    if (record === undefined || !/^[A-Za-z][A-Za-z0-9-]{0,63}$/u.test(key) || key in record) {
+      fail("invalid-worktree-registry", "Git returned a duplicate or misplaced worktree field.");
+    }
+    fields += 1;
+    if (fields > MAXIMUM_WORKTREE_FIELDS) {
+      fail("invalid-worktree-registry", "Git returned too many fields for one worktree.");
+    }
+    record[key] = value;
+  }
+  if (record !== undefined) fail("invalid-worktree-registry", "Git omitted the final worktree record separator.");
+  if (records.length === 0 || new Set(records.map((item) => item.path)).size !== records.length) {
+    fail("invalid-worktree-registry", "Git returned duplicate or missing worktree records.");
   }
   return Object.freeze(records);
 }
@@ -423,6 +520,16 @@ function parseStatus(output) {
             ? Object.freeze({ kind: "ignored", path: line.slice(2) })
             : Object.freeze({ kind: "tracked", path: null })
       )
+  );
+}
+
+function configuredContentFilterKeys(output) {
+  return Object.freeze(
+    output
+      .split("\0")
+      .filter(Boolean)
+      .map((key) => key.toLowerCase())
+      .filter((key) => /^filter\..+\.(?:clean|process|required)$/u.test(key))
   );
 }
 
@@ -463,7 +570,8 @@ function normalizePaths(root) {
     root: managerRoot,
     entries: join(managerRoot, "entries"),
     checkouts: join(managerRoot, "checkouts"),
-    locks: join(managerRoot, "locks")
+    locks: join(managerRoot, "locks"),
+    retirements: join(managerRoot, "retirements")
   });
 }
 
@@ -487,6 +595,16 @@ export function createCheckoutManager(options = {}) {
       }
       managedIdentities.set(path, allowCreate ? ensurePrivateDirectory(path) : assertPrivateDirectory(path, path));
     }
+  }
+
+  function initializeRetirementJournal() {
+    const identity = managedIdentities.get(paths.retirements);
+    if (identity === undefined) {
+      managedIdentities.set(paths.retirements, ensurePrivateDirectory(paths.retirements));
+      return;
+    }
+    assertPrivateDirectory(paths.retirements, paths.retirements);
+    revalidatePathIdentity(paths.retirements, identity, paths.retirements, "directory");
   }
 
   function checkoutPathFor(slug) {
@@ -516,6 +634,12 @@ export function createCheckoutManager(options = {}) {
       fail("invalid-lock", "The operation lock generation is out of range.");
     }
     return join(paths.locks, `${generation}.${kind}.json`);
+  }
+
+  function retirementPath(slug, generation) {
+    assertSlug(slug);
+    assertGeneration(generation);
+    return join(paths.retirements, `${slug}.${generation}.json`);
   }
 
   function validateLockClaim(value, generation, label) {
@@ -703,6 +827,106 @@ export function createCheckoutManager(options = {}) {
       value.gitFile.content !== `gitdir: ${value.gitAdmin.path}\n`
     ) {
       fail("invalid-registry", "The checkout Git receipt is malformed.");
+    }
+  }
+
+  function validateRetirementEvidence(value, entry) {
+    exactKeys(
+      value,
+      ["protocol", "slug", "source", "checkout", "git", "deferredChecks", "authorizesCleanup"],
+      "Retirement evidence"
+    );
+    if (value.protocol !== RETIREMENT_PLAN_PROTOCOL || value.slug !== entry.slug || value.authorizesCleanup !== false) {
+      fail("invalid-registry", "The retirement evidence is malformed.");
+    }
+    exactKeys(
+      value.source,
+      ["generation", "ownerTask", "revision", "cleanupRequest", "entryIdentity", "entryByteLength", "entrySha256"],
+      "Retirement plan source"
+    );
+    validateIdentity(value.source.entryIdentity, "Retirement plan source identity");
+    if (
+      !Number.isSafeInteger(value.source.generation) ||
+      value.source.generation !== entry.generation ||
+      value.source.ownerTask !== entry.ownerTask ||
+      value.source.revision !== entry.revision ||
+      !isDeepStrictEqual(value.source.cleanupRequest, entry.cleanupRequest) ||
+      !Number.isSafeInteger(value.source.entryByteLength) ||
+      value.source.entryByteLength < 1 ||
+      value.source.entryByteLength > MAXIMUM_ENTRY_BYTES ||
+      !/^[0-9a-f]{64}$/u.test(value.source.entrySha256)
+    ) {
+      fail("invalid-registry", "The retirement plan source is malformed.");
+    }
+    validateCheckoutReceipt(value.checkout, entry);
+    if (!isDeepStrictEqual(value.checkout, entry.checkout)) {
+      fail("invalid-registry", "The retirement plan changes the checkout receipt.");
+    }
+    exactKeys(
+      value.git,
+      [
+        "worktreeListSha256",
+        "worktreeRecordCount",
+        "nestedWorktreeCount",
+        "checkoutPath",
+        "targetRecord",
+        "commonDir",
+        "branch",
+        "head",
+        "headTree",
+        "configNamesSha256",
+        "contentFilterConfigKeyCount",
+        "statusSha256",
+        "statusRecordCount",
+        "indexFlagsSha256",
+        "unsafeIndexFlags",
+        "indexStagesSha256",
+        "gitlinkCount",
+        "trackedWorktreeClean",
+        "stagedClean"
+      ],
+      "Retirement Git receipt"
+    );
+    if (
+      !/^[0-9a-f]{64}$/u.test(value.git.worktreeListSha256) ||
+      !Number.isSafeInteger(value.git.worktreeRecordCount) ||
+      value.git.worktreeRecordCount < 1 ||
+      value.git.worktreeRecordCount > MAXIMUM_WORKTREE_RECORDS ||
+      value.git.nestedWorktreeCount !== 0 ||
+      value.git.checkoutPath !== checkoutPathFor(entry.slug) ||
+      value.git.branch !== entry.branch ||
+      !SHA_PATTERN.test(value.git.head) ||
+      !SHA_PATTERN.test(value.git.headTree) ||
+      !/^[0-9a-f]{64}$/u.test(value.git.configNamesSha256) ||
+      value.git.contentFilterConfigKeyCount !== 0 ||
+      !/^[0-9a-f]{64}$/u.test(value.git.statusSha256) ||
+      value.git.statusRecordCount !== 0 ||
+      !/^[0-9a-f]{64}$/u.test(value.git.indexFlagsSha256) ||
+      value.git.unsafeIndexFlags !== 0 ||
+      !/^[0-9a-f]{64}$/u.test(value.git.indexStagesSha256) ||
+      value.git.gitlinkCount !== 0 ||
+      value.git.trackedWorktreeClean !== true ||
+      value.git.stagedClean !== true
+    ) {
+      fail("invalid-registry", "The retirement Git receipt is malformed.");
+    }
+    exactKeys(value.git.targetRecord, ["path", "HEAD", "branch"], "Retirement target worktree record");
+    if (
+      value.git.targetRecord.path !== value.git.checkoutPath ||
+      value.git.targetRecord.HEAD !== value.git.head ||
+      value.git.targetRecord.branch !== `refs/heads/${entry.branch}`
+    ) {
+      fail("invalid-registry", "The retirement target worktree record is malformed.");
+    }
+    validateGitAdminCommondirReceipt(value.git.commonDir, entry);
+    exactKeys(value.deferredChecks, ["protocol", "recovery", "processUse", "mounts"], "Retirement deferred checks");
+    if (
+      value.deferredChecks.protocol !== RETIREMENT_CHECKS_PROTOCOL ||
+      value.deferredChecks.recovery !== "not-checked-recheck-required" ||
+      value.deferredChecks.processUse !== "not-checked-recheck-required" ||
+      value.deferredChecks.mounts !== "not-checked-recheck-required"
+    ) {
+      fail("invalid-registry", "The retirement deferred checks are malformed.");
     }
   }
 
@@ -916,12 +1140,15 @@ export function createCheckoutManager(options = {}) {
     return next;
   }
 
+  function worktreeRegistry(readOnly = false) {
+    const output = commonGit(run, paths, repository, ["worktree", "list", "--porcelain", "-z"], {
+      env: readOnly ? auditGitEnvironment() : undefined
+    }).stdout;
+    return Object.freeze({ output, records: parseWorktreeList(output) });
+  }
+
   function worktreeRecords(readOnly = false) {
-    return parseWorktreeList(
-      commonGit(run, paths, repository, ["worktree", "list", "--porcelain", "-z"], {
-        env: readOnly ? { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } : undefined
-      }).stdout
-    );
+    return worktreeRegistry(readOnly).records;
   }
 
   function worktreeRecord(checkoutPath, readOnly = false) {
@@ -1007,6 +1234,8 @@ export function createCheckoutManager(options = {}) {
     let generatedOnly = null;
     let trackedWorktreeClean = null;
     let stagedClean = null;
+    let gitlinkCount = null;
+    let contentFilterConfigKeys = null;
     if (entry.state === "creating") issues.push("creation-incomplete");
     else if (entry.state === "abandoned-review-required") issues.push("abandoned-review-required");
     else if (!existsSync(checkoutPath)) issues.push("checkout-path-missing");
@@ -1042,13 +1271,18 @@ export function createCheckoutManager(options = {}) {
         issues.push("filesystem-receipt-mismatch");
       }
       if (receiptMatches) {
-        const observedBranch = auditCheckoutGit(run, paths, checkoutPath, [
+        const gitAdminPath = entry.checkout.gitAdmin.path;
+        const observedBranch = auditCheckoutGit(run, paths, checkoutPath, gitAdminPath, [
           "symbolic-ref",
           "--quiet",
           "--short",
           "HEAD"
         ]);
-        const observedHead = auditCheckoutGit(run, paths, checkoutPath, ["rev-parse", "--verify", "HEAD"]);
+        const observedHead = auditCheckoutGit(run, paths, checkoutPath, gitAdminPath, [
+          "rev-parse",
+          "--verify",
+          "HEAD"
+        ]);
         branch = observedBranch.status === 0 ? observedBranch.stdout.trim() : null;
         head = observedHead.status === 0 ? observedHead.stdout.trim() : null;
         registrationMatches =
@@ -1056,7 +1290,17 @@ export function createCheckoutManager(options = {}) {
         if (!registrationMatches) {
           issues.push("git-registration-mismatch");
         }
-        const flags = auditCheckoutGit(run, paths, checkoutPath, ["ls-files", "-v", "-z"]);
+        const configNames = auditCheckoutGit(run, paths, checkoutPath, gitAdminPath, [
+          "config",
+          "--null",
+          "--name-only",
+          "--list"
+        ]);
+        if (configNames.status === 0) {
+          contentFilterConfigKeys = configuredContentFilterKeys(configNames.stdout).length;
+          if (contentFilterConfigKeys > 0) issues.push("external-content-filter-configured");
+        } else issues.push("git-config-unreadable");
+        const flags = auditCheckoutGit(run, paths, checkoutPath, gitAdminPath, ["ls-files", "-v", "-z"]);
         if (flags.status === 0) {
           unsafeIndexFlags = flags.stdout
             .split("\0")
@@ -1064,33 +1308,54 @@ export function createCheckoutManager(options = {}) {
             .filter((item) => item[0] !== "H").length;
           if (unsafeIndexFlags > 0) issues.push("assume-unchanged-or-skip-worktree");
         } else issues.push("index-flags-unreadable");
-        const status = auditCheckoutGit(run, paths, checkoutPath, [
-          "status",
-          "--porcelain=v2",
-          "-z",
-          "--untracked-files=all",
-          "--ignored=matching"
-        ]);
-        if (status.status === 0) {
-          const records = parseStatus(status.stdout);
-          porcelainClean = records.length === 0;
-          generatedOnly = records.every(
-            (item) => item.kind === "ignored" && belongsToGeneratedRoot(item.path, entry.generatedRoots)
-          );
-          if (!generatedOnly) issues.push("tracked-or-user-work-present");
-        } else issues.push("status-unreadable");
-        const worktreeDiff = auditCheckoutGit(run, paths, checkoutPath, ["diff-files", "--quiet", "--"]);
-        trackedWorktreeClean = worktreeDiff.status === 0 && unsafeIndexFlags === 0;
-        if (!trackedWorktreeClean) issues.push("tracked-worktree-not-proven-clean");
-        const stagedDiff = auditCheckoutGit(run, paths, checkoutPath, [
-          "diff-index",
-          "--cached",
-          "--quiet",
-          "HEAD",
-          "--"
-        ]);
-        stagedClean = stagedDiff.status === 0;
-        if (!stagedClean) issues.push("index-not-clean");
+        const stages = auditCheckoutGit(run, paths, checkoutPath, gitAdminPath, ["ls-files", "--stage", "-z"]);
+        if (stages.status === 0) {
+          gitlinkCount = stages.stdout
+            .split("\0")
+            .filter(Boolean)
+            .filter((item) => item.startsWith("160000 ")).length;
+          if (gitlinkCount > 0) issues.push("submodule-present");
+        } else issues.push("index-stages-unreadable");
+        if (contentFilterConfigKeys === 0) {
+          const status = auditCheckoutGit(run, paths, checkoutPath, gitAdminPath, [
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--ignore-submodules=all"
+          ]);
+          if (status.status === 0) {
+            const records = parseStatus(status.stdout);
+            porcelainClean = records.length === 0;
+            generatedOnly = records.every(
+              (item) => item.kind === "ignored" && belongsToGeneratedRoot(item.path, entry.generatedRoots)
+            );
+            if (!generatedOnly) issues.push("tracked-or-user-work-present");
+          } else issues.push("status-unreadable");
+          const worktreeDiff = auditCheckoutGit(run, paths, checkoutPath, gitAdminPath, [
+            "diff-files",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=all",
+            "--"
+          ]);
+          trackedWorktreeClean = worktreeDiff.status === 0 && unsafeIndexFlags === 0 && gitlinkCount === 0;
+          if (!trackedWorktreeClean) issues.push("tracked-worktree-not-proven-clean");
+          const stagedDiff = auditCheckoutGit(run, paths, checkoutPath, gitAdminPath, [
+            "diff-index",
+            "--cached",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=all",
+            "HEAD",
+            "--"
+          ]);
+          stagedClean = stagedDiff.status === 0;
+          if (!stagedClean) issues.push("index-not-clean");
+        }
       }
     }
     return Object.freeze({
@@ -1106,6 +1371,8 @@ export function createCheckoutManager(options = {}) {
       branch,
       head,
       unsafeIndexFlags,
+      gitlinkCount,
+      contentFilterConfigKeys,
       porcelainClean,
       generatedOnly,
       trackedWorktreeClean,
@@ -1114,11 +1381,234 @@ export function createCheckoutManager(options = {}) {
         receiptMatches &&
         registrationMatches &&
         unsafeIndexFlags === 0 &&
+        gitlinkCount === 0 &&
+        contentFilterConfigKeys === 0 &&
         generatedOnly === true &&
         trackedWorktreeClean === true &&
         stagedClean === true,
       issues: Object.freeze([...new Set(issues)])
     });
+  }
+
+  function requireAuditCommand(entry, checkoutPath, args, label) {
+    const result = auditCheckoutGit(run, paths, checkoutPath, entry.checkout.gitAdmin.path, args);
+    if (result.status !== 0) fail("retirement-not-eligible", `${label} could not be proven.`);
+    return result.stdout;
+  }
+
+  function captureSourceEntryReceipt(entry) {
+    const expectedIdentity = verifyEntrySnapshot(entry);
+    const source = readBoundedFile(
+      entryPath(entry.slug, entry.generation),
+      MAXIMUM_ENTRY_BYTES,
+      `Managed checkout ${entry.slug}`,
+      0o600n
+    );
+    if (!sameIdentity(source.identity, expectedIdentity)) {
+      fail("registry-changed", "The cleanup-pending entry changed while retirement evidence was collected.");
+    }
+    return Object.freeze({
+      generation: entry.generation,
+      ownerTask: entry.ownerTask,
+      revision: entry.revision,
+      cleanupRequest: entry.cleanupRequest,
+      entryIdentity: expectedIdentity,
+      entryByteLength: Buffer.byteLength(source.text, "utf8"),
+      entrySha256: sha256(source.text)
+    });
+  }
+
+  function verifyCheckoutFilesystemReceipt(entry) {
+    const checkoutPath = checkoutPathFor(entry.slug);
+    revalidatePathIdentity(checkoutPath, entry.checkout.directory, "Managed checkout", "directory");
+    const gitFile = readGitFile(checkoutPath);
+    revalidatePathIdentity(entry.checkout.gitAdmin.path, entry.checkout.gitAdmin.identity, "Git admin", "directory");
+    const backlink = readBoundedFile(join(entry.checkout.gitAdmin.path, "gitdir"), 8192, "Checkout Git admin backlink");
+    if (
+      !sameIdentity(gitFile.identity, entry.checkout.gitFile.identity) ||
+      gitFile.text !== entry.checkout.gitFile.content ||
+      !sameIdentity(backlink.identity, entry.checkout.gitAdmin.gitdir.identity) ||
+      backlink.text !== entry.checkout.gitAdmin.gitdir.content
+    ) {
+      fail("retirement-not-eligible", "The checkout filesystem receipt no longer matches.");
+    }
+    return captureGitAdminCommondir(entry);
+  }
+
+  function captureGitAdminCommondir(entry) {
+    const path = join(entry.checkout.gitAdmin.path, "commondir");
+    const file = readBoundedFile(path, 8192, "Checkout Git admin common-directory link");
+    const match = /^([^\0\r\n]+)\n$/u.exec(file.text);
+    if (match === null) {
+      fail("retirement-not-eligible", "The checkout Git common-directory link is malformed.");
+    }
+    const configuredTarget = resolve(entry.checkout.gitAdmin.path, match[1]);
+    if (configuredTarget !== repository.commonGitDirectory) {
+      fail("retirement-not-eligible", "The checkout Git common-directory link targets another repository.");
+    }
+    let target;
+    try {
+      target = realpathSync(configuredTarget);
+    } catch {
+      fail("retirement-not-eligible", "The checkout Git common directory cannot be resolved.");
+    }
+    revalidatePathIdentity(target, repository.identity, "Git common directory", "directory");
+    return Object.freeze({ path, identity: file.identity, content: file.text, target });
+  }
+
+  function validateGitAdminCommondirReceipt(value, entry) {
+    exactKeys(value, ["path", "identity", "content", "target"], "Checkout Git common-directory receipt");
+    validateIdentity(value.identity, "Checkout Git common-directory file identity");
+    const match = typeof value.content === "string" ? /^([^\0\r\n]+)\n$/u.exec(value.content) : null;
+    if (
+      value.path !== join(entry.checkout.gitAdmin.path, "commondir") ||
+      value.target !== repository.commonGitDirectory ||
+      match === null ||
+      resolve(entry.checkout.gitAdmin.path, match[1]) !== repository.commonGitDirectory
+    ) {
+      fail("invalid-registry", "The checkout Git common-directory receipt is malformed.");
+    }
+  }
+
+  function captureRetirementEvidence(entry) {
+    if (entry.state !== "cleanup-pending") {
+      fail("checkout-not-cleanup-pending", "Only a cleanup-pending checkout can be planned for retirement.");
+    }
+    const source = captureSourceEntryReceipt(entry);
+    const commonDir = verifyCheckoutFilesystemReceipt(entry);
+    const checkoutPath = checkoutPathFor(entry.slug);
+    const registry = worktreeRegistry(true);
+    const records = registry.records.filter((record) => record.path === checkoutPath);
+    if (records.length !== 1) fail("retirement-not-eligible", "The checkout has no exact Git worktree record.");
+    const record = records[0];
+    if (Object.keys(record).sort().join("\0") !== ["HEAD", "branch", "path"].sort().join("\0")) {
+      fail("retirement-not-eligible", "The checkout worktree record is detached, locked, or otherwise ambiguous.");
+    }
+    const nestedWorktrees = registry.records.filter(
+      (candidate) => candidate.path !== checkoutPath && isContained(checkoutPath, candidate.path)
+    );
+    if (nestedWorktrees.length !== 0) {
+      fail("retirement-not-eligible", "Another registered worktree is nested below the checkout.");
+    }
+    const branch = requireAuditCommand(
+      entry,
+      checkoutPath,
+      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      "The checkout branch"
+    ).trim();
+    const head = requireAuditCommand(
+      entry,
+      checkoutPath,
+      ["rev-parse", "--verify", "HEAD"],
+      "The checkout head"
+    ).trim();
+    const headTree = requireAuditCommand(
+      entry,
+      checkoutPath,
+      ["rev-parse", "--verify", "HEAD^{tree}"],
+      "The checkout tree"
+    ).trim();
+    const configNames = requireAuditCommand(
+      entry,
+      checkoutPath,
+      ["config", "--null", "--name-only", "--list"],
+      "The checkout Git configuration"
+    );
+    const contentFilterConfigKeyCount = configuredContentFilterKeys(configNames).length;
+    if (contentFilterConfigKeyCount !== 0) {
+      fail("retirement-not-eligible", "The checkout configures an external Git content filter.");
+    }
+    const status = requireAuditCommand(
+      entry,
+      checkoutPath,
+      ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=all"],
+      "The checkout status"
+    );
+    const flags = requireAuditCommand(entry, checkoutPath, ["ls-files", "-v", "-z"], "The checkout index flags");
+    const stages = requireAuditCommand(entry, checkoutPath, ["ls-files", "--stage", "-z"], "The checkout index stages");
+    const statusRecords = parseStatus(status);
+    const unsafeIndexFlags = flags
+      .split("\0")
+      .filter(Boolean)
+      .filter((item) => item[0] !== "H").length;
+    const gitlinkCount = stages
+      .split("\0")
+      .filter(Boolean)
+      .filter((item) => item.startsWith("160000 ")).length;
+    const trackedWorktreeClean =
+      auditCheckoutGit(run, paths, checkoutPath, entry.checkout.gitAdmin.path, [
+        "diff-files",
+        "--quiet",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--ignore-submodules=all",
+        "--"
+      ]).status === 0 && unsafeIndexFlags === 0;
+    const stagedClean =
+      auditCheckoutGit(run, paths, checkoutPath, entry.checkout.gitAdmin.path, [
+        "diff-index",
+        "--cached",
+        "--quiet",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--ignore-submodules=all",
+        "HEAD",
+        "--"
+      ]).status === 0;
+    if (
+      branch !== entry.branch ||
+      record.branch !== `refs/heads/${entry.branch}` ||
+      record.HEAD !== head ||
+      !SHA_PATTERN.test(head) ||
+      !SHA_PATTERN.test(headTree) ||
+      statusRecords.length !== 0 ||
+      unsafeIndexFlags !== 0 ||
+      gitlinkCount !== 0 ||
+      !trackedWorktreeClean ||
+      !stagedClean
+    ) {
+      fail("retirement-not-eligible", "The checkout changed while retirement evidence was collected.");
+    }
+    const confirmedCommonDir = captureGitAdminCommondir(entry);
+    if (!isDeepStrictEqual(confirmedCommonDir, commonDir)) {
+      fail("registry-changed", "The checkout Git common-directory link changed during evidence collection.");
+    }
+    const evidence = {
+      protocol: RETIREMENT_PLAN_PROTOCOL,
+      slug: entry.slug,
+      source,
+      checkout: entry.checkout,
+      git: {
+        worktreeListSha256: sha256(registry.output),
+        worktreeRecordCount: registry.records.length,
+        nestedWorktreeCount: nestedWorktrees.length,
+        checkoutPath,
+        targetRecord: record,
+        commonDir,
+        branch,
+        head,
+        headTree,
+        configNamesSha256: sha256(configNames),
+        contentFilterConfigKeyCount,
+        statusSha256: sha256(status),
+        statusRecordCount: statusRecords.length,
+        indexFlagsSha256: sha256(flags),
+        unsafeIndexFlags,
+        indexStagesSha256: sha256(stages),
+        gitlinkCount,
+        trackedWorktreeClean,
+        stagedClean
+      },
+      deferredChecks: {
+        protocol: RETIREMENT_CHECKS_PROTOCOL,
+        recovery: "not-checked-recheck-required",
+        processUse: "not-checked-recheck-required",
+        mounts: "not-checked-recheck-required"
+      },
+      authorizesCleanup: false
+    };
+    validateRetirementEvidence(evidence, entry);
+    return evidence;
   }
 
   function requestCleanup(entry, reason) {
@@ -1287,6 +1777,63 @@ export function createCheckoutManager(options = {}) {
       });
     },
 
+    planRetirement({ slug, ownerTask, expectedRevision, expectedGeneration }) {
+      assertSlug(slug);
+      assertGeneration(expectedGeneration);
+      return withLock(() => {
+        const entry = readEntry(slug);
+        assertOwnerRevision(entry, ownerTask, expectedRevision);
+        if (entry.generation !== expectedGeneration) {
+          fail("registry-changed", `Managed checkout ${slug} is no longer at the expected generation.`);
+        }
+        initializeRetirementJournal();
+        const retirementJournalIdentity = managedIdentities.get(paths.retirements);
+        if (retirementJournalIdentity === undefined) {
+          fail("unsafe-manager", "The retirement journal was not initialized.");
+        }
+        const destination = retirementPath(slug, entry.generation);
+        if (existsSync(destination)) {
+          fail("retirement-evidence-exists", "Retirement evidence already exists for this checkout generation.");
+        }
+        const firstEvidence = captureRetirementEvidence(entry);
+        hooks?.beforeRetirementEvidenceWrite?.(entry, firstEvidence);
+        const secondEvidence = captureRetirementEvidence(entry);
+        if (!isDeepStrictEqual(firstEvidence, secondEvidence)) {
+          fail("checkout-changed", "The checkout changed while its retirement plan was prepared.");
+        }
+        hooks?.beforeRetirementEvidencePublish?.(entry, secondEvidence);
+        revalidatePathIdentity(paths.retirements, retirementJournalIdentity, paths.retirements, "directory");
+        try {
+          writeJsonExclusive(destination, secondEvidence, retirementJournalIdentity);
+        } catch (error) {
+          if (error.code === "EEXIST") {
+            fail("retirement-evidence-exists", "Retirement evidence appeared concurrently.");
+          }
+          throw error;
+        }
+        revalidatePathIdentity(paths.retirements, retirementJournalIdentity, paths.retirements, "directory");
+        const written = readJson(destination, MAXIMUM_ENTRY_BYTES, `Retirement evidence for ${slug}`);
+        validateRetirementEvidence(written.value, entry);
+        if (
+          !isDeepStrictEqual(written.value, secondEvidence) ||
+          !isDeepStrictEqual(written.value.source, captureSourceEntryReceipt(entry))
+        ) {
+          fail("registry-changed", "The retirement evidence or its source changed while it was recorded.");
+        }
+        revalidatePathIdentity(destination, written.identity, `Retirement evidence for ${slug}`);
+        return Object.freeze({
+          status: "retirement-evidence-recorded",
+          slug,
+          ownerTask: entry.ownerTask,
+          revision: entry.revision,
+          generation: entry.generation,
+          checkoutState: entry.state,
+          authorizesCleanup: false,
+          evidence: written.value
+        });
+      });
+    },
+
     abandon({ slug, expectedOwnerTask, expectedHead, expectedRevision }) {
       assertSlug(slug);
       return withLock(() => {
@@ -1316,6 +1863,12 @@ function parseRevision(value) {
   return revision;
 }
 
+function parseGeneration(value) {
+  const generation = Number(value);
+  assertGeneration(generation);
+  return generation;
+}
+
 export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = {}) {
   const { positionals, values } = parseArgs({
     args: argv,
@@ -1325,6 +1878,7 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       owner: { type: "string" },
       to: { type: "string" },
       revision: { type: "string" },
+      generation: { type: "string" },
       branch: { type: "string" },
       base: { type: "string" },
       remote: { type: "string" },
@@ -1356,6 +1910,13 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
     });
   } else if (command === "finish") {
     result = manager.finish({ slug, ownerTask: values.owner, expectedRevision: parseRevision(values.revision) });
+  } else if (command === "plan-retirement") {
+    result = manager.planRetirement({
+      slug,
+      ownerTask: values.owner,
+      expectedRevision: parseRevision(values.revision),
+      expectedGeneration: parseGeneration(values.generation)
+    });
   } else if (command === "abandon") {
     result = manager.abandon({
       slug,
@@ -1363,7 +1924,7 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       expectedHead: values["expect-head"],
       expectedRevision: parseRevision(values.revision)
     });
-  } else fail("invalid-cli", "Use create, status, audit, handoff, finish, or abandon.");
+  } else fail("invalid-cli", "Use create, status, audit, handoff, finish, plan-retirement, or abandon.");
   (options.stdout ?? process.stdout).write(`${JSON.stringify(result, null, 2)}\n`);
   return result;
 }
