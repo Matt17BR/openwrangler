@@ -1,5 +1,6 @@
-import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import {
+  DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES,
   DATA_WRANGLER_STUDY_RESOURCE_CATEGORIES,
   DATA_WRANGLER_STUDY_RESOURCE_PROTOCOL,
   validateDataWranglerStudyResourceObservation
@@ -10,29 +11,15 @@ const MAX_PROC_DIRECTORY_ENTRIES = 131_584;
 const MAX_CENSUS_PROCESSES = 131_072;
 const MAX_PROC_ENTRY_NAME_CHARACTERS = 32;
 const MAX_PROC_STAT_CHARACTERS = 4_096;
-const MAX_PROC_STATUS_CHARACTERS = 1_048_576;
 const MAX_SMAPS_ROLLUP_CHARACTERS = 1_048_576;
 const NANOSECONDS_PER_MILLISECOND = 1_000_000n;
 const NANOSECONDS_TEXT = /^(?:0|[1-9]\d{0,29})$/u;
-const PID_NAMESPACE_ID = /^pid:\[[1-9]\d{0,29}\]$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
+const PYTHON_VERSION = /^3\.12(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$/u;
 export const LINUX_PSS_CLOCK_SOURCE = "linux-process-hrtime-bigint";
 export const LINUX_PSS_CLOCK_NORMALIZATION = "elapsedMs=(endedMonotonicNanoseconds-originNanoseconds)/1000000";
 export const LINUX_PSS_BASELINE_ACKNOWLEDGEMENT_PROTOCOL = "openwrangler-linux-pss-baseline-ack-v1";
-export const LINUX_PSS_CONTAINMENT_PROTOCOL = "openwrangler-linux-bwrap-pid-containment-v1";
-export const LINUX_PSS_REQUIRED_BWRAP_CONTAINMENT_ARGUMENTS = Object.freeze([
-  "--die-with-parent",
-  "--unshare-pid",
-  "--as-pid-1",
-  "--new-session",
-  "--disable-userns",
-  "--assert-userns-disabled",
-  "--cap-drop",
-  "ALL",
-  "--proc",
-  "/proc",
-  "--json-status-fd=<private-fd>"
-]);
+export const LINUX_PSS_OWNERSHIP_PROTOCOL = "openwrangler-linux-study-supervisor-v1";
 
 // A sample that finishes more than one quarter of the 200 ms period after its
 // scheduled instant is not treated as a gap-free sample. This bound is part of
@@ -175,75 +162,23 @@ function readProcessStat(procRoot, pid, readFile, { allowVanished = false } = {}
   return parseProcessStat(stat, pid);
 }
 
-function readPidNamespace(procRoot, pid, readLink, { allowVanished = false } = {}) {
-  let value;
-  try {
-    value = readLink(procPath(procRoot, pid, "ns/pid"), "utf8");
-  } catch (error) {
-    if (allowVanished && vanishedProcError(error)) {
-      return null;
-    }
-    throw new Error(`Could not read PID namespace identity for PID ${pid}.`);
-  }
-  if (typeof value !== "string" || !PID_NAMESPACE_ID.test(value)) {
-    throw new Error(`PID namespace identity for PID ${pid} is malformed or exceeds its bound.`);
-  }
-  return value;
-}
-
-function readProcessIdentity(procRoot, pid, readFile, readLink, { allowVanished = false } = {}) {
-  const process = readProcessStat(procRoot, pid, readFile, { allowVanished });
-  if (process === null) {
-    return null;
-  }
-  const pidNamespaceId = readPidNamespace(procRoot, pid, readLink, { allowVanished });
-  if (pidNamespaceId === null) {
-    return null;
-  }
-  return { ...process, pidNamespaceId };
-}
-
-function readRootNamespacePidChain(procRoot, pid, readFile) {
-  const status = readTextFile(
-    readFile,
-    procPath(procRoot, pid, "status"),
-    `process status for PID ${pid}`,
-    MAX_PROC_STATUS_CHARACTERS
-  );
-  const match = /^NSpid:\s+([0-9\t ]+)$/mu.exec(status);
-  if (match === null) {
-    throw new Error(`Could not read NSpid from process status for PID ${pid}.`);
-  }
-  const chain = match[1].trim().split(/\s+/u).map(Number);
-  if (
-    chain.length < 2 ||
-    chain.length > 64 ||
-    chain[0] !== pid ||
-    chain.at(-1) !== 1 ||
-    chain.some((value) => !Number.isSafeInteger(value) || value <= 0) ||
-    new Set(chain).size !== chain.length
-  ) {
-    throw new Error(`PID ${pid} is not PID 1 in one fresh nested namespace.`);
-  }
-  return chain;
-}
-
 function sameProcess(left, right) {
   return (
     left.pid === right.pid &&
     left.parentPid === right.parentPid &&
     left.processGroupId === right.processGroupId &&
     left.sessionId === right.sessionId &&
-    left.pidNamespaceId === right.pidNamespaceId &&
     left.startTimeTicks === right.startTimeTicks
   );
 }
 
-function readFullCensus(procRoot, readFile, readDirectory, readLink, requiredPids) {
+function readFullCensus(procRoot, readFile, readDirectory, requiredPids) {
   const pids = readNumericPids(procRoot, readDirectory);
   const census = new Map();
   for (const pid of pids) {
-    const process = readProcessIdentity(procRoot, pid, readFile, readLink, { allowVanished: true });
+    // Keep the global scan to numeric /proc/<pid>/stat. Sensitive and
+    // permission-gated procfs files are read only after ownership is proven.
+    const process = readProcessStat(procRoot, pid, readFile, { allowVanished: true });
     if (process === null) {
       if (requiredPids.has(pid)) {
         throw new Error(`Owned Linux PID ${pid} vanished during the process census.`);
@@ -255,39 +190,20 @@ function readFullCensus(procRoot, readFile, readDirectory, readLink, requiredPid
   return census;
 }
 
-function ownedProcessesFromCensus(
-  census,
-  { rootPid, rootStartTimeTicks, rootPidNamespaceId, launchProcessGroupId, launchSessionId, retainedIdentities }
-) {
-  const root = census.get(rootPid);
-  if (root === undefined) {
-    throw new Error("Linux editor root is absent from the process census.");
+function ownedProcessesFromCensus(census, ownership) {
+  const { supervisorPid, supervisorStartTimeTicks, editorRootPid, editorRootStartTimeTicks, retainedIdentities } =
+    ownership;
+  const supervisor = census.get(supervisorPid);
+  if (supervisor?.startTimeTicks !== supervisorStartTimeTicks) {
+    throw new Error("Linux study supervisor is absent or no longer has its launch-time identity.");
   }
+  const editorRoot = census.get(editorRootPid);
   if (
-    root.startTimeTicks !== rootStartTimeTicks ||
-    root.pidNamespaceId !== rootPidNamespaceId ||
-    root.processGroupId !== launchProcessGroupId ||
-    root.sessionId !== launchSessionId ||
-    launchProcessGroupId !== rootPid ||
-    launchSessionId !== rootPid
+    editorRoot?.startTimeTicks !== editorRootStartTimeTicks ||
+    editorRoot.processGroupId !== editorRootPid ||
+    editorRoot.sessionId !== editorRootPid
   ) {
-    throw new Error("Linux editor root no longer proves its dedicated PID namespace, process group, and session.");
-  }
-
-  // The study launch owns a fresh PID namespace. Every process in that
-  // namespace is therefore historically descended from its pinned PID-1
-  // editor root even after setsid and reparenting. Process-group and session
-  // fields remain consistency checks; neither is used as ownership proof.
-  for (const process of census.values()) {
-    if (
-      process.processGroupId === launchProcessGroupId &&
-      (process.sessionId !== launchSessionId || process.pidNamespaceId !== rootPidNamespaceId)
-    ) {
-      throw new Error("Linux launch process group contains foreign or ambiguous containment membership.");
-    }
-    if (process.pidNamespaceId === rootPidNamespaceId && BigInt(process.startTimeTicks) < BigInt(rootStartTimeTicks)) {
-      throw new Error("Linux PID namespace contains a process older than its pinned namespace init.");
-    }
+    throw new Error("Linux editor root is absent or no longer owns its dedicated process group and session.");
   }
 
   const childrenByParent = new Map();
@@ -303,24 +219,11 @@ function ownedProcessesFromCensus(
     children.sort((left, right) => left - right);
   }
 
-  const seeds = new Set([rootPid]);
-  for (const process of census.values()) {
-    if (process.pidNamespaceId === rootPidNamespaceId) {
-      seeds.add(process.pid);
-    }
-  }
-  for (const [pid, identity] of retainedIdentities) {
-    const process = census.get(pid);
-    if (process === undefined) {
-      continue;
-    }
-    if (process.startTimeTicks !== identity.startTimeTicks || process.pidNamespaceId !== identity.pidNamespaceId) {
-      throw new Error(`Previously owned PID ${pid} was reused in the Linux process census.`);
-    }
-    seeds.add(pid);
-  }
-
-  const queue = [...seeds].sort((left, right) => left - right);
+  // PR_SET_CHILD_SUBREAPER makes orphaned descendants direct children of the
+  // supervisor. A numeric stat census plus PPid closure therefore continues
+  // to cover double-forked and setsid descendants without reading unrelated
+  // processes' namespace, command-line, environment, or smaps files.
+  const queue = [supervisorPid];
   const enqueued = new Set(queue);
   const visited = new Set();
   const ownedProcesses = [];
@@ -343,22 +246,28 @@ function ownedProcessesFromCensus(
     }
   }
 
-  const ownedPids = new Set(ownedProcesses.map((process) => process.pid));
-  for (const process of ownedProcesses) {
-    if (process.pidNamespaceId !== rootPidNamespaceId) {
-      throw new Error("Owned Linux process escaped the launch PID namespace containment.");
+  const ownedByPid = new Map(ownedProcesses.map((process) => [process.pid, process]));
+  if (!ownedByPid.has(editorRootPid)) {
+    throw new Error("Linux editor root is not owned by the retained study supervisor.");
+  }
+  for (const [pid, identity] of retainedIdentities) {
+    const visible = census.get(pid);
+    if (visible === undefined) {
+      continue;
     }
-    const chain = new Set();
-    let current = process.pid;
-    while (ownedPids.has(current)) {
-      if (chain.has(current)) {
-        throw new Error("Owned Linux process census contains cyclic parentage.");
-      }
-      chain.add(current);
-      current = census.get(current).parentPid;
+    if (visible.startTimeTicks !== identity.startTimeTicks) {
+      throw new Error(`Previously owned PID ${pid} was reused in the Linux process census.`);
+    }
+    if (!ownedByPid.has(pid)) {
+      throw new Error(`Previously owned PID ${pid} is alive outside the supervisor-owned process closure.`);
     }
   }
-  return ownedProcesses.sort((left, right) => left.pid - right.pid);
+  for (const process of ownedProcesses) {
+    if (BigInt(process.startTimeTicks) < BigInt(supervisorStartTimeTicks)) {
+      throw new Error("Linux ownership closure contains a process older than its supervisor.");
+    }
+  }
+  return ownedProcesses.filter((process) => process.pid !== supervisorPid).sort((left, right) => left.pid - right.pid);
 }
 
 function assertSameOwnedCensus(first, second) {
@@ -427,73 +336,83 @@ function validateFilesystemIdentity(identity, description) {
   return Object.freeze({ ...identity });
 }
 
-function validateContainmentLaunchReceipt(
-  receipt,
-  { rootPid, rootStartTimeTicks, rootPidNamespaceId, samplerPidNamespaceId, rootNamespacePidChain }
-) {
+function validateOwnershipReceipt(receipt, { supervisor, editorRoot }) {
   if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) {
-    throw new TypeError("PSS sampler requires a verified Bubblewrap containment launch receipt.");
+    throw new TypeError("PSS sampler requires a verified Linux study-supervisor ownership receipt.");
   }
   const expectedKeys = [
     "protocol",
-    "launcherExecutable",
-    "launcherVersion",
-    "launcherSha256",
-    "launcherFilesystemIdentityBefore",
-    "launcherFilesystemIdentityAfter",
-    "verifiedArguments",
-    "jsonStatusHostPid",
-    "rootStartTimeTicks",
-    "rootPidNamespaceId",
-    "samplerPidNamespaceId",
-    "rootNSpid"
+    "kind",
+    "nonce",
+    "supervisor",
+    "editorRoot",
+    "supervisorSource",
+    "pythonExecutable",
+    "invocationPolicySha256",
+    "invocationSha256",
+    "payloadArgvSha256",
+    "payloadEnvironmentSha256"
   ];
-  const launcherIdentityBefore = validateFilesystemIdentity(
-    receipt.launcherFilesystemIdentityBefore,
-    "PSS containment launcher identity before hashing"
+  const supervisorSourceFilesystemIdentity = validateFilesystemIdentity(
+    receipt.supervisorSource?.filesystemIdentity,
+    "PSS supervisor source filesystem identity"
   );
-  const launcherIdentityAfter = validateFilesystemIdentity(
-    receipt.launcherFilesystemIdentityAfter,
-    "PSS containment launcher identity after hashing"
+  const pythonExecutableFilesystemIdentity = validateFilesystemIdentity(
+    receipt.pythonExecutable?.filesystemIdentity,
+    "PSS supervisor Python filesystem identity"
   );
   if (
     Object.keys(receipt).sort().join("\0") !== [...expectedKeys].sort().join("\0") ||
-    receipt.protocol !== LINUX_PSS_CONTAINMENT_PROTOCOL ||
-    receipt.launcherExecutable !== "/usr/bin/bwrap" ||
-    typeof receipt.launcherVersion !== "string" ||
-    !/^bubblewrap \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(receipt.launcherVersion) ||
-    typeof receipt.launcherSha256 !== "string" ||
-    !SHA256.test(receipt.launcherSha256) ||
-    JSON.stringify(launcherIdentityBefore) !== JSON.stringify(launcherIdentityAfter) ||
-    !Array.isArray(receipt.verifiedArguments) ||
-    receipt.verifiedArguments.length !== LINUX_PSS_REQUIRED_BWRAP_CONTAINMENT_ARGUMENTS.length ||
-    receipt.verifiedArguments.some(
-      (argument, index) => argument !== LINUX_PSS_REQUIRED_BWRAP_CONTAINMENT_ARGUMENTS[index]
-    ) ||
-    receipt.jsonStatusHostPid !== rootPid ||
-    receipt.rootStartTimeTicks !== rootStartTimeTicks ||
-    receipt.rootPidNamespaceId !== rootPidNamespaceId ||
-    receipt.samplerPidNamespaceId !== samplerPidNamespaceId ||
-    receipt.rootPidNamespaceId === receipt.samplerPidNamespaceId ||
-    !Array.isArray(receipt.rootNSpid) ||
-    receipt.rootNSpid.length !== rootNamespacePidChain.length ||
-    receipt.rootNSpid.some((value, index) => value !== rootNamespacePidChain[index])
+    receipt.protocol !== LINUX_PSS_OWNERSHIP_PROTOCOL ||
+    receipt.kind !== "launch" ||
+    typeof receipt.nonce !== "string" ||
+    !SHA256.test(receipt.nonce) ||
+    Object.keys(receipt.supervisor ?? {})
+      .sort()
+      .join("\0") !== ["pid", "startTimeTicks", "subreaperVerified", "pidfdVerified"].sort().join("\0") ||
+    receipt.supervisor.pid !== supervisor.pid ||
+    receipt.supervisor.startTimeTicks !== supervisor.startTimeTicks ||
+    receipt.supervisor.subreaperVerified !== true ||
+    receipt.supervisor.pidfdVerified !== true ||
+    Object.keys(receipt.editorRoot ?? {})
+      .sort()
+      .join("\0") !== ["pid", "startTimeTicks", "processGroupId", "sessionId"].sort().join("\0") ||
+    receipt.editorRoot.pid !== editorRoot.pid ||
+    receipt.editorRoot.startTimeTicks !== editorRoot.startTimeTicks ||
+    receipt.editorRoot.processGroupId !== editorRoot.pid ||
+    receipt.editorRoot.sessionId !== editorRoot.pid ||
+    editorRoot.processGroupId !== receipt.editorRoot.processGroupId ||
+    editorRoot.sessionId !== receipt.editorRoot.sessionId ||
+    editorRoot.parentPid !== supervisor.pid ||
+    Object.keys(receipt.supervisorSource ?? {})
+      .sort()
+      .join("\0") !== ["sha256", "filesystemIdentity"].sort().join("\0") ||
+    !SHA256.test(receipt.supervisorSource.sha256) ||
+    Object.keys(receipt.pythonExecutable ?? {})
+      .sort()
+      .join("\0") !== ["implementation", "version", "sha256", "filesystemIdentity"].sort().join("\0") ||
+    receipt.pythonExecutable.implementation !== "CPython" ||
+    !SHA256.test(receipt.pythonExecutable.sha256) ||
+    !PYTHON_VERSION.test(receipt.pythonExecutable.version) ||
+    !SHA256.test(receipt.invocationPolicySha256) ||
+    !SHA256.test(receipt.invocationSha256) ||
+    !SHA256.test(receipt.payloadArgvSha256) ||
+    !SHA256.test(receipt.payloadEnvironmentSha256)
   ) {
-    throw new TypeError("PSS sampler containment launch receipt is malformed or does not bind the editor root.");
+    throw new TypeError("PSS sampler ownership receipt is malformed or does not bind its supervisor and editor root.");
   }
   return Object.freeze({
-    protocol: receipt.protocol,
-    launcherExecutable: receipt.launcherExecutable,
-    launcherVersion: receipt.launcherVersion,
-    launcherSha256: receipt.launcherSha256,
-    launcherFilesystemIdentityBefore: launcherIdentityBefore,
-    launcherFilesystemIdentityAfter: launcherIdentityAfter,
-    verifiedArguments: Object.freeze([...receipt.verifiedArguments]),
-    jsonStatusHostPid: receipt.jsonStatusHostPid,
-    rootStartTimeTicks: receipt.rootStartTimeTicks,
-    rootPidNamespaceId: receipt.rootPidNamespaceId,
-    samplerPidNamespaceId: receipt.samplerPidNamespaceId,
-    rootNSpid: Object.freeze([...receipt.rootNSpid])
+    ...receipt,
+    supervisor: Object.freeze({ ...receipt.supervisor }),
+    editorRoot: Object.freeze({ ...receipt.editorRoot }),
+    supervisorSource: Object.freeze({
+      ...receipt.supervisorSource,
+      filesystemIdentity: supervisorSourceFilesystemIdentity
+    }),
+    pythonExecutable: Object.freeze({
+      ...receipt.pythonExecutable,
+      filesystemIdentity: pythonExecutableFilesystemIdentity
+    })
   });
 }
 
@@ -565,70 +484,50 @@ function abortAwareWait(milliseconds, signal) {
 
 export class LinuxPssTreeSampler {
   constructor({
-    rootPid,
-    rootStartTimeTicks,
-    rootPidNamespaceId,
-    launchContainmentReceipt,
-    launchProcessGroupId = rootPid,
-    launchSessionId = rootPid,
+    supervisorPid,
+    supervisorStartTimeTicks,
+    editorRootPid,
+    editorRootStartTimeTicks,
+    ownershipReceipt,
     classify,
     procRoot = "/proc",
     readFile = readFileSync,
     readDirectory = readdirSync,
-    readLink = readlinkSync,
     clock = process.hrtime.bigint,
     originNanoseconds
   }) {
     if (process.platform !== "linux" && procRoot === "/proc") {
       throw new Error("Linux PSS sampling is supported only on Linux.");
     }
-    if (!Number.isSafeInteger(rootPid) || rootPid <= 0) {
-      throw new TypeError("PSS sampler root PID must be a positive integer.");
+    if (!Number.isSafeInteger(supervisorPid) || supervisorPid <= 0) {
+      throw new TypeError("PSS sampler supervisor PID must be a positive integer.");
     }
-    if (typeof rootStartTimeTicks !== "string" || !/^\d+$/u.test(rootStartTimeTicks)) {
-      throw new TypeError("PSS sampler requires the launch-time root process startTimeTicks.");
+    if (typeof supervisorStartTimeTicks !== "string" || !/^\d+$/u.test(supervisorStartTimeTicks)) {
+      throw new TypeError("PSS sampler requires the launch-time supervisor startTimeTicks.");
     }
-    if (
-      !Number.isSafeInteger(launchProcessGroupId) ||
-      launchProcessGroupId !== rootPid ||
-      !Number.isSafeInteger(launchSessionId) ||
-      launchSessionId !== rootPid
-    ) {
-      throw new TypeError("PSS sampler requires the editor root's dedicated launch process group and session.");
+    if (!Number.isSafeInteger(editorRootPid) || editorRootPid <= 0 || editorRootPid === supervisorPid) {
+      throw new TypeError("PSS sampler editor-root PID must be a distinct positive integer.");
+    }
+    if (typeof editorRootStartTimeTicks !== "string" || !/^\d+$/u.test(editorRootStartTimeTicks)) {
+      throw new TypeError("PSS sampler requires the launch-time editor-root startTimeTicks.");
     }
     if (typeof classify !== "function") {
       throw new TypeError("PSS sampler requires an explicit process classifier.");
     }
-    if (
-      typeof readFile !== "function" ||
-      typeof readDirectory !== "function" ||
-      typeof readLink !== "function" ||
-      typeof clock !== "function"
-    ) {
+    if (typeof readFile !== "function" || typeof readDirectory !== "function" || typeof clock !== "function") {
       throw new TypeError("PSS sampler dependencies must be functions.");
     }
-    this.rootPid = rootPid;
-    this.rootStartTimeTicks = rootStartTimeTicks;
-    this.launchProcessGroupId = launchProcessGroupId;
-    this.launchSessionId = launchSessionId;
+    this.supervisorPid = supervisorPid;
+    this.supervisorStartTimeTicks = supervisorStartTimeTicks;
+    this.rootPid = editorRootPid;
+    this.rootStartTimeTicks = editorRootStartTimeTicks;
     this.classify = classify;
     this.procRoot = procRoot.replace(/\/$/u, "");
     this.readFile = readFile;
     this.readDirectory = readDirectory;
-    this.readLink = readLink;
-    this.rootPidNamespaceId = rootPidNamespaceId ?? readPidNamespace(this.procRoot, rootPid, readLink);
-    if (typeof this.rootPidNamespaceId !== "string" || !PID_NAMESPACE_ID.test(this.rootPidNamespaceId)) {
-      throw new TypeError("PSS sampler requires a bounded launch-time PID namespace identity.");
-    }
-    this.samplerPidNamespaceId = readPidNamespace(this.procRoot, "self", readLink);
-    const rootNamespacePidChain = readRootNamespacePidChain(this.procRoot, rootPid, readFile);
-    this.launchContainmentReceipt = validateContainmentLaunchReceipt(launchContainmentReceipt, {
-      rootPid,
-      rootStartTimeTicks,
-      rootPidNamespaceId: this.rootPidNamespaceId,
-      samplerPidNamespaceId: this.samplerPidNamespaceId,
-      rootNamespacePidChain
-    });
+    const supervisor = readProcessStat(this.procRoot, supervisorPid, readFile);
+    const editorRoot = readProcessStat(this.procRoot, editorRootPid, readFile);
+    this.ownership = validateOwnershipReceipt(ownershipReceipt, { supervisor, editorRoot });
     this.clock = clock;
     this.originNanoseconds =
       originNanoseconds === undefined
@@ -639,9 +538,7 @@ export class LinuxPssTreeSampler {
     if (this.originNanoseconds < 0n) {
       throw new TypeError("PSS sampler clock origin must be non-negative nanoseconds.");
     }
-    this.identities = new Map([
-      [rootPid, { startTimeTicks: rootStartTimeTicks, pidNamespaceId: this.rootPidNamespaceId }]
-    ]);
+    this.identities = new Map([[editorRootPid, { startTimeTicks: editorRootStartTimeTicks }]]);
     this.categories = new Map();
   }
 
@@ -653,8 +550,8 @@ export class LinuxPssTreeSampler {
     });
   }
 
-  containmentReceipt() {
-    return this.launchContainmentReceipt;
+  ownershipReceipt() {
+    return this.ownership;
   }
 
   retainedOwnedIdentities() {
@@ -664,8 +561,7 @@ export class LinuxPssTreeSampler {
         .map(([pid, identity]) =>
           Object.freeze({
             pid,
-            startTimeTicks: identity.startTimeTicks,
-            pidNamespaceId: identity.pidNamespaceId
+            startTimeTicks: identity.startTimeTicks
           })
         )
     );
@@ -680,18 +576,11 @@ export class LinuxPssTreeSampler {
   }
 
   assertKnownIdentity(process) {
-    if (
-      process.pid === this.rootPid &&
-      (process.startTimeTicks !== this.rootStartTimeTicks || process.pidNamespaceId !== this.rootPidNamespaceId)
-    ) {
+    if (process.pid === this.rootPid && process.startTimeTicks !== this.rootStartTimeTicks) {
       throw new Error(`Root PID ${process.pid} no longer has its launch-time process identity.`);
     }
     const knownIdentity = this.identities.get(process.pid);
-    if (
-      knownIdentity !== undefined &&
-      (knownIdentity.startTimeTicks !== process.startTimeTicks ||
-        knownIdentity.pidNamespaceId !== process.pidNamespaceId)
-    ) {
+    if (knownIdentity !== undefined && knownIdentity.startTimeTicks !== process.startTimeTicks) {
       throw new Error(`PID ${process.pid} was reused during PSS sampling.`);
     }
   }
@@ -707,15 +596,14 @@ export class LinuxPssTreeSampler {
     if (scheduledAt < this.originNanoseconds || startedAt < scheduledAt) {
       throw new Error("PSS sample start precedes its scheduled absolute monotonic instant.");
     }
-    // Both boundary scans cover every visible numeric /proc PID. Equality is
-    // required for the retained owned closure, not unrelated desktop churn.
-    // Retained identities remain closure seeds after reparenting.
+    // Both boundary scans cover every visible numeric /proc PID using stat
+    // only. Equality is required for the supervisor-owned closure, not for
+    // unrelated desktop churn.
     const firstCensus = readFullCensus(
       this.procRoot,
       this.readFile,
       this.readDirectory,
-      this.readLink,
-      new Set(this.identities.keys())
+      new Set([this.supervisorPid, this.rootPid])
     );
     const root = firstCensus.get(this.rootPid);
     if (root === undefined) {
@@ -723,25 +611,21 @@ export class LinuxPssTreeSampler {
     }
     this.assertKnownIdentity(root);
     const ownership = {
-      rootPid: this.rootPid,
-      rootStartTimeTicks: this.rootStartTimeTicks,
-      rootPidNamespaceId: this.rootPidNamespaceId,
-      launchProcessGroupId: this.launchProcessGroupId,
-      launchSessionId: this.launchSessionId,
+      supervisorPid: this.supervisorPid,
+      supervisorStartTimeTicks: this.supervisorStartTimeTicks,
+      editorRootPid: this.rootPid,
+      editorRootStartTimeTicks: this.rootStartTimeTicks,
       retainedIdentities: this.identities
     };
     const ownedProcesses = ownedProcessesFromCensus(firstCensus, ownership);
     for (const process of ownedProcesses) {
       this.assertKnownIdentity(process);
-      this.identities.set(process.pid, {
-        startTimeTicks: process.startTimeTicks,
-        pidNamespaceId: process.pidNamespaceId
-      });
+      this.identities.set(process.pid, { startTimeTicks: process.startTimeTicks });
     }
 
     const processes = [];
     for (const process of ownedProcesses) {
-      const before = readProcessIdentity(this.procRoot, process.pid, this.readFile, this.readLink);
+      const before = readProcessStat(this.procRoot, process.pid, this.readFile);
       if (!sameProcess(process, before)) {
         throw new Error(`PID ${process.pid} changed identity or parentage before its PSS read.`);
       }
@@ -751,7 +635,7 @@ export class LinuxPssTreeSampler {
         `PSS rollup for PID ${process.pid}`,
         MAX_SMAPS_ROLLUP_CHARACTERS
       );
-      const after = readProcessIdentity(this.procRoot, process.pid, this.readFile, this.readLink);
+      const after = readProcessStat(this.procRoot, process.pid, this.readFile);
       if (!sameProcess(process, after)) {
         throw new Error(`PID ${process.pid} changed identity or parentage during its PSS read.`);
       }
@@ -778,7 +662,6 @@ export class LinuxPssTreeSampler {
       processes.push({
         pid: process.pid,
         startTimeTicks: process.startTimeTicks,
-        pidNamespaceId: process.pidNamespaceId,
         category,
         pssBytes: parseKilobytes(rollup, "Pss", process.pid),
         rssBytes: parseKilobytes(rollup, "Rss", process.pid)
@@ -789,8 +672,7 @@ export class LinuxPssTreeSampler {
       this.procRoot,
       this.readFile,
       this.readDirectory,
-      this.readLink,
-      new Set([...this.identities.keys(), ...ownedProcesses.map((process) => process.pid)])
+      new Set([this.supervisorPid, this.rootPid])
     );
     const finalOwnedProcesses = ownedProcessesFromCensus(finalCensus, ownership);
     assertSameOwnedCensus(ownedProcesses, finalOwnedProcesses);
@@ -880,11 +762,12 @@ export async function collectLinuxPssObservation({
   const observationBase = () => ({
     protocol: DATA_WRANGLER_STUDY_RESOURCE_PROTOCOL,
     clock: sampler.clockReceipt(),
-    containment: sampler.containmentReceipt(),
+    ownershipTracker: sampler.ownershipReceipt(),
     intervalMs,
     maximumLatenessMs: LINUX_PSS_MAXIMUM_LATENESS_MS,
     missedSamples,
     terminalBoundary,
+    retainedOwnedIdentities: sampler.retainedOwnedIdentities(),
     samples
   });
   const invalidObservation = () =>
@@ -1042,6 +925,10 @@ export async function collectLinuxPssObservation({
       const startedAt = nanosecondsText(sample.startedMonotonicNanoseconds, "PSS sample-start monotonic timestamp");
       const endedAt = nanosecondsText(sample.endedMonotonicNanoseconds, "PSS sample-end monotonic timestamp");
       if (scheduledAt !== due || startedAt < scheduledAt || endedAt < startedAt || endedAt > now) {
+        missedSamples += 1;
+        return invalidObservation();
+      }
+      if (samples.length >= DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES) {
         missedSamples += 1;
         return invalidObservation();
       }

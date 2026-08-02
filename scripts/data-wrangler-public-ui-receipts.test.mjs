@@ -40,7 +40,8 @@ function context() {
     editor: {
       id: "Microsoft.VisualStudioCode",
       version: "1.130.0",
-      sha256: sha("a")
+      sha256: sha("a"),
+      uiLocale: "en"
     },
     source: {
       variableName: "study_frame",
@@ -80,7 +81,8 @@ function rawEvidence(kind, conclusion) {
     editor: {
       id: "Microsoft.VisualStudioCode",
       version: "1.130.0",
-      sha256: sha("a")
+      sha256: sha("a"),
+      uiLocale: "en"
     },
     extensions: structuredClone(inventory),
     source: structuredClone(context().source),
@@ -164,6 +166,7 @@ test("available capability normalizes raw evidence and requires one exact pointe
     receipt.evidence.actions.map((action) => action.product),
     ["open-wrangler", "data-wrangler"]
   );
+  assert.equal(receipt.evidence.actions[0].accessibleName, "Open in Open Wrangler");
   assert.deepEqual(receipt.evidence.actions[1], {
     product: "data-wrangler",
     accessibleName: "Open 'study_frame' in Data Wrangler",
@@ -420,6 +423,7 @@ test("capture, editor, and notebook source receipts are bound exactly to expecte
     ["capture", /expected capture ID/u, (evidence) => (evidence.captureId = "58f75762-5d47-40b3-b410-1fb4855a8bc5")],
     ["editor version", /exact expected editor identity/u, (evidence) => (evidence.editor.version = "1.131.0")],
     ["editor binary", /exact expected editor identity/u, (evidence) => (evidence.editor.sha256 = sha("c"))],
+    ["editor locale", /exact expected editor identity/u, (evidence) => (evidence.editor.uiLocale = "de")],
     ["source engine", /exact expected notebook source/u, (evidence) => (evidence.source.engine = "pandas")],
     ["source shape", /exact expected notebook source/u, (evidence) => (evidence.source.rowCount = 10_001)],
     ["source sentinel", /exact expected notebook source/u, (evidence) => (evidence.source.sentinels[1].value = "WRONG")]
@@ -511,6 +515,10 @@ test("contexts and source sentinels are bounded and restricted to the study edit
   const wrongEditor = structuredClone(context());
   wrongEditor.editor.id = "cursor";
   assert.throws(() => createPublicUiReceiptContext(wrongEditor), /official Microsoft Visual Studio Code/u);
+
+  const wrongLocale = structuredClone(context());
+  wrongLocale.editor.uiLocale = "de";
+  assert.throws(() => createPublicUiReceiptContext(wrongLocale), /--locale=en/u);
 
   const wrongSource = structuredClone(context());
   wrongSource.source.engine = "pandas";

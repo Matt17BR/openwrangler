@@ -1,14 +1,30 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { createInterface } from "node:readline";
 import test from "node:test";
 import {
   DATA_WRANGLER_STUDY_CELLS,
   DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
+  DATA_WRANGLER_STUDY_CONTROL_ALLOWANCE_MS,
   DATA_WRANGLER_STUDY_DEADLINES_MS,
   DATA_WRANGLER_STUDY_FRAGMENT_PROTOCOL,
   DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL,
+  DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES,
   DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
   DATA_WRANGLER_STUDY_PRODUCTS,
   DATA_WRANGLER_STUDY_RESULT_PROTOCOL,
@@ -17,6 +33,7 @@ import {
   buildDataWranglerStudyResult,
   calculatePairedStudyRegression,
   calculateStudyPssSegments,
+  createOrLoadDataWranglerStudyFinalizationIntent,
   createDataWranglerStudySchedule,
   createEmptyStudyMilestones,
   createStudyFragmentIdentity,
@@ -29,13 +46,32 @@ import {
   validateDataWranglerStudyFragment,
   validateDataWranglerStudyManifest,
   validateDataWranglerStudyResult,
-  validateDataWranglerStudyResultEvidence
+  validateDataWranglerStudyResultEvidence,
+  writeDataWranglerStudyJsonExclusive
 } from "./data-wrangler-comparison-study.mjs";
+import {
+  DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
+  NEITHER_PRODUCT_CONTROL_RECEIPT_KIND,
+  PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS,
+  PUBLIC_UI_DATA_WRANGLER_ACTION_NAME,
+  PUBLIC_UI_OBSERVATION_MAX_GAP_MS,
+  PUBLIC_UI_OPEN_WRANGLER_ACTION_NAME,
+  createDataWranglerPolarsCapabilityReceipt,
+  createExpectedPublicUiExtensionInventory,
+  createNeitherProductControlReceipt,
+  createPublicUiReceiptContext,
+  digestPublicUiReceiptEvidence
+} from "./data-wrangler-public-ui-receipts.mjs";
+import { LinuxPssTreeSampler } from "./linux-pss-sampler.mjs";
 
 const digest = (value) => value.repeat(64);
+const STUDY_SUPERVISOR_PATH = resolve("scripts/linux-study-supervisor.py");
+const STUDY_PYTHON_312 = process.env.OPEN_WRANGLER_STUDY_PYTHON;
 
 test("the fixed study schedule has four interleaved warm cells, ten balanced pairs, and cold AB/BA", () => {
   assert.deepEqual(DATA_WRANGLER_STUDY_PRODUCTS, ["open-wrangler", "data-wrangler"]);
+  assert.equal(DATA_WRANGLER_STUDY_CONTROL_ALLOWANCE_MS, 3_000);
+  assert.equal(DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES, 1_228);
   const first = createDataWranglerStudySchedule();
   const second = createDataWranglerStudySchedule();
   assert.deepEqual(first, second);
@@ -106,6 +142,20 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
   wrongKernelVersion.python.kernel.version = "6.29.4";
   assert.throws(() => validateDataWranglerStudyManifest(wrongKernelVersion), /match the pinned ipykernel/u);
 
+  const mismatchedSupervisorPythonPatch = structuredClone(manifest);
+  mismatchedSupervisorPythonPatch.provenance.ownershipTracker.pythonExecutable.version = "3.12.9";
+  assert.throws(
+    () => validateDataWranglerStudyManifest(mismatchedSupervisorPythonPatch),
+    /exact manifest-pinned Python executable/u
+  );
+
+  const mismatchedSupervisorPythonHash = structuredClone(manifest);
+  mismatchedSupervisorPythonHash.provenance.ownershipTracker.pythonExecutable.sha256 = "b".repeat(64);
+  assert.throws(
+    () => validateDataWranglerStudyManifest(mismatchedSupervisorPythonHash),
+    /exact manifest-pinned Python executable/u
+  );
+
   const changedAffinity = structuredClone(manifest);
   changedAffinity.provenance.cpu.affinity[0] = 9;
   assert.throws(() => validateDataWranglerStudyManifest(changedAffinity), /machine topology/u);
@@ -138,18 +188,58 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
   timedCapabilityProbe.provenance.capabilities[0].timed = true;
   assert.throws(() => validateDataWranglerStudyManifest(timedCapabilityProbe), /capability receipt/u);
 
+  const wrongLocale = structuredClone(manifest);
+  wrongLocale.editor.uiLocale = "de";
+  assert.throws(() => validateDataWranglerStudyManifest(wrongLocale), /--locale=en/u);
+
+  const changedWrapperDigest = structuredClone(manifest);
+  changedWrapperDigest.provenance.capabilities[0].receiptSha256 = "0".repeat(64);
+  assert.throws(() => validateDataWranglerStudyManifest(changedWrapperDigest), /validated public-UI evidence/u);
+
+  const changedContext = structuredClone(manifest);
+  changedContext.provenance.capabilities[0].context.source.schemaSha256 = "0".repeat(64);
+  assert.throws(() => validateDataWranglerStudyManifest(changedContext), /exact Polars fixture source/u);
+
+  const coordinatedSourceForgery = structuredClone(manifest);
+  const forgedCapability = coordinatedSourceForgery.provenance.capabilities[0];
+  forgedCapability.context.source.schemaSha256 = "0".repeat(64);
+  forgedCapability.receipt.evidence.source.schemaSha256 = "0".repeat(64);
+  forgedCapability.receipt.evidenceSha256 = digestPublicUiReceiptEvidence(forgedCapability.receipt.evidence);
+  forgedCapability.receiptSha256 = digestStudyValue(forgedCapability.receipt);
+  assert.throws(() => validateDataWranglerStudyManifest(coordinatedSourceForgery), /exact Polars fixture source/u);
+
+  const forgedTrace = structuredClone(manifest);
+  const forgedTraceReceipt = forgedTrace.provenance.capabilities[0].receipt;
+  forgedTraceReceipt.evidence.trace[1].actions[1].matchCount = 0;
+  forgedTraceReceipt.evidence.trace[1].actions[1].pointerUsable = false;
+  forgedTraceReceipt.evidenceSha256 = digestPublicUiReceiptEvidence(forgedTraceReceipt.evidence);
+  forgedTrace.provenance.capabilities[0].receiptSha256 = digestStudyValue(forgedTraceReceipt);
+  assert.throws(() => validateDataWranglerStudyManifest(forgedTrace), /first stable exact pointer-usable action/u);
+
+  const changedControlContext = structuredClone(manifest);
+  changedControlContext.provenance.controlProfile.context.captureId = "55555555-5555-4555-8555-555555555555";
+  assert.throws(() => validateDataWranglerStudyManifest(changedControlContext), /expected capture ID/u);
+
+  const changedControlDigest = structuredClone(manifest);
+  changedControlDigest.provenance.controlProfile.receiptSha256 = "0".repeat(64);
+  assert.throws(() => validateDataWranglerStudyManifest(changedControlDigest), /validated public-UI evidence/u);
+
   const extra = { ...manifest, marketingWinner: "Open Wrangler" };
   assert.throws(() => validateDataWranglerStudyManifest(extra), /missing or unknown fields/u);
 });
 
-test("append-only fragments resume a half pair and refuse overwrite", () => {
+test("append-only fragments resume a half pair and accept only an exact completed retry", () => {
   withTemporaryDirectory((directory) => {
     const manifest = studyManifest();
     const firstBlock = manifest.schedule.filter((entry) => entry.blockId === manifest.schedule[0].blockId);
     const first = successFragment(manifest, firstBlock[0], 0, 10);
     const receipt = publishDataWranglerStudyFragment(directory, first, manifest);
     assert.match(receipt.sha256, /^[0-9a-f]{64}$/u);
-    assert.throws(() => publishDataWranglerStudyFragment(directory, first, manifest), /exact next immutable schedule/u);
+    const repeated = publishDataWranglerStudyFragment(directory, first, manifest);
+    assert.equal(repeated.status, "complete");
+    const conflicting = structuredClone(first);
+    conflicting.fragmentId = "44444444-4444-4444-8444-444444444444";
+    assert.throws(() => publishDataWranglerStudyFragment(directory, conflicting, manifest), /digest/u);
 
     const loaded = loadDataWranglerStudyFragments(directory, manifest);
     assert.equal(loaded.length, 1);
@@ -158,6 +248,61 @@ test("append-only fragments resume a half pair and refuse overwrite", () => {
     assert.equal(pending.filter((entry) => entry.blockId === firstBlock[0].blockId).length, 1);
     assert.equal(pending.find((entry) => entry.blockId === firstBlock[0].blockId).product, firstBlock[1].product);
     assert.equal(pending.find((entry) => entry.blockId === firstBlock[0].blockId).attempt, 0);
+  });
+});
+
+test("fragment loading keeps one directory lease and rejects a rebound parent", () => {
+  withTemporaryDirectory((directory) => {
+    const manifest = studyManifest();
+    const fragment = successFragment(manifest, manifest.schedule[0], 0, 10);
+    publishDataWranglerStudyFragment(directory, fragment, manifest);
+    const displaced = `${directory}.displaced`;
+    let rebound = false;
+    assert.throws(
+      () =>
+        loadDataWranglerStudyFragments(directory, manifest, {
+          faultInjector: (point) => {
+            if (point !== "directory-opened" || rebound) {
+              return;
+            }
+            rebound = true;
+            renameSync(directory, displaced);
+            mkdirSync(directory, { mode: 0o700 });
+          }
+        }),
+      /parent identity changed while it was leased/u
+    );
+    assert.equal(rebound, true);
+    assert.equal(readdirSync(displaced).filter((name) => name.endsWith(".json")).length, 1);
+    assert.equal(readdirSync(directory).length, 0);
+  });
+});
+
+test("fragment loading rejects a directory-entry swap after opening the file", () => {
+  withTemporaryDirectory((directory) => {
+    const manifest = studyManifest();
+    const fragment = successFragment(manifest, manifest.schedule[0], 0, 10);
+    publishDataWranglerStudyFragment(directory, fragment, manifest);
+    const [name] = readdirSync(directory).filter((entry) => entry.endsWith(".json"));
+    const path = resolve(directory, name);
+    const displaced = `${path}.displaced`;
+    let swapped = false;
+    assert.throws(
+      () =>
+        loadDataWranglerStudyFragments(directory, manifest, {
+          faultInjector: (point) => {
+            if (point !== "file-opened" || swapped) {
+              return;
+            }
+            swapped = true;
+            renameSync(path, displaced);
+            writeFileSync(path, readFileSync(displaced), { mode: 0o600 });
+          }
+        }),
+      /Study fragment changed while it was read/u
+    );
+    assert.equal(swapped, true);
+    assert.notEqual(lstatSync(path, { bigint: true }).ino, lstatSync(displaced, { bigint: true }).ino);
   });
 });
 
@@ -288,6 +433,14 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
   assert.equal(fragment.protocol, DATA_WRANGLER_STUDY_FRAGMENT_PROTOCOL);
   assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
 
+  const fractionalMilestones = successFragment(manifest, manifest.schedule[0], 0, 25.125);
+  assert.equal(validateDataWranglerStudyFragment(fractionalMilestones, manifest), fractionalMilestones);
+  assert.equal(
+    BigInt(fractionalMilestones.resourceObservation.terminalBoundary.targetMonotonicNanoseconds) -
+      PSS_TEST_ORIGIN_NANOSECONDS,
+    5_475_375_000n
+  );
+
   assert.throws(
     () => validateDataWranglerStudyFragment({ ...fragment, manifestSha256: digest("9") }, manifest),
     /immutable manifest/u
@@ -312,9 +465,128 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
     /valid resource observation/u
   );
 
+  const sampledOnlyIdentity = { pid: 199, startTimeTicks: "19900" };
+  const sampledOnlyChild = structuredClone(fragment);
+  sampledOnlyChild.resourceObservation.retainedOwnedIdentities.push(sampledOnlyIdentity);
+  sampledOnlyChild.cleanupProof.retainedOwnedIdentities.push(sampledOnlyIdentity);
+  const sampledOnlyProcess = {
+    ...sampledOnlyIdentity,
+    category: "other-owned-child",
+    pssBytes: 4_096,
+    rssBytes: 8_192
+  };
+  sampledOnlyChild.resourceObservation.samples[0].processes.push(sampledOnlyProcess);
+  sampledOnlyChild.resourceObservation.samples[0].totalPssBytes += sampledOnlyProcess.pssBytes;
+  sampledOnlyChild.resourceObservation.samples[0].totalRssBytes += sampledOnlyProcess.rssBytes;
+  sampledOnlyChild.resourceObservation.samples[0].categories["other-owned-child"] += sampledOnlyProcess.pssBytes;
+  assert.equal(
+    sampledOnlyChild.cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities.some(
+      (identity) => identity.pid === sampledOnlyIdentity.pid
+    ),
+    false
+  );
+  assert.equal(validateDataWranglerStudyFragment(sampledOnlyChild, manifest), sampledOnlyChild);
+
+  const omittedCumulativeChildFromCleanup = structuredClone(sampledOnlyChild);
+  omittedCumulativeChildFromCleanup.cleanupProof.retainedOwnedIdentities.pop();
+  assert.throws(
+    () => validateDataWranglerStudyFragment(omittedCumulativeChildFromCleanup, manifest),
+    /canonical union of sampled and supervisor-owned identities/u
+  );
+
+  const adoptedDuringCleanup = structuredClone(fragment);
+  const adoptedIdentity = { pid: 199, startTimeTicks: "19900" };
+  adoptedDuringCleanup.cleanupProof.retainedOwnedIdentities.push(adoptedIdentity);
+  adoptedDuringCleanup.cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities.push({
+    ...adoptedIdentity,
+    disposition: "terminated"
+  });
+  adoptedDuringCleanup.cleanupProof.observations.splice(1, 0, {
+    sequence: 1,
+    elapsedMs: 100,
+    processes: [adoptedIdentity]
+  });
+  adoptedDuringCleanup.cleanupProof.observations[2].sequence = 2;
+  assert.equal(validateDataWranglerStudyFragment(adoptedDuringCleanup, manifest), adoptedDuringCleanup);
+
+  const simultaneousCleanupPoll = structuredClone(fragment);
+  simultaneousCleanupPoll.cleanupProof.observations[1].elapsedMs = 99;
+  assert.throws(
+    () => validateDataWranglerStudyFragment(simultaneousCleanupPoll, manifest),
+    /near-200 ms polling cadence/u
+  );
+  const minimumCleanupPoll = structuredClone(fragment);
+  minimumCleanupPoll.cleanupProof.observations[1].elapsedMs = 100;
+  assert.equal(validateDataWranglerStudyFragment(minimumCleanupPoll, manifest), minimumCleanupPoll);
+
+  const survivingCleanup = postActionFailureFragment(structuredClone(fragment), "cleanup");
+  survivingCleanup.cleanupProof.status = "surviving-tree";
+  survivingCleanup.cleanupProof.treeEmpty = false;
+  survivingCleanup.cleanupProof.failure = { reason: "surviving-process-tree", observedAtMs: 10_000 };
+  assert.throws(() => validateDataWranglerStudyFragment(survivingCleanup, manifest), /publishable cleanup proof/u);
+
+  const reusedPid = structuredClone(fragment);
+  const oldKernelIdentity = reusedPid.cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities.find(
+    (identity) => identity.pid === reusedPid.processProofs.configuredKernel.pid
+  );
+  const replacementIdentity = {
+    pid: oldKernelIdentity.pid,
+    startTimeTicks: String(Number(oldKernelIdentity.startTimeTicks) + 1)
+  };
+  reusedPid.cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities.push({
+    ...replacementIdentity,
+    disposition: "terminated"
+  });
+  reusedPid.cleanupProof.supervisorTerminalReceipt.identityReuseEvents.push({
+    pid: replacementIdentity.pid,
+    previousStartTimeTicks: oldKernelIdentity.startTimeTicks,
+    replacementStartTimeTicks: replacementIdentity.startTimeTicks
+  });
+  reusedPid.cleanupProof.supervisorTerminalReceipt.supervisorExitCode = 125;
+  reusedPid.cleanupProof.retainedOwnedIdentities.push(replacementIdentity);
+  assert.throws(
+    () => validateDataWranglerStudyFragment(reusedPid, manifest),
+    /PID-reuse cleanup receipt requires a resource-sampling product failure/u
+  );
+  postActionFailureFragment(reusedPid, "resource-sampling");
+  assert.equal(validateDataWranglerStudyFragment(reusedPid, manifest), reusedPid);
+
+  const sequentialReuse = structuredClone(reusedPid);
+  const secondReplacement = {
+    pid: replacementIdentity.pid,
+    startTimeTicks: String(Number(replacementIdentity.startTimeTicks) + 1)
+  };
+  sequentialReuse.cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities.push({
+    ...secondReplacement,
+    disposition: "terminated"
+  });
+  sequentialReuse.cleanupProof.supervisorTerminalReceipt.identityReuseEvents.push({
+    pid: secondReplacement.pid,
+    previousStartTimeTicks: replacementIdentity.startTimeTicks,
+    replacementStartTimeTicks: secondReplacement.startTimeTicks
+  });
+  sequentialReuse.cleanupProof.retainedOwnedIdentities.push(secondReplacement);
+  assert.equal(validateDataWranglerStudyFragment(sequentialReuse, manifest), sequentialReuse);
+
+  const duplicateTerminalIdentity = structuredClone(fragment);
+  duplicateTerminalIdentity.cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities.push(
+    structuredClone(duplicateTerminalIdentity.cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities[0])
+  );
+  assert.throws(
+    () => validateDataWranglerStudyFragment(duplicateTerminalIdentity, manifest),
+    /repeats an owned process identity/u
+  );
+
   const tooFewResourceSamples = structuredClone(fragment);
   tooFewResourceSamples.resourceObservation.samples = tooFewResourceSamples.resourceObservation.samples.slice(0, 4);
   assert.throws(() => validateDataWranglerStudyFragment(tooFewResourceSamples, manifest), /at least five samples/u);
+
+  const tooManyResourceSamples = structuredClone(fragment);
+  tooManyResourceSamples.resourceObservation.samples = new Array(DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES + 1);
+  assert.throws(
+    () => validateDataWranglerStudyFragment(tooManyResourceSamples, manifest),
+    /fixed trial, deadline, and quiescence bound/u
+  );
 
   const wrongClockNormalization = structuredClone(fragment);
   wrongClockNormalization.resourceObservation.samples[0].elapsedMs = 1;
@@ -327,38 +599,38 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
   wrongLatenessBound.resourceObservation.maximumLatenessMs = 199;
   assert.throws(() => validateDataWranglerStudyFragment(wrongLatenessBound, manifest), /preregistered lateness bound/u);
 
-  const tamperedLauncherHash = structuredClone(fragment);
-  tamperedLauncherHash.resourceObservation.containment.launcherSha256 = "not-a-sha256";
-  assert.throws(() => validateDataWranglerStudyFragment(tamperedLauncherHash, manifest), /Bubblewrap SHA-256/u);
+  const tamperedSupervisorHash = structuredClone(fragment);
+  tamperedSupervisorHash.resourceObservation.ownershipTracker.supervisorSource.sha256 = "not-a-sha256";
+  assert.throws(() => validateDataWranglerStudyFragment(tamperedSupervisorHash, manifest), /source SHA-256/u);
 
-  const substitutedLauncherHash = structuredClone(fragment);
-  substitutedLauncherHash.resourceObservation.containment.launcherSha256 = "b".repeat(64);
-  assert.throws(() => validateDataWranglerStudyFragment(substitutedLauncherHash, manifest), /manifest-pinned/u);
+  const substitutedSupervisorHash = structuredClone(fragment);
+  substitutedSupervisorHash.resourceObservation.ownershipTracker.supervisorSource.sha256 = "0".repeat(64);
+  assert.throws(() => validateDataWranglerStudyFragment(substitutedSupervisorHash, manifest), /manifest-pinned/u);
 
-  const driftingLauncherIdentity = structuredClone(fragment);
-  driftingLauncherIdentity.resourceObservation.containment.launcherFilesystemIdentityAfter.inode = "43";
-  assert.throws(() => validateDataWranglerStudyFragment(driftingLauncherIdentity, manifest), /identity changed/u);
+  const unverifiedSubreaper = structuredClone(fragment);
+  unverifiedSubreaper.resourceObservation.ownershipTracker.supervisor.subreaperVerified = false;
+  assert.throws(() => validateDataWranglerStudyFragment(unverifiedSubreaper, manifest), /subreaper/u);
 
-  const substitutedLauncherIdentity = structuredClone(fragment);
-  substitutedLauncherIdentity.resourceObservation.containment.launcherFilesystemIdentityBefore.inode = "43";
-  substitutedLauncherIdentity.resourceObservation.containment.launcherFilesystemIdentityAfter.inode = "43";
-  assert.throws(() => validateDataWranglerStudyFragment(substitutedLauncherIdentity, manifest), /manifest-pinned/u);
+  const substitutedSupervisorIdentity = structuredClone(fragment);
+  substitutedSupervisorIdentity.resourceObservation.ownershipTracker.supervisorSource.filesystemIdentity.inode = "43";
+  assert.throws(() => validateDataWranglerStudyFragment(substitutedSupervisorIdentity, manifest), /manifest-pinned/u);
 
-  const reusedSamplerNamespace = structuredClone(fragment);
-  reusedSamplerNamespace.resourceObservation.containment.samplerPidNamespaceId =
-    reusedSamplerNamespace.resourceObservation.containment.rootPidNamespaceId;
-  assert.throws(() => validateDataWranglerStudyFragment(reusedSamplerNamespace, manifest), /distinct PID namespaces/u);
+  const substitutedInvocationPolicy = structuredClone(fragment);
+  substitutedInvocationPolicy.resourceObservation.ownershipTracker.invocationPolicySha256 = "0".repeat(64);
+  assert.throws(() => validateDataWranglerStudyFragment(substitutedInvocationPolicy, manifest), /manifest-pinned/u);
 
-  const nonInitTarget = structuredClone(fragment);
-  nonInitTarget.resourceObservation.containment.rootNSpid = [nonInitTarget.processProofs.editorRoot.pid, 2];
-  assert.throws(() => validateDataWranglerStudyFragment(nonInitTarget, manifest), /PID 1/u);
+  const reusedSupervisorPid = structuredClone(fragment);
+  reusedSupervisorPid.resourceObservation.ownershipTracker.supervisor.pid =
+    reusedSupervisorPid.resourceObservation.ownershipTracker.editorRoot.pid;
+  assert.throws(() => validateDataWranglerStudyFragment(reusedSupervisorPid, manifest), /dedicated process group/u);
 
-  const wrongJsonStatusPid = structuredClone(fragment);
-  wrongJsonStatusPid.resourceObservation.containment.jsonStatusHostPid += 1;
-  wrongJsonStatusPid.resourceObservation.containment.rootNSpid[0] += 1;
+  const wrongSupervisorEditorPid = structuredClone(fragment);
+  wrongSupervisorEditorPid.resourceObservation.ownershipTracker.editorRoot.pid += 1;
+  wrongSupervisorEditorPid.resourceObservation.ownershipTracker.editorRoot.processGroupId += 1;
+  wrongSupervisorEditorPid.resourceObservation.ownershipTracker.editorRoot.sessionId += 1;
   assert.throws(
-    () => validateDataWranglerStudyFragment(wrongJsonStatusPid, manifest),
-    /launch-receipt editor root|editor root captured/u
+    () => validateDataWranglerStudyFragment(wrongSupervisorEditorPid, manifest),
+    /supervisor-receipt editor root|editor root captured/u
   );
 
   const missedResourceSample = structuredClone(fragment);
@@ -465,7 +737,7 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
 
   const incompleteCleanup = structuredClone(fragment);
   incompleteCleanup.cleanupProof.observations.at(-1).processes = [{ pid: 100, startTimeTicks: "12345" }];
-  assert.throws(() => validateDataWranglerStudyFragment(incompleteCleanup, manifest), /process tree stopped/u);
+  assert.throws(() => validateDataWranglerStudyFragment(incompleteCleanup, manifest), /complete owned process tree/u);
 
   const missingRuntimeProof = structuredClone(fragment);
   missingRuntimeProof.processProofs.openWranglerRuntime.status =
@@ -609,6 +881,194 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
   assert.equal(validateDataWranglerStudyFragment(missingPercent, manifest), missingPercent);
 });
 
+test(
+  "a real Linux supervisor receipt and proc sampler bridge into fragment cleanup validation",
+  {
+    skip: process.platform !== "linux" || STUDY_PYTHON_312 === undefined,
+    timeout: 20_000
+  },
+  async () => {
+    const privateRoot = mkdtempSync(resolve(tmpdir(), "ow-study-real-ownership-"));
+    chmodSync(privateRoot, 0o700);
+    const payloadPath = resolve(privateRoot, "payload.py");
+    const statePath = resolve(privateRoot, "state.json");
+    writeFileSync(
+      payloadPath,
+      [
+        "import json",
+        "import os",
+        "import subprocess",
+        "import sys",
+        "import time",
+        "if len(sys.argv) == 2 and sys.argv[1] == '--child':",
+        "    while True:",
+        "        time.sleep(1)",
+        "child = subprocess.Popen([sys.executable, __file__, '--child'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",
+        "temporary = sys.argv[1] + '.tmp'",
+        "with open(temporary, 'w', encoding='utf-8') as output:",
+        "    json.dump({'childPid': child.pid}, output, separators=(',', ':'))",
+        "    output.flush()",
+        "    os.fsync(output.fileno())",
+        "os.replace(temporary, sys.argv[1])",
+        "while True:",
+        "    time.sleep(1)"
+      ].join("\n"),
+      { encoding: "utf8", mode: 0o600 }
+    );
+    const environment = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
+    const environmentReceipt = Object.entries(environment).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0
+    );
+    const environmentSha256 = createHash("sha256").update(JSON.stringify(environmentReceipt), "utf8").digest("hex");
+    const nonce = digestStudyValue([process.pid, privateRoot]);
+    const supervisor = spawn(
+      STUDY_PYTHON_312,
+      [
+        STUDY_SUPERVISOR_PATH,
+        "--protocol",
+        "openwrangler-linux-study-supervisor-v1",
+        "--nonce",
+        nonce,
+        "--receipt-fd",
+        "3",
+        "--payload-environment-sha256",
+        environmentSha256,
+        "--",
+        STUDY_PYTHON_312,
+        payloadPath,
+        statePath
+      ],
+      { env: environment, stdio: ["ignore", "ignore", "pipe", "pipe"] }
+    );
+    const closePromise = once(supervisor, "close");
+    const receiptLines = createInterface({ input: supervisor.stdio[3], crlfDelay: Infinity });
+    const receiptIterator = receiptLines[Symbol.asyncIterator]();
+    let stderr = "";
+    supervisor.stderr.setEncoding("utf8");
+    supervisor.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      assert.ok(Buffer.byteLength(stderr, "utf8") <= 4_096);
+    });
+    let terminalIdentities = [];
+    try {
+      const launchFrame = await receiptIterator.next();
+      assert.equal(launchFrame.done, false, stderr);
+      const launchReceipt = JSON.parse(launchFrame.value);
+      const payloadState = await waitForStudyBridgeState(statePath);
+      const childIdentity = readStudyBridgeProcIdentity(payloadState.childPid);
+      assert.notEqual(childIdentity, null);
+      const sampler = new LinuxPssTreeSampler({
+        supervisorPid: launchReceipt.supervisor.pid,
+        supervisorStartTimeTicks: launchReceipt.supervisor.startTimeTicks,
+        editorRootPid: launchReceipt.editorRoot.pid,
+        editorRootStartTimeTicks: launchReceipt.editorRoot.startTimeTicks,
+        ownershipReceipt: launchReceipt,
+        classify: ({ pid }) =>
+          pid === launchReceipt.editorRoot.pid
+            ? "editor-main"
+            : pid === childIdentity.pid
+              ? "configured-kernel"
+              : "other-owned-child"
+      });
+      const scheduledMonotonicNanoseconds = sampler.readClockNanoseconds();
+      const sample = sampler.sample({ scheduledMonotonicNanoseconds });
+      assert.equal(
+        sample.processes.some(
+          (processIdentity) =>
+            processIdentity.pid === childIdentity.pid && processIdentity.startTimeTicks === childIdentity.startTimeTicks
+        ),
+        true
+      );
+      const sampledIdentities = sampler.retainedOwnedIdentities();
+
+      supervisor.kill("SIGTERM");
+      const [terminalFrame, [exitCode, closeSignal]] = await Promise.all([receiptIterator.next(), closePromise]);
+      assert.equal(terminalFrame.done, false);
+      const terminalReceipt = JSON.parse(terminalFrame.value);
+      assert.equal(closeSignal, null);
+      assert.equal(exitCode, terminalReceipt.supervisorExitCode);
+      assert.equal(stderr, "");
+      assert.deepEqual(terminalReceipt.identityReuseEvents, []);
+      terminalIdentities = terminalReceipt.retainedOwnedIdentities;
+
+      const ownershipProvenance = {
+        protocol: launchReceipt.protocol,
+        supervisorSource: structuredClone(launchReceipt.supervisorSource),
+        pythonExecutable: structuredClone(launchReceipt.pythonExecutable),
+        invocationPolicySha256: launchReceipt.invocationPolicySha256
+      };
+      const manifest = studyManifest("available", ownershipProvenance);
+      const scheduleEntry = manifest.schedule[0];
+      const fragment = postActionFailureFragment(
+        successFragment(manifest, scheduleEntry, 0, 25, 0),
+        "resource-sampling"
+      );
+      fragment.processProofs.editorRoot = {
+        pid: launchReceipt.editorRoot.pid,
+        startTimeTicks: launchReceipt.editorRoot.startTimeTicks,
+        capturedAtLaunch: true
+      };
+      fragment.processProofs.configuredKernel.pid = childIdentity.pid;
+      fragment.processProofs.configuredKernel.startTimeTicks = childIdentity.startTimeTicks;
+      fragment.trialProvenance.editorProcess = {
+        pid: launchReceipt.editorRoot.pid,
+        startTimeTicks: launchReceipt.editorRoot.startTimeTicks
+      };
+      fragment.trialProvenance.kernelProcess.pid = childIdentity.pid;
+      fragment.trialProvenance.kernelProcess.startTimeTicks = childIdentity.startTimeTicks;
+      fragment.resourceObservation = {
+        protocol: "openwrangler-linux-pss-observation-v1",
+        clock: sampler.clockReceipt(),
+        ownershipTracker: launchReceipt,
+        valid: false,
+        reasonClass: "resource-sampling",
+        intervalMs: 200,
+        maximumLatenessMs: 50,
+        missedSamples: 1,
+        terminalBoundary: null,
+        retainedOwnedIdentities: sampledIdentities,
+        samples: [sample]
+      };
+      const cleanupIdentities = [
+        ...new Map(
+          [...sampledIdentities, ...terminalReceipt.retainedOwnedIdentities].map((identity) => [
+            `${identity.pid}:${identity.startTimeTicks}`,
+            { pid: identity.pid, startTimeTicks: identity.startTimeTicks }
+          ])
+        ).values()
+      ].sort(
+        (left, right) => left.pid - right.pid || (BigInt(left.startTimeTicks) < BigInt(right.startTimeTicks) ? -1 : 1)
+      );
+      fragment.cleanupProof = {
+        editorRootPid: launchReceipt.editorRoot.pid,
+        editorRootStartTimeTicks: launchReceipt.editorRoot.startTimeTicks,
+        startedAfterTrial: true,
+        intervalMs: 200,
+        deadlineMs: 10_000,
+        retainedOwnedIdentities: cleanupIdentities,
+        supervisorTerminalReceipt: terminalReceipt,
+        observations: [
+          { sequence: 0, elapsedMs: 0, processes: structuredClone(cleanupIdentities) },
+          { sequence: 1, elapsedMs: 200, processes: [] }
+        ],
+        treeEmpty: true,
+        status: "complete",
+        failure: null
+      };
+      assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
+    } finally {
+      receiptLines.close();
+      if (supervisor.exitCode === null && supervisor.signalCode === null) {
+        supervisor.kill("SIGTERM");
+        await Promise.race([closePromise, new Promise((resolvePromise) => setTimeout(resolvePromise, 3_000))]);
+      }
+      if (supervisor.exitCode === null && supervisor.signalCode === null) supervisor.kill("SIGKILL");
+      for (const identity of terminalIdentities) terminateStudyBridgeIdentity(identity);
+      rmSync(privateRoot, { recursive: true, force: true });
+    }
+  }
+);
+
 test("Open Wrangler success proves an observed runtime or explicit live-kernel absence", () => {
   const manifest = studyManifest();
   const entry = manifest.schedule.find((candidate) => candidate.product === "open-wrangler");
@@ -621,10 +1081,19 @@ test("Open Wrangler success proves an observed runtime or explicit live-kernel a
   observed.resourceObservation.samples[0].processes.push({
     pid: 102,
     startTimeTicks: "67890",
-    pidNamespaceId: PSS_TEST_PID_NAMESPACE_ID,
     category: "open-wrangler-runtime",
     pssBytes: 0,
     rssBytes: 0
+  });
+  observed.resourceObservation.retainedOwnedIdentities.push({
+    pid: 102,
+    startTimeTicks: "67890"
+  });
+  observed.cleanupProof.retainedOwnedIdentities.push({ pid: 102, startTimeTicks: "67890" });
+  observed.cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities.push({
+    pid: 102,
+    startTimeTicks: "67890",
+    disposition: "exited"
   });
   assert.equal(validateDataWranglerStudyFragment(observed, manifest), observed);
 
@@ -632,10 +1101,19 @@ test("Open Wrangler success proves an observed runtime or explicit live-kernel a
   contradictedAbsence.resourceObservation.samples[0].processes.push({
     pid: 102,
     startTimeTicks: "67890",
-    pidNamespaceId: PSS_TEST_PID_NAMESPACE_ID,
     category: "open-wrangler-runtime",
     pssBytes: 0,
     rssBytes: 0
+  });
+  contradictedAbsence.resourceObservation.retainedOwnedIdentities.push({
+    pid: 102,
+    startTimeTicks: "67890"
+  });
+  contradictedAbsence.cleanupProof.retainedOwnedIdentities.push({ pid: 102, startTimeTicks: "67890" });
+  contradictedAbsence.cleanupProof.supervisorTerminalReceipt.retainedOwnedIdentities.push({
+    pid: 102,
+    startTimeTicks: "67890",
+    disposition: "exited"
   });
   assert.throws(() => validateDataWranglerStudyFragment(contradictedAbsence, manifest), /contradicts/u);
 
@@ -695,7 +1173,7 @@ test("product timeouts name the journey and retain an exact >= deadline right-ce
 
   const missingTimeoutResource = structuredClone(timeout);
   missingTimeoutResource.resourceObservation = null;
-  assert.throws(() => validateDataWranglerStudyFragment(missingTimeoutResource, manifest), /started product action/u);
+  assert.throws(() => validateDataWranglerStudyFragment(missingTimeoutResource, manifest), /launched study fragment/u);
 
   const explicitlyInvalidResource = structuredClone(timeout);
   explicitlyInvalidResource.resourceObservation.valid = false;
@@ -742,6 +1220,41 @@ test("product timeouts name the journey and retain an exact >= deadline right-ce
     }
   ]);
   assert.equal(validateDataWranglerStudyResult(result), result);
+});
+
+test("a launched pre-action invalidation retains an explicit resource observation", () => {
+  const manifest = studyManifest();
+  const entry = manifest.schedule.find((candidate) => candidate.product === "data-wrangler");
+  const fragment = successFragment(manifest, entry, 0, 10, 0);
+  fragment.outcome = {
+    status: "pre-action-invalid",
+    reasonClass: "setup",
+    actionStarted: false,
+    correctness: "not-reached",
+    timeout: null,
+    unsupported: null
+  };
+  fragment.milestones = createEmptyStudyMilestones();
+  fragment.sourceLoad = {
+    status: "not-reached",
+    durationMs: null,
+    includedInInlineTiming: entry.kind === "cold"
+  };
+  fragment.engineEvidence = null;
+  fragment.uiEvidence = null;
+  fragment.resourceObservation.valid = false;
+  fragment.resourceObservation.reasonClass = "resource-sampling";
+  fragment.resourceObservation.missedSamples = 1;
+  fragment.resourceObservation.terminalBoundary = null;
+  fragment.resourceObservation.samples = [];
+  assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
+
+  const missingResourceObservation = structuredClone(fragment);
+  missingResourceObservation.resourceObservation = null;
+  assert.throws(
+    () => validateDataWranglerStudyFragment(missingResourceObservation, manifest),
+    /launched study fragment requires a retained valid or explicitly invalid resource observation/u
+  );
 });
 
 test("Data Wrangler Polars can be explicitly unavailable without becoming a failure or timing sample", () => {
@@ -862,13 +1375,14 @@ test("PSS segments use the five samples before each action and report total and 
   const observation = {
     protocol: "openwrangler-linux-pss-observation-v1",
     clock: pssClock(),
-    containment: pssContainment({ editorRoot: { pid: 100, startTimeTicks: "12345" } }),
+    ownershipTracker: pssOwnershipTracker({ editorRoot: { pid: 100, startTimeTicks: "12345" } }),
     valid: true,
     reasonClass: null,
     intervalMs: 200,
     maximumLatenessMs: 50,
     missedSamples: 0,
     terminalBoundary: pssTerminalBoundary(6_000),
+    retainedOwnedIdentities: pssRetainedIdentities({ editorRoot: { pid: 100, startTimeTicks: "12345" } }),
     samples
   };
   const milestones = {
@@ -1035,6 +1549,64 @@ test("a complete schedule finalizes ten warm pairs per cell and all descriptive 
       .slice(0, 2)
       .map((entry) => (entry.product === "open-wrangler" ? 20 : 10))
   );
+
+  withTemporaryDirectory((directory) => {
+    const outputPath = resolve(directory, "result.json");
+    assert.throws(
+      () =>
+        createOrLoadDataWranglerStudyFinalizationIntent({
+          outputPath,
+          manifest,
+          fragments,
+          finalizedAtUtc: result.finalizedAtUtc,
+          publicationOptions: {
+            faultInjector: (point) => {
+              if (point === "target-linked") {
+                throw new Error("injected finalization-intent link crash");
+              }
+            },
+            tokenFactory: () => "2".repeat(32)
+          }
+        }),
+      /injected finalization-intent link crash/u
+    );
+    const repeated = createOrLoadDataWranglerStudyFinalizationIntent({
+      outputPath,
+      manifest,
+      fragments,
+      finalizedAtUtc: "2026-08-02T14:00:00.000Z"
+    });
+    assert.equal(repeated.finalizedAtUtc, result.finalizedAtUtc);
+    assert.equal(readdirSync(directory).filter((name) => name.includes(".ow-study-finalize-")).length, 1);
+
+    assert.throws(
+      () =>
+        writeDataWranglerStudyJsonExclusive(outputPath, result, {
+          faultInjector: (point) => {
+            if (point === "target-linked") {
+              throw new Error("injected result link crash");
+            }
+          },
+          tokenFactory: () => "1".repeat(32)
+        }),
+      /injected result link crash/u
+    );
+    const recovered = writeDataWranglerStudyJsonExclusive(outputPath, result);
+    assert.equal(recovered.status, "recovered");
+    assert.deepEqual(JSON.parse(readFileSync(outputPath, "utf8")), result);
+
+    writeFileSync(resolve(directory, `.result.json.ow-study-finalize-${"f".repeat(64)}.json`), "{}\n", { mode: 0o600 });
+    assert.throws(
+      () =>
+        createOrLoadDataWranglerStudyFinalizationIntent({
+          outputPath,
+          manifest,
+          fragments,
+          finalizedAtUtc: "2026-08-02T15:00:00.000Z"
+        }),
+      /more than one digest-named intent/u
+    );
+  });
 });
 
 function studyFixture(id, format, rows, columns, sha256, inode) {
@@ -1061,7 +1633,17 @@ function studyFixture(id, format, rows, columns, sha256, inode) {
   };
 }
 
-function studyManifest(dataWranglerPolarsAvailability = "available") {
+function studyManifest(dataWranglerPolarsAvailability = "available", ownershipTracker = pssOwnershipProvenance()) {
+  const editor = {
+    id: "Microsoft.VisualStudioCode",
+    version: "1.130.0",
+    sha256: digest("3"),
+    uiLocale: "en"
+  };
+  const fixtures = [
+    studyFixture("csv-100k-50", "csv", 100_000, 50, digest("6"), "6001"),
+    studyFixture("parquet-1m-20", "parquet", 1_000_000, 20, digest("7"), "7001")
+  ];
   return buildDataWranglerStudyManifest({
     studyId: "11111111-1111-4111-8111-111111111111",
     createdAtUtc: "2026-08-02T10:00:00.000Z",
@@ -1073,11 +1655,11 @@ function studyManifest(dataWranglerPolarsAvailability = "available") {
       filesystemIdentity: { device: "2049", inode: "2001", sizeBytes: 1024, mtimeNs: "1754100000000000000" }
     },
     baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
-    editor: { id: "Microsoft.VisualStudioCode", version: "1.130.0", sha256: digest("3") },
+    editor,
     python: {
       implementation: "CPython",
-      version: "3.12.10",
-      executableSha256: digest("4"),
+      version: ownershipTracker.pythonExecutable.version,
+      executableSha256: ownershipTracker.pythonExecutable.sha256,
       environmentSha256: digest("5"),
       packages: [
         { name: "pandas", version: "2.2.3" },
@@ -1093,25 +1675,23 @@ function studyManifest(dataWranglerPolarsAvailability = "available") {
         kernelspecSha256: digest("a")
       }
     },
-    fixtures: [
-      studyFixture("csv-100k-50", "csv", 100_000, 50, digest("6"), "6001"),
-      studyFixture("parquet-1m-20", "parquet", 1_000_000, 20, digest("7"), "7001")
-    ],
-    provenance: studyProvenance(dataWranglerPolarsAvailability)
+    fixtures,
+    provenance: studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, ownershipTracker)
   });
 }
 
-function studyProvenance(dataWranglerPolarsAvailability) {
-  const controlReceipt = {
-    openWranglerInstalled: false,
-    dataWranglerInstalled: false,
-    surfaceOwner: "host-jupyter"
-  };
-  const capabilityReceipt = {
-    publicSurface: "data-wrangler-polars",
-    availability: dataWranglerPolarsAvailability,
-    observedVia: "public-ui"
-  };
+function studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, ownershipTracker) {
+  const capabilityContext = publicUiContext("22222222-2222-4222-8222-222222222222", editor, fixtures[0]);
+  const controlContext = publicUiContext("33333333-3333-4333-8333-333333333333", editor, fixtures[0]);
+  const capabilityConclusion = dataWranglerPolarsAvailability === "available" ? "available" : "unsupported";
+  const capabilityReceipt = createDataWranglerPolarsCapabilityReceipt(
+    publicUiEvidence(DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND, capabilityContext, capabilityConclusion),
+    capabilityContext
+  );
+  const controlReceipt = createNeitherProductControlReceipt(
+    publicUiEvidence(NEITHER_PRODUCT_CONTROL_RECEIPT_KIND, controlContext, "neither-product-control"),
+    controlContext
+  );
   return {
     machine: {
       platform: "linux",
@@ -1163,27 +1743,94 @@ function studyProvenance(dataWranglerPolarsAvailability) {
         availability: dataWranglerPolarsAvailability,
         method: "public-capability",
         timed: false,
+        fixtureId: fixtures[0].id,
+        context: capabilityContext,
         receiptSha256: digestStudyValue(capabilityReceipt),
         receipt: capabilityReceipt
       }
     ],
     controlProfile: {
       method: "neither-product",
+      fixtureId: fixtures[0].id,
+      context: controlContext,
       receiptSha256: digestStudyValue(controlReceipt),
       receipt: controlReceipt
     },
-    containmentLauncher: {
-      executable: "/usr/bin/bwrap",
-      version: "bubblewrap 0.11.1",
-      sha256: "a".repeat(64),
-      filesystemIdentity: {
-        device: "8",
-        inode: "42",
-        sizeBytes: 125_000,
-        mtimeNs: "1000000000"
-      }
-    }
+    ownershipTracker: structuredClone(ownershipTracker)
   };
+}
+
+function publicUiContext(captureId, editor, fixture) {
+  return createPublicUiReceiptContext({
+    captureId,
+    editor,
+    source: {
+      variableName: "study_frame",
+      engine: "polars",
+      semanticClass: "dataframe",
+      rowCount: fixture.rows,
+      columnCount: fixture.columns,
+      schemaSha256: digestStudyValue(fixture.schema),
+      sentinels: fixture.sentinels.map((sentinel) => ({
+        rowIndex: sentinel.rowIndex,
+        columnName: sentinel.column,
+        value: sentinel.value
+      }))
+    }
+  });
+}
+
+function publicUiEvidence(kind, context, conclusion) {
+  const available = conclusion === "available";
+  const startedAtMonotonicMs = 8_456_000;
+  const endedAtMonotonicMs = available
+    ? startedAtMonotonicMs + 475
+    : startedAtMonotonicMs + PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS;
+  const times = available
+    ? [startedAtMonotonicMs, startedAtMonotonicMs + 250, endedAtMonotonicMs]
+    : [...Array(PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS / PUBLIC_UI_OBSERVATION_MAX_GAP_MS + 1).keys()].map(
+        (index) => startedAtMonotonicMs + index * PUBLIC_UI_OBSERVATION_MAX_GAP_MS
+      );
+  const trace = times.map((atMonotonicMs, index) => ({
+    atMonotonicMs,
+    output: { ready: true, busy: false, obstructed: false, owner: "host-jupyter" },
+    actions: publicUiActions(available && index >= times.length - 2)
+  }));
+  return {
+    captureId: context.captureId,
+    editor: structuredClone(context.editor),
+    extensions: structuredClone(createExpectedPublicUiExtensionInventory(kind)),
+    source: structuredClone(context.source),
+    observation: {
+      clock: "linux-monotonic",
+      startedAtMonotonicMs,
+      endedAtMonotonicMs,
+      absenceDeadlineAtMonotonicMs: startedAtMonotonicMs + PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS,
+      maxGapMs: PUBLIC_UI_OBSERVATION_MAX_GAP_MS,
+      sampleCount: trace.length
+    },
+    trace,
+    output: structuredClone(trace.at(-1).output),
+    actions: structuredClone(trace.at(-1).actions),
+    conclusion
+  };
+}
+
+function publicUiActions(dataWranglerAvailable) {
+  return [
+    {
+      product: "open-wrangler",
+      accessibleName: PUBLIC_UI_OPEN_WRANGLER_ACTION_NAME,
+      matchCount: 0,
+      pointerUsable: false
+    },
+    {
+      product: "data-wrangler",
+      accessibleName: PUBLIC_UI_DATA_WRANGLER_ACTION_NAME,
+      matchCount: dataWranglerAvailable ? 1 : 0,
+      pointerUsable: dataWranglerAvailable
+    }
+  ];
 }
 
 function successFragment(manifest, scheduleEntry, attempt, duration, executionIndex = scheduleEntry.sequence) {
@@ -1246,17 +1893,6 @@ function postActionFailureFragment(fragment, reasonClass) {
     fragment.resourceObservation.valid = false;
     fragment.resourceObservation.reasonClass = "resource-sampling";
     fragment.resourceObservation.missedSamples = 1;
-  }
-  if (reasonClass === "cleanup") {
-    const processes = structuredClone(fragment.cleanupProof.observations[0].processes);
-    fragment.cleanupProof.observations = [...Array(51).keys()].map((sequence) => ({
-      sequence,
-      elapsedMs: sequence * 200,
-      processes: structuredClone(processes)
-    }));
-    fragment.cleanupProof.treeEmpty = false;
-    fragment.cleanupProof.status = "surviving-tree";
-    fragment.cleanupProof.failure = { reason: "surviving-process-tree", observedAtMs: 10_000 };
   }
   return fragment;
 }
@@ -1678,7 +2314,7 @@ function reuseTrialProcessIdentities(target, source) {
   target.processProofs.configuredKernel = structuredClone(source.processProofs.configuredKernel);
   target.trialProvenance.editorProcess = structuredClone(source.trialProvenance.editorProcess);
   target.trialProvenance.kernelProcess = structuredClone(source.trialProvenance.kernelProcess);
-  target.resourceObservation.containment = pssContainment(source.processProofs);
+  target.resourceObservation.ownershipTracker = pssOwnershipTracker(source.processProofs);
 
   for (const sample of target.resourceObservation.samples) {
     for (const process of sample.processes) {
@@ -1691,6 +2327,9 @@ function reuseTrialProcessIdentities(target, source) {
 
   target.cleanupProof.editorRootPid = source.processProofs.editorRoot.pid;
   target.cleanupProof.editorRootStartTimeTicks = source.processProofs.editorRoot.startTimeTicks;
+  target.resourceObservation.retainedOwnedIdentities = pssRetainedIdentities(source.processProofs);
+  target.cleanupProof.retainedOwnedIdentities = pssRetainedIdentities(source.processProofs);
+  target.cleanupProof.supervisorTerminalReceipt = studyCleanupProof(source.processProofs).supervisorTerminalReceipt;
   for (const observation of target.cleanupProof.observations) {
     for (const process of observation.processes) {
       const replacement =
@@ -1752,12 +2391,45 @@ function studyTrialProvenance(manifest, scheduleEntry, processProofs) {
 }
 
 function studyCleanupProof(processProofs) {
+  const ownershipTracker = pssOwnershipTracker(processProofs);
+  const terminalIdentities = pssRetainedIdentities(processProofs).map(({ pid, startTimeTicks }) => ({
+    pid,
+    startTimeTicks,
+    disposition: "terminated"
+  }));
   return {
     editorRootPid: processProofs.editorRoot.pid,
     editorRootStartTimeTicks: processProofs.editorRoot.startTimeTicks,
     startedAfterTrial: true,
     intervalMs: 200,
     deadlineMs: 10_000,
+    retainedOwnedIdentities: pssRetainedIdentities(processProofs).map(({ pid, startTimeTicks }) => ({
+      pid,
+      startTimeTicks
+    })),
+    supervisorTerminalReceipt: {
+      protocol: ownershipTracker.protocol,
+      kind: "terminal-cleanup",
+      nonce: ownershipTracker.nonce,
+      supervisor: {
+        pid: ownershipTracker.supervisor.pid,
+        startTimeTicks: ownershipTracker.supervisor.startTimeTicks
+      },
+      editorRoot: {
+        pid: ownershipTracker.editorRoot.pid,
+        startTimeTicks: ownershipTracker.editorRoot.startTimeTicks
+      },
+      retainedOwnedIdentities: terminalIdentities,
+      identityReuseEvents: [],
+      emptyCensusProof: {
+        requiredConsecutiveChecks: 3,
+        checks: [0, 1, 2].map((index) => ({
+          monotonicNanoseconds: (PSS_TEST_ORIGIN_NANOSECONDS + BigInt(10_000 + index) * 1_000_000n).toString(),
+          ownedProcessCount: 0
+        }))
+      },
+      supervisorExitCode: 0
+    },
     observations: [
       {
         sequence: 0,
@@ -1787,13 +2459,14 @@ function studyResourceObservation(targetMs, processProofs) {
   return {
     protocol: "openwrangler-linux-pss-observation-v1",
     clock: pssClock(),
-    containment: pssContainment(processProofs),
+    ownershipTracker: pssOwnershipTracker(processProofs),
     valid: true,
     reasonClass: null,
     intervalMs: 200,
     maximumLatenessMs: 50,
     missedSamples: 0,
     terminalBoundary: pssTerminalBoundary(targetMs, terminalScheduledMs),
+    retainedOwnedIdentities: pssRetainedIdentities(processProofs),
     samples
   };
 }
@@ -1801,21 +2474,6 @@ function studyResourceObservation(targetMs, processProofs) {
 const PSS_TEST_ORIGIN_NANOSECONDS = 1_000_000_000_000n;
 const PSS_TEST_SAMPLE_START_DELAY_MS = 1;
 const PSS_TEST_SAMPLE_DURATION_MS = 1;
-const PSS_TEST_PID_NAMESPACE_ID = "pid:[4026533000]";
-const PSS_TEST_CONTAINMENT_ARGUMENTS = [
-  "--die-with-parent",
-  "--unshare-pid",
-  "--as-pid-1",
-  "--new-session",
-  "--disable-userns",
-  "--assert-userns-disabled",
-  "--cap-drop",
-  "ALL",
-  "--proc",
-  "/proc",
-  "--json-status-fd=<private-fd>"
-];
-
 function pssClock() {
   return {
     source: "linux-process-hrtime-bigint",
@@ -1825,7 +2483,7 @@ function pssClock() {
 }
 
 function pssMonotonicNanoseconds(elapsedMs) {
-  return (PSS_TEST_ORIGIN_NANOSECONDS + BigInt(elapsedMs) * 1_000_000n).toString();
+  return (PSS_TEST_ORIGIN_NANOSECONDS + BigInt(Math.ceil(elapsedMs * 1_000_000))).toString();
 }
 
 function pssTerminalScheduledMs(targetMs) {
@@ -1836,31 +2494,63 @@ function pssTerminalEndElapsedMs(targetMs) {
   return pssTerminalScheduledMs(targetMs) + PSS_TEST_SAMPLE_START_DELAY_MS + PSS_TEST_SAMPLE_DURATION_MS;
 }
 
-function pssContainment(processProofs) {
+function pssOwnershipProvenance() {
   return {
-    protocol: "openwrangler-linux-bwrap-pid-containment-v1",
-    launcherExecutable: "/usr/bin/bwrap",
-    launcherVersion: "bubblewrap 0.11.1",
-    launcherSha256: "a".repeat(64),
-    launcherFilesystemIdentityBefore: {
-      device: "8",
-      inode: "42",
-      sizeBytes: 125_000,
-      mtimeNs: "1000000000"
+    protocol: "openwrangler-linux-study-supervisor-v1",
+    supervisorSource: {
+      sha256: "a".repeat(64),
+      filesystemIdentity: {
+        device: "8",
+        inode: "42",
+        sizeBytes: 125_000,
+        mtimeNs: "1000000000"
+      }
     },
-    launcherFilesystemIdentityAfter: {
-      device: "8",
-      inode: "42",
-      sizeBytes: 125_000,
-      mtimeNs: "1000000000"
+    pythonExecutable: {
+      implementation: "CPython",
+      version: "3.12.10",
+      sha256: digest("4"),
+      filesystemIdentity: {
+        device: "8",
+        inode: "43",
+        sizeBytes: 6_000_000,
+        mtimeNs: "1000000000"
+      }
     },
-    verifiedArguments: [...PSS_TEST_CONTAINMENT_ARGUMENTS],
-    jsonStatusHostPid: processProofs.editorRoot.pid,
-    rootStartTimeTicks: processProofs.editorRoot.startTimeTicks,
-    rootPidNamespaceId: PSS_TEST_PID_NAMESPACE_ID,
-    samplerPidNamespaceId: "pid:[4026532000]",
-    rootNSpid: [processProofs.editorRoot.pid, 1]
+    invocationPolicySha256: "c".repeat(64)
   };
+}
+
+function pssOwnershipTracker(processProofs) {
+  return {
+    ...pssOwnershipProvenance(),
+    kind: "launch",
+    nonce: "d".repeat(64),
+    supervisor: {
+      pid: processProofs.editorRoot.pid - 1,
+      startTimeTicks: String(Number(processProofs.editorRoot.startTimeTicks) - 1),
+      subreaperVerified: true,
+      pidfdVerified: true
+    },
+    editorRoot: {
+      pid: processProofs.editorRoot.pid,
+      startTimeTicks: processProofs.editorRoot.startTimeTicks,
+      processGroupId: processProofs.editorRoot.pid,
+      sessionId: processProofs.editorRoot.pid
+    },
+    invocationSha256: "0".repeat(64),
+    payloadArgvSha256: "e".repeat(64),
+    payloadEnvironmentSha256: "f".repeat(64)
+  };
+}
+
+function pssRetainedIdentities(processProofs) {
+  return [processProofs.editorRoot, processProofs.configuredKernel, processProofs.openWranglerRuntime]
+    .filter((identity) => identity?.pid !== null && identity?.pid !== undefined)
+    .map((identity) => ({
+      pid: identity.pid,
+      startTimeTicks: identity.startTimeTicks
+    }));
 }
 
 function pssTerminalBoundary(targetMs, scheduledMs = pssTerminalScheduledMs(targetMs)) {
@@ -1903,7 +2593,6 @@ function fragmentPssSample(scheduledMs, processProofs) {
       {
         pid: processProofs.editorRoot.pid,
         startTimeTicks: processProofs.editorRoot.startTimeTicks,
-        pidNamespaceId: PSS_TEST_PID_NAMESPACE_ID,
         category: "editor-main",
         pssBytes: editorPssBytes,
         rssBytes: editorPssBytes + 1_024
@@ -1911,7 +2600,6 @@ function fragmentPssSample(scheduledMs, processProofs) {
       {
         pid: processProofs.configuredKernel.pid,
         startTimeTicks: processProofs.configuredKernel.startTimeTicks,
-        pidNamespaceId: PSS_TEST_PID_NAMESPACE_ID,
         category: "configured-kernel",
         pssBytes: kernelPssBytes,
         rssBytes: kernelPssBytes + 1_024
@@ -1943,13 +2631,54 @@ function pssSample(scheduledMs, pssBytes) {
       {
         pid: 100,
         startTimeTicks: "12345",
-        pidNamespaceId: PSS_TEST_PID_NAMESPACE_ID,
         category: "editor-main",
         pssBytes,
         rssBytes: pssBytes + 1024
       }
     ]
   };
+}
+
+async function waitForStudyBridgeState(path) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      return JSON.parse(readFileSync(path, "utf8"));
+    } catch (error) {
+      if (!(error && typeof error === "object" && error.code === "ENOENT")) throw error;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  assert.fail("Timed out waiting for the real supervisor payload state.");
+}
+
+function readStudyBridgeProcIdentity(pid) {
+  let text;
+  try {
+    text = readFileSync(`/proc/${pid}/stat`, "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && (error.code === "ENOENT" || error.code === "ESRCH")) {
+      return null;
+    }
+    throw error;
+  }
+  const closingParenthesis = text.lastIndexOf(")");
+  assert.ok(closingParenthesis > 0);
+  const fields = text
+    .slice(closingParenthesis + 2)
+    .trim()
+    .split(/\s+/u);
+  assert.ok(fields.length >= 20);
+  return { pid, startTimeTicks: fields[19] };
+}
+
+function terminateStudyBridgeIdentity(identity) {
+  if (readStudyBridgeProcIdentity(identity.pid)?.startTimeTicks !== identity.startTimeTicks) return;
+  try {
+    process.kill(identity.pid, "SIGKILL");
+  } catch (error) {
+    if (!(error && typeof error === "object" && error.code === "ESRCH")) throw error;
+  }
 }
 
 function withTemporaryDirectory(callback) {

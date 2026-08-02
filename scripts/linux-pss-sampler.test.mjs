@@ -1,102 +1,150 @@
 import assert from "node:assert/strict";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  readlinkSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
-import { validateDataWranglerStudyResourceObservation } from "./data-wrangler-comparison-study.mjs";
+import {
+  DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES,
+  validateDataWranglerStudyResourceObservation
+} from "./data-wrangler-comparison-study.mjs";
 import {
   LinuxPssTreeSampler as VerifiedLinuxPssTreeSampler,
-  LINUX_PSS_CONTAINMENT_PROTOCOL,
-  LINUX_PSS_REQUIRED_BWRAP_CONTAINMENT_ARGUMENTS,
+  LINUX_PSS_OWNERSHIP_PROTOCOL,
   collectLinuxPssObservation
 } from "./linux-pss-sampler.mjs";
 
-function testContainmentReceipt({ rootPid, rootStartTimeTicks, rootPidNamespaceId }, overrides = {}) {
+function testOwnershipReceipt(
+  { supervisorPid, supervisorStartTimeTicks, editorRootPid, editorRootStartTimeTicks },
+  overrides = {}
+) {
   return {
-    protocol: LINUX_PSS_CONTAINMENT_PROTOCOL,
-    launcherExecutable: "/usr/bin/bwrap",
-    launcherVersion: "bubblewrap 0.11.1",
-    launcherSha256: "a".repeat(64),
-    launcherFilesystemIdentityBefore: testLauncherFilesystemIdentity(),
-    launcherFilesystemIdentityAfter: testLauncherFilesystemIdentity(),
-    verifiedArguments: [...LINUX_PSS_REQUIRED_BWRAP_CONTAINMENT_ARGUMENTS],
-    jsonStatusHostPid: rootPid,
-    rootStartTimeTicks,
-    rootPidNamespaceId,
-    samplerPidNamespaceId: "pid:[1]",
-    rootNSpid: [rootPid, 1],
+    protocol: LINUX_PSS_OWNERSHIP_PROTOCOL,
+    kind: "launch",
+    nonce: "0".repeat(64),
+    supervisor: {
+      pid: supervisorPid,
+      startTimeTicks: supervisorStartTimeTicks,
+      subreaperVerified: true,
+      pidfdVerified: true
+    },
+    editorRoot: {
+      pid: editorRootPid,
+      startTimeTicks: editorRootStartTimeTicks,
+      processGroupId: editorRootPid,
+      sessionId: editorRootPid
+    },
+    supervisorSource: {
+      sha256: "1".repeat(64),
+      filesystemIdentity: testFilesystemIdentity()
+    },
+    pythonExecutable: {
+      implementation: "CPython",
+      version: "3.12.9",
+      sha256: "2".repeat(64),
+      filesystemIdentity: { ...testFilesystemIdentity(), inode: "43" }
+    },
+    invocationPolicySha256: "3".repeat(64),
+    invocationSha256: "6".repeat(64),
+    payloadArgvSha256: "4".repeat(64),
+    payloadEnvironmentSha256: "5".repeat(64),
     ...overrides
   };
 }
 
 class LinuxPssTreeSampler extends VerifiedLinuxPssTreeSampler {
   constructor(options) {
-    const rootPidNamespaceId =
-      options.rootPidNamespaceId ?? readlinkSync(resolve(options.procRoot, String(options.rootPid), "ns/pid"));
+    const supervisorPid = options.supervisorPid ?? options.rootPid - 1;
+    const supervisorStartTimeTicks = options.supervisorStartTimeTicks ?? String(Number(options.rootStartTimeTicks) - 1);
+    if (!existsProcess(options.procRoot, supervisorPid)) {
+      writeProcess(options.procRoot, {
+        pid: supervisorPid,
+        start: supervisorStartTimeTicks,
+        pssKb: 999,
+        rssKb: 999
+      });
+    }
+    reparentProcess(options.procRoot, options.rootPid, supervisorPid);
     super({
       ...options,
-      rootPidNamespaceId,
-      launchContainmentReceipt:
-        options.launchContainmentReceipt ??
-        testContainmentReceipt({
-          rootPid: options.rootPid,
-          rootStartTimeTicks: options.rootStartTimeTicks,
-          rootPidNamespaceId
+      supervisorPid,
+      supervisorStartTimeTicks,
+      editorRootPid: options.rootPid,
+      editorRootStartTimeTicks: options.rootStartTimeTicks,
+      ownershipReceipt:
+        options.ownershipReceipt ??
+        testOwnershipReceipt({
+          supervisorPid,
+          supervisorStartTimeTicks,
+          editorRootPid: options.rootPid,
+          editorRootStartTimeTicks: options.rootStartTimeTicks
         })
     });
   }
 }
 
-test("Linux PSS sampling fails closed without a driver-bound containment launch receipt", () => {
+test("Linux PSS sampling fails closed without a driver-bound supervisor ownership receipt", () => {
   withProcFixture((procRoot) => {
+    writeProcess(procRoot, { pid: 89, start: "899", pssKb: 999, rssKb: 999 });
     writeProcess(procRoot, { pid: 90, start: "900", pssKb: 10, rssKb: 20 });
+    reparentProcess(procRoot, 90, 89);
     assert.throws(
       () =>
         new VerifiedLinuxPssTreeSampler({
-          rootPid: 90,
-          rootStartTimeTicks: "900",
+          supervisorPid: 89,
+          supervisorStartTimeTicks: "899",
+          editorRootPid: 90,
+          editorRootStartTimeTicks: "900",
           procRoot,
           clock: () => 0n,
           classify: () => "editor-main"
         }),
-      /requires a verified Bubblewrap containment launch receipt/u
+      /requires a verified Linux study-supervisor ownership receipt/u
     );
   });
 });
 
-test("Linux PSS sampling rejects tampered launcher and namespace containment receipts", () => {
+test("Linux PSS sampling rejects tampered supervisor ownership receipts", () => {
   withProcFixture((procRoot) => {
+    writeProcess(procRoot, { pid: 94, start: "949", pssKb: 999, rssKb: 999 });
     writeProcess(procRoot, { pid: 95, start: "950", pssKb: 10, rssKb: 20 });
-    const receiptInput = { rootPid: 95, rootStartTimeTicks: "950", rootPidNamespaceId: "pid:[95]" };
+    reparentProcess(procRoot, 95, 94);
+    const receiptInput = {
+      supervisorPid: 94,
+      supervisorStartTimeTicks: "949",
+      editorRootPid: 95,
+      editorRootStartTimeTicks: "950"
+    };
     const create = (overrides) =>
       new VerifiedLinuxPssTreeSampler({
-        rootPid: 95,
-        rootStartTimeTicks: "950",
+        ...receiptInput,
         procRoot,
         clock: () => 0n,
         classify: () => "editor-main",
-        launchContainmentReceipt: testContainmentReceipt(receiptInput, overrides)
+        ownershipReceipt: testOwnershipReceipt(receiptInput, overrides)
       });
-    assert.throws(() => create({ launcherSha256: "not-a-sha256" }), /malformed or does not bind/u);
+    assert.throws(
+      () => create({ supervisorSource: { ...testOwnershipReceipt(receiptInput).supervisorSource, sha256: "x" } }),
+      /malformed or does not bind/u
+    );
+    assert.throws(
+      () => create({ supervisor: { ...testOwnershipReceipt(receiptInput).supervisor, pid: 96 } }),
+      /malformed or does not bind/u
+    );
     assert.throws(
       () =>
         create({
-          launcherFilesystemIdentityAfter: { ...testLauncherFilesystemIdentity(), inode: "43" }
+          supervisor: { ...testOwnershipReceipt(receiptInput).supervisor, subreaperVerified: false }
         }),
       /malformed or does not bind/u
     );
-    assert.throws(() => create({ jsonStatusHostPid: 96 }), /malformed or does not bind/u);
-    assert.throws(() => create({ rootNSpid: [95, 2] }), /malformed or does not bind/u);
-    assert.throws(() => create({ samplerPidNamespaceId: "pid:[95]" }), /malformed or does not bind/u);
+    assert.throws(
+      () =>
+        create({
+          editorRoot: { ...testOwnershipReceipt(receiptInput).editorRoot, processGroupId: 94 }
+        }),
+      /malformed or does not bind/u
+    );
+    assert.throws(() => create({ invocationPolicySha256: "a" }), /malformed or does not bind/u);
   });
 });
 
@@ -167,13 +215,14 @@ test("Linux PSS sampling uses the PPid census when task children omit living and
     const observation = {
       protocol: "openwrangler-linux-pss-observation-v1",
       clock: sampler.clockReceipt(),
-      containment: sampler.containmentReceipt(),
+      ownershipTracker: sampler.ownershipReceipt(),
       valid: true,
       reasonClass: null,
       intervalMs: 200,
       maximumLatenessMs: 50,
       missedSamples: 0,
       terminalBoundary: null,
+      retainedOwnedIdentities: sampler.retainedOwnedIdentities(),
       samples: [0, 200, 400, 600, 800].map((elapsedMs) => ({
         ...sample,
         scheduledMonotonicNanoseconds: msNanoseconds(1_000 + elapsedMs).toString(),
@@ -208,7 +257,13 @@ test("Linux PSS sampling retains a live owned process after reparenting and disc
       [175, 176]
     );
 
-    writeProcess(procRoot, { pid: 176, parentPid: 0, start: "1751", pssKb: 5, rssKb: 10 });
+    writeProcess(procRoot, {
+      pid: 176,
+      parentPid: sampler.supervisorPid,
+      start: "1751",
+      pssKb: 5,
+      rssKb: 10
+    });
     writeProcess(procRoot, { pid: 177, parentPid: 176, start: "1752", pssKb: 2, rssKb: 4 });
     assert.deepEqual(
       sampler.sample().processes.map((process) => process.pid),
@@ -217,7 +272,56 @@ test("Linux PSS sampling retains a live owned process after reparenting and disc
   });
 });
 
-test("Linux PSS sampling includes a child first observed after setsid and reparenting in the launch PID namespace", () => {
+test("Linux PSS sampling retains evidence for a helper that exits between samples without requiring it to stay live", () => {
+  withProcFixture((procRoot) => {
+    writeProcess(procRoot, { pid: 185, start: "1850", pssKb: 10, rssKb: 20 });
+    writeProcess(procRoot, { pid: 186, parentPid: 185, start: "1851", pssKb: 5, rssKb: 10 });
+    const sampler = new LinuxPssTreeSampler({
+      rootPid: 185,
+      rootStartTimeTicks: "1850",
+      procRoot,
+      clock: () => 0n,
+      classify: ({ pid }) => (pid === 185 ? "editor-main" : "other-owned-child")
+    });
+    assert.deepEqual(
+      sampler.sample().processes.map((process) => process.pid),
+      [185, 186]
+    );
+
+    rmSync(resolve(procRoot, "186"), { recursive: true, force: true });
+    assert.deepEqual(
+      sampler.sample().processes.map((process) => process.pid),
+      [185]
+    );
+    assert.deepEqual(sampler.retainedOwnedIdentities(), [
+      { pid: 185, startTimeTicks: "1850" },
+      { pid: 186, startTimeTicks: "1851" }
+    ]);
+  });
+});
+
+test("Linux PSS sampling rejects a retained identity that is reused or remains alive outside supervisor ownership", () => {
+  withProcFixture((procRoot) => {
+    writeProcess(procRoot, { pid: 187, start: "1870", pssKb: 10, rssKb: 20 });
+    writeProcess(procRoot, { pid: 188, parentPid: 187, start: "1871", pssKb: 5, rssKb: 10 });
+    const sampler = new LinuxPssTreeSampler({
+      rootPid: 187,
+      rootStartTimeTicks: "1870",
+      procRoot,
+      clock: () => 0n,
+      classify: ({ pid }) => (pid === 187 ? "editor-main" : "other-owned-child")
+    });
+    sampler.sample();
+
+    writeProcess(procRoot, { pid: 188, parentPid: 0, start: "1871", pssKb: 5, rssKb: 10 });
+    assert.throws(() => sampler.sample(), /alive outside the supervisor-owned process closure/u);
+
+    writeProcess(procRoot, { pid: 188, parentPid: 0, start: "9999", pssKb: 5, rssKb: 10 });
+    assert.throws(() => sampler.sample(), /was reused/u);
+  });
+});
+
+test("Linux PSS sampling includes a child first observed after setsid and subreaper reparenting", () => {
   withProcFixture((procRoot) => {
     writeProcess(procRoot, { pid: 180, start: "1800", pssKb: 10, rssKb: 20 });
     const sampler = new LinuxPssTreeSampler({
@@ -234,10 +338,9 @@ test("Linux PSS sampling includes a child first observed after setsid and repare
 
     writeProcess(procRoot, {
       pid: 181,
-      parentPid: 0,
+      parentPid: sampler.supervisorPid,
       processGroupId: 181,
       sessionId: 181,
-      pidNamespaceId: "pid:[180]",
       start: "1801",
       pssKb: 5,
       rssKb: 10
@@ -247,13 +350,13 @@ test("Linux PSS sampling includes a child first observed after setsid and repare
       [180, 181]
     );
     assert.deepEqual(sampler.retainedOwnedIdentities(), [
-      { pid: 180, startTimeTicks: "1800", pidNamespaceId: "pid:[180]" },
-      { pid: 181, startTimeTicks: "1801", pidNamespaceId: "pid:[180]" }
+      { pid: 180, startTimeTicks: "1800" },
+      { pid: 181, startTimeTicks: "1801" }
     ]);
   });
 });
 
-test("Linux PSS sampling rejects foreign PID-namespace membership in the launch process group", () => {
+test("Linux PSS sampling excludes an unrelated process even when it reuses the editor process group", () => {
   withProcFixture((procRoot) => {
     writeProcess(procRoot, { pid: 190, start: "1900", pssKb: 10, rssKb: 20 });
     writeProcess(procRoot, {
@@ -272,7 +375,10 @@ test("Linux PSS sampling rejects foreign PID-namespace membership in the launch 
       clock: () => 0n,
       classify: () => "editor-main"
     });
-    assert.throws(() => sampler.sample(), /foreign or ambiguous containment membership/u);
+    assert.deepEqual(
+      sampler.sample().processes.map((process) => process.pid),
+      [190]
+    );
   });
 });
 
@@ -280,17 +386,20 @@ test("Linux PSS sampling rejects root PID reuse before its first sample", () => 
   withProcFixture((procRoot) => {
     writeProcess(procRoot, { pid: 150, start: "1599", pssKb: 10, rssKb: 20 });
     let classifications = 0;
-    const sampler = new LinuxPssTreeSampler({
-      rootPid: 150,
-      rootStartTimeTicks: "1500",
-      procRoot,
-      clock: () => 0n,
-      classify: () => {
-        classifications += 1;
-        return "editor-main";
-      }
-    });
-    assert.throws(() => sampler.sample(), /launch-time process identity/u);
+    assert.throws(
+      () =>
+        new LinuxPssTreeSampler({
+          rootPid: 150,
+          rootStartTimeTicks: "1500",
+          procRoot,
+          clock: () => 0n,
+          classify: () => {
+            classifications += 1;
+            return "editor-main";
+          }
+        }),
+      /ownership receipt is malformed|does not bind/u
+    );
     assert.equal(classifications, 0);
   });
 });
@@ -384,7 +493,7 @@ test("Linux PSS sampling fails closed when an owned identity changes around its 
   });
 });
 
-test("Linux PSS sampling skips a vanished unrelated census entry but rejects a vanished owned entry", () => {
+test("Linux PSS sampling skips vanished unrelated and exited retained entries but rejects a vanished editor root", () => {
   withProcFixture((procRoot) => {
     writeProcess(procRoot, { pid: 280, start: "2800", pssKb: 10, rssKb: 20 });
     writeProcess(procRoot, { pid: 999, start: "9990", pssKb: 1, rssKb: 1 });
@@ -409,19 +518,21 @@ test("Linux PSS sampling skips a vanished unrelated census entry but rejects a v
 
   withProcFixture((procRoot) => {
     writeProcess(procRoot, { pid: 285, start: "2850", pssKb: 10, rssKb: 20 });
+    let rootMustVanish = false;
     const sampler = new LinuxPssTreeSampler({
       rootPid: 285,
       rootStartTimeTicks: "2850",
       procRoot,
       clock: () => 0n,
       readFile: (path, encoding) => {
-        if (path.endsWith("/285/stat")) {
+        if (rootMustVanish && path.endsWith("/285/stat")) {
           throw procError("ESRCH");
         }
         return readFileSync(path, encoding);
       },
       classify: () => "editor-main"
     });
+    rootMustVanish = true;
     assert.throws(() => sampler.sample(), /Owned Linux PID 285 vanished/u);
   });
 
@@ -447,7 +558,10 @@ test("Linux PSS sampling skips a vanished unrelated census entry but rejects a v
       [286, 288]
     );
     childMustVanish = true;
-    assert.throws(() => sampler.sample(), /Owned Linux PID 288 vanished/u);
+    assert.deepEqual(
+      sampler.sample().processes.map((process) => process.pid),
+      [286]
+    );
   });
 });
 
@@ -520,8 +634,38 @@ test("Linux PSS sampling retains every discovered owned identity before a metric
     });
     assert.throws(() => sampler.sample(), /Could not read PSS rollup/u);
     assert.deepEqual(sampler.retainedOwnedIdentities(), [
-      { pid: 275, startTimeTicks: "2750", pidNamespaceId: "pid:[275]" },
-      { pid: 276, startTimeTicks: "2751", pidNamespaceId: "pid:[275]" }
+      { pid: 275, startTimeTicks: "2750" },
+      { pid: 276, startTimeTicks: "2751" }
+    ]);
+  });
+});
+
+test("the collector publishes cumulative ownership after a newly discovered child metric fails", async () => {
+  await withProcFixture(async (procRoot) => {
+    writeProcess(procRoot, { pid: 280, start: "2800", pssKb: 10, rssKb: 20 });
+    writeProcess(procRoot, { pid: 281, parentPid: 280, start: "2801", pssKb: 5, rssKb: 10 });
+    const sampler = new LinuxPssTreeSampler({
+      rootPid: 280,
+      rootStartTimeTicks: "2800",
+      procRoot,
+      clock: () => 0n,
+      readFile: (path, encoding) => {
+        if (path === resolve(procRoot, "281", "smaps_rollup")) {
+          throw new Error("fixture child metric failure");
+        }
+        return readFileSync(path, encoding);
+      },
+      classify: ({ pid }) => (pid === 280 ? "editor-main" : "extension-host")
+    });
+    const observation = await collectLinuxPssObservation({
+      sampler,
+      signal: new AbortController().signal,
+      scheduleClock: () => 0n
+    });
+    assert.equal(observation.valid, false);
+    assert.deepEqual(observation.retainedOwnedIdentities, [
+      { pid: 280, startTimeTicks: "2800" },
+      { pid: 281, startTimeTicks: "2801" }
     ]);
   });
 });
@@ -556,6 +700,32 @@ test("the 200 ms collector returns a bounded invalid resource observation on sam
     assert.equal(observation.missedSamples, 1);
     assert.equal(observation.samples.length, 1);
     assert.equal(JSON.stringify(observation).includes(procRoot), false);
+  });
+});
+
+test("the collector fails closed before exceeding the fixed maximum trial sample count", async () => {
+  await withProcFixture(async (procRoot) => {
+    writeProcess(procRoot, { pid: 305, start: "3050", pssKb: 10, rssKb: 20 });
+    let now = 0;
+    const sampler = new LinuxPssTreeSampler({
+      rootPid: 305,
+      rootStartTimeTicks: "3050",
+      procRoot,
+      clock: () => msNanoseconds(now),
+      classify: () => "editor-main"
+    });
+    const observation = await collectLinuxPssObservation({
+      sampler,
+      signal: new AbortController().signal,
+      scheduleClock: () => msNanoseconds(now),
+      wait: async (milliseconds) => {
+        now += milliseconds;
+      }
+    });
+    assert.equal(observation.valid, false);
+    assert.equal(observation.reasonClass, "resource-sampling");
+    assert.equal(observation.missedSamples, 1);
+    assert.equal(observation.samples.length, DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES);
   });
 });
 
@@ -964,36 +1134,14 @@ async function collectWithTerminalOffset(procRoot, pid, terminalOffsetMs) {
 
 function writeProcess(
   procRoot,
-  {
-    pid,
-    parentPid = 0,
-    processGroupId,
-    sessionId,
-    pidNamespaceId,
-    start,
-    state = "S",
-    taskChildren = [],
-    workers = [],
-    pssKb,
-    rssKb
-  }
+  { pid, parentPid = 0, processGroupId, sessionId, start, state = "S", taskChildren = [], workers = [], pssKb, rssKb }
 ) {
   const directory = resolve(procRoot, String(pid));
-  let existingPidNamespaceId = null;
-  try {
-    existingPidNamespaceId = readlinkSync(resolve(directory, "ns/pid"));
-  } catch {
-    // A newly observed fake process has no retained namespace fixture yet.
-  }
   rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { recursive: true });
   const inherited = parentPid > 0 ? readFixtureOwnership(procRoot, parentPid) : null;
   const resolvedProcessGroupId = processGroupId ?? inherited?.processGroupId ?? pid;
   const resolvedSessionId = sessionId ?? inherited?.sessionId ?? pid;
-  const resolvedPidNamespaceId =
-    pidNamespaceId ?? existingPidNamespaceId ?? inherited?.pidNamespaceId ?? `pid:[${pid}]`;
-  mkdirSync(resolve(directory, "ns"), { recursive: true });
-  symlinkSync(resolvedPidNamespaceId, resolve(directory, "ns/pid"));
   writeFileSync(
     resolve(directory, "stat"),
     makeStat(pid, parentPid, start, state, resolvedProcessGroupId, resolvedSessionId)
@@ -1020,9 +1168,27 @@ function readFixtureOwnership(procRoot, pid) {
     .split(/\s+/u);
   return {
     processGroupId: Number(fields[2]),
-    sessionId: Number(fields[3]),
-    pidNamespaceId: readlinkSync(resolve(procRoot, String(pid), "ns/pid"))
+    sessionId: Number(fields[3])
   };
+}
+
+function existsProcess(procRoot, pid) {
+  try {
+    readFileSync(resolve(procRoot, String(pid), "stat"), "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function reparentProcess(procRoot, pid, parentPid) {
+  const path = resolve(procRoot, String(pid), "stat");
+  const stat = readFileSync(path, "utf8");
+  const fields = stat
+    .slice(stat.lastIndexOf(")") + 2)
+    .trim()
+    .split(/\s+/u);
+  writeFileSync(path, makeStat(pid, parentPid, fields[19], fields[0], Number(fields[2]), Number(fields[3])));
 }
 
 function makeStat(id, parentPid, start, state = "S", processGroupId = id, sessionId = processGroupId) {
@@ -1047,15 +1213,13 @@ function procError(code) {
   return error;
 }
 
-function testLauncherFilesystemIdentity() {
+function testFilesystemIdentity() {
   return { device: "8", inode: "42", sizeBytes: 125_000, mtimeNs: "1000000000" };
 }
 
 function withProcFixture(callback) {
   const directory = mkdtempSync(resolve(tmpdir(), "ow-proc-fixture-"));
   try {
-    mkdirSync(resolve(directory, "self/ns"), { recursive: true });
-    symlinkSync("pid:[1]", resolve(directory, "self/ns/pid"));
     const result = callback(directory);
     if (result instanceof Promise) {
       return result.finally(() => rmSync(directory, { recursive: true, force: true }));

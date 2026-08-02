@@ -23,7 +23,7 @@ export const PUBLIC_UI_CAPABILITY_END_JITTER_MS = 250;
 export const PUBLIC_UI_OBSERVATION_MAX_GAP_MS = 1_000;
 export const PUBLIC_UI_AVAILABLE_STABILITY_CHECKS = 2;
 export const PUBLIC_UI_MAXIMUM_TRACE_SAMPLES = 64;
-export const PUBLIC_UI_OPEN_WRANGLER_ACTION_NAME = "Open 'study_frame' in Open Wrangler";
+export const PUBLIC_UI_OPEN_WRANGLER_ACTION_NAME = "Open in Open Wrangler";
 export const PUBLIC_UI_DATA_WRANGLER_ACTION_NAME = "Open 'study_frame' in Data Wrangler";
 export const PUBLIC_UI_DATA_WRANGLER_EXTENSION = Object.freeze({
   extensionId: "ms-toolsai.datawrangler",
@@ -146,11 +146,12 @@ function lexicalCompare(left, right) {
 }
 
 function normalizeEditor(editor) {
-  exactRecord(editor, ["id", "version", "sha256"], "Public-UI editor receipt");
+  exactRecord(editor, ["id", "version", "sha256", "uiLocale"], "Public-UI editor receipt");
   return {
     id: assertBoundedString(editor.id, 128, "Public-UI editor ID"),
     version: assertString(editor.version, NUMERIC_VERSION, "Public-UI editor version"),
-    sha256: assertString(editor.sha256, SHA256, "Public-UI editor SHA-256")
+    sha256: assertString(editor.sha256, SHA256, "Public-UI editor SHA-256"),
+    uiLocale: assertBoundedString(editor.uiLocale, 32, "Public-UI editor locale")
   };
 }
 
@@ -483,8 +484,8 @@ function normalizeContext(context) {
 }
 
 function assertStudyEditor(editor) {
-  if (editor.id !== "Microsoft.VisualStudioCode") {
-    fail("wrong-editor", "Public-UI evidence requires official Microsoft Visual Studio Code.");
+  if (editor.id !== "Microsoft.VisualStudioCode" || editor.uiLocale !== "en") {
+    fail("wrong-editor", "Public-UI evidence requires official Microsoft Visual Studio Code with --locale=en.");
   }
 }
 

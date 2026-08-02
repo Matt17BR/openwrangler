@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -11,6 +11,18 @@ import {
   createStudyFragmentIdentity,
   digestStudyValue
 } from "./data-wrangler-comparison-study.mjs";
+import {
+  DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
+  NEITHER_PRODUCT_CONTROL_RECEIPT_KIND,
+  PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS,
+  PUBLIC_UI_DATA_WRANGLER_ACTION_NAME,
+  PUBLIC_UI_OBSERVATION_MAX_GAP_MS,
+  PUBLIC_UI_OPEN_WRANGLER_ACTION_NAME,
+  createDataWranglerPolarsCapabilityReceipt,
+  createExpectedPublicUiExtensionInventory,
+  createNeitherProductControlReceipt,
+  createPublicUiReceiptContext
+} from "./data-wrangler-public-ui-receipts.mjs";
 import {
   parseDataWranglerComparisonStudyArguments,
   runDataWranglerComparisonStudy
@@ -51,13 +63,12 @@ test("plan, record, and status preserve one immutable manifest and append-only f
     });
     assert.equal(planned.output.schedule.length, 96);
     assert.equal(JSON.parse(readFileSync(manifestPath, "utf8")).studyId, planned.output.studyId);
-    assert.throws(
-      () =>
-        runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
-          cwd: directory
-        }),
-      /EEXIST/u
-    );
+    const repeatedPlan = runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
+      cwd: directory
+    });
+    assert.deepEqual(repeatedPlan.output, planned.output);
+    assert.equal(repeatedPlan.receipt.status, "complete");
+    assert.equal(lstatSync(manifestPath).mode & 0o777, 0o600);
 
     const entry = planned.output.schedule[0];
     const fragment = {
@@ -92,6 +103,12 @@ test("plan, record, and status preserve one immutable manifest and append-only f
       { cwd: directory }
     );
     assert.equal(recorded.output.fragmentId, fragment.fragmentId);
+    const repeatedRecord = runDataWranglerComparisonStudy(
+      ["record", "--manifest", manifestPath, "--fragments", fragments, "--fragment", fragmentInputPath],
+      { cwd: directory }
+    );
+    assert.deepEqual(repeatedRecord.output, recorded.output);
+    assert.equal(repeatedRecord.receipt.status, "complete");
     const status = runDataWranglerComparisonStudy(["status", "--manifest", manifestPath, "--fragments", fragments], {
       cwd: directory
     });
@@ -108,17 +125,64 @@ test("plan, record, and status preserve one immutable manifest and append-only f
   });
 });
 
+test("plan recovers an exact linked publication and creates only a private output directory", () => {
+  withDirectory((directory) => {
+    const studyDirectory = resolve(directory, "study");
+    const specificationPath = resolve(directory, "spec.json");
+    const manifestPath = resolve(studyDirectory, "manifest.json");
+    writeFileSync(specificationPath, JSON.stringify(studySpecification()));
+
+    assert.throws(
+      () =>
+        runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
+          cwd: directory,
+          publicationOptions: {
+            manifest: {
+              faultInjector: (point) => {
+                if (point === "target-linked") {
+                  throw new Error("injected manifest link crash");
+                }
+              },
+              tokenFactory: () => "1".repeat(32)
+            }
+          }
+        }),
+      /injected manifest link crash/u
+    );
+
+    assert.equal(lstatSync(studyDirectory).mode & 0o777, 0o700);
+    assert.equal(lstatSync(manifestPath).nlink, 2);
+    const recovered = runDataWranglerComparisonStudy(["plan", "--spec", specificationPath, "--out", manifestPath], {
+      cwd: directory
+    });
+    assert.equal(recovered.receipt.status, "recovered");
+    assert.equal(lstatSync(manifestPath).nlink, 1);
+    assert.equal(lstatSync(manifestPath).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(readFileSync(manifestPath, "utf8")), recovered.output);
+  });
+});
+
 function studySpecification() {
-  const controlReceipt = {
-    openWranglerInstalled: false,
-    dataWranglerInstalled: false,
-    surfaceOwner: "host-jupyter"
+  const editor = {
+    id: "Microsoft.VisualStudioCode",
+    version: "1.130.0",
+    sha256: digest("3"),
+    uiLocale: "en"
   };
-  const capabilityReceipt = {
-    publicSurface: "data-wrangler-polars",
-    availability: "available",
-    observedVia: "public-ui"
-  };
+  const fixtures = [
+    studyFixture("csv-100k-50", "csv", 100_000, 50, digest("6"), "6001"),
+    studyFixture("parquet-1m-20", "parquet", 1_000_000, 20, digest("7"), "7001")
+  ];
+  const capabilityContext = publicUiContext("22222222-2222-4222-8222-222222222222", editor, fixtures[0]);
+  const controlContext = publicUiContext("33333333-3333-4333-8333-333333333333", editor, fixtures[0]);
+  const capabilityReceipt = createDataWranglerPolarsCapabilityReceipt(
+    publicUiEvidence(DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND, capabilityContext, "available"),
+    capabilityContext
+  );
+  const controlReceipt = createNeitherProductControlReceipt(
+    publicUiEvidence(NEITHER_PRODUCT_CONTROL_RECEIPT_KIND, controlContext, "neither-product-control"),
+    controlContext
+  );
   return {
     studyId: "11111111-1111-4111-8111-111111111111",
     createdAtUtc: "2026-08-02T10:00:00.000Z",
@@ -130,7 +194,7 @@ function studySpecification() {
       filesystemIdentity: { device: "2049", inode: "2001", sizeBytes: 1024, mtimeNs: "1754100000000000000" }
     },
     baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
-    editor: { id: "Microsoft.VisualStudioCode", version: "1.130.0", sha256: digest("3") },
+    editor,
     python: {
       implementation: "CPython",
       version: "3.12.10",
@@ -150,10 +214,7 @@ function studySpecification() {
         kernelspecSha256: digest("a")
       }
     },
-    fixtures: [
-      studyFixture("csv-100k-50", "csv", 100_000, 50, digest("6"), "6001"),
-      studyFixture("parquet-1m-20", "parquet", 1_000_000, 20, digest("7"), "7001")
-    ],
+    fixtures,
     provenance: {
       machine: {
         platform: "linux",
@@ -205,28 +266,122 @@ function studySpecification() {
           availability: "available",
           method: "public-capability",
           timed: false,
+          fixtureId: fixtures[0].id,
+          context: capabilityContext,
           receiptSha256: digestStudyValue(capabilityReceipt),
           receipt: capabilityReceipt
         }
       ],
       controlProfile: {
         method: "neither-product",
+        fixtureId: fixtures[0].id,
+        context: controlContext,
         receiptSha256: digestStudyValue(controlReceipt),
         receipt: controlReceipt
       },
-      containmentLauncher: {
-        executable: "/usr/bin/bwrap",
-        version: "bubblewrap 0.11.1",
-        sha256: "a".repeat(64),
-        filesystemIdentity: {
-          device: "8",
-          inode: "42",
-          sizeBytes: 125_000,
-          mtimeNs: "1000000000"
-        }
+      ownershipTracker: {
+        protocol: "openwrangler-linux-study-supervisor-v1",
+        supervisorSource: {
+          sha256: "a".repeat(64),
+          filesystemIdentity: {
+            device: "8",
+            inode: "42",
+            sizeBytes: 125_000,
+            mtimeNs: "1000000000"
+          }
+        },
+        pythonExecutable: {
+          implementation: "CPython",
+          version: "3.12.10",
+          sha256: digest("4"),
+          filesystemIdentity: {
+            device: "8",
+            inode: "43",
+            sizeBytes: 6_000_000,
+            mtimeNs: "1000000000"
+          }
+        },
+        invocationPolicySha256: "c".repeat(64)
       }
     }
   };
+}
+
+function publicUiContext(captureId, editor, fixture) {
+  return createPublicUiReceiptContext({
+    captureId,
+    editor,
+    source: {
+      variableName: "study_frame",
+      engine: "polars",
+      semanticClass: "dataframe",
+      rowCount: fixture.rows,
+      columnCount: fixture.columns,
+      schemaSha256: digestStudyValue(fixture.schema),
+      sentinels: fixture.sentinels.map((sentinel) => ({
+        rowIndex: sentinel.rowIndex,
+        columnName: sentinel.column,
+        value: sentinel.value
+      }))
+    }
+  });
+}
+
+function publicUiEvidence(kind, context, conclusion) {
+  const available = conclusion === "available";
+  const startedAtMonotonicMs = 8_456_000;
+  const endedAtMonotonicMs = available
+    ? startedAtMonotonicMs + 475
+    : startedAtMonotonicMs + PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS;
+  const times = available
+    ? [startedAtMonotonicMs, startedAtMonotonicMs + 250, endedAtMonotonicMs]
+    : [...Array(PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS / PUBLIC_UI_OBSERVATION_MAX_GAP_MS + 1).keys()].map(
+        (index) => startedAtMonotonicMs + index * PUBLIC_UI_OBSERVATION_MAX_GAP_MS
+      );
+  const trace = times.map((atMonotonicMs, index) => ({
+    atMonotonicMs,
+    output: publicUiOutput(),
+    actions: publicUiActions(available && index >= times.length - 2)
+  }));
+  return {
+    captureId: context.captureId,
+    editor: structuredClone(context.editor),
+    extensions: structuredClone(createExpectedPublicUiExtensionInventory(kind)),
+    source: structuredClone(context.source),
+    observation: {
+      clock: "linux-monotonic",
+      startedAtMonotonicMs,
+      endedAtMonotonicMs,
+      absenceDeadlineAtMonotonicMs: startedAtMonotonicMs + PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS,
+      maxGapMs: PUBLIC_UI_OBSERVATION_MAX_GAP_MS,
+      sampleCount: trace.length
+    },
+    trace,
+    output: structuredClone(trace.at(-1).output),
+    actions: structuredClone(trace.at(-1).actions),
+    conclusion
+  };
+}
+
+function publicUiOutput() {
+  return { ready: true, busy: false, obstructed: false, owner: "host-jupyter" };
+}
+
+function publicUiActions(dataWranglerAvailable) {
+  return [
+    {
+      product: "open-wrangler",
+      accessibleName: PUBLIC_UI_OPEN_WRANGLER_ACTION_NAME,
+      matchCount: 0,
+      pointerUsable: false
+    },
+    {
+      product: "data-wrangler",
+      accessibleName: PUBLIC_UI_DATA_WRANGLER_ACTION_NAME,
+      matchCount: dataWranglerAvailable ? 1 : 0,
+      pointerUsable: dataWranglerAvailable
+    }
+  ];
 }
 
 function studyFixture(id, format, rows, columns, sha256, inode) {

@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  closeSync,
+  constants,
   linkSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync
@@ -186,6 +191,33 @@ test("parent mode drift after opening fails closed before the target link", () =
     chmodSync(directory, 0o700);
     assert.equal(recoverDurableStudyJsonPublication(target, digestDurableJsonValue(STUDY_VALUE)).status, "absent");
     assert.equal(exists(temporary), true);
+  });
+});
+
+test("a borrowed parent lease anchors publication and recovery to one directory generation", () => {
+  withTemporaryDirectory((directory) => {
+    const ledger = join(directory, "ledger");
+    const displaced = join(directory, "ledger-displaced");
+    mkdirSync(ledger, { mode: 0o700 });
+    const descriptor = openSync(ledger, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const parentLease = { descriptor, path: ledger };
+    const target = join(ledger, "study-result.json");
+    try {
+      const published = publishDurableStudyJsonExclusive(target, STUDY_VALUE, { parentLease });
+      assert.equal(published.status, "published");
+      assert.equal(recoverDurableStudyJsonPublication(target, published.sha256, { parentLease }).status, "complete");
+
+      renameSync(ledger, displaced);
+      mkdirSync(ledger, { mode: 0o700 });
+      assert.throws(
+        () => recoverDurableStudyJsonPublication(target, published.sha256, { parentLease }),
+        /borrowed durable JSON parent no longer matches/u
+      );
+      assert.deepEqual(readdirSync(ledger), []);
+      assert.deepEqual(readdirSync(displaced), ["study-result.json"]);
+    } finally {
+      closeSync(descriptor);
+    }
   });
 });
 

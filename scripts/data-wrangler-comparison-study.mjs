@@ -1,17 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
+  constants,
+  fstatSync,
   fsyncSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
-  readdirSync,
-  unlinkSync,
-  writeFileSync
+  readdirSync
 } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
+import {
+  createPublicUiReceiptContext,
+  validateDataWranglerPolarsCapabilityReceipt,
+  validateNeitherProductControlReceipt
+} from "./data-wrangler-public-ui-receipts.mjs";
+import {
+  digestDurableJsonValue,
+  publishDurableStudyJsonExclusive,
+  recoverDurableStudyJsonPublication
+} from "./durable-study-json.mjs";
 
 export const DATA_WRANGLER_STUDY_METHOD_PROTOCOL = "openwrangler-data-wrangler-study-method-v1";
 export const DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL = "openwrangler-data-wrangler-study-manifest-v1";
@@ -22,6 +31,8 @@ export const DATA_WRANGLER_STUDY_SEED = 0x4f575231;
 export const DATA_WRANGLER_STUDY_WARM_PAIRS_PER_CELL = 10;
 export const DATA_WRANGLER_STUDY_SCHEDULE_SHA256 = "3fcf79fa323c60e256fddaf62c0a1454ea2077c5b6158ba93e1dfddd43adaa64";
 export const DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL = "openwrangler-source-cache-proof-v1";
+export const DATA_WRANGLER_STUDY_FINALIZATION_INTENT_PROTOCOL =
+  "openwrangler-data-wrangler-study-finalization-intent-v1";
 
 export const DATA_WRANGLER_STUDY_PRODUCTS = Object.freeze(["open-wrangler", "data-wrangler"]);
 export const DATA_WRANGLER_STUDY_DEADLINES_MS = Object.freeze({
@@ -29,6 +40,15 @@ export const DATA_WRANGLER_STUDY_DEADLINES_MS = Object.freeze({
   "workbench-open": 60_000,
   "complete-profile": 135_000
 });
+export const DATA_WRANGLER_STUDY_CONTROL_ALLOWANCE_MS = 3_000;
+export const DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES =
+  Math.ceil(
+    (Object.values(DATA_WRANGLER_STUDY_DEADLINES_MS).reduce((total, value) => total + value, 0) +
+      DATA_WRANGLER_STUDY_CONTROL_ALLOWANCE_MS +
+      2_000 +
+      250) /
+      200
+  ) + 1;
 export const DATA_WRANGLER_STUDY_COMMON_EXTENSIONS = Object.freeze([
   Object.freeze({ extensionId: "ms-python.debugpy", version: "2026.6.0" }),
   Object.freeze({ extensionId: "ms-python.python", version: "2026.4.0" }),
@@ -95,22 +115,7 @@ const RESOURCE_CATEGORIES = Object.freeze([
 ]);
 const PSS_CLOCK_SOURCE = "linux-process-hrtime-bigint";
 const PSS_CLOCK_NORMALIZATION = "elapsedMs=(endedMonotonicNanoseconds-originNanoseconds)/1000000";
-const PSS_CONTAINMENT_PROTOCOL = "openwrangler-linux-bwrap-pid-containment-v1";
-const PSS_PID_NAMESPACE_ID = /^pid:\[[1-9]\d{0,29}\]$/u;
-const PSS_BWRAP_VERSION = /^bubblewrap \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u;
-const PSS_REQUIRED_BWRAP_CONTAINMENT_ARGUMENTS = Object.freeze([
-  "--die-with-parent",
-  "--unshare-pid",
-  "--as-pid-1",
-  "--new-session",
-  "--disable-userns",
-  "--assert-userns-disabled",
-  "--cap-drop",
-  "ALL",
-  "--proc",
-  "/proc",
-  "--json-status-fd=<private-fd>"
-]);
+const PSS_OWNERSHIP_PROTOCOL = "openwrangler-linux-study-supervisor-v1";
 const PSS_MAXIMUM_LATENESS_MS = 50;
 const PSS_MAXIMUM_TERMINAL_OVERSHOOT_MS = 250;
 const REQUIRED_PYTHON_PACKAGES = Object.freeze(["pandas", "polars", "pyarrow", "jupyter_core", "ipykernel"]);
@@ -332,9 +337,9 @@ function validateBaseline(baseline) {
 }
 
 function validateEditor(editor) {
-  exactKeys(editor, ["id", "version", "sha256"], "Study editor receipt");
-  if (editor.id !== "Microsoft.VisualStudioCode") {
-    fail("Study editor must be official Microsoft Visual Studio Code.");
+  exactKeys(editor, ["id", "version", "sha256", "uiLocale"], "Study editor receipt");
+  if (editor.id !== "Microsoft.VisualStudioCode" || editor.uiLocale !== "en") {
+    fail("Study editor must be official Microsoft Visual Studio Code launched with --locale=en.");
   }
   assertString(editor.version, NUMERIC_VERSION, "Study editor version");
   assertString(editor.sha256, SHA256, "Study editor SHA-256");
@@ -606,14 +611,50 @@ function validateStudyStorage(storage) {
   assertBoolean(storage.rotational, "Study rotational-storage provenance");
 }
 
-function validateCapabilityReceipts(receipts) {
+function expectedPublicUiSource(fixture) {
+  return {
+    variableName: "study_frame",
+    engine: "polars",
+    semanticClass: "dataframe",
+    rowCount: fixture.rows,
+    columnCount: fixture.columns,
+    schemaSha256: digestStudyValue(fixture.schema),
+    sentinels: fixture.sentinels.map((sentinel) => ({
+      rowIndex: sentinel.rowIndex,
+      columnName: sentinel.column,
+      value: sentinel.value
+    }))
+  };
+}
+
+function validatePublicUiReceiptContext(context, fixtureId, manifestContext, label) {
+  const fixture = manifestContext.fixtures.find((candidate) => candidate.id === fixtureId);
+  if (fixture === undefined) {
+    fail(`${label} fixture ID does not name a manifest fixture.`);
+  }
+  const expected = createPublicUiReceiptContext({
+    captureId: context.captureId,
+    editor: manifestContext.editor,
+    source: expectedPublicUiSource(fixture)
+  });
+  const normalized = createPublicUiReceiptContext(context);
+  if (canonicalStudyJson(normalized) !== canonicalStudyJson(context)) {
+    fail(`${label} must store its normalized public-UI context.`);
+  }
+  if (canonicalStudyJson(normalized) !== canonicalStudyJson(expected)) {
+    fail(`${label} does not match the manifest editor and exact Polars fixture source.`);
+  }
+  return normalized;
+}
+
+function validateCapabilityReceipts(receipts, manifestContext) {
   if (!Array.isArray(receipts) || receipts.length !== 1) {
     fail("Study capability provenance must contain the Data Wrangler Polars receipt.");
   }
   const receipt = receipts[0];
   exactKeys(
     receipt,
-    ["product", "engine", "availability", "method", "timed", "receiptSha256", "receipt"],
+    ["product", "engine", "availability", "method", "timed", "fixtureId", "context", "receiptSha256", "receipt"],
     "Study public-capability receipt"
   );
   if (
@@ -625,57 +666,80 @@ function validateCapabilityReceipts(receipts) {
   ) {
     fail("Study Data Wrangler Polars capability receipt is invalid.");
   }
-  exactKeys(receipt.receipt, ["publicSurface", "availability", "observedVia"], "Study raw public-capability receipt");
-  if (
-    receipt.receipt.publicSurface !== "data-wrangler-polars" ||
-    receipt.receipt.availability !== receipt.availability ||
-    receipt.receipt.observedVia !== "public-ui"
-  ) {
-    fail("Study raw Data Wrangler Polars capability receipt is invalid.");
+  assertBoundedText(receipt.fixtureId, "Study public-capability fixture ID", 128);
+  const context = validatePublicUiReceiptContext(
+    receipt.context,
+    receipt.fixtureId,
+    manifestContext,
+    "Study public-capability context"
+  );
+  validateDataWranglerPolarsCapabilityReceipt(receipt.receipt, context);
+  const expectedAvailability = receipt.receipt.evidence.conclusion === "available" ? "available" : "unavailable";
+  if (receipt.availability !== expectedAvailability) {
+    fail("Study Data Wrangler Polars availability does not match its public-UI observation trace.");
   }
   assertString(receipt.receiptSha256, SHA256, "Study public-capability receipt SHA-256");
   if (receipt.receiptSha256 !== digestStudyValue(receipt.receipt)) {
-    fail("Study public-capability receipt SHA-256 does not match its bounded raw evidence.");
+    fail("Study public-capability receipt SHA-256 does not match its validated public-UI evidence.");
   }
 }
 
-function validateControlProfile(controlProfile) {
-  exactKeys(controlProfile, ["method", "receiptSha256", "receipt"], "Study neither-product control profile");
+function validateControlProfile(controlProfile, manifestContext) {
+  exactKeys(
+    controlProfile,
+    ["method", "fixtureId", "context", "receiptSha256", "receipt"],
+    "Study neither-product control profile"
+  );
   if (controlProfile.method !== "neither-product") {
     fail("Study control profile must omit both measured products.");
   }
-  exactKeys(
-    controlProfile.receipt,
-    ["openWranglerInstalled", "dataWranglerInstalled", "surfaceOwner"],
-    "Study control-profile receipt"
+  assertBoundedText(controlProfile.fixtureId, "Study control-profile fixture ID", 128);
+  const context = validatePublicUiReceiptContext(
+    controlProfile.context,
+    controlProfile.fixtureId,
+    manifestContext,
+    "Study control-profile context"
   );
-  if (
-    controlProfile.receipt.openWranglerInstalled !== false ||
-    controlProfile.receipt.dataWranglerInstalled !== false ||
-    !["host-jupyter", "unverified"].includes(controlProfile.receipt.surfaceOwner)
-  ) {
-    fail("Study control-profile receipt cannot contain a measured product or misattribute its surface.");
-  }
+  validateNeitherProductControlReceipt(controlProfile.receipt, context);
   assertString(controlProfile.receiptSha256, SHA256, "Study control-profile receipt SHA-256");
   if (controlProfile.receiptSha256 !== digestStudyValue(controlProfile.receipt)) {
-    fail("Study control-profile receipt SHA-256 does not match its bounded raw evidence.");
+    fail("Study control-profile receipt SHA-256 does not match its validated public-UI evidence.");
   }
 }
 
-function validateContainmentLauncher(launcher) {
+function validateOwnershipTrackerProvenance(tracker) {
   exactKeys(
-    launcher,
-    ["executable", "version", "sha256", "filesystemIdentity"],
-    "Study Bubblewrap containment launcher"
+    tracker,
+    ["protocol", "supervisorSource", "pythonExecutable", "invocationPolicySha256"],
+    "Study process ownership tracker"
   );
-  if (launcher.executable !== "/usr/bin/bwrap" || !PSS_BWRAP_VERSION.test(launcher.version)) {
-    fail("Study containment launcher must be the preregistered Bubblewrap executable.");
+  if (tracker.protocol !== PSS_OWNERSHIP_PROTOCOL) {
+    fail("Study process ownership tracker protocol is invalid.");
   }
-  assertString(launcher.sha256, SHA256, "Study Bubblewrap containment launcher SHA-256");
-  validateFilesystemIdentity(launcher.filesystemIdentity, "Study Bubblewrap containment launcher filesystem identity");
+  exactKeys(tracker.supervisorSource, ["sha256", "filesystemIdentity"], "Study supervisor source provenance");
+  assertString(tracker.supervisorSource.sha256, SHA256, "Study supervisor source SHA-256");
+  validateFilesystemIdentity(
+    tracker.supervisorSource.filesystemIdentity,
+    "Study supervisor source filesystem identity"
+  );
+  exactKeys(
+    tracker.pythonExecutable,
+    ["implementation", "version", "sha256", "filesystemIdentity"],
+    "Study supervisor Python executable provenance"
+  );
+  if (tracker.pythonExecutable.implementation !== "CPython") {
+    fail("Study supervisor must use the manifest-pinned CPython 3.12 executable.");
+  }
+  assertString(tracker.pythonExecutable.sha256, SHA256, "Study supervisor Python executable SHA-256");
+  validateFilesystemIdentity(
+    tracker.pythonExecutable.filesystemIdentity,
+    "Study supervisor Python executable filesystem identity"
+  );
+  assertString(tracker.pythonExecutable.version, PYTHON_VERSION, "Study supervisor Python version");
+  assertString(tracker.invocationPolicySha256, SHA256, "Study supervisor invocation-policy SHA-256");
 }
 
-function validateStudyProvenance(provenance) {
+function validateStudyProvenance(provenance, manifestContext) {
   exactKeys(
     provenance,
     [
@@ -689,7 +753,7 @@ function validateStudyProvenance(provenance) {
       "templates",
       "capabilities",
       "controlProfile",
-      "containmentLauncher"
+      "ownershipTracker"
     ],
     "Study environment provenance"
   );
@@ -704,9 +768,18 @@ function validateStudyProvenance(provenance) {
   validateStudyZoom(provenance.zoom);
   validateStudyCommonExtensions(provenance.commonExtensions);
   validateStudyTemplates(provenance.templates);
-  validateCapabilityReceipts(provenance.capabilities);
-  validateControlProfile(provenance.controlProfile);
-  validateContainmentLauncher(provenance.containmentLauncher);
+  validateCapabilityReceipts(provenance.capabilities, manifestContext);
+  validateControlProfile(provenance.controlProfile, manifestContext);
+  if (provenance.capabilities[0].context.captureId === provenance.controlProfile.context.captureId) {
+    fail("Study capability and neither-product control captures must be independent.");
+  }
+  validateOwnershipTrackerProvenance(provenance.ownershipTracker);
+  if (
+    provenance.ownershipTracker.pythonExecutable.version !== manifestContext.python.version ||
+    provenance.ownershipTracker.pythonExecutable.sha256 !== manifestContext.python.executableSha256
+  ) {
+    fail("Study process ownership must use the exact manifest-pinned Python executable.");
+  }
 }
 
 function validateScheduleEntry(entry, expected) {
@@ -750,7 +823,11 @@ export function validateDataWranglerStudyManifest(manifest) {
   validateEditor(manifest.editor);
   validatePython(manifest.python);
   validateFixtures(manifest.fixtures);
-  validateStudyProvenance(manifest.provenance);
+  validateStudyProvenance(manifest.provenance, {
+    editor: manifest.editor,
+    python: manifest.python,
+    fixtures: manifest.fixtures
+  });
   exactKeys(
     manifest.sampling,
     ["seed", "warmPairsPerCell", "coldPairsPerOrder", "scheduleSha256"],
@@ -1906,101 +1983,133 @@ function validateUiEvidence(evidence, fragment, entry, manifest) {
   }
 }
 
-function validatePssContainment(containment) {
+function validatePssOwnershipTracker(tracker) {
   exactKeys(
-    containment,
+    tracker,
     [
       "protocol",
-      "launcherExecutable",
-      "launcherVersion",
-      "launcherSha256",
-      "launcherFilesystemIdentityBefore",
-      "launcherFilesystemIdentityAfter",
-      "verifiedArguments",
-      "jsonStatusHostPid",
-      "rootStartTimeTicks",
-      "rootPidNamespaceId",
-      "samplerPidNamespaceId",
-      "rootNSpid"
+      "kind",
+      "nonce",
+      "supervisor",
+      "editorRoot",
+      "supervisorSource",
+      "pythonExecutable",
+      "invocationPolicySha256",
+      "invocationSha256",
+      "payloadArgvSha256",
+      "payloadEnvironmentSha256"
     ],
-    "PSS launch containment receipt"
+    "PSS process ownership tracker receipt"
   );
-  if (
-    containment.protocol !== PSS_CONTAINMENT_PROTOCOL ||
-    containment.launcherExecutable !== "/usr/bin/bwrap" ||
-    typeof containment.launcherVersion !== "string" ||
-    !PSS_BWRAP_VERSION.test(containment.launcherVersion)
-  ) {
-    fail("PSS containment must retain the preregistered Bubblewrap launch protocol.");
+  if (tracker.protocol !== PSS_OWNERSHIP_PROTOCOL || tracker.kind !== "launch") {
+    fail("PSS ownership tracker protocol is invalid.");
   }
-  assertString(containment.launcherSha256, SHA256, "PSS containment Bubblewrap SHA-256");
+  assertString(tracker.nonce, SHA256, "PSS ownership tracker nonce");
+  exactKeys(
+    tracker.supervisor,
+    ["pid", "startTimeTicks", "subreaperVerified", "pidfdVerified"],
+    "PSS supervisor identity"
+  );
+  assertInteger(tracker.supervisor.pid, "PSS supervisor PID", { minimum: 1 });
+  if (typeof tracker.supervisor.startTimeTicks !== "string" || !/^\d+$/u.test(tracker.supervisor.startTimeTicks)) {
+    fail("PSS supervisor start time is invalid.");
+  }
+  if (tracker.supervisor.subreaperVerified !== true || tracker.supervisor.pidfdVerified !== true) {
+    fail("PSS ownership tracker must prove subreaper and pidfd support before launch.");
+  }
+  exactKeys(tracker.editorRoot, ["pid", "startTimeTicks", "processGroupId", "sessionId"], "PSS editor-root identity");
+  assertInteger(tracker.editorRoot.pid, "PSS editor-root PID", { minimum: 1 });
+  if (typeof tracker.editorRoot.startTimeTicks !== "string" || !/^\d+$/u.test(tracker.editorRoot.startTimeTicks)) {
+    fail("PSS editor-root start time is invalid.");
+  }
+  if (
+    tracker.editorRoot.pid === tracker.supervisor.pid ||
+    tracker.editorRoot.processGroupId !== tracker.editorRoot.pid ||
+    tracker.editorRoot.sessionId !== tracker.editorRoot.pid
+  ) {
+    fail("PSS editor root must own a dedicated process group and session beneath its supervisor.");
+  }
+  exactKeys(tracker.supervisorSource, ["sha256", "filesystemIdentity"], "PSS supervisor source provenance");
+  assertString(tracker.supervisorSource.sha256, SHA256, "PSS supervisor source SHA-256");
+  validateFilesystemIdentity(tracker.supervisorSource.filesystemIdentity, "PSS supervisor source filesystem identity");
+  exactKeys(
+    tracker.pythonExecutable,
+    ["implementation", "version", "sha256", "filesystemIdentity"],
+    "PSS supervisor Python executable provenance"
+  );
+  if (tracker.pythonExecutable.implementation !== "CPython") {
+    fail("PSS supervisor Python implementation is invalid.");
+  }
+  assertString(tracker.pythonExecutable.sha256, SHA256, "PSS supervisor Python executable SHA-256");
   validateFilesystemIdentity(
-    containment.launcherFilesystemIdentityBefore,
-    "PSS containment Bubblewrap identity before hashing"
+    tracker.pythonExecutable.filesystemIdentity,
+    "PSS supervisor Python executable filesystem identity"
   );
-  validateFilesystemIdentity(
-    containment.launcherFilesystemIdentityAfter,
-    "PSS containment Bubblewrap identity after hashing"
-  );
-  if (
-    canonicalStudyJson(containment.launcherFilesystemIdentityBefore) !==
-    canonicalStudyJson(containment.launcherFilesystemIdentityAfter)
-  ) {
-    fail("PSS containment Bubblewrap identity changed while it was hashed and launched.");
-  }
-  if (
-    !Array.isArray(containment.verifiedArguments) ||
-    containment.verifiedArguments.length !== PSS_REQUIRED_BWRAP_CONTAINMENT_ARGUMENTS.length ||
-    containment.verifiedArguments.some(
-      (argument, index) => argument !== PSS_REQUIRED_BWRAP_CONTAINMENT_ARGUMENTS[index]
-    )
-  ) {
-    fail("PSS containment must retain every required namespace-escape control.");
-  }
-  assertInteger(containment.jsonStatusHostPid, "PSS containment JSON-status host PID", { minimum: 1 });
-  if (typeof containment.rootStartTimeTicks !== "string" || !/^\d+$/u.test(containment.rootStartTimeTicks)) {
-    fail("PSS containment root start time is invalid.");
-  }
-  assertString(containment.rootPidNamespaceId, PSS_PID_NAMESPACE_ID, "PSS containment PID namespace");
-  assertString(containment.samplerPidNamespaceId, PSS_PID_NAMESPACE_ID, "PSS sampler PID namespace");
-  if (containment.rootPidNamespaceId === containment.samplerPidNamespaceId) {
-    fail("PSS target and sampler must occupy distinct PID namespaces.");
-  }
-  if (
-    !Array.isArray(containment.rootNSpid) ||
-    containment.rootNSpid.length < 2 ||
-    containment.rootNSpid.length > 64 ||
-    containment.rootNSpid[0] !== containment.jsonStatusHostPid ||
-    containment.rootNSpid.at(-1) !== 1 ||
-    containment.rootNSpid.some((pid) => !Number.isSafeInteger(pid) || pid <= 0) ||
-    new Set(containment.rootNSpid).size !== containment.rootNSpid.length
-  ) {
-    fail("PSS target must prove it is PID 1 in one fresh nested namespace.");
-  }
-  return containment;
+  assertString(tracker.pythonExecutable.version, PYTHON_VERSION, "PSS supervisor Python version");
+  assertString(tracker.invocationPolicySha256, SHA256, "PSS supervisor invocation-policy SHA-256");
+  assertString(tracker.invocationSha256, SHA256, "PSS supervisor invocation SHA-256");
+  assertString(tracker.payloadArgvSha256, SHA256, "PSS supervisor payload-argv SHA-256");
+  assertString(tracker.payloadEnvironmentSha256, SHA256, "PSS supervisor payload-environment SHA-256");
+  return tracker;
 }
 
-function validatePssProcess(process, containment) {
-  exactKeys(
-    process,
-    ["pid", "startTimeTicks", "pidNamespaceId", "category", "pssBytes", "rssBytes"],
-    "PSS process sample"
-  );
+function validatePssProcess(process) {
+  exactKeys(process, ["pid", "startTimeTicks", "category", "pssBytes", "rssBytes"], "PSS process sample");
   assertInteger(process.pid, "PSS process PID", { minimum: 1 });
   if (typeof process.startTimeTicks !== "string" || !/^\d+$/u.test(process.startTimeTicks)) {
     fail("PSS process start time is invalid.");
-  }
-  if (process.pidNamespaceId !== containment.rootPidNamespaceId) {
-    fail("PSS process escaped the retained launch PID namespace.");
   }
   assertEnum(process.category, RESOURCE_CATEGORIES, "PSS process category");
   assertInteger(process.pssBytes, "PSS process bytes");
   assertInteger(process.rssBytes, "RSS process bytes");
 }
 
+function validatePssRetainedIdentities(identities, ownershipTracker) {
+  if (!Array.isArray(identities) || identities.length === 0 || identities.length > 131_072) {
+    fail("PSS retained owned identities must contain one to 131072 processes.");
+  }
+  const retained = new Map();
+  for (const identity of identities) {
+    exactKeys(identity, ["pid", "startTimeTicks"], "PSS retained owned identity");
+    assertInteger(identity.pid, "PSS retained owned PID", { minimum: 1 });
+    if (typeof identity.startTimeTicks !== "string" || !/^\d+$/u.test(identity.startTimeTicks)) {
+      fail("PSS retained owned process start time is invalid.");
+    }
+    if (retained.has(identity.pid)) {
+      fail("PSS retained owned identities are duplicated.");
+    }
+    retained.set(identity.pid, identity);
+  }
+  const root = retained.get(ownershipTracker.editorRoot.pid);
+  if (root?.startTimeTicks !== ownershipTracker.editorRoot.startTimeTicks) {
+    fail("PSS retained owned identities do not contain the supervisor-receipt editor root.");
+  }
+  return retained;
+}
+
 function parseMonotonicNanoseconds(value, label) {
   assertString(value, MONOTONIC_NANOSECONDS, label);
   return BigInt(value);
+}
+
+function millisecondsLowerBoundToNanoseconds(value, label) {
+  assertNonNegativeFinite(value, label);
+  const match = /^(?<integer>\d+)(?:\.(?<fraction>\d+))?(?:e(?<exponent>[+-]?\d+))?$/iu.exec(String(value));
+  if (match?.groups === undefined) {
+    fail(`${label} cannot be represented as canonical decimal milliseconds.`);
+  }
+  const fraction = match.groups.fraction ?? "";
+  const exponent = Number(match.groups.exponent ?? "0");
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1_000) {
+    fail(`${label} decimal exponent exceeds its bound.`);
+  }
+  const coefficient = BigInt(`${match.groups.integer}${fraction}`);
+  const decimalPlaces = fraction.length - exponent;
+  if (decimalPlaces <= 6) {
+    return coefficient * 10n ** BigInt(6 - decimalPlaces);
+  }
+  const divisor = 10n ** BigInt(decimalPlaces - 6);
+  return (coefficient + divisor - 1n) / divisor;
 }
 
 function validatePssClock(clock) {
@@ -2011,7 +2120,7 @@ function validatePssClock(clock) {
   return parseMonotonicNanoseconds(clock.originNanoseconds, "PSS monotonic-clock origin");
 }
 
-function validatePssSample(sample, originNanoseconds, containment) {
+function validatePssSample(sample, originNanoseconds, ownershipTracker, retainedIdentities) {
   exactKeys(
     sample,
     [
@@ -2059,7 +2168,11 @@ function validatePssSample(sample, originNanoseconds, containment) {
   const categoryTotals = Object.fromEntries(RESOURCE_CATEGORIES.map((category) => [category, 0]));
   let foundRoot = false;
   for (const process of sample.processes) {
-    validatePssProcess(process, containment);
+    validatePssProcess(process);
+    const retainedIdentity = retainedIdentities.get(process.pid);
+    if (retainedIdentity?.startTimeTicks !== process.startTimeTicks) {
+      fail("PSS sample process is absent from the cumulative retained-owned identity set.");
+    }
     if (pids.has(process.pid)) {
       fail("PSS sample cannot count one PID more than once.");
     }
@@ -2068,7 +2181,8 @@ function validatePssSample(sample, originNanoseconds, containment) {
     totalRssBytes += process.rssBytes;
     categoryTotals[process.category] += process.pssBytes;
     foundRoot ||=
-      process.pid === containment.jsonStatusHostPid && process.startTimeTicks === containment.rootStartTimeTicks;
+      process.pid === ownershipTracker.editorRoot.pid &&
+      process.startTimeTicks === ownershipTracker.editorRoot.startTimeTicks;
   }
   if (!foundRoot) {
     fail("PSS sample does not retain its launch-receipt editor root.");
@@ -2149,13 +2263,14 @@ export function validateDataWranglerStudyResourceObservation(observation) {
     [
       "protocol",
       "clock",
-      "containment",
+      "ownershipTracker",
       "valid",
       "reasonClass",
       "intervalMs",
       "maximumLatenessMs",
       "missedSamples",
       "terminalBoundary",
+      "retainedOwnedIdentities",
       "samples"
     ],
     "Study resource observation"
@@ -2177,7 +2292,8 @@ export function validateDataWranglerStudyResourceObservation(observation) {
   if (observation.maximumLatenessMs !== PSS_MAXIMUM_LATENESS_MS) {
     fail("Study resource samples must retain the preregistered lateness bound.");
   }
-  const containment = validatePssContainment(observation.containment);
+  const ownershipTracker = validatePssOwnershipTracker(observation.ownershipTracker);
+  const retainedIdentities = validatePssRetainedIdentities(observation.retainedOwnedIdentities, ownershipTracker);
   const originNanoseconds = validatePssClock(observation.clock);
   assertInteger(observation.missedSamples, "Study missed resource samples");
   if (observation.valid && observation.missedSamples !== 0) {
@@ -2185,6 +2301,9 @@ export function validateDataWranglerStudyResourceObservation(observation) {
   }
   if (!Array.isArray(observation.samples)) {
     fail("Study resource samples must be an array.");
+  }
+  if (observation.samples.length > DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES) {
+    fail("Study resource samples exceed the fixed trial, deadline, and quiescence bound.");
   }
   if (observation.valid && observation.samples.length < 5) {
     fail("A valid resource observation must contain at least five samples.");
@@ -2195,7 +2314,12 @@ export function validateDataWranglerStudyResourceObservation(observation) {
   let previousEndedAt = null;
   const intervalNanoseconds = BigInt(observation.intervalMs) * 1_000_000n;
   for (const sample of observation.samples) {
-    const { scheduledAt, startedAt, endedAt } = validatePssSample(sample, originNanoseconds, containment);
+    const { scheduledAt, startedAt, endedAt } = validatePssSample(
+      sample,
+      originNanoseconds,
+      ownershipTracker,
+      retainedIdentities
+    );
     if (sample.elapsedMs < previousElapsedMs) {
       fail("PSS samples must be ordered by elapsed time.");
     }
@@ -2260,27 +2384,23 @@ function validateStudyProcessProofs(proofs, fragment, manifest) {
   if (proofs.editorRoot.capturedAtLaunch !== true) {
     fail("Study editor-root identity must be captured at launch.");
   }
-  const containment = fragment.resourceObservation?.containment;
-  const expectedLauncher = manifest.provenance.containmentLauncher;
+  const ownershipTracker = fragment.resourceObservation?.ownershipTracker;
+  const expectedTracker = manifest.provenance.ownershipTracker;
   if (
-    containment !== undefined &&
-    (containment.launcherExecutable !== expectedLauncher.executable ||
-      containment.launcherVersion !== expectedLauncher.version ||
-      containment.launcherSha256 !== expectedLauncher.sha256 ||
-      canonicalStudyJson(containment.launcherFilesystemIdentityBefore) !==
-        canonicalStudyJson(expectedLauncher.filesystemIdentity) ||
-      canonicalStudyJson(containment.launcherFilesystemIdentityAfter) !==
-        canonicalStudyJson(expectedLauncher.filesystemIdentity))
+    ownershipTracker !== undefined &&
+    (ownershipTracker.protocol !== expectedTracker.protocol ||
+      canonicalStudyJson(ownershipTracker.supervisorSource) !== canonicalStudyJson(expectedTracker.supervisorSource) ||
+      canonicalStudyJson(ownershipTracker.pythonExecutable) !== canonicalStudyJson(expectedTracker.pythonExecutable) ||
+      ownershipTracker.invocationPolicySha256 !== expectedTracker.invocationPolicySha256)
   ) {
-    fail("Study containment receipt does not match the manifest-pinned Bubblewrap launcher.");
+    fail("Study ownership receipt does not match the manifest-pinned supervisor and Python identity.");
   }
   if (
     fragment.resourceObservation !== null &&
-    (fragment.resourceObservation.containment.jsonStatusHostPid !== proofs.editorRoot.pid ||
-      fragment.resourceObservation.containment.rootStartTimeTicks !== proofs.editorRoot.startTimeTicks ||
-      fragment.resourceObservation.containment.rootNSpid[0] !== proofs.editorRoot.pid)
+    (fragment.resourceObservation.ownershipTracker.editorRoot.pid !== proofs.editorRoot.pid ||
+      fragment.resourceObservation.ownershipTracker.editorRoot.startTimeTicks !== proofs.editorRoot.startTimeTicks)
   ) {
-    fail("Study containment receipt does not match the editor root captured from Bubblewrap JSON status.");
+    fail("Study ownership receipt does not match the editor root captured from the supervisor receipt.");
   }
   if (
     fragment.resourceObservation !== null &&
@@ -2372,6 +2492,164 @@ function validateStudyProcessProofs(proofs, fragment, manifest) {
   }
 }
 
+function validateSupervisorTerminalReceipt(receipt, launchReceipt) {
+  exactKeys(
+    receipt,
+    [
+      "protocol",
+      "kind",
+      "nonce",
+      "supervisor",
+      "editorRoot",
+      "retainedOwnedIdentities",
+      "identityReuseEvents",
+      "emptyCensusProof",
+      "supervisorExitCode"
+    ],
+    "Study supervisor terminal cleanup receipt"
+  );
+  if (
+    receipt.protocol !== PSS_OWNERSHIP_PROTOCOL ||
+    receipt.kind !== "terminal-cleanup" ||
+    receipt.nonce !== launchReceipt.nonce
+  ) {
+    fail("Study supervisor terminal receipt is not correlated with its launch receipt.");
+  }
+  exactKeys(receipt.supervisor, ["pid", "startTimeTicks"], "Study cleanup supervisor identity");
+  exactKeys(receipt.editorRoot, ["pid", "startTimeTicks"], "Study cleanup editor-root identity");
+  if (
+    receipt.supervisor.pid !== launchReceipt.supervisor.pid ||
+    receipt.supervisor.startTimeTicks !== launchReceipt.supervisor.startTimeTicks ||
+    receipt.editorRoot.pid !== launchReceipt.editorRoot.pid ||
+    receipt.editorRoot.startTimeTicks !== launchReceipt.editorRoot.startTimeTicks
+  ) {
+    fail("Study supervisor terminal receipt changed its launch-time process identities.");
+  }
+  if (
+    !Array.isArray(receipt.retainedOwnedIdentities) ||
+    receipt.retainedOwnedIdentities.length === 0 ||
+    receipt.retainedOwnedIdentities.length > 256
+  ) {
+    fail("Study supervisor terminal receipt has an invalid cumulative owned-process set.");
+  }
+  const terminalIdentities = new Map();
+  const terminalIdentitiesByPid = new Map();
+  for (const identity of receipt.retainedOwnedIdentities) {
+    exactKeys(identity, ["pid", "startTimeTicks", "disposition"], "Study supervisor terminal owned identity");
+    assertInteger(identity.pid, "Study supervisor terminal owned PID", { minimum: 1 });
+    if (typeof identity.startTimeTicks !== "string" || !/^\d+$/u.test(identity.startTimeTicks)) {
+      fail("Study supervisor terminal owned-process start time is invalid.");
+    }
+    assertEnum(identity.disposition, ["exited", "terminated"], "Study supervisor terminal disposition");
+    const key = `${identity.pid}:${identity.startTimeTicks}`;
+    if (terminalIdentities.has(key)) {
+      fail("Study supervisor terminal receipt repeats an owned process identity.");
+    }
+    terminalIdentities.set(key, identity);
+    const forPid = terminalIdentitiesByPid.get(identity.pid) ?? [];
+    forPid.push(identity);
+    terminalIdentitiesByPid.set(identity.pid, forPid);
+  }
+  const rootKey = `${launchReceipt.editorRoot.pid}:${launchReceipt.editorRoot.startTimeTicks}`;
+  if (!terminalIdentities.has(rootKey)) {
+    fail("Study supervisor terminal receipt omits its editor root.");
+  }
+
+  if (!Array.isArray(receipt.identityReuseEvents) || receipt.identityReuseEvents.length > 256) {
+    fail("Study supervisor terminal identity-reuse evidence exceeds its bound.");
+  }
+  const reuseEventsByPid = new Map();
+  const reuseEventKeys = new Set();
+  for (const event of receipt.identityReuseEvents) {
+    exactKeys(
+      event,
+      ["pid", "previousStartTimeTicks", "replacementStartTimeTicks"],
+      "Study supervisor identity-reuse event"
+    );
+    assertInteger(event.pid, "Study supervisor reused PID", { minimum: 1 });
+    if (
+      typeof event.previousStartTimeTicks !== "string" ||
+      !/^\d+$/u.test(event.previousStartTimeTicks) ||
+      typeof event.replacementStartTimeTicks !== "string" ||
+      !/^\d+$/u.test(event.replacementStartTimeTicks) ||
+      event.previousStartTimeTicks === event.replacementStartTimeTicks
+    ) {
+      fail("Study supervisor identity-reuse event has invalid process start times.");
+    }
+    const eventKey = `${event.pid}:${event.previousStartTimeTicks}:${event.replacementStartTimeTicks}`;
+    if (reuseEventKeys.has(eventKey)) {
+      fail("Study supervisor identity-reuse events cannot repeat.");
+    }
+    reuseEventKeys.add(eventKey);
+    const forPid = reuseEventsByPid.get(event.pid) ?? [];
+    forPid.push(event);
+    reuseEventsByPid.set(event.pid, forPid);
+  }
+  for (const [pid, identities] of terminalIdentitiesByPid) {
+    const events = reuseEventsByPid.get(pid) ?? [];
+    if (identities.length === 1) {
+      if (events.length !== 0) {
+        fail("Study supervisor identity-reuse evidence names an unambiguous PID.");
+      }
+      continue;
+    }
+    if (events.length !== identities.length - 1) {
+      fail("Study supervisor identity-reuse evidence does not cover its complete PID history.");
+    }
+    const historyStarts = new Set(identities.map((identity) => identity.startTimeTicks));
+    let expectedPrevious = events[0]?.previousStartTimeTicks;
+    const observedStarts = new Set([expectedPrevious]);
+    for (const event of events) {
+      if (
+        event.previousStartTimeTicks !== expectedPrevious ||
+        !historyStarts.has(event.previousStartTimeTicks) ||
+        !historyStarts.has(event.replacementStartTimeTicks) ||
+        observedStarts.has(event.replacementStartTimeTicks)
+      ) {
+        fail("Study supervisor identity-reuse events do not form one ordered PID history.");
+      }
+      observedStarts.add(event.replacementStartTimeTicks);
+      expectedPrevious = event.replacementStartTimeTicks;
+    }
+    if (observedStarts.size !== historyStarts.size) {
+      fail("Study supervisor identity-reuse evidence omits a retained PID generation.");
+    }
+  }
+  for (const pid of reuseEventsByPid.keys()) {
+    if (!terminalIdentitiesByPid.has(pid)) {
+      fail("Study supervisor identity-reuse evidence names an unretained PID.");
+    }
+  }
+  exactKeys(receipt.emptyCensusProof, ["requiredConsecutiveChecks", "checks"], "Study supervisor empty-census proof");
+  if (
+    receipt.emptyCensusProof.requiredConsecutiveChecks !== 3 ||
+    !Array.isArray(receipt.emptyCensusProof.checks) ||
+    receipt.emptyCensusProof.checks.length !== receipt.emptyCensusProof.requiredConsecutiveChecks
+  ) {
+    fail("Study supervisor cleanup requires three repeated empty ownership censuses.");
+  }
+  let previousCheck = null;
+  for (const check of receipt.emptyCensusProof.checks) {
+    exactKeys(check, ["monotonicNanoseconds", "ownedProcessCount"], "Study supervisor empty-census check");
+    const timestamp = parseMonotonicNanoseconds(
+      check.monotonicNanoseconds,
+      "Study supervisor empty-census monotonic timestamp"
+    );
+    if (check.ownedProcessCount !== 0 || (previousCheck !== null && timestamp <= previousCheck)) {
+      fail("Study supervisor empty-census checks must be empty and strictly ordered.");
+    }
+    previousCheck = timestamp;
+  }
+  assertInteger(receipt.supervisorExitCode, "Study supervisor exit code");
+  if (receipt.supervisorExitCode > 255) {
+    fail("Study supervisor exit code exceeds its byte-sized bound.");
+  }
+  if (receipt.identityReuseEvents.length > 0 && receipt.supervisorExitCode !== 125) {
+    fail("Study supervisor must latch PID reuse as invalid evidence after cleanup.");
+  }
+  return { terminalIdentities, identityReuseEvents: receipt.identityReuseEvents };
+}
+
 function validateCleanupProof(proof, processProofs, fragment) {
   const launchSkipped = fragmentSkippedEditorLaunch(fragment);
   if (proof === null) {
@@ -2391,6 +2669,8 @@ function validateCleanupProof(proof, processProofs, fragment) {
       "startedAfterTrial",
       "intervalMs",
       "deadlineMs",
+      "retainedOwnedIdentities",
+      "supervisorTerminalReceipt",
       "observations",
       "treeEmpty",
       "status",
@@ -2408,10 +2688,55 @@ function validateCleanupProof(proof, processProofs, fragment) {
   if (proof.startedAfterTrial !== true || proof.intervalMs !== 200 || proof.deadlineMs !== 10_000) {
     fail("Study cleanup proof does not match the bounded post-trial protocol.");
   }
+  const sampledRetainedIdentities =
+    fragment.resourceObservation?.retainedOwnedIdentities ??
+    [processProofs.editorRoot, processProofs.configuredKernel, processProofs.openWranglerRuntime]
+      .filter((identity) => identity?.pid !== null && identity?.pid !== undefined)
+      .sort((left, right) => left.pid - right.pid);
+  const { terminalIdentities, identityReuseEvents } = validateSupervisorTerminalReceipt(
+    proof.supervisorTerminalReceipt,
+    fragment.resourceObservation.ownershipTracker
+  );
+  const expectedRetainedIdentities = [
+    ...new Map(
+      [...sampledRetainedIdentities, ...terminalIdentities.values()].map((identity) => [
+        `${identity.pid}:${identity.startTimeTicks}`,
+        identity
+      ])
+    ).values()
+  ]
+    .sort(
+      (left, right) =>
+        left.pid - right.pid ||
+        (BigInt(left.startTimeTicks) < BigInt(right.startTimeTicks)
+          ? -1
+          : BigInt(left.startTimeTicks) > BigInt(right.startTimeTicks)
+            ? 1
+            : 0)
+    )
+    .map(({ pid, startTimeTicks }) => ({ pid, startTimeTicks }));
+  if (
+    !Array.isArray(proof.retainedOwnedIdentities) ||
+    canonicalStudyJson(proof.retainedOwnedIdentities) !== canonicalStudyJson(expectedRetainedIdentities)
+  ) {
+    fail("Study cleanup proof is not the canonical union of sampled and supervisor-owned identities.");
+  }
+  const retainedIdentityKeys = new Set();
+  for (const identity of proof.retainedOwnedIdentities) {
+    exactKeys(identity, ["pid", "startTimeTicks"], "Study cleanup retained owned identity");
+    assertInteger(identity.pid, "Study cleanup retained owned PID", { minimum: 1 });
+    if (typeof identity.startTimeTicks !== "string" || !/^\d+$/u.test(identity.startTimeTicks)) {
+      fail("Study cleanup retained owned process start time is invalid.");
+    }
+    const key = `${identity.pid}:${identity.startTimeTicks}`;
+    if (retainedIdentityKeys.has(key)) {
+      fail("Study cleanup retained owned identities cannot repeat.");
+    }
+    retainedIdentityKeys.add(key);
+  }
   if (!Array.isArray(proof.observations) || proof.observations.length < 2 || proof.observations.length > 51) {
     fail("Study cleanup proof must retain two to fifty-one bounded process-tree observations.");
   }
-  let previousIdentities;
   let previousElapsedMs = -1;
   proof.observations.forEach((observation, index) => {
     exactKeys(observation, ["sequence", "elapsedMs", "processes"], "Study cleanup observation");
@@ -2421,6 +2746,7 @@ function validateCleanupProof(proof, processProofs, fragment) {
       (index === 0 && observation.elapsedMs > proof.intervalMs) ||
       (index > 0 &&
         (observation.elapsedMs <= previousElapsedMs ||
+          observation.elapsedMs - previousElapsedMs < proof.intervalMs / 2 ||
           observation.elapsedMs - previousElapsedMs >= proof.intervalMs * 2))
     ) {
       fail("Study cleanup observations must retain their actual ordered near-200 ms polling cadence.");
@@ -2436,61 +2762,34 @@ function validateCleanupProof(proof, processProofs, fragment) {
         fail("Study cleanup process start time is invalid.");
       }
       const identity = `${process.pid}:${process.startTimeTicks}`;
+      if (!retainedIdentityKeys.has(identity)) {
+        fail("Study cleanup polling observed a process absent from the supervisor's cumulative ownership receipt.");
+      }
       if (identities.has(identity)) {
         fail("Study cleanup observations cannot repeat a process identity.");
-      }
-      if (previousIdentities !== undefined && !previousIdentities.has(identity)) {
-        fail("Study cleanup polling cannot introduce a new owned process identity after shutdown starts.");
       }
       identities.add(identity);
     }
     if (observation.processes.length === 0 && index !== proof.observations.length - 1) {
       fail("Study cleanup polling must stop at the first empty process tree.");
     }
-    previousIdentities = identities;
     previousElapsedMs = observation.elapsedMs;
   });
-  const rootIdentity = `${processProofs.editorRoot.pid}:${processProofs.editorRoot.startTimeTicks}`;
-  const initialIdentities = new Set(
-    proof.observations[0].processes.map((process) => `${process.pid}:${process.startTimeTicks}`)
-  );
-  if (!initialIdentities.has(rootIdentity)) {
-    fail("Study cleanup proof must begin with the exact editor root captured at launch.");
-  }
-  const finalSample = fragment.resourceObservation?.samples.at(-1);
-  if (
-    finalSample !== undefined &&
-    finalSample.processes.some((process) => !initialIdentities.has(`${process.pid}:${process.startTimeTicks}`))
-  ) {
-    fail("Study cleanup proof omits a process identity retained at the sampling boundary.");
-  }
   const terminal = proof.observations.at(-1);
-  assertEnum(proof.status, ["complete", "surviving-tree"], "Study cleanup status");
-  if (proof.status === "complete") {
-    if (
-      terminal.elapsedMs > proof.deadlineMs ||
-      terminal.processes.length !== 0 ||
-      proof.treeEmpty !== true ||
-      proof.failure !== null
-    ) {
-      fail("Study cleanup proof must end with the complete owned process tree stopped before its deadline.");
-    }
-  } else {
-    exactKeys(proof.failure, ["reason", "observedAtMs"], "Study cleanup failure evidence");
-    if (
-      proof.failure.reason !== "surviving-process-tree" ||
-      proof.failure.observedAtMs !== terminal.elapsedMs ||
-      terminal.elapsedMs < proof.deadlineMs ||
-      terminal.processes.length === 0 ||
-      proof.treeEmpty !== false ||
-      fragment.outcome.status !== "product-failure" ||
-      fragment.outcome.reasonClass !== "cleanup"
-    ) {
-      fail("A surviving-tree cleanup proof requires an immutable post-deadline cleanup failure outcome.");
-    }
+  if (
+    proof.status !== "complete" ||
+    terminal.elapsedMs > proof.deadlineMs ||
+    terminal.processes.length !== 0 ||
+    proof.treeEmpty !== true ||
+    proof.failure !== null
+  ) {
+    fail("A publishable cleanup proof must show the complete owned process tree empty within ten seconds.");
   }
-  if (fragment.outcome.status === "success" && proof.status !== "complete") {
-    fail("A successful study fragment requires complete process-tree cleanup.");
+  if (
+    identityReuseEvents.length > 0 &&
+    (fragment.outcome.status !== "product-failure" || fragment.outcome.reasonClass !== "resource-sampling")
+  ) {
+    fail("A PID-reuse cleanup receipt requires a resource-sampling product failure.");
   }
 }
 
@@ -2743,14 +3042,15 @@ export function validateDataWranglerStudyFragment(fragment, manifest) {
   if (fragment.outcome.status === "success" && fragment.resourceObservation?.valid !== true) {
     fail("A successful study fragment requires a valid resource observation.");
   }
-  if (fragment.outcome.actionStarted && fragment.resourceObservation === null) {
-    fail("A started product action requires a retained valid or explicitly invalid resource observation.");
+  if (!fragmentSkippedEditorLaunch(fragment) && fragment.resourceObservation === null) {
+    fail("A launched study fragment requires a retained valid or explicitly invalid resource observation.");
   }
   if (fragment.outcome.status === "success") {
     const lastSample = fragment.resourceObservation.samples.at(-1);
     const quiescenceBoundary = fragment.milestones.profilesCompleteMs + 2_000;
     const quiescenceTargetNanoseconds =
-      BigInt(fragment.resourceObservation.clock.originNanoseconds) + BigInt(quiescenceBoundary) * 1_000_000n;
+      BigInt(fragment.resourceObservation.clock.originNanoseconds) +
+      millisecondsLowerBoundToNanoseconds(quiescenceBoundary, "Study profile-quiescence boundary");
     const firstSampleAtOrAfterQuiescence = fragment.resourceObservation.samples.find(
       (sample) => BigInt(sample.startedMonotonicNanoseconds) >= quiescenceTargetNanoseconds
     );
@@ -2792,56 +3092,252 @@ function fragmentFileName(fragment) {
   return `${fragment.scheduleEntryId}.attempt-${String(fragment.attempt).padStart(2, "0")}.json`;
 }
 
-function writeExclusiveAtomicJson(path, value) {
-  const directory = resolve(path, "..");
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const temporary = resolve(directory, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
-  let descriptor;
+const MAXIMUM_STUDY_JSON_BYTES = 32 * 1024 * 1024;
+
+function sameFilesystemIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function currentUserOwns(metadata) {
+  return typeof process.getuid !== "function" || metadata.uid === BigInt(process.getuid());
+}
+
+function assertPrivateStudyDirectory(metadata, label) {
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    !currentUserOwns(metadata) ||
+    (metadata.mode & 0o777n) !== 0o700n
+  ) {
+    fail(`${label} must be one owned mode-0700 directory.`);
+  }
+}
+
+function anchoredStudyPath(directoryDescriptor, name = "") {
+  return name.length === 0 ? `/proc/self/fd/${directoryDescriptor}` : `/proc/self/fd/${directoryDescriptor}/${name}`;
+}
+
+function invokeStudyReadFault(options, point) {
+  if (options?.faultInjector === undefined) {
+    return;
+  }
+  if (typeof options.faultInjector !== "function") {
+    fail("Study read fault injector must be a function.");
+  }
+  options.faultInjector(point);
+}
+
+function openPrivateStudyDirectoryLease(directory, options = {}) {
+  const path = resolve(directory);
+  const before = lstatSync(path, { bigint: true });
+  assertPrivateStudyDirectory(before, "Study artifact parent");
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    assertPrivateStudyDirectory(opened, "Opened study artifact parent");
+    if (!sameFilesystemIdentity(before, opened)) {
+      fail("Study artifact parent identity changed while it opened.");
+    }
+    const lease = { descriptor, identity: opened, path };
+    invokeStudyReadFault(options, "directory-opened");
+    return lease;
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+}
+
+function verifyPrivateStudyDirectoryLease(lease) {
+  const opened = fstatSync(lease.descriptor, { bigint: true });
+  assertPrivateStudyDirectory(opened, "Leased study artifact parent");
+  let named;
+  try {
+    named = lstatSync(lease.path, { bigint: true });
+  } catch {
+    fail("Study artifact parent disappeared while it was leased.");
+  }
+  assertPrivateStudyDirectory(named, "Named study artifact parent");
+  if (!sameFilesystemIdentity(opened, lease.identity) || !sameFilesystemIdentity(named, lease.identity)) {
+    fail("Study artifact parent identity changed while it was leased.");
+  }
+}
+
+function withPrivateStudyDirectory(directory, options, callback) {
+  const lease = openPrivateStudyDirectoryLease(directory, options);
+  let result;
   let operationError;
   try {
-    descriptor = openSync(temporary, "wx", 0o600);
-    writeFileSync(descriptor, canonicalStudyJson(value), "utf8");
-    fsyncSync(descriptor);
-    closeSync(descriptor);
-    descriptor = undefined;
-    linkSync(temporary, path);
+    result = callback(lease);
   } catch (error) {
     operationError = error;
   }
-  const cleanupErrors = [];
-  if (descriptor !== undefined) {
-    try {
-      closeSync(descriptor);
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
+  const settlementErrors = [];
+  try {
+    verifyPrivateStudyDirectoryLease(lease);
+  } catch (error) {
+    settlementErrors.push(error);
   }
   try {
-    unlinkSync(temporary);
+    closeSync(lease.descriptor);
   } catch (error) {
-    if (error?.code !== "ENOENT") {
-      cleanupErrors.push(error);
-    }
+    settlementErrors.push(error);
   }
-  if (operationError !== undefined || cleanupErrors.length > 0) {
+  if (operationError !== undefined || settlementErrors.length !== 0) {
+    if (operationError !== undefined && settlementErrors.length === 0) {
+      throw operationError;
+    }
+    if (operationError === undefined && settlementErrors.length === 1) {
+      throw settlementErrors[0];
+    }
     throw new AggregateError(
-      operationError === undefined ? cleanupErrors : [operationError, ...cleanupErrors],
-      `Could not publish the exclusive study JSON file (${operationError?.code ?? "cleanup"}).`
+      operationError === undefined ? settlementErrors : [operationError, ...settlementErrors],
+      [operationError, ...settlementErrors]
+        .filter((error) => error !== undefined)
+        .map((error) => error?.message ?? "unknown study artifact error")
+        .join("; ")
     );
   }
+  return result;
 }
 
-export function writeDataWranglerStudyJsonExclusive(path, value) {
-  writeExclusiveAtomicJson(resolve(path), value);
-  return Object.freeze({ path: resolve(path), sha256: digestStudyValue(value) });
+function validatePrivateStudyDirectory(directory) {
+  return withPrivateStudyDirectory(directory, {}, (lease) => {
+    fsyncSync(lease.descriptor);
+    return lease.path;
+  });
 }
 
-export function publishDataWranglerStudyFragment(directory, fragment, manifest) {
+function ensurePrivateStudyDirectory(directory) {
+  const target = resolve(directory);
+  let created = false;
+  try {
+    mkdirSync(target, { mode: 0o700 });
+    created = true;
+  } catch (error) {
+    if (error?.code !== "EEXIST") {
+      throw error;
+    }
+  }
+  const validated = validatePrivateStudyDirectory(target);
+  if (created) {
+    const parent = dirname(target);
+    const descriptor = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+  return validated;
+}
+
+function assertPrivateStudyFile(metadata, label) {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    !currentUserOwns(metadata) ||
+    (metadata.mode & 0o777n) !== 0o600n ||
+    metadata.size < 1n ||
+    metadata.size > BigInt(MAXIMUM_STUDY_JSON_BYTES)
+  ) {
+    fail(`${label} must be one private, bounded, singly linked regular JSON file.`);
+  }
+}
+
+function readPrivateStudyJson(lease, name, label, options = {}) {
+  if (typeof name !== "string" || name.length === 0 || basename(name) !== name) {
+    fail(`${label} filename is invalid.`);
+  }
+  const path = anchoredStudyPath(lease.descriptor, name);
+  const before = lstatSync(path, { bigint: true });
+  assertPrivateStudyFile(before, label);
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let text;
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    assertPrivateStudyFile(opened, label);
+    if (!sameFilesystemIdentity(before, opened)) {
+      fail(`${label} identity changed while it opened.`);
+    }
+    invokeStudyReadFault(options, "file-opened");
+    text = readFileSync(descriptor, "utf8");
+    const after = fstatSync(descriptor, { bigint: true });
+    const entry = lstatSync(path, { bigint: true });
+    if (
+      !sameFilesystemIdentity(opened, after) ||
+      !sameFilesystemIdentity(after, entry) ||
+      opened.size !== after.size ||
+      opened.mtimeNs !== after.mtimeNs ||
+      opened.ctimeNs !== after.ctimeNs ||
+      after.size !== entry.size ||
+      after.mtimeNs !== entry.mtimeNs ||
+      after.ctimeNs !== entry.ctimeNs
+    ) {
+      fail(`${label} changed while it was read.`);
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    fail(`${label} is not valid JSON.`);
+  }
+}
+
+function publishOrRecoverStudyJson(path, value, options = {}) {
+  const target = resolve(path);
+  if (options.parentLease === undefined) {
+    ensurePrivateStudyDirectory(dirname(target));
+  }
+  const sha256 = digestDurableJsonValue(value);
+  if (sha256 !== digestStudyValue(value)) {
+    fail("Study artifact canonical digest disagrees with the durable JSON digest.");
+  }
+  const recovery = recoverDurableStudyJsonPublication(target, sha256, options);
+  if (recovery.status !== "absent") {
+    return Object.freeze({ path: target, sha256, status: recovery.status });
+  }
+  const publication = publishDurableStudyJsonExclusive(target, value, options);
+  return Object.freeze({ path: target, sha256, status: publication.status });
+}
+
+export function writeDataWranglerStudyJsonExclusive(path, value, options = {}) {
+  if (value?.protocol === DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL) {
+    validateDataWranglerStudyManifest(value);
+  } else if (value?.protocol === DATA_WRANGLER_STUDY_RESULT_PROTOCOL) {
+    validateDataWranglerStudyResult(value);
+  } else {
+    fail("Study artifact publication requires a validated manifest or result.");
+  }
+  return publishOrRecoverStudyJson(path, value, options);
+}
+
+export function readDataWranglerStudyManifestPublication(path, options = {}) {
+  const target = resolve(path);
+  return withPrivateStudyDirectory(dirname(target), options, (lease) =>
+    validateDataWranglerStudyManifest(readPrivateStudyJson(lease, basename(target), "Study manifest", options))
+  );
+}
+
+export function publishDataWranglerStudyFragment(directory, fragment, manifest, options = {}) {
   validateDataWranglerStudyFragment(fragment, manifest);
   if (fragment.attempt > 99) {
     fail("Study fragment attempt exceeds the bounded filename range.");
   }
+  ensurePrivateStudyDirectory(directory);
+  const path = resolve(directory, fragmentFileName(fragment));
+  const sha256 = digestStudyValue(fragment);
+  const recovery = recoverDurableStudyJsonPublication(path, sha256, options);
   const recorded = loadDataWranglerStudyFragments(directory, manifest);
+  if (recovery.status !== "absent") {
+    const existing = recorded[fragment.executionIndex];
+    if (existing === undefined || canonicalStudyJson(existing) !== canonicalStudyJson(fragment)) {
+      fail("Completed study fragment publication does not match the exact retry input.");
+    }
+    return Object.freeze({ path, sha256, status: recovery.status });
+  }
   const pending = pendingDataWranglerStudyTrials(manifest, recorded);
   const next = pending[0];
   if (
@@ -2853,50 +3349,153 @@ export function publishDataWranglerStudyFragment(directory, fragment, manifest) 
   ) {
     fail("Study fragment is not the exact next immutable schedule execution.");
   }
-  const path = resolve(directory, fragmentFileName(fragment));
-  writeExclusiveAtomicJson(path, fragment);
-  return Object.freeze({ path, sha256: digestStudyValue(fragment) });
+  return publishOrRecoverStudyJson(path, fragment, options);
 }
 
-export function loadDataWranglerStudyFragments(directory, manifest) {
+export function loadDataWranglerStudyFragments(directory, manifest, options = {}) {
   validateDataWranglerStudyManifest(manifest);
-  let names;
   try {
-    names = readdirSync(directory)
-      .filter((name) => name.endsWith(".json"))
-      .sort();
+    return withPrivateStudyDirectory(directory, options, (lease) => {
+      const listedNames = readdirSync(anchoredStudyPath(lease.descriptor), { encoding: "utf8" });
+      if (!Array.isArray(listedNames) || listedNames.length > 131_072) {
+        fail("Study fragment directory listing exceeds its bound.");
+      }
+      const names = listedNames.filter((name) => name.endsWith(".json")).sort();
+      invokeStudyReadFault(options, "directory-listed");
+      const fragments = [];
+      for (const name of names) {
+        const match = FRAGMENT_FILE.exec(name);
+        if (match === null) {
+          fail("Study fragment directory contains an unexpected JSON filename.");
+        }
+        const fragment = readPrivateStudyJson(lease, name, "Study fragment", options);
+        validateDataWranglerStudyFragment(fragment, manifest);
+        if (name !== fragmentFileName(fragment)) {
+          fail("Study fragment filename does not match its immutable identity.");
+        }
+        fragments.push(fragment);
+      }
+      fragments.sort((left, right) => left.executionIndex - right.executionIndex);
+      pendingDataWranglerStudyTrials(manifest, fragments);
+      return fragments;
+    });
   } catch (error) {
     if (error?.code === "ENOENT") {
       return [];
     }
     throw error;
   }
-  const fragments = [];
-  for (const name of names) {
-    const match = FRAGMENT_FILE.exec(name);
-    if (match === null) {
-      fail("Study fragment directory contains an unexpected JSON filename.");
-    }
-    const path = resolve(directory, name);
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size <= 0 || stat.size > 32 * 1024 * 1024) {
-      fail("Study fragment must be one bounded, singly linked regular file.");
-    }
-    let fragment;
-    try {
-      fragment = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      fail("Study fragment is not valid JSON.");
-    }
-    validateDataWranglerStudyFragment(fragment, manifest);
-    if (name !== fragmentFileName(fragment)) {
-      fail("Study fragment filename does not match its immutable identity.");
-    }
-    fragments.push(fragment);
+}
+
+function escapeRegularExpression(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function finalizationIntentPattern(outputName) {
+  return new RegExp(
+    `^\\.${escapeRegularExpression(outputName)}\\.ow-study-finalize-(?<sha256>[0-9a-f]{64})\\.json$`,
+    "u"
+  );
+}
+
+function finalizationFragmentDigests(fragments) {
+  return fragments.map((fragment) => digestStudyValue(fragment));
+}
+
+function validateFinalizationIntent(intent, { outputName, manifest, fragments }) {
+  exactKeys(
+    intent,
+    ["protocol", "outputName", "manifestSha256", "fragmentSha256s", "finalizedAtUtc"],
+    "Study finalization intent"
+  );
+  if (
+    intent.protocol !== DATA_WRANGLER_STUDY_FINALIZATION_INTENT_PROTOCOL ||
+    intent.outputName !== outputName ||
+    intent.manifestSha256 !== digestStudyValue(manifest) ||
+    canonicalStudyJson(intent.fragmentSha256s) !== canonicalStudyJson(finalizationFragmentDigests(fragments))
+  ) {
+    fail("Study finalization intent does not match the output, manifest, and ordered fragments.");
   }
-  fragments.sort((left, right) => left.executionIndex - right.executionIndex);
-  pendingDataWranglerStudyTrials(manifest, fragments);
-  return fragments;
+  assertString(intent.finalizedAtUtc, ISO_UTC, "Study finalization timestamp");
+  return intent;
+}
+
+function listFinalizationIntentNames(lease, outputName) {
+  const names = readdirSync(anchoredStudyPath(lease.descriptor), { encoding: "utf8" });
+  if (!Array.isArray(names) || names.length > 131_072) {
+    fail("Study finalization directory listing is malformed or exceeds its bound.");
+  }
+  const pattern = finalizationIntentPattern(outputName);
+  return names
+    .map((name) => ({ name, match: pattern.exec(name) }))
+    .filter((entry) => entry.match !== null)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function createOrLoadDataWranglerStudyFinalizationIntent({
+  outputPath,
+  manifest,
+  fragments,
+  finalizedAtUtc,
+  publicationOptions = {},
+  readOptions = {}
+}) {
+  validateDataWranglerStudyManifest(manifest);
+  if (pendingDataWranglerStudyTrials(manifest, fragments).length !== 0) {
+    fail("Study finalization intent requires every planned pair to be complete.");
+  }
+  assertString(finalizedAtUtc, ISO_UTC, "Requested study finalization timestamp");
+  const target = resolve(outputPath);
+  const directory = ensurePrivateStudyDirectory(dirname(target));
+  const outputName = basename(target);
+  return withPrivateStudyDirectory(directory, readOptions, (lease) => {
+    const durableOptions = {
+      ...publicationOptions,
+      parentLease: { descriptor: lease.descriptor, path: lease.path }
+    };
+    let matches = listFinalizationIntentNames(lease, outputName);
+    invokeStudyReadFault(readOptions, "directory-listed");
+    if (matches.length > 1) {
+      fail("Study finalization found more than one digest-named intent.");
+    }
+    let intent;
+    if (matches.length === 0) {
+      intent = validateFinalizationIntent(
+        {
+          protocol: DATA_WRANGLER_STUDY_FINALIZATION_INTENT_PROTOCOL,
+          outputName,
+          manifestSha256: digestStudyValue(manifest),
+          fragmentSha256s: finalizationFragmentDigests(fragments),
+          finalizedAtUtc
+        },
+        { outputName, manifest, fragments }
+      );
+      const sha256 = digestStudyValue(intent);
+      const name = `.${outputName}.ow-study-finalize-${sha256}.json`;
+      publishOrRecoverStudyJson(resolve(directory, name), intent, durableOptions);
+      matches = listFinalizationIntentNames(lease, outputName);
+      if (matches.length !== 1 || matches[0].name !== name) {
+        fail("Study finalization did not publish one unique digest-named intent.");
+      }
+    } else {
+      const [{ name, match }] = matches;
+      const expectedSha256 = match.groups.sha256;
+      const intentPath = resolve(directory, name);
+      const recovery = recoverDurableStudyJsonPublication(intentPath, expectedSha256, durableOptions);
+      if (recovery.status === "absent") {
+        fail("Study finalization intent disappeared during recovery.");
+      }
+      intent = validateFinalizationIntent(readPrivateStudyJson(lease, name, "Study finalization intent", readOptions), {
+        outputName,
+        manifest,
+        fragments
+      });
+      if (digestStudyValue(intent) !== expectedSha256) {
+        fail("Study finalization intent content does not match the SHA-256 in its filename.");
+      }
+    }
+    return Object.freeze(structuredClone(intent));
+  });
 }
 
 function groupFragmentsByBlock(fragments, manifest) {

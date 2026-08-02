@@ -7,12 +7,13 @@ import {
   buildDataWranglerStudyManifest,
   buildDataWranglerStudyResult,
   canonicalStudyJson,
+  createOrLoadDataWranglerStudyFinalizationIntent,
   digestStudyValue,
   loadDataWranglerStudyFragments,
   pendingDataWranglerStudyTrials,
   publishDataWranglerStudyFragment,
+  readDataWranglerStudyManifestPublication,
   validateDataWranglerStudyFragment,
-  validateDataWranglerStudyManifest,
   validateDataWranglerStudyResultEvidence,
   writeDataWranglerStudyJsonExclusive
 } from "./data-wrangler-comparison-study.mjs";
@@ -74,18 +75,21 @@ function readBoundedJson(path, label) {
   }
 }
 
-export function runDataWranglerComparisonStudy(argv, { cwd = process.cwd(), now = () => new Date() } = {}) {
+export function runDataWranglerComparisonStudy(
+  argv,
+  { cwd = process.cwd(), now = () => new Date(), publicationOptions = {} } = {}
+) {
   const options = parseArguments(argv, cwd);
   if (options.command === "plan") {
     const specification = readBoundedJson(options.spec, "Study specification");
     const manifest = buildDataWranglerStudyManifest(specification);
     return {
       command: options.command,
-      receipt: writeDataWranglerStudyJsonExclusive(options.out, manifest),
+      receipt: writeDataWranglerStudyJsonExclusive(options.out, manifest, publicationOptions.manifest),
       output: manifest
     };
   }
-  const manifest = validateDataWranglerStudyManifest(readBoundedJson(options.manifest, "Study manifest"));
+  const manifest = readDataWranglerStudyManifestPublication(options.manifest);
   if (options.command === "record") {
     const fragment = validateDataWranglerStudyFragment(
       readBoundedJson(options.fragment, "Study fragment input"),
@@ -93,7 +97,7 @@ export function runDataWranglerComparisonStudy(argv, { cwd = process.cwd(), now 
     );
     return {
       command: options.command,
-      receipt: publishDataWranglerStudyFragment(options.fragments, fragment, manifest),
+      receipt: publishDataWranglerStudyFragment(options.fragments, fragment, manifest, publicationOptions.fragment),
       output: fragment
     };
   }
@@ -111,18 +115,26 @@ export function runDataWranglerComparisonStudy(argv, { cwd = process.cwd(), now 
       }
     };
   }
+  const pending = pendingDataWranglerStudyTrials(manifest, fragments);
+  if (pending.length !== 0) {
+    throw new Error("Study result cannot be finalized while planned pair work remains.");
+  }
+  const intent = createOrLoadDataWranglerStudyFinalizationIntent({
+    outputPath: options.out,
+    manifest,
+    fragments,
+    finalizedAtUtc: now().toISOString(),
+    publicationOptions: publicationOptions.finalizationIntent
+  });
   const result = buildDataWranglerStudyResult({
     manifest,
     fragments,
-    finalizedAtUtc: now().toISOString()
+    finalizedAtUtc: intent.finalizedAtUtc
   });
-  if (!result.accounting.allPlannedPairsComplete) {
-    throw new Error("Study result cannot be finalized while planned pair work remains.");
-  }
   validateDataWranglerStudyResultEvidence({ manifest, fragments, result });
   return {
     command: options.command,
-    receipt: writeDataWranglerStudyJsonExclusive(options.out, result),
+    receipt: writeDataWranglerStudyJsonExclusive(options.out, result, publicationOptions.result),
     output: result
   };
 }

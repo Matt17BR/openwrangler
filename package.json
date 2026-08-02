@@ -1,7 +1,7 @@
 {
   "name": "openwrangler",
   "displayName": "Open Wrangler",
-  "description": "Open files and notebook variables, then clean and export data in VS Code and Cursor. Pandas and Polars are native. DuckDB and PySpark are experimental; their notebook sessions are viewing-only.",
+  "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
   "version": "1.2.0",
   "publisher": "Matt17BR",
   "license": "MIT",
@@ -87,7 +87,7 @@
     "test:scripts:run": "npm run test:scripts:workflow && npm run test:scripts:portable && npm run test:scripts:native",
     "test:scripts:workflow": "node --test scripts/ci-workflow.test.mjs",
     "test:scripts:portable": "node scripts/run-heavy-local-command.mjs test:scripts:portable -- npm run test:scripts:portable:run",
-    "test:scripts:portable:run": "node --test --test-concurrency=4 scripts/capture-screenshots-json.test.mjs scripts/check-licenses.test.mjs scripts/create-canonical-release-artifact.test.mjs scripts/cursor-acquisition.test.mjs scripts/data-wrangler-comparison-report.test.mjs scripts/data-wrangler-comparison-study.test.mjs scripts/download-canonical-github-release.test.mjs scripts/editor-acceptance-artifact.test.mjs scripts/editor-acceptance-evidence.test.mjs scripts/editor-acceptance.test.mjs scripts/installed-performance-report.test.mjs scripts/installed-performance-system.test.mjs scripts/jupyter-acceptance-environment.test.mjs scripts/linux-pss-sampler.test.mjs scripts/marketplace-identity-profile.test.mjs scripts/marketplace-promotion-workflow.test.mjs scripts/marketplace-release-intake.test.mjs scripts/open-vsx-promotion-workflow.test.mjs scripts/package-current-channel.test.mjs scripts/packaged-editor-orchestration.test.mjs scripts/packaged-python-preflight.test.mjs scripts/prepare-stable-candidate-tag.test.mjs scripts/prepare-xvfb.test.mjs scripts/public-writing.test.mjs scripts/publish-github-stable-release.test.mjs scripts/push-stable-release-tag.test.mjs scripts/registry-release-source.test.mjs scripts/release-readiness.test.mjs scripts/remote-jupyter-acceptance.test.mjs scripts/remote-jupyter-lock.test.mjs scripts/remote-workspace-acceptance.test.mjs scripts/remote-workspace-acquisition.test.mjs scripts/remote-workspace-cleanup.test.mjs scripts/remote-workspace-launch.test.mjs scripts/remote-workspace-phase-loader.test.mjs scripts/remote-workspace-processes.test.mjs scripts/remote-workspace-provenance.test.mjs scripts/remote-workspace-staging.test.mjs scripts/remote-workspace-terminal.test.mjs scripts/run-data-wrangler-comparison-study.test.mjs scripts/run-data-wrangler-comparison.test.mjs scripts/run-heavy-local-command.test.mjs scripts/run-installed-performance.test.mjs scripts/stable-release-workflow.test.mjs scripts/verify-canonical-release-artifact.test.mjs scripts/verify-marketplace-publication.test.mjs scripts/verify-open-vsx-release.test.mjs scripts/verify-registry-release-artifact.test.mjs scripts/vsix-archive.test.mjs && npm run test:scripts:media",
+    "test:scripts:portable:run": "node --test --test-concurrency=4 scripts/capture-screenshots-json.test.mjs scripts/check-licenses.test.mjs scripts/create-canonical-release-artifact.test.mjs scripts/cursor-acquisition.test.mjs scripts/data-wrangler-comparison-report.test.mjs scripts/data-wrangler-comparison-study.test.mjs scripts/data-wrangler-public-ui-receipts.test.mjs scripts/download-canonical-github-release.test.mjs scripts/durable-study-json.test.mjs scripts/editor-acceptance-artifact.test.mjs scripts/editor-acceptance-evidence.test.mjs scripts/editor-acceptance.test.mjs scripts/installed-performance-report.test.mjs scripts/installed-performance-system.test.mjs scripts/jupyter-acceptance-environment.test.mjs scripts/linux-pss-sampler.test.mjs scripts/linux-study-supervisor.test.mjs scripts/marketplace-identity-profile.test.mjs scripts/marketplace-promotion-workflow.test.mjs scripts/marketplace-release-intake.test.mjs scripts/open-vsx-promotion-workflow.test.mjs scripts/package-current-channel.test.mjs scripts/packaged-editor-orchestration.test.mjs scripts/packaged-python-preflight.test.mjs scripts/prepare-stable-candidate-tag.test.mjs scripts/prepare-xvfb.test.mjs scripts/public-writing.test.mjs scripts/publish-github-stable-release.test.mjs scripts/push-stable-release-tag.test.mjs scripts/registry-release-source.test.mjs scripts/release-readiness.test.mjs scripts/remote-jupyter-acceptance.test.mjs scripts/remote-jupyter-lock.test.mjs scripts/remote-workspace-acceptance.test.mjs scripts/remote-workspace-acquisition.test.mjs scripts/remote-workspace-cleanup.test.mjs scripts/remote-workspace-launch.test.mjs scripts/remote-workspace-phase-loader.test.mjs scripts/remote-workspace-processes.test.mjs scripts/remote-workspace-provenance.test.mjs scripts/remote-workspace-staging.test.mjs scripts/remote-workspace-terminal.test.mjs scripts/run-data-wrangler-comparison-study.test.mjs scripts/run-data-wrangler-comparison.test.mjs scripts/run-heavy-local-command.test.mjs scripts/run-installed-performance.test.mjs scripts/stable-release-workflow.test.mjs scripts/verify-canonical-release-artifact.test.mjs scripts/verify-marketplace-publication.test.mjs scripts/verify-open-vsx-release.test.mjs scripts/verify-registry-release-artifact.test.mjs scripts/vsix-archive.test.mjs && npm run test:scripts:media",
     "test:scripts:media": "node scripts/run-heavy-local-command.mjs test:scripts:media -- npm run test:scripts:media:run",
     "test:scripts:media:run": "node --max-old-space-size=1024 --test --test-concurrency=1 scripts/public-media-surfaces.test.mjs scripts/readme-media.test.mjs",
     "test:scripts:native": "node --test scripts/windows-job-supervisor.native.test.mjs",
@@ -464,27 +464,27 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Open files or notebook variables, inspect profiles, preview cleaning steps, and export code or data. Filters and cleaning steps do not overwrite the source. DuckDB and PySpark are experimental; their notebook sessions are viewing-only.",
+        "description": "Explore, clean, and export tabular data with Pandas, Polars, or DuckDB file sessions and native notebook sessions without modifying the source.",
         "steps": [
           {
             "id": "openData",
-            "title": "Open files or notebook variables",
-            "description": "Choose [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel. In a notebook, choose a supported live Pandas, Polars, DuckDB, or PySpark variable from the toolbar."
+            "title": "Open a data source",
+            "description": "Use [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel, or launch Open Wrangler from a notebook dataframe."
           },
           {
             "id": "explore",
-            "title": "Inspect and filter data",
-            "description": "Column profiles, filters, sorts, search, and the virtual grid share one workbench. Filters and sorts remain separate from cleaning steps."
+            "title": "Explore without changing data",
+            "description": "Use column profiles, filters, sorts, search, and the virtual grid. Viewing state remains separate from cleaning steps."
           },
           {
             "id": "clean",
             "title": "Preview a cleaning step",
-            "description": "Choose [Add Cleaning Step](command:openWrangler.startOperation), review the changed cells and generated code, then apply or discard the draft."
+            "description": "Choose [Add Cleaning Step](command:openWrangler.startOperation), inspect its diff and generated code, then apply or discard it."
           },
           {
             "id": "export",
-            "title": "Save code or data",
-            "description": "Copy generated code, save it as a Python script, insert it into the originating notebook, or export cleaned data to a new CSV or Parquet file."
+            "title": "Export explicitly",
+            "description": "Copy or save generated code, insert it into the originating notebook, or export cleaned data to a new CSV or Parquet file."
           }
         ]
       }

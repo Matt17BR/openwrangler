@@ -29,7 +29,7 @@ Polars surface, that cell is unavailable rather than replaced with a different w
 
 ## Fixed environment
 
-- Official Microsoft VS Code, one exact version and Linux x64 build for every run.
+- Official Microsoft VS Code, one exact version and Linux x64 build for every run, launched with `--locale=en`.
 - Open Wrangler: the exact v1.2.1 release-candidate VSIX and SHA-256.
 - Microsoft Data Wrangler: exact Marketplace version 1.24.2.
 - One current-user-owned CPython 3.12 executable with pinned Pandas, Polars, PyArrow, Jupyter Core, and ipykernel.
@@ -82,9 +82,19 @@ must not be marketed as Data Wrangler rendering a custom preview. A control prof
 neither product establishes the host renderer's behavior. If a Polars output has no product-owned inline path, that
 cell is unsupported/non-comparable rather than a timing of generic Polars HTML.
 
+The untimed Polars capability check records the complete extension inventory, English UI locale, and exact official
+VS Code build. It uses the same `study_frame` source shape, schema hash, and sentinels registered in the manifest. The capture samples the
+ready notebook output and both products' exact accessible launch-action names once per second for 30 seconds. An
+available action must be unique and pointer-usable twice in succession. An unsupported result requires the Data
+Wrangler action to stay absent for the full window. A separate capture without either measured product must keep both
+actions absent under the same host/Jupyter output. These normalized traces are part of the manifest rather than a
+self-reported availability flag.
+
 ### Workbench open
 
-Start on pointer activation of **Open in Open Wrangler** or **Open in Data Wrangler**. Stop when the newly selected
+Start on pointer activation of **Open in Open Wrangler** or **Open in Data Wrangler**. These actions follow the
+[public Data Wrangler workflow](https://code.visualstudio.com/docs/datascience/data-wrangler), not a private command.
+Stop when the newly selected
 custom/webview editor contains the expected grid/table, ordered sentinel headers and cells, a non-busy state, stable
 geometry across two animation frames, and no visible Quick Input, dialog, modal, or pointer obstruction. Merely
 creating a frame, returning from the kernel, or painting a loading shell is not readiness.
@@ -149,12 +159,25 @@ fragments and start both products again under a new block ID.
 A timeout or error after the action is a result and is never replaced. Timing and memory summaries use successful
 fragments only. The report still shows failure and timeout counts.
 
-The immutable schedule and provenance digest are written before the first trial. Every trial publishes one fragment
-after cleanup and input revalidation. Publication is exclusive and atomic. The final result is rebuilt from those raw
-fragments and must match their hashes before publication. An interrupted study resumes only missing schedule entries;
-it cannot overwrite an outcome or mix another candidate, fixture, editor, environment, or method revision. Pair-level
-reruns append new correlated block IDs and retain the invalidated pair. If the laptop shuts down, the next run continues
-from those fragments and cannot mistake partial work for a complete report.
+The immutable schedule and provenance digest are written before the first trial. Manifest, fragment, finalization
+intent, and result files use private mode-`0700` directories and mode-`0600` files. Publication writes and syncs a new
+file, links it into place without replacing an existing target, syncs the directory, removes the exact temporary link,
+and syncs the directory again. A retry completes an exact two-link crash state by its independently known SHA-256. It
+leaves an unlinked or ambiguous one-link temporary untouched. Readers keep one verified directory descriptor open
+across each listing and every file read. A renamed parent or replaced directory entry fails the command instead of
+mixing two ledger generations.
+
+Every trial publishes one fragment after cleanup and input revalidation. The final result is rebuilt from those raw
+fragments and must match their hashes before publication. Finalization first publishes a small intent whose filename
+contains the intent SHA-256. The intent binds a real UTC finalization time to the manifest and ordered fragment hashes.
+A retry finds exactly one such intent, validates it against the current ledger, and rebuilds the same result. No intent
+or output digest is accepted merely because it appears inside the file being recovered.
+
+An interrupted study resumes only missing schedule entries. It cannot overwrite an outcome or mix another candidate,
+fixture, editor, environment, or method revision. Pair-level reruns append new correlated block IDs and retain the
+invalidated pair. Retry the interrupted `plan`, `record`, or `finalize` command before running `status`; this supplies
+the expected digest needed to settle a linked publication. If the laptop shuts down, the retained fragments still
+identify the next scheduled trial.
 
 Median and p95 use Hyndman-Fan type-7 interpolation. For ten ordered values, p95 is
 `x9 + 0.55 * (x10 - x9)`. The raw JSON binds each observation to its block ID and includes the schedule seed, cache
@@ -163,14 +186,27 @@ raw logs or private paths.
 
 ## Memory
 
-Sample the exact isolated editor descendant tree every 200 ms before and throughout every journey. On Linux, read each
-unique owned PID's `/proc/<pid>/smaps_rollup`, pin its `/proc/<pid>/stat` start time before and after the read to reject
-PID reuse, and sum proportional set size once to avoid double-counting shared pages. Retain RSS as a diagnostic only.
-Classify every PID exactly once as editor main, renderer/GPU, extension host, configured kernel, Open Wrangler runtime,
-or other owned child; category PSS must sum to total PSS. Ownership follows the complete descendant graph from the
-isolated editor, not process-group membership alone. The exact configured kernel must be observed by pinned executable,
-kernel ID, and process start time before preview readiness; every publicly expected Open Wrangler runtime child must be
-observed or its absence explicitly proven for the live-kernel path.
+Each editor starts under the pinned Linux study supervisor. The manifest binds that supervisor to the same CPython
+executable, patch version, and SHA-256 used by the notebook. Before launch, the supervisor verifies Linux
+[child-subreaper](https://man7.org/linux/man-pages/man2/pr_set_child_subreaper.2const.html),
+[`pidfd_open`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html), and
+[`pidfd_send_signal`](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html) support. It launches one editor in
+a new session and retains each process identity it observes. The subreaper adopts orphaned descendants, including
+double-forked children, so they remain visible through the parent links in a full numeric
+[`/proc`](https://www.kernel.org/doc/html/latest/filesystems/proc.html) census. The cleanup record combines the
+supervisor's history with identities sampled for PSS, so a short-lived child seen by only one side is still accounted
+for. This is process accounting for the cooperative measured applications, not a security sandbox. An incomplete
+census, a reused PID, or a live process outside the recorded ownership closure invalidates the run.
+
+Sample that owned tree every 200 ms before and throughout every journey. Read each PID's
+`/proc/<pid>/smaps_rollup`, pin its `/proc/<pid>/stat` start time before and after the read, and sum proportional set
+size once to avoid double-counting shared pages. Retain RSS as a diagnostic only. Classify every PID exactly once as
+editor main, renderer/GPU, extension host, configured kernel, Open Wrangler runtime, or other owned child; category
+PSS must sum to total PSS. The sampler uses
+[`process.hrtime.bigint()`](https://nodejs.org/api/process.html#processhrtimebigint) for one monotonic clock origin shared
+by its retained samples and milestones. The exact configured kernel must be observed by pinned executable, kernel ID,
+and process start time before preview readiness; every publicly expected Open Wrangler runtime child must be observed
+or its absence explicitly proven for the live-kernel path.
 
 For every journey report:
 
@@ -182,11 +218,19 @@ For every journey report:
   Open Wrangler runtime, and other owned-child categories, including explicit zero-valued categories;
 - the sampling interval, missed-sample count, and process-count range.
 
-Memory sampling begins before the action and ends two seconds after profile completion. Cleanup is outside the latency
-boundary but must prove the complete owned descendant tree stopped. A missing `smaps_rollup`, process-identity
+Memory sampling begins before the action and ends two seconds after profile completion. The trial allows three seconds
+for the pre-action control and the two transitions between journeys. The fixed cap is 1,228 samples: the three journey
+deadlines, that control allowance, two-second quiescence, 250 ms terminal overshoot, and the inclusive origin sample at
+the 200 ms interval. Cleanup is outside the latency boundary. The supervisor must reap the editor tree and publish its terminal receipt; three consecutive full censuses
+must then find no owned process. Cleanup signals, when needed, use pidfds after rechecking the saved process start time.
+PID reuse is retained as invalid evidence even when cleanup succeeds. If ownership cannot be settled, the runner stops
+without publishing a fragment and leaves its private root for diagnosis. A missing `smaps_rollup`, process-identity
 ambiguity, surviving process, or sampling gap invalidates the resource observation; the study may not fall back
-silently to a less comparable number. A fresh delegated cgroup's `memory.peak` may be secondary evidence only; it is
-never added to PSS or used as the headline because it can include charged page cache.
+silently to a less comparable number. Once the editor has launched, the fragment always keeps the ownership launch
+receipt and either a valid or explicitly invalid resource observation, even if setup fails before the product action.
+Only an unavailable public surface or a failed pre-launch environment gate may omit them. A fresh delegated cgroup's
+`memory.peak` may be secondary evidence only; it is never added to PSS or used as the headline because it can include
+charged page cache.
 
 The inline segment starts at its accepted pre-cell baseline and ends at inline readiness. The workbench segment starts
 at the accepted five-sample baseline immediately before the launch click and ends after the required scroll settles.

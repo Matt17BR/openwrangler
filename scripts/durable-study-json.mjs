@@ -359,7 +359,30 @@ function cleanOwnedPrelinkTemporary({ directoryDescriptor, directoryIdentity, na
   fsyncSync(directoryDescriptor);
 }
 
-function publicationContext(targetPath, platform) {
+function borrowedDirectory(path, parentLease) {
+  if (
+    parentLease === null ||
+    typeof parentLease !== "object" ||
+    Array.isArray(parentLease) ||
+    Object.keys(parentLease).sort().join("\0") !== ["descriptor", "path"].sort().join("\0") ||
+    !Number.isSafeInteger(parentLease.descriptor) ||
+    parentLease.descriptor < 0 ||
+    typeof parentLease.path !== "string" ||
+    resolve(parentLease.path) !== resolve(path)
+  ) {
+    fail("invalid-directory-lease", "The borrowed durable JSON parent lease is malformed or addresses another path.");
+  }
+  const named = lstatSync(path, { bigint: true });
+  const opened = fstatSync(parentLease.descriptor, { bigint: true });
+  assertOwnedPrivateDirectory(named, "The borrowed durable JSON parent path");
+  assertOwnedPrivateDirectory(opened, "The borrowed durable JSON parent descriptor");
+  if (!sameIdentity(named, opened)) {
+    fail("directory-rebound", "The borrowed durable JSON parent no longer matches its named path.");
+  }
+  return { descriptor: parentLease.descriptor, identity: opened, borrowed: true };
+}
+
+function publicationContext(targetPath, platform, parentLease) {
   assertLinux(platform);
   if (typeof targetPath !== "string" || targetPath.length === 0 || targetPath.includes("\0")) {
     fail("invalid-target", "The durable JSON target path is invalid.");
@@ -367,7 +390,9 @@ function publicationContext(targetPath, platform) {
   const target = resolve(targetPath);
   const targetName = basename(target);
   assertTargetName(targetName);
-  const directory = openOwnedDirectory(dirname(target));
+  const directoryPath = dirname(target);
+  const directory =
+    parentLease === undefined ? openOwnedDirectory(directoryPath) : borrowedDirectory(directoryPath, parentLease);
   return {
     ...directory,
     targetName,
@@ -381,6 +406,7 @@ export function publishDurableStudyJsonExclusive(
   {
     faultInjector,
     maximumBytes = DEFAULT_MAXIMUM_JSON_BYTES,
+    parentLease,
     platform = process.platform,
     tokenFactory = () => randomBytes(16).toString("hex")
   } = {}
@@ -392,7 +418,7 @@ export function publishDurableStudyJsonExclusive(
     fail("invalid-json-size", "The canonical durable JSON payload is missing or exceeds its byte bound.");
   }
   const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
-  const context = publicationContext(targetPath, platform);
+  const context = publicationContext(targetPath, platform, parentLease);
   let temporaryDescriptor;
   let temporaryIdentity;
   let temporaryEntry;
@@ -482,7 +508,9 @@ export function publishDurableStudyJsonExclusive(
       closeErrors.push(error);
     }
   }
-  closeDescriptor(context.descriptor, closeErrors);
+  if (!context.borrowed) {
+    closeDescriptor(context.descriptor, closeErrors);
+  }
   if (operationError !== undefined || closeErrors.length !== 0) {
     if (operationError !== undefined && closeErrors.length === 0) {
       throw operationError;
@@ -498,13 +526,13 @@ export function publishDurableStudyJsonExclusive(
 export function recoverDurableStudyJsonPublication(
   targetPath,
   expectedSha256,
-  { faultInjector, maximumBytes = DEFAULT_MAXIMUM_JSON_BYTES, platform = process.platform } = {}
+  { faultInjector, maximumBytes = DEFAULT_MAXIMUM_JSON_BYTES, parentLease, platform = process.platform } = {}
 ) {
   assertMaximumBytes(maximumBytes);
   if (typeof expectedSha256 !== "string" || !SHA256.test(expectedSha256)) {
     fail("invalid-digest", "Durable JSON recovery requires one lowercase SHA-256 digest.");
   }
-  const context = publicationContext(targetPath, platform);
+  const context = publicationContext(targetPath, platform, parentLease);
   let operationError;
   let result;
   try {
@@ -586,7 +614,9 @@ export function recoverDurableStudyJsonPublication(
     operationError = error;
   }
   const closeErrors = [];
-  closeDescriptor(context.descriptor, closeErrors);
+  if (!context.borrowed) {
+    closeDescriptor(context.descriptor, closeErrors);
+  }
   if (operationError !== undefined || closeErrors.length !== 0) {
     if (operationError !== undefined && closeErrors.length === 0) {
       throw operationError;

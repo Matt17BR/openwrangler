@@ -587,16 +587,24 @@ npm run comparison:study -- record --manifest tmp/comparison-study/manifest.json
 npm run comparison:study -- finalize --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --out tmp/comparison-study/result.json
 ```
 
-The ledger has four versioned formats: manifest, fragment, result, and Linux PSS observation. Their protocol IDs begin
-with `openwrangler-data-wrangler-study-` or `openwrangler-linux-pss-observation-`. Each validator rejects unknown fields
-and identities that do not match the manifest or fixed schedule.
+The ledger has five versioned formats: manifest, fragment, finalization intent, result, and Linux PSS observation.
+Their protocol IDs begin with `openwrangler-data-wrangler-study-` or `openwrangler-linux-pss-observation-`. Each
+validator rejects unknown fields and identities that do not match the manifest or fixed schedule.
 
 The manifest records the machine, CPU policy, AC power, fixture volume, display, extension inventory, editor templates,
-Python environment, control profile, and untimed Data Wrangler Polars capability check. These records do not contain
+Python environment, control profile, and untimed Data Wrangler Polars capability check. It also binds the ownership
+supervisor to that same Python executable, including its patch version and SHA-256. The capability and control receipts
+retain normalized one-second public-UI traces. Their validators bind the official editor digest, complete extension
+inventory, `--locale=en`, exact `study_frame` schema and sentinels, host output owner, and both launch-action names.
+Tests change the wrapper, receipt digest, context, inventory, source, trace cadence, action count, obstruction state,
+conclusion, and supervisor Python identity independently and in coordinated combinations. These records do not contain
 local paths.
 
 `plan` writes the manifest once. Its fixed seed creates ten paired warm blocks for each engine and format. Each product
-runs first five times. One cold AB pair and one cold BA pair follow for every cell.
+runs first five times. One cold AB pair and one cold BA pair follow for every cell. The manifest, fragments, and result
+are published through the durable JSON helper. Integration tests cover exact retry after a complete write and after a
+two-link crash state, rejection of a conflicting retry, private-directory enforcement, and preservation of stale
+one-link temporaries.
 
 `record` accepts only the next scheduled fragment and never overwrites an attempt. `status` returns the missing work.
 Pre-action failures follow two rules:
@@ -607,8 +615,18 @@ Pre-action failures follow two rules:
 The next `status` call schedules both products under a new attempt. This also makes an interrupted half-pair safe to
 resume.
 
-`finalize` stops if planned work remains. It then rebuilds the result from the manifest and raw fragments and requires
-an exact match before writing the file. Changing an observation and its summary cannot bypass the fragment hashes.
+`finalize` stops if planned work remains. It publishes a digest-named finalization intent that binds the manifest,
+ordered fragment hashes, output basename, and a real UTC timestamp. A retry accepts exactly one validated intent and
+rebuilds the result with the same timestamp. Zero intents starts a new finalization; more than one fails. It then
+requires an exact result match before writing the file. Changing an observation and its summary cannot bypass the
+fragment hashes.
+
+The durable JSON tests inject a fault after each file and directory durability boundary. Recovery may remove only the
+unique two-link temporary that shares the target inode. A one-link temporary without a target stays in place. Study
+commands therefore recover with a digest derived from the caller's validated payload or from the digest-named,
+manifest-bound finalization intent, never from an output file alone. Manifest, fragment, and finalization readers hold
+one verified parent-directory descriptor through listing, child reads, and final entry checks. Tests replace both the
+named parent and an opened child entry; neither replacement may enter the accepted ledger.
 
 The result uses Hyndman-Fan type-7 median and p95. It keeps each successful observation plus the paired difference and
 ratio used by the latency and memory checks. Correctness, cleanup, and sampling failures stay in the counts but do not
@@ -628,15 +646,31 @@ value or an approximate interval containing the row count. The receipt contains 
 free-form text.
 
 The deadlines are 45 seconds for inline output, 60 seconds for the workbench, and 135 seconds for complete profiling.
+The resource ledger also budgets three seconds for the pre-action control and the two journey transitions. With the
+two-second quiescence, 250 ms terminal overshoot, an inclusive origin sample, and a 200 ms interval, one trial may
+retain at most 1,228 samples.
 A timeout keeps its `>= deadline` bound and failure count but never substitutes that bound into paired calculations. If
 Data Wrangler has no public Polars surface, the cell is marked unavailable and release-incomplete without a launch or
 timing sample.
 
-On Linux, the sampler reads `/proc/<pid>/smaps_rollup` every 200 ms. It verifies PID start times and assigns each editor
-descendant to one process category. A valid observation needs at least five gap-free samples and a terminal receipt at
-the first sample after the two-second quiescence target. The result keeps missed-sample and process-count ranges. PSS is
-the comparison measure; RSS is diagnostic. The notebook UI driver must be finished before this command can produce
-study evidence.
+On Linux, the pinned supervisor verifies child-subreaper and pidfd support before it starts one editor in a new session.
+It uses a full numeric `/proc/<pid>/stat` census, so descendants that double-fork or call `setsid` remain in the owned
+closure after the subreaper adopts them. The sampler reads `/proc/<pid>/smaps_rollup` every 200 ms, verifies PID start
+times, and assigns each owned editor process to one category. The cleanup record is the sorted union of identities seen
+by the sampler and the supervisor. A PID reused during cleanup is retained as invalid evidence, but the replacement is
+still terminated and reaped. It fails on census ambiguity or ownership drift; this is reproducible accounting for
+cooperative measured applications, not a sandbox. A valid observation needs at least five gap-free samples and a
+terminal receipt at the first sample after the two-second quiescence target. Cleanup requires three consecutive empty
+ownership censuses. Every launched trial retains the ownership launch receipt and a valid or explicitly invalid
+resource observation, including setup failures before the public product action. Unsupported surfaces and failed
+pre-launch environment gates retain neither. If cleanup cannot prove an empty tree, the runner publishes no fragment.
+The result keeps missed-sample and process-count ranges. PSS is the comparison measure; RSS is diagnostic. The notebook UI driver must
+be finished before this command can produce study evidence. The implementation follows the Linux documentation for
+[`/proc`](https://www.kernel.org/doc/html/latest/filesystems/proc.html),
+[child subreapers](https://man7.org/linux/man-pages/man2/pr_set_child_subreaper.2const.html),
+[`pidfd_open`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html), and
+[`pidfd_send_signal`](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html); sample timestamps use
+[`process.hrtime.bigint()`](https://nodejs.org/api/process.html#processhrtimebigint).
 
 ## Performance fixtures
 
