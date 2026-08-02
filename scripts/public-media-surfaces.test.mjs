@@ -40,6 +40,7 @@ import {
   PUBLIC_MEDIA_PROPAGATION_DELAY_MS,
   PUBLIC_MEDIA_PROPAGATION_TIMEOUT_MS,
   PUBLIC_MEDIA_RENDER_ATTEMPT_TIMEOUT_MS,
+  PUBLIC_SURFACE_CONTENT,
   publicMediaVerificationRequired,
   publicSurfaceDefinitions,
   REPRESENTATIVE_PUBLIC_IMAGES
@@ -325,9 +326,17 @@ test("GitHub verification is pinned to the caller-supplied README commit", () =>
 });
 
 test("surface content and versions fail closed on stale publication", () => {
-  const content = "Explore, profile, clean, and export dataframes in an open-source workbench\nWhy Open Wrangler";
+  assert.deepEqual(PUBLIC_SURFACE_CONTENT, [
+    "A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks.",
+    "Open files",
+    "The active filter matches 14,285 rows."
+  ]);
+  const content = PUBLIC_SURFACE_CONTENT.join("\n");
   assert.doesNotThrow(() => assertExpectedSurfaceContent("Synthetic", content));
-  assert.throws(() => assertExpectedSurfaceContent("Synthetic", "Why Open Wrangler"), /expected README content/u);
+  assert.throws(
+    () => assertExpectedSurfaceContent("Synthetic", content.replace(PUBLIC_SURFACE_CONTENT[1], "Open data")),
+    /expected README content/u
+  );
   assert.doesNotThrow(() => assertExpectedSurfaceVersion("Synthetic", version, version));
   assert.throws(() => assertExpectedSurfaceVersion("Synthetic", "1.2.0", version), /instead of/u);
   assert.doesNotThrow(() => assertSourcePackageVersion(JSON.stringify({ version }), version));
@@ -349,6 +358,7 @@ test("representative media remains bound to each immutable README URL", () => {
       sourceSha: referenceSha
     })),
     [
+      { logicalWidth: 100, logicalHeight: 50, sourceSha },
       { logicalWidth: 100, logicalHeight: 50, sourceSha },
       { logicalWidth: 100, logicalHeight: 50, sourceSha }
     ]

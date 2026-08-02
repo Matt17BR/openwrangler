@@ -3,22 +3,23 @@
 These scenes use generated business data and show Open Wrangler as users see it in VS Code and Cursor. Dataset
 sizes in the images describe the example, not a row or column limit.
 
-[Workbench](#workbench-at-a-glance) · [Files](#open-files-where-you-work) ·
-[Explore](#explore-profile-and-navigate) · [Clean](#build-a-cleaning-plan) · [Export](#keep-the-result) ·
-[Notebooks](#notebook-workflows) · [Editors](#editors-and-themes)
+[Workbench](#grid-and-sidebar) · [Files](#file-entry-points) ·
+[Explore](#filters-profiles-sorts-and-column-search) · [Clean](#cleaning-drafts-and-history) ·
+[Export](#export-code-and-cleaned-data) · [Notebooks](#notebook-dataframes) ·
+[Editors](#editor-and-theme-support)
 
-## Workbench at a glance
+## Grid and sidebar
 
 <img alt="Open Wrangler in VS Code with a Polars dataframe, column summaries, profiles, and native Activity Bar views" src="images/readme/v1.2/explore.png" width="1440" height="870">
 
-The grid, column summaries, detailed profiles, and editor-native controls stay in one workspace.
+The workbench places the grid, column summaries, detailed profiles, and editor controls together.
 
 <img alt="Operations, Summary, Filters and Sorts, and Cleaning Steps beside a dataframe draft" src="images/readme/v1.2/gallery/sidebar-overview.png" width="1440" height="874">
 
-The sidebar keeps the operation catalog, dataset health, viewing state, and cleaning history visible beside the
-data. Filters and sorts remain separate from applied cleaning steps.
+Operations, dataset health, viewing state, and cleaning history appear beside the grid. Filters and sorts remain
+separate from applied cleaning steps.
 
-## Open files where you work
+## File entry points
 
 <table>
   <tr>
@@ -26,8 +27,8 @@ data. Filters and sorts remain separate from applied cleaning steps.
     <td width="38%"><a href="images/readme/v1.2/gallery/tab-context-menu.png"><img alt="Opening the active CSV in Open Wrangler from its editor-tab menu" src="images/readme/v1.2/gallery/tab-context-menu.png" width="540" height="570"></a></td>
   </tr>
   <tr>
-    <td><strong>Explorer.</strong> Open CSV, TSV, Parquet, JSONL, NDJSON, or Excel files from the file tree.</td>
-    <td><strong>Editor tab.</strong> The same action is available from an already-open file.</td>
+    <td>Use the Explorer context menu to open CSV, TSV, Parquet, JSONL, NDJSON, or Excel files.</td>
+    <td>Use the editor-tab menu when the file is already open.</td>
   </tr>
 </table>
 
@@ -38,7 +39,7 @@ encoding, quote style, and header automatically. **Import options** is an explic
 
 <img alt="Import options starting from the detected configuration for a semicolon-delimited CSV" src="images/readme/v1.2/gallery/import-options.png" width="1440" height="870">
 
-## Explore, profile, and navigate
+## Filters, profiles, sorts, and column search
 
 <img alt="A Polars file session filtered to 14,285 DACH rows with the active predicate and matching native sidebar state" src="images/readme/v1.2/filter-result.png" width="1440" height="861">
 
@@ -47,12 +48,12 @@ changing the source.
 
 <table>
   <tr>
-    <td width="50%"><a href="images/readme/v1.2/gallery/histogram-hover.png"><img alt="A numeric histogram showing the exact interval and row count for a focused bin" src="images/readme/v1.2/gallery/histogram-hover.png" width="448" height="480"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows" src="images/readme/v1.2/gallery/histogram-hover.png" width="448" height="480"></a></td>
     <td width="50%"><a href="images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with priority, reorder, edit, and remove controls" src="images/readme/v1.2/gallery/sort-priority.png" width="448" height="480"></a></td>
   </tr>
   <tr>
-    <td><strong>Inspect distributions.</strong> Every bin has an easy-to-target interaction area and exact interval.</td>
-    <td><strong>Control compound sorts.</strong> Reorder, change direction and null placement, or remove any key.</td>
+    <td>Focus a histogram bin to see its interval and row count.</td>
+    <td>Reorder sort keys, change their direction and null placement, or remove them.</td>
   </tr>
 </table>
 
@@ -61,7 +62,7 @@ changing the source.
 Column search reaches the complete schema and keeps type icons, full names, and keyboard navigation available even
 for very wide dataframes.
 
-## Build a cleaning plan
+## Cleaning drafts and history
 
 <table>
   <tr>
@@ -69,8 +70,8 @@ for very wide dataframes.
     <td width="50%"><a href="images/readme/v1.2/gallery/operation-configuration.png"><img alt="Configuring a Formula column operation before preview" src="images/readme/v1.2/gallery/operation-configuration-detail.png" width="510" height="605"></a></td>
   </tr>
   <tr>
-    <td><strong>Choose a task.</strong> Search or browse 27 built-in operations, custom code, and by-example transforms.</td>
-    <td><strong>Configure safely.</strong> Parameters remain editable until Preview changes creates a draft.</td>
+    <td>Search or browse 27 built-in operations, custom code, and transformations inferred from examples.</td>
+    <td>Edit the operation parameters, then choose <strong>Preview changes</strong> to create a draft.</td>
   </tr>
 </table>
 
@@ -85,8 +86,8 @@ are available before a step joins the plan.
     <td width="50%"><a href="images/readme/v1.2/gallery/latest-step-undone.png"><img alt="Cleaning Steps after undoing the formula while retaining the earlier uppercase step" src="images/readme/v1.2/gallery/latest-step-undone-detail.png" width="448" height="440"></a></td>
   </tr>
   <tr>
-    <td><strong>Edit in place.</strong> Updating the latest step replaces it instead of duplicating history.</td>
-    <td><strong>Undo precisely.</strong> Remove the latest step while keeping the rest of the plan and view.</td>
+    <td>Editing the latest step updates that history entry instead of adding a duplicate.</td>
+    <td>Undo removes the latest step without clearing the rest of the plan, filters, or sorts.</td>
   </tr>
 </table>
 
@@ -100,12 +101,12 @@ Select any applied step to inspect that point in history, then return to confirm
     <td width="50%"><a href="images/readme/v1.2/gallery/by-example-preview.png"><img alt="Previewing the learned country-code transformation on unseen values" src="images/readme/v1.2/gallery/by-example-preview-detail.png" width="700" height="525"></a></td>
   </tr>
   <tr>
-    <td><strong>Teach it.</strong> Provide exact input and output examples.</td>
-    <td><strong>Review it.</strong> Confirm the deterministic candidate on unseen rows before applying.</td>
+    <td>Enter exact input and output examples for the account-code transformation.</td>
+    <td>Preview the inferred transformation on unseen rows before applying it.</td>
   </tr>
 </table>
 
-## Keep the result
+## Export code and cleaned data
 
 <table>
   <tr>
@@ -113,12 +114,12 @@ Select any applied step to inspect that point in history, then return to confirm
     <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="images/readme/v1.2/gallery/export-data-detail.png" width="995" height="344"></a></td>
   </tr>
   <tr>
-    <td><strong>Reusable code.</strong> Copy it, insert it into a notebook, or save a native Python script.</td>
-    <td><strong>Separate output.</strong> Export cleaned CSV or Parquet without overwriting the source.</td>
+    <td>Copy generated code, insert it into a notebook, or save it as a Python script.</td>
+    <td>Export a cleaned CSV or Parquet file without overwriting the source.</td>
   </tr>
 </table>
 
-## Notebook workflows
+## Notebook dataframes
 
 <table>
   <tr>
@@ -126,8 +127,8 @@ Select any applied step to inspect that point in history, then return to confirm
     <td width="49%"><a href="images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating notebook" src="images/readme/v1.2/gallery/notebook-code-insertion-detail.png" width="1000" height="288"></a></td>
   </tr>
   <tr>
-    <td><strong>Open the live object.</strong> Variables are labeled by engine and dataframe type before launch.</td>
-    <td><strong>Keep the work reproducible.</strong> Insert generated code into the notebook that owns the data.</td>
+    <td>The notebook picker labels each live variable by engine and dataframe type.</td>
+    <td>Insert generated code into the notebook that opened the dataframe.</td>
   </tr>
 </table>
 
@@ -137,38 +138,39 @@ Select any applied step to inspect that point in history, then return to confirm
     <td width="50%"><a href="images/readme/v1.2/gallery/notebook-polars.png"><img alt="A native Polars notebook session with a formula draft and generated Polars code" src="images/readme/v1.2/gallery/notebook-polars-detail.png" width="884" height="675"></a></td>
   </tr>
   <tr>
-    <td><strong>Pandas.</strong> Preview inline, then open and edit the complete live dataframe.</td>
-    <td><strong>Polars.</strong> Edit natively and generate executable Polars code.</td>
+    <td>Pandas outputs open as live Pandas dataframes.</td>
+    <td>Polars dataframes stay native and generate Polars code.</td>
   </tr>
   <tr>
     <td width="50%"><a href="images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="images/readme/v1.2/gallery/notebook-duckdb-detail.png" width="872" height="700"></a></td>
-    <td width="50%"><a href="images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="An experimental native PySpark notebook session with exact profiles" src="images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels" src="images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
   </tr>
   <tr>
-    <td><strong>DuckDB, experimental.</strong> Query the same live relation without converting it.</td>
-    <td><strong>PySpark 4.2.x, experimental.</strong> View, filter, sort, page, and profile in Spark.</td>
+    <td>Experimental DuckDB relations are view-only and do not require dataframe conversion.</td>
+    <td>Experimental PySpark 4.2.x support provides viewing, filtering, sorting, paging, and profiles.</td>
   </tr>
 </table>
 
-DuckDB and PySpark notebook sessions are currently viewing-only. PySpark uses the Spark session supplied by the
-notebook and can be expensive to open on large or remote dataframes.
+DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's Spark session. The first page loads
+without counting or caching the entire dataframe, and the exact row total appears after the last page. Pages must be
+visited in order because Spark does not guarantee a global row order for an unordered dataframe.
 
-## Rich file types
+## DuckDB nested and temporal values
 
 <a href="images/readme/v1.2/gallery/duckdb-rich-parquet.png"><img alt="A DuckDB Parquet source with decimal, time-zone, list, and struct columns" src="images/readme/v1.2/gallery/duckdb-rich-parquet-detail.png" width="1500" height="595"></a>
 
 Decimal, time-zone-aware timestamp, list, and struct values remain typed through the grid and summaries.
 
-## Editors and themes
+## Editor and theme support
 
 <table>
   <tr>
     <td width="50%"><a href="images/readme/v1.2/gallery/cursor-explore.png"><img alt="Open Wrangler running in Cursor" src="images/readme/v1.2/gallery/cursor-explore.png" width="1440" height="865"></a></td>
-    <td width="50%"><a href="images/readme/v1.2/gallery/high-contrast-explore.png"><img alt="Open Wrangler populated with high-contrast theme tokens" src="images/readme/v1.2/gallery/high-contrast-explore.png" width="1440" height="845"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/high-contrast-explore.png"><img alt="Open Wrangler in a high-contrast theme with the operations sidebar, orders grid, and revenue profile outlined in cyan" src="images/readme/v1.2/gallery/high-contrast-explore.png" width="1440" height="845"></a></td>
   </tr>
   <tr>
-    <td><strong>Cursor.</strong> VS Code and Cursor are release-tested from the same VSIX.</td>
-    <td><strong>High contrast.</strong> Grid, views, profiles, and controls use native editor theme tokens.</td>
+    <td>The same VSIX is release-tested in VS Code and Cursor.</td>
+    <td>The grid, sidebars, profiles, and controls use the editor's high-contrast theme tokens.</td>
   </tr>
 </table>
 

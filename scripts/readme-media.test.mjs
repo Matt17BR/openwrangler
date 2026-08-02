@@ -503,6 +503,15 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(readme, /14,285 matching rows/u);
   assert.match(readme, /automatic delimiter, encoding, quote, and header detection/u);
+  assert.match(readme, /^## Open files$/mu);
+  assert.match(
+    readme,
+    /If a required Python package is missing, Open Wrangler\s+lists it and asks before installing anything\./u
+  );
+  assert.match(
+    readme,
+    /The active filter matches 14,285 rows\. The grid and sidebar show the same predicate and clear controls without\s+changing the source\./u
+  );
   assert.match(readme, /Open Wrangler stays inactive in Restricted Mode\./u);
   assert.match(readme, /Column search covers the full schema and includes data-type icons/u);
   assert.match(readme, /Hover or focus any histogram bin to see its range and row count/u);
@@ -516,6 +525,14 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /Experimental PySpark 4\.2\.x support provides viewing, filtering, sorting, paging, and profiles/u
   );
+  assert.match(
+    readme,
+    /alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows"/u
+  );
+  assert.match(
+    readme,
+    /alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels"/u
+  );
   assert.match(readme, /Open Wrangler can open larger datasets; usable size depends/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
@@ -526,6 +543,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(
     readme,
     /open-source project inspired by <a href="https:\/\/github\.com\/microsoft\/vscode-data-wrangler"/u
+  );
+  assert.equal(
+    [...readme.matchAll(/uses no Microsoft Data Wrangler code or assets/gu)].length,
+    1,
+    "The concise project-origin statement belongs near the top without a duplicate license disclaimer."
   );
   assert.match(readme, /If Microsoft\s+Data Wrangler is installed too[\s\S]{0,180}Choose\s+Notebook Preview Provider/u);
   assert.match(readme, /\| Other VS Code desktop forks \| Experimental/u);
@@ -538,6 +560,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(readme, /Pages must be\s+visited in order because Spark does not guarantee a global row order/u);
   assert.match(readme, /does not install PySpark, manage cluster\s+authentication, or stop the Spark session/u);
+  assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
+  assert.match(
+    readme,
+    /Issue \[#91\][\s\S]{0,120}tracks a planned comparison with Microsoft Data\s+Wrangler using the same files, editor, Python environment, and actions\./u
+  );
   assert.match(
     readme,
     /\*\*Next in v1:\*\*[\s\S]{0,220}#36[\s\S]{0,220}#86[\s\S]{0,220}#91[\s\S]{0,180}currently\s+experimental/u
@@ -578,25 +605,45 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     assert.ok(gallery.includes(image), `Gallery must include ${image}.`);
   }
   assert.match(gallery, /Dataset\s+sizes in the images describe the example, not a row or column limit/u);
-  assert.match(gallery, /Query the same live relation without converting it/u);
-  assert.match(gallery, /PySpark 4\.2\.x, experimental/u);
-  assert.match(gallery, /Teach it\./u);
-  assert.match(gallery, /Review it\./u);
-  assert.match(gallery, /^## Workbench at a glance$/mu);
+  assert.match(gallery, /Experimental DuckDB relations are view-only and do not require dataframe conversion/u);
+  assert.match(gallery, /Experimental PySpark 4\.2\.x support/u);
+  assert.match(gallery, /^## Grid and sidebar$/mu);
   assert.match(
     gallery,
-    /The sidebar keeps the operation catalog, dataset health, viewing state, and cleaning history/u
+    /The workbench places the grid, column summaries, detailed profiles, and editor controls together/u
   );
-  assert.match(gallery, /Inspect distributions\./u);
-  assert.match(gallery, /Control compound sorts\./u);
+  assert.match(gallery, /Operations, dataset health, viewing state, and cleaning history appear beside the grid/u);
+  assert.match(gallery, /Focus a histogram bin to see its interval and row count\./u);
+  assert.match(gallery, /Reorder sort keys, change their direction and null placement, or remove them\./u);
   assert.match(
     gallery,
-    /## Build a cleaning plan[\s\S]{0,1200}operation-catalog\.png[\s\S]{0,1200}operation-configuration\.png[\s\S]{0,1200}workflow\.png[\s\S]{0,2500}applied-step-inspection\.png/u
+    /## Cleaning drafts and history[\s\S]{0,1200}operation-catalog\.png[\s\S]{0,1200}operation-configuration\.png[\s\S]{0,1200}workflow\.png[\s\S]{0,2500}applied-step-inspection\.png/u
   );
-  assert.match(gallery, /Open the live object\./u);
-  assert.match(gallery, /Keep the work reproducible\./u);
-  assert.match(gallery, /## Open files where you work/u);
-  assert.match(gallery, /## Editors and themes/u);
+  assert.match(gallery, /The notebook picker labels each live variable by engine and dataframe type\./u);
+  assert.match(gallery, /Insert generated code into the notebook that opened the dataframe\./u);
+  assert.match(gallery, /^## File entry points$/mu);
+  assert.match(gallery, /^## Export code and cleaned data$/mu);
+  assert.match(gallery, /^## Notebook dataframes$/mu);
+  assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
+  assert.match(gallery, /^## Editor and theme support$/mu);
+  assert.doesNotMatch(gallery, /<td><strong>/u);
+  assert.match(
+    gallery,
+    /alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows"/u
+  );
+  assert.match(
+    gallery,
+    /alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels"/u
+  );
+  assert.match(
+    gallery,
+    /alt="Open Wrangler in a high-contrast theme with the operations sidebar, orders grid, and revenue profile outlined in cyan"/u
+  );
+  assert.match(
+    gallery,
+    /first page loads\s+without counting or caching the entire dataframe[\s\S]{0,120}exact row total appears after the last page/u
+  );
+  assert.doesNotMatch(gallery, /expensive to open|scan and index|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   assert.doesNotMatch(
     gallery,
     /production webview|packaged extension|current grid-block|bounded, read-only projection/u
