@@ -290,6 +290,20 @@ function verifyDirectoryIdentity(directoryDescriptor, expected) {
   assertOwnedPrivateDirectory(current, "The durable JSON parent");
 }
 
+function verifyNamedDirectoryIdentity(directoryPath, directoryDescriptor, expected) {
+  verifyDirectoryIdentity(directoryDescriptor, expected);
+  let named;
+  try {
+    named = lstatSync(directoryPath, { bigint: true });
+  } catch {
+    fail("directory-rebound", "The durable JSON parent disappeared from its named path before settlement.");
+  }
+  assertOwnedPrivateDirectory(named, "The named durable JSON parent");
+  if (!sameIdentity(named, expected)) {
+    fail("directory-rebound", "The durable JSON parent no longer matches its named path at settlement.");
+  }
+}
+
 function verifyFileBytes(path, expectedSha256, maximumBytes, expectedIdentity, expectedLinks) {
   let descriptor;
   let operationError;
@@ -395,6 +409,7 @@ function publicationContext(targetPath, platform, parentLease) {
     parentLease === undefined ? openOwnedDirectory(directoryPath) : borrowedDirectory(directoryPath, parentLease);
   return {
     ...directory,
+    directoryPath,
     targetName,
     targetPath: anchoredPath(directory.descriptor, targetName)
   };
@@ -489,6 +504,11 @@ export function publishDurableStudyJsonExclusive(
     operationError = error;
   }
   const closeErrors = [];
+  try {
+    verifyNamedDirectoryIdentity(context.directoryPath, context.descriptor, context.identity);
+  } catch (error) {
+    closeErrors.push(error);
+  }
   closeDescriptor(temporaryDescriptor, closeErrors);
   if (
     operationError !== undefined &&
@@ -514,6 +534,9 @@ export function publishDurableStudyJsonExclusive(
   if (operationError !== undefined || closeErrors.length !== 0) {
     if (operationError !== undefined && closeErrors.length === 0) {
       throw operationError;
+    }
+    if (operationError === undefined && closeErrors.length === 1) {
+      throw closeErrors[0];
     }
     throw new AggregateError(
       operationError === undefined ? closeErrors : [operationError, ...closeErrors],
@@ -614,12 +637,20 @@ export function recoverDurableStudyJsonPublication(
     operationError = error;
   }
   const closeErrors = [];
+  try {
+    verifyNamedDirectoryIdentity(context.directoryPath, context.descriptor, context.identity);
+  } catch (error) {
+    closeErrors.push(error);
+  }
   if (!context.borrowed) {
     closeDescriptor(context.descriptor, closeErrors);
   }
   if (operationError !== undefined || closeErrors.length !== 0) {
     if (operationError !== undefined && closeErrors.length === 0) {
       throw operationError;
+    }
+    if (operationError === undefined && closeErrors.length === 1) {
+      throw closeErrors[0];
     }
     throw new AggregateError(
       operationError === undefined ? closeErrors : [operationError, ...closeErrors],

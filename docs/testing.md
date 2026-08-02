@@ -604,7 +604,9 @@ local paths.
 runs first five times. One cold AB pair and one cold BA pair follow for every cell. The manifest, fragments, and result
 are published through the durable JSON helper. Integration tests cover exact retry after a complete write and after a
 two-link crash state, rejection of a conflicting retry, private-directory enforcement, and preservation of stale
-one-link temporaries.
+one-link temporaries. Manifest and result writes hold one named-path-verified directory lease from recovery through
+publication. Fragment recording uses one such lease for recovery, the current ledger read, schedule validation, and
+publication. Settlement rejects a renamed or rebound parent.
 
 `record` accepts only the next scheduled fragment and never overwrites an attempt. `status` returns the missing work.
 Pre-action failures follow two rules:
@@ -626,7 +628,9 @@ unique two-link temporary that shares the target inode. A one-link temporary wit
 commands therefore recover with a digest derived from the caller's validated payload or from the digest-named,
 manifest-bound finalization intent, never from an output file alone. Manifest, fragment, and finalization readers hold
 one verified parent-directory descriptor through listing, child reads, and final entry checks. Tests replace both the
-named parent and an opened child entry; neither replacement may enter the accepted ledger.
+named parent and an opened child entry; neither replacement may enter the accepted ledger. The CLI reads specification
+and fragment input JSON through bounded `O_NOFOLLOW` descriptors, with metadata and named-entry checks around the read;
+symlink and entry-swap fixtures must fail before parsed data reaches a validator.
 
 The result uses Hyndman-Fan type-7 median and p95. It keeps each successful observation plus the paired difference and
 ratio used by the latency and memory checks. Correctness, cleanup, and sampling failures stay in the counts but do not
@@ -646,7 +650,8 @@ value or an approximate interval containing the row count. The receipt contains 
 free-form text.
 
 The deadlines are 45 seconds for inline output, 60 seconds for the workbench, and 135 seconds for complete profiling.
-The resource ledger also budgets three seconds for the pre-action control and the two journey transitions. With the
+The resource ledger also caps `inlineActionMs + (workbenchActionMs - inlineReadyMs) + (profileActionMs -
+workbenchReadyMs)` at three seconds. With the
 two-second quiescence, 250 ms terminal overshoot, an inclusive origin sample, and a 200 ms interval, one trial may
 retain at most 1,228 samples.
 A timeout keeps its `>= deadline` bound and failure count but never substitutes that bound into paired calculations. If

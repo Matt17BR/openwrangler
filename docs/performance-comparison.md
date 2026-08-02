@@ -164,8 +164,11 @@ intent, and result files use private mode-`0700` directories and mode-`0600` fil
 file, links it into place without replacing an existing target, syncs the directory, removes the exact temporary link,
 and syncs the directory again. A retry completes an exact two-link crash state by its independently known SHA-256. It
 leaves an unlinked or ambiguous one-link temporary untouched. Readers keep one verified directory descriptor open
-across each listing and every file read. A renamed parent or replaced directory entry fails the command instead of
-mixing two ledger generations.
+across each listing and every file read. `plan` and result publication keep that lease from recovery through final
+publication; `record` keeps it through recovery, schedule validation, and fragment publication. The named directory is
+checked again before the command returns. CLI specification and fragment inputs are also read through bounded
+no-follow descriptors and checked against their named entries before and after the read. A renamed parent, symlink, or
+replaced directory entry fails the command instead of mixing two ledger generations.
 
 Every trial publishes one fragment after cleanup and input revalidation. The final result is rebuilt from those raw
 fragments and must match their hashes before publication. Finalization first publishes a small intent whose filename
@@ -219,7 +222,8 @@ For every journey report:
 - the sampling interval, missed-sample count, and process-count range.
 
 Memory sampling begins before the action and ends two seconds after profile completion. The trial allows three seconds
-for the pre-action control and the two transitions between journeys. The fixed cap is 1,228 samples: the three journey
+in total for `inlineActionMs`, the gap from inline readiness to the workbench action, and the gap from workbench
+readiness to the profile action. The fixed cap is 1,228 samples: the three journey
 deadlines, that control allowance, two-second quiescence, 250 ms terminal overshoot, and the inclusive origin sample at
 the 200 ms interval. Cleanup is outside the latency boundary. The supervisor must reap the editor tree and publish its terminal receipt; three consecutive full censuses
 must then find no owned process. Cleanup signals, when needed, use pidfds after rechecking the saved process start time.

@@ -251,6 +251,63 @@ test("append-only fragments resume a half pair and accept only an exact complete
   });
 });
 
+test("artifact publication and fragment recording reject a parent rebind within one directory lease", async (t) => {
+  await t.test("manifest publication", () => {
+    withTemporaryDirectory((directory) => {
+      const ledger = resolve(directory, "ledger");
+      const displaced = resolve(directory, "ledger-displaced");
+      mkdirSync(ledger, { mode: 0o700 });
+      let directoryOpenCount = 0;
+      assert.throws(
+        () =>
+          writeDataWranglerStudyJsonExclusive(resolve(ledger, "manifest.json"), studyManifest(), {
+            faultInjector: (point) => {
+              if (point === "directory-opened") {
+                directoryOpenCount += 1;
+              }
+              if (point === "publication-recovered") {
+                renameSync(ledger, displaced);
+                mkdirSync(ledger, { mode: 0o700 });
+              }
+            }
+          }),
+        /parent identity changed while it was leased/u
+      );
+      assert.equal(directoryOpenCount, 1);
+      assert.deepEqual(readdirSync(ledger), []);
+      assert.deepEqual(readdirSync(displaced), []);
+    });
+  });
+
+  await t.test("fragment recording", () => {
+    withTemporaryDirectory((directory) => {
+      const ledger = resolve(directory, "fragments");
+      const displaced = resolve(directory, "fragments-displaced");
+      const manifest = studyManifest();
+      const fragment = successFragment(manifest, manifest.schedule[0], 0, 10);
+      let directoryOpenCount = 0;
+      assert.throws(
+        () =>
+          publishDataWranglerStudyFragment(ledger, fragment, manifest, {
+            faultInjector: (point) => {
+              if (point === "directory-opened") {
+                directoryOpenCount += 1;
+              }
+              if (point === "directory-listed") {
+                renameSync(ledger, displaced);
+                mkdirSync(ledger, { mode: 0o700 });
+              }
+            }
+          }),
+        /parent identity changed while it was leased/u
+      );
+      assert.equal(directoryOpenCount, 1);
+      assert.deepEqual(readdirSync(ledger), []);
+      assert.deepEqual(readdirSync(displaced), []);
+    });
+  });
+});
+
 test("fragment loading keeps one directory lease and rejects a rebound parent", () => {
   withTemporaryDirectory((directory) => {
     const manifest = studyManifest();
@@ -438,7 +495,7 @@ test("fragment validation correlates manifest, scheduled identity, milestones, a
   assert.equal(
     BigInt(fractionalMilestones.resourceObservation.terminalBoundary.targetMonotonicNanoseconds) -
       PSS_TEST_ORIGIN_NANOSECONDS,
-    5_475_375_000n
+    5_075_375_000n
   );
 
   assert.throws(
@@ -1160,6 +1217,25 @@ test("the three journey deadlines accept the boundary and reject one millisecond
   }
 });
 
+test("unmeasured control and transition gaps accept 3000 ms and reject one millisecond more", () => {
+  const manifest = studyManifest();
+  const fragment = deadlineBoundaryFragment(manifest, manifest.schedule[0]);
+  assert.equal(
+    fragment.milestones.inlineActionMs +
+      (fragment.milestones.workbenchActionMs - fragment.milestones.inlineReadyMs) +
+      (fragment.milestones.profileActionMs - fragment.milestones.workbenchReadyMs),
+    DATA_WRANGLER_STUDY_CONTROL_ALLOWANCE_MS
+  );
+  assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
+
+  const overAllowance = structuredClone(fragment);
+  overAllowance.milestones.profileActionMs += 1;
+  assert.throws(
+    () => validateDataWranglerStudyFragment(overAllowance, manifest),
+    /unmeasured control and transition gaps exceed/u
+  );
+});
+
 test("product timeouts name the journey and retain an exact >= deadline right-censor", () => {
   const manifest = studyManifest();
   const entries = manifest.schedule.slice(0, 2);
@@ -1388,9 +1464,9 @@ test("PSS segments use the five samples before each action and report total and 
   const milestones = {
     inlineActionMs: 1_000,
     inlineReadyMs: 1_202,
-    workbenchActionMs: 2_200,
+    workbenchActionMs: 2_000,
     workbenchReadyMs: 2_402,
-    profileActionMs: 3_400,
+    profileActionMs: 3_000,
     firstProfileReadyMs: 3_602,
     profilesCompleteMs: 4_002,
     samplingStoppedMs: 6_002
@@ -1834,14 +1910,14 @@ function publicUiActions(dataWranglerAvailable) {
 }
 
 function successFragment(manifest, scheduleEntry, attempt, duration, executionIndex = scheduleEntry.sequence) {
-  const profilesCompleteMs = 3_400 + duration * 3;
+  const profilesCompleteMs = 3_000 + duration * 3;
   const milestones = {
     inlineActionMs: 1_000,
     inlineReadyMs: 1_000 + duration,
-    workbenchActionMs: 2_200,
-    workbenchReadyMs: 2_200 + duration,
-    profileActionMs: 3_400,
-    firstProfileReadyMs: 3_400 + duration,
+    workbenchActionMs: 2_000,
+    workbenchReadyMs: 2_000 + duration,
+    profileActionMs: 3_000,
+    firstProfileReadyMs: 3_000 + duration,
     profilesCompleteMs,
     samplingStoppedMs: pssTerminalEndElapsedMs(profilesCompleteMs + 2_000)
   };

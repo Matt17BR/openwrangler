@@ -221,6 +221,55 @@ test("a borrowed parent lease anchors publication and recovery to one directory 
   });
 });
 
+test("owned publication and recovery reject a rebound named parent at settlement", async (t) => {
+  await t.test("publication", () => {
+    withTemporaryDirectory((directory) => {
+      const ledger = join(directory, "ledger");
+      const displaced = join(directory, "ledger-displaced");
+      mkdirSync(ledger, { mode: 0o700 });
+      const target = join(ledger, "study-result.json");
+      assert.throws(
+        () =>
+          publishDurableStudyJsonExclusive(target, STUDY_VALUE, {
+            faultInjector: (point) => {
+              if (point === "target-validated") {
+                renameSync(ledger, displaced);
+                mkdirSync(ledger, { mode: 0o700 });
+              }
+            }
+          }),
+        /no longer matches its named path at settlement/u
+      );
+      assert.deepEqual(readdirSync(ledger), []);
+      assert.deepEqual(readdirSync(displaced), ["study-result.json"]);
+    });
+  });
+
+  await t.test("recovery", () => {
+    withTemporaryDirectory((directory) => {
+      const ledger = join(directory, "ledger");
+      const displaced = join(directory, "ledger-displaced");
+      mkdirSync(ledger, { mode: 0o700 });
+      const target = join(ledger, "study-result.json");
+      const publication = publishDurableStudyJsonExclusive(target, STUDY_VALUE);
+      assert.throws(
+        () =>
+          recoverDurableStudyJsonPublication(target, publication.sha256, {
+            faultInjector: (point) => {
+              if (point === "recovery-target-validated-final") {
+                renameSync(ledger, displaced);
+                mkdirSync(ledger, { mode: 0o700 });
+              }
+            }
+          }),
+        /no longer matches its named path at settlement/u
+      );
+      assert.deepEqual(readdirSync(ledger), []);
+      assert.deepEqual(readdirSync(displaced), ["study-result.json"]);
+    });
+  });
+});
+
 test("every publication boundary has a deterministic crash state that recovery handles conservatively", async (t) => {
   const prelink = new Set(["temporary-opened", "temporary-written", "temporary-file-synced", "temporary-closed"]);
   const linked = new Set(["target-linked", "link-directory-synced"]);

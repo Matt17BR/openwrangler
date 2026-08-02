@@ -911,6 +911,19 @@ function validateCompletedJourney(milestones, actionKey, readyKey, deadline, lab
   }
 }
 
+function validateControlAllowance(milestones) {
+  let unmeasuredControlMs = milestones.inlineActionMs ?? 0;
+  if (milestones.workbenchActionMs !== null) {
+    unmeasuredControlMs += milestones.workbenchActionMs - milestones.inlineReadyMs;
+  }
+  if (milestones.profileActionMs !== null) {
+    unmeasuredControlMs += milestones.profileActionMs - milestones.workbenchReadyMs;
+  }
+  if (unmeasuredControlMs > DATA_WRANGLER_STUDY_CONTROL_ALLOWANCE_MS) {
+    fail("Study unmeasured control and transition gaps exceed the preregistered allowance.");
+  }
+}
+
 function validateMilestones(milestones, status, timeout = null) {
   exactKeys(milestones, MILESTONE_KEYS, "Study trial milestones");
   let previous = -1;
@@ -930,6 +943,7 @@ function validateMilestones(milestones, status, timeout = null) {
   if (status === "success" && sawNull) {
     fail("A successful study fragment requires every milestone.");
   }
+  validateControlAllowance(milestones);
   validateCompletedJourney(
     milestones,
     "inlineActionMs",
@@ -3289,13 +3303,20 @@ function readPrivateStudyJson(lease, name, label, options = {}) {
 function publishOrRecoverStudyJson(path, value, options = {}) {
   const target = resolve(path);
   if (options.parentLease === undefined) {
-    ensurePrivateStudyDirectory(dirname(target));
+    const directory = ensurePrivateStudyDirectory(dirname(target));
+    return withPrivateStudyDirectory(directory, options, (lease) =>
+      publishOrRecoverStudyJson(target, value, {
+        ...options,
+        parentLease: { descriptor: lease.descriptor, path: lease.path }
+      })
+    );
   }
   const sha256 = digestDurableJsonValue(value);
   if (sha256 !== digestStudyValue(value)) {
     fail("Study artifact canonical digest disagrees with the durable JSON digest.");
   }
   const recovery = recoverDurableStudyJsonPublication(target, sha256, options);
+  invokeStudyReadFault(options, "publication-recovered");
   if (recovery.status !== "absent") {
     return Object.freeze({ path: target, sha256, status: recovery.status });
   }
@@ -3326,59 +3347,71 @@ export function publishDataWranglerStudyFragment(directory, fragment, manifest, 
   if (fragment.attempt > 99) {
     fail("Study fragment attempt exceeds the bounded filename range.");
   }
-  ensurePrivateStudyDirectory(directory);
-  const path = resolve(directory, fragmentFileName(fragment));
-  const sha256 = digestStudyValue(fragment);
-  const recovery = recoverDurableStudyJsonPublication(path, sha256, options);
-  const recorded = loadDataWranglerStudyFragments(directory, manifest);
-  if (recovery.status !== "absent") {
-    const existing = recorded[fragment.executionIndex];
-    if (existing === undefined || canonicalStudyJson(existing) !== canonicalStudyJson(fragment)) {
-      fail("Completed study fragment publication does not match the exact retry input.");
+  const targetDirectory = ensurePrivateStudyDirectory(directory);
+  return withPrivateStudyDirectory(targetDirectory, options, (lease) => {
+    const durableOptions = {
+      ...options,
+      parentLease: { descriptor: lease.descriptor, path: lease.path }
+    };
+    const path = resolve(lease.path, fragmentFileName(fragment));
+    const sha256 = digestStudyValue(fragment);
+    const recovery = recoverDurableStudyJsonPublication(path, sha256, durableOptions);
+    invokeStudyReadFault(options, "fragment-recovered");
+    const recorded = loadDataWranglerStudyFragmentsFromLease(lease, manifest, options);
+    if (recovery.status !== "absent") {
+      const existing = recorded[fragment.executionIndex];
+      if (existing === undefined || canonicalStudyJson(existing) !== canonicalStudyJson(fragment)) {
+        fail("Completed study fragment publication does not match the exact retry input.");
+      }
+      return Object.freeze({ path, sha256, status: recovery.status });
     }
-    return Object.freeze({ path, sha256, status: recovery.status });
+    const pending = pendingDataWranglerStudyTrials(manifest, recorded);
+    const next = pending[0];
+    if (
+      fragment.executionIndex !== recorded.length ||
+      next === undefined ||
+      next.id !== fragment.scheduleEntryId ||
+      next.attempt !== fragment.attempt ||
+      next.effectiveBlockId !== fragment.effectiveBlockId
+    ) {
+      fail("Study fragment is not the exact next immutable schedule execution.");
+    }
+    const publication = publishDurableStudyJsonExclusive(path, fragment, durableOptions);
+    return Object.freeze({ path, sha256, status: publication.status });
+  });
+}
+
+function loadDataWranglerStudyFragmentsFromLease(lease, manifest, options) {
+  const listedNames = readdirSync(anchoredStudyPath(lease.descriptor), { encoding: "utf8" });
+  if (!Array.isArray(listedNames) || listedNames.length > 131_072) {
+    fail("Study fragment directory listing exceeds its bound.");
   }
-  const pending = pendingDataWranglerStudyTrials(manifest, recorded);
-  const next = pending[0];
-  if (
-    fragment.executionIndex !== recorded.length ||
-    next === undefined ||
-    next.id !== fragment.scheduleEntryId ||
-    next.attempt !== fragment.attempt ||
-    next.effectiveBlockId !== fragment.effectiveBlockId
-  ) {
-    fail("Study fragment is not the exact next immutable schedule execution.");
+  const names = listedNames.filter((name) => name.endsWith(".json")).sort();
+  invokeStudyReadFault(options, "directory-listed");
+  const fragments = [];
+  for (const name of names) {
+    const match = FRAGMENT_FILE.exec(name);
+    if (match === null) {
+      fail("Study fragment directory contains an unexpected JSON filename.");
+    }
+    const fragment = readPrivateStudyJson(lease, name, "Study fragment", options);
+    validateDataWranglerStudyFragment(fragment, manifest);
+    if (name !== fragmentFileName(fragment)) {
+      fail("Study fragment filename does not match its immutable identity.");
+    }
+    fragments.push(fragment);
   }
-  return publishOrRecoverStudyJson(path, fragment, options);
+  fragments.sort((left, right) => left.executionIndex - right.executionIndex);
+  pendingDataWranglerStudyTrials(manifest, fragments);
+  return fragments;
 }
 
 export function loadDataWranglerStudyFragments(directory, manifest, options = {}) {
   validateDataWranglerStudyManifest(manifest);
   try {
-    return withPrivateStudyDirectory(directory, options, (lease) => {
-      const listedNames = readdirSync(anchoredStudyPath(lease.descriptor), { encoding: "utf8" });
-      if (!Array.isArray(listedNames) || listedNames.length > 131_072) {
-        fail("Study fragment directory listing exceeds its bound.");
-      }
-      const names = listedNames.filter((name) => name.endsWith(".json")).sort();
-      invokeStudyReadFault(options, "directory-listed");
-      const fragments = [];
-      for (const name of names) {
-        const match = FRAGMENT_FILE.exec(name);
-        if (match === null) {
-          fail("Study fragment directory contains an unexpected JSON filename.");
-        }
-        const fragment = readPrivateStudyJson(lease, name, "Study fragment", options);
-        validateDataWranglerStudyFragment(fragment, manifest);
-        if (name !== fragmentFileName(fragment)) {
-          fail("Study fragment filename does not match its immutable identity.");
-        }
-        fragments.push(fragment);
-      }
-      fragments.sort((left, right) => left.executionIndex - right.executionIndex);
-      pendingDataWranglerStudyTrials(manifest, fragments);
-      return fragments;
-    });
+    return withPrivateStudyDirectory(directory, options, (lease) =>
+      loadDataWranglerStudyFragmentsFromLease(lease, manifest, options)
+    );
   } catch (error) {
     if (error?.code === "ENOENT") {
       return [];

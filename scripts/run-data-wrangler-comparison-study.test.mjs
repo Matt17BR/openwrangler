@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -48,6 +48,99 @@ test("study command arguments are explicit and reject missing or repeated paths"
     /only once/u
   );
   assert.throws(() => parseDataWranglerComparisonStudyArguments(["launch"], "/work"), /Usage/u);
+});
+
+test("CLI specification and fragment inputs reject symlinks and directory-entry swaps", async (t) => {
+  await t.test("specification symlink", () => {
+    withDirectory((directory) => {
+      const realSpecification = resolve(directory, "real-spec.json");
+      const linkedSpecification = resolve(directory, "spec.json");
+      writeFileSync(realSpecification, JSON.stringify(studySpecification()));
+      symlinkSync(realSpecification, linkedSpecification);
+      assert.throws(
+        () =>
+          runDataWranglerComparisonStudy(
+            ["plan", "--spec", linkedSpecification, "--out", resolve(directory, "manifest.json")],
+            { cwd: directory }
+          ),
+        /bounded, singly linked regular JSON file/u
+      );
+    });
+  });
+
+  await t.test("specification entry swap", () => {
+    withDirectory((directory) => {
+      const specification = resolve(directory, "spec.json");
+      const displaced = resolve(directory, "spec-displaced.json");
+      writeFileSync(specification, JSON.stringify(studySpecification()));
+      assert.throws(
+        () =>
+          runDataWranglerComparisonStudy(
+            ["plan", "--spec", specification, "--out", resolve(directory, "manifest.json")],
+            {
+              cwd: directory,
+              inputReadOptions: {
+                faultInjector: (point, label) => {
+                  if (point === "file-opened" && label === "Study specification") {
+                    renameSync(specification, displaced);
+                    writeFileSync(specification, JSON.stringify(studySpecification()));
+                  }
+                }
+              }
+            }
+          ),
+        /Study specification changed while it was read/u
+      );
+    });
+  });
+
+  for (const mode of ["symlink", "entry swap"]) {
+    await t.test(`fragment ${mode}`, () => {
+      withDirectory((directory) => {
+        const specification = resolve(directory, "spec.json");
+        const manifest = resolve(directory, "manifest.json");
+        const realFragment = resolve(directory, "real-fragment.json");
+        const fragment = resolve(directory, "fragment.json");
+        writeFileSync(specification, JSON.stringify(studySpecification()));
+        runDataWranglerComparisonStudy(["plan", "--spec", specification, "--out", manifest], { cwd: directory });
+        writeFileSync(realFragment, "{}\n");
+        if (mode === "symlink") {
+          symlinkSync(realFragment, fragment);
+        } else {
+          renameSync(realFragment, fragment);
+        }
+        const inputReadOptions =
+          mode === "entry swap"
+            ? {
+                faultInjector: (point, label) => {
+                  if (point === "file-opened" && label === "Study fragment input") {
+                    renameSync(fragment, realFragment);
+                    writeFileSync(fragment, "{}\n");
+                  }
+                }
+              }
+            : {};
+        assert.throws(
+          () =>
+            runDataWranglerComparisonStudy(
+              [
+                "record",
+                "--manifest",
+                manifest,
+                "--fragments",
+                resolve(directory, "fragments"),
+                "--fragment",
+                fragment
+              ],
+              { cwd: directory, inputReadOptions }
+            ),
+          mode === "symlink"
+            ? /bounded, singly linked regular JSON file/u
+            : /Study fragment input changed while it was read/u
+        );
+      });
+    });
+  }
 });
 
 test("plan, record, and status preserve one immutable manifest and append-only fragment", () => {
