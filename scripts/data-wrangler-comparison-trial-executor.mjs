@@ -17,7 +17,12 @@ const PHASE = /^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/u;
 const FAILURE_CLASSIFICATION = /^[a-z][a-z0-9-]{0,63}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const AUTHORIZATION_OUTCOMES = Object.freeze(["not-attempted", "not-authorized", "authorized"]);
-const RECEIPT_STATUSES = Object.freeze(["evidence", "pre-notebook-failure", "post-launch-setup-failure"]);
+const RECEIPT_STATUSES = Object.freeze([
+  "evidence",
+  "pre-notebook-failure",
+  "post-launch-setup-failure",
+  "pre-action-process-proof-failure"
+]);
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -547,6 +552,18 @@ export function validateDataWranglerComparisonTrialExecutorReceipt(
         throw new TypeError("Comparison trial post-launch setup failure is contradictory.");
       }
       validateLaunchOnlyProcessProofs(value.processProofs, value.launchReceipt);
+    } else if (value.status === "pre-action-process-proof-failure") {
+      if (
+        value.authorizationAttempted ||
+        value.actionAuthorized ||
+        value.authorizationOutcome !== "not-attempted" ||
+        !/^pre-action-process-proof-[a-z][a-z0-9-]{0,63}$/u.test(value.outerEditorFailure.classification) ||
+        value.terminalEvidence === null ||
+        (controlReceipt !== null && (controlReceipt.status !== "failed" || controlReceipt.authorization !== null))
+      ) {
+        throw new TypeError("Comparison trial pre-action process-proof failure is contradictory.");
+      }
+      validateLaunchOnlyProcessProofs(value.processProofs, value.launchReceipt);
     } else if (controlReceipt === null) {
       throw new TypeError("Comparison trial pre-notebook failure omitted its controller receipt.");
     }
@@ -686,6 +703,8 @@ export async function executeDataWranglerComparisonTrial(
   let actionAuthorized = false;
   let authorizationAttempted = false;
   let authorizationOutcome = "not-attempted";
+  let actionPreparationAttempted = false;
+  let preActionProofError;
 
   const indeterminateAuthorization = (cause) => {
     const error = new Error(
@@ -729,10 +748,22 @@ export async function executeDataWranglerComparisonTrial(
   };
 
   const authorizeMeasuredAction = () => {
-    if (authorizationAttempted) throw new Error("Comparison trial product action was authorized more than once.");
-    const proofs = processEvidence.snapshotProcessProofs({ selectedKernel: input.selectedKernel });
+    if (authorizationAttempted || actionPreparationAttempted) {
+      throw new Error("Comparison trial product-action preparation was attempted more than once.");
+    }
+    actionPreparationAttempted = true;
+    let proofs;
+    try {
+      proofs = processEvidence.snapshotProcessProofs({ selectedKernel: input.selectedKernel });
+    } catch (error) {
+      preActionProofError = error;
+      throw error;
+    }
     if (!isRecord(proofs) || (proofs && typeof proofs.then === "function")) {
-      throw new TypeError("Comparison trial process proofs must be captured synchronously before authorization.");
+      preActionProofError = new TypeError(
+        "Comparison trial process proofs must be captured synchronously before authorization."
+      );
+      throw preActionProofError;
     }
     processProofs = proofs;
     authorizationAttempted = true;
@@ -785,13 +816,13 @@ export async function executeDataWranglerComparisonTrial(
     controlSettlement.then((outcome) => ({ owner: "control", outcome }))
   ]);
 
-  let preActionProofError;
-  if (!authorizationAttempted) {
+  if (!authorizationAttempted && preActionProofError === undefined) {
     try {
-      processProofs = processEvidence.snapshotPreActionProcessProofs({ selectedKernel: input.selectedKernel });
-      if (!isRecord(processProofs) || (processProofs && typeof processProofs.then === "function")) {
+      const proofs = processEvidence.snapshotPreActionProcessProofs({ selectedKernel: input.selectedKernel });
+      if (!isRecord(proofs) || (proofs && typeof proofs.then === "function")) {
         throw new TypeError("Comparison trial pre-action process proofs must be captured synchronously.");
       }
+      processProofs = proofs;
     } catch (error) {
       preActionProofError = error;
       controlAbort.abort("pre-action-process-proof-failed");
@@ -852,10 +883,36 @@ export async function executeDataWranglerComparisonTrial(
   });
 
   if (preActionProofError !== undefined) {
-    throw new AggregateError(
-      [preActionProofError, earlySignalError].filter(Boolean),
-      "Comparison trial pre-action process proof failed after launch."
-    );
+    if (
+      authorizationAttempted ||
+      actionAuthorized ||
+      authorizationOutcome !== "not-attempted" ||
+      (editor.status === "fulfilled" && editor.value?.status === "success") ||
+      (controlReceipt !== null && controlReceipt.status !== "failed")
+    ) {
+      throw new AggregateError(
+        [preActionProofError, earlySignalError].filter(Boolean),
+        "Comparison trial pre-action process proof failed with an indeterminate product action; inspect the durable journal before any retry."
+      );
+    }
+    return rawEvidence({
+      input,
+      status: "pre-action-process-proof-failure",
+      notebookPhaseReceipt: null,
+      controlReceipt,
+      cacheProof,
+      processProofs,
+      launchReceipt,
+      supervisorCompletion: completion,
+      terminalEvidence,
+      outerEditorFailure: Object.freeze({
+        status: "failed",
+        classification: setupFailureClassification("pre-action-process-proof", preActionProofError)
+      }),
+      actionAuthorized: false,
+      authorizationAttempted: false,
+      authorizationOutcome: "not-attempted"
+    });
   }
 
   if (authorizationInspectionError !== undefined) {

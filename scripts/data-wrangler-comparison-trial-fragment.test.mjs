@@ -36,6 +36,7 @@ import {
 } from "./data-wrangler-comparison-trial-executor.mjs";
 import {
   normalizeDataWranglerComparisonPostLaunchSetupFailureFragment,
+  normalizeDataWranglerComparisonPreActionProcessProofFailureFragment,
   normalizeDataWranglerComparisonPreNotebookFailureFragment,
   normalizeDataWranglerComparisonTrialFragment
 } from "./data-wrangler-comparison-trial-fragment.mjs";
@@ -790,6 +791,70 @@ async function executeSetupFailureReceipt(input, boundary) {
   );
 }
 
+async function executePreActionProcessProofFailureReceipt(input) {
+  const launchReceipt = input.supervisorLaunchReceipt;
+  const terminal = launchOnlyTerminalEvidence(input);
+  const completion = {
+    launchReceipt,
+    terminalReceipt: terminal.cleanupProof.supervisorTerminalReceipt,
+    exit: { code: 0, signal: null, error: undefined }
+  };
+  const child = Object.freeze({ kill: () => true });
+  const adapter = Object.freeze({
+    spawnProcess: () => child,
+    waitForLaunch: async () => launchReceipt,
+    waitForCompletion: async () => completion,
+    child: () => child
+  });
+  return await executeDataWranglerComparisonTrial(
+    {
+      runId: RUN_ID,
+      phase: PHASE,
+      cacheState: input.scheduleEntry.kind,
+      product: input.scheduleEntry.product,
+      preparedIntent: input.preparedIntent,
+      scheduleEntry: input.scheduleEntry,
+      requestPath: "/private/request.json",
+      acknowledgementPath: "/private/ack.json",
+      selectedKernel: {
+        name: "openwrangler-study-pre-action-proof-test",
+        displayName: "Open Wrangler pre-action proof test CPython 3.12"
+      },
+      editorPhaseOptions: {},
+      supervisorOptions: {},
+      processEvidenceOptions: {},
+      authorizeAction: () => assert.fail("a failed process proof must not authorize an action"),
+      reinspectActionAuthorization: () => assert.fail("a failed process proof must not inspect authorization")
+    },
+    {
+      createSupervisorAdapter: () => adapter,
+      runEditorPhase: async (_options, { spawnProcess }) => {
+        spawnProcess("code", [], {});
+        return { protocol: "test-notebook-phase-v1", status: "failed" };
+      },
+      createProcessEvidence: () => ({
+        classify: () => "other-owned-child",
+        snapshotLaunchProcessProofs: () => terminal.processProofs,
+        snapshotPreActionProcessProofs: () => {
+          throw new Error("private pre-action process detail");
+        },
+        snapshotProcessProofs: () => assert.fail("a failed process proof cannot reach an action")
+      }),
+      createSampler: () => ({}),
+      controlTrial: ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("private control abort detail")), { once: true });
+        }),
+      prepareSourceCache: async () => input.cacheProof,
+      signalSupervisor: async () => {},
+      completeTerminalEvidence: async () => ({
+        cleanupProof: terminal.cleanupProof,
+        trialProvenance: terminal.trialProvenance
+      })
+    }
+  );
+}
+
 test("normalizes a successful trial through the manifest fragment validator", () => {
   const input = trialInput();
   const fragment = normalizeDataWranglerComparisonTrialFragment(input);
@@ -858,6 +923,30 @@ test("composes honest process and sampler setup failures without a resource samp
     assert.equal(fragment.sourceLoad.includedInInlineTiming, true);
     assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
   });
+});
+
+test("composes a failed pre-action process proof into a retryable fragment", async (t) => {
+  for (const kind of ["warm", "cold"]) {
+    await t.test(kind, async () => {
+      const input = preNotebookFailureInput({ kind });
+      input.executorReceipt = await executePreActionProcessProofFailureReceipt(input);
+      const fragment = normalizeDataWranglerComparisonPreActionProcessProofFailureFragment(input);
+
+      assert.equal(validateDataWranglerStudyFragment(fragment, input.manifest), fragment);
+      assert.equal(input.executorReceipt.status, "pre-action-process-proof-failure");
+      assert.equal(input.executorReceipt.controlReceipt, null);
+      assert.equal(input.executorReceipt.authorizationAttempted, false);
+      assert.equal(fragment.outcome.status, "pre-action-invalid");
+      assert.equal(fragment.outcome.reasonClass, "setup");
+      assert.equal(fragment.outcome.actionStarted, false);
+      assert.equal(fragment.resourceObservation, null);
+      assert.equal(fragment.processProofs.configuredKernel, null);
+      assert.equal(fragment.trialProvenance.kernelProcess, null);
+      assert.deepEqual(fragment.cleanupProof.supervisorLaunchReceipt, input.supervisorLaunchReceipt);
+      assert.equal(fragment.cacheProof === null, kind === "cold");
+      assert.equal(JSON.stringify(fragment).includes("private"), false);
+    });
+  }
 });
 
 test("binds a cold trial to the controller's verified cache proof", () => {

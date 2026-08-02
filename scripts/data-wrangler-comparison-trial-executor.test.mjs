@@ -471,6 +471,136 @@ test("sampler setup failure retains launch proof without inventing a resource ob
   assert.equal(JSON.stringify(result).includes("private sampler setup detail"), false);
 });
 
+test("a failed pre-action snapshot returns determinate evidence after verified cleanup", async () => {
+  const harness = createHarness({
+    runEditorPhase: () => Object.freeze({ protocol: "test-notebook-phase-v1", status: "failed" }),
+    createProcessEvidence: ({ events }) =>
+      Object.freeze({
+        classify: () => "other-owned-child",
+        snapshotLaunchProcessProofs() {
+          events.push("launch-process-proof");
+          return Object.freeze({
+            editorRoot: Object.freeze({ pid: 41, startTimeTicks: "410", capturedAtLaunch: true }),
+            configuredKernel: null,
+            openWranglerRuntime: null
+          });
+        },
+        snapshotPreActionProcessProofs() {
+          events.push("pre-action-process-proof");
+          throw new TypeError("private pre-action /proc detail");
+        },
+        snapshotProcessProofs: () => assert.fail("the product action reached its authorization proof")
+      }),
+    controlTrial: ({ options, events }) =>
+      new Promise((resolve) => {
+        options.signal.addEventListener(
+          "abort",
+          () => {
+            events.push("control-aborted");
+            resolve(
+              Object.freeze({
+                protocol: "test-control-v1",
+                status: "failed",
+                runId: RUN_ID,
+                phase: PHASE,
+                cacheState: "warm",
+                authorization: null,
+                abandonedRequest: null
+              })
+            );
+          },
+          { once: true }
+        );
+      }),
+    completeTerminalEvidence: () => ({ cleanupProof: {}, trialProvenance: {} })
+  });
+
+  const result = await executeDataWranglerComparisonTrial(input(), harness.dependencies);
+
+  assert.equal(result.status, "pre-action-process-proof-failure");
+  assert.equal(result.notebookPhaseReceipt, null);
+  assert.equal(result.controlReceipt.status, "failed");
+  assert.equal(result.actionAuthorized, false);
+  assert.equal(result.authorizationAttempted, false);
+  assert.equal(result.authorizationOutcome, "not-attempted");
+  assert.deepEqual(result.processProofs, {
+    editorRoot: { pid: 41, startTimeTicks: "410", capturedAtLaunch: true },
+    configuredKernel: null,
+    openWranglerRuntime: null
+  });
+  assert.deepEqual(result.outerEditorFailure, {
+    status: "failed",
+    classification: "pre-action-process-proof-type-error"
+  });
+  assert.equal(
+    validateDataWranglerComparisonTrialExecutorReceipt(result, { validateControlReceipt: (receipt) => receipt }),
+    result
+  );
+  assert.equal(JSON.stringify(result).includes("private pre-action /proc detail"), false);
+  assert.ok(harness.events.includes("signal:pre-action-process-proof-failed"));
+  assert.deepEqual(harness.events.slice(-2), ["terminal-receipt", "complete-terminal-evidence"]);
+});
+
+test("a product-action proof failure cannot fall through to durable authorization", async () => {
+  const stopEditor = deferred();
+  let durableAuthorizationCalls = 0;
+  const harness = createHarness({
+    runEditorPhase: async () => {
+      await stopEditor.promise;
+      throw new Error("editor stopped");
+    },
+    createProcessEvidence: ({ events }) =>
+      Object.freeze({
+        classify: () => "other-owned-child",
+        snapshotLaunchProcessProofs() {
+          return Object.freeze({
+            editorRoot: Object.freeze({ pid: 41, startTimeTicks: "410", capturedAtLaunch: true }),
+            configuredKernel: null,
+            openWranglerRuntime: null
+          });
+        },
+        snapshotPreActionProcessProofs: () => assert.fail("a second process-proof path ran"),
+        snapshotProcessProofs() {
+          events.push("product-action-process-proof");
+          throw new Error("configured kernel disappeared");
+        }
+      }),
+    controlTrial: ({ options }) => {
+      assert.throws(() => options.authorizeAction(), /configured kernel disappeared/u);
+      return Object.freeze({
+        protocol: "test-control-v1",
+        status: "failed",
+        runId: RUN_ID,
+        phase: PHASE,
+        cacheState: "warm",
+        authorization: null,
+        abandonedRequest: null
+      });
+    },
+    signalSupervisor: () => stopEditor.resolve(),
+    completeTerminalEvidence: () => ({ cleanupProof: {}, trialProvenance: {} })
+  });
+
+  const result = await executeDataWranglerComparisonTrial(
+    input({
+      authorizeAction() {
+        durableAuthorizationCalls += 1;
+        return Object.freeze({ protocol: "test-authorization-v1" });
+      }
+    }),
+    harness.dependencies
+  );
+
+  assert.equal(result.status, "pre-action-process-proof-failure");
+  assert.equal(result.outerEditorFailure.classification, "pre-action-process-proof-error");
+  assert.equal(result.authorizationAttempted, false);
+  assert.equal(durableAuthorizationCalls, 0);
+  assert.equal(
+    validateDataWranglerComparisonTrialExecutorReceipt(result, { validateControlReceipt: (receipt) => receipt }),
+    result
+  );
+});
+
 test("authorized action without notebook evidence throws after verified cleanup and cannot be retried", async () => {
   const stopEditor = deferred();
   let authorizations = 0;

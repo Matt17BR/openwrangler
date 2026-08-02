@@ -653,6 +653,30 @@ function validateOuterFailure(executorReceipt) {
   return outerFailure;
 }
 
+function validateLaunchOnlyProcessProofs(executorReceipt, label) {
+  const processProofs = requireRecord(executorReceipt.processProofs, label);
+  exactKeys(processProofs, ["editorRoot", "configuredKernel", "openWranglerRuntime"], label);
+  if (processProofs.configuredKernel !== null || processProofs.openWranglerRuntime !== null) {
+    fail(`${label} cannot claim a kernel or product runtime.`);
+  }
+  return processProofs;
+}
+
+function launchOnlyTerminalEvidence(executorReceipt) {
+  const terminalEvidence = requireRecord(executorReceipt.terminalEvidence, "Trial terminal evidence");
+  const retainedCleanupProof = requireRecord(terminalEvidence.cleanupProof, "Trial cleanup proof");
+  if (!sameValue(terminalReceipt(executorReceipt), retainedCleanupProof.supervisorTerminalReceipt)) {
+    fail("Cleanup is not bound to the supervisor terminal receipt.");
+  }
+  return {
+    cleanupProof: {
+      ...structuredClone(retainedCleanupProof),
+      supervisorLaunchReceipt: structuredClone(executorReceipt.launchReceipt)
+    },
+    trialProvenance: structuredClone(terminalEvidence.trialProvenance)
+  };
+}
+
 function validatePreNotebookControlReceipt(controlReceipt) {
   if (controlReceipt.status !== "failed" || controlReceipt.failure === null) {
     fail("A pre-notebook fragment requires a failed trial control receipt.");
@@ -785,26 +809,14 @@ export function normalizeDataWranglerComparisonPostLaunchSetupFailureFragment(
   ) {
     fail("A post-launch setup failure cannot follow action authorization or controller evidence.");
   }
-  const processProofs = requireRecord(executorReceipt.processProofs, "Launch process proofs");
-  exactKeys(processProofs, ["editorRoot", "configuredKernel", "openWranglerRuntime"], "Launch process proofs");
-  if (processProofs.configuredKernel !== null || processProofs.openWranglerRuntime !== null) {
-    fail("A post-launch setup failure cannot claim a kernel or product runtime.");
-  }
+  const processProofs = validateLaunchOnlyProcessProofs(executorReceipt, "Post-launch setup process proofs");
   if (scheduleEntry.kind === "warm" && executorReceipt.cacheProof === null) {
     fail("A warm launched setup failure requires its completed source-cache proof.");
   }
   if (scheduleEntry.kind === "cold" && executorReceipt.cacheProof !== null) {
     fail("A cold launched setup failure cannot claim cache eviction before its controller starts.");
   }
-  const terminalEvidence = requireRecord(executorReceipt.terminalEvidence, "Trial terminal evidence");
-  const retainedCleanupProof = requireRecord(terminalEvidence.cleanupProof, "Trial cleanup proof");
-  if (!sameValue(terminalReceipt(executorReceipt), retainedCleanupProof.supervisorTerminalReceipt)) {
-    fail("Cleanup is not bound to the supervisor terminal receipt.");
-  }
-  const cleanupProof = {
-    ...structuredClone(retainedCleanupProof),
-    supervisorLaunchReceipt: structuredClone(executorReceipt.launchReceipt)
-  };
+  const terminalEvidence = launchOnlyTerminalEvidence(executorReceipt);
   const fragment = {
     ...structuredClone(input.fragmentIdentity),
     outcome: {
@@ -827,8 +839,83 @@ export function normalizeDataWranglerComparisonPostLaunchSetupFailureFragment(
     uiEvidence: null,
     processProofs: structuredClone(processProofs),
     resourceObservation: null,
-    cleanupProof,
-    trialProvenance: structuredClone(terminalEvidence.trialProvenance)
+    cleanupProof: terminalEvidence.cleanupProof,
+    trialProvenance: terminalEvidence.trialProvenance
+  };
+  return validateFragment(fragment, manifest);
+}
+
+/**
+ * Records a process-proof failure after the editor launched but before any
+ * product action was authorized. Only the launch identity, completed cache
+ * work, terminal cleanup, and revalidated provenance are published.
+ */
+export function normalizeDataWranglerComparisonPreActionProcessProofFailureFragment(
+  input,
+  {
+    validateControlReceipt = validateDataWranglerComparisonTrialControlReceipt,
+    validateExecutorReceipt = validateDataWranglerComparisonTrialExecutorReceipt,
+    validateFragment = validateDataWranglerStudyFragment
+  } = {}
+) {
+  const manifest = requireRecord(input.manifest, "Study manifest");
+  const scheduleEntry = requireRecord(input.scheduleEntry, "Study schedule entry");
+  const executorReceipt = validateExecutorReceipt(requireRecord(input.executorReceipt, "Trial executor receipt"), {
+    validateControlReceipt
+  });
+  if (executorReceipt.status !== "pre-action-process-proof-failure") {
+    fail("The pre-action process-proof normalizer requires its matching executor failure receipt.");
+  }
+  validateExecutorBinding(executorReceipt, input, manifest, scheduleEntry);
+  const outerFailure = validateOuterFailure(executorReceipt);
+  if (
+    !outerFailure.classification.startsWith("pre-action-process-proof-") ||
+    executorReceipt.authorizationAttempted ||
+    executorReceipt.authorizationOutcome !== "not-attempted" ||
+    executorReceipt.actionAuthorized
+  ) {
+    fail("A pre-action process-proof failure cannot follow product-action authorization.");
+  }
+  const controlReceipt =
+    executorReceipt.controlReceipt === null ? null : validateControlReceipt(executorReceipt.controlReceipt);
+  if (controlReceipt !== null) {
+    validatePreNotebookControlReceipt(controlReceipt);
+    if (controlReceipt.cacheState !== scheduleEntry.kind) {
+      fail("The failed trial control receipt does not match the scheduled cache state.");
+    }
+    if (scheduleEntry.kind === "cold" && !sameValue(controlReceipt.coldCacheProof, executorReceipt.cacheProof)) {
+      fail("The cold-cache control proof does not match the pre-action process-proof failure.");
+    }
+  }
+  const processProofs = validateLaunchOnlyProcessProofs(executorReceipt, "Pre-action process proofs");
+  if (scheduleEntry.kind === "warm" && executorReceipt.cacheProof === null) {
+    fail("A warm pre-action process-proof failure requires its completed source-cache proof.");
+  }
+  const terminalEvidence = launchOnlyTerminalEvidence(executorReceipt);
+  const fragment = {
+    ...structuredClone(input.fragmentIdentity),
+    outcome: {
+      status: "pre-action-invalid",
+      reasonClass: "setup",
+      actionStarted: false,
+      correctness: "not-reached",
+      timeout: null,
+      unsupported: null
+    },
+    milestones: createEmptyStudyMilestones(),
+    cacheProof: structuredClone(executorReceipt.cacheProof),
+    sourceLoad: {
+      status: "not-reached",
+      durationMs: null,
+      includedInInlineTiming: scheduleEntry.kind === "cold"
+    },
+    engineEvidence: null,
+    environmentGate: structuredClone(input.environmentGate),
+    uiEvidence: null,
+    processProofs: structuredClone(processProofs),
+    resourceObservation: null,
+    cleanupProof: terminalEvidence.cleanupProof,
+    trialProvenance: terminalEvidence.trialProvenance
   };
   return validateFragment(fragment, manifest);
 }
