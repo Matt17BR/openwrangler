@@ -33,6 +33,7 @@ export const DATA_WRANGLER_STUDY_SCHEDULE_SHA256 = "3fcf79fa323c60e256fddaf62c0a
 export const DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const DATA_WRANGLER_STUDY_FINALIZATION_INTENT_PROTOCOL =
   "openwrangler-data-wrangler-study-finalization-intent-v1";
+export const DATA_WRANGLER_STUDY_TRIAL_INTENT_PROTOCOL = "openwrangler-data-wrangler-study-trial-intent-v1";
 
 export const DATA_WRANGLER_STUDY_PRODUCTS = Object.freeze(["open-wrangler", "data-wrangler"]);
 export const DATA_WRANGLER_STUDY_DEADLINES_MS = Object.freeze({
@@ -95,6 +96,8 @@ const PACKAGE_VERSION = /^[0-9A-Za-z](?:[0-9A-Za-z._+-]{0,126}[0-9A-Za-z])?$/u;
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const MONOTONIC_NANOSECONDS = /^(?:0|[1-9]\d{0,29})$/u;
 const FRAGMENT_FILE = /^(?<entry>[a-z0-9-]+)\.attempt-(?<attempt>\d{2})\.json$/u;
+const TRIAL_INTENT_FILE =
+  /^(?<runId>[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.(?<stage>prepared|action-authorized)\.intent$/iu;
 const MILESTONE_KEYS = Object.freeze([
   "inlineActionMs",
   "inlineReadyMs",
@@ -3418,6 +3421,337 @@ export function loadDataWranglerStudyFragments(directory, manifest, options = {}
     }
     throw error;
   }
+}
+
+function trialIntentFileName(intent) {
+  return `${intent.runId}.${intent.stage}.intent`;
+}
+
+function trialIntentLedgerSha256(fragments) {
+  return digestStudyValue(
+    fragments.map((fragment) => ({
+      fragmentId: fragment.fragmentId,
+      executionIndex: fragment.executionIndex,
+      scheduleEntryId: fragment.scheduleEntryId,
+      attempt: fragment.attempt,
+      effectiveBlockId: fragment.effectiveBlockId,
+      sha256: digestStudyValue(fragment)
+    }))
+  );
+}
+
+function validateTrialIntentIdentity(intent, label) {
+  for (const key of ["runId", "manifestSha256", "scheduleEntryId", "effectiveBlockId", "product", "ledgerSha256"]) {
+    if (typeof intent[key] !== "string" || intent[key].length === 0 || /[\0\r\n]/u.test(intent[key])) {
+      fail(`${label} ${key} is invalid.`);
+    }
+  }
+  if (!UUID.test(intent.runId)) {
+    fail(`${label} run ID must be one UUID.`);
+  }
+  for (const key of ["manifestSha256", "ledgerSha256"]) {
+    if (!SHA256.test(intent[key])) {
+      fail(`${label} ${key} must be one SHA-256 digest.`);
+    }
+  }
+  assertInteger(intent.executionIndex, `${label} execution index`);
+  assertInteger(intent.attempt, `${label} attempt`);
+  assertEnum(intent.product, DATA_WRANGLER_STUDY_PRODUCTS, `${label} product`);
+  if (!intent.effectiveBlockId.endsWith(`~a${String(intent.attempt).padStart(2, "0")}`)) {
+    fail(`${label} effective block does not match its attempt.`);
+  }
+}
+
+function validateDataWranglerStudyTrialIntent(intent) {
+  if (intent?.stage === "prepared") {
+    exactKeys(
+      intent,
+      [
+        "protocol",
+        "stage",
+        "runId",
+        "manifestSha256",
+        "executionIndex",
+        "scheduleEntryId",
+        "attempt",
+        "effectiveBlockId",
+        "product",
+        "ledgerSha256",
+        "preparedAtUtc"
+      ],
+      "Prepared study trial intent"
+    );
+    validateTrialIntentIdentity(intent, "Prepared study trial intent");
+    assertString(intent.preparedAtUtc, ISO_UTC, "Prepared study trial timestamp");
+  } else if (intent?.stage === "action-authorized") {
+    exactKeys(
+      intent,
+      [
+        "protocol",
+        "stage",
+        "runId",
+        "manifestSha256",
+        "executionIndex",
+        "scheduleEntryId",
+        "attempt",
+        "effectiveBlockId",
+        "product",
+        "ledgerSha256",
+        "preparedSha256",
+        "authorizedAtUtc"
+      ],
+      "Authorized study trial intent"
+    );
+    validateTrialIntentIdentity(intent, "Authorized study trial intent");
+    if (!SHA256.test(intent.preparedSha256)) {
+      fail("Authorized study trial intent preparedSha256 must be one SHA-256 digest.");
+    }
+    assertString(intent.authorizedAtUtc, ISO_UTC, "Authorized study trial timestamp");
+  } else {
+    fail("Study trial intent stage is invalid.");
+  }
+  if (intent.protocol !== DATA_WRANGLER_STUDY_TRIAL_INTENT_PROTOCOL) {
+    fail("Study trial intent protocol is invalid.");
+  }
+  return intent;
+}
+
+function readStudyTrialIntentRecords(lease, options = {}) {
+  const names = readdirSync(anchoredStudyPath(lease.descriptor), { encoding: "utf8" });
+  if (!Array.isArray(names) || names.length > 1_024) {
+    fail("Study trial intent directory listing exceeds its bound.");
+  }
+  const records = [];
+  for (const name of names.sort()) {
+    const match = TRIAL_INTENT_FILE.exec(name);
+    if (match === null) {
+      const isPublicationTemporary =
+        /^\.[^.]+\.(?:prepared|action-authorized)\.intent\.ow-study-publish-[0-9a-f]{32}\.tmp$/u.test(name);
+      if (isPublicationTemporary) {
+        continue;
+      }
+      fail("Study trial intent directory contains an unexpected entry.");
+    }
+    const intent = validateDataWranglerStudyTrialIntent(
+      readPrivateStudyJson(lease, name, "Study trial intent", options)
+    );
+    if (intent.runId.toLowerCase() !== match.groups.runId.toLowerCase() || intent.stage !== match.groups.stage) {
+      fail("Study trial intent filename does not match its content.");
+    }
+    records.push(intent);
+  }
+  return records;
+}
+
+function fragmentSettlesTrialIntent(intent, fragment) {
+  return (
+    fragment.executionIndex === intent.executionIndex &&
+    fragment.scheduleEntryId === intent.scheduleEntryId &&
+    fragment.attempt === intent.attempt &&
+    fragment.effectiveBlockId === intent.effectiveBlockId &&
+    fragment.product === intent.product
+  );
+}
+
+function inspectStudyTrialIntentRecords(records, manifest, fragments) {
+  const manifestSha256 = digestStudyValue(manifest);
+  const preparedByRun = new Map();
+  const authorized = [];
+  for (const intent of records) {
+    if (intent.manifestSha256 !== manifestSha256) {
+      fail("Study trial intent belongs to another manifest.");
+    }
+    if (intent.stage === "prepared") {
+      if (preparedByRun.has(intent.runId)) {
+        fail("Study trial intent journal contains duplicate prepared entries.");
+      }
+      preparedByRun.set(intent.runId, intent);
+    } else {
+      authorized.push(intent);
+    }
+  }
+  const unresolved = [];
+  let settledCount = 0;
+  for (const intent of authorized) {
+    const prepared = preparedByRun.get(intent.runId);
+    if (prepared === undefined || intent.preparedSha256 !== digestStudyValue(prepared)) {
+      fail("Authorized study trial intent does not match one prepared entry.");
+    }
+    for (const key of [
+      "manifestSha256",
+      "executionIndex",
+      "scheduleEntryId",
+      "attempt",
+      "effectiveBlockId",
+      "product",
+      "ledgerSha256"
+    ]) {
+      if (intent[key] !== prepared[key]) {
+        fail(`Authorized study trial intent changed its prepared ${key}.`);
+      }
+    }
+    const settled = fragments.some((fragment) => fragmentSettlesTrialIntent(intent, fragment));
+    if (settled) {
+      settledCount += 1;
+    } else {
+      unresolved.push(intent);
+    }
+  }
+  if (new Set(authorized.map((intent) => intent.runId)).size !== authorized.length) {
+    fail("Study trial intent journal contains duplicate action authorizations.");
+  }
+  return Object.freeze({
+    preparedCount: preparedByRun.size,
+    authorizedCount: authorized.length,
+    settledCount,
+    abandonedPreparedCount: [...preparedByRun.keys()].filter(
+      (runId) => !authorized.some((intent) => intent.runId === runId)
+    ).length,
+    unresolved: Object.freeze(unresolved.map((intent) => Object.freeze(structuredClone(intent))))
+  });
+}
+
+export function inspectDataWranglerStudyTrialIntents({ directory, manifest, fragments, options = {} }) {
+  validateDataWranglerStudyManifest(manifest);
+  pendingDataWranglerStudyTrials(manifest, fragments);
+  try {
+    return withPrivateStudyDirectory(directory, options, (lease) =>
+      inspectStudyTrialIntentRecords(readStudyTrialIntentRecords(lease, options), manifest, fragments)
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return Object.freeze({
+        preparedCount: 0,
+        authorizedCount: 0,
+        settledCount: 0,
+        abandonedPreparedCount: 0,
+        unresolved: Object.freeze([])
+      });
+    }
+    throw error;
+  }
+}
+
+export function assertNoIndeterminateDataWranglerStudyAction(arguments_) {
+  const inspection = inspectDataWranglerStudyTrialIntents(arguments_);
+  if (inspection.unresolved.length !== 0) {
+    const [intent] = inspection.unresolved;
+    fail(
+      `Study trial ${intent.scheduleEntryId} has an authorized action without a published result. The study is indeterminate and must not rerun that action.`
+    );
+  }
+  return inspection;
+}
+
+export function prepareDataWranglerStudyTrialIntent({
+  directory,
+  manifest,
+  fragments,
+  runId = randomUUID(),
+  preparedAtUtc,
+  options = {}
+}) {
+  validateDataWranglerStudyManifest(manifest);
+  const next = pendingDataWranglerStudyTrials(manifest, fragments)[0];
+  if (next === undefined) {
+    fail("Study trial intent cannot be prepared after the schedule is complete.");
+  }
+  const intent = validateDataWranglerStudyTrialIntent({
+    protocol: DATA_WRANGLER_STUDY_TRIAL_INTENT_PROTOCOL,
+    stage: "prepared",
+    runId,
+    manifestSha256: digestStudyValue(manifest),
+    executionIndex: fragments.length,
+    scheduleEntryId: next.id,
+    attempt: next.attempt,
+    effectiveBlockId: next.effectiveBlockId,
+    product: next.product,
+    ledgerSha256: trialIntentLedgerSha256(fragments),
+    preparedAtUtc
+  });
+  const targetDirectory = ensurePrivateStudyDirectory(directory);
+  const publication = withPrivateStudyDirectory(targetDirectory, options, (lease) => {
+    const records = readStudyTrialIntentRecords(lease, options);
+    const inspection = inspectStudyTrialIntentRecords(records, manifest, fragments);
+    if (inspection.unresolved.length !== 0) {
+      fail("Study cannot prepare another trial while an earlier authorized action is indeterminate.");
+    }
+    return publishOrRecoverStudyJson(resolve(lease.path, trialIntentFileName(intent)), intent, {
+      ...options,
+      parentLease: { descriptor: lease.descriptor, path: lease.path }
+    });
+  });
+  return Object.freeze({ intent: Object.freeze(structuredClone(intent)), publication });
+}
+
+export function authorizeDataWranglerStudyTrialAction({
+  directory,
+  manifest,
+  fragments,
+  preparedIntent,
+  authorizedAtUtc,
+  options = {}
+}) {
+  validateDataWranglerStudyManifest(manifest);
+  validateDataWranglerStudyTrialIntent(preparedIntent);
+  if (preparedIntent.stage !== "prepared") {
+    fail("Study action authorization requires one prepared intent.");
+  }
+  const next = pendingDataWranglerStudyTrials(manifest, fragments)[0];
+  if (
+    next === undefined ||
+    preparedIntent.manifestSha256 !== digestStudyValue(manifest) ||
+    preparedIntent.executionIndex !== fragments.length ||
+    preparedIntent.scheduleEntryId !== next.id ||
+    preparedIntent.attempt !== next.attempt ||
+    preparedIntent.effectiveBlockId !== next.effectiveBlockId ||
+    preparedIntent.product !== next.product ||
+    preparedIntent.ledgerSha256 !== trialIntentLedgerSha256(fragments)
+  ) {
+    fail("Prepared study trial intent no longer matches the next ledger entry.");
+  }
+  const authorizedIntent = validateDataWranglerStudyTrialIntent({
+    protocol: DATA_WRANGLER_STUDY_TRIAL_INTENT_PROTOCOL,
+    stage: "action-authorized",
+    runId: preparedIntent.runId,
+    manifestSha256: preparedIntent.manifestSha256,
+    executionIndex: preparedIntent.executionIndex,
+    scheduleEntryId: preparedIntent.scheduleEntryId,
+    attempt: preparedIntent.attempt,
+    effectiveBlockId: preparedIntent.effectiveBlockId,
+    product: preparedIntent.product,
+    ledgerSha256: preparedIntent.ledgerSha256,
+    preparedSha256: digestStudyValue(preparedIntent),
+    authorizedAtUtc
+  });
+  const targetDirectory = ensurePrivateStudyDirectory(directory);
+  const publication = withPrivateStudyDirectory(targetDirectory, options, (lease) => {
+    const records = readStudyTrialIntentRecords(lease, options);
+    const recordedPrepared = records.find(
+      (intent) => intent.runId === preparedIntent.runId && intent.stage === "prepared"
+    );
+    if (recordedPrepared === undefined || canonicalStudyJson(recordedPrepared) !== canonicalStudyJson(preparedIntent)) {
+      fail("Study action authorization cannot find its exact prepared intent.");
+    }
+    const inspection = inspectStudyTrialIntentRecords(records, manifest, fragments);
+    if (inspection.unresolved.some((intent) => intent.runId !== preparedIntent.runId)) {
+      fail("Study cannot authorize another action while an earlier action is indeterminate.");
+    }
+    const receipt = publishOrRecoverStudyJson(
+      resolve(lease.path, trialIntentFileName(authorizedIntent)),
+      authorizedIntent,
+      {
+        ...options,
+        parentLease: { descriptor: lease.descriptor, path: lease.path }
+      }
+    );
+    const after = inspectStudyTrialIntentRecords(readStudyTrialIntentRecords(lease, options), manifest, fragments);
+    if (after.unresolved.length !== 1 || after.unresolved[0].runId !== preparedIntent.runId) {
+      fail("Study action authorization did not leave one exact in-flight action.");
+    }
+    return receipt;
+  });
+  return Object.freeze({ intent: Object.freeze(structuredClone(authorizedIntent)), publication });
 }
 
 function escapeRegularExpression(value) {

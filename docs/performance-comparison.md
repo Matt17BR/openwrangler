@@ -177,6 +177,11 @@ contains the intent SHA-256. The intent binds a real UTC finalization time to th
 A retry finds exactly one such intent, validates it against the current ledger, and rebuilds the same result. No intent
 or output digest is accepted merely because it appears inside the file being recovered.
 
+The runner also records each trial before it opens the editor. Immediately before the first measured public action,
+it records a second entry and waits for that entry to reach disk. A shutdown before that authorization is safe to
+retry. A shutdown after authorization without a result stops the study for review; the runner will not repeat a
+possibly completed action.
+
 An interrupted study resumes only missing schedule entries. It cannot overwrite an outcome or mix another candidate,
 fixture, editor, environment, or method revision. Pair-level reruns append new correlated block IDs and retain the
 invalidated pair. Retry the interrupted `plan`, `record`, or `finalize` command before running `status`; this supplies

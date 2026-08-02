@@ -29,6 +29,8 @@ import {
   DATA_WRANGLER_STUDY_PRODUCTS,
   DATA_WRANGLER_STUDY_RESULT_PROTOCOL,
   DATA_WRANGLER_STUDY_SCHEDULE_SHA256,
+  assertNoIndeterminateDataWranglerStudyAction,
+  authorizeDataWranglerStudyTrialAction,
   buildDataWranglerStudyManifest,
   buildDataWranglerStudyResult,
   calculatePairedStudyRegression,
@@ -38,8 +40,10 @@ import {
   createEmptyStudyMilestones,
   createStudyFragmentIdentity,
   digestStudyValue,
+  inspectDataWranglerStudyTrialIntents,
   loadDataWranglerStudyFragments,
   pendingDataWranglerStudyTrials,
+  prepareDataWranglerStudyTrialIntent,
   publishDataWranglerStudyFragment,
   summarizeStudyMetric,
   type7Quantile,
@@ -114,6 +118,107 @@ test("the fixed study schedule has four interleaved warm cells, ten balanced pai
       .filter((entry) => entry.repetition === repetition && entry.orderInPair === 1)
       .map((entry) => entry.cellId);
     assert.deepEqual(new Set(cells), new Set(DATA_WRANGLER_STUDY_CELLS.map((cell) => cell.id)));
+  }
+});
+
+test("trial intents allow safe pre-action recovery but stop after an authorized action is lost", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-intents-"));
+  const directory = resolve(root, "intents");
+  try {
+    const manifest = studyManifest();
+    const fragments = [];
+    const preparedAtUtc = "2026-08-02T12:00:00.000Z";
+    const runId = "11111111-1111-4111-8111-111111111111";
+    const prepared = prepareDataWranglerStudyTrialIntent({
+      directory,
+      manifest,
+      fragments,
+      runId,
+      preparedAtUtc
+    });
+    assert.equal(prepared.publication.status, "published");
+    assert.equal(prepared.intent.scheduleEntryId, manifest.schedule[0].id);
+    assert.deepEqual(readdirSync(directory), [`${runId}.prepared.intent`]);
+    assert.deepEqual(inspectDataWranglerStudyTrialIntents({ directory, manifest, fragments }), {
+      preparedCount: 1,
+      authorizedCount: 0,
+      settledCount: 0,
+      abandonedPreparedCount: 1,
+      unresolved: []
+    });
+
+    const repeatedPreparation = prepareDataWranglerStudyTrialIntent({
+      directory,
+      manifest,
+      fragments,
+      runId,
+      preparedAtUtc
+    });
+    assert.equal(repeatedPreparation.publication.status, "complete");
+
+    const authorization = authorizeDataWranglerStudyTrialAction({
+      directory,
+      manifest,
+      fragments,
+      preparedIntent: prepared.intent,
+      authorizedAtUtc: "2026-08-02T12:00:01.000Z"
+    });
+    assert.equal(authorization.publication.status, "published");
+    assert.throws(
+      () => assertNoIndeterminateDataWranglerStudyAction({ directory, manifest, fragments }),
+      /authorized action without a published result/u
+    );
+    assert.throws(
+      () =>
+        prepareDataWranglerStudyTrialIntent({
+          directory,
+          manifest,
+          fragments,
+          runId: "22222222-2222-4222-8222-222222222222",
+          preparedAtUtc: "2026-08-02T12:00:02.000Z"
+        }),
+      /earlier authorized action is indeterminate/u
+    );
+
+    const completed = successFragment(manifest, manifest.schedule[0], 0, 10, 0);
+    assert.deepEqual(assertNoIndeterminateDataWranglerStudyAction({ directory, manifest, fragments: [completed] }), {
+      preparedCount: 1,
+      authorizedCount: 1,
+      settledCount: 1,
+      abandonedPreparedCount: 0,
+      unresolved: []
+    });
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("action authorization rejects a prepared intent that no longer matches the ledger", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-intent-ledger-"));
+  const directory = resolve(root, "intents");
+  try {
+    const manifest = studyManifest();
+    const prepared = prepareDataWranglerStudyTrialIntent({
+      directory,
+      manifest,
+      fragments: [],
+      runId: "33333333-3333-4333-8333-333333333333",
+      preparedAtUtc: "2026-08-02T12:00:00.000Z"
+    }).intent;
+    const changed = { ...prepared, effectiveBlockId: "wrong~a00" };
+    assert.throws(
+      () =>
+        authorizeDataWranglerStudyTrialAction({
+          directory,
+          manifest,
+          fragments: [],
+          preparedIntent: changed,
+          authorizedAtUtc: "2026-08-02T12:00:01.000Z"
+        }),
+      /no longer matches the next ledger entry/u
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
   }
 });
 
