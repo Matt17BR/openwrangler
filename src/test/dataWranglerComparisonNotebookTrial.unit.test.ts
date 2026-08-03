@@ -427,33 +427,33 @@ describe("one-trial notebook comparison flow", () => {
     expect(() => validateDataWranglerNotebookTrialPhaseReceipt(receipt)).not.toThrow();
   });
 
-  it("rejects a manifest-declared unavailable trial before kernel selection", async () => {
+  it("rejects an undetermined capability before kernel selection", async () => {
     const events: string[] = [];
     const base = successDependencies(events);
     const dependencies: NotebookTrialFlowDependencies = {
       ...base,
       product: "data-wrangler",
       study: { ...STUDY, engine: "polars" },
-      publicSurfaceAvailability: "unavailable",
+      publicSurfaceAvailability: "undetermined",
       async executeVerification(phase) {
         events.push(`verify:${phase}`);
         return verification(phase);
       },
       async prepareMeasuredAction() {
-        throw new Error("unsupported must not prepare a measured action");
+        throw new Error("undetermined must not prepare a measured action");
       },
       async clickInlineAction() {
-        throw new Error("unsupported must not click");
+        throw new Error("undetermined must not click");
       },
       async waitForWorkbenchAndScroll() {
-        throw new Error("unsupported must not open a workbench");
+        throw new Error("undetermined must not open a workbench");
       },
       async activateProfiles() {
-        throw new Error("unsupported must not profile");
+        throw new Error("undetermined must not profile");
       }
     };
 
-    await expect(executeDataWranglerNotebookTrialFlow(dependencies)).rejects.toThrow(/skipped before/u);
+    await expect(executeDataWranglerNotebookTrialFlow(dependencies)).rejects.toThrow(/resolved before/u);
     expect(events).toEqual([]);
     expect(events).not.toContain("close-product-restore-notebook");
     expect(events).not.toContain("verify:after-workbench");

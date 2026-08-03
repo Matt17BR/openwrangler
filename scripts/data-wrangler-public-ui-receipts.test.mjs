@@ -187,9 +187,9 @@ test("available capability normalizes raw evidence and requires one exact pointe
   assert.equal(validateDataWranglerPolarsCapabilityReceipt(receipt, context()), receipt);
 });
 
-test("unsupported Polars capability proves zero Data Wrangler actions through the full deadline", () => {
-  const receipt = createCapability("unsupported");
-  assert.equal(receipt.evidence.conclusion, "unsupported");
+test("a Polars capability timeout proves only that no action appeared before the deadline", () => {
+  const receipt = createCapability("capability-timeout");
+  assert.equal(receipt.evidence.conclusion, "capability-timeout");
   assert.equal(
     receipt.evidence.observation.endedAtMonotonicMs,
     receipt.evidence.observation.absenceDeadlineAtMonotonicMs
@@ -223,18 +223,18 @@ test("neither-product control excludes both measured extensions and actions on t
 });
 
 test("a recomputed digest cannot legitimize a capability or control enum flip", async (t) => {
-  await t.test("available to unsupported", () => {
+  await t.test("available to capability timeout", () => {
     const changed = resign(createCapability("available"), (evidence) => {
-      evidence.conclusion = "unsupported";
+      evidence.conclusion = "capability-timeout";
     });
     assert.throws(
       () => validateDataWranglerPolarsCapabilityReceipt(changed, context()),
-      /Unsupported Data Wrangler Polars capability requires zero actions through the deadline/u
+      /capability timeout requires zero actions through the deadline/u
     );
   });
 
-  await t.test("unsupported to available", () => {
-    const changed = resign(createCapability("unsupported"), (evidence) => {
+  await t.test("capability timeout to available", () => {
+    const changed = resign(createCapability("capability-timeout"), (evidence) => {
       evidence.conclusion = "available";
     });
     assert.throws(
@@ -256,7 +256,7 @@ test("a recomputed digest cannot legitimize a capability or control enum flip", 
 
 test("absence claims require the exact absolute full deadline", async (t) => {
   await t.test("a shortened declared deadline", () => {
-    const changed = resign(createCapability("unsupported"), (evidence) => {
+    const changed = resign(createCapability("capability-timeout"), (evidence) => {
       evidence.observation.absenceDeadlineAtMonotonicMs = START_MS + 5_000;
       evidence.observation.endedAtMonotonicMs = START_MS + 5_000;
     });
@@ -267,7 +267,7 @@ test("absence claims require the exact absolute full deadline", async (t) => {
   });
 
   await t.test("an early end despite the fixed deadline", () => {
-    const changed = resign(createCapability("unsupported"), (evidence) => {
+    const changed = resign(createCapability("capability-timeout"), (evidence) => {
       evidence.trace.pop();
       evidence.observation.sampleCount = evidence.trace.length;
       evidence.observation.endedAtMonotonicMs = evidence.trace.at(-1).atMonotonicMs;
@@ -300,8 +300,8 @@ test("absence claims require the exact absolute full deadline", async (t) => {
 });
 
 test("the bounded trace exposes mid-window actions, missing cadence intervals, and forged summaries", async (t) => {
-  await t.test("a Data Wrangler action appearing mid-window invalidates unsupported evidence", () => {
-    const changed = resign(createCapability("unsupported"), (evidence) => {
+  await t.test("a Data Wrangler action appearing mid-window invalidates timeout evidence", () => {
+    const changed = resign(createCapability("capability-timeout"), (evidence) => {
       evidence.trace[10].actions[1].matchCount = 1;
       evidence.trace[10].actions[1].pointerUsable = true;
     });
@@ -334,7 +334,7 @@ test("the bounded trace exposes mid-window actions, missing cadence intervals, a
   });
 
   await t.test("a final summary cannot contradict the retained trace", () => {
-    const changed = resign(createCapability("unsupported"), (evidence) => {
+    const changed = resign(createCapability("capability-timeout"), (evidence) => {
       evidence.actions[1].matchCount = 1;
       evidence.actions[1].pointerUsable = true;
     });

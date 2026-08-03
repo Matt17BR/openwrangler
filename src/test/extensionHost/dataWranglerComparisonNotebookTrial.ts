@@ -286,7 +286,7 @@ export interface NotebookTrialFlowDependencies {
   readonly monotonicNanoseconds: () => bigint;
   readonly timeOriginUnixMs: number;
   readonly controlBridge: DataWranglerStudyControlBridge;
-  readonly publicSurfaceAvailability?: "available" | "unavailable";
+  readonly publicSurfaceAvailability?: "available" | "undetermined";
   assertExactNotebook(checkpoint: string): void;
   selectKernel(): Promise<void>;
   executeSetup(): Promise<void>;
@@ -318,8 +318,8 @@ export async function executeDataWranglerNotebookTrialFlow(
   dependencies: NotebookTrialFlowDependencies
 ): Promise<DataWranglerNotebookTrialPhaseReceipt> {
   validateTrialDefinition(dependencies.study);
-  if (dependencies.publicSurfaceAvailability === "unavailable") {
-    throw new Error("Manifest-declared unavailable trials must be skipped before the notebook driver launches.");
+  if (dependencies.publicSurfaceAvailability === "undetermined") {
+    throw new Error("An undetermined capability must be resolved before the notebook driver launches.");
   }
   const milestones: { -readonly [Key in keyof NotebookTrialMilestones]: NotebookTrialMilestones[Key] } = {
     inlineActionMs: null,
@@ -2585,8 +2585,8 @@ interface CapturedStudyNotebook {
 export async function run(): Promise<DataWranglerNotebookTrialPhaseReceipt> {
   const product = studyProductFromPhase(requiredEnvironment("OPEN_WRANGLER_TEST_PHASE"));
   const publicSurfaceAvailability = studyPublicSurfaceAvailabilityFromEnvironment();
-  if (publicSurfaceAvailability === "unavailable") {
-    throw new Error("Manifest-declared unavailable trials must skip the editor phase entirely.");
+  if (publicSurfaceAvailability === "undetermined") {
+    throw new Error("An undetermined capability must skip the editor phase entirely.");
   }
   assert.equal(
     vscode.env.language,
@@ -3562,11 +3562,11 @@ function studyProductFromPhase(value: string): ProductKey {
   return PHASE_PRODUCTS[value as keyof typeof PHASE_PRODUCTS];
 }
 
-function studyPublicSurfaceAvailabilityFromEnvironment(): "available" | "unavailable" {
+function studyPublicSurfaceAvailabilityFromEnvironment(): "available" | "undetermined" {
   const value = process.env.OPEN_WRANGLER_STUDY_PUBLIC_SURFACE_AVAILABILITY;
   if (value === undefined || value === "available") return "available";
-  if (value === "unavailable") return "unavailable";
-  throw new Error("The notebook study public-surface capability must be available or unavailable.");
+  if (value === "undetermined") return "undetermined";
+  throw new Error("The notebook study public-surface capability must be available or undetermined.");
 }
 
 function requiredEnvironment(key: string): string {

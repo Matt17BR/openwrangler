@@ -77,11 +77,14 @@ export const DATA_WRANGLER_STUDY_CELLS = Object.freeze([
 export const DATA_WRANGLER_STUDY_METRICS = Object.freeze([
   Object.freeze({ name: "inlinePreviewMs", threshold: 500, allowZero: false }),
   Object.freeze({ name: "workbenchOpenMs", threshold: 750, allowZero: false }),
-  Object.freeze({ name: "firstProfileFromWorkbenchClickMs", threshold: 750, allowZero: false }),
-  Object.freeze({ name: "completeProfileFromWorkbenchClickMs", threshold: 2_000, allowZero: false }),
+  Object.freeze({ name: "firstProfileMs", threshold: 750, allowZero: false }),
+  Object.freeze({ name: "completeProfileMs", threshold: 2_000, allowZero: false }),
   Object.freeze({ name: "completeTrialPssDeltaBytes", threshold: 256 * 1024 * 1024, allowZero: true })
 ]);
-export const DATA_WRANGLER_STUDY_DESCRIPTIVE_METRICS = Object.freeze(["firstProfileMs", "completeProfileMs"]);
+export const DATA_WRANGLER_STUDY_DESCRIPTIVE_METRICS = Object.freeze([
+  "firstProfileFromWorkbenchClickMs",
+  "completeProfileFromWorkbenchClickMs"
+]);
 export const DATA_WRANGLER_STUDY_REASON_CLASSES = Object.freeze([
   "fixture",
   "setup",
@@ -901,7 +904,7 @@ function validateCapabilityReceipts(receipts, manifestContext) {
     if (
       receipt.product !== "data-wrangler" ||
       receipt.engine !== "polars" ||
-      !["available", "unavailable"].includes(receipt.availability) ||
+      !["available", "undetermined"].includes(receipt.availability) ||
       receipt.method !== "public-capability" ||
       receipt.timed !== false ||
       receipt.fixtureId !== expectedFixtureIds[index]
@@ -920,7 +923,7 @@ function validateCapabilityReceipts(receipts, manifestContext) {
     }
     captureIds.add(context.captureId);
     validateDataWranglerPolarsCapabilityReceipt(receipt.receipt, context);
-    const expectedAvailability = receipt.receipt.evidence.conclusion === "available" ? "available" : "unavailable";
+    const expectedAvailability = receipt.receipt.evidence.conclusion === "available" ? "available" : "undetermined";
     if (receipt.availability !== expectedAvailability) {
       fail("Study Data Wrangler Polars availability does not match its public-UI observation trace.");
     }
@@ -3419,9 +3422,11 @@ export function validateDataWranglerStudyFragment(fragment, manifest) {
     if (dataWranglerPolarsCapability === undefined) {
       fail("Study Data Wrangler Polars entry has no exact fixture capability receipt.");
     }
-    const mustBeUnsupported = dataWranglerPolarsCapability.availability === "unavailable";
-    if ((fragment.outcome.status === "unsupported") !== mustBeUnsupported) {
-      fail("Study Data Wrangler Polars outcomes must match the manifest-bound untimed capability receipt.");
+    if (dataWranglerPolarsCapability.availability !== "available") {
+      fail("A timed-out Data Wrangler Polars capability check is undetermined and cannot produce a study fragment.");
+    }
+    if (fragment.outcome.status === "unsupported") {
+      fail("An absent launch action is not public proof that Data Wrangler Polars is unsupported.");
     }
   }
   assertBoolean(fragment.outcome.actionStarted, "Study action-started proof");
@@ -4511,25 +4516,25 @@ function pssSegment(observation, { label, actionMs, endMs }) {
   if (segmentSamples.length === 0) {
     fail(`${label} PSS segment has no samples inside its measured interval.`);
   }
-  const peak = Math.max(...segmentSamples.map((sample) => sample.totalPssBytes));
+  const maximumObservedSampledPssBytes = Math.max(...segmentSamples.map((sample) => sample.totalPssBytes));
   const categories = Object.fromEntries(
     RESOURCE_CATEGORIES.map((category) => {
       const baselinePssBytes = categoryMedian(baselineSamples, category);
-      const peakPssBytes = Math.max(...segmentSamples.map((sample) => sample.categories[category]));
+      const maximumObservedSampledPssBytes = Math.max(...segmentSamples.map((sample) => sample.categories[category]));
       return [
         category,
         {
           baselinePssBytes,
-          peakPssBytes,
-          deltaPssBytes: Math.max(0, peakPssBytes - baselinePssBytes)
+          maximumObservedSampledPssBytes,
+          deltaPssBytes: Math.max(0, maximumObservedSampledPssBytes - baselinePssBytes)
         }
       ];
     })
   );
   return {
     baselinePssBytes: median,
-    peakPssBytes: peak,
-    deltaPssBytes: Math.max(0, peak - median),
+    maximumObservedSampledPssBytes,
+    deltaPssBytes: Math.max(0, maximumObservedSampledPssBytes - median),
     processCountRange: {
       minimum: Math.min(...segmentSamples.map((sample) => sample.processes.length)),
       maximum: Math.max(...segmentSamples.map((sample) => sample.processes.length))
@@ -4715,8 +4720,17 @@ function completedPairAttempts(manifest, fragments) {
 
 function summarizeTrialResource(fragment) {
   const observation = fragment.resourceObservation;
+  const samplingDisclosure = {
+    memoryMetric: "maximum-observed-sampled-pss",
+    samplingLimitations: {
+      configuredIntervalMs: 200,
+      processMeasurementsAreSequential: true,
+      betweenSampleSpikesMayBeMissed: true
+    }
+  };
   if (observation === null) {
     return {
+      ...samplingDisclosure,
       status: "not-recorded",
       reasonClass: null,
       intervalMs: null,
@@ -4727,6 +4741,7 @@ function summarizeTrialResource(fragment) {
   }
   const processCounts = observation.samples.map((sample) => sample.processes.length);
   return {
+    ...samplingDisclosure,
     status: observation.valid ? "valid" : "invalid",
     reasonClass: observation.reasonClass,
     intervalMs: observation.intervalMs,
@@ -5246,29 +5261,64 @@ function validateProcessCountRange(range, label) {
 }
 
 function validateResourceSegment(segment, label) {
-  exactKeys(segment, ["baselinePssBytes", "peakPssBytes", "deltaPssBytes", "processCountRange", "categories"], label);
+  exactKeys(
+    segment,
+    ["baselinePssBytes", "maximumObservedSampledPssBytes", "deltaPssBytes", "processCountRange", "categories"],
+    label
+  );
   assertNonNegativeFinite(segment.baselinePssBytes, `${label} baseline PSS`);
-  assertNonNegativeFinite(segment.peakPssBytes, `${label} peak PSS`);
+  assertNonNegativeFinite(segment.maximumObservedSampledPssBytes, `${label} maximum observed sampled PSS`);
   assertNonNegativeFinite(segment.deltaPssBytes, `${label} PSS delta`);
-  if (segment.deltaPssBytes !== Math.max(0, segment.peakPssBytes - segment.baselinePssBytes)) {
-    fail(`${label} PSS delta does not match its retained baseline and peak.`);
+  if (segment.deltaPssBytes !== Math.max(0, segment.maximumObservedSampledPssBytes - segment.baselinePssBytes)) {
+    fail(`${label} PSS delta does not match its retained baseline and maximum observed sample.`);
   }
   validateProcessCountRange(segment.processCountRange, `${label} process-count range`);
   exactKeys(segment.categories, RESOURCE_CATEGORIES, `${label} categories`);
   for (const category of RESOURCE_CATEGORIES) {
     const summary = segment.categories[category];
-    exactKeys(summary, ["baselinePssBytes", "peakPssBytes", "deltaPssBytes"], `${label} ${category}`);
+    exactKeys(summary, ["baselinePssBytes", "maximumObservedSampledPssBytes", "deltaPssBytes"], `${label} ${category}`);
     assertNonNegativeFinite(summary.baselinePssBytes, `${label} ${category} baseline PSS`);
-    assertNonNegativeFinite(summary.peakPssBytes, `${label} ${category} peak PSS`);
+    assertNonNegativeFinite(
+      summary.maximumObservedSampledPssBytes,
+      `${label} ${category} maximum observed sampled PSS`
+    );
     assertNonNegativeFinite(summary.deltaPssBytes, `${label} ${category} PSS delta`);
-    if (summary.deltaPssBytes !== Math.max(0, summary.peakPssBytes - summary.baselinePssBytes)) {
-      fail(`${label} ${category} PSS delta does not match its retained baseline and peak.`);
+    if (summary.deltaPssBytes !== Math.max(0, summary.maximumObservedSampledPssBytes - summary.baselinePssBytes)) {
+      fail(`${label} ${category} PSS delta does not match its retained baseline and maximum observed sample.`);
     }
   }
 }
 
 function validateResultResource(summary, outcomeStatus, label) {
-  exactKeys(summary, ["status", "reasonClass", "intervalMs", "missedSamples", "processCountRange", "segments"], label);
+  exactKeys(
+    summary,
+    [
+      "memoryMetric",
+      "samplingLimitations",
+      "status",
+      "reasonClass",
+      "intervalMs",
+      "missedSamples",
+      "processCountRange",
+      "segments"
+    ],
+    label
+  );
+  if (summary.memoryMetric !== "maximum-observed-sampled-pss") {
+    fail(`${label} must identify maximum observed sampled PSS as its memory metric.`);
+  }
+  exactKeys(
+    summary.samplingLimitations,
+    ["configuredIntervalMs", "processMeasurementsAreSequential", "betweenSampleSpikesMayBeMissed"],
+    `${label} sampling limitations`
+  );
+  if (
+    summary.samplingLimitations.configuredIntervalMs !== 200 ||
+    summary.samplingLimitations.processMeasurementsAreSequential !== true ||
+    summary.samplingLimitations.betweenSampleSpikesMayBeMissed !== true
+  ) {
+    fail(`${label} must disclose sequential 200 ms sampling and the between-sample limitation.`);
+  }
   assertEnum(summary.status, ["valid", "invalid", "not-recorded"], `${label} status`);
   if (summary.status === "not-recorded") {
     if (
@@ -5554,6 +5604,8 @@ export function validateDataWranglerStudyResult(result) {
           "workbenchVerification",
           "inlineSurfaceOwner",
           "semanticEquivalence",
+          "memoryMetric",
+          "samplingLimitations",
           "status",
           "reasonClass",
           "intervalMs",
@@ -5663,6 +5715,8 @@ export function validateDataWranglerStudyResult(result) {
       resourcePairs.set(trial.effectiveBlockId, pair);
       validateResultResource(
         {
+          memoryMetric: trial.memoryMetric,
+          samplingLimitations: trial.samplingLimitations,
           status: trial.status,
           reasonClass: trial.reasonClass,
           intervalMs: trial.intervalMs,

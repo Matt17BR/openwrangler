@@ -136,7 +136,7 @@ function validatePreparedTrial(value) {
     fail("Prepared trial source, notebook, result, and bridge paths must be distinct.");
   }
   validateKernel(requireRecord(value.selectedKernel, "Prepared trial kernel"));
-  if (!["available", "unavailable"].includes(value.publicSurfaceAvailability)) {
+  if (!["available", "undetermined"].includes(value.publicSurfaceAvailability)) {
     fail("Prepared trial public surface availability is invalid.");
   }
   const editorPhaseOptions = requireRecord(value.editorPhaseOptions, "Prepared editor phase options");

@@ -29,7 +29,7 @@ const WARM_KINDS = [
 const COLD_KINDS = ["source-verified", "cold-cache-evicted", ...WARM_KINDS.slice(1)];
 const MILLISECOND_NS = 1_000_000n;
 
-test("warm measured control retains the exact fences, stable baselines, authorization, and terminal sample", async () => {
+test("warm control fences the first actions, releases profiling immediately, and retains the terminal sample", async () => {
   const harness = createHarness(WARM_KINDS);
   const receipt = await runControl(harness, {
     cacheState: "warm",
@@ -50,7 +50,7 @@ test("warm measured control retains the exact fences, stable baselines, authoriz
     WARM_KINDS.map((kind) => [receiptForKind(receipt, kind).request.sequence, kind]),
     WARM_KINDS.map((kind, sequence) => [sequence, kind])
   );
-  for (const baseline of Object.values(receipt.baselines)) {
+  for (const baseline of [receipt.baselines.inline, receipt.baselines.workbench]) {
     assert.equal(baseline.receipt.stableBaseline.sampleCount, 5);
     assert.ok(
       BigInt(baseline.receipt.stableBaseline.lastEndedMonotonicNanoseconds) >=
@@ -61,6 +61,15 @@ test("warm measured control retains the exact fences, stable baselines, authoriz
         BigInt(baseline.receipt.stableBaseline.lastEndedMonotonicNanoseconds)
     );
   }
+  assert.equal(receipt.baselines.profile.receipt, null);
+  assert.notEqual(receipt.baselines.profile.acknowledgement, null);
+  assert.equal(harness.events.includes("stable:profile-baseline"), false);
+  assert.ok(
+    eventIndex(harness.events, "request:profile-baseline") < eventIndex(harness.events, "ack:profile-baseline")
+  );
+  assert.ok(
+    eventIndex(harness.events, "ack:profile-baseline") < eventIndex(harness.events, "child-action:profile-baseline")
+  );
   assert.ok(
     eventIndex(harness.events, "stable:inline-baseline") < eventIndex(harness.events, "authorize:inline-baseline")
   );
@@ -178,7 +187,7 @@ test("a request accepted concurrently with abort is abandoned exactly instead of
   assert.equal(receipt.resourceObservation.valid, false);
 });
 
-test("each unstable baseline returns the validated partial receipt accumulated before timeout", async (t) => {
+test("an unstable blocking baseline returns the validated partial receipt accumulated before timeout", async (t) => {
   const cases = [
     {
       kind: "inline-baseline",
@@ -190,12 +199,6 @@ test("each unstable baseline returns the validated partial receipt accumulated b
       kind: "workbench-baseline",
       completed: WARM_KINDS.slice(0, 4),
       retained: ["inline"],
-      authorized: true
-    },
-    {
-      kind: "profile-baseline",
-      completed: WARM_KINDS.slice(0, 5),
-      retained: ["inline", "workbench"],
       authorized: true
     }
   ];
@@ -223,11 +226,7 @@ test("each unstable baseline returns the validated partial receipt accumulated b
         assert.equal(receipt.baselines[retained].receipt.stableBaseline.sampleCount, 5);
         assert.notEqual(receipt.baselines[retained].acknowledgement, null);
       }
-      const pendingBaseline = {
-        inline: "inline-baseline",
-        workbench: "workbench-baseline",
-        profile: "profile-baseline"
-      };
+      const pendingBaseline = { inline: "inline-baseline", workbench: "workbench-baseline" };
       const key = Object.entries(pendingBaseline).find(([, kind]) => kind === scenario.kind)[0];
       assert.equal(receipt.baselines[key].request.kind, scenario.kind);
       assert.equal(receipt.baselines[key].acknowledgement, null);
@@ -439,7 +438,11 @@ function createHarness(kinds, options = {}) {
       accepted.add(request);
       events.push(`request:${actualKind}`);
       options.onRequest?.(actualKind, request);
-      if (actualKind.endsWith("-baseline") && actualKind !== options.suppressBaselineKind) {
+      if (
+        actualKind.endsWith("-baseline") &&
+        actualKind !== "profile-baseline" &&
+        actualKind !== options.suppressBaselineKind
+      ) {
         collector?.emitBaseline(request);
       }
       if (actualKind === "sampling-stop") collector?.scheduleTerminal();
@@ -460,7 +463,9 @@ function createHarness(kinds, options = {}) {
         request.kind,
         clock.now
       );
-      if (request.kind === "inline-baseline") events.push("child-action:inline-baseline");
+      if (["inline-baseline", "profile-baseline"].includes(request.kind)) {
+        events.push(`child-action:${request.kind}`);
+      }
       return acknowledgement;
     },
     abandon(request) {

@@ -13,7 +13,7 @@ const MAXIMUM_SOURCE_ROWS = 10_000_000;
 const MAXIMUM_SOURCE_COLUMNS = 2_048;
 const MAXIMUM_SENTINEL_STRING_BYTES = 4 * 1024;
 const MAXIMUM_COLUMN_NAME_BYTES = 256;
-const CONCLUSIONS = new Set(["available", "unsupported", "neither-product-control"]);
+const CONCLUSIONS = new Set(["available", "capability-timeout", "neither-product-control"]);
 const ACTION_ORDER = Object.freeze(["open-wrangler", "data-wrangler"]);
 
 export const DATA_WRANGLER_PUBLIC_UI_RECEIPT_PROTOCOL = "openwrangler-data-wrangler-public-ui-receipt-v1";
@@ -617,7 +617,7 @@ function assertFixedActions(actions) {
 }
 
 function assertCapabilityConclusion(evidence, actions, traceActions) {
-  if (evidence.conclusion !== "available" && evidence.conclusion !== "unsupported") {
+  if (evidence.conclusion !== "available" && evidence.conclusion !== "capability-timeout") {
     fail("invalid-conclusion", "Data Wrangler Polars capability evidence has an invalid conclusion.");
   }
   const openWrangler = actions.get("open-wrangler");
@@ -661,10 +661,7 @@ function assertCapabilityConclusion(evidence, actions, traceActions) {
       return action.matchCount !== 0 || action.pointerUsable !== false;
     })
   ) {
-    fail(
-      "invalid-capability",
-      "Unsupported Data Wrangler Polars capability requires zero actions through the deadline."
-    );
+    fail("invalid-capability", "A Data Wrangler Polars capability timeout requires zero actions through the deadline.");
   }
 }
 

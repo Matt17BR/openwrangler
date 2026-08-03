@@ -534,8 +534,13 @@ export function validateDataWranglerComparisonTrialControlReceipt(value) {
       fail("bridge-mismatch", `Measured-trial ${kind} request does not match its retained bridge evidence.`);
     }
     if (baseline.receipt === null) {
-      if (completed !== undefined) fail("sampler-mismatch", `Acknowledged ${kind} has no stable-baseline receipt.`);
+      if (completed !== undefined && name !== "profile") {
+        fail("sampler-mismatch", `Acknowledged ${kind} has no stable-baseline receipt.`);
+      }
     } else {
+      if (name === "profile") {
+        fail("sampler-mismatch", "The immediate profile action may not wait for a stable-baseline receipt.");
+      }
       const receipt = validateStableBaselineReceipt(baseline.receipt);
       if (!baselineQualifies(receipt, request)) {
         fail("sampler-mismatch", `Measured-trial ${kind} baseline predates its request.`);
@@ -629,7 +634,7 @@ export function validateDataWranglerComparisonTrialControlReceipt(value) {
     validateObservationAndBaselines(
       value.resourceObservation,
       BigInt(value.samplingStop.terminalTargetMonotonicNanoseconds),
-      [value.baselines.inline.receipt, value.baselines.workbench.receipt, value.baselines.profile.receipt]
+      [value.baselines.inline.receipt, value.baselines.workbench.receipt]
     );
   }
   return immutableEvidenceClone(value);
@@ -1074,11 +1079,16 @@ export async function controlDataWranglerComparisonMeasuredTrial(
       true
     );
     state.baselines.workbench.acknowledgement = workbench.exchange.acknowledgement;
+    // Profiling is an interaction-latency journey, so release the public action
+    // immediately after confirming that sampling is active. Waiting here for a
+    // five-sample fence would add about a second of harness-imposed idle time
+    // between workbench readiness and the user's profiling click. The final
+    // study result derives and validates the five samples immediately before
+    // the recorded profile-action milestone from the completed observation.
     const profile = await exchange(
       "profile-baseline",
-      async (request) => {
+      (request) => {
         state.baselines.profile = { request, acknowledgement: null, receipt: null };
-        state.baselines.profile.receipt = await waitForStableBaseline(request);
       },
       true
     );
@@ -1096,8 +1106,7 @@ export async function controlDataWranglerComparisonMeasuredTrial(
     const observation = await guarded(collectionPromise, terminalTimeoutMs, "PSS first eligible terminal sample");
     validateObservationAndBaselines(observation, terminalTarget, [
       state.baselines.inline.receipt,
-      state.baselines.workbench.receipt,
-      state.baselines.profile.receipt
+      state.baselines.workbench.receipt
     ]);
     state.resourceObservation = observation;
     const terminalSampleEnded = nanoseconds(

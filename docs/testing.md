@@ -578,7 +578,7 @@ all-column-profile, and PSS boundaries supersede no feasibility-smoke contract a
 after that reviewed method, its versioned study protocol, the exact candidate artifact, and all raw scheduled outcomes
 land together.
 
-The study command manages the durable ledger; it does not drive the notebook UI yet:
+The ledger commands plan the study, record completed fragments, report progress, and finalize the result:
 
 ```bash
 npm run comparison:study -- plan --spec tmp/comparison-study/spec.json --out tmp/comparison-study/manifest.json --cache-controller python/benchmarks/source_cache_control.py --python /absolute/path/to/cpython-3.12
@@ -586,6 +586,27 @@ npm run comparison:study -- status --manifest tmp/comparison-study/manifest.json
 npm run comparison:study -- record --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --fragment tmp/comparison-study/next-fragment.json
 npm run comparison:study -- finalize --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --out tmp/comparison-study/result.json
 ```
+
+Before collecting the full schedule, run one unrecorded diagnostic through the packaged driver and the same public
+notebook UI journey used by the study:
+
+```bash
+taskset --cpu-list <manifest-cpu-list> npm run comparison:diagnostic -- \
+  --manifest /absolute/path/to/manifest.json \
+  --prepared /absolute/path/to/prepared-diagnostic.json
+```
+
+The preparation file names the already reviewed candidate, synthetic fixture, official editor artifact, pinned CPython,
+cache controller, packaged neutral driver, warmed disposable profile, selected study kernelspec, and editor-phase
+options. The command accepts only the manifest's first scheduled trial and always attempts its public launch action.
+A missing action or a timeout leaves the diagnostic failed or undetermined; it is not treated as proof that a product
+lacks the feature.
+
+This diagnostic uses a private scratch ledger. It never writes to the real study ledger and deletes its scratch data
+only after the public action, 200 ms PSS sampling, source-copy removal, process-tree cleanup, and provenance recheck all
+succeed. A failed run leaves that private journal in the disposable profile for inspection. The JSON summary labels
+memory as maximum observed sampled PSS: short spikes can fall between samples, and per-process `smaps_rollup` reads are
+sequential rather than simultaneous. Data Wrangler's backend stays `unverified` unless the public UI identifies it.
 
 `plan` opens and identifies the supplied controller and CPython executable itself. It writes those observed receipts
 into the manifest and rejects a specification that claims a different toolchain. Later cache preparation executes
@@ -658,9 +679,10 @@ The resource ledger also caps `inlineActionMs + (workbenchActionMs - inlineReady
 workbenchReadyMs)` at three seconds. With the
 two-second quiescence, 250 ms terminal overshoot, an inclusive origin sample, and a 200 ms interval, one trial may
 retain at most 1,228 samples.
-A timeout keeps its `>= deadline` bound and failure count but never substitutes that bound into paired calculations. If
-Data Wrangler has no public Polars surface, the cell is marked unavailable and release-incomplete without a launch or
-timing sample.
+A timeout keeps its `>= deadline` bound and failure count but never substitutes that bound into paired calculations.
+If no Data Wrangler Polars action appears during the fixed capability window, the receipt records
+`capability-timeout` and the manifest records `undetermined`. No unsupported claim or launch-free fragment is created;
+the cell stays pending and the study remains release-incomplete.
 
 On Linux, the pinned supervisor verifies child-subreaper and pidfd support before it starts one editor in a new session.
 It uses a full numeric `/proc/<pid>/stat` census, so descendants that double-fork or call `setsid` remain in the owned
@@ -671,10 +693,12 @@ still terminated and reaped. It fails on census ambiguity or ownership drift; th
 cooperative measured applications, not a sandbox. A valid observation needs at least five gap-free samples and a
 terminal receipt at the first sample after the two-second quiescence target. Cleanup requires three consecutive empty
 ownership censuses. Every launched trial retains the ownership launch receipt and a valid or explicitly invalid
-resource observation, including setup failures before the public product action. Unsupported surfaces and failed
-pre-launch environment gates retain neither. If cleanup cannot prove an empty tree, the runner publishes no fragment.
-The result keeps missed-sample and process-count ranges. PSS is the comparison measure; RSS is diagnostic. The notebook UI driver must
-be finished before this command can produce study evidence. The implementation follows the Linux documentation for
+resource observation, including setup failures before the public product action. An undetermined capability never
+launches and therefore produces no fragment. Failed pre-launch environment gates retain neither. If cleanup cannot
+prove an empty tree, the runner publishes no fragment.
+The result keeps missed-sample and process-count ranges. PSS is the comparison measure; RSS is diagnostic. Recorded
+study evidence must pass through the packaged notebook UI driver and its parent control bridge. The implementation
+follows the Linux documentation for
 [`/proc`](https://www.kernel.org/doc/html/latest/filesystems/proc.html),
 [child subreapers](https://man7.org/linux/man-pages/man2/pr_set_child_subreaper.2const.html),
 [`pidfd_open`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html), and

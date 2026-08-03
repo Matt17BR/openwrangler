@@ -23,9 +23,7 @@ import {
   buildDataWranglerStudyManifest,
   buildDataWranglerStudyResult,
   canonicalStudyJson,
-  createEmptyStudyMilestones,
   createOrLoadDataWranglerStudyFinalizationIntent,
-  createStudyFragmentIdentity,
   digestStudyValue,
   inspectDataWranglerStudyTrialIntents,
   loadDataWranglerStudyFragments,
@@ -669,7 +667,7 @@ function fragmentLedgerDigest(fragments) {
   return digestStudyValue(fragments.map((fragment) => digestStudyValue(fragment)));
 }
 
-export function manifestDeclaresDataWranglerPolarsUnavailable(manifest, entry) {
+export function manifestDeclaresDataWranglerPolarsUndetermined(manifest, entry) {
   if (entry.product !== "data-wrangler" || entry.engine !== "polars") return false;
   const fixture = manifest.fixtures.find((candidate) => candidate.format === entry.format);
   if (fixture === undefined) {
@@ -682,50 +680,7 @@ export function manifestDeclaresDataWranglerPolarsUnavailable(manifest, entry) {
   if (capability === undefined) {
     throw new TypeError("The scheduled Data Wrangler Polars entry has no matching capability receipt.");
   }
-  return capability?.availability === "unavailable";
-}
-
-export function createManifestBoundDataWranglerPolarsUnsupportedFragment({
-  manifest,
-  scheduleEntry,
-  executionIndex,
-  recordedAtUtc,
-  fragmentId
-}) {
-  const fragment = {
-    ...createStudyFragmentIdentity({
-      manifest,
-      scheduleEntry,
-      executionIndex,
-      attempt: scheduleEntry.attempt,
-      recordedAtUtc
-    }),
-    outcome: {
-      status: "unsupported",
-      reasonClass: null,
-      actionStarted: false,
-      correctness: "not-reached",
-      timeout: null,
-      unsupported: { publicSurface: "unavailable", comparability: "non-comparable" }
-    },
-    milestones: createEmptyStudyMilestones(),
-    sourceCopy: null,
-    cacheProof: null,
-    sourceLoad: {
-      status: "not-reached",
-      durationMs: null,
-      includedInInlineTiming: scheduleEntry.kind === "cold"
-    },
-    engineEvidence: null,
-    environmentGate: null,
-    uiEvidence: null,
-    processProofs: null,
-    resourceObservation: null,
-    cleanupProof: null,
-    trialProvenance: null
-  };
-  if (fragmentId !== undefined) fragment.fragmentId = fragmentId;
-  return validateDataWranglerStudyFragment(fragment, manifest);
+  return capability.availability === "undetermined";
 }
 
 export async function runNextDataWranglerComparisonStudyTrial(
@@ -774,6 +729,12 @@ export async function runNextDataWranglerComparisonStudyTrial(
       }
       if (next === undefined) {
         return { command: "run-next", status: "complete", receipt: null, output: null };
+      }
+      if (manifestDeclaresDataWranglerPolarsUndetermined(manifest, next)) {
+        throw new Error(
+          "The Data Wrangler Polars capability check reached its deadline without a launch action. " +
+            "That result is undetermined, so the study remains release-incomplete until a public action is observed or separate reviewed public evidence establishes that the surface is unsupported."
+        );
       }
 
       const prepared = prepareDataWranglerStudyTrialIntent({
@@ -900,27 +861,17 @@ export async function runNextDataWranglerComparisonStudyTrial(
 
       let fragment;
       try {
-        if (manifestDeclaresDataWranglerPolarsUnavailable(manifest, next)) {
-          fragment = createManifestBoundDataWranglerPolarsUnsupportedFragment({
-            manifest,
-            scheduleEntry: next,
-            executionIndex: fragments.length,
-            recordedAtUtc: isoTimestamp(now, "Study unsupported trial"),
-            fragmentId: fragmentIdFactory()
-          });
-        } else {
-          if (typeof executeTrial !== "function") {
-            throw new TypeError("Study run-next requires an executeTrial function for a supported entry.");
-          }
-          fragment = await executeTrial({
-            manifest: structuredClone(manifest),
-            scheduleEntry: structuredClone(next),
-            executionIndex: fragments.length,
-            preparedIntent: structuredClone(prepared.intent),
-            authorizeAction,
-            reinspectActionAuthorization
-          });
+        if (typeof executeTrial !== "function") {
+          throw new TypeError("Study run-next requires an executeTrial function for a supported entry.");
         }
+        fragment = await executeTrial({
+          manifest: structuredClone(manifest),
+          scheduleEntry: structuredClone(next),
+          executionIndex: fragments.length,
+          preparedIntent: structuredClone(prepared.intent),
+          authorizeAction,
+          reinspectActionAuthorization
+        });
       } finally {
         acceptingAuthorization = false;
       }

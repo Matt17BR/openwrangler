@@ -22,10 +22,12 @@ import {
   DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
   DATA_WRANGLER_STUDY_CONTROL_ALLOWANCE_MS,
   DATA_WRANGLER_STUDY_DEADLINES_MS,
+  DATA_WRANGLER_STUDY_DESCRIPTIVE_METRICS,
   DATA_WRANGLER_STUDY_FRAGMENT_PROTOCOL,
   DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL,
   DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES,
   DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
+  DATA_WRANGLER_STUDY_METRICS,
   DATA_WRANGLER_STUDY_PRODUCTS,
   DATA_WRANGLER_STUDY_RESULT_PROTOCOL,
   DATA_WRANGLER_STUDY_SCHEDULE_SHA256,
@@ -78,6 +80,14 @@ test("the fixed study schedule has four interleaved warm cells, ten balanced pai
   assert.deepEqual(DATA_WRANGLER_STUDY_PRODUCTS, ["open-wrangler", "data-wrangler"]);
   assert.equal(DATA_WRANGLER_STUDY_CONTROL_ALLOWANCE_MS, 3_000);
   assert.equal(DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES, 1_228);
+  assert.deepEqual(
+    DATA_WRANGLER_STUDY_METRICS.map((metric) => metric.name),
+    ["inlinePreviewMs", "workbenchOpenMs", "firstProfileMs", "completeProfileMs", "completeTrialPssDeltaBytes"]
+  );
+  assert.deepEqual(DATA_WRANGLER_STUDY_DESCRIPTIVE_METRICS, [
+    "firstProfileFromWorkbenchClickMs",
+    "completeProfileFromWorkbenchClickMs"
+  ]);
   const first = createDataWranglerStudySchedule();
   const second = createDataWranglerStudySchedule();
   assert.deepEqual(first, second);
@@ -1616,70 +1626,34 @@ test("a launched pre-action invalidation retains an explicit resource observatio
   );
 });
 
-test("Data Wrangler Polars can be explicitly unavailable without becoming a failure or timing sample", () => {
-  const manifest = studyManifest("unavailable");
-  const unavailableEntry = manifest.schedule.find(
-    (entry) => entry.kind === "warm" && entry.engine === "polars" && entry.product === "data-wrangler"
-  );
-  const fragment = unsupportedFragment(manifest, unavailableEntry, unavailableEntry.sequence);
-  assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
-  assert.equal(fragment.processProofs, null);
-  assert.equal(fragment.cleanupProof, null);
-  assert.equal(fragment.engineEvidence, null);
-
-  const availableManifest = studyManifest("available");
-  const availableEntry = availableManifest.schedule.find(
+test("a Data Wrangler Polars capability timeout remains undetermined and release-incomplete", () => {
+  const manifest = studyManifest("undetermined");
+  const undeterminedEntry = manifest.schedule.find(
     (entry) => entry.kind === "warm" && entry.engine === "polars" && entry.product === "data-wrangler"
   );
   assert.throws(
-    () =>
-      validateDataWranglerStudyFragment(unsupportedFragment(availableManifest, availableEntry, 0), availableManifest),
-    /manifest-bound untimed capability receipt/u
-  );
-
-  const openWranglerPolars = manifest.schedule.find(
-    (entry) => entry.kind === "warm" && entry.engine === "polars" && entry.product === "open-wrangler"
+    () => validateDataWranglerStudyFragment(unsupportedFragment(manifest, undeterminedEntry, 0), manifest),
+    /capability check is undetermined and cannot produce a study fragment/u
   );
   assert.throws(
-    () => validateDataWranglerStudyFragment(unsupportedFragment(manifest, openWranglerPolars, 0), manifest),
-    /Only a Data Wrangler Polars entry/u
+    () => validateDataWranglerStudyFragment(successFragment(manifest, undeterminedEntry, 0, 10, 0), manifest),
+    /capability check is undetermined and cannot produce a study fragment/u
   );
-  const dataWranglerPandas = manifest.schedule.find(
-    (entry) => entry.kind === "warm" && entry.engine === "pandas" && entry.product === "data-wrangler"
-  );
-  assert.throws(
-    () => validateDataWranglerStudyFragment(unsupportedFragment(manifest, dataWranglerPandas, 0), manifest),
-    /Only a Data Wrangler Polars entry/u
-  );
-
-  const blockLastSequence = Math.max(
-    ...manifest.schedule.filter((entry) => entry.blockId === unavailableEntry.blockId).map((entry) => entry.sequence)
-  );
-  const fragments = manifest.schedule
-    .slice(0, blockLastSequence + 1)
-    .map((entry) =>
-      entry.id === unavailableEntry.id
-        ? unsupportedFragment(manifest, entry, entry.sequence)
-        : successFragment(manifest, entry, 0, 10, entry.sequence)
-    );
   const result = buildDataWranglerStudyResult({
     manifest,
-    fragments,
+    fragments: [],
     finalizedAtUtc: "2026-08-02T11:50:00.000Z"
   });
-  const cell = result.cells.find((candidate) => candidate.cellId === unavailableEntry.cellId);
-  assert.equal(result.accounting.retainedUnsupportedFragments, 1);
-  assert.deepEqual(result.accounting.unavailableCells, [unavailableEntry.cellId]);
-  assert.equal(cell.availability, "data-wrangler-polars-unavailable");
+  const cell = result.cells.find((candidate) => candidate.cellId === undeterminedEntry.cellId);
+  assert.equal(result.accounting.allPlannedPairsComplete, false);
+  assert.equal(result.accounting.pendingTrials.length, manifest.schedule.length);
+  assert.equal(cell.availability, "pending");
   assert.equal(cell.releaseComplete, false);
-  assert.equal(cell.dataWranglerUnsupported, 1);
-  assert.equal(cell.dataWranglerFailures, 0);
-  assert.equal(cell.metrics[0].dataWrangler, null);
   assert.equal(validateDataWranglerStudyResult(result), result);
 });
 
 test("Data Wrangler Polars availability is bound to the exact CSV or Parquet fixture", () => {
-  const manifest = studyManifest({ csv: "available", parquet: "unavailable" });
+  const manifest = studyManifest({ csv: "available", parquet: "undetermined" });
   const csvEntry = manifest.schedule.find(
     (entry) =>
       entry.kind === "warm" && entry.engine === "polars" && entry.format === "csv" && entry.product === "data-wrangler"
@@ -1695,18 +1669,14 @@ test("Data Wrangler Polars availability is bound to the exact CSV or Parquet fix
     validateDataWranglerStudyFragment(successFragment(manifest, csvEntry, 0, 10, 0), manifest).outcome.status,
     "success"
   );
-  assert.equal(
-    validateDataWranglerStudyFragment(unsupportedFragment(manifest, parquetEntry, parquetEntry.sequence), manifest)
-      .outcome.status,
-    "unsupported"
-  );
   assert.throws(
-    () => validateDataWranglerStudyFragment(unsupportedFragment(manifest, csvEntry, csvEntry.sequence), manifest),
-    /manifest-bound untimed capability receipt/u
+    () =>
+      validateDataWranglerStudyFragment(unsupportedFragment(manifest, parquetEntry, parquetEntry.sequence), manifest),
+    /capability check is undetermined and cannot produce a study fragment/u
   );
   assert.throws(
     () => validateDataWranglerStudyFragment(successFragment(manifest, parquetEntry, 0, 10, 0), manifest),
-    /manifest-bound untimed capability receipt/u
+    /capability check is undetermined and cannot produce a study fragment/u
   );
 });
 
@@ -1825,7 +1795,7 @@ test("paired regression records every difference and applies all three materiali
   assert.equal(memory.investigationTriggered, true);
 });
 
-test("PSS segments use the five samples before each action and report total and category peak deltas", () => {
+test("PSS segments use five pre-action samples and report maximum observed sampled deltas", () => {
   const MiB = 1024 * 1024;
   const samples = [];
   for (let scheduledMs = 0; scheduledMs <= 6_000; scheduledMs += 200) {
@@ -1892,6 +1862,12 @@ test("the result schema reports incomplete accounting without manufacturing miss
   assert.equal(result.coldTrials.length, 0);
   const measuredCell = result.cells.find((cell) => cell.completedWarmPairs === 1);
   assert.equal(measuredCell.resourceTrials.length, 2);
+  assert.equal(measuredCell.resourceTrials[0].memoryMetric, "maximum-observed-sampled-pss");
+  assert.deepEqual(measuredCell.resourceTrials[0].samplingLimitations, {
+    configuredIntervalMs: 200,
+    processMeasurementsAreSequential: true,
+    betweenSampleSpikesMayBeMissed: true
+  });
   assert.deepEqual(measuredCell.resourceTrials[0].processCountRange, { minimum: 2, maximum: 2 });
   assert.deepEqual(measuredCell.resourceTrials[0].segments.completeTrial.processCountRange, {
     minimum: 2,
@@ -2219,7 +2195,7 @@ function studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, owner
         ? dataWranglerPolarsAvailability
         : dataWranglerPolarsAvailability[fixture.format];
     const context = publicUiContext(capabilityCaptureIds[index], editor, fixture);
-    const conclusion = availability === "available" ? "available" : "unsupported";
+    const conclusion = availability === "available" ? "available" : "capability-timeout";
     const receipt = createDataWranglerPolarsCapabilityReceipt(
       publicUiEvidence(DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND, context, conclusion),
       context

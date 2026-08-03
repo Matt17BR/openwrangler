@@ -40,9 +40,8 @@ import {
 } from "./data-wrangler-public-ui-receipts.mjs";
 import {
   DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL,
-  createManifestBoundDataWranglerPolarsUnsupportedFragment,
   dataWranglerStudyExecutionLockPath,
-  manifestDeclaresDataWranglerPolarsUnavailable,
+  manifestDeclaresDataWranglerPolarsUndetermined,
   parseDataWranglerComparisonStudyArguments,
   runNextDataWranglerComparisonStudyTrial,
   runDataWranglerComparisonStudy
@@ -740,35 +739,35 @@ test("run-next retries a pre-authorization crash and halts after a post-authoriz
   });
 });
 
-test("manifest-declared Data Wrangler Polars unavailability produces a launch-free fragment", () => {
-  const manifest = runDataWranglerComparisonStudyManifest("unavailable");
-  const unavailableEntry = manifest.schedule.find(
+test("a timed-out Data Wrangler Polars capability remains undetermined and cannot become a fragment", () => {
+  const manifest = runDataWranglerComparisonStudyManifest("undetermined");
+  const undeterminedEntry = manifest.schedule.find(
     (entry) => entry.product === "data-wrangler" && entry.engine === "polars"
   );
-  const scheduleEntry = {
-    ...unavailableEntry,
-    attempt: 0,
-    effectiveBlockId: `${unavailableEntry.blockId}~a00`
-  };
-  const fragment = createManifestBoundDataWranglerPolarsUnsupportedFragment({
+  assert.equal(manifestDeclaresDataWranglerPolarsUndetermined(manifest, undeterminedEntry), true);
+  const claimedUnsupported = preActionInvalidFragment(
     manifest,
-    scheduleEntry,
-    executionIndex: scheduleEntry.sequence,
-    recordedAtUtc: "2026-08-02T11:00:00.000Z",
-    fragmentId: "44444444-4444-4444-8444-444444444444"
-  });
-  assert.equal(validateDataWranglerStudyFragment(fragment, manifest), fragment);
-  assert.equal(fragment.outcome.status, "unsupported");
-  assert.equal(fragment.outcome.actionStarted, false);
-  assert.equal(fragment.processProofs, null);
-  assert.equal(fragment.resourceObservation, null);
-  assert.equal(fragment.cleanupProof, null);
+    { ...undeterminedEntry, attempt: 0, effectiveBlockId: `${undeterminedEntry.blockId}~a00` },
+    undeterminedEntry.sequence
+  );
+  claimedUnsupported.outcome = {
+    status: "unsupported",
+    reasonClass: null,
+    actionStarted: false,
+    correctness: "not-reached",
+    timeout: null,
+    unsupported: { publicSurface: "unavailable", comparability: "non-comparable" }
+  };
+  assert.throws(
+    () => validateDataWranglerStudyFragment(claimedUnsupported, manifest),
+    /capability check is undetermined and cannot produce a study fragment/u
+  );
 });
 
 test("Data Wrangler Polars availability is matched to the scheduled file format", () => {
   for (const [availability, expectedCsv, expectedParquet] of [
-    [{ "csv-100k-50": "available", "parquet-1m-20": "unavailable" }, false, true],
-    [{ "csv-100k-50": "unavailable", "parquet-1m-20": "available" }, true, false]
+    [{ "csv-100k-50": "available", "parquet-1m-20": "undetermined" }, false, true],
+    [{ "csv-100k-50": "undetermined", "parquet-1m-20": "available" }, true, false]
   ]) {
     const manifest = runDataWranglerComparisonStudyManifest(availability);
     const csvEntry = manifest.schedule.find(
@@ -777,8 +776,8 @@ test("Data Wrangler Polars availability is matched to the scheduled file format"
     const parquetEntry = manifest.schedule.find(
       (entry) => entry.product === "data-wrangler" && entry.engine === "polars" && entry.format === "parquet"
     );
-    assert.equal(manifestDeclaresDataWranglerPolarsUnavailable(manifest, csvEntry), expectedCsv);
-    assert.equal(manifestDeclaresDataWranglerPolarsUnavailable(manifest, parquetEntry), expectedParquet);
+    assert.equal(manifestDeclaresDataWranglerPolarsUndetermined(manifest, csvEntry), expectedCsv);
+    assert.equal(manifestDeclaresDataWranglerPolarsUndetermined(manifest, parquetEntry), expectedParquet);
   }
 });
 
@@ -943,14 +942,14 @@ function studySpecification(dataWranglerPolarsAvailability = "available") {
       : dataWranglerPolarsAvailability[fixture.id];
   const capabilityReceipts = fixtures.map((fixture, index) => {
     const availability = availabilityFor(fixture);
-    if (!["available", "unavailable"].includes(availability)) {
+    if (!["available", "undetermined"].includes(availability)) {
       throw new TypeError(`Missing test capability for ${fixture.id}.`);
     }
     return createDataWranglerPolarsCapabilityReceipt(
       publicUiEvidence(
         DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
         capabilityContexts[index],
-        availability === "available" ? "available" : "unsupported"
+        availability === "available" ? "available" : "capability-timeout"
       ),
       capabilityContexts[index]
     );

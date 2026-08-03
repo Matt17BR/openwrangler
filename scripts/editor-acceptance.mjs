@@ -3156,8 +3156,8 @@ function resolveEditorAcceptanceComparisonStudyEnvironment(comparisonStudyEnviro
     }
   }
   const sourcePath = requireContainedPath(comparisonStudyEnvironment.sourcePath, "source", "source");
-  if (!["available", "unavailable"].includes(comparisonStudyEnvironment.publicSurfaceAvailability)) {
-    throw new Error("Comparison-study public-surface availability must be available or unavailable.");
+  if (!["available", "undetermined"].includes(comparisonStudyEnvironment.publicSurfaceAvailability)) {
+    throw new Error("Comparison-study public-surface availability must be available or undetermined.");
   }
   return {
     OPEN_WRANGLER_STUDY_REQUEST: resolve(requestPath),

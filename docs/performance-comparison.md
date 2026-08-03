@@ -24,8 +24,9 @@ The Pandas comparison uses the same Pandas dataframe in both products. The Polar
 native and passes the same real Polars variable to Data Wrangler. A Polars source proves the source engine, not the
 implementation of either workbench. The report may describe Data Wrangler as converting through Pandas only when a
 public conversion prompt, backend label, or generated-code surface proves it. Otherwise it records
-`sourceEngine=polars, workbenchEngine=unverified`. If the installed Data Wrangler build exposes no equivalent public
-Polars surface, that cell is unavailable rather than replaced with a different workload.
+`sourceEngine=polars, workbenchEngine=unverified`. If no equivalent Data Wrangler Polars action appears before the
+capability deadline, the result is undetermined. It is not evidence that the feature is unsupported, and the cell
+stays release-incomplete rather than being replaced with a different workload.
 
 ## Fixed environment
 
@@ -105,17 +106,19 @@ obstructed, and the product's public launch action is visible and pointer-usable
 This boundary is deliberately described as an inline _surface_, not necessarily an extension-owned renderer. If
 Data Wrangler adds only its launch action to a host/Jupyter dataframe rendering, the report must say so; that timing
 must not be marketed as Data Wrangler rendering a custom preview. A control profile containing Python and Jupyter but
-neither product establishes the host renderer's behavior. If a Polars output has no product-owned inline path, that
-cell is unsupported/non-comparable rather than a timing of generic Polars HTML.
+neither product establishes the host renderer's behavior. If a Polars output has no product-owned inline path before
+the deadline, that capability is undetermined rather than a timing of generic Polars HTML.
 
 The untimed Polars capability check records the complete extension inventory, English UI locale, and exact official
 VS Code build. CSV and Parquet each get their own receipt, using that fixture's `study_frame` shape, schema hash, and
 sentinels. The capture samples the ready notebook output and both products' exact accessible launch-action names once
 per second for 30 seconds. An
-available action must be unique and pointer-usable twice in succession. An unsupported result requires the Data
-Wrangler action to stay absent for the full window. A separate capture without either measured product must keep both
-actions absent under the same host/Jupyter output. These normalized traces are part of the manifest rather than a
-self-reported availability flag.
+available action must be unique and pointer-usable twice in succession. If the Data Wrangler action stays absent for
+the full window, the receipt records `capability-timeout`; it does not infer unsupported. A separate capture without
+either measured product must keep both actions absent under the same host/Jupyter output. These normalized traces are
+part of the manifest rather than a self-reported availability flag. A timed-out capability leaves its scheduled cell
+pending and prevents release completion until a public action is observed or separate reviewed public evidence
+establishes that the surface is unsupported.
 
 ### Workbench open
 
@@ -139,9 +142,16 @@ sampling label can finish the timing. It counts toward correctness only when its
 contains `rowCount`. Record a displayed approximate point without an interval as `approximate-unqualified`. Exclude it
 from the distinct-count check and the semantic-equivalence claim. Exact type, missing count, minimum, and maximum are
 still required. Stop after every column has supplied its final profile. Record the first useful `c00` profile and
-complete traversal relative both to profile activation and to the original workbench-open click. The workbench-click
-measurements are the primary comparison. The activation-relative measurements remain descriptive. This keeps
-background profiling done while the grid opens or scrolls inside the measured journey.
+complete traversal relative both to profile activation and to the original workbench-open click. The
+activation-relative measurements are the primary comparison. The workbench-click measurements remain descriptive
+context for background work completed while the grid opens or scrolls.
+
+The profile action follows a fixed immediate policy. After the workbench is ready and the first rows are restored, the
+child requests the profile boundary. The parent confirms that PSS sampling is still active and acknowledges it
+synchronously; it does not wait for another sample or for a five-sample stability window. The next child operation is
+the public profile pointer action. After the trial, the result derives the five samples immediately before that
+recorded pointer milestone and applies the same ten-second and stability rules used by the other segment baselines. A
+missing or unstable pre-action window invalidates the resource result; it never delays the user-visible interaction.
 
 This is an end-to-end public-UI comparison, not a private request benchmark. The final report must disclose that
 Open Wrangler profiles progressively/on demand and whether Data Wrangler was observed to profile eagerly. Histograms
@@ -249,13 +259,13 @@ and process start time before preview readiness; every publicly expected Open Wr
 or its absence explicitly proven for the live-kernel path. A setup failure before the first product action may stop
 before a kernel exists, but it still records and rechecks the editor process.
 
-For every journey report:
+For every journey report ("maximum observed" means the largest retained 200 ms sample, not a true instantaneous peak):
 
 - the baseline immediately before the measured cell and each next action: the median of five consecutive 200 ms
   samples whose range is at most the greater of 64 MiB or 5% of that median;
-- absolute peak editor-tree PSS for inline, workbench, profiling, and the complete trial;
-- peak-minus-segment-baseline PSS deltas for the same segments;
-- the same baseline, absolute peak, and peak delta for editor main, renderer/GPU, extension host, configured kernel,
+- maximum observed sampled editor-tree PSS for inline, workbench, profiling, and the complete trial;
+- maximum-observed-minus-segment-baseline PSS deltas for the same segments;
+- the same baseline, maximum observed sample, and sampled delta for editor main, renderer/GPU, extension host, configured kernel,
   Open Wrangler runtime, and other owned-child categories, including explicit zero-valued categories;
 - the sampling interval, missed-sample count, and process-count range.
 
@@ -272,16 +282,22 @@ without publishing a fragment and leaves its private root for diagnosis. A missi
 ambiguity, surviving process, or sampling gap invalidates the resource observation; the study may not fall back
 silently to a less comparable number. Once the editor has launched, the fragment always keeps the ownership launch
 receipt and either a valid or explicitly invalid resource observation, even if setup fails before the product action.
-Only an unavailable public surface or a failed pre-launch environment gate may omit them. A fresh delegated cgroup's
+An undetermined capability never launches and therefore produces no fragment. A failed pre-launch environment gate
+may omit process evidence. A fresh delegated cgroup's
 `memory.peak` may be secondary evidence only; it is never added to PSS or used as the headline because it can include
 charged page cache.
 
+The sampler reads each process's `smaps_rollup` one after another. Those process values are therefore close in time,
+not simultaneous, and a short-lived memory spike between 200 ms samples may be missed. Public results must say
+"maximum observed sampled PSS" rather than "peak PSS."
+
 The inline segment starts at its accepted pre-cell baseline and ends at inline readiness. The workbench segment starts
 at the accepted five-sample baseline immediately before the launch click and ends at the first stable, selected,
-unobstructed grid. The profile segment starts at the accepted five-sample baseline immediately before profile
-activation and ends after complete traversal plus the two-second quiescence. The complete-trial segment starts at the
-pre-cell baseline and ends with that same quiescence. A baseline that cannot satisfy the range rule within ten seconds
-is a pre-action harness failure rather than a hand-picked lower value.
+unobstructed grid. The profile segment uses the five samples immediately before the recorded profile action, derived
+from the completed observation after the action has run, and ends after complete traversal plus the two-second
+quiescence. The complete-trial segment starts at the pre-cell baseline and ends with that same quiescence. Inline and
+workbench baselines must satisfy the range rule before their actions. A missing or unstable derived profile baseline
+invalidates the resource result instead of delaying the profile click or selecting a hand-picked lower value.
 
 ## Predeclared regression gate
 
@@ -300,7 +316,7 @@ right-censored at its deadline and reported as `>= deadline`, never substituted 
 timeout or correctness failure paired with a successful Data Wrangler trial is release-blocking. A run with fewer than
 ten successful timed pairs in a cell is retained but is not release-complete; after the root cause is resolved, that
 whole cell receives a new preregistered run ID rather than replacement samples. Memory uses the same formulas with
-`OW_i` and `DW_i` equal to complete-trial peak PSS minus the pre-cell baseline; it triggers under the same seven-of-ten
+`OW_i` and `DW_i` equal to complete-trial maximum observed sampled PSS minus the pre-cell baseline; it triggers under the same seven-of-ten
 and 1.20 rules when `median(d_i)` also exceeds 256 MiB. For any non-negative memory deltas `a=OW_i` and `b=DW_i`, the
 ratio is `1` when both are zero, positive infinity when only `b` is zero, and `a / b` otherwise. Absolute PSS,
 per-segment deltas, and per-category summaries remain reported diagnostics. These are materiality thresholds, not

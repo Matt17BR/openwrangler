@@ -212,7 +212,7 @@ function parentControlReceipt({ entry, fragmentIdentity, exchanges, resourceObse
       : {
           request: exchange.request,
           acknowledgement: exchange.acknowledgement,
-          receipt: stableBaselineReceipt(exchange, resourceObservation)
+          receipt: kind === "profile-baseline" ? null : stableBaselineReceipt(exchange, resourceObservation)
         };
   };
   const authorization = byKind.has("inline-baseline")
