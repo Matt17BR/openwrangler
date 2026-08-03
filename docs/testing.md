@@ -76,7 +76,10 @@ Agent checkout lifecycle has a separate, small contract test:
   isolated `/usr/bin/python3` and fails closed when that syscall or interpreter is unavailable. Purge compares each
   remaining entry with the verified recovery
   tree through already-open parent descriptors immediately before `unlink`/`rmdir`, never dereferences a symlink, and
-  can resume after a partial purge.
+  can resume after a partial purge. Before purge, it creates manager-owned hard-link pins for every file and symlink.
+  The source entry is atomically moved into a durable releasing state, compared with its retained pin, then deleted
+  only after its source directory records the move. This prevents a same-byte replacement from inheriting a reusable
+  inode during purge.
   Tests cover an external symlink, source and parent replacement, link swaps, hard links, nested Git markers, a FIFO,
   archive and publication interruptions, same-boot retention, later-boot removal, and interruption during purge. Do
   not point either command at a real directory until the dry output and its owner/revision have been reviewed.

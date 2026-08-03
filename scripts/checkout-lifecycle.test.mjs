@@ -709,6 +709,38 @@ test("generated-artifact purge resumes after an interrupted unlink", () => {
   });
 });
 
+test("generated-artifact purge resumes after a source unlink before its pin is released", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const seed = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "d".repeat(32) });
+    create(fixture, "artifact-pin-resume-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "purge-pin-crash");
+    const args = artifactArguments("purge-pin-crash", artifact);
+    const audit = seed.artifactAudit(args);
+    seed.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    let interrupted = false;
+    const crashing = manager(fixture, {
+      readBootId: () => bootB,
+      hooks: {
+        afterArtifactSourceUnlink() {
+          if (!interrupted) {
+            interrupted = true;
+            throw new Error("simulated source-unlink crash");
+          }
+        }
+      }
+    });
+    assert.throws(() => crashing.sweep(), /simulated source-unlink crash/u);
+    const resumed = manager(fixture, { readBootId: () => bootB })
+      .sweep()
+      .results.find((item) => item.kind === "artifact" && item.slug === "purge-pin-crash");
+    assert.equal(resumed.state, "retired");
+    assert.equal(resumed.removed, true);
+    assert.equal(existsSync(join(seed.paths.artifactPins, `purge-pin-crash.1.${"d".repeat(32)}`)), false);
+  });
+});
+
 test("generated-artifact quarantine never replaces a raced destination", () => {
   withRepository((fixture) => {
     const bootA = "11111111-1111-4111-8111-111111111111";
@@ -872,6 +904,42 @@ test("generated-artifact purge rejects a same-byte file replacement", () => {
     assert.equal(result.state, "held");
     assert.equal(result.code, "artifact-purge-unsafe");
     assert.equal(result.removed, false);
+    assert.equal(existsSync(join(seed.paths.artifactPins, `purge-file-swap.1.${"a".repeat(32)}`)), true);
+  });
+});
+
+test("generated-artifact purge moves a final-window replacement into private holding", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const seed = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "f".repeat(32) });
+    create(fixture, "artifact-final-window-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "purge-final-window");
+    const args = artifactArguments("purge-final-window", artifact);
+    const audit = seed.artifactAudit(args);
+    seed.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    let replaced = false;
+    const hostile = manager(fixture, {
+      readBootId: () => bootB,
+      hooks: {
+        beforeArtifactEntryUnlink(_root, child) {
+          if (!replaced && child.endsWith("metadata.json")) {
+            replaced = true;
+            const bytes = readFileSync(child);
+            unlinkSync(child);
+            writeFileSync(child, bytes);
+          }
+        }
+      }
+    });
+    const result = hostile
+      .sweep()
+      .results.find((item) => item.kind === "artifact" && item.slug === "purge-final-window");
+    assert.equal(replaced, true);
+    assert.equal(result.state, "held");
+    assert.equal(result.code, "artifact-purge-unsafe");
+    assert.equal(result.removed, false);
+    assert.equal(existsSync(join(seed.paths.artifactPins, `purge-final-window.1.${"f".repeat(32)}`)), true);
   });
 });
 

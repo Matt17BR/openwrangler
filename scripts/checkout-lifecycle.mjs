@@ -2586,7 +2586,8 @@ function normalizePaths(root) {
     artifactAttempts: join(managerRoot, "artifact-retirements", "attempts"),
     artifactEntries: join(managerRoot, "artifact-retirements", "entries"),
     artifactSweeps: join(managerRoot, "artifact-retirement-sweeps"),
-    artifactQuarantine: join(managerRoot, "artifact-retirement-quarantine")
+    artifactQuarantine: join(managerRoot, "artifact-retirement-quarantine"),
+    artifactPins: join(managerRoot, "artifact-retirement-pins")
   });
 }
 
@@ -2832,7 +2833,8 @@ export function createCheckoutManager(options = {}) {
       paths.artifactAttempts,
       paths.artifactEntries,
       paths.artifactSweeps,
-      paths.artifactQuarantine
+      paths.artifactQuarantine,
+      paths.artifactPins
     ]) {
       const identity = managedIdentities.get(path);
       if (identity === undefined) managedIdentities.set(path, ensurePrivateDirectory(path));
@@ -11580,6 +11582,31 @@ export function createCheckoutManager(options = {}) {
     }
   }
 
+  function openArtifactPrivateChildDirectory(parentDescriptor, name, expectedIdentity, label) {
+    requireArtifactDescriptorTraversal();
+    let descriptor;
+    try {
+      descriptor = openSync(
+        artifactDescriptorPath(parentDescriptor, name),
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0)
+      );
+      const metadata = fstatSync(descriptor, { bigint: true });
+      if (
+        !metadata.isDirectory() ||
+        !currentUserOwns(metadata) ||
+        (typeof process.getuid === "function" && (metadata.mode & 0o777n) !== 0o700n) ||
+        !sameIdentity(identityOf(metadata), expectedIdentity)
+      ) {
+        fail("artifact-purge-unsafe", `${label} changed before descriptor-relative traversal.`);
+      }
+      return Object.freeze({ descriptor, metadata });
+    } catch (error) {
+      if (descriptor !== undefined) closeSync(descriptor);
+      if (error instanceof CheckoutLifecycleError) throw error;
+      fail("artifact-purge-unsafe", `${label} could not be opened without following links: ${error.message}`);
+    }
+  }
+
   function synchronizeArtifactDirectory(descriptor, path) {
     if (syncArtifactDirectoryHook === undefined) syncArtifactDescriptor(descriptor);
     else syncArtifactDirectoryHook(path, descriptor);
@@ -12457,6 +12484,47 @@ export function createCheckoutManager(options = {}) {
     return join(paths.artifactQuarantine, `${slug}.${ownerRevision}.${operationId}`);
   }
 
+  function artifactPinRootPath(slug, ownerRevision, operationId) {
+    return join(paths.artifactPins, `${slug}.${ownerRevision}.${operationId}`);
+  }
+
+  function artifactPinName(relativePath) {
+    return sha256(Buffer.from(relativePath, "utf8"));
+  }
+
+  function artifactPinPaths(slug, ownerRevision, operationId) {
+    const root = artifactPinRootPath(slug, ownerRevision, operationId);
+    return Object.freeze({
+      root,
+      active: join(root, "active"),
+      releasing: join(root, "releasing")
+    });
+  }
+
+  function artifactPinBinding(paths, root, active, releasing) {
+    return Object.freeze({
+      root: Object.freeze({ path: paths.root, identity: identityOf(root) }),
+      active: Object.freeze({ path: paths.active, identity: identityOf(active) }),
+      releasing: Object.freeze({ path: paths.releasing, identity: identityOf(releasing) })
+    });
+  }
+
+  function validateArtifactPinBinding(value, expectedPaths) {
+    exactKeys(value, ["root", "active", "releasing"], "Generated-artifact pin binding");
+    for (const [label, expectedPath] of [
+      ["root", expectedPaths.root],
+      ["active", expectedPaths.active],
+      ["releasing", expectedPaths.releasing]
+    ]) {
+      const candidate = value[label];
+      exactKeys(candidate, ["path", "identity"], `Generated-artifact pin ${label}`);
+      if (candidate.path !== expectedPath) {
+        fail("invalid-artifact-journal", `Generated-artifact pin ${label} has the wrong path.`);
+      }
+      validateIdentity(candidate.identity, `Generated-artifact pin ${label} identity`);
+    }
+  }
+
   function validateArtifactSweepRecord(record, previous, expected) {
     const value = record.loaded.value;
     const common = ["protocol", "kind", "slug", "ownerTask", "ownerRevision", "sequence", "operationId", "previous"];
@@ -12475,7 +12543,7 @@ export function createCheckoutManager(options = {}) {
         : record.kind === "quarantine-intent"
           ? [...common, "bootId", "originalPath", "quarantinePath"]
           : record.kind === "quarantine-result"
-            ? [...common, "bootId", "quarantinePath", "location"]
+            ? [...common, "bootId", "quarantinePath", "location", "pins"]
             : record.kind === "purge-intent"
               ? [...common, "bootId", "quarantinePath"]
               : [...common, "bootId", "quarantinePath", "archivePreserved"];
@@ -12516,6 +12584,7 @@ export function createCheckoutManager(options = {}) {
     ) {
       fail("invalid-artifact-journal", `Generated-artifact ${record.kind} has an invalid path or result.`);
     }
+    if (record.kind === "quarantine-result") validateArtifactPinBinding(value.pins, expected.pinPaths);
   }
 
   function readArtifactSweepRecords(slug, ownerRevision) {
@@ -12564,7 +12633,8 @@ export function createCheckoutManager(options = {}) {
         rootIdentity: eligible.rootIdentity,
         reviewSha256: eligible.reviewSha256,
         entry: eligible.entry,
-        quarantinePath: artifactQuarantinePath(slug, ownerRevision, eligible.operationId)
+        quarantinePath: artifactQuarantinePath(slug, ownerRevision, eligible.operationId),
+        pinPaths: artifactPinPaths(slug, ownerRevision, eligible.operationId)
       });
       for (const [index, record] of records.entries())
         validateArtifactSweepRecord(record, records[index - 1], expected);
@@ -12692,14 +12762,14 @@ export function createCheckoutManager(options = {}) {
     return Object.freeze({ state: "blocked", quarantinePath });
   }
 
-  function hashArtifactRegularFile(path, observed, label) {
+  function hashArtifactRegularFile(path, observed, label, expectedLinks = 1n) {
     let descriptor;
     try {
       descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       const before = fstatSync(descriptor, { bigint: true });
       if (
         !before.isFile() ||
-        before.nlink !== 1n ||
+        before.nlink !== expectedLinks ||
         !currentUserOwns(before) ||
         !sameIdentity(identityOf(before), identityOf(observed))
       ) {
@@ -12725,7 +12795,7 @@ export function createCheckoutManager(options = {}) {
     }
   }
 
-  function artifactManifestMatcher(manifestPath, expectedReceipt) {
+  function artifactManifestMatcher(manifestPath, expectedReceipt, options = {}) {
     let descriptor;
     let iterator;
     function* records() {
@@ -12813,8 +12883,12 @@ export function createCheckoutManager(options = {}) {
     }
     iterator = records();
     let current = iterator.next();
+    const skip = () => {
+      options.onSkipped?.(current.value);
+      current = iterator.next();
+    };
     const nextMatching = (path, kind) => {
-      while (!current.done && current.value.path !== path) current = iterator.next();
+      while (!current.done && current.value.path !== path) skip();
       if (current.done || current.value.kind !== kind) {
         fail("artifact-purge-unsafe", `The quarantine entry ${path || "."} is absent from the source manifest.`);
       }
@@ -12831,12 +12905,373 @@ export function createCheckoutManager(options = {}) {
         return value;
       },
       finish() {
-        while (!current.done) current = iterator.next();
+        while (!current.done) skip();
+      },
+      consumeMissingChildren(parentPath) {
+        while (
+          !current.done &&
+          (posix.dirname(current.value.path) === "." ? "" : posix.dirname(current.value.path)) === parentPath
+        ) {
+          skip();
+        }
       },
       close() {
         iterator.return?.();
       }
     });
+  }
+
+  function ensureArtifactPinDirectory(parentDescriptor, parentPath, name, label) {
+    const reference = artifactDescriptorPath(parentDescriptor, name);
+    let metadata;
+    try {
+      metadata = lstatSync(reference, { bigint: true });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      mkdirSync(reference, { mode: 0o700 });
+      synchronizeArtifactDirectory(parentDescriptor, parentPath);
+      metadata = lstatSync(reference, { bigint: true });
+    }
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !currentUserOwns(metadata) ||
+      (typeof process.getuid === "function" && (metadata.mode & 0o777n) !== 0o700n)
+    ) {
+      fail("artifact-purge-unsafe", `${label} is not one private directory.`);
+    }
+    return openArtifactChildDirectoryDescriptor(parentDescriptor, name, metadata, label);
+  }
+
+  function readArtifactPin(directoryDescriptor, name, label) {
+    const reference = artifactDescriptorPath(directoryDescriptor, name);
+    try {
+      return Object.freeze({ reference, metadata: lstatSync(reference, { bigint: true }) });
+    } catch (error) {
+      if (error.code === "ENOENT") return undefined;
+      fail("artifact-purge-unsafe", `${label} could not be inspected safely: ${error.message}`);
+    }
+  }
+
+  function assertArtifactPinMetadata(metadata, source, kind, links, label) {
+    const validKind = kind === "file" ? metadata.isFile() && !metadata.isSymbolicLink() : metadata.isSymbolicLink();
+    if (
+      !validKind ||
+      !currentUserOwns(metadata) ||
+      metadata.nlink !== links ||
+      !sameIdentity(identityOf(metadata), source.identity) ||
+      Number(metadata.mode & 0o7777n) !== source.mode
+    ) {
+      fail("artifact-purge-unsafe", `${label} does not match the sealed generated-artifact entry.`);
+    }
+  }
+
+  function assertArtifactPinPair(sourceMetadata, pinMetadata, source, kind, sourceLinks, pinLinks, label) {
+    assertArtifactPinMetadata(sourceMetadata, source, kind, sourceLinks, `${label} source`);
+    assertArtifactPinMetadata(pinMetadata, source, kind, pinLinks, `${label} pin`);
+    if (!sameIdentity(identityOf(sourceMetadata), identityOf(pinMetadata))) {
+      fail("artifact-purge-unsafe", `${label} source and pin differ.`);
+    }
+  }
+
+  function ensureArtifactPins(quarantinePath, expectedIdentity, manifestPath, manifestReceipt, pinPaths) {
+    const pinParentIdentity = managedIdentities.get(paths.artifactPins);
+    if (pinParentIdentity === undefined || dirname(pinPaths.root) !== paths.artifactPins) {
+      fail("artifact-purge-unsafe", "The generated-artifact pin parent is not manager-owned.");
+    }
+    const pinParent = openArtifactDirectoryDescriptor(
+      paths.artifactPins,
+      "Generated-artifact pin parent",
+      pinParentIdentity
+    );
+    let pinRoot;
+    let active;
+    let releasing;
+    let sourceRoot;
+    let manifest;
+    try {
+      pinRoot = ensureArtifactPinDirectory(
+        pinParent.descriptor,
+        paths.artifactPins,
+        basename(pinPaths.root),
+        "Generated-artifact pin root"
+      );
+      active = ensureArtifactPinDirectory(
+        pinRoot.descriptor,
+        pinPaths.root,
+        "active",
+        "Generated-artifact active pins"
+      );
+      releasing = ensureArtifactPinDirectory(
+        pinRoot.descriptor,
+        pinPaths.root,
+        "releasing",
+        "Generated-artifact releasing pins"
+      );
+      sourceRoot = openArtifactDirectoryDescriptor(quarantinePath, "Generated-artifact quarantine", expectedIdentity);
+      manifest = artifactManifestMatcher(manifestPath, manifestReceipt, {
+        onSkipped() {
+          fail("artifact-purge-unsafe", "The quarantined artifact changed while its pins were prepared.");
+        }
+      });
+      let pinCount = 0;
+      const ensurePin = (sourceReference, sourceMetadata, source, kind, relativePath) => {
+        const name = artifactPinName(relativePath);
+        const activePin = readArtifactPin(active.descriptor, name, "Generated-artifact active pin");
+        const releasingPin = readArtifactPin(releasing.descriptor, name, "Generated-artifact releasing pin");
+        if (activePin !== undefined && releasingPin !== undefined) {
+          fail("artifact-purge-unsafe", "A generated-artifact pin is in two release states.");
+        }
+        if (releasingPin !== undefined) {
+          fail("artifact-purge-unsafe", "A generated-artifact pin was released before purge began.");
+        }
+        const sourceLinks = activePin === undefined ? 1n : 2n;
+        if (kind === "file") {
+          const current = hashArtifactRegularFile(
+            sourceReference,
+            sourceMetadata,
+            "Quarantined artifact file while pinning",
+            sourceLinks
+          );
+          if (current.sha256 !== source.sha256 || current.metadata.size.toString() !== source.size) {
+            fail("artifact-purge-unsafe", "A quarantined file changed before its identity pin was created.");
+          }
+        } else {
+          const target = readlinkSync(sourceReference, { encoding: "buffer" });
+          if (
+            target.toString("base64") !== source.targetBase64 ||
+            sha256(target) !== source.targetSha256 ||
+            target.byteLength.toString() !== source.targetBytes
+          ) {
+            fail("artifact-purge-unsafe", "A quarantined symlink changed before its identity pin was created.");
+          }
+        }
+        if (activePin === undefined) {
+          linkSync(sourceReference, artifactDescriptorPath(active.descriptor, name));
+          synchronizeArtifactDirectory(active.descriptor, pinPaths.active);
+          const linkedSource = lstatSync(sourceReference, { bigint: true });
+          const linkedPin = readArtifactPin(active.descriptor, name, "Generated-artifact active pin");
+          if (linkedPin === undefined)
+            fail("artifact-purge-unsafe", "A generated-artifact pin disappeared after creation.");
+          assertArtifactPinPair(linkedSource, linkedPin.metadata, source, kind, 2n, 2n, "Generated-artifact pin");
+        } else {
+          assertArtifactPinPair(sourceMetadata, activePin.metadata, source, kind, 2n, 2n, "Generated-artifact pin");
+        }
+        pinCount += 1;
+      };
+      const visit = (directoryDescriptor, directoryReference, relativePath, depth) => {
+        if (depth > MAXIMUM_ARTIFACT_DEPTH)
+          fail("artifact-too-large", "The generated-artifact pin tree exceeds its depth limit.");
+        const directoryMetadata = fstatSync(directoryDescriptor, { bigint: true });
+        manifest.match(relativePath, "directory", directoryMetadata);
+        for (const item of readArtifactDirectoryBounded(directoryDescriptor, "Generated-artifact pin source").sort(
+          (left, right) => Buffer.compare(left.nameBytes, right.nameBytes)
+        )) {
+          const childReference = artifactDescriptorPath(directoryDescriptor, item.name);
+          const childRelative = relativePath === "" ? item.name : `${relativePath}/${item.name}`;
+          const metadata = lstatSync(childReference, { bigint: true });
+          if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+            const child = openArtifactChildDirectoryDescriptor(
+              directoryDescriptor,
+              item.name,
+              metadata,
+              `Quarantined artifact directory ${childRelative}`
+            );
+            try {
+              visit(child.descriptor, childReference, childRelative, depth + 1);
+            } finally {
+              closeSync(child.descriptor);
+            }
+          } else if (metadata.isFile() && !metadata.isSymbolicLink()) {
+            ensurePin(childReference, metadata, manifest.match(childRelative, "file", metadata), "file", childRelative);
+          } else if (metadata.isSymbolicLink()) {
+            ensurePin(
+              childReference,
+              metadata,
+              manifest.match(childRelative, "symlink", metadata),
+              "symlink",
+              childRelative
+            );
+          } else {
+            fail("artifact-purge-unsafe", "The quarantined artifact contains a special file while pinning.");
+          }
+        }
+      };
+      visit(sourceRoot.descriptor, artifactDescriptorPath(sourceRoot.descriptor), "", 0);
+      manifest.finish();
+      const activeEntries = readArtifactDirectoryBounded(active.descriptor, "Generated-artifact active pins");
+      const releasingEntries = readArtifactDirectoryBounded(releasing.descriptor, "Generated-artifact releasing pins");
+      if (
+        activeEntries.length !== pinCount ||
+        releasingEntries.length !== 0 ||
+        activeEntries.some(
+          (entry) =>
+            !/^[0-9a-f]{64}$/u.test(entry.name) ||
+            (() => {
+              const metadata = lstatSync(artifactDescriptorPath(active.descriptor, entry.name), { bigint: true });
+              return !((metadata.isFile() && !metadata.isSymbolicLink()) || metadata.isSymbolicLink());
+            })()
+        )
+      ) {
+        fail("artifact-purge-unsafe", "The generated-artifact pin set is incomplete or has unknown entries.");
+      }
+      synchronizeArtifactDirectory(active.descriptor, pinPaths.active);
+      synchronizeArtifactDirectory(releasing.descriptor, pinPaths.releasing);
+      synchronizeArtifactDirectory(pinRoot.descriptor, pinPaths.root);
+      synchronizeArtifactDirectory(pinParent.descriptor, paths.artifactPins);
+      return artifactPinBinding(pinPaths, pinRoot.metadata, active.metadata, releasing.metadata);
+    } finally {
+      manifest?.close();
+      if (sourceRoot !== undefined) closeSync(sourceRoot.descriptor);
+      if (releasing !== undefined) closeSync(releasing.descriptor);
+      if (active !== undefined) closeSync(active.descriptor);
+      if (pinRoot !== undefined) closeSync(pinRoot.descriptor);
+      closeSync(pinParent.descriptor);
+    }
+  }
+
+  function openArtifactPins(binding) {
+    const pinPaths = Object.freeze({
+      root: binding.root.path,
+      active: binding.active.path,
+      releasing: binding.releasing.path
+    });
+    validateArtifactPinBinding(binding, pinPaths);
+    const pinParentIdentity = managedIdentities.get(paths.artifactPins);
+    if (
+      pinParentIdentity === undefined ||
+      dirname(binding.root.path) !== paths.artifactPins ||
+      dirname(binding.active.path) !== binding.root.path ||
+      dirname(binding.releasing.path) !== binding.root.path ||
+      basename(binding.active.path) !== "active" ||
+      basename(binding.releasing.path) !== "releasing"
+    ) {
+      fail("artifact-purge-unsafe", "The generated-artifact pin parent is not manager-owned.");
+    }
+    const parent = openArtifactDirectoryDescriptor(
+      paths.artifactPins,
+      "Generated-artifact pin parent",
+      pinParentIdentity
+    );
+    let root;
+    let active;
+    let releasing;
+    try {
+      root = openArtifactPrivateChildDirectory(
+        parent.descriptor,
+        basename(binding.root.path),
+        binding.root.identity,
+        "Generated-artifact pin root"
+      );
+      active = openArtifactPrivateChildDirectory(
+        root.descriptor,
+        "active",
+        binding.active.identity,
+        "Generated-artifact active pins"
+      );
+      releasing = openArtifactPrivateChildDirectory(
+        root.descriptor,
+        "releasing",
+        binding.releasing.identity,
+        "Generated-artifact releasing pins"
+      );
+      return Object.freeze({ parent, root, active, releasing, paths: pinPaths });
+    } catch (error) {
+      if (releasing !== undefined) closeSync(releasing.descriptor);
+      if (active !== undefined) closeSync(active.descriptor);
+      if (root !== undefined) closeSync(root.descriptor);
+      closeSync(parent.descriptor);
+      throw error;
+    }
+  }
+
+  function closeArtifactPins(pins) {
+    closeSync(pins.releasing.descriptor);
+    closeSync(pins.active.descriptor);
+    closeSync(pins.root.descriptor);
+    closeSync(pins.parent.descriptor);
+  }
+
+  function removeEmptyArtifactPins(binding) {
+    const pinPaths = Object.freeze({
+      root: binding.root.path,
+      active: binding.active.path,
+      releasing: binding.releasing.path
+    });
+    validateArtifactPinBinding(binding, pinPaths);
+    if (
+      dirname(pinPaths.root) !== paths.artifactPins ||
+      dirname(pinPaths.active) !== pinPaths.root ||
+      dirname(pinPaths.releasing) !== pinPaths.root ||
+      basename(pinPaths.active) !== "active" ||
+      basename(pinPaths.releasing) !== "releasing"
+    ) {
+      fail("artifact-purge-unsafe", "The generated-artifact pin paths are not manager-owned.");
+    }
+    const parentIdentity = managedIdentities.get(paths.artifactPins);
+    if (parentIdentity === undefined)
+      fail("artifact-purge-unsafe", "The generated-artifact pin parent is not manager-owned.");
+    const parent = openArtifactDirectoryDescriptor(paths.artifactPins, "Generated-artifact pin parent", parentIdentity);
+    const rootReference = artifactDescriptorPath(parent.descriptor, basename(pinPaths.root));
+    let rootMetadata;
+    try {
+      rootMetadata = lstatSync(rootReference, { bigint: true });
+    } catch (error) {
+      closeSync(parent.descriptor);
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+    let root;
+    try {
+      if (!sameIdentity(identityOf(rootMetadata), binding.root.identity)) {
+        fail("artifact-purge-unsafe", "The generated-artifact pin root changed before cleanup.");
+      }
+      root = openArtifactPrivateChildDirectory(
+        parent.descriptor,
+        basename(pinPaths.root),
+        binding.root.identity,
+        "Generated-artifact pin root"
+      );
+      for (const [name, expected] of [
+        ["active", binding.active.identity],
+        ["releasing", binding.releasing.identity]
+      ]) {
+        const reference = artifactDescriptorPath(root.descriptor, name);
+        let metadata;
+        try {
+          metadata = lstatSync(reference, { bigint: true });
+        } catch (error) {
+          if (error.code === "ENOENT") continue;
+          throw error;
+        }
+        if (!metadata.isDirectory() || metadata.isSymbolicLink() || !sameIdentity(identityOf(metadata), expected)) {
+          fail("artifact-purge-unsafe", `The generated-artifact ${name} pin directory changed before cleanup.`);
+        }
+        const child = openArtifactPrivateChildDirectory(
+          root.descriptor,
+          name,
+          expected,
+          `Generated-artifact ${name} pins`
+        );
+        try {
+          if (readArtifactDirectoryBounded(child.descriptor, `Generated-artifact ${name} pins`).length !== 0) {
+            fail("artifact-purge-unsafe", `The generated-artifact ${name} pins are not empty after purge.`);
+          }
+        } finally {
+          closeSync(child.descriptor);
+        }
+        rmdirSync(reference);
+        synchronizeArtifactDirectory(root.descriptor, pinPaths.root);
+      }
+      if (readArtifactDirectoryBounded(root.descriptor, "Generated-artifact pin root").length !== 0) {
+        fail("artifact-purge-unsafe", "The generated-artifact pin root has unknown entries.");
+      }
+      rmdirSync(rootReference);
+      synchronizeArtifactDirectory(parent.descriptor, paths.artifactPins);
+    } finally {
+      if (root !== undefined) closeSync(root.descriptor);
+      closeSync(parent.descriptor);
+    }
   }
 
   function removeArtifactTreeNoFollow(
@@ -12845,7 +13280,8 @@ export function createCheckoutManager(options = {}) {
     recoveryPath,
     recoveryIdentity,
     manifestPath,
-    manifestReceipt
+    manifestReceipt,
+    pinBinding
   ) {
     assertNoMountAtOrBelow(quarantinePath);
     const quarantineParentIdentity = managedIdentities.get(paths.artifactQuarantine);
@@ -12898,10 +13334,71 @@ export function createCheckoutManager(options = {}) {
       closeSync(quarantineParent.descriptor);
       throw error;
     }
+    let pins;
     let manifest;
+    let sourceParents;
+    let assertPinnedContent;
     try {
-      manifest = artifactManifestMatcher(manifestPath, manifestReceipt);
+      pins = openArtifactPins(pinBinding);
+      sourceParents = new Map();
+      assertPinnedContent = (pin, record, expectedLinks, label) => {
+        assertArtifactPinMetadata(pin.metadata, record, record.kind, expectedLinks, label);
+        if (record.kind === "file") {
+          const pinned = hashArtifactRegularFile(pin.reference, pin.metadata, label, expectedLinks);
+          if (pinned.sha256 !== record.sha256 || pinned.metadata.size.toString() !== record.size) {
+            fail("artifact-purge-unsafe", `${label} differs from the sealed source.`);
+          }
+          return;
+        }
+        const target = readlinkSync(pin.reference, { encoding: "buffer" });
+        if (target.toString("base64") !== record.targetBase64 || sha256(target) !== record.targetSha256) {
+          fail("artifact-purge-unsafe", `${label} differs from the sealed source.`);
+        }
+      };
+      const releaseMissingPin = (record) => {
+        if (record.kind !== "file" && record.kind !== "symlink") return;
+        const parentPath = posix.dirname(record.path) === "." ? "" : posix.dirname(record.path);
+        const parent = sourceParents.get(parentPath);
+        const pinName = artifactPinName(record.path);
+        const activePin = readArtifactPin(pins.active.descriptor, pinName, "Generated-artifact active pin");
+        const releasingPin = readArtifactPin(pins.releasing.descriptor, pinName, "Generated-artifact releasing pin");
+        if (parent === undefined) {
+          fail("artifact-purge-unsafe", "A generated-artifact identity pin outlived its parent directory.");
+        }
+        if (activePin === undefined && releasingPin === undefined) return;
+        if (activePin !== undefined && releasingPin !== undefined) {
+          assertArtifactPinPair(
+            activePin.metadata,
+            releasingPin.metadata,
+            record,
+            record.kind,
+            2n,
+            2n,
+            "Released generated-artifact pins"
+          );
+          assertPinnedContent(activePin, record, 2n, "Active generated-artifact pin");
+          assertPinnedContent(releasingPin, record, 2n, "Released generated-artifact pin");
+          synchronizeArtifactDirectory(parent.descriptor, parent.reference);
+          unlinkSync(releasingPin.reference);
+          synchronizeArtifactDirectory(pins.releasing.descriptor, pins.paths.releasing);
+          const remaining = readArtifactPin(pins.active.descriptor, pinName, "Generated-artifact active pin");
+          if (remaining === undefined) fail("artifact-purge-unsafe", "An active generated-artifact pin disappeared.");
+          assertPinnedContent(remaining, record, 1n, "Active generated-artifact pin");
+          unlinkSync(remaining.reference);
+          synchronizeArtifactDirectory(pins.active.descriptor, pins.paths.active);
+          return;
+        }
+        if (releasingPin !== undefined) {
+          fail("artifact-purge-unsafe", "A released generated-artifact pin has no active identity pin.");
+        }
+        assertPinnedContent(activePin, record, 1n, "Active generated-artifact pin");
+        synchronizeArtifactDirectory(parent.descriptor, parent.reference);
+        unlinkSync(activePin.reference);
+        synchronizeArtifactDirectory(pins.active.descriptor, pins.paths.active);
+      };
+      manifest = artifactManifestMatcher(manifestPath, manifestReceipt, { onSkipped: releaseMissingPin });
     } catch (error) {
+      if (pins !== undefined) closeArtifactPins(pins);
       closeSync(recoveryRoot.descriptor);
       closeSync(quarantineRoot.descriptor);
       closeSync(quarantineParent.descriptor);
@@ -12920,126 +13417,248 @@ export function createCheckoutManager(options = {}) {
       ) {
         fail("artifact-purge-unsafe", "Artifact purge encountered an unsafe directory.");
       }
-      manifest.match(relativePath, "directory", currentMetadata);
-      hooks?.beforeArtifactPurgeDirectoryRead?.(Object.freeze({ quarantinePath, relativePath }));
-      const children = readArtifactDirectoryBounded(currentDescriptor, "Artifact purge directory").sort((left, right) =>
-        Buffer.compare(left.nameBytes, right.nameBytes)
-      );
-      for (const item of children) {
-        entries += 1;
-        if (entries > MAXIMUM_ARTIFACT_ENTRIES)
-          fail("artifact-too-large", "The artifact purge exceeds its entry limit.");
-        const child = artifactDescriptorPath(currentDescriptor, item.name);
-        const recoveryChild = artifactDescriptorPath(recoveryDescriptor, item.name);
-        const childRelative = relativePath === "" ? item.name : `${relativePath}/${item.name}`;
-        const metadata = lstatSync(child, { bigint: true });
-        let recoveryEntry;
-        try {
-          recoveryEntry = lstatSync(recoveryChild, { bigint: true });
-        } catch {
-          fail("artifact-purge-unsafe", "The quarantine contains an entry absent from the verified archive.");
-        }
-        if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
-          if (!recoveryEntry.isDirectory() || recoveryEntry.isSymbolicLink()) {
-            fail("artifact-purge-unsafe", "A quarantined directory does not match the verified archive.");
-          }
-          const currentChild = openArtifactChildDirectoryDescriptor(
-            currentDescriptor,
-            item.name,
-            metadata,
-            `Quarantined artifact directory ${childRelative}`
-          );
-          let archivedChild;
+      sourceParents.set(relativePath, Object.freeze({ descriptor: currentDescriptor, reference: currentReference }));
+      try {
+        manifest.match(relativePath, "directory", currentMetadata);
+        hooks?.beforeArtifactPurgeDirectoryRead?.(Object.freeze({ quarantinePath, relativePath }));
+        const children = readArtifactDirectoryBounded(currentDescriptor, "Artifact purge directory").sort(
+          (left, right) => Buffer.compare(left.nameBytes, right.nameBytes)
+        );
+        for (const item of children) {
+          entries += 1;
+          if (entries > MAXIMUM_ARTIFACT_ENTRIES)
+            fail("artifact-too-large", "The artifact purge exceeds its entry limit.");
+          const child = artifactDescriptorPath(currentDescriptor, item.name);
+          const recoveryChild = artifactDescriptorPath(recoveryDescriptor, item.name);
+          const childRelative = relativePath === "" ? item.name : `${relativePath}/${item.name}`;
+          const metadata = lstatSync(child, { bigint: true });
+          let recoveryEntry;
           try {
-            archivedChild = openArtifactChildDirectoryDescriptor(
-              recoveryDescriptor,
-              item.name,
-              recoveryEntry,
-              `Archived artifact directory ${childRelative}`
-            );
-            try {
-              visit(currentChild.descriptor, child, archivedChild.descriptor, recoveryChild, childRelative, depth + 1);
-            } finally {
-              closeSync(archivedChild.descriptor);
+            recoveryEntry = lstatSync(recoveryChild, { bigint: true });
+          } catch {
+            fail("artifact-purge-unsafe", "The quarantine contains an entry absent from the verified archive.");
+          }
+          if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+            if (!recoveryEntry.isDirectory() || recoveryEntry.isSymbolicLink()) {
+              fail("artifact-purge-unsafe", "A quarantined directory does not match the verified archive.");
             }
-          } finally {
-            closeSync(currentChild.descriptor);
+            const currentChild = openArtifactChildDirectoryDescriptor(
+              currentDescriptor,
+              item.name,
+              metadata,
+              `Quarantined artifact directory ${childRelative}`
+            );
+            let archivedChild;
+            try {
+              archivedChild = openArtifactChildDirectoryDescriptor(
+                recoveryDescriptor,
+                item.name,
+                recoveryEntry,
+                `Archived artifact directory ${childRelative}`
+              );
+              try {
+                visit(
+                  currentChild.descriptor,
+                  child,
+                  archivedChild.descriptor,
+                  recoveryChild,
+                  childRelative,
+                  depth + 1
+                );
+              } finally {
+                closeSync(archivedChild.descriptor);
+              }
+            } finally {
+              closeSync(currentChild.descriptor);
+            }
+            const confirmed = lstatSync(child, { bigint: true });
+            if (
+              !confirmed.isDirectory() ||
+              confirmed.isSymbolicLink() ||
+              !sameIdentity(identityOf(confirmed), identityOf(metadata))
+            ) {
+              fail("artifact-purge-unsafe", "A quarantined directory changed before removal.");
+            }
+            rmdirSync(child);
+            synchronizeArtifactDirectory(currentDescriptor, currentReference);
+            hooks?.afterArtifactEntryRemoved?.(quarantinePath, child, entries);
+          } else if (metadata.isFile() && !metadata.isSymbolicLink()) {
+            if (!recoveryEntry.isFile() || recoveryEntry.isSymbolicLink()) {
+              fail("artifact-purge-unsafe", "A quarantined file does not match the verified archive.");
+            }
+            const source = manifest.match(childRelative, "file", metadata);
+            const pinName = artifactPinName(childRelative);
+            const activePin = readArtifactPin(pins.active.descriptor, pinName, "Generated-artifact active pin");
+            const releasingPin = readArtifactPin(
+              pins.releasing.descriptor,
+              pinName,
+              "Generated-artifact releasing pin"
+            );
+            if (activePin === undefined || releasingPin !== undefined) {
+              fail("artifact-purge-unsafe", "A generated-artifact file does not have one active identity pin.");
+            }
+            assertArtifactPinPair(metadata, activePin.metadata, source, "file", 2n, 2n, "Generated-artifact file pin");
+            const currentFile = hashArtifactRegularFile(child, metadata, "Quarantined artifact file", 2n);
+            const archivedFile = hashArtifactRegularFile(recoveryChild, recoveryEntry, "Archived artifact file");
+            if (
+              currentFile.sha256 !== archivedFile.sha256 ||
+              currentFile.sha256 !== source.sha256 ||
+              source.size !== metadata.size.toString() ||
+              currentFile.metadata.size !== archivedFile.metadata.size ||
+              (currentFile.metadata.mode & 0o7777n) !== (archivedFile.metadata.mode & 0o7777n)
+            ) {
+              fail("artifact-purge-unsafe", "A quarantined file does not match the verified archive.");
+            }
+            hooks?.beforeArtifactEntryUnlink?.(quarantinePath, child, entries);
+            renameArtifactNoReplace(currentDescriptor, item.name, pins.releasing.descriptor, pinName);
+            synchronizeArtifactDirectory(currentDescriptor, currentReference);
+            synchronizeArtifactDirectory(pins.releasing.descriptor, pins.paths.releasing);
+            const releasedPin = readArtifactPin(pins.releasing.descriptor, pinName, "Generated-artifact releasing pin");
+            const retainedPin = readArtifactPin(pins.active.descriptor, pinName, "Generated-artifact active pin");
+            if (releasedPin === undefined || retainedPin === undefined)
+              fail("artifact-purge-unsafe", "A generated-artifact file pin disappeared during retirement.");
+            assertArtifactPinPair(
+              releasedPin.metadata,
+              retainedPin.metadata,
+              source,
+              "file",
+              2n,
+              2n,
+              "Released generated-artifact file pins"
+            );
+            const releasedFile = hashArtifactRegularFile(
+              releasedPin.reference,
+              releasedPin.metadata,
+              "Released generated-artifact file pin",
+              2n
+            );
+            const retainedFile = hashArtifactRegularFile(
+              retainedPin.reference,
+              retainedPin.metadata,
+              "Active generated-artifact file pin",
+              2n
+            );
+            if (releasedFile.sha256 !== source.sha256 || retainedFile.sha256 !== source.sha256) {
+              fail("artifact-purge-unsafe", "A quarantined file changed before identity-bound removal.");
+            }
+            hooks?.afterArtifactSourceUnlink?.(quarantinePath, child, entries);
+            const releasedAfter = readArtifactPin(
+              pins.releasing.descriptor,
+              pinName,
+              "Generated-artifact releasing pin"
+            );
+            if (releasedAfter === undefined)
+              fail("artifact-purge-unsafe", "A generated-artifact file pin disappeared.");
+            assertPinnedContent(releasedAfter, source, 2n, "Released generated-artifact file pin");
+            unlinkSync(releasedAfter.reference);
+            synchronizeArtifactDirectory(pins.releasing.descriptor, pins.paths.releasing);
+            const retainedAfter = readArtifactPin(pins.active.descriptor, pinName, "Generated-artifact active pin");
+            if (retainedAfter === undefined)
+              fail("artifact-purge-unsafe", "An active generated-artifact file pin disappeared.");
+            assertPinnedContent(retainedAfter, source, 1n, "Active generated-artifact file pin");
+            unlinkSync(retainedAfter.reference);
+            synchronizeArtifactDirectory(pins.active.descriptor, pins.paths.active);
+            hooks?.afterArtifactEntryRemoved?.(quarantinePath, child, entries);
+          } else if (metadata.isSymbolicLink()) {
+            if (!recoveryEntry.isSymbolicLink() || recoveryEntry.nlink !== 1n) {
+              fail("artifact-purge-unsafe", "A quarantined symlink does not match the verified archive.");
+            }
+            const source = manifest.match(childRelative, "symlink", metadata);
+            const pinName = artifactPinName(childRelative);
+            const activePin = readArtifactPin(pins.active.descriptor, pinName, "Generated-artifact active pin");
+            const releasingPin = readArtifactPin(
+              pins.releasing.descriptor,
+              pinName,
+              "Generated-artifact releasing pin"
+            );
+            if (activePin === undefined || releasingPin !== undefined) {
+              fail("artifact-purge-unsafe", "A generated-artifact symlink does not have one active identity pin.");
+            }
+            assertArtifactPinPair(
+              metadata,
+              activePin.metadata,
+              source,
+              "symlink",
+              2n,
+              2n,
+              "Generated-artifact symlink pin"
+            );
+            hooks?.beforeArtifactEntryUnlink?.(quarantinePath, child, entries);
+            renameArtifactNoReplace(currentDescriptor, item.name, pins.releasing.descriptor, pinName);
+            synchronizeArtifactDirectory(currentDescriptor, currentReference);
+            synchronizeArtifactDirectory(pins.releasing.descriptor, pins.paths.releasing);
+            const releasedPin = readArtifactPin(pins.releasing.descriptor, pinName, "Generated-artifact releasing pin");
+            const retainedPin = readArtifactPin(pins.active.descriptor, pinName, "Generated-artifact active pin");
+            if (releasedPin === undefined || retainedPin === undefined)
+              fail("artifact-purge-unsafe", "A generated-artifact symlink pin disappeared during retirement.");
+            assertArtifactPinPair(
+              releasedPin.metadata,
+              retainedPin.metadata,
+              source,
+              "symlink",
+              2n,
+              2n,
+              "Released generated-artifact symlink pins"
+            );
+            assertPinnedContent(releasedPin, source, 2n, "Released generated-artifact symlink pin");
+            assertPinnedContent(retainedPin, source, 2n, "Active generated-artifact symlink pin");
+            hooks?.afterArtifactSourceUnlink?.(quarantinePath, child, entries);
+            const releasedAfter = readArtifactPin(
+              pins.releasing.descriptor,
+              pinName,
+              "Generated-artifact releasing pin"
+            );
+            if (releasedAfter === undefined)
+              fail("artifact-purge-unsafe", "A generated-artifact symlink pin disappeared.");
+            assertPinnedContent(releasedAfter, source, 2n, "Released generated-artifact symlink pin");
+            unlinkSync(releasedAfter.reference);
+            synchronizeArtifactDirectory(pins.releasing.descriptor, pins.paths.releasing);
+            const retainedAfter = readArtifactPin(pins.active.descriptor, pinName, "Generated-artifact active pin");
+            if (retainedAfter === undefined)
+              fail("artifact-purge-unsafe", "An active generated-artifact symlink pin disappeared.");
+            assertPinnedContent(retainedAfter, source, 1n, "Active generated-artifact symlink pin");
+            unlinkSync(retainedAfter.reference);
+            synchronizeArtifactDirectory(pins.active.descriptor, pins.paths.active);
+            hooks?.afterArtifactEntryRemoved?.(quarantinePath, child, entries);
+          } else {
+            fail("artifact-purge-unsafe", "Artifact purge encountered a special file.");
           }
-          const confirmed = lstatSync(child, { bigint: true });
-          if (
-            !confirmed.isDirectory() ||
-            confirmed.isSymbolicLink() ||
-            !sameIdentity(identityOf(confirmed), identityOf(metadata))
-          ) {
-            fail("artifact-purge-unsafe", "A quarantined directory changed before removal.");
-          }
-          rmdirSync(child);
-          hooks?.afterArtifactEntryRemoved?.(quarantinePath, child, entries);
-        } else if (metadata.isFile() && !metadata.isSymbolicLink()) {
-          if (!recoveryEntry.isFile() || recoveryEntry.isSymbolicLink()) {
-            fail("artifact-purge-unsafe", "A quarantined file does not match the verified archive.");
-          }
-          const currentFile = hashArtifactRegularFile(child, metadata, "Quarantined artifact file");
-          const archivedFile = hashArtifactRegularFile(recoveryChild, recoveryEntry, "Archived artifact file");
-          const source = manifest.match(childRelative, "file", metadata);
-          if (
-            currentFile.sha256 !== archivedFile.sha256 ||
-            currentFile.sha256 !== source.sha256 ||
-            source.size !== metadata.size.toString() ||
-            currentFile.metadata.size !== archivedFile.metadata.size ||
-            (currentFile.metadata.mode & 0o7777n) !== (archivedFile.metadata.mode & 0o7777n)
-          ) {
-            fail("artifact-purge-unsafe", "A quarantined file does not match the verified archive.");
-          }
-          hooks?.beforeArtifactEntryUnlink?.(quarantinePath, child, entries);
-          const confirmed = lstatSync(child, { bigint: true });
-          if (!sameArtifactStat(metadata, confirmed)) {
-            fail("artifact-purge-unsafe", "A quarantined file changed before unlink.");
-          }
-          unlinkSync(child);
-          hooks?.afterArtifactEntryRemoved?.(quarantinePath, child, entries);
-        } else if (metadata.isSymbolicLink()) {
-          if (!recoveryEntry.isSymbolicLink() || metadata.nlink !== 1n || recoveryEntry.nlink !== 1n) {
-            fail("artifact-purge-unsafe", "A quarantined symlink does not match the verified archive.");
-          }
-          const target = readlinkSync(child, { encoding: "buffer" });
-          const archivedTarget = readlinkSync(recoveryChild, { encoding: "buffer" });
-          const source = manifest.match(childRelative, "symlink", metadata);
-          hooks?.beforeArtifactEntryUnlink?.(quarantinePath, child, entries);
-          const confirmed = lstatSync(child, { bigint: true });
-          if (
-            !sameArtifactStat(metadata, confirmed) ||
-            !target.equals(archivedTarget) ||
-            source.targetBase64 !== target.toString("base64")
-          ) {
-            fail("artifact-purge-unsafe", "A quarantined symlink changed or differs from the archive.");
-          }
-          unlinkSync(child);
-          hooks?.afterArtifactEntryRemoved?.(quarantinePath, child, entries);
-        } else {
-          fail("artifact-purge-unsafe", "Artifact purge encountered a special file.");
         }
-      }
-      const currentAfter = fstatSync(currentDescriptor, { bigint: true });
-      const currentNamed = lstatSync(currentReference, { bigint: true });
-      const recoveryAfter = fstatSync(recoveryDescriptor, { bigint: true });
-      const recoveryNamed =
-        recoveryReference === undefined ? recoveryAfter : lstatSync(recoveryReference, { bigint: true });
-      if (
-        !currentAfter.isDirectory() ||
-        !currentNamed.isDirectory() ||
-        currentNamed.isSymbolicLink() ||
-        !sameIdentity(identityOf(currentAfter), identityOf(currentMetadata)) ||
-        !sameIdentity(identityOf(currentNamed), identityOf(currentMetadata)) ||
-        !sameArtifactStat(recoveryMetadata, recoveryAfter) ||
-        !sameArtifactStat(recoveryMetadata, recoveryNamed)
-      ) {
-        fail("artifact-purge-unsafe", "An artifact directory changed during descriptor-relative purge.");
+        manifest.consumeMissingChildren(relativePath);
+        const currentAfter = fstatSync(currentDescriptor, { bigint: true });
+        const currentNamed = lstatSync(currentReference, { bigint: true });
+        const recoveryAfter = fstatSync(recoveryDescriptor, { bigint: true });
+        const recoveryNamed =
+          recoveryReference === undefined ? recoveryAfter : lstatSync(recoveryReference, { bigint: true });
+        if (
+          !currentAfter.isDirectory() ||
+          !currentNamed.isDirectory() ||
+          currentNamed.isSymbolicLink() ||
+          !sameIdentity(identityOf(currentAfter), identityOf(currentMetadata)) ||
+          !sameIdentity(identityOf(currentNamed), identityOf(currentMetadata)) ||
+          !sameArtifactStat(recoveryMetadata, recoveryAfter) ||
+          !sameArtifactStat(recoveryMetadata, recoveryNamed)
+        ) {
+          fail("artifact-purge-unsafe", "An artifact directory changed during descriptor-relative purge.");
+        }
+      } finally {
+        sourceParents.delete(relativePath);
       }
     };
     try {
       visit(quarantineRoot.descriptor, quarantineReference, recoveryRoot.descriptor, undefined, "", 0);
-      manifest.finish();
+      sourceParents.set("", Object.freeze({ descriptor: quarantineRoot.descriptor, reference: quarantineReference }));
+      try {
+        manifest.finish();
+      } finally {
+        sourceParents.delete("");
+      }
+      if (
+        readArtifactDirectoryBounded(pins.active.descriptor, "Generated-artifact active pins").length !== 0 ||
+        readArtifactDirectoryBounded(pins.releasing.descriptor, "Generated-artifact releasing pins").length !== 0
+      ) {
+        fail("artifact-purge-unsafe", "Generated-artifact identity pins remain after source purge.");
+      }
       const finalRoot = lstatSync(quarantineReference, { bigint: true });
       if (
         !finalRoot.isDirectory() ||
@@ -13055,6 +13674,7 @@ export function createCheckoutManager(options = {}) {
       closeSync(quarantineRoot.descriptor);
       closeSync(quarantineParent.descriptor);
       manifest.close();
+      closeArtifactPins(pins);
     }
   }
 
@@ -13230,11 +13850,19 @@ export function createCheckoutManager(options = {}) {
     if (records.length === 2) {
       if (layout.state !== "quarantine")
         fail("artifact-layout-blocked", "Artifact quarantine did not complete exactly.");
+      const pins = ensureArtifactPins(
+        layout.quarantinePath,
+        eligible.originalIdentity,
+        authority.entry.attempt.manifestPath,
+        authority.entry.attempt.manifest,
+        artifactPinPaths(eligible.slug, eligible.ownerRevision, eligible.operationId)
+      );
       records.push(
         appendArtifactProgress(records, eligible, "quarantine-result", {
           bootId,
           quarantinePath: layout.quarantinePath,
-          location: "quarantine"
+          location: "quarantine",
+          pins
         })
       );
     }
@@ -13256,13 +13884,15 @@ export function createCheckoutManager(options = {}) {
         authority.entry.attempt.recoveryPath,
         authority.entry.attempt.recoveryIdentity,
         authority.entry.attempt.manifestPath,
-        authority.entry.attempt.manifest
+        authority.entry.attempt.manifest,
+        records[2].loaded.value.pins
       );
       hooks?.afterArtifactPurge?.(eligible);
       layout = artifactLayout(eligible);
     }
     if (records.length === 4 && layout.state === "absent") {
       validateArtifactArchiveAttempt(authority.entry.attempt, authority.review);
+      removeEmptyArtifactPins(records[2].loaded.value.pins);
       records.push(
         appendArtifactProgress(records, eligible, "retired", {
           bootId,
