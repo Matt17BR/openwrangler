@@ -14,9 +14,11 @@ import {
   retireDataWranglerComparisonOwnedDirectory
 } from "./data-wrangler-comparison-preparation.mjs";
 import {
+  DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_TIMEOUT_MS,
   DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS,
   DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL,
   capturePreparedProductWarmups as capturePreparedProductWarmupsImplementation,
+  controlDataWranglerPublicWarmup,
   runPreparedProductWarmupJourney
 } from "./data-wrangler-comparison-warmup.mjs";
 import { createDataWranglerStudyBridgeController } from "./data-wrangler-study-control-bridge.mjs";
@@ -144,6 +146,29 @@ async function runRealWarmupController(options) {
   controller.close();
   return exchanges;
 }
+
+test("public warm-up gives a clean notebook launch a bounded startup window", async () => {
+  const expectedError = new Error("stop after capturing responder options");
+  let observedOptions;
+  await assert.rejects(
+    controlDataWranglerPublicWarmup(
+      {
+        requestPath: "/private/bridge/request.json",
+        acknowledgementPath: "/private/bridge/acknowledgement.json",
+        runId: "00000000-0000-4000-8000-000000000000",
+        phase: "comparison-study-open-wrangler-warmup"
+      },
+      {
+        createResponder(_input, options) {
+          observedOptions = options;
+          throw expectedError;
+        }
+      }
+    ),
+    (error) => error === expectedError
+  );
+  assert.deepEqual(observedOptions, { timeoutMs: DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_TIMEOUT_MS });
+});
 
 test("watch headroom failure prevents the warm-up controller and editor phase", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-headroom-"));

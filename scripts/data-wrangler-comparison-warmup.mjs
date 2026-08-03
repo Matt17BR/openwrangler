@@ -42,6 +42,7 @@ import { requireLinuxInotifyWatchHeadroom } from "./linux-inotify-watch-headroom
 
 export const DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-warmup-phase-v1";
 export const DATA_WRANGLER_PUBLIC_WARMUP_CONTROL_PROTOCOL = "openwrangler-data-wrangler-public-warmup-control-v1";
+export const DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_TIMEOUT_MS = 120_000;
 export const DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS = Object.freeze([
   "source-verified",
   "measurement-ready",
@@ -164,7 +165,10 @@ export function validateDataWranglerPublicWarmupControlReceipt(value, { runId, p
 
 export async function controlDataWranglerPublicWarmup(
   { requestPath, acknowledgementPath, runId, phase, signal = new AbortController().signal } = {},
-  { createResponder = createDataWranglerStudyBridgeResponder, responderOptions } = {}
+  {
+    createResponder = createDataWranglerStudyBridgeResponder,
+    responderOptions = { timeoutMs: DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_TIMEOUT_MS }
+  } = {}
 ) {
   if (typeof createResponder !== "function") fail("Public notebook warm-up control requires a responder factory.");
   if (
