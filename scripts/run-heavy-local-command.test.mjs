@@ -476,13 +476,15 @@ test(
 );
 
 test(
-  "the Linux cleanup lease survives a SIGKILLed wrapper until its complete process tree is reaped",
+  "the Linux cleanup lease survives an accept fault and SIGKILLed wrapper until its process tree is reaped",
   { timeout: 15_000, skip: process.platform !== "linux" },
   async () => {
     const scope = `openwrangler-heavy-parent-death-${process.pid}-${Date.now()}`;
     const environment = {
       ...cleanLeaseEnvironment(scope),
-      OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "512"
+      OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "512",
+      OPEN_WRANGLER_EXTENSION_TESTS: "1",
+      OPEN_WRANGLER_HEAVY_TEST_CLEANUP_ACCEPT_FAILURE: "always"
     };
     const guarded = captureChild(
       [
@@ -491,6 +493,7 @@ test(
         "node",
         "--eval",
         "const {spawn}=require('node:child_process');" +
+          "if(process.env.OPEN_WRANGLER_HEAVY_TEST_CLEANUP_ACCEPT_FAILURE)process.exit(24);" +
           "process.on('SIGTERM',()=>{});" +
           "const child=spawn(process.execPath,['--eval',\"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"]," +
           "{detached:true,stdio:'ignore'});" +
@@ -541,6 +544,7 @@ test(
         true,
         "the detached descendant disappeared before the cleanup-lease assertion"
       );
+      assert.doesNotMatch(guarded.output().stderr, /cleanup-token service failed/u);
 
       let cleanupLeaseRefusal;
       const refusalDeadline = Date.now() + 600;
@@ -554,22 +558,24 @@ test(
             `a same-scope command overlapped the live orphaned tree (${targetPid}, ${descendantPid}): ${contender.output().stderr}`
           );
         }
-        if (/previous Open Wrangler Linux process tree is still draining/u.test(contender.output().stderr)) {
+        if (/cleanup lease is occupied but could not be verified/u.test(contender.output().stderr)) {
           cleanupLeaseRefusal = contender.output().stderr;
           break;
         }
         assert.match(contender.output().stderr, /memory-intensive command is already running/u);
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));
       }
-      assert.match(cleanupLeaseRefusal ?? "", /previous Open Wrangler Linux process tree is still draining/u);
+      assert.match(cleanupLeaseRefusal ?? "", /cleanup lease is occupied but could not be verified/u);
       for (const [pid, identity] of ownedIdentities) {
         assert.equal(linuxProcessIsRunning(pid, identity), true, `owned PID ${pid} ended before overlap was refused`);
       }
+      assert.doesNotMatch(guarded.output().stderr, /cleanup-token service failed/u);
 
       await waitForLinuxProcessesToStop(ownedIdentities, 5_000);
       for (const [pid, identity] of ownedIdentities) {
         assert.equal(linuxProcessIsRunning(pid, identity), false, `owned PID ${pid} survived parent-death cleanup`);
       }
+      await waitForCapturedText(guarded, /cleanup-token service failed; its owned tree was drained/u, 1_000);
 
       const recovery = captureChild(
         ["recovery", "--", "node", "--eval", "process.stdout.write('recovered')"],
@@ -681,6 +687,15 @@ async function waitForJsonLine(captured, timeoutMs) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 10));
   }
   throw new Error("The guarded command did not publish its process IDs before the deadline.");
+}
+
+async function waitForCapturedText(captured, pattern, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (pattern.test(captured.output().stderr)) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  assert.match(captured.output().stderr, pattern);
 }
 
 function readLinuxDirectChildren(pid) {

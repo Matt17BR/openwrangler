@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import select
 import signal
@@ -23,6 +24,8 @@ _POLL_MILLISECONDS = 25
 _MAX_CHILDREN_BYTES = 64 * 1024
 _MAX_DIRECT_CHILDREN = 4096
 _CLEANUP_LEASE_TOKEN_ENV = "OPEN_WRANGLER_HEAVY_CLEANUP_LEASE_TOKEN"
+_TEST_ACCEPT_FAILURE_ENV = "OPEN_WRANGLER_HEAVY_TEST_CLEANUP_ACCEPT_FAILURE"
+_TEST_MODE_ENV = "OPEN_WRANGLER_EXTENSION_TESTS"
 _READY = b"READY\n"
 _GO = b"GO\n"
 _ERROR = b"ERROR\n"
@@ -31,6 +34,50 @@ _parent_death_requested = False
 
 class ParentLeaseLost(RuntimeError):
     """The Node owner disappeared before its complete child tree settled."""
+
+
+class CleanupTokenServiceFault(RuntimeError):
+    """The bounded cleanup-token service failed before tree settlement."""
+
+
+class CleanupTokenService:
+    """Own the cleanup listener and contain failures to its bounded protocol."""
+
+    def __init__(self, listener: socket.socket, token: str, inject_accept_failure: bool):
+        self.listener = listener
+        self.token = token.encode("ascii")
+        self.inject_accept_failure = inject_accept_failure
+
+    def fileno(self) -> int:
+        return self.listener.fileno()
+
+    def close(self) -> None:
+        self.listener.close()
+
+    def serve(self) -> bool:
+        """Serve bounded requests and report infrastructure faults without raising."""
+        for _ in range(16):
+            try:
+                if self.inject_accept_failure:
+                    raise OSError(errno.EMFILE, "injected cleanup-token accept failure")
+                connection, _address = self.listener.accept()
+            except BlockingIOError:
+                return False
+            except BaseException:
+                return True
+            try:
+                connection.settimeout(0.1)
+                connection.sendall(self.token)
+            except BaseException:
+                # A peer may disconnect at any point. The still-bound listener,
+                # rather than successful delivery to one peer, owns exclusion.
+                pass
+            finally:
+                try:
+                    connection.close()
+                except BaseException:
+                    pass
+        return False
 
 
 def _write_report(contents: bytes) -> None:
@@ -92,7 +139,7 @@ def _validate_token(raw_token: str | None) -> str:
     return raw_token
 
 
-def _open_cleanup_lease(port: int) -> socket.socket:
+def _open_cleanup_lease(port: int, token: str, inject_accept_failure: bool) -> CleanupTokenService:
     if port < 35_000 or port >= 45_000:
         raise RuntimeError("the cleanup lease port is outside its private range")
     cleanup_lease = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -104,57 +151,45 @@ def _open_cleanup_lease(port: int) -> socket.socket:
     except BaseException:
         cleanup_lease.close()
         raise
-    return cleanup_lease
+    return CleanupTokenService(cleanup_lease, token, inject_accept_failure)
 
 
-def _serve_cleanup_token(cleanup_lease: socket.socket, token: str) -> None:
-    for _ in range(16):
-        try:
-            connection, _address = cleanup_lease.accept()
-        except BlockingIOError:
-            return
-        try:
-            connection.settimeout(0.1)
-            connection.sendall(token.encode("ascii"))
-        except OSError:
-            pass
-        finally:
-            connection.close()
-
-
-def _create_poller(cleanup_lease: socket.socket) -> select.poll:
+def _create_poller(cleanup_service: CleanupTokenService) -> select.poll:
     poller = select.poll()
     event_mask = select.POLLIN | select.POLLHUP | select.POLLERR | select.POLLNVAL
     poller.register(_CONTROL_FD, event_mask)
-    poller.register(cleanup_lease.fileno(), event_mask)
+    poller.register(cleanup_service.fileno(), event_mask)
     return poller
 
 
-def _parent_lease_lost(poller: select.poll, cleanup_lease: socket.socket, token: str) -> bool:
+def _parent_lease_lost(
+    poller: select.poll, cleanup_service: CleanupTokenService
+) -> tuple[bool, bool]:
     if _parent_death_requested:
-        return True
+        return True, False
     try:
         events = poller.poll(_POLL_MILLISECONDS)
     except InterruptedError:
-        return _parent_death_requested
+        return _parent_death_requested, False
     for descriptor, event_mask in events:
-        if descriptor == cleanup_lease.fileno():
+        if descriptor == cleanup_service.fileno():
             if event_mask & (select.POLLHUP | select.POLLERR | select.POLLNVAL):
-                return True
+                return True, True
             if event_mask & select.POLLIN:
-                _serve_cleanup_token(cleanup_lease, token)
+                if cleanup_service.serve():
+                    return True, True
             continue
         if descriptor != _CONTROL_FD:
-            return True
+            return True, False
         if event_mask & (select.POLLHUP | select.POLLERR | select.POLLNVAL):
-            return True
+            return True, False
         if event_mask & select.POLLIN:
             try:
                 os.read(_CONTROL_FD, 4097)
             except OSError:
-                return True
-            return True
-    return _parent_death_requested
+                return True, False
+            return True, False
+    return _parent_death_requested, False
 
 
 def _reset_target_signals() -> None:
@@ -226,14 +261,14 @@ def _signal_direct_children(signal_number: int) -> None:
 def _drain_after_parent_death(
     target_pid: int,
     target_outcome: tuple[int | None, int | None] | None,
-    cleanup_lease: socket.socket,
-    token: str,
-) -> None:
+    cleanup_service: CleanupTokenService,
+    cleanup_faulted: bool = False,
+) -> bool:
     started = time.monotonic()
     while True:
         target_outcome, children_exist = _reap_available(target_pid, target_outcome)
         if not children_exist:
-            return
+            return cleanup_faulted
         signal_number = (
             signal.SIGTERM
             if time.monotonic() - started < _PARENT_TERM_GRACE_SECONDS
@@ -245,12 +280,12 @@ def _drain_after_parent_death(
             # Ownership uncertainty may delay cleanup, but it must never make
             # the supervisor exit and orphan a still-live child tree.
             pass
-        _serve_cleanup_token(cleanup_lease, token)
+        cleanup_faulted = cleanup_service.serve() or cleanup_faulted
         time.sleep(_POLL_MILLISECONDS / 1000)
 
 
 def _supervise(
-    target_pid: int, poller: select.poll, cleanup_lease: socket.socket, token: str
+    target_pid: int, poller: select.poll, cleanup_service: CleanupTokenService
 ) -> tuple[int | None, int | None]:
     target_outcome: tuple[int | None, int | None] | None = None
     target_reported = False
@@ -268,11 +303,18 @@ def _supervise(
                 _report_target_outcome(target_outcome)
                 target_reported = True
             except (BrokenPipeError, OSError):
-                _drain_after_parent_death(target_pid, target_outcome, cleanup_lease, token)
+                cleanup_faulted = _drain_after_parent_death(target_pid, target_outcome, cleanup_service)
+                if cleanup_faulted:
+                    raise CleanupTokenServiceFault from None
                 raise ParentLeaseLost("the parent disappeared before the target tree settled") from None
 
-        if _parent_lease_lost(poller, cleanup_lease, token):
-            _drain_after_parent_death(target_pid, target_outcome, cleanup_lease, token)
+        lease_lost, cleanup_faulted = _parent_lease_lost(poller, cleanup_service)
+        if lease_lost:
+            cleanup_faulted = _drain_after_parent_death(
+                target_pid, target_outcome, cleanup_service, cleanup_faulted
+            )
+            if cleanup_faulted:
+                raise CleanupTokenServiceFault
             raise ParentLeaseLost("the parent lease closed before the target tree settled")
 
 
@@ -295,8 +337,13 @@ def _run(argv: list[str]) -> None:
     if expected_parent_pid <= 0:
         raise RuntimeError("the supervisor parent PID is invalid")
     token = _validate_token(os.environ.get(_CLEANUP_LEASE_TOKEN_ENV))
+    accept_failure_mode = os.environ.get(_TEST_ACCEPT_FAILURE_ENV)
+    if accept_failure_mode not in (None, "always"):
+        raise RuntimeError("the cleanup-token accept-failure mode is invalid")
+    if accept_failure_mode is not None and os.environ.get(_TEST_MODE_ENV) != "1":
+        raise RuntimeError("cleanup-token fault injection requires extension test mode")
     _arm_ownership(expected_parent_pid)
-    cleanup_lease = _open_cleanup_lease(cleanup_port)
+    cleanup_service = _open_cleanup_lease(cleanup_port, token, accept_failure_mode == "always")
     try:
         if os.getppid() != expected_parent_pid or _parent_death_requested:
             raise ParentLeaseLost("the expected parent disappeared before the launch barrier")
@@ -312,24 +359,34 @@ def _run(argv: list[str]) -> None:
             try:
                 os.close(_CONTROL_FD)
                 os.close(_REPORT_FD)
-                cleanup_lease.close()
+                cleanup_service.close()
                 _reset_target_signals()
                 target_environment = dict(os.environ)
                 target_environment.pop(_CLEANUP_LEASE_TOKEN_ENV, None)
+                target_environment.pop(_TEST_ACCEPT_FAILURE_ENV, None)
                 os.execvpe(argv[3], argv[3:], target_environment)
             except BaseException:
                 os._exit(127)
 
-        poller = _create_poller(cleanup_lease)
-        outcome = _supervise(target_pid, poller, cleanup_lease, token)
+        poller = _create_poller(cleanup_service)
+        outcome = _supervise(target_pid, poller, cleanup_service)
         _exit_like_target(*outcome)
     finally:
-        cleanup_lease.close()
+        cleanup_service.close()
 
 
 def main() -> None:
     try:
         _run(sys.argv)
+    except CleanupTokenServiceFault:
+        try:
+            _write_report(_ERROR)
+        except BaseException:
+            pass
+        sys.stderr.write(
+            "Open Wrangler Linux cleanup-token service failed; its owned tree was drained before lease release.\n"
+        )
+        raise SystemExit(125) from None
     except ParentLeaseLost:
         raise SystemExit(125) from None
     except BaseException as error:

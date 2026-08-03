@@ -25,7 +25,9 @@ uses RSS only when the kernel does not expose `smaps_rollup`. The wrapper prints
 peak. Set `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` to a positive whole number to choose a different limit. `off` explicitly
 disables the watcher, including Linux subreaper ownership. A nested guarded npm command inherits the outer lease and
 never starts a second watcher. This is a watchdog rather than a kernel reservation, so a very abrupt allocation can
-overshoot between samples.
+overshoot between samples. The focused process test injects an `accept()` resource failure into the cleanup-token
+service and proves that the helper retains exclusion, drains and reaps the complete tree, and only then reports the
+bounded fault and permits recovery.
 
 Hosted CI keeps its runner-level resource controls and does not apply the local default, so the watchdog does not
 weaken a required test. CI-default and explicit-`off` executions retain the shared lease but do not claim descendant

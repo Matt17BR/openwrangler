@@ -74,10 +74,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   substantial memory; packaging retains that lease across clean, build, checks, tests, and the final VSIX writer. The
   local Linux wrapper also applies a conservative process-tree memory watchdog. It arms a parent-leased child
   subreaper and a secondary cleanup lease before launch, so killing the wrapper makes the helper terminate and reap its
-  exact tree while preventing a replacement command from overlapping cleanup. Every per-PID signal revalidates the
-  captured process-start identity first. macOS, Windows, and explicitly disabled modes make no descendant-containment
-  claim; numeric limits fail closed on those unsupported platforms. The editor-heavy feasibility comparison now
-  acquires the same lease and guard.
+  exact tree while preventing a replacement command from overlapping cleanup. Cleanup-token accept failures remain
+  latched behind that lease until the tree is empty. Every per-PID signal revalidates the captured process-start
+  identity first. macOS, Windows, and explicitly disabled modes make no descendant-containment claim; numeric limits
+  fail closed on those unsupported platforms. The editor-heavy feasibility comparison now acquires the same lease and
+  guard.
 - Added a fail-closed pull-request fast path for non-packaged documentation. Exact `docs/**`, contributor/security
   guides, and contribution-template changes still run formatting, lint, strict types, generated-document freshness,
   licenses, and workflow contracts, while checksum packaging and main-CI product/editor job IDs report explicit
