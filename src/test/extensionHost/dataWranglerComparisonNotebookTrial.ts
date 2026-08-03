@@ -44,6 +44,8 @@ export const DATA_WRANGLER_STUDY_REQUIRED_LOCALE = "en";
 export const DATA_WRANGLER_STUDY_INLINE_ACTION_WINDOW_MS = 45_000;
 export const DATA_WRANGLER_STUDY_WORKBENCH_WINDOW_MS = 60_000;
 export const DATA_WRANGLER_STUDY_PROFILE_WINDOW_MS = 135_000;
+export const DATA_WRANGLER_STUDY_NOTEBOOK_CAPTURE_WINDOW_MS = 30_000;
+export const DATA_WRANGLER_PUBLIC_WARMUP_NOTEBOOK_CAPTURE_WINDOW_MS = 120_000;
 export const DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-ui-capture-phase-v1";
 export const DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-warmup-phase-v1";
 export const DATA_WRANGLER_PUBLIC_WARMUP_PHASES = Object.freeze({
@@ -89,6 +91,12 @@ export function studyKernelPickerLabelMatches(candidate: string, targetLabel: st
   if (candidate === targetLabel) return true;
   const version = /\bCPython (3\.12(?:\.\d+)?)\b/u.exec(targetLabel)?.[1];
   return version !== undefined && candidate === `${targetLabel} (Python ${version})`;
+}
+
+export function dataWranglerNotebookCaptureWindowMs(phase: string): number {
+  return publicWarmupProductFromPhase(phase) === undefined
+    ? DATA_WRANGLER_STUDY_NOTEBOOK_CAPTURE_WINDOW_MS
+    : DATA_WRANGLER_PUBLIC_WARMUP_NOTEBOOK_CAPTURE_WINDOW_MS;
 }
 
 export function chooseStudyKernelPickerDecision(input: {
@@ -2746,7 +2754,7 @@ export async function run(): Promise<
     recordProgress("comparison-study:workbench-connect");
     const { page } = await connectToEditorWorkbench();
     recordProgress("comparison-study:notebook-capture");
-    const captured = await captureStudyNotebook();
+    const captured = await captureStudyNotebook(dataWranglerNotebookCaptureWindowMs(phase));
     dependencies = createRealNotebookTrialDependencies(
       product,
       page,
@@ -2802,7 +2810,9 @@ async function captureDataWranglerPublicWarmup(product: ProductKey): Promise<Dat
   try {
     recordProgress("comparison-study:public-warmup-connect");
     const { page } = await connectToEditorWorkbench();
-    const captured = await captureStudyNotebook();
+    const captured = await captureStudyNotebook(
+      dataWranglerNotebookCaptureWindowMs(DATA_WRANGLER_PUBLIC_WARMUP_PHASES[product])
+    );
     dependencies = createRealNotebookTrialDependencies(product, page, captured, "available", controlBridge);
     result = await executeDataWranglerNotebookTrialFlow(dependencies);
   } catch (error) {
@@ -3309,7 +3319,9 @@ function createRealNotebookTrialDependencies(
   };
 }
 
-async function captureStudyNotebook(): Promise<CapturedStudyNotebook> {
+async function captureStudyNotebook(
+  timeoutMs = DATA_WRANGLER_STUDY_NOTEBOOK_CAPTURE_WINDOW_MS
+): Promise<CapturedStudyNotebook> {
   let notebook: vscode.NotebookDocument | undefined;
   await waitFor(
     () => {
@@ -3318,7 +3330,7 @@ async function captureStudyNotebook(): Promise<CapturedStudyNotebook> {
       notebook = open[0];
       return notebook !== undefined;
     },
-    30_000,
+    timeoutMs,
     "the exact study notebook document opened by VS Code"
   );
   assert.ok(notebook, "VS Code reported notebook readiness without one open notebook document.");

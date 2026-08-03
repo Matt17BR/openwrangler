@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DATA_WRANGLER_NOTEBOOK_TRIAL_PHASE_PROTOCOL,
+  DATA_WRANGLER_PUBLIC_WARMUP_NOTEBOOK_CAPTURE_WINDOW_MS,
   DATA_WRANGLER_STUDY_INLINE_ACTION_WINDOW_MS,
+  DATA_WRANGLER_STUDY_NOTEBOOK_CAPTURE_WINDOW_MS,
   chooseStudyKernelPickerDecision,
+  dataWranglerNotebookCaptureWindowMs,
   describeIncompletePublicWarmup,
   executeDataWranglerNotebookTrialFlow,
   observeNotebookTrialGridScrollState,
@@ -162,6 +165,21 @@ describe("study kernel picker navigation", () => {
 });
 
 describe("public warm-up diagnostics", () => {
+  it("allows a clean notebook to open without changing the measured-trial capture bound", () => {
+    expect(dataWranglerNotebookCaptureWindowMs("comparison-study-open-wrangler-warmup")).toBe(
+      DATA_WRANGLER_PUBLIC_WARMUP_NOTEBOOK_CAPTURE_WINDOW_MS
+    );
+    expect(dataWranglerNotebookCaptureWindowMs("comparison-study-data-wrangler-warmup")).toBe(
+      DATA_WRANGLER_PUBLIC_WARMUP_NOTEBOOK_CAPTURE_WINDOW_MS
+    );
+    expect(dataWranglerNotebookCaptureWindowMs("comparison-study-open-wrangler-trial")).toBe(
+      DATA_WRANGLER_STUDY_NOTEBOOK_CAPTURE_WINDOW_MS
+    );
+    expect(dataWranglerNotebookCaptureWindowMs("comparison-study-data-wrangler-capability")).toBe(
+      DATA_WRANGLER_STUDY_NOTEBOOK_CAPTURE_WINDOW_MS
+    );
+  });
+
   it("reports the failed stage and bounded profile progress without row data", () => {
     expect(
       describeIncompletePublicWarmup({
