@@ -7,13 +7,13 @@ import { fileURLToPath } from "node:url";
 import {
   heavyCommandLeaseEndpoint,
   heavyCommandLeasePort,
+  heavyCommandLinuxCleanupLeasePort,
   parseHeavyCommandArguments,
   terminateChildTree
 } from "./run-heavy-local-command.mjs";
 import {
   collectOwnedProcessRows,
   parseLinuxProcessStat,
-  parseMacProcessRows,
   resolveHeavyMemoryPolicy,
   signalIdentityCheckedProcessRows
 } from "./heavy-process-memory.mjs";
@@ -38,7 +38,10 @@ test("local memory policy is conservative, configurable, and never silently asse
     mebibytes: 8192,
     source: "local-default"
   });
-  assert.equal(resolveHeavyMemoryPolicy(memoryPolicyFixture("darwin", 16)).mebibytes, 4096);
+  assert.deepEqual(resolveHeavyMemoryPolicy(memoryPolicyFixture("darwin", 16)), {
+    enabled: false,
+    source: "unsupported-local-platform"
+  });
   assert.equal(resolveHeavyMemoryPolicy(memoryPolicyFixture("linux", 2)).mebibytes, 512);
   assert.equal(
     resolveHeavyMemoryPolicy({
@@ -85,7 +88,15 @@ test("local memory policy is conservative, configurable, and never silently asse
         environment: { OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "2048" },
         platform: "win32"
       }),
-    /Job Object or container limit/u
+    /externally enforced process container/u
+  );
+  assert.throws(
+    () =>
+      resolveHeavyMemoryPolicy({
+        environment: { OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "2048" },
+        platform: "darwin"
+      }),
+    /supported only on Linux/u
   );
   for (const value of ["0", "1.5", "-1", "yes", "131073"]) {
     assert.throws(
@@ -159,17 +170,6 @@ test("process snapshots retain identities and include new process groups below t
     [],
     "an unwitnessed process group must not be reacquired after the root exits"
   );
-
-  assert.deepEqual(parseMacProcessRows(" 9 1 9 2048 Mon Aug  3 10:20:30 2026\n"), [
-    {
-      pid: 9,
-      ppid: 1,
-      pgid: 9,
-      identity: "9:Mon Aug  3 10:20:30 2026",
-      memoryBytes: 2 * 1024 ** 2
-    }
-  ]);
-  assert.throws(() => parseMacProcessRows("not a process row"), /malformed row/u);
 });
 
 test("process signaling revalidates identities immediately and skips reused PIDs", () => {
@@ -234,6 +234,16 @@ test("heavy-command arguments and shared scope endpoints are deterministic", () 
   assert.throws(() => parseHeavyCommandArguments(["package", "npm"]), /Usage:/u);
   assert.equal(heavyCommandLeasePort("same-repository"), heavyCommandLeasePort("same-repository"));
   assert.notEqual(heavyCommandLeasePort("same-repository"), heavyCommandLeasePort("other-repository"));
+  assert.equal(
+    heavyCommandLinuxCleanupLeasePort("same-repository"),
+    heavyCommandLinuxCleanupLeasePort("same-repository")
+  );
+  assert.notEqual(
+    heavyCommandLinuxCleanupLeasePort("same-repository"),
+    heavyCommandLinuxCleanupLeasePort("other-repository")
+  );
+  assert.equal(heavyCommandLinuxCleanupLeasePort("same-repository") >= 35_000, true);
+  assert.equal(heavyCommandLinuxCleanupLeasePort("same-repository") < 45_000, true);
   assert.deepEqual(heavyCommandLeaseEndpoint("same-repository", "linux"), {
     host: "127.0.0.1",
     port: heavyCommandLeasePort("same-repository")
@@ -410,7 +420,16 @@ test(
       ...cleanLeaseEnvironment(scope),
       OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "64"
     };
-    const guarded = captureChild(["memory-success", "--", "node", "--eval", "setTimeout(() => {}, 150)"], environment);
+    const guarded = captureChild(
+      [
+        "memory-success",
+        "--",
+        "node",
+        "--eval",
+        "if(process.env.OPEN_WRANGLER_HEAVY_CLEANUP_LEASE_TOKEN)process.exit(23);setTimeout(()=>{},150)"
+      ],
+      environment
+    );
     const [code, signal] = await once(guarded.child, "close");
     assert.equal(signal, null, guarded.output().stderr);
     assert.equal(code, 0, guarded.output().stderr);
@@ -453,6 +472,130 @@ test(
       guarded.child.kill("SIGKILL");
       if (descendantPid && processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
     }
+  }
+);
+
+test(
+  "the Linux cleanup lease survives a SIGKILLed wrapper until its complete process tree is reaped",
+  { timeout: 15_000, skip: process.platform !== "linux" },
+  async () => {
+    const scope = `openwrangler-heavy-parent-death-${process.pid}-${Date.now()}`;
+    const environment = {
+      ...cleanLeaseEnvironment(scope),
+      OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "512"
+    };
+    const guarded = captureChild(
+      [
+        "parent-death",
+        "--",
+        "node",
+        "--eval",
+        "const {spawn}=require('node:child_process');" +
+          "process.on('SIGTERM',()=>{});" +
+          "const child=spawn(process.execPath,['--eval',\"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"]," +
+          "{detached:true,stdio:'ignore'});" +
+          "child.unref();" +
+          "process.stdout.write(JSON.stringify({target:process.pid,descendant:child.pid})+'\\n');" +
+          "setInterval(()=>{},1000);"
+      ],
+      environment
+    );
+    const ownedIdentities = new Map();
+    const cleanupChildren = [];
+    let cleanupFailure;
+    let supervisorPid;
+    let targetPid;
+    let descendantPid;
+    try {
+      const ids = await waitForJsonLine(guarded, 3_000);
+      targetPid = ids.target;
+      descendantPid = ids.descendant;
+      assert.equal(Number.isSafeInteger(targetPid) && targetPid > 0, true, guarded.output().stdout);
+      assert.equal(Number.isSafeInteger(descendantPid) && descendantPid > 0, true, guarded.output().stdout);
+
+      const supervisorChildren = readLinuxDirectChildren(guarded.child.pid);
+      assert.equal(supervisorChildren.length, 1, `wrapper children: ${supervisorChildren.join(",")}`);
+      [supervisorPid] = supervisorChildren;
+      for (const pid of [supervisorPid, targetPid, descendantPid]) {
+        ownedIdentities.set(pid, readLinuxProcessIdentity(pid));
+        assert.equal(linuxProcessIsRunning(pid, ownedIdentities.get(pid)), true, `owned PID ${pid} was not running`);
+      }
+
+      const wrapperExit = once(guarded.child, "exit");
+      assert.equal(guarded.child.kill("SIGKILL"), true);
+      const [wrapperCode, wrapperSignal] = await wrapperExit;
+      assert.equal(wrapperCode, null);
+      assert.equal(wrapperSignal, "SIGKILL");
+      assert.equal(
+        linuxProcessIsRunning(supervisorPid, ownedIdentities.get(supervisorPid)),
+        true,
+        "the supervisor did not retain the cleanup lease after parent death"
+      );
+      assert.equal(
+        linuxProcessIsRunning(targetPid, ownedIdentities.get(targetPid)),
+        true,
+        "the SIGTERM-resistant target disappeared before the cleanup-lease assertion"
+      );
+      assert.equal(
+        linuxProcessIsRunning(descendantPid, ownedIdentities.get(descendantPid)),
+        true,
+        "the detached descendant disappeared before the cleanup-lease assertion"
+      );
+
+      let cleanupLeaseRefusal;
+      const refusalDeadline = Date.now() + 600;
+      while (Date.now() < refusalDeadline && linuxProcessIsRunning(targetPid, ownedIdentities.get(targetPid))) {
+        const contender = captureChild(["must-wait", "--", "node", "--eval", "process.exit(0)"], environment);
+        cleanupChildren.push(contender);
+        const [contenderCode, contenderSignal] = await once(contender.child, "close");
+        assert.equal(contenderSignal, null, contender.output().stderr);
+        if (contenderCode === 0) {
+          assert.fail(
+            `a same-scope command overlapped the live orphaned tree (${targetPid}, ${descendantPid}): ${contender.output().stderr}`
+          );
+        }
+        if (/previous Open Wrangler Linux process tree is still draining/u.test(contender.output().stderr)) {
+          cleanupLeaseRefusal = contender.output().stderr;
+          break;
+        }
+        assert.match(contender.output().stderr, /memory-intensive command is already running/u);
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      assert.match(cleanupLeaseRefusal ?? "", /previous Open Wrangler Linux process tree is still draining/u);
+      for (const [pid, identity] of ownedIdentities) {
+        assert.equal(linuxProcessIsRunning(pid, identity), true, `owned PID ${pid} ended before overlap was refused`);
+      }
+
+      await waitForLinuxProcessesToStop(ownedIdentities, 5_000);
+      for (const [pid, identity] of ownedIdentities) {
+        assert.equal(linuxProcessIsRunning(pid, identity), false, `owned PID ${pid} survived parent-death cleanup`);
+      }
+
+      const recovery = captureChild(
+        ["recovery", "--", "node", "--eval", "process.stdout.write('recovered')"],
+        environment
+      );
+      cleanupChildren.push(recovery);
+      const [recoveryCode, recoverySignal] = await once(recovery.child, "close");
+      assert.equal(recoverySignal, null, recovery.output().stderr);
+      assert.equal(recoveryCode, 0, recovery.output().stderr);
+      assert.equal(recovery.output().stdout, "recovered");
+      for (const [pid, identity] of ownedIdentities) {
+        assert.equal(linuxProcessIsRunning(pid, identity), false, `old PID ${pid} revived during recovery`);
+      }
+    } finally {
+      guarded.child.kill("SIGKILL");
+      for (const child of cleanupChildren) child.child.kill("SIGKILL");
+      for (const pid of [descendantPid, targetPid, supervisorPid]) {
+        if (!pid || !linuxProcessIsRunning(pid, ownedIdentities.get(pid))) continue;
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (error) {
+          if (error?.code !== "ESRCH") cleanupFailure ??= error;
+        }
+      }
+    }
+    if (cleanupFailure) throw cleanupFailure;
   }
 );
 
@@ -524,5 +667,47 @@ function processIsAlive(pid) {
   } catch (error) {
     if (error?.code === "ESRCH") return false;
     throw error;
+  }
+}
+
+async function waitForJsonLine(captured, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const line = captured.output().stdout.split("\n", 1)[0];
+    if (line) return JSON.parse(line);
+    if (captured.child.exitCode !== null || captured.child.signalCode !== null) {
+      throw new Error(`The guarded command exited before publishing process IDs: ${captured.output().stderr}`);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  throw new Error("The guarded command did not publish its process IDs before the deadline.");
+}
+
+function readLinuxDirectChildren(pid) {
+  const contents = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim();
+  if (!contents) return [];
+  return contents.split(/\s+/u).map((value) => Number.parseInt(value, 10));
+}
+
+function readLinuxProcessIdentity(pid) {
+  return parseLinuxProcessStat(readFileSync(`/proc/${pid}/stat`, "utf8")).identity;
+}
+
+function linuxProcessIsRunning(pid, expectedIdentity) {
+  if (!Number.isSafeInteger(pid) || !expectedIdentity) return false;
+  try {
+    const row = parseLinuxProcessStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
+    return row.identity === expectedIdentity && row.state !== "Z" && row.state !== "X";
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForLinuxProcessesToStop(ownedIdentities, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if ([...ownedIdentities].every(([pid, identity]) => !linuxProcessIsRunning(pid, identity))) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
   }
 }

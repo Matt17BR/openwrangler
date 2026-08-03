@@ -247,10 +247,10 @@ slows the feedback loop, and can exhaust the developer machine without improving
 Public memory-intensive commands acquire one shared lease across clones and worktrees. If one reports that another
 Open Wrangler command is active, wait for that command instead of bypassing the wrapper, invoking a `:run`/`:prepare`
 continuation directly, or launching a duplicate to poll it. Resume a yielded live execution through its exact session.
-On local Linux and macOS, keep the outer wrapper's process-tree memory watchdog enabled unless the user explicitly
-accepts the machine-wide risk; tune `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` only with measured headroom. Nested commands
-must inherit the one outer watchdog. Never replace it with system-wide cache dropping, unrelated process termination,
-or an unsupported-platform claim. Windows needs an external Job Object or container limit when a memory ceiling is
+On local Linux, keep the outer wrapper's process-tree memory watchdog enabled unless the user explicitly accepts the
+machine-wide risk; tune `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` only with measured headroom. Nested commands must inherit
+the one outer watchdog. Never replace it with system-wide cache dropping, unrelated process termination, or an
+unsupported-platform claim. macOS and Windows need an externally enforced process container when a memory ceiling is
 required.
 Run the complete serial list below for a release candidate or when a change genuinely spans every listed boundary;
 otherwise run `npm run check`, the focused tests for the changed owner, and the relevant UI/editor scenario. Hosted CI

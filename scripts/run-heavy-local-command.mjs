@@ -13,8 +13,10 @@ import {
 const LEASE_TOKEN = "OPEN_WRANGLER_HEAVY_LEASE_TOKEN";
 const LEASE_ADDRESS = "OPEN_WRANGLER_HEAVY_LEASE_ADDRESS";
 const LEASE_SCOPE = "OPEN_WRANGLER_HEAVY_LEASE_SCOPE";
+const LINUX_CLEANUP_LEASE_TOKEN = "OPEN_WRANGLER_HEAVY_CLEANUP_LEASE_TOKEN";
 const LOOPBACK = "127.0.0.1";
 const WINDOWS_PIPE_PREFIX = "\\\\.\\pipe\\openwrangler-heavy-";
+const LEASE_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const MEMORY_POLL_MS = 250;
 const NORMAL_TREE_DRAIN_MS = 500;
 const SUPERVISOR_READY_MS = 2_000;
@@ -36,6 +38,11 @@ export function parseHeavyCommandArguments(argv) {
 export function heavyCommandLeasePort(scope) {
   const digest = createHash("sha256").update(scope).digest();
   return 45_000 + (digest.readUInt16BE(0) % 10_000);
+}
+
+export function heavyCommandLinuxCleanupLeasePort(scope) {
+  const digest = createHash("sha256").update(`linux-cleanup-v1\0${scope}`).digest();
+  return 35_000 + (digest.readUInt16BE(0) % 10_000);
 }
 
 export function heavyCommandLeaseEndpoint(scope, platform = process.platform) {
@@ -99,15 +106,62 @@ async function acquireLease(endpoint, token, label) {
   return server;
 }
 
-function spawnGuardedCommand(resolved, environment, useLinuxSupervisor) {
-  if (useLinuxSupervisor) {
-    return spawn("python3", [linuxSupervisor, resolved.executable, ...resolved.args], {
-      cwd: root,
-      detached: true,
-      env: environment,
-      stdio: ["inherit", "inherit", "inherit", "pipe", "pipe"],
-      windowsHide: true
+async function assertLinuxCleanupLeaseAvailable(scope, label) {
+  const endpoint = { host: LOOPBACK, port: heavyCommandLinuxCleanupLeasePort(scope) };
+  const probe = createServer();
+  try {
+    await new Promise((resolveListen, rejectListen) => {
+      probe.once("error", rejectListen);
+      probe.listen({ ...endpoint, exclusive: true }, resolveListen);
     });
+  } catch (error) {
+    if (error?.code !== "EADDRINUSE") throw error;
+    const token = await readLinuxCleanupLeaseToken(endpoint);
+    if (token && LEASE_TOKEN_PATTERN.test(token)) {
+      throw new Error(
+        `A previous Open Wrangler Linux process tree is still draining. Wait for it to stop before starting "${label}".`
+      );
+    }
+    throw new Error(
+      `The Open Wrangler Linux cleanup lease is occupied but could not be verified. Refusing to start "${label}".`
+    );
+  } finally {
+    if (probe.listening) await new Promise((resolveClose) => probe.close(resolveClose));
+  }
+  return endpoint.port;
+}
+
+async function readLinuxCleanupLeaseToken(endpoint) {
+  return await new Promise((resolveToken) => {
+    const socket = createConnection(endpoint);
+    let response = "";
+    const timer = setTimeout(() => socket.destroy(), 1_000);
+    timer.unref();
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      response = `${response}${chunk}`.slice(-256);
+    });
+    socket.once("error", () => resolveToken(undefined));
+    socket.once("close", () => {
+      clearTimeout(timer);
+      resolveToken(response);
+    });
+  });
+}
+
+function spawnGuardedCommand(resolved, environment, useLinuxSupervisor, linuxCleanupLeasePort) {
+  if (useLinuxSupervisor) {
+    return spawn(
+      "python3",
+      [linuxSupervisor, String(process.pid), String(linuxCleanupLeasePort), resolved.executable, ...resolved.args],
+      {
+        cwd: root,
+        detached: true,
+        env: environment,
+        stdio: ["inherit", "inherit", "inherit", "pipe", "pipe"],
+        windowsHide: true
+      }
+    );
   }
   return spawn(resolved.executable, resolved.args, {
     cwd: root,
@@ -129,6 +183,7 @@ function createLinuxSupervisorProtocol(child) {
   let buffered = "";
   let readySeen = false;
   let targetSeen = false;
+  let goWritten = false;
   let failed = false;
 
   function fail(message) {
@@ -191,13 +246,16 @@ function createLinuxSupervisorProtocol(child) {
     ready: ready.promise,
     targetOutcome: targetOutcome.promise,
     async go() {
-      if (!readySeen || failed) {
+      if (!readySeen || goWritten || failed) {
         throw new Error("The Linux process supervisor was not ready for launch authorization.");
       }
       await new Promise((resolveWrite, rejectWrite) => {
-        control.end("GO\n", "ascii", (error) => {
+        control.write("GO\n", "ascii", (error) => {
           if (error) rejectWrite(new Error("The Linux process supervisor GO frame could not be written."));
-          else resolveWrite();
+          else {
+            goWritten = true;
+            resolveWrite();
+          }
         });
       });
     },
@@ -208,10 +266,13 @@ function createLinuxSupervisorProtocol(child) {
   });
 }
 
-async function runChild(command, environment, { label, memoryPolicy }) {
+async function runChild(command, environment, { label, memoryPolicy, linuxCleanupLeasePort }) {
   const resolved = normalizedCommand(command);
   const useLinuxSupervisor = process.platform === "linux" && memoryPolicy.enabled;
-  const child = spawnGuardedCommand(resolved, environment, useLinuxSupervisor);
+  if (useLinuxSupervisor && !Number.isSafeInteger(linuxCleanupLeasePort)) {
+    throw new Error("The Linux process supervisor requires one prepared cleanup lease.");
+  }
+  const child = spawnGuardedCommand(resolved, environment, useLinuxSupervisor, linuxCleanupLeasePort);
   const childOutcome = new Promise((resolveChild) => {
     child.once("error", (error) => resolveChild({ kind: "error", error }));
     child.once("close", (code, signal) => resolveChild({ kind: "exit", code, signal }));
@@ -580,7 +641,7 @@ export async function runHeavyLocalCommand(argv = process.argv.slice(2)) {
   const inheritedToken = process.env[LEASE_TOKEN];
   if (
     inheritedToken &&
-    /^[0-9a-f-]{36}$/u.test(inheritedToken) &&
+    LEASE_TOKEN_PATTERN.test(inheritedToken) &&
     process.env[LEASE_ADDRESS] === address &&
     (await verifyInheritedLease(endpoint, inheritedToken))
   ) {
@@ -594,14 +655,19 @@ export async function runHeavyLocalCommand(argv = process.argv.slice(2)) {
   const token = randomUUID();
   const server = await acquireLease(endpoint, token, label);
   try {
+    const linuxCleanupLeasePort =
+      process.platform === "linux" && memoryPolicy.enabled
+        ? await assertLinuxCleanupLeaseAvailable(scope, label)
+        : undefined;
     return await runChild(
       command,
       {
         ...process.env,
         [LEASE_TOKEN]: token,
-        [LEASE_ADDRESS]: address
+        [LEASE_ADDRESS]: address,
+        ...(linuxCleanupLeasePort === undefined ? {} : { [LINUX_CLEANUP_LEASE_TOKEN]: randomUUID() })
       },
-      { label, memoryPolicy }
+      { label, memoryPolicy, linuxCleanupLeasePort }
     );
   } finally {
     await new Promise((resolveClose) => server.close(resolveClose));

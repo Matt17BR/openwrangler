@@ -1,9 +1,5 @@
-import { execFile, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { totalmem } from "node:os";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
 const MIB = 1024 * 1024;
 const DEFAULT_FRACTION = 0.25;
 const DEFAULT_MINIMUM_MIB = 256;
@@ -37,7 +33,7 @@ export function resolveHeavyMemoryPolicy({
   if (isContinuousIntegration(environment)) {
     return Object.freeze({ enabled: false, source: "continuous-integration" });
   }
-  if (platform !== "linux" && platform !== "darwin") {
+  if (platform !== "linux") {
     return Object.freeze({ enabled: false, source: "unsupported-local-platform" });
   }
   if (!Number.isSafeInteger(totalMemoryBytes) || totalMemoryBytes <= 0) {
@@ -61,10 +57,10 @@ function isContinuousIntegration(environment) {
 }
 
 function assertSupportedPlatform(platform) {
-  if (platform === "linux" || platform === "darwin") return;
+  if (platform === "linux") return;
   throw new Error(
-    `${HEAVY_MEMORY_LIMIT} is supported only on Linux and macOS. ` +
-      "Windows needs an externally enforced Job Object or container limit; the wrapper will not claim a limit it cannot enforce."
+    `${HEAVY_MEMORY_LIMIT} is supported only on Linux, where the wrapper can contain and reap the complete child tree. ` +
+      "macOS and Windows need an externally enforced process container; the wrapper will not claim a limit it cannot enforce."
   );
 }
 
@@ -93,42 +89,6 @@ export function parseLinuxProcessStat(contents) {
     throw new Error("Linux process stat is malformed.");
   }
   return Object.freeze({ pid, ppid, pgid, state, identity: `${pid}:${start}` });
-}
-
-export function parseMacProcessRows(contents) {
-  if (typeof contents !== "string") throw new Error("macOS process rows must be text.");
-  const rows = [];
-  for (const line of contents.split(/\r?\n/u)) {
-    if (line.trim().length === 0) continue;
-    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(line);
-    if (!match) throw new Error("macOS process accounting returned a malformed row.");
-    const [, pidText, ppidText, pgidText, rssText, started] = match;
-    const pid = Number(pidText);
-    const ppid = Number(ppidText);
-    const pgid = Number(pgidText);
-    const rssKibibytes = Number(rssText);
-    if (
-      ![pid, ppid, pgid, rssKibibytes].every(Number.isSafeInteger) ||
-      pid <= 0 ||
-      ppid < 0 ||
-      pgid < 0 ||
-      rssKibibytes < 0 ||
-      started.length === 0 ||
-      started.length > 128
-    ) {
-      throw new Error("macOS process accounting returned an invalid row.");
-    }
-    rows.push(
-      Object.freeze({
-        pid,
-        ppid,
-        pgid,
-        identity: `${pid}:${started}`,
-        memoryBytes: rssKibibytes * 1024
-      })
-    );
-  }
-  return rows;
 }
 
 export function collectOwnedProcessRows(
@@ -170,8 +130,7 @@ export function collectOwnedProcessRows(
 
 export function createProcessTreeMemorySampler(rootPid, { platform = process.platform } = {}) {
   assertSupportedPlatform(platform);
-  if (platform === "linux") return createLinuxSampler(rootPid);
-  return createMacSampler(rootPid);
+  return createLinuxSampler(rootPid);
 }
 
 function createLinuxSampler(rootPid) {
@@ -259,61 +218,6 @@ function linuxProcessIdentityStillMatches(row) {
 
 function readLinuxProcessRow(pid) {
   return parseLinuxProcessStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
-}
-
-function createMacSampler(rootPid) {
-  const capturedIdentities = new Map();
-  const metric = Object.freeze({ kind: "rss", label: "resident set size (RSS)" });
-  const initialRows = parseMacProcessRows(
-    execFileSync("/bin/ps", ["-p", String(rootPid), "-o", "pid=,ppid=,pgid=,rss=,lstart="], {
-      encoding: "utf8",
-      maxBuffer: 4 * 1024,
-      timeout: 2_000,
-      windowsHide: true
-    })
-  );
-  const initialRoot = initialRows.length === 1 && initialRows[0].pid === rootPid ? initialRows[0] : undefined;
-  if (!initialRoot || initialRoot.pgid !== rootPid) {
-    throw new Error(`The guarded process PID ${rootPid} did not own its expected process group.`);
-  }
-  capturedIdentities.set(rootPid, initialRoot.identity);
-  const selector = createOwnedProcessSelector(rootPid, capturedIdentities, {
-    processGroupVerified: true
-  });
-  async function ownedRows() {
-    const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid=,ppid=,pgid=,rss=,lstart="], {
-      encoding: "utf8",
-      maxBuffer: 2 * 1024 * 1024,
-      timeout: 2_000,
-      windowsHide: true
-    });
-    return selector.select(parseMacProcessRows(stdout));
-  }
-  return samplerFromRows(
-    rootPid,
-    capturedIdentities,
-    metric,
-    ownedRows,
-    (row) => row.memoryBytes,
-    macProcessIdentityStillMatches
-  );
-}
-
-function macProcessIdentityStillMatches(row) {
-  let stdout;
-  try {
-    stdout = execFileSync("/bin/ps", ["-p", String(row.pid), "-o", "pid=,ppid=,pgid=,rss=,lstart="], {
-      encoding: "utf8",
-      maxBuffer: 4 * 1024,
-      timeout: 2_000,
-      windowsHide: true
-    });
-  } catch (error) {
-    if (error?.status === 1 || error?.code === "ESRCH") return false;
-    throw new Error(`macOS process identity revalidation failed for PID ${row.pid}.`, { cause: error });
-  }
-  const currentRows = parseMacProcessRows(stdout);
-  return currentRows.length === 1 && currentRows[0].pid === row.pid && currentRows[0].identity === row.identity;
 }
 
 function createOwnedProcessSelector(
