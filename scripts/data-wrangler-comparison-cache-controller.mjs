@@ -280,6 +280,7 @@ function runPinnedToolchainDescription(controller, pythonExecutable, spawn) {
     CHILD_PYTHON_PATH,
     [CHILD_CONTROLLER_PATH, "--contract", "toolchain-v2", "--controller-fd", "3", "--python-fd", "4"],
     {
+      argv0: pythonExecutable.path,
       cwd: dirname(controller.path),
       encoding: "utf8",
       env: {
@@ -406,6 +407,7 @@ export function runDataWranglerComparisonStudyV2CacheController(
           "4"
         ],
         {
+          argv0: pythonExecutable.path,
           cwd: dirname(controller.path),
           encoding: "utf8",
           env: {

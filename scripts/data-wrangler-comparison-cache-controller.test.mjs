@@ -100,6 +100,49 @@ linuxTest("runs study-v2 through inherited fd 3 and binds the proof to host rece
   }
 });
 
+linuxTest("uses the canonical interpreter path as argv0 while executing the pinned descriptor", () => {
+  const current = fixture();
+  const invocations = [];
+  try {
+    const toolchain = captureDataWranglerComparisonStudyV2Toolchain(
+      {
+        pythonExecutablePath: current.pythonExecutablePath,
+        controllerPath: current.controllerPath
+      },
+      {
+        spawn(executable, arguments_, options) {
+          invocations.push({ executable, arguments_, options });
+          return spawnSync(executable, arguments_, options);
+        }
+      }
+    );
+    const receipt = runDataWranglerComparisonStudyV2CacheController(
+      {
+        sourceCopy: current.sourceCopy,
+        cacheState: "warm",
+        pythonExecutablePath: current.pythonExecutablePath,
+        controllerPath: current.controllerPath
+      },
+      {
+        spawn(executable, arguments_, options) {
+          invocations.push({ executable, arguments_, options });
+          return spawnSync(executable, arguments_, options);
+        }
+      }
+    );
+
+    assert.equal(invocations.length, 2);
+    for (const invocation of invocations) {
+      assert.equal(invocation.executable, "/proc/self/fd/4");
+      assert.equal(invocation.options.argv0, current.pythonExecutablePath);
+      assert.equal(invocation.arguments_[0], "/proc/self/fd/3");
+    }
+    assert.deepEqual(receipt.toolchain, toolchain);
+  } finally {
+    dispose(current);
+  }
+});
+
 linuxTest("an evicted acknowledgement binds the exact private copy receipt", () => {
   const current = fixture();
   try {
@@ -175,6 +218,7 @@ linuxTest("path rebinding cannot change the descriptor-executed interpreter, con
           {
             spawn(executable, arguments_, options) {
               assert.equal(executable, "/proc/self/fd/4");
+              assert.equal(options.argv0, current.pythonExecutablePath);
               assert.equal(arguments_[0], "/proc/self/fd/3");
               assert.deepEqual(arguments_.slice(1, 3), ["--source-fd", "5"]);
               renameSync(current.controllerPath, `${current.controllerPath}.pinned`);
