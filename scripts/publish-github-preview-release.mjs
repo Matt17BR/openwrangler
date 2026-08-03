@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withPinnedCanonicalReleaseAssets } from "./canonical-release-assets.mjs";
 import { parseGitHubImmutableReleaseExpectation, publishGitHubRelease } from "./github-release-publisher.mjs";
+import { readReleaseNotesFromCommit } from "./release-notes.mjs";
 import { verifyPinnedPreviewReleaseArtifactFromCheckout } from "./verify-preview-release-artifact.mjs";
 
 export async function publishGitHubPreviewRelease(options) {
@@ -15,6 +16,7 @@ export async function publishVerifiedGitHubPreviewRelease({
   expectedCommit,
   fetchImpl,
   releaseTag,
+  releaseNotes,
   repository,
   root,
   token
@@ -35,6 +37,7 @@ export async function publishVerifiedGitHubPreviewRelease({
       expectedCommit: receipt.sourceCommit,
       fetchImpl,
       releaseTag: receipt.releaseTag,
+      releaseNotes,
       repository,
       token,
       version: receipt.version
@@ -55,6 +58,11 @@ async function runCli() {
     expectImmutable: parseGitHubImmutableReleaseExpectation(process.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED),
     expectedCommit: process.env.EXPECTED_SHA,
     releaseTag: process.env.RELEASE_TAG,
+    releaseNotes: readReleaseNotesFromCommit({
+      commit: process.env.EXPECTED_SHA,
+      root,
+      version: process.env.RELEASE_TAG?.slice(1)
+    }),
     repository: process.env.GITHUB_REPOSITORY,
     root,
     token: process.env.GITHUB_TOKEN

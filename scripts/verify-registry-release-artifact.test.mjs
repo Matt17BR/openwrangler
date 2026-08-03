@@ -341,6 +341,7 @@ test("preview publication rejects a provenance replacement before creating a Git
       expectedCommit: candidateCommit,
       fetchImpl,
       releaseTag,
+      releaseNotes: "Reviewed preview release notes.\n",
       repository: "Matt17BR/openwrangler",
       root,
       token: "test-token"

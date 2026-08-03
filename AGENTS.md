@@ -86,6 +86,10 @@ Public copy needs an editorial pass; an AI detector or word blacklist is not a s
 sound weightier. Commit subjects and PR titles should name the observable result rather than “harden,” “improve,” or
 “stabilize” without saying what changed.
 
+Every release adds `docs/release-notes/<version>.md` in the release change. Publication reads that exact blob from the
+tagged commit and must not substitute GitHub-generated notes. Automation proves which text will be published; it does
+not prove that a person reviewed the prose. Give public copy an editorial read before approving the release change.
+
 ## Managed agent checkouts
 
 The coordinating agent creates task isolation with
