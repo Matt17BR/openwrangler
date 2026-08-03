@@ -1542,6 +1542,46 @@ test("an explicit legacy catalog attests ordinary trees without following declar
   });
 });
 
+test("an exact checkout list cannot stand in for its complete parent catalog", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "1".repeat(32) });
+    const parent = join(fixture.root, "catalog-omitted-sibling-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-omitted-candidate");
+    writeFileSync(join(candidate.checkout, "borrowed-only.txt"), "not present in the remote\n");
+    git(candidate.checkout, "add", "borrowed-only.txt");
+    git(candidate.checkout, "commit", "-q", "-m", "Add an object borrowed by a sibling");
+    const borrowedHead = git(candidate.checkout, "rev-parse", "HEAD");
+    const dependent = join(parent, "unlisted-dependent");
+    git(parent, "clone", "-q", "--shared", candidate.checkout, dependent);
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-omitted-sibling",
+      [{ slug: "catalog-omitted-candidate", checkout: candidate.checkout, parent }],
+      [parent],
+      [candidate.checkout]
+    );
+    const value = JSON.parse(readFileSync(manifest, "utf8"));
+    value.dependencyCatalog.roots[0].entries = value.dependencyCatalog.roots[0].entries.filter(
+      (entry) => entry.name !== "unlisted-dependent"
+    );
+    writeFileSync(manifest, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    const managed = defaultManager(fixture);
+
+    lifecycleError(() => managed.legacyBatchAudit({ manifestPath: manifest }), "legacy-dependency-universe-changed");
+
+    assert.equal(existsSync(join(managed.paths.root, "legacy-adoptions")), false);
+    assert.equal(git(dependent, "cat-file", "-t", borrowedHead), "commit");
+    assert.equal(
+      resolve(
+        join(dependent, ".git", "objects"),
+        readFileSync(join(dependent, ".git", "objects", "info", "alternates"), "utf8").trim()
+      ),
+      join(candidate.checkout, ".git", "objects")
+    );
+  });
+});
+
 test("explicit catalog descriptor traversal rejects root, directory, repository, and FIFO pathname swaps", () => {
   const expectCatalogRace = (managed, manifest) => {
     assert.throws(

@@ -124,6 +124,11 @@ Agent checkout lifecycle has a separate, small contract test:
   unrecorded and different-cohort missing peers, no candidate deletion or movement, bounded generated-path
   suggestions, directory-to-symlink and file-to-FIFO pathname swaps, and fail-closed handling of dirty, linked,
   omitted-worktree, outside-alternate, and inbound alternate-dependent candidates.
+  An exact list of checkout paths cannot replace the complete parent catalog. Git records an object alternate in the
+  borrowing repository, so inspecting a standalone clone cannot show that an unlisted checkout does not depend on its
+  objects. If reviewing the complete parent would inspect unrelated files, that clone stays on hold. A future no-scan
+  migration would need to replace the original path atomically with a small compatibility tombstone backed by the
+  verified recovery object store; removing the path outright is not safe. There is no exact-path cleanup override.
   `checkout:legacy-batch-retire` resumes partial adoption,
   creates and verifies each all-object archive (including unreachable objects), and enrolls retirement without moving
   anything in the current boot. Crash tests stop between candidates and resume against the same review. Recognized
