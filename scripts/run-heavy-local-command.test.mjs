@@ -19,8 +19,8 @@ function cleanLeaseEnvironment(scope) {
   return environment;
 }
 
-function captureChild(arguments_, environment) {
-  const child = spawn(process.execPath, [guard, ...arguments_], {
+function captureNode(script, arguments_, environment) {
+  const child = spawn(process.execPath, [script, ...arguments_], {
     env: environment,
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -35,6 +35,10 @@ function captureChild(arguments_, environment) {
     stderr = `${stderr}${chunk}`.slice(-32 * 1024);
   });
   return { child, output: () => ({ stdout, stderr }) };
+}
+
+function captureChild(arguments_, environment) {
+  return captureNode(guard, arguments_, environment);
 }
 
 test("heavy-command arguments and shared scope endpoints are deterministic", () => {
@@ -78,6 +82,8 @@ test("public heavy scripts hold the shared lease across their complete transacti
     "test:webview-acceptance",
     "benchmark:runtime",
     "benchmark:installed",
+    "comparison:diagnostic",
+    "comparison:prepare",
     "package"
   ];
   for (const name of guarded) {
@@ -97,6 +103,95 @@ test("public heavy scripts hold the shared lease across their complete transacti
     scripts["test:packaged-editors"],
     "node scripts/run-heavy-local-command.mjs test:packaged-editors -- npm run test:packaged-editors:prepare --"
   );
+  assert.equal(scripts["comparison:study"], "node scripts/run-data-wrangler-comparison-study-entry.mjs");
+});
+
+test("public comparison workflows reject contention and accept one inherited lease", { timeout: 15_000 }, async () => {
+  const scope = `openwrangler-comparison-command-test-${process.pid}-${Date.now()}`;
+  const environment = cleanLeaseEnvironment(scope);
+  const holder = captureChild(
+    [
+      "comparison-holder",
+      "--",
+      "node",
+      "--input-type=module",
+      "--eval",
+      "process.stdout.write('holder-ready\\n'); setTimeout(() => {}, 3000);"
+    ],
+    environment
+  );
+  const commands = [
+    {
+      name: "prepare",
+      script: guard,
+      arguments: [
+        "comparison:prepare",
+        "--",
+        "node",
+        "scripts/run-data-wrangler-comparison-preparation.mjs"
+      ],
+      nestedError: /Usage: npm run comparison:prepare/u
+    },
+    {
+      name: "diagnostic",
+      script: guard,
+      arguments: [
+        "comparison:diagnostic",
+        "--",
+        "node",
+        "scripts/run-data-wrangler-comparison-diagnostic.mjs"
+      ],
+      nestedError: /Usage: node scripts\/run-data-wrangler-comparison-diagnostic/u
+    },
+    {
+      name: "study run-next",
+      script: "scripts/run-data-wrangler-comparison-study-entry.mjs",
+      arguments: [
+        "run-next",
+        "--manifest",
+        "missing-manifest.json",
+        "--fragments",
+        "missing-fragments",
+        "--intents",
+        "missing-intents",
+        "--preparation",
+        "missing-preparation.json"
+      ],
+      nestedError: /ENOENT|must be one bounded/u
+    }
+  ];
+  try {
+    await new Promise((resolveReady, rejectReady) => {
+      const timer = setTimeout(() => rejectReady(new Error("The comparison lease holder did not start.")), 3_000);
+      holder.child.stdout.on("data", () => {
+        if (!holder.output().stdout.includes("holder-ready")) return;
+        clearTimeout(timer);
+        resolveReady();
+      });
+    });
+
+    for (const command of commands) {
+      const contender = captureNode(command.script, command.arguments, environment);
+      const [code, signal] = await once(contender.child, "close");
+      assert.equal(signal, null, `${command.name}: ${contender.output().stderr}`);
+      assert.equal(code, 1, `${command.name}: ${contender.output().stderr}`);
+      assert.match(contender.output().stderr, /Another Open Wrangler memory-intensive command is already running/u);
+    }
+  } finally {
+    if (holder.child.exitCode === null && holder.child.signalCode === null) {
+      holder.child.kill("SIGKILL");
+      await once(holder.child, "close");
+    }
+  }
+
+  for (const command of commands) {
+    const nested = captureChild(["outer", "--", "node", command.script, ...command.arguments], environment);
+    const [code, signal] = await once(nested.child, "close");
+    assert.equal(signal, null, `${command.name}: ${nested.output().stderr}`);
+    assert.equal(code, 1, `${command.name}: ${nested.output().stderr}`);
+    assert.doesNotMatch(nested.output().stderr, /Another Open Wrangler memory-intensive command is already running/u);
+    assert.match(nested.output().stderr, command.nestedError);
+  }
 });
 
 test(

@@ -1022,8 +1022,7 @@ export function runDataWranglerComparisonStudy(
   };
 }
 
-async function main() {
-  const arguments_ = process.argv.slice(2);
+export async function runDataWranglerComparisonStudyCli(arguments_ = process.argv.slice(2)) {
   const parsed = parseArguments(arguments_);
   const result =
     parsed.command === "run-next"
@@ -1046,7 +1045,7 @@ async function main() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  main().catch((error) => {
+  runDataWranglerComparisonStudyCli().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });
