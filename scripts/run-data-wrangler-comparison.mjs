@@ -73,6 +73,7 @@ const comparisonInputReceipts = new WeakSet();
 const comparisonProductEditorPhasePlans = new WeakSet();
 
 export const COMPARISON_PRODUCT_FRAGMENT_PROTOCOL = "openwrangler-comparison-product-fragment-v1";
+export const COMPARISON_CONFIGURED_PROFILES_PROTOCOL = "openwrangler-comparison-configured-profiles-v1";
 export const DATA_WRANGLER_MARKETPLACE_EXTENSION = `ms-toolsai.datawrangler@${DATA_WRANGLER_BASELINE_VERSION}`;
 export const COMPARISON_TEST_PHASES = Object.freeze({
   "open-wrangler": "comparison-open-wrangler",
@@ -385,9 +386,86 @@ export function normalizeComparisonProductEvidence({
 export async function runDataWranglerComparison(options, environment = process.env, overrides = {}) {
   const dependencies = comparisonDependencies(overrides);
   validateComparisonOptions(options);
+  const session = await runComparisonEditorSession({
+    options,
+    environment,
+    dependencies,
+    purpose: "smoke"
+  });
+  const { candidateReceipt, fixtureManifest, productRuns } = session;
+  const [firstProductRun, secondProductRun] = productRuns;
+  if (
+    !fixtureManifest ||
+    !firstProductRun ||
+    !secondProductRun ||
+    JSON.stringify(firstProductRun.configuredPythonEnvironment) !==
+      JSON.stringify(secondProductRun.configuredPythonEnvironment)
+  ) {
+    throw new Error("The configured Python environment changed between comparison product runs.");
+  }
+  const phases = productRuns.flatMap((run) => run.phases);
+  if (!candidateReceipt || phases.length !== 4) {
+    throw new Error("Data Wrangler comparison smoke completed without four validated phases.");
+  }
+
+  const report = buildDataWranglerComparisonSmokeReport({
+    generatedAtUtc: dependencies.now().toISOString(),
+    configuredPythonEnvironment: firstProductRun.configuredPythonEnvironment,
+    fixtureManifest,
+    phases
+  });
+  assertComparisonPathSeparation(options);
+  dependencies.writeReport(options.output, report);
+  return report;
+}
+
+export async function bootstrapDataWranglerComparisonConfiguredProfiles(
+  options,
+  environment = process.env,
+  overrides = {}
+) {
+  const dependencies = comparisonDependencies(overrides);
+  validateComparisonBootstrapOptions(options);
+  const session = await runComparisonEditorSession({
+    options,
+    environment,
+    dependencies,
+    purpose: "configured-profiles"
+  });
+  const profiles = session.productRuns.map((run) => run.profile);
+  if (
+    !session.candidateReceipt ||
+    profiles.length !== 2 ||
+    profiles[0]?.product !== "open-wrangler" ||
+    profiles[1]?.product !== "data-wrangler" ||
+    profiles.some((profile) => profile.kind !== "configured-only")
+  ) {
+    throw new Error("Comparison configured-profile bootstrap did not produce both exact product profiles.");
+  }
+  const editor = profiles[0].editor;
+  if (
+    profiles.some(
+      (profile) =>
+        profile.editor.executable !== editor.executable ||
+        profile.editor.cli !== editor.cli ||
+        profile.editor.version !== editor.version
+    )
+  ) {
+    throw new Error("Official VS Code changed between configured-profile bootstrap products.");
+  }
+  return Object.freeze({
+    protocol: COMPARISON_CONFIGURED_PROFILES_PROTOCOL,
+    studyRoot: session.privateRoot,
+    candidateSha256: session.candidateReceipt.sha256,
+    editor,
+    profiles: Object.freeze(profiles)
+  });
+}
+
+async function runComparisonEditorSession({ options, environment, dependencies, purpose }) {
   dependencies.validatePrivatePathOverrides();
   if (dependencies.platform !== "linux" || dependencies.architecture !== "x64") {
-    throw new Error("The clean-room Data Wrangler comparison smoke supports only Linux x64.");
+    throw new Error("The clean-room Data Wrangler comparison supports only Linux x64.");
   }
   const inputReceipts = dependencies.captureInputs(options);
   exactKeys(inputReceipts, ["candidate", "python"], "comparison input receipts");
@@ -412,8 +490,7 @@ export async function runDataWranglerComparison(options, environment = process.e
   let processTreeUncertain = false;
   let candidateReceipt;
   let fixtureManifest;
-  let configuredPythonEnvironment;
-  let phases;
+  let productRuns;
   try {
     dependencies.buildTestRuntime(runEnvironment);
     const testModule = resolve(root, "dist-test", "test", "extensionHost", "dataWranglerComparison.js");
@@ -422,13 +499,15 @@ export async function runDataWranglerComparison(options, environment = process.e
     }
 
     candidateReceipt = dependencies.stageCandidate(options.candidate, resolve(privateRoot, "openwrangler.vsix"));
-    const fixtureRoot = resolve(privateRoot, "fixtures-root");
-    dependencies.revalidateInput(inputReceipts.python);
-    fixtureManifest = dependencies.generateFixtures({
-      pythonReceipt: inputReceipts.python,
-      fixtureRoot,
-      environment: runEnvironment
-    });
+    const fixtureRoot = purpose === "smoke" ? resolve(privateRoot, "fixtures-root") : undefined;
+    if (purpose === "smoke") {
+      dependencies.revalidateInput(inputReceipts.python);
+      fixtureManifest = dependencies.generateFixtures({
+        pythonReceipt: inputReceipts.python,
+        fixtureRoot,
+        environment: runEnvironment
+      });
+    }
     const harnessDevelopmentPath = await dependencies.createHarness(privateRoot);
     const acquisition = await dependencies.acquireVscode(privateRoot);
     validateOfficialVSCodeAcquisition(acquisition);
@@ -437,13 +516,14 @@ export async function runDataWranglerComparison(options, environment = process.e
       environment: runEnvironment
     });
     if (display?.isolated !== true || display?.mode !== "headless" || typeof display.stop !== "function") {
-      throw new Error("Comparison smoke requires one zero-window, isolated headless Ozone environment.");
+      throw new Error("Comparison editor work requires one zero-window, isolated headless Ozone environment.");
     }
 
-    const productRuns = [];
+    productRuns = [];
     let editorVersion;
     for (const productKey of ["open-wrangler", "data-wrangler"]) {
-      const run = await dependencies.runProduct({
+      const runProduct = purpose === "smoke" ? dependencies.runProduct : dependencies.runConfiguredProduct;
+      const run = await runProduct({
         productKey,
         editor: acquisition.editor,
         editorVersion,
@@ -451,10 +531,10 @@ export async function runDataWranglerComparison(options, environment = process.e
         harnessDevelopmentPath,
         pythonReceipt: inputReceipts.python,
         privateRoot,
-        fixtureRoot,
+        ...(fixtureRoot === undefined ? {} : { fixtureRoot }),
         testModule,
         environment: runEnvironment,
-        captureTemplate: dependencies.captureTemplate
+        ...(purpose === "smoke" ? { captureTemplate: dependencies.captureTemplate } : {})
       });
       dependencies.revalidateInput(inputReceipts.python);
       editorVersion ??= run.editorVersion;
@@ -463,17 +543,38 @@ export async function runDataWranglerComparison(options, environment = process.e
       }
       productRuns.push(run);
     }
-    const [firstProductRun, secondProductRun] = productRuns;
-    if (
-      !firstProductRun ||
-      !secondProductRun ||
-      JSON.stringify(firstProductRun.configuredPythonEnvironment) !==
-        JSON.stringify(secondProductRun.configuredPythonEnvironment)
-    ) {
-      throw new Error("The configured Python environment changed between comparison product runs.");
+    if (purpose === "smoke") {
+      const [firstProductRun, secondProductRun] = productRuns;
+      if (
+        !firstProductRun ||
+        !secondProductRun ||
+        JSON.stringify(firstProductRun.configuredPythonEnvironment) !==
+          JSON.stringify(secondProductRun.configuredPythonEnvironment)
+      ) {
+        throw new Error("The configured Python environment changed between comparison product runs.");
+      }
+      if (!fixtureManifest || productRuns.flatMap((run) => run.phases).length !== 4) {
+        throw new Error("Data Wrangler comparison smoke completed without four validated phases.");
+      }
+    } else {
+      const profiles = productRuns.map((run) => run.profile);
+      const editor = profiles[0]?.editor;
+      if (
+        profiles.length !== 2 ||
+        profiles[0]?.product !== "open-wrangler" ||
+        profiles[1]?.product !== "data-wrangler" ||
+        profiles.some(
+          (profile) =>
+            profile.kind !== "configured-only" ||
+            profile.configuredPythonProcessObservedDuringSetup !== true ||
+            profile.editor.executable !== editor?.executable ||
+            profile.editor.cli !== editor?.cli ||
+            profile.editor.version !== editor?.version
+        )
+      ) {
+        throw new Error("Comparison configured-profile bootstrap did not retain both exact product profiles.");
+      }
     }
-    phases = productRuns.flatMap((run) => run.phases);
-    configuredPythonEnvironment = firstProductRun.configuredPythonEnvironment;
     dependencies.revalidateInput(inputReceipts.candidate);
     dependencies.revalidateInput(inputReceipts.python);
     dependencies.revalidateCandidate(candidateReceipt);
@@ -493,7 +594,9 @@ export async function runDataWranglerComparison(options, environment = process.e
 
   if (
     !processTreeUncertain &&
-    (!dependencies.retainPrivateRoot || primaryError !== undefined || displayError !== undefined)
+    ((purpose !== "configured-profiles" && !dependencies.retainPrivateRoot) ||
+      primaryError !== undefined ||
+      displayError !== undefined)
   ) {
     try {
       dependencies.removePrivateRoot(rootReceipt);
@@ -506,28 +609,13 @@ export async function runDataWranglerComparison(options, environment = process.e
     const error =
       failures.length === 1
         ? failures[0]
-        : new AggregateError(failures, "Data Wrangler comparison smoke failed or could not clean up.");
+        : new AggregateError(failures, "Data Wrangler comparison editor work failed or could not clean up.");
     throw new Error(dependencies.sanitize(error, privatePaths));
   }
-  if (
-    !candidateReceipt ||
-    !fixtureManifest ||
-    !configuredPythonEnvironment ||
-    !Array.isArray(phases) ||
-    phases.length !== 4
-  ) {
-    throw new Error("Data Wrangler comparison smoke completed without four validated phases.");
+  if (!candidateReceipt || !Array.isArray(productRuns) || productRuns.length !== 2) {
+    throw new Error("Data Wrangler comparison editor work completed without both validated products.");
   }
-
-  const report = buildDataWranglerComparisonSmokeReport({
-    generatedAtUtc: dependencies.now().toISOString(),
-    configuredPythonEnvironment,
-    fixtureManifest,
-    phases
-  });
-  assertComparisonPathSeparation(options);
-  dependencies.writeReport(options.output, report);
-  return report;
+  return Object.freeze({ privateRoot, candidateReceipt, fixtureManifest, productRuns: Object.freeze(productRuns) });
 }
 
 export function dataWranglerComparisonKernelLabel(runId) {
@@ -686,6 +774,44 @@ export async function runComparisonProduct({
   environment,
   captureTemplate = () => undefined
 }) {
+  return runComparisonProductInternal(
+    {
+      productKey,
+      editor,
+      editorVersion: knownEditorVersion,
+      candidateReceipt,
+      harnessDevelopmentPath,
+      pythonReceipt,
+      privateRoot,
+      fixtureRoot,
+      testModule,
+      environment,
+      captureTemplate
+    },
+    { configuredOnly: false }
+  );
+}
+
+export async function runComparisonProductConfiguredSetup(input) {
+  return runComparisonProductInternal(input, { configuredOnly: true });
+}
+
+async function runComparisonProductInternal(
+  {
+    productKey,
+    editor,
+    editorVersion: knownEditorVersion,
+    candidateReceipt,
+    harnessDevelopmentPath,
+    pythonReceipt,
+    privateRoot,
+    fixtureRoot,
+    testModule,
+    environment,
+    captureTemplate = () => undefined
+  },
+  { configuredOnly }
+) {
   requireProductKey(productKey);
   if (typeof captureTemplate !== "function") {
     throw new TypeError("Comparison product preparation requires a callable template capture.");
@@ -696,7 +822,14 @@ export async function runComparisonProduct({
   const workspace = resolve(profile, "workspace");
   const userData = resolve(profile, "user");
   const extensions = resolve(profile, "extensions");
-  prepareComparisonWorkspace(workspace, fixtureRoot);
+  if (configuredOnly) {
+    if (fixtureRoot !== undefined) {
+      throw new Error("Configured-profile setup must not receive smoke fixtures.");
+    }
+    prepareComparisonSetupWorkspace(workspace);
+  } else {
+    prepareComparisonDiagnosticWorkspace(workspace, fixtureRoot);
+  }
   writeEditorSettings(userData, comparisonEditorSettings(python));
 
   const sandboxArgs = ["--no-sandbox", ...editorDisplayLaunchArgs("linux", environment)];
@@ -710,7 +843,7 @@ export async function runComparisonProduct({
       sandboxArgs,
       environment: editorEnvironment
     }));
-  const identifiedEditor = { ...editor, version: editorVersion };
+  const identifiedEditor = Object.freeze({ ...editor, version: editorVersion });
   const allowedPrivateVsixPaths = [candidateReceipt.path];
   for (const install of PRODUCT_INSTALLS[productKey]) {
     if (install === "candidate") {
@@ -792,6 +925,32 @@ export async function runComparisonProduct({
           { environment, spawnProcess }
         )
     });
+  if (configuredOnly) {
+    const setupLaunch = phasePlan[0];
+    if (setupLaunch?.kind !== "first-use-setup") {
+      throw new Error("Configured-profile bootstrap did not derive its exact first-use phase.");
+    }
+    const { installedExtensions, phaseResult: observed } = await runComparisonInventoryGuard({
+      readInventory: () => readComparisonInstalledExtensions(inventoryInput),
+      runPhase: () => runObservedPhase(setupLaunch)
+    });
+    installedComparisonProductVersion(installedExtensions, productKey);
+    if (observed.configuredPythonProcessObservedDuringProductRun !== true) {
+      throw new Error(`${productKey} configured-profile setup did not prove its exact Python runtime.`);
+    }
+    const profileDescriptor = Object.freeze({
+      product: productKey,
+      kind: "configured-only",
+      privateRoot: profile,
+      userData,
+      extensions,
+      editor: identifiedEditor,
+      sandboxArgs: Object.freeze([...sandboxArgs]),
+      installedExtensions: Object.freeze([...installedExtensions]),
+      configuredPythonProcessObservedDuringSetup: true
+    });
+    return Object.freeze({ editorVersion, profile: profileDescriptor });
+  }
   const { installedExtensions, phaseResult: observed } = await runComparisonInventoryGuard({
     readInventory: () => readComparisonInstalledExtensions(inventoryInput),
     runPhase: () =>
@@ -1198,6 +1357,7 @@ function comparisonDependencies(overrides) {
     acquireVscode: acquirePinnedVSCodeClient,
     startDisplay: startIsolatedEditorDisplay,
     runProduct: runComparisonProduct,
+    runConfiguredProduct: runComparisonProductConfiguredSetup,
     captureTemplate: () => undefined,
     retainPrivateRoot: false,
     processTreeMayBeLive: editorProcessTreeMayBeLive,
@@ -1221,6 +1381,15 @@ function validateComparisonOptions(options) {
     }
   }
   assertComparisonPathSeparation(options);
+}
+
+function validateComparisonBootstrapOptions(options) {
+  exactKeys(options, ["candidate", "python"], "comparison configured-profile bootstrap options");
+  for (const [key, value] of Object.entries(options)) {
+    if (typeof value !== "string" || !isAbsolute(value) || value.length === 0 || /[\0\r\n]/u.test(value)) {
+      throw new Error(`Comparison configured-profile bootstrap option ${key} must be an absolute path.`);
+    }
+  }
 }
 
 export function assertComparisonPathSeparation({ candidate, python, output }) {
@@ -1494,8 +1663,17 @@ async function createComparisonHarness(privateRoot) {
   return directory;
 }
 
-function prepareComparisonWorkspace(workspace, fixtureRoot) {
+function prepareComparisonSetupWorkspace(workspace) {
   mkdirSync(workspace, { recursive: true, mode: 0o700 });
+  mkdirSync(resolve(workspace, "results"), {
+    recursive: true,
+    mode: 0o700
+  });
+  writeFileSync(resolve(workspace, "warmup.csv"), "c00,c01\n0,1\n1,2\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+}
+
+function prepareComparisonDiagnosticWorkspace(workspace, fixtureRoot) {
+  prepareComparisonSetupWorkspace(workspace);
   cpSync(resolve(fixtureRoot, "fixtures"), resolve(workspace, "fixtures"), {
     recursive: true,
     errorOnExist: true,
@@ -1514,11 +1692,6 @@ function prepareComparisonWorkspace(workspace, fixtureRoot) {
     resolve(workspace, "benchmarks", "source_cache_control.py"),
     { errorOnExist: true, force: false }
   );
-  mkdirSync(resolve(workspace, "results"), {
-    recursive: true,
-    mode: 0o700
-  });
-  writeFileSync(resolve(workspace, "warmup.csv"), "c00,c01\n0,1\n1,2\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
 }
 
 function comparisonEditorSettings(python) {

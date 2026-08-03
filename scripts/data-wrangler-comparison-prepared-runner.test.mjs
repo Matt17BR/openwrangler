@@ -33,13 +33,15 @@ import {
 import {
   parseDataWranglerComparisonPreparationArguments,
   prepareDataWranglerComparisonStudy,
-  publishDataWranglerComparisonPreparationTransaction
+  publishDataWranglerComparisonPreparationTransaction,
+  validateDataWranglerComparisonConfiguredProfilesBootstrap
 } from "./run-data-wrangler-comparison-preparation.mjs";
 import {
   parseDataWranglerComparisonStudyArguments,
   runDataWranglerComparisonStudy
 } from "./run-data-wrangler-comparison-study.mjs";
 import {
+  COMPARISON_CONFIGURED_PROFILES_PROTOCOL,
   createComparisonProductEditorPhasePlan,
   runComparisonProductEditorPhases
 } from "./run-data-wrangler-comparison.mjs";
@@ -1012,16 +1014,91 @@ test("preparation CLI requires every path that it audits or publishes", () => {
     "manifest.json",
     "--preparation",
     "preparation.json",
-    "--smoke-report",
-    "smoke.json",
     "--cpu-list",
     "2-5"
   ];
   const parsed = parseDataWranglerComparisonPreparationArguments(flags, "/study");
   assert.equal(parsed.candidate, "/study/openwrangler.vsix");
   assert.equal(parsed.cpuList, "2-5");
-  assert.equal(parsed.smokeReport, "/study/smoke.json");
   assert.throws(() => parseDataWranglerComparisonPreparationArguments(flags.slice(0, -2), "/study"), /Usage/u);
+});
+
+test("preparation rejects malformed configured-profile bootstrap trust bindings", async () => {
+  await withDirectory(async (root) => {
+    const studyRoot = privateDirectory(resolve(root, "study"));
+    const editorRoot = privateDirectory(resolve(studyRoot, "vscode"));
+    const editor = {
+      name: "VS Code",
+      key: "vscode",
+      executable: resolve(editorRoot, "code"),
+      cli: resolve(editorRoot, "bin", "code"),
+      sharedDataDir: true,
+      version: "1.130.0"
+    };
+    const profiles = ["open-wrangler", "data-wrangler"].map((product) => {
+      const privateRoot = privateDirectory(resolve(studyRoot, `profile-${product}`));
+      privateDirectory(resolve(privateRoot, "user"));
+      privateDirectory(resolve(privateRoot, "extensions"));
+      return {
+        product,
+        kind: "configured-only",
+        privateRoot,
+        userData: resolve(privateRoot, "user"),
+        extensions: resolve(privateRoot, "extensions"),
+        editor,
+        sandboxArgs: ["--no-sandbox"],
+        installedExtensions: [],
+        configuredPythonProcessObservedDuringSetup: true
+      };
+    });
+    const candidateSha256 = "d".repeat(64);
+    const valid = {
+      protocol: COMPARISON_CONFIGURED_PROFILES_PROTOCOL,
+      candidateSha256,
+      studyRoot,
+      editor,
+      profiles
+    };
+    assert.equal(validateDataWranglerComparisonConfiguredProfilesBootstrap(valid, candidateSha256), valid);
+
+    const malformed = [
+      (value) => {
+        value.protocol = "wrong-protocol";
+      },
+      (value) => {
+        value.candidateSha256 = "e".repeat(64);
+      },
+      (value) => {
+        value.studyRoot = "relative-study-root";
+      },
+      (value) => {
+        value.profiles[1].editor = { ...value.profiles[1].editor, version: "1.131.0" };
+      },
+      (value) => {
+        value.profiles.pop();
+      },
+      (value) => {
+        value.profiles[1].product = "open-wrangler";
+      },
+      (value) => {
+        value.profiles[0].kind = "warmed";
+      },
+      (value) => {
+        value.profiles[0].configuredPythonProcessObservedDuringSetup = false;
+      },
+      (value) => {
+        value.profiles[0].privateRoot = resolve(root, "outside-study");
+      }
+    ];
+    for (const corrupt of malformed) {
+      const value = structuredClone(valid);
+      corrupt(value);
+      assert.throws(
+        () => validateDataWranglerComparisonConfiguredProfilesBootstrap(value, candidateSha256),
+        /malformed or mis-correlated/u
+      );
+    }
+  });
 });
 
 test("preparation rejects the wrong Python cache controller before packaging or editor work", async () => {
@@ -1033,7 +1110,7 @@ test("preparation rejects the wrong Python cache controller before packaging or 
     }
   };
   let packageCalls = 0;
-  let smokeCalls = 0;
+  let bootstrapCalls = 0;
   await assert.rejects(
     prepareDataWranglerComparisonStudy(
       {
@@ -1046,7 +1123,6 @@ test("preparation rejects the wrong Python cache controller before packaging or 
         specification: "/study/specification.json",
         manifest: "/study/manifest.json",
         preparation: "/study/preparation.json",
-        smokeReport: "/study/smoke.json",
         cpuList: "2-5"
       },
       {},
@@ -1061,15 +1137,15 @@ test("preparation rejects the wrong Python cache controller before packaging or 
         async packageDriver() {
           packageCalls += 1;
         },
-        async runSmoke() {
-          smokeCalls += 1;
+        async bootstrapConfiguredProfiles() {
+          bootstrapCalls += 1;
         }
       }
     ),
     /Python controller changed after preregistration/u
   );
   assert.equal(packageCalls, 0);
-  assert.equal(smokeCalls, 0);
+  assert.equal(bootstrapCalls, 0);
 });
 
 test("preparation publication resumes from its exact journal after every boundary crash", async (t) => {
@@ -1159,7 +1235,6 @@ test("a retained preparation journal resumes without rebuilding private editor s
     specification: "/study/specification.json",
     manifest: "/study/manifest.json",
     preparation: "/study/preparation.json",
-    smokeReport: "/study/smoke.json",
     cpuList: "2-5"
   };
   const receipt = {
@@ -1172,7 +1247,7 @@ test("a retained preparation journal resumes without rebuilding private editor s
     manifestSha256: digestStudyValue(manifest)
   };
   let packageCalls = 0;
-  let smokeCalls = 0;
+  let bootstrapCalls = 0;
   let revalidationCalls = 0;
   const result = await prepareDataWranglerComparisonStudy(
     options,
@@ -1195,15 +1270,15 @@ test("a retained preparation journal resumes without rebuilding private editor s
       async packageDriver() {
         packageCalls += 1;
       },
-      async runSmoke() {
-        smokeCalls += 1;
+      async bootstrapConfiguredProfiles() {
+        bootstrapCalls += 1;
       }
     }
   );
   assert.deepEqual(result.manifest, manifest);
   assert.equal(revalidationCalls, 1);
   assert.equal(packageCalls, 0);
-  assert.equal(smokeCalls, 0);
+  assert.equal(bootstrapCalls, 0);
 });
 
 test("preparation derives one complete specification from the reviewed preregistration", async () => {
@@ -1292,13 +1367,11 @@ test("preparation derives one complete specification from the reviewed preregist
     };
     const templateSources = new Map();
     for (const product of ["open-wrangler", "data-wrangler"]) {
-      for (const kind of ["configured-only", "warmed"]) {
-        const source = privateDirectory(resolve(root, "profile-sources", product, kind));
-        const userData = privateDirectory(resolve(source, "user"));
-        const extensions = privateDirectory(resolve(source, "extensions"));
-        writeFileSync(resolve(userData, "settings.json"), "{}\n", { mode: 0o600 });
-        templateSources.set(`${product}:${kind}`, { userData, extensions });
-      }
+      const source = privateDirectory(resolve(studyRoot, `profile-${product}`));
+      const userData = privateDirectory(resolve(source, "user"));
+      const extensions = privateDirectory(resolve(source, "extensions"));
+      writeFileSync(resolve(userData, "settings.json"), "{}\n", { mode: 0o600 });
+      templateSources.set(product, { privateRoot: source, userData, extensions });
     }
     const options = {
       preregistration: resolve(root, "preregistration.json"),
@@ -1310,7 +1383,6 @@ test("preparation derives one complete specification from the reviewed preregist
       specification: resolve(outputRoot, "specification.json"),
       manifest: resolve(outputRoot, "manifest.json"),
       preparation: resolve(outputRoot, "preparation.json"),
-      smokeReport: resolve(outputRoot, "smoke.json"),
       cpuList: "2-5"
     };
     let publishedSpecification;
@@ -1345,21 +1417,27 @@ test("preparation derives one complete specification from the reviewed preregist
         ]
       }),
       captureFile: () => ({ sha256: sha, filesystemIdentity }),
-      async runSmoke(_input, _environment, { captureTemplate }) {
-        for (const product of ["open-wrangler", "data-wrangler"]) {
-          for (const kind of ["configured-only", "warmed"]) {
-            const source = templateSources.get(`${product}:${kind}`);
-            await captureTemplate({
+      async bootstrapConfiguredProfiles() {
+        return {
+          protocol: COMPARISON_CONFIGURED_PROFILES_PROTOCOL,
+          candidateSha256: "d".repeat(64),
+          studyRoot,
+          editor,
+          profiles: ["open-wrangler", "data-wrangler"].map((product) => {
+            const source = templateSources.get(product);
+            return {
               product,
-              kind,
-              privateRoot: resolve(studyRoot, `${product}-${kind}`),
+              kind: "configured-only",
+              privateRoot: source.privateRoot,
               userData: source.userData,
               extensions: source.extensions,
               editor,
-              sandboxArgs: []
-            });
-          }
-        }
+              sandboxArgs: [],
+              installedExtensions: [],
+              configuredPythonProcessObservedDuringSetup: true
+            };
+          })
+        };
       },
       queryInventory: async (template) =>
         createDataWranglerComparisonTemplateInventory(

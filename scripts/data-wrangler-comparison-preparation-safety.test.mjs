@@ -17,6 +17,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
   captureDataWranglerPreparationFile,
+  createDataWranglerConfiguredTemplateCapture,
   executeIdentityPinnedPreparationInterpreter,
   readBoundedDataWranglerPreparationJson,
   revalidateDataWranglerPreparationFileIdentity
@@ -201,4 +202,39 @@ test("the private study kernelspec is product-neutral and names its exact CPytho
     "{connection_file}"
   ]);
   assert.equal(value.display_name, kernel.displayName);
+});
+
+test("configured template capture accepts exactly one profile for each product", async (t) => {
+  const root = withRoot(t, "ow-preparation-configured-templates-");
+  const studyRoot = resolve(root, "study-complete");
+  const incompleteStudyRoot = resolve(root, "study-incomplete");
+  mkdirSync(studyRoot, { mode: 0o700 });
+  mkdirSync(incompleteStudyRoot, { mode: 0o700 });
+  const profiles = new Map();
+  for (const product of ["open-wrangler", "data-wrangler"]) {
+    const profile = resolve(root, product);
+    const userData = resolve(profile, "user");
+    const extensions = resolve(profile, "extensions");
+    mkdirSync(userData, { recursive: true, mode: 0o700 });
+    mkdirSync(extensions, { mode: 0o700 });
+    writeFileSync(resolve(userData, "settings.json"), "{}\n", { mode: 0o600 });
+    profiles.set(product, { product, kind: "configured-only", userData, extensions, editor: {}, sandboxArgs: [] });
+  }
+
+  const incomplete = createDataWranglerConfiguredTemplateCapture(incompleteStudyRoot);
+  await incomplete.capture(profiles.get("open-wrangler"));
+  assert.throws(() => incomplete.values(), /both configured-only product templates/u);
+
+  const capture = createDataWranglerConfiguredTemplateCapture(studyRoot);
+  await assert.rejects(
+    capture.capture({ ...profiles.get("open-wrangler"), kind: "warmed" }),
+    /only exact configured-only/u
+  );
+  await capture.capture(profiles.get("open-wrangler"));
+  await capture.capture(profiles.get("data-wrangler"));
+  await assert.rejects(capture.capture(profiles.get("open-wrangler")), /more than once/u);
+  assert.deepEqual(
+    capture.values().map((entry) => `${entry.product}:${entry.kind}`),
+    ["open-wrangler:configured-only", "data-wrangler:configured-only"]
+  );
 });

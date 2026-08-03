@@ -245,8 +245,11 @@ lockfile, npm launch recipes, and tool hashes. The JavaScript cache harness and 
 hashes and are checked separately before packaging or editor work. It then
 packages and verifies the neutral driver itself and records the actual candidate, official editor installation,
 CPython environment and kernelspec, fixture volume, CPU/power/storage state, fixture generator and contract, cache
-controller, process supervisor, and four sealed editor-profile trees. It gets the profiles by completing
-each product's public setup and a separate untimed inline-to-workbench-to-profile warm-up. Those warm-ups use the same
+controller, process supervisor, and four sealed editor-profile trees. A setup-only bootstrap installs the locked
+extensions, selects the exact runtime, reaches the first usable grid on the tiny setup file, checks the extension
+inventory, and seals one configured-only profile per product. It has no timings and is not comparison evidence. The
+older four-phase CSV/Parquet feasibility smoke remains a separate diagnostic command and is not part of preparation.
+A separate untimed inline-to-workbench-to-profile warm-up creates the two warmed profiles. Those warm-ups use the same
 durable, ordered request/acknowledgement bridge as measured trials; preparation must independently observe every
 exchange and match it to the editor receipt. Extension inventory checks
 run against disposable copies, so asking the VS Code CLI for an inventory cannot alter a sealed template. Preparation

@@ -17,11 +17,13 @@ import { PINNED_PYTHON_EXTENSION_ID } from "./editor-acceptance.mjs";
 import { DATA_WRANGLER_COMPARISON_BOUNDARY } from "./data-wrangler-comparison-report.mjs";
 import {
   COMPARISON_PRODUCT_FRAGMENT_PROTOCOL,
+  COMPARISON_CONFIGURED_PROFILES_PROTOCOL,
   COMPARISON_COMMON_EXTENSION_LOCK,
   COMPARISON_TEST_PHASES,
   DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
   DATA_WRANGLER_MARKETPLACE_EXTENSION,
   assertComparisonPathSeparation,
+  bootstrapDataWranglerComparisonConfiguredProfiles,
   captureComparisonInputFile,
   createComparisonProductEditorPhasePlan,
   dataWranglerComparisonKernelLabel,
@@ -1010,6 +1012,87 @@ test("fixture execution requires a just-in-time Python input revalidation", asyn
     );
     assert.deepEqual(events.slice(0, 3), ["build", "stage", "revalidate-python-before-fixtures"]);
     assert.equal(events.includes("fixtures"), false);
+    assert.equal(events.includes("write"), false);
+  });
+});
+
+test("configured-profile bootstrap runs only first-use setup and retains its isolated profiles", async () => {
+  await withRunnerFixture(async ({ options, privateRoot }) => {
+    const events = [];
+    const dependencies = successfulDependencies({ privateRoot, events });
+    dependencies.generateFixtures = () => {
+      throw new Error("configured-profile bootstrap must not generate smoke fixtures");
+    };
+    dependencies.writeReport = () => {
+      throw new Error("configured-profile bootstrap must not publish a smoke report");
+    };
+    dependencies.runConfiguredProduct = async (input) => {
+      events.push(`setup:${input.productKey}`);
+      assert.equal(Object.hasOwn(input, "fixtureRoot"), false);
+      assert.equal(Object.hasOwn(input, "captureTemplate"), false);
+      const editor = Object.freeze({ ...input.editor, version: "1.130.0" });
+      return Object.freeze({
+        editorVersion: "1.130.0",
+        profile: Object.freeze({
+          product: input.productKey,
+          kind: "configured-only",
+          privateRoot: join(privateRoot, input.productKey),
+          userData: join(privateRoot, input.productKey, "user"),
+          extensions: join(privateRoot, input.productKey, "extensions"),
+          editor,
+          sandboxArgs: Object.freeze(["--no-sandbox"]),
+          installedExtensions: Object.freeze(installedInventory(input.productKey)),
+          configuredPythonProcessObservedDuringSetup: true
+        })
+      });
+    };
+
+    const result = await bootstrapDataWranglerComparisonConfiguredProfiles(
+      { candidate: options.candidate, python: options.python },
+      {},
+      dependencies
+    );
+    assert.equal(result.protocol, COMPARISON_CONFIGURED_PROFILES_PROTOCOL);
+    assert.equal(result.studyRoot, privateRoot);
+    assert.equal(result.candidateSha256, digest("a"));
+    assert.deepEqual(
+      result.profiles.map((profile) => `${profile.product}:${profile.kind}`),
+      ["open-wrangler:configured-only", "data-wrangler:configured-only"]
+    );
+    assert.deepEqual(events, [
+      "build",
+      "stage",
+      "harness",
+      "acquire-vscode",
+      "start-display",
+      "setup:open-wrangler",
+      "setup:data-wrangler",
+      "revalidate-candidate",
+      "stop-display:false"
+    ]);
+    assert.equal(events.includes("remove-root"), false);
+  });
+});
+
+test("configured-profile bootstrap removes its private root when first-use setup fails", async () => {
+  await withRunnerFixture(async ({ options, privateRoot }) => {
+    const events = [];
+    const dependencies = successfulDependencies({ privateRoot, events });
+    dependencies.runConfiguredProduct = async ({ productKey }) => {
+      events.push(`setup:${productKey}`);
+      throw new Error("first-use setup failed");
+    };
+    await assert.rejects(
+      bootstrapDataWranglerComparisonConfiguredProfiles(
+        { candidate: options.candidate, python: options.python },
+        {},
+        dependencies
+      ),
+      /first-use setup failed/u
+    );
+    assert.equal(events.filter((entry) => entry.startsWith("setup:")).length, 1);
+    assert.ok(events.includes("stop-display:false"));
+    assert.ok(events.includes("remove-root"));
     assert.equal(events.includes("write"), false);
   });
 });

@@ -141,6 +141,17 @@ export interface Workbench {
   readonly page: Page;
 }
 
+interface ComparisonFirstUseSetupInput {
+  readonly productKey: ProductKey;
+  readonly workbench: Workbench;
+  readonly source: string;
+  readonly kernelLabel?: string;
+}
+
+type ComparisonHostPhasePreparation =
+  | { readonly kind: "setup-only" }
+  | { readonly kind: "diagnostic"; readonly manifest: InstalledPerformanceFixtureManifest };
+
 interface ComparisonActionResult {
   readonly diagnosticDurationMs: number;
   readonly readiness: {
@@ -156,23 +167,15 @@ export async function run(): Promise<InstalledPerformanceArtifactReceipt | undef
   const testPython = requiredEnvironment("OPEN_WRANGLER_TEST_PYTHON");
   const productKey = comparisonProduct(phase);
   const workspace = soleFileWorkspace();
-  const manifest = readFixtureManifest(path.join(workspace, "performance-fixtures.json"));
-  assert.equal(manifest.smoke, true, "The comparison host is restricted to smoke-sized fixtures.");
   assertTelemetryDisabled();
 
   recordProgress("comparison:workbench-connect");
   const workbench = await connectToEditorWorkbench();
   await waitForWorkbenchReady(workbench.page);
 
-  if (phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE || phase === OPEN_WRANGLER_FIRST_USE_SETUP_PHASE) {
-    await runProductFirstUseSetup({
-      productKey,
-      workbench,
-      source: path.join(workspace, "warmup.csv"),
-      ...(productKey === "data-wrangler" ? { kernelLabel: dataWranglerComparisonKernelLabel(runId) } : {})
-    });
-    return undefined;
-  }
+  const preparedPhase = await prepareComparisonHostPhase({ phase, productKey, runId, workspace, workbench });
+  if (preparedPhase.kind === "setup-only") return undefined;
+  const { manifest } = preparedPhase;
 
   recordProgress("comparison:configured-python-provenance");
   const configuredPythonEnvironment = await configuredPythonEnvironmentProvenance(testPython);
@@ -242,6 +245,43 @@ export async function run(): Promise<InstalledPerformanceArtifactReceipt | undef
   const receipt = publishInstalledPerformanceFragment(path.join(workspace, "results", `${phase}.json`), fragment);
   recordProgress("comparison:fragment-published");
   return receipt;
+}
+
+export async function prepareComparisonHostPhase(
+  {
+    phase,
+    productKey,
+    runId,
+    workspace,
+    workbench
+  }: {
+    readonly phase: ComparisonPhase;
+    readonly productKey: ProductKey;
+    readonly runId: string;
+    readonly workspace: string;
+    readonly workbench: Workbench;
+  },
+  {
+    runFirstUseSetup = runProductFirstUseSetup,
+    readManifest = readFixtureManifest
+  }: {
+    readonly runFirstUseSetup?: (input: ComparisonFirstUseSetupInput) => Promise<void>;
+    readonly readManifest?: (manifestPath: string) => InstalledPerformanceFixtureManifest;
+  } = {}
+): Promise<ComparisonHostPhasePreparation> {
+  if (phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE || phase === OPEN_WRANGLER_FIRST_USE_SETUP_PHASE) {
+    await runFirstUseSetup({
+      productKey,
+      workbench,
+      source: path.join(workspace, "warmup.csv"),
+      ...(productKey === "data-wrangler" ? { kernelLabel: dataWranglerComparisonKernelLabel(runId) } : {})
+    });
+    return Object.freeze({ kind: "setup-only" });
+  }
+
+  const manifest = readManifest(path.join(workspace, "performance-fixtures.json"));
+  assert.equal(manifest.smoke, true, "The comparison host is restricted to smoke-sized fixtures.");
+  return Object.freeze({ kind: "diagnostic", manifest });
 }
 
 async function runWarmup({

@@ -557,7 +557,7 @@ npm run comparison:feasibility:smoke -- \
 virtual-environment symlink. It must be CPython 3.10 through 3.14 with Pandas, Polars, PyArrow, Jupyter Core, and
 ipykernel installed. Polars generates the deterministic fixture manifest and validates every fixture cell against the
 checked-in row-plus-column rule; the matched editor comparison
-still uses Pandas for both products. `--out` must be absent: the runner reserves the final path with one exclusive no-follow create, then
+still uses Pandas for both products. The `--out` target must be absent: the runner reserves the final path with one exclusive no-follow create, then
 writes, flushes, and validates only through that bound descriptor. It never replaces an existing file and never
 unlinks an output pathname after creation, so an ancestor or pathname rebind cannot turn failed-publication cleanup
 into deletion of the candidate or interpreter. If publication fails after creation, its partial or complete report
@@ -670,7 +670,6 @@ taskset --cpu-list 2-5 npm run comparison:prepare -- \
   --specification /absolute/path/to/study/specification.json \
   --manifest /absolute/path/to/study/manifest.json \
   --preparation /absolute/path/to/study/preparation.json \
-  --smoke-report /absolute/path/to/study/preparation-smoke.json \
   --cpu-list 2-5
 ```
 
@@ -678,9 +677,10 @@ Preparation rehashes every preregistered source and recipe before doing any tria
 neutral driver inside its own retained private directory; callers do not provide a driver directory or VSIX. It also
 inspects the candidate, CPython environment, deterministic fixtures, CPU and power state, and proves that both fixture
 paths resolve to the same exact study volume,
-storage, official editor, and disposable profiles. It creates the study kernelspec, runs public first-use and warm-up
-journeys, and seals separate configured-only and warmed profiles for both products. The supplied fixtures must match a
-fresh generator run byte for byte and pass the full Polars value contract.
+storage, official editor, and disposable profiles. It creates the study kernelspec, runs each product's public
+first-use setup, and seals the resulting configured-only profiles. Separate notebook warm-ups then produce the warmed
+profiles used by the study. Preparation does not run the older CSV/Parquet feasibility diagnostic. The supplied
+fixtures must match a fresh generator run byte for byte and pass the full Polars value contract.
 
 Only after all checks pass does preparation durably publish its journal first. The journal embeds the complete
 specification and authorizes one manifest digest; preparation then publishes that exact specification and derives the

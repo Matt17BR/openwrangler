@@ -858,11 +858,14 @@ export async function revalidateDataWranglerComparisonPreparationReceipt(receipt
   return receipt;
 }
 
-export function createDataWranglerTemplateCapture(studyRoot) {
+export function createDataWranglerConfiguredTemplateCapture(studyRoot) {
   privateDirectory(studyRoot, "Comparison preparation study root");
   const captured = new Map();
   return Object.freeze({
     async capture({ product, kind, userData, extensions, editor, sandboxArgs }) {
+      if (!["open-wrangler", "data-wrangler"].includes(product) || kind !== "configured-only") {
+        fail("Comparison preparation accepts only exact configured-only product templates.");
+      }
       const key = `${product}:${kind}`;
       if (captured.has(key)) fail(`Comparison preparation captured ${key} more than once.`);
       const root = resolve(studyRoot, "templates", product, kind);
@@ -882,8 +885,11 @@ export function createDataWranglerTemplateCapture(studyRoot) {
       captured.set(key, Object.freeze({ product, kind, root, editor, sandboxArgs: Object.freeze([...sandboxArgs]) }));
     },
     values() {
-      if (captured.size !== 4) fail("Comparison preparation did not capture all four profile templates.");
-      return Object.freeze([...captured.values()]);
+      const expected = ["open-wrangler:configured-only", "data-wrangler:configured-only"];
+      if (captured.size !== expected.length || expected.some((key) => !captured.has(key))) {
+        fail("Comparison preparation did not capture both configured-only product templates.");
+      }
+      return Object.freeze(expected.map((key) => captured.get(key)));
     }
   });
 }

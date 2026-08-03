@@ -2,13 +2,13 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   captureDataWranglerPreparationFile,
   captureDataWranglerProfileTree,
   createDataWranglerComparisonPreparationReceipt,
-  createDataWranglerTemplateCapture,
+  createDataWranglerConfiguredTemplateCapture,
   digestDataWranglerComparisonPythonEnvironment,
   probeDataWranglerComparisonPython,
   queryDataWranglerTemplateInventory,
@@ -42,7 +42,10 @@ import {
 import { captureDataWranglerComparisonStudyV2Toolchain } from "./data-wrangler-comparison-cache-controller.mjs";
 import { configureEditorAcceptanceTempRoot, createEditorAcceptanceEnvironment } from "./editor-acceptance.mjs";
 import { PINNED_REMOTE_WORKSPACE_TARGETS } from "./remote-workspace-acquisition.mjs";
-import { runDataWranglerComparison } from "./run-data-wrangler-comparison.mjs";
+import {
+  bootstrapDataWranglerComparisonConfiguredProfiles,
+  COMPARISON_CONFIGURED_PROFILES_PROTOCOL
+} from "./run-data-wrangler-comparison.mjs";
 import { runDataWranglerComparisonStudy } from "./run-data-wrangler-comparison-study.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 import {
@@ -68,8 +71,7 @@ function parseArguments(argv, cwd = process.cwd()) {
     "--parquet",
     "--specification",
     "--manifest",
-    "--preparation",
-    "--smoke-report"
+    "--preparation"
   ];
   const flags = [...pathFlags, "--cpu-list"];
   const usage = `Usage: npm run comparison:prepare -- ${flags.map((flag) => `${flag} <value>`).join(" ")}`;
@@ -303,6 +305,76 @@ function pathExists(path) {
   }
 }
 
+function isCanonicalBootstrapPath(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    isAbsolute(value) &&
+    resolve(value) === value &&
+    !/[\0\r\n]/u.test(value)
+  );
+}
+
+function isStrictBootstrapDescendant(parent, value) {
+  const relativePath = relative(parent, value);
+  return (
+    relativePath.length > 0 &&
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  );
+}
+
+export function validateDataWranglerComparisonConfiguredProfilesBootstrap(bootstrap, candidateSha256) {
+  const profiles = bootstrap?.profiles;
+  const editor = bootstrap?.editor;
+  if (
+    bootstrap?.protocol !== COMPARISON_CONFIGURED_PROFILES_PROTOCOL ||
+    !/^[0-9a-f]{64}$/u.test(candidateSha256 ?? "") ||
+    bootstrap.candidateSha256 !== candidateSha256 ||
+    !isCanonicalBootstrapPath(bootstrap.studyRoot) ||
+    !editor ||
+    editor.name !== "VS Code" ||
+    editor.key !== "vscode" ||
+    editor.sharedDataDir !== true ||
+    !isCanonicalBootstrapPath(editor.executable) ||
+    !isCanonicalBootstrapPath(editor.cli) ||
+    !isStrictBootstrapDescendant(bootstrap.studyRoot, editor.executable) ||
+    !isStrictBootstrapDescendant(bootstrap.studyRoot, editor.cli) ||
+    typeof editor.version !== "string" ||
+    !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(editor.version) ||
+    !Array.isArray(profiles) ||
+    profiles.length !== 2 ||
+    profiles[0]?.product !== "open-wrangler" ||
+    profiles[1]?.product !== "data-wrangler" ||
+    profiles.some(
+      (profile) =>
+        !profile ||
+        profile.kind !== "configured-only" ||
+        profile.configuredPythonProcessObservedDuringSetup !== true ||
+        !isCanonicalBootstrapPath(profile.privateRoot) ||
+        !isCanonicalBootstrapPath(profile.userData) ||
+        !isCanonicalBootstrapPath(profile.extensions) ||
+        !isStrictBootstrapDescendant(bootstrap.studyRoot, profile.privateRoot) ||
+        profile.userData !== resolve(profile.privateRoot, "user") ||
+        profile.extensions !== resolve(profile.privateRoot, "extensions") ||
+        !Array.isArray(profile.sandboxArgs) ||
+        profile.sandboxArgs.some((argument) => typeof argument !== "string" || /[\0\r\n]/u.test(argument)) ||
+        !Array.isArray(profile.installedExtensions) ||
+        !profile.editor ||
+        profile.editor.name !== editor.name ||
+        profile.editor.key !== editor.key ||
+        profile.editor.sharedDataDir !== editor.sharedDataDir ||
+        profile.editor.executable !== editor.executable ||
+        profile.editor.cli !== editor.cli ||
+        profile.editor.version !== editor.version
+    )
+  ) {
+    fail("Comparison preparation configured-profile bootstrap is malformed or mis-correlated.");
+  }
+  return bootstrap;
+}
+
 function planArguments(options) {
   return [
     "plan",
@@ -359,7 +431,7 @@ export async function publishDataWranglerComparisonPreparationTransaction(
 
 export async function prepareDataWranglerComparisonStudy(options, environment = process.env, overrides = {}) {
   const dependencies = {
-    runSmoke: runDataWranglerComparison,
+    bootstrapConfiguredProfiles: bootstrapDataWranglerComparisonConfiguredProfiles,
     queryInventory: queryDataWranglerTemplateInventory,
     captureTree: captureDataWranglerProfileTree,
     candidateIdentity,
@@ -465,37 +537,16 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
     fail("Comparison preparation candidate version does not match the preregistration.");
   }
   const python = dependencies.probePython(options.python);
-  let templateCapture;
-  let studyRoot;
-  let identifiedEditor;
-  await dependencies.runSmoke(
-    { candidate: options.candidate, python: options.python, output: options.smokeReport },
-    environment,
-    {
-      retainPrivateRoot: true,
-      captureTemplate: async (value) => {
-        const root = dirname(value.privateRoot);
-        if (studyRoot === undefined) {
-          studyRoot = root;
-          templateCapture = createDataWranglerTemplateCapture(root);
-        } else if (studyRoot !== root) {
-          fail("Comparison preparation products were not created inside one retained root.");
-        }
-        if (identifiedEditor === undefined) identifiedEditor = value.editor;
-        if (
-          identifiedEditor.executable !== value.editor.executable ||
-          identifiedEditor.cli !== value.editor.cli ||
-          identifiedEditor.version !== value.editor.version
-        )
-          fail("Comparison preparation editor changed between profile templates.");
-        await templateCapture.capture(value);
-      }
-    }
+  const bootstrap = await dependencies.bootstrapConfiguredProfiles(
+    { candidate: options.candidate, python: options.python },
+    environment
   );
-  if (studyRoot === undefined || identifiedEditor === undefined || templateCapture === undefined) {
-    fail("Comparison preparation smoke did not retain its editor and profile templates.");
-  }
-  const smokeTemplates = templateCapture.values();
+  validateDataWranglerComparisonConfiguredProfilesBootstrap(bootstrap, candidate.receipt.sha256);
+  const studyRoot = bootstrap.studyRoot;
+  const identifiedEditor = bootstrap.editor;
+  const templateCapture = createDataWranglerConfiguredTemplateCapture(studyRoot);
+  for (const profile of bootstrap.profiles) await templateCapture.capture(profile);
+  const configuredTemplates = templateCapture.values();
   const profileEnvironment = createEditorAcceptanceEnvironment(environment, {
     OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
     OPEN_WRANGLER_EDITOR_TEMP_ROOT: studyRoot
@@ -503,7 +554,7 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
   configureEditorAcceptanceTempRoot(studyRoot, profileEnvironment);
   const templateTrees = new Map();
   for (const product of ["open-wrangler", "data-wrangler"]) {
-    const template = smokeTemplates.find((entry) => entry.product === product && entry.kind === "configured-only");
+    const template = configuredTemplates.find((entry) => entry.product === product && entry.kind === "configured-only");
     const inventory = await dependencies.queryInventory(template, identifiedEditor, profileEnvironment);
     assertTemplateInventory(inventory, expectedExtensions(specification, candidate.version, product));
     templateTrees.set(`${product}:configured-only`, dependencies.captureTree(template.root).treeSha256);
@@ -600,7 +651,6 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
     fail("Comparison preparation process supervisor changed after preregistration.");
   }
   specification.provenance.ownershipTracker = tracker;
-  const configuredTemplates = smokeTemplates.filter((entry) => entry.kind === "configured-only");
   const warmups = await dependencies.captureWarmups(
     {
       specification,
