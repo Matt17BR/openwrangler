@@ -25,6 +25,7 @@ jobs:
     outputs:
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
       draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
+      internal_tooling_only: ${{ steps.classify.outputs.internal_tooling_only }}
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
       package_only: ${{ steps.classify.outputs.package_only }}
       full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
@@ -64,6 +65,8 @@ jobs:
              needs.classify.outputs.documentation_only != 'false') ||
             (needs.classify.outputs.draft_pull_request != 'true' &&
              needs.classify.outputs.draft_pull_request != 'false') ||
+            (needs.classify.outputs.internal_tooling_only != 'true' &&
+             needs.classify.outputs.internal_tooling_only != 'false') ||
             (needs.classify.outputs.lightweight_only != 'true' &&
              needs.classify.outputs.lightweight_only != 'false') ||
             (needs.classify.outputs.package_only != 'true' &&
@@ -72,18 +75,25 @@ jobs:
              needs.classify.outputs.full_matrix_required != 'false') ||
             (needs.classify.outputs.lightweight_only == 'true' &&
              needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.internal_tooling_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false') ||
             (needs.classify.outputs.lightweight_only == 'false' &&
              (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.internal_tooling_only == 'true' ||
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.documentation_only == 'true' &&
              needs.classify.outputs.package_only == 'true') ||
+            (needs.classify.outputs.internal_tooling_only == 'true' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.package_only == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'true' &&
              (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.internal_tooling_only == 'true' ||
               needs.classify.outputs.package_only == 'true' ||
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'false' &&
              needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.internal_tooling_only == 'false' &&
              needs.classify.outputs.package_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false')
           }}
@@ -133,6 +143,8 @@ jobs:
              needs.classify.outputs.documentation_only != 'false') ||
             (needs.classify.outputs.draft_pull_request != 'true' &&
              needs.classify.outputs.draft_pull_request != 'false') ||
+            (needs.classify.outputs.internal_tooling_only != 'true' &&
+             needs.classify.outputs.internal_tooling_only != 'false') ||
             (needs.classify.outputs.lightweight_only != 'true' &&
              needs.classify.outputs.lightweight_only != 'false') ||
             (needs.classify.outputs.package_only != 'true' &&
@@ -141,18 +153,25 @@ jobs:
              needs.classify.outputs.full_matrix_required != 'false') ||
             (needs.classify.outputs.lightweight_only == 'true' &&
              needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.internal_tooling_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false') ||
             (needs.classify.outputs.lightweight_only == 'false' &&
              (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.internal_tooling_only == 'true' ||
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.documentation_only == 'true' &&
              needs.classify.outputs.package_only == 'true') ||
+            (needs.classify.outputs.internal_tooling_only == 'true' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.package_only == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'true' &&
              (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.internal_tooling_only == 'true' ||
               needs.classify.outputs.package_only == 'true' ||
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'false' &&
              needs.classify.outputs.documentation_only == 'false' &&
+             needs.classify.outputs.internal_tooling_only == 'false' &&
              needs.classify.outputs.package_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false')
           }}

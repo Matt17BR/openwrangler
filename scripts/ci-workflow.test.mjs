@@ -7,6 +7,7 @@ import { loadConfigFromFile } from "vite";
 import {
   classifyCiChange,
   isDocumentationOnlyChangeSet,
+  isInternalToolingOnlyChangeSet,
   isPackageOnlyChangeSet,
   parseChangedPathBuffer,
   parsePullRequestDraft,
@@ -17,6 +18,7 @@ import {
   ALWAYS_REQUIRED_CI_JOBS,
   CONDITIONAL_CI_JOB,
   FULL_MATRIX_CI_JOBS,
+  INTERNAL_TOOLING_CI_JOB,
   OPTIONAL_CI_JOB,
   PACKAGE_CI_JOBS,
   PRODUCT_CI_JOBS,
@@ -40,6 +42,7 @@ const requiredPullRequestWorkflows = [
 const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
   "classify",
   "fast-feedback",
+  "checkout-lifecycle-contracts",
   "contract-tests",
   "visual-accessibility",
   "production-audits",
@@ -61,13 +64,15 @@ const CANONICAL_CI_IF =
   "${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}";
 const FULL_CI_IF =
   "${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
+const INTERNAL_TOOLING_CI_IF =
+  "${{ !cancelled() && (needs.classify.result != 'success' || (needs.classify.outputs.internal_tooling_only == 'true' && needs.classify.outputs.draft_pull_request == 'false')) }}";
 const MATRIX_CONTEXT_IF = "${{ !cancelled() }}";
 const NON_MATRIX_CONTEXT_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}";
 const SUBSTANTIVE_MATRIX_STEP_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}";
 const CLASSIFICATION_GATE_IF =
-  "${{ needs.classify.result != 'success' || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') || (needs.classify.outputs.draft_pull_request != 'true' && needs.classify.outputs.draft_pull_request != 'false') || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.lightweight_only != 'false') || (needs.classify.outputs.package_only != 'true' && needs.classify.outputs.package_only != 'false') || (needs.classify.outputs.full_matrix_required != 'true' && needs.classify.outputs.full_matrix_required != 'false') || (needs.classify.outputs.lightweight_only == 'true' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') || (needs.classify.outputs.lightweight_only == 'false' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.documentation_only == 'true' && needs.classify.outputs.package_only == 'true') || (needs.classify.outputs.full_matrix_required == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'false' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.package_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') }}";
+  "${{ needs.classify.result != 'success' || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') || (needs.classify.outputs.draft_pull_request != 'true' && needs.classify.outputs.draft_pull_request != 'false') || (needs.classify.outputs.internal_tooling_only != 'true' && needs.classify.outputs.internal_tooling_only != 'false') || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.lightweight_only != 'false') || (needs.classify.outputs.package_only != 'true' && needs.classify.outputs.package_only != 'false') || (needs.classify.outputs.full_matrix_required != 'true' && needs.classify.outputs.full_matrix_required != 'false') || (needs.classify.outputs.lightweight_only == 'true' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.internal_tooling_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') || (needs.classify.outputs.lightweight_only == 'false' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.internal_tooling_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.documentation_only == 'true' && needs.classify.outputs.package_only == 'true') || (needs.classify.outputs.internal_tooling_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true')) || (needs.classify.outputs.full_matrix_required == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.internal_tooling_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'false' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.internal_tooling_only == 'false' && needs.classify.outputs.package_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') }}";
 const PROTECTED_PRODUCT_BRANCHES = ["main", "release/1.x"];
 const PULL_REQUEST_ACTIVITY_TYPES = ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"];
 
@@ -527,7 +532,7 @@ test("PR workflows cancel only obsolete pull-request heads", () => {
   }
 });
 
-test("NUL-safe path classification fast-paths only explicit non-packaged documentation", () => {
+test("NUL-safe path classification limits every fast path to explicit files", () => {
   assert.deepEqual(
     parseChangedPathBuffer(Buffer.from("docs/testing.md\0AGENTS.md\0docs/images/über.png\0docs/a\nfile.md\0", "utf8")),
     ["docs/testing.md", "AGENTS.md", "docs/images/über.png", "docs/a\nfile.md"]
@@ -540,6 +545,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   const required = (changedPaths, pullRequestDraft = "false") =>
     requiresReleasedJupyter({ eventName: "pull_request", changedPaths, pullRequestDraft });
   const documentationOnly = (eventName, changedPaths) => isDocumentationOnlyChangeSet({ eventName, changedPaths });
+  const internalToolingOnly = (eventName, changedPaths) => isInternalToolingOnlyChangeSet({ eventName, changedPaths });
   const packageOnly = (eventName, changedPaths) => isPackageOnlyChangeSet({ eventName, changedPaths });
   const allowed = [
     "AGENTS.md",
@@ -558,11 +564,48 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: allowed, pullRequestDraft: "false" }), {
     documentationOnly: true,
     draftPullRequest: false,
+    internalToolingOnly: false,
     lightweightOnly: true,
     packageOnly: false,
     fullMatrixRequired: false,
     releasedJupyterRequired: false
   });
+  const checkoutLifecyclePaths = [
+    "AGENTS.md",
+    "docs/testing.md",
+    "scripts/checkout-lifecycle.mjs",
+    "scripts/checkout-lifecycle.test.mjs"
+  ];
+  assert.equal(internalToolingOnly("pull_request", checkoutLifecyclePaths), true);
+  assert.deepEqual(
+    classifyCiChange({ eventName: "pull_request", changedPaths: checkoutLifecyclePaths, pullRequestDraft: "false" }),
+    {
+      documentationOnly: false,
+      draftPullRequest: false,
+      internalToolingOnly: true,
+      lightweightOnly: true,
+      packageOnly: false,
+      fullMatrixRequired: false,
+      releasedJupyterRequired: false
+    }
+  );
+  assert.deepEqual(
+    classifyCiChange({ eventName: "pull_request", changedPaths: checkoutLifecyclePaths, pullRequestDraft: "true" }),
+    {
+      documentationOnly: false,
+      draftPullRequest: true,
+      internalToolingOnly: true,
+      lightweightOnly: true,
+      packageOnly: false,
+      fullMatrixRequired: false,
+      releasedJupyterRequired: false
+    }
+  );
+  assert.equal(internalToolingOnly("pull_request", ["AGENTS.md", "docs/testing.md"]), false);
+  assert.equal(
+    internalToolingOnly("pull_request", ["scripts/checkout-lifecycle.mjs", "scripts/checkout-lifecycle.test.mjs"]),
+    true
+  );
   const packagedDocuments = ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"];
   assert.equal(packageOnly("pull_request", packagedDocuments), true);
   assert.deepEqual(
@@ -570,6 +613,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     {
       documentationOnly: false,
       draftPullRequest: false,
+      internalToolingOnly: false,
       lightweightOnly: false,
       packageOnly: true,
       fullMatrixRequired: false,
@@ -581,6 +625,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     {
       documentationOnly: false,
       draftPullRequest: true,
+      internalToolingOnly: false,
       lightweightOnly: true,
       packageOnly: true,
       fullMatrixRequired: false,
@@ -595,6 +640,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     "protocol/openwrangler.v2.schema.json",
     "python/openwrangler_runtime/notebook.py",
     "scripts/build-webviews.mjs",
+    "scripts/repository-python-environment.mjs",
     "src/extension/notebooks/jupyterBridge.ts",
     "src/webviews/notebookRenderer.ts",
     "docs/images/acceptance/grid-dark-1920.png",
@@ -613,6 +659,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     "unknown/future-package-surface"
   ]) {
     assert.equal(documentationOnly("pull_request", [path]), false, `${path} must require the complete PR matrix.`);
+    assert.equal(internalToolingOnly("pull_request", [path]), false, `${path} must not select internal-tooling CI.`);
     assert.equal(packageOnly("pull_request", [path]), false, `${path} must not select package-only CI.`);
     assert.equal(required([path]), true, `${path} must require released-Jupyter acceptance.`);
   }
@@ -622,6 +669,38 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     assert.equal(required([path]), false, `${path} must not require released-Jupyter acceptance.`);
   }
   assert.equal(packageOnly("pull_request", ["README.md", "docs/testing.md"]), false);
+  assert.equal(internalToolingOnly("pull_request", ["scripts/checkout-lifecycle.mjs", "README.md"]), false);
+  assert.equal(
+    internalToolingOnly("pull_request", ["scripts/checkout-lifecycle.mjs", "scripts/ci-path-classification.mjs"]),
+    false
+  );
+  assert.equal(
+    internalToolingOnly("pull_request", ["scripts/checkout-lifecycle.mjs", ".github/workflows/ci.yml"]),
+    false
+  );
+  assert.equal(
+    internalToolingOnly("pull_request", ["scripts/checkout-lifecycle.mjs", ".github/workflows/stable-release.yml"]),
+    false
+  );
+  assert.equal(
+    internalToolingOnly("pull_request", ["scripts/checkout-lifecycle.mjs", "src/extension/activate.ts"]),
+    false
+  );
+  for (const mixedPath of [
+    "README.md",
+    ".github/workflows/ci.yml",
+    ".github/workflows/stable-release.yml",
+    "src/extension/activate.ts",
+    "unknown/future-tooling-surface"
+  ]) {
+    const classification = classifyCiChange({
+      eventName: "pull_request",
+      changedPaths: ["scripts/checkout-lifecycle.mjs", mixedPath],
+      pullRequestDraft: "false"
+    });
+    assert.equal(classification.internalToolingOnly, false, `${mixedPath} must leave the tooling fast path.`);
+    assert.equal(classification.fullMatrixRequired, true, `${mixedPath} must require the complete PR matrix.`);
+  }
   assert.equal(packageOnly("pull_request", ["README.md", "src/shared/notebookOutput.ts"]), false);
   assert.equal(documentationOnly("pull_request", ["docs/testing.md", "src/shared/notebookOutput.ts"]), false);
   assert.equal(required(["docs/testing.md", "src/shared/notebookOutput.ts"]), true);
@@ -634,6 +713,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     {
       documentationOnly: false,
       draftPullRequest: true,
+      internalToolingOnly: false,
       lightweightOnly: true,
       packageOnly: false,
       fullMatrixRequired: false,
@@ -642,6 +722,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   );
   assert.equal(required(["src/shared/notebookOutput.ts"], "true"), false);
   assert.equal(documentationOnly("pull_request", []), false, "an empty PR diff must fail closed");
+  assert.equal(internalToolingOnly("pull_request", []), false, "an empty PR diff must fail closed");
   assert.equal(packageOnly("pull_request", []), false, "an empty PR diff must fail closed");
   assert.equal(required([]), true, "an empty PR diff must fail closed into acceptance");
   for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
@@ -654,6 +735,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     assert.deepEqual(classifyCiChange({ eventName, changedPaths: [], pullRequestDraft: "" }), {
       documentationOnly: false,
       draftPullRequest: false,
+      internalToolingOnly: false,
       lightweightOnly: false,
       packageOnly: false,
       fullMatrixRequired: true,
@@ -661,8 +743,10 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     });
   }
   assert.equal(documentationOnly("pull_request", [undefined]), false);
+  assert.equal(internalToolingOnly("pull_request", [undefined]), false);
   assert.equal(documentationOnly("pull_request", ["docs/testing.md", 42]), false);
   assert.throws(() => documentationOnly("pull_request", undefined), /changedPaths must be an array/u);
+  assert.throws(() => internalToolingOnly("pull_request", undefined), /changedPaths must be an array/u);
   assert.throws(() => packageOnly("pull_request", undefined), /changedPaths must be an array/u);
   assert.equal(requiresReleasedJupyter({ eventName: "push", changedPaths: ["src/extension/activate.ts"] }), false);
   assert.throws(() => requiresReleasedJupyter({ eventName: "schedule", changedPaths: [] }), /Unsupported CI event/u);
@@ -712,6 +796,7 @@ test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX"
   assert.equal(classification?.name, "CI change classification");
   assert.equal(classification?.outputs?.documentation_only, "${{ steps.classify.outputs.documentation_only }}");
   assert.equal(classification?.outputs?.draft_pull_request, "${{ steps.classify.outputs.draft_pull_request }}");
+  assert.equal(classification?.outputs?.internal_tooling_only, "${{ steps.classify.outputs.internal_tooling_only }}");
   assert.equal(classification?.outputs?.lightweight_only, "${{ steps.classify.outputs.lightweight_only }}");
   assert.equal(classification?.outputs?.package_only, "${{ steps.classify.outputs.package_only }}");
   assert.equal(classification?.outputs?.full_matrix_required, "${{ steps.classify.outputs.full_matrix_required }}");
@@ -1018,6 +1103,7 @@ test("non-matrix PR tiers preserve direct contexts while substantive changes and
     assert.equal(job?.["timeout-minutes"], 5);
     assert.equal(job?.outputs?.documentation_only, "${{ steps.classify.outputs.documentation_only }}");
     assert.equal(job?.outputs?.draft_pull_request, "${{ steps.classify.outputs.draft_pull_request }}");
+    assert.equal(job?.outputs?.internal_tooling_only, "${{ steps.classify.outputs.internal_tooling_only }}");
     assert.equal(job?.outputs?.lightweight_only, "${{ steps.classify.outputs.lightweight_only }}");
     assert.equal(job?.outputs?.package_only, "${{ steps.classify.outputs.package_only }}");
     assert.equal(job?.outputs?.full_matrix_required, "${{ steps.classify.outputs.full_matrix_required }}");
@@ -1049,6 +1135,16 @@ test("non-matrix PR tiers preserve direct contexts while substantive changes and
   assert.equal(packagedMedia?.run, "npm run test:scripts:media");
   assert.equal(ci?.jobs?.["fast-feedback"]?.needs, undefined);
   assert.equal(ci?.jobs?.["fast-feedback"]?.if, undefined);
+  const internalTooling = ci?.jobs?.[INTERNAL_TOOLING_CI_JOB];
+  assert.equal(internalTooling?.name, "Checkout lifecycle contracts");
+  assert.equal(internalTooling?.needs, "classify");
+  assert.equal(normalizedCommand(internalTooling?.if), INTERNAL_TOOLING_CI_IF);
+  assert.equal(internalTooling?.["runs-on"], "ubuntu-latest");
+  assert.equal(internalTooling?.["timeout-minutes"], 15);
+  assert.deepEqual(
+    internalTooling?.steps?.filter((step) => step?.run !== undefined).map((step) => step.run),
+    ["node --test scripts/checkout-lifecycle.test.mjs"]
+  );
 
   for (const [relativePath, classifierName, expectedJobs] of [
     [
@@ -1127,6 +1223,7 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
   assert.equal(resultStep?.env?.RELEASED_JUPYTER_REQUIRED, "${{ needs.classify.outputs.released_jupyter_required }}");
   assert.equal(resultStep?.env?.DOCUMENTATION_ONLY, "${{ needs.classify.outputs.documentation_only }}");
   assert.equal(resultStep?.env?.DRAFT_PULL_REQUEST, "${{ needs.classify.outputs.draft_pull_request }}");
+  assert.equal(resultStep?.env?.INTERNAL_TOOLING_ONLY, "${{ needs.classify.outputs.internal_tooling_only }}");
   assert.equal(resultStep?.env?.LIGHTWEIGHT_ONLY, "${{ needs.classify.outputs.lightweight_only }}");
   assert.equal(resultStep?.env?.PACKAGE_ONLY, "${{ needs.classify.outputs.package_only }}");
   assert.equal(resultStep?.env?.FULL_MATRIX_REQUIRED, "${{ needs.classify.outputs.full_matrix_required }}");
@@ -1135,23 +1232,49 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
 });
 
 test("required CI result validation rejects every absent or non-success blocking result", () => {
-  const successes = Object.fromEntries(REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]));
+  const successes = Object.fromEntries([
+    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    [INTERNAL_TOOLING_CI_JOB, "skipped"],
+    ...PRODUCT_CI_JOBS.map((jobId) => [jobId, "success"])
+  ]);
   const documentationResults = Object.fromEntries([
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    [INTERNAL_TOOLING_CI_JOB, "skipped"],
+    ...PRODUCT_CI_JOBS.map((jobId) => [jobId, "skipped"])
+  ]);
+  const internalToolingResults = Object.fromEntries([
+    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    [INTERNAL_TOOLING_CI_JOB, "success"],
     ...PRODUCT_CI_JOBS.map((jobId) => [jobId, "skipped"])
   ]);
   const packageResults = Object.fromEntries([
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    [INTERNAL_TOOLING_CI_JOB, "skipped"],
     ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
   ]);
   const validateResults = (configuration) => {
-    const normalized = { draftPullRequest: false, packageOnly: false, ...configuration };
-    normalized.lightweightOnly ??= normalized.documentationOnly || normalized.draftPullRequest;
+    const normalized = { draftPullRequest: false, internalToolingOnly: false, packageOnly: false, ...configuration };
+    normalized.lightweightOnly ??=
+      normalized.documentationOnly || normalized.internalToolingOnly || normalized.draftPullRequest;
     normalized.fullMatrixRequired ??=
-      !normalized.documentationOnly && !normalized.packageOnly && !normalized.draftPullRequest;
+      !normalized.documentationOnly &&
+      !normalized.internalToolingOnly &&
+      !normalized.packageOnly &&
+      !normalized.draftPullRequest;
     return requireCiResults(normalized);
   };
+  assert.doesNotThrow(() =>
+    validateResults({
+      requiredResults: internalToolingResults,
+      documentationOnly: false,
+      internalToolingOnly: true,
+      releasedJupyterResult: "skipped",
+      releasedJupyterRequired: false,
+      remoteResult: "skipped",
+      remoteRequired: false
+    })
+  );
   assert.doesNotThrow(() =>
     validateResults({
       requiredResults: successes,
@@ -1213,6 +1336,20 @@ test("required CI result validation rejects every absent or non-success blocking
         requiredResults: documentationResults,
         documentationOnly: false,
         draftPullRequest: true,
+        internalToolingOnly: true,
+        releasedJupyterResult: "skipped",
+        releasedJupyterRequired: false,
+        remoteResult: "skipped",
+        remoteRequired: false
+      }),
+    /mergeable validation is deferred until ready_for_review/u
+  );
+  assert.throws(
+    () =>
+      validateResults({
+        requiredResults: documentationResults,
+        documentationOnly: false,
+        draftPullRequest: true,
         packageOnly: true,
         releasedJupyterResult: "skipped",
         releasedJupyterRequired: false,
@@ -1247,7 +1384,14 @@ test("required CI result validation rejects every absent or non-success blocking
       documentationOnly: true,
       packageOnly: true,
       fullMatrixRequired: false,
-      message: /documentation-only and package-only classifiers are mutually exclusive/u
+      message: /classifiers are mutually exclusive/u
+    },
+    {
+      documentationOnly: false,
+      internalToolingOnly: true,
+      packageOnly: true,
+      fullMatrixRequired: false,
+      message: /classifiers are mutually exclusive/u
     },
     {
       documentationOnly: false,
@@ -1267,6 +1411,7 @@ test("required CI result validation rejects every absent or non-success blocking
         validateResults({
           requiredResults: documentationResults,
           documentationOnly: configuration.documentationOnly,
+          internalToolingOnly: configuration.internalToolingOnly ?? false,
           packageOnly: configuration.packageOnly,
           fullMatrixRequired: configuration.fullMatrixRequired,
           releasedJupyterResult: "skipped",
@@ -1278,7 +1423,7 @@ test("required CI result validation rejects every absent or non-success blocking
     );
   }
 
-  for (const jobId of REQUIRED_CI_JOBS) {
+  for (const jobId of [...ALWAYS_REQUIRED_CI_JOBS, ...PRODUCT_CI_JOBS]) {
     for (const result of [undefined, "failure", "cancelled", "skipped"]) {
       const candidate = { ...successes };
       if (result === undefined) delete candidate[jobId];
@@ -1296,6 +1441,43 @@ test("required CI result validation rejects every absent or non-success blocking
         new RegExp(`${jobId}=${result ?? "missing"}`, "u")
       );
     }
+  }
+
+  for (const result of [undefined, "success", "failure", "cancelled"]) {
+    const candidate = { ...successes };
+    if (result === undefined) delete candidate[INTERNAL_TOOLING_CI_JOB];
+    else candidate[INTERNAL_TOOLING_CI_JOB] = result;
+    assert.throws(
+      () =>
+        validateResults({
+          requiredResults: candidate,
+          documentationOnly: false,
+          releasedJupyterResult: "skipped",
+          releasedJupyterRequired: false,
+          remoteResult: "skipped",
+          remoteRequired: false
+        }),
+      new RegExp(`${INTERNAL_TOOLING_CI_JOB}=${result ?? "missing"} \\(expected skipped\\)`, "u")
+    );
+  }
+
+  for (const result of [undefined, "skipped", "failure", "cancelled"]) {
+    const candidate = { ...internalToolingResults };
+    if (result === undefined) delete candidate[INTERNAL_TOOLING_CI_JOB];
+    else candidate[INTERNAL_TOOLING_CI_JOB] = result;
+    assert.throws(
+      () =>
+        validateResults({
+          requiredResults: candidate,
+          documentationOnly: false,
+          internalToolingOnly: true,
+          releasedJupyterResult: "skipped",
+          releasedJupyterRequired: false,
+          remoteResult: "skipped",
+          remoteRequired: false
+        }),
+      new RegExp(`${INTERNAL_TOOLING_CI_JOB}=${result ?? "missing"} \\(expected success\\)`, "u")
+    );
   }
 
   for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
