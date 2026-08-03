@@ -5,13 +5,42 @@ import json
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
+from importlib import import_module
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, Protocol, TypedDict, cast
 
 import polars as pl
 import pytest
 
-from benchmarks.fixture_contract import FixtureSpec, assert_fixture_contract
+
+class _FixtureSpec(Protocol):
+    kind: Literal["csv", "parquet"]
+    rows: int
+    columns: int
+
+    @property
+    def names(self) -> list[str]: ...
+
+    @property
+    def sentinel_rows(self) -> tuple[int, ...]: ...
+
+
+class _FixtureSpecFactory(Protocol):
+    def __call__(self, kind: Literal["csv", "parquet"], rows: int, columns: int) -> _FixtureSpec: ...
+
+
+benchmark_directory = Path(__file__).parents[1] / "benchmarks"
+sys.path.insert(0, str(benchmark_directory))
+try:
+    fixture_contract = import_module("fixture_contract")
+    FixtureSpec = cast(_FixtureSpecFactory, fixture_contract.FixtureSpec)
+    assert_fixture_contract = cast(
+        Callable[[Path, _FixtureSpec], None],
+        fixture_contract.assert_fixture_contract,
+    )
+finally:
+    sys.path.remove(str(benchmark_directory))
 
 
 class _FixtureEvidence(TypedDict):
