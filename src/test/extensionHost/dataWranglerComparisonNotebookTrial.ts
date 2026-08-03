@@ -46,6 +46,11 @@ export const DATA_WRANGLER_STUDY_INLINE_ACTION_WINDOW_MS = 45_000;
 export const DATA_WRANGLER_STUDY_WORKBENCH_WINDOW_MS = 60_000;
 export const DATA_WRANGLER_STUDY_PROFILE_WINDOW_MS = 135_000;
 export const DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-ui-capture-phase-v1";
+export const DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-warmup-phase-v1";
+export const DATA_WRANGLER_PUBLIC_WARMUP_PHASES = Object.freeze({
+  "open-wrangler": "comparison-study-open-wrangler-warmup",
+  "data-wrangler": "comparison-study-data-wrangler-warmup"
+});
 export const DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASES = Object.freeze({
   capability: "comparison-study-data-wrangler-capability",
   control: "comparison-study-neither-product-control"
@@ -328,6 +333,25 @@ export interface DataWranglerPublicUiCapturePhaseReceipt {
   readonly output: PublicUiCaptureOutput;
   readonly actions: readonly PublicUiCaptureAction[];
   readonly conclusion: "available" | "capability-timeout" | "neither-product-control";
+}
+
+export interface DataWranglerPublicWarmupPhaseReceipt {
+  readonly protocol: typeof DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL;
+  readonly product: ProductKey;
+  readonly untimed: true;
+  readonly locale: typeof DATA_WRANGLER_STUDY_REQUIRED_LOCALE;
+  readonly editorVersion: string;
+  readonly study: NotebookTrialDefinition & {
+    readonly pythonImplementation: "CPython";
+    readonly pythonVersion: string;
+  };
+  readonly milestones: NotebookTrialMilestones;
+  readonly profiles: {
+    readonly expectedColumnCount: number;
+    readonly completedColumnCount: number;
+    readonly canonicalOrder: true;
+  };
+  readonly cleanup: { readonly closeStatus: "succeeded"; readonly afterVerification: "matched" };
 }
 
 export interface NotebookTrialFlowDependencies {
@@ -2633,8 +2657,12 @@ interface CapturedStudyNotebook {
   assertExact(checkpoint: string): void;
 }
 
-export async function run(): Promise<DataWranglerNotebookTrialPhaseReceipt | DataWranglerPublicUiCapturePhaseReceipt> {
+export async function run(): Promise<
+  DataWranglerNotebookTrialPhaseReceipt | DataWranglerPublicUiCapturePhaseReceipt | DataWranglerPublicWarmupPhaseReceipt
+> {
   const phase = requiredEnvironment("OPEN_WRANGLER_TEST_PHASE");
+  const warmupProduct = publicWarmupProductFromPhase(phase);
+  if (warmupProduct !== undefined) return captureDataWranglerPublicWarmup(warmupProduct);
   const captureKind = publicUiCaptureKindFromPhase(phase);
   if (captureKind !== undefined) return captureDataWranglerPublicUi(captureKind);
   const product = studyProductFromPhase(phase);
@@ -2696,6 +2724,69 @@ export async function run(): Promise<DataWranglerNotebookTrialPhaseReceipt | Dat
   assert.ok(result, "Notebook trial completed without its strict phase receipt.");
   recordProgress("comparison-study:phase-receipt");
   return result;
+}
+
+function publicWarmupProductFromPhase(phase: string): ProductKey | undefined {
+  return (Object.entries(DATA_WRANGLER_PUBLIC_WARMUP_PHASES) as [ProductKey, string][]).find(
+    ([, expected]) => phase === expected
+  )?.[0];
+}
+
+async function captureDataWranglerPublicWarmup(product: ProductKey): Promise<DataWranglerPublicWarmupPhaseReceipt> {
+  assert.equal(vscode.env.language, DATA_WRANGLER_STUDY_REQUIRED_LOCALE);
+  const controlBridge = createDataWranglerStudyControlBridgeFromEnvironment();
+  let dependencies: (NotebookTrialFlowDependencies & { dispose(): Promise<void> }) | undefined;
+  let result: DataWranglerNotebookTrialPhaseReceipt | undefined;
+  let primaryError: unknown;
+  let cleanupError: unknown;
+  try {
+    recordProgress("comparison-study:public-warmup-connect");
+    const { page } = await connectToEditorWorkbench();
+    await waitForWorkbenchReady(page);
+    const captured = await captureStudyNotebook();
+    dependencies = createRealNotebookTrialDependencies(product, page, captured, "available", controlBridge);
+    result = await executeDataWranglerNotebookTrialFlow(dependencies);
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    if (dependencies !== undefined) {
+      try {
+        await dependencies.dispose();
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+    try {
+      controlBridge.close();
+    } catch (error) {
+      cleanupError = cleanupError === undefined ? error : new AggregateError([cleanupError, error]);
+    }
+  }
+  if (primaryError !== undefined && cleanupError !== undefined) throw new AggregateError([primaryError, cleanupError]);
+  if (primaryError !== undefined) throw primaryError;
+  if (cleanupError !== undefined) throw cleanupError;
+  assert.ok(result?.status === "success" && result.profiles, "The public warm-up did not complete every journey.");
+  assert.equal(result.profiles.completedColumnCount, result.profiles.expectedColumnCount);
+  assert.equal(result.finalization.closeStatus, "succeeded");
+  assert.equal(result.finalization.afterVerification, "matched");
+  const receipt: DataWranglerPublicWarmupPhaseReceipt = {
+    protocol: DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL,
+    product,
+    untimed: true,
+    locale: DATA_WRANGLER_STUDY_REQUIRED_LOCALE,
+    editorVersion: vscode.version,
+    study: result.study,
+    milestones: result.milestones,
+    profiles: {
+      expectedColumnCount: result.profiles.expectedColumnCount,
+      completedColumnCount: result.profiles.completedColumnCount,
+      canonicalOrder: true
+    },
+    cleanup: { closeStatus: "succeeded", afterVerification: "matched" }
+  };
+  assertPathFreeJson(receipt);
+  assert.ok(Buffer.byteLength(JSON.stringify(receipt), "utf8") <= MAX_RECEIPT_BYTES);
+  return receipt;
 }
 
 function publicUiCaptureKindFromPhase(phase: string): PublicUiCaptureKind | undefined {

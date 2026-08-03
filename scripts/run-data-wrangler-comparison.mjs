@@ -79,6 +79,7 @@ export const COMPARISON_TEST_PHASES = Object.freeze({
   "data-wrangler": "comparison-data-wrangler"
 });
 export const DATA_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-data-wrangler-setup";
+export const OPEN_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-open-wrangler-setup";
 export const COMPARISON_COMMON_EXTENSION_LOCK = Object.freeze([
   "ms-python.debugpy@2026.6.0",
   PINNED_PYTHON_EXTENSION_ID,
@@ -609,16 +610,15 @@ export function createComparisonProductEditorPhasePlan(input) {
     jupyterEnvironment,
     reportsFragment: true
   });
-  let plan;
+  if (
+    typeof firstUseSetupResultPath !== "string" ||
+    !isAbsolute(firstUseSetupResultPath) ||
+    /[\0\r\n]/u.test(firstUseSetupResultPath) ||
+    firstUseSetupResultPath === diagnosticResultPath
+  ) {
+    throw new TypeError("Comparison phase plan requires one distinct absolute setup result path.");
+  }
   if (productKey === "data-wrangler") {
-    if (
-      typeof firstUseSetupResultPath !== "string" ||
-      !isAbsolute(firstUseSetupResultPath) ||
-      /[\0\r\n]/u.test(firstUseSetupResultPath) ||
-      firstUseSetupResultPath === diagnosticResultPath
-    ) {
-      throw new TypeError("Data Wrangler comparison phase plan requires one distinct absolute setup result path.");
-    }
     exactKeys(
       jupyterEnvironment,
       ["dataDir", "runtimeDir", "configDir", "path"],
@@ -629,23 +629,20 @@ export function createComparisonProductEditorPhasePlan(input) {
         throw new TypeError("Data Wrangler comparison phase plan requires absolute private Jupyter paths.");
       }
     }
-    plan = Object.freeze([
-      Object.freeze({
-        kind: "first-use-setup",
-        phase: DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
-        resultPath: firstUseSetupResultPath,
-        userData,
-        jupyterEnvironment,
-        reportsFragment: false
-      }),
-      diagnostic
-    ]);
-  } else {
-    if (firstUseSetupResultPath !== null || jupyterEnvironment !== null) {
-      throw new TypeError("Open Wrangler comparison phase plan must not include Data Wrangler setup state.");
-    }
-    plan = Object.freeze([diagnostic]);
+  } else if (jupyterEnvironment !== null) {
+    throw new TypeError("Open Wrangler comparison setup must not include Data Wrangler Jupyter state.");
   }
+  const plan = Object.freeze([
+    Object.freeze({
+      kind: "first-use-setup",
+      phase: productKey === "data-wrangler" ? DATA_WRANGLER_FIRST_USE_SETUP_PHASE : OPEN_WRANGLER_FIRST_USE_SETUP_PHASE,
+      resultPath: firstUseSetupResultPath,
+      userData,
+      jupyterEnvironment,
+      reportsFragment: false
+    }),
+    diagnostic
+  ]);
   comparisonProductEditorPhasePlans.add(plan);
   return plan;
 }
@@ -744,19 +741,6 @@ export async function runComparisonProduct({
     }
   }
 
-  if (productKey === "open-wrangler") {
-    await captureTemplate({
-      product: productKey,
-      kind: "configured-only",
-      privateRoot: profile,
-      userData,
-      extensions,
-      editor: identifiedEditor,
-      sandboxArgs,
-      environment: editorEnvironment
-    });
-  }
-
   const runId = randomUUID();
   const phase = COMPARISON_TEST_PHASES[productKey];
   const resultPath = resolve(profile, `${phase}-result.json`);
@@ -776,8 +760,10 @@ export async function runComparisonProduct({
     productKey,
     diagnosticPhase: phase,
     diagnosticResultPath: resultPath,
-    firstUseSetupResultPath:
-      productKey === "data-wrangler" ? resolve(profile, `${DATA_WRANGLER_FIRST_USE_SETUP_PHASE}-result.json`) : null,
+    firstUseSetupResultPath: resolve(
+      profile,
+      `${productKey === "data-wrangler" ? DATA_WRANGLER_FIRST_USE_SETUP_PHASE : OPEN_WRANGLER_FIRST_USE_SETUP_PHASE}-result.json`
+    ),
     userData,
     jupyterEnvironment: dataWranglerKernel?.jupyterEnvironment ?? null
   });
@@ -813,7 +799,7 @@ export async function runComparisonProduct({
         phasePlan,
         runPhase: runObservedPhase,
         afterPhase: async (launch) => {
-          if (productKey === "data-wrangler" && launch.kind === "first-use-setup") {
+          if (launch.kind === "first-use-setup") {
             await captureTemplate({
               product: productKey,
               kind: "configured-only",

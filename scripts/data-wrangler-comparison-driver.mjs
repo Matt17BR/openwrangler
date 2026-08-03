@@ -1695,7 +1695,7 @@ function validateExpectedTemplate(expectedTemplate) {
 }
 
 export async function runDataWranglerComparisonNeutralDriverPhase(
-  { product, receipt, expectedDriver, expectedExtensions, expectedTemplate, profile, editorPhaseOptions },
+  { product, receipt, expectedDriver, expectedExtensions, expectedTemplate, profile, editorPhaseOptions, prevalidated },
   {
     captureDriverReceipt = createDataWranglerComparisonDriverStudyReceipt,
     installDriver = installDataWranglerComparisonDriver,
@@ -1735,19 +1735,30 @@ export async function runDataWranglerComparisonNeutralDriverPhase(
     product,
     expectedExtensions
   });
-  const driverBeforeInstall = captureDriverReceipt(receipt);
-  if (canonicalJson(driverBeforeInstall) !== canonicalJson(expectedDriver)) {
-    fail("The neutral driver does not match the immutable study manifest before installation.");
+  let driverBefore;
+  let before;
+  if (prevalidated === undefined) {
+    const driverBeforeInstall = captureDriverReceipt(receipt);
+    if (canonicalJson(driverBeforeInstall) !== canonicalJson(expectedDriver)) {
+      fail("The neutral driver does not match the immutable study manifest before installation.");
+    }
+    await installDriver({ receipt, profile });
+    driverBefore = captureDriverReceipt(receipt);
+    before = assertDataWranglerComparisonArmInventory(await readInventory({ profile, stage: "before" }), {
+      product,
+      expectedExtensions: expectedInventory
+    });
+  } else {
+    exactKeys(prevalidated, ["driver", "installedExtensions"], "Prevalidated neutral-driver state");
+    driverBefore = prevalidated.driver;
+    before = assertDataWranglerComparisonArmInventory(prevalidated.installedExtensions, {
+      product,
+      expectedExtensions: expectedInventory
+    });
   }
-  await installDriver({ receipt, profile });
-  const driverBefore = captureDriverReceipt(receipt);
   if (canonicalJson(driverBefore) !== canonicalJson(expectedDriver)) {
     fail("The installed neutral driver does not match the immutable study manifest.");
   }
-  const before = assertDataWranglerComparisonArmInventory(await readInventory({ profile, stage: "before" }), {
-    product,
-    expectedExtensions: expectedInventory
-  });
   let phaseResult;
   let phaseError;
   try {

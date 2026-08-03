@@ -13,12 +13,19 @@ import {
 import { capturePreparedDataWranglerPublicUi } from "./data-wrangler-comparison-public-capture.mjs";
 import {
   NEITHER_PRODUCT_CONTROL_RECEIPT_KIND,
+  PUBLIC_UI_BASE_EXTENSION_INVENTORY,
   PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS,
-  PUBLIC_UI_COMMON_EXTENSION_INVENTORY,
   createExpectedPublicUiExtensionInventory
 } from "./data-wrangler-public-ui-receipts.mjs";
 import { digestStudyValue } from "./data-wrangler-comparison-study.mjs";
-import { runPreparedDataWranglerComparisonEntry } from "./run-data-wrangler-comparison-prepared.mjs";
+import {
+  DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
+  createDataWranglerComparisonMeasuredInventory
+} from "./data-wrangler-comparison-inventory.mjs";
+import {
+  runPreparedDataWranglerComparisonEntry,
+  runUnrecordedPreparedDataWranglerComparisonDiagnostic
+} from "./run-data-wrangler-comparison-prepared.mjs";
 import { parseDataWranglerComparisonPreparationArguments } from "./run-data-wrangler-comparison-preparation.mjs";
 import {
   parseDataWranglerComparisonStudyArguments,
@@ -271,9 +278,7 @@ test("preparation captures real capability and control receipts from isolated di
       editor: publicEditor,
       fixtures,
       provenance: {
-        commonExtensions: PUBLIC_UI_COMMON_EXTENSION_INVENTORY.filter(
-          (entry) => entry.extensionId !== "openwrangler-study.notebook-comparison-driver"
-        ),
+        commonExtensions: PUBLIC_UI_BASE_EXTENSION_INVENTORY,
         comparisonDriver: { exact: "driver" }
       }
     };
@@ -286,14 +291,20 @@ test("preparation captures real capability and control receipts from isolated di
       "22222222-2222-4222-8222-222222222222",
       "33333333-3333-4333-8333-333333333333"
     ];
-    const sourceReceipt = {
-      sha256: "e".repeat(64),
-      filesystemIdentity: { device: "8", inode: "9", sizeBytes: 1024, mtimeNs: "1000000000" }
-    };
+    const sourceReceiptForFixture = (fixture) => ({
+      sha256: fixture.sha256,
+      filesystemIdentity: {
+        device: "8",
+        inode: fixture.format === "csv" ? "9" : "10",
+        sizeBytes: 1024,
+        mtimeNs: "1000000000"
+      }
+    });
     let captureIndex = 0;
     let controlInventoryRead = 0;
     const clones = [];
     const rawPhase = (kind, captureId, fixture) => {
+      const sourceReceipt = sourceReceiptForFixture(fixture);
       const start = 8_000_000 + captureIndex * 100_000;
       const times =
         kind === "capability"
@@ -349,8 +360,8 @@ test("preparation captures real capability and control receipts from isolated di
             semanticClass: "dataframe",
             rowCount: fixture.rows,
             columnCount: fixture.columns,
-            schema: [],
-            sentinels: []
+            schema: structuredClone(fixture.schema),
+            sentinels: structuredClone(fixture.sentinels)
           }
         },
         observation: {
@@ -424,7 +435,10 @@ test("preparation captures real capability and control receipts from isolated di
         createProfile(value) {
           return { ...value };
         },
-        createSourceCopy: () => ({ copyPath: resolve(root, "source-copy"), copyReceipt: sourceReceipt }),
+        createSourceCopy: () => {
+          const fixture = fixtures[(captureIndex - 1) % fixtures.length];
+          return { copyPath: resolve(root, "source-copy"), copyReceipt: sourceReceiptForFixture(fixture) };
+        },
         cleanupSourceCopy() {},
         writeNotebook() {},
         async runNeutralPhase(input) {
@@ -469,10 +483,10 @@ test("public run-next derives the pending entry, clone, profile, paths, and reti
       candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
       baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
       editor: { version: "1.106.0" },
-      python: { executableSha256: "b".repeat(64) },
+      python: { executableSha256: "b".repeat(64), environmentSha256: "f".repeat(64) },
       fixtures: [{ id: "parquet", format: "parquet" }],
       provenance: {
-        commonExtensions: [{ extensionId: "ms-python.python", version: "2026.4.0" }],
+        commonExtensions: DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
         templates: [
           {
             product: "open-wrangler",
@@ -537,8 +551,15 @@ test("public run-next derives the pending entry, clone, profile, paths, and reti
           return { authentic: "profile" };
         },
         recoverDriver: () => ({ authentic: "driver" }),
+        async installDriver() {},
+        captureDriver: () => manifest.provenance.comparisonDriver,
+        capturePythonEnvironment: () => ({ stateSha256: manifest.python.environmentSha256 }),
         captureGateProvenance: () => ({ authentic: "gate" }),
-        readInventory: async () => [],
+        readInventory: async () =>
+          createDataWranglerComparisonMeasuredInventory({
+            extensionId: manifest.candidate.extensionId,
+            version: manifest.candidate.version
+          }),
         async recordTrial(input) {
           events.push(["record", input.preparedTrial.scheduleEntryId]);
           assert.equal(input.preparedTrial.sourcePath, preparation.fixtures[1].path);
@@ -575,10 +596,10 @@ test("public run-next retains its exact clone when measured execution is uncerta
       candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
       baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
       editor: { version: "1.106.0" },
-      python: { executableSha256: "b".repeat(64) },
+      python: { executableSha256: "b".repeat(64), environmentSha256: "f".repeat(64) },
       fixtures: [{ id: "csv", format: "csv" }],
       provenance: {
-        commonExtensions: [],
+        commonExtensions: DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
         templates: [
           {
             product: "data-wrangler",
@@ -636,7 +657,15 @@ test("public run-next retains its exact clone when measured execution is uncerta
           configureTempRoot() {},
           createProfile: () => ({ authentic: "profile" }),
           recoverDriver: () => ({ authentic: "driver" }),
+          async installDriver() {},
+          captureDriver: () => manifest.provenance.comparisonDriver,
+          capturePythonEnvironment: () => ({ stateSha256: manifest.python.environmentSha256 }),
           captureGateProvenance: () => ({ authentic: "gate" }),
+          readInventory: async () =>
+            createDataWranglerComparisonMeasuredInventory({
+              extensionId: manifest.baseline.extensionId,
+              version: manifest.baseline.version
+            }),
           async recordTrial() {
             throw new Error("measured boundary uncertain");
           },
@@ -652,6 +681,105 @@ test("public run-next retains its exact clone when measured execution is uncerta
     );
     assert.equal(retired, false);
     assert.equal(existsSync(cloneRoot), true);
+  });
+});
+
+test("the prepared diagnostic removes its private journal only after complete success", async () => {
+  await withDirectory(async (root) => {
+    const entry = { id: "warm-polars-csv-r01-dw", product: "data-wrangler", engine: "polars", format: "csv" };
+    const manifest = { schedule: [entry] };
+    const preparation = { studyRoot: root };
+    let scratchRoot;
+    const result = await runUnrecordedPreparedDataWranglerComparisonDiagnostic(
+      { manifestPath: resolve(root, "manifest.json"), preparationPath: resolve(root, "preparation.json") },
+      {},
+      {
+        readManifest: () => manifest,
+        loadPreparation: () => preparation,
+        revalidatePreparation: async () => preparation,
+        writeManifest() {},
+        writePreparation() {},
+        async runEntry(options) {
+          scratchRoot = resolve(options.manifestPath, "..");
+          assert.equal(options.retireOnlyAfterSuccessfulTrial, true);
+          return {
+            status: "recorded",
+            receipt: null,
+            cleanup: { status: "retired", treeEmpty: true },
+            output: {
+              outcome: { status: "success", actionStarted: true },
+              resourceObservation: {
+                valid: true,
+                intervalMs: 200,
+                missedSamples: 0,
+                samples: [10, 20, 30, 40, 50].map((totalPssBytes) => ({ totalPssBytes }))
+              },
+              engineEvidence: {
+                sourceEngine: "polars",
+                workbenchEngine: "pandas",
+                workbenchVerification: "public-ui-label"
+              },
+              cleanupProof: { status: "complete", treeEmpty: true },
+              sourceCopy: { cleanup: { removed: true } },
+              trialProvenance: { revalidatedAfterCleanup: true }
+            }
+          };
+        }
+      }
+    );
+    assert.equal(existsSync(scratchRoot), false);
+    assert.equal(result.cleanupVerified, true);
+    assert.equal(result.maximumObservedSampledPssBytes, 50);
+    assert.deepEqual(result.dataWranglerBackend, {
+      sourceEngine: "polars",
+      workbenchEngine: "pandas",
+      workbenchVerification: "public-ui-label"
+    });
+    assert.equal(result.retainedFailureJournal, false);
+  });
+});
+
+test("an incomplete prepared diagnostic retains its private journal without exposing its path", async () => {
+  await withDirectory(async (root) => {
+    const entry = { id: "warm-pandas-parquet-r01-ow", product: "open-wrangler", engine: "pandas", format: "parquet" };
+    const manifest = { schedule: [entry] };
+    let scratchRoot;
+    const result = await runUnrecordedPreparedDataWranglerComparisonDiagnostic(
+      { manifestPath: resolve(root, "manifest.json"), preparationPath: resolve(root, "preparation.json") },
+      {},
+      {
+        readManifest: () => manifest,
+        loadPreparation: () => ({ studyRoot: root }),
+        revalidatePreparation: async () => {},
+        writeManifest() {},
+        writePreparation() {},
+        async runEntry(options) {
+          scratchRoot = resolve(options.manifestPath, "..");
+          return {
+            status: "recorded",
+            receipt: null,
+            cleanup: null,
+            output: {
+              outcome: { status: "product-failure", actionStarted: true },
+              resourceObservation: {
+                valid: true,
+                intervalMs: 200,
+                missedSamples: 0,
+                samples: [{ totalPssBytes: 10 }]
+              },
+              cleanupProof: { status: "complete", treeEmpty: true },
+              sourceCopy: { cleanup: { removed: true } },
+              trialProvenance: { revalidatedAfterCleanup: true }
+            }
+          };
+        }
+      }
+    );
+    assert.equal(existsSync(scratchRoot), true);
+    assert.equal(result.cleanupVerified, false);
+    assert.equal(result.retainedFailureJournal.retained, true);
+    assert.equal(JSON.stringify(result).includes(scratchRoot), false);
+    assert.equal(result.dataWranglerBackend, "not-applicable");
   });
 });
 

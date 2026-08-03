@@ -169,9 +169,18 @@ function validatePreparedTrial(value) {
   exactKeys(
     neutralDriver,
     ["receipt", "expectedExtensions", "expectedTemplate", "profile"],
-    "Prepared neutral-driver options"
+    "Prepared neutral-driver options",
+    ["prevalidated"]
   );
   requireRecord(neutralDriver.receipt, "Prepared neutral-driver receipt");
+  if (neutralDriver.prevalidated !== undefined) {
+    const prevalidatedDriver = requireRecord(neutralDriver.prevalidated, "Prepared prevalidated neutral-driver state");
+    exactKeys(prevalidatedDriver, ["driver", "installedExtensions"], "Prepared prevalidated neutral-driver state");
+    requireRecord(prevalidatedDriver.driver, "Prepared prevalidated driver receipt");
+    if (!Array.isArray(prevalidatedDriver.installedExtensions)) {
+      fail("Prepared prevalidated extension inventory must be an array.");
+    }
+  }
   if (!Array.isArray(neutralDriver.expectedExtensions)) {
     fail("Prepared neutral-driver extension inventory must be an array.");
   }
@@ -907,10 +916,6 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
           }
           const phase = PHASE_BY_PRODUCT[context.scheduleEntry.product];
           if (phase === undefined) fail("Prepared comparison trial product is invalid.");
-          const environmentGate = await runGate(
-            { expectedProvenance: structuredClone(input.expectedProvenance), maximumWaitMs: 300_000 },
-            gateDependencies
-          );
           const fragmentIdentity = createStudyFragmentIdentity({
             manifest: context.manifest,
             scheduleEntry: context.scheduleEntry,
@@ -919,20 +924,6 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
             recordedAtUtc: now().toISOString()
           });
           fragmentIdentity.fragmentId = fragmentIdFactory();
-          if (environmentGate?.passed !== true) {
-            return validateFragment(
-              gateFailureFragment({
-                manifest: context.manifest,
-                scheduleEntry: context.scheduleEntry,
-                executionIndex: context.executionIndex,
-                environmentGate,
-                fragmentId: fragmentIdentity.fragmentId,
-                recordedAtUtc: fragmentIdentity.recordedAtUtc
-              }),
-              context.manifest
-            );
-          }
-
           const fixture = fixtureForEntry(context.manifest, context.scheduleEntry);
           const sourceCopy = createSourceCopy({
             canonicalPath: prepared.sourcePath,
@@ -978,6 +969,24 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
                 notebookReceipt.mode !== "0600"
               ) {
                 fail("Comparison notebook writer did not retain its exact private publication receipt.");
+              }
+
+              const environmentGate = await runGate(
+                { expectedProvenance: structuredClone(input.expectedProvenance), maximumWaitMs: 300_000 },
+                gateDependencies
+              );
+              if (environmentGate?.passed !== true) {
+                return validateFragment(
+                  gateFailureFragment({
+                    manifest: context.manifest,
+                    scheduleEntry: context.scheduleEntry,
+                    executionIndex: context.executionIndex,
+                    environmentGate,
+                    fragmentId: fragmentIdentity.fragmentId,
+                    recordedAtUtc: fragmentIdentity.recordedAtUtc
+                  }),
+                  context.manifest
+                );
               }
 
               let provenanceBefore;
@@ -1067,6 +1076,7 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
                             expectedExtensions: structuredClone(prepared.neutralDriver.expectedExtensions),
                             expectedTemplate: structuredClone(prepared.neutralDriver.expectedTemplate),
                             profile: prepared.neutralDriver.profile,
+                            prevalidated: structuredClone(prepared.neutralDriver.prevalidated),
                             editorPhaseOptions: phaseOptions
                           },
                           {
@@ -1083,14 +1093,12 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
                               capturedDriverBefore = structuredClone(
                                 requireRecord(dependencies.driverBefore, "Neutral driver before measured launch")
                               );
-                              if (context.scheduleEntry.kind === "warm") {
-                                const prepareWarmSourceCacheBeforeLaunch =
-                                  editorRunnerDependencies.prepareWarmSourceCacheBeforeLaunch;
-                                if (typeof prepareWarmSourceCacheBeforeLaunch !== "function") {
-                                  fail("Warm measured trial omitted its executor-owned cache preparation hook.");
-                                }
-                                await prepareWarmSourceCacheBeforeLaunch();
+                              const prepareSourceCacheBeforeLaunch =
+                                editorRunnerDependencies.prepareSourceCacheBeforeLaunch;
+                              if (typeof prepareSourceCacheBeforeLaunch !== "function") {
+                                fail("Measured trial omitted its executor-owned pre-launch cache preparation hook.");
                               }
+                              await prepareSourceCacheBeforeLaunch();
                               provenanceBefore = structuredClone(
                                 requireRecord(
                                   await captureTrialProvenanceBefore({

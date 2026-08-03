@@ -139,12 +139,11 @@ function createHarness({
         events.push("create-supervisor");
         return adapter;
       },
-      async runEditorPhase(options, { spawnProcess, prepareWarmSourceCacheBeforeLaunch }) {
+      async runEditorPhase(options, { spawnProcess, prepareSourceCacheBeforeLaunch }) {
         assert.equal(options.runId, RUN_ID);
         assert.equal(options.phase, PHASE);
-        if (prepareWarmSourceCacheBeforeLaunch !== undefined) {
-          await prepareWarmSourceCacheBeforeLaunch();
-        }
+        assert.equal(typeof prepareSourceCacheBeforeLaunch, "function");
+        await prepareSourceCacheBeforeLaunch();
         spawnProcess("code", [], {});
         events.push("editor-started");
         return runEditorPhase
@@ -271,7 +270,7 @@ test("one warm trial keeps launch, action, process, notebook, control, and clean
   );
 });
 
-test("cold cache preparation stays behind the controller's source-verification fence", async () => {
+test("cold cache preparation is retained before spawn and re-used behind the source-verification fence", async () => {
   const harness = createHarness({
     runEditorPhase: async ({ events }) => {
       events.push("child-timeout-finished");
@@ -295,9 +294,10 @@ test("cold cache preparation stays behind the controller's source-verification f
   assert.equal(result.cacheProof.requestedState, "cold");
   assert.deepEqual(
     harness.events.filter((event) => event.startsWith("cache:")),
-    ["cache:cold:cold-cache-evicted"]
+    ["cache:cold"]
   );
-  assert.ok(harness.events.indexOf("source-verified") < harness.events.indexOf("cache:cold:cold-cache-evicted"));
+  assert.ok(harness.events.indexOf("cache:cold") < harness.events.indexOf("spawn"));
+  assert.ok(harness.events.indexOf("spawn") < harness.events.indexOf("source-verified"));
   assert.equal(
     harness.events.some((event) => event.startsWith("signal:")),
     false
@@ -784,14 +784,14 @@ test("warm cache failure happens after adapter setup but before any process laun
 
 test("a warm editor runner cannot bypass the fresh cache-proof hook", async () => {
   const harness = createHarness();
-  harness.dependencies.runEditorPhase = async (_options, { spawnProcess, prepareWarmSourceCacheBeforeLaunch }) => {
-    assert.equal(typeof prepareWarmSourceCacheBeforeLaunch, "function");
+  harness.dependencies.runEditorPhase = async (_options, { spawnProcess, prepareSourceCacheBeforeLaunch }) => {
+    assert.equal(typeof prepareSourceCacheBeforeLaunch, "function");
     spawnProcess("code", [], {});
   };
 
   await assert.rejects(
     executeDataWranglerComparisonTrial(input(), harness.dependencies),
-    /refused to launch before its fresh warm-cache proof/u
+    /refused to launch before its fresh source-cache proof/u
   );
   assert.deepEqual(harness.events, ["create-supervisor"]);
 });

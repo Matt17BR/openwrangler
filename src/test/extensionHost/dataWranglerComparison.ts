@@ -29,6 +29,7 @@ const PHASES = Object.freeze({
   "comparison-data-wrangler": "data-wrangler"
 } as const);
 const DATA_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-data-wrangler-setup" as const;
+const OPEN_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-open-wrangler-setup" as const;
 const ACTIONS = Object.freeze({
   "open-wrangler": "Open in Open Wrangler",
   "data-wrangler": "Open in Data Wrangler"
@@ -50,7 +51,8 @@ const COMPARISON_RUNTIME_DIAGNOSTIC_ACCESSIBLE_NAME =
   /(?:python|kernel|runtime|interpreter|environment|jupyter|conda|venv|open wrangler comparison)/iu;
 
 type DiagnosticComparisonPhase = keyof typeof PHASES;
-type ComparisonPhase = DiagnosticComparisonPhase | typeof DATA_WRANGLER_FIRST_USE_SETUP_PHASE;
+type ComparisonPhase =
+  DiagnosticComparisonPhase | typeof DATA_WRANGLER_FIRST_USE_SETUP_PHASE | typeof OPEN_WRANGLER_FIRST_USE_SETUP_PHASE;
 type ProductKey = (typeof PHASES)[DiagnosticComparisonPhase];
 type FixtureFormat = "csv" | "parquet";
 type ComparisonRuntimeRole = "button" | "combobox" | "menuitem" | "option" | "radio" | "treeitem";
@@ -162,11 +164,12 @@ export async function run(): Promise<InstalledPerformanceArtifactReceipt | undef
   const workbench = await connectToEditorWorkbench();
   await waitForWorkbenchReady(workbench.page);
 
-  if (phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE) {
-    await runDataWranglerFirstUseSetup({
+  if (phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE || phase === OPEN_WRANGLER_FIRST_USE_SETUP_PHASE) {
+    await runProductFirstUseSetup({
+      productKey,
       workbench,
       source: path.join(workspace, "warmup.csv"),
-      kernelLabel: dataWranglerComparisonKernelLabel(runId)
+      ...(productKey === "data-wrangler" ? { kernelLabel: dataWranglerComparisonKernelLabel(runId) } : {})
     });
     return undefined;
   }
@@ -265,28 +268,30 @@ async function runWarmup({
   assert.deepEqual(readFileSync(source), expectedBytes, "The deterministic warm-up source changed during launch.");
 }
 
-async function runDataWranglerFirstUseSetup({
+async function runProductFirstUseSetup({
+  productKey,
   workbench,
   source,
   kernelLabel
 }: {
+  productKey: ProductKey;
   workbench: Workbench;
   source: string;
-  kernelLabel: string;
+  kernelLabel?: string;
 }): Promise<void> {
   let setupError: unknown;
   let closeError: unknown;
   try {
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     await waitForNoEditorTabs();
-    recordProgress("comparison:data-wrangler-setup:start");
+    recordProgress(`comparison:${productKey}-setup:start`);
     await runWarmup({
-      productKey: "data-wrangler",
+      productKey,
       workbench,
       source,
       firstUseKernelLabel: kernelLabel
     });
-    recordProgress("comparison:data-wrangler-setup:grid-ready");
+    recordProgress(`comparison:${productKey}-setup:grid-ready`);
   } catch (error) {
     setupError = error;
   } finally {
@@ -300,12 +305,12 @@ async function runDataWranglerFirstUseSetup({
   if (setupError !== undefined && closeError !== undefined) {
     throw new AggregateError(
       [setupError, closeError],
-      "Data Wrangler first-use setup failed and its editor tabs could not close."
+      `${productKey} first-use setup failed and its editor tabs could not close.`
     );
   }
   if (setupError !== undefined) throw setupError;
   if (closeError !== undefined) throw closeError;
-  recordProgress("comparison:data-wrangler-setup:closed");
+  recordProgress(`comparison:${productKey}-setup:closed`);
 }
 
 async function runFixtureDiagnostic({
@@ -1331,14 +1336,18 @@ function tabInputUri(input: unknown): vscode.Uri | undefined {
 
 function comparisonPhase(value: string): ComparisonPhase {
   assert.ok(
-    Object.hasOwn(PHASES, value) || value === DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
-    "The comparison phase must identify exactly one product or the Data Wrangler first-use setup."
+    Object.hasOwn(PHASES, value) ||
+      value === DATA_WRANGLER_FIRST_USE_SETUP_PHASE ||
+      value === OPEN_WRANGLER_FIRST_USE_SETUP_PHASE,
+    "The comparison phase must identify exactly one product or first-use setup."
   );
   return value as ComparisonPhase;
 }
 
 function comparisonProduct(phase: ComparisonPhase): ProductKey {
-  return phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE ? "data-wrangler" : PHASES[phase];
+  if (phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE) return "data-wrangler";
+  if (phase === OPEN_WRANGLER_FIRST_USE_SETUP_PHASE) return "open-wrangler";
+  return PHASES[phase];
 }
 
 function soleFileWorkspace(): string {

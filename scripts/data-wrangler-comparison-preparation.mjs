@@ -11,7 +11,6 @@ import {
   mkdtempSync,
   openSync,
   readdirSync,
-  readFileSync,
   readSync,
   realpathSync,
   rmSync,
@@ -19,12 +18,18 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { recoverDataWranglerComparisonDriver } from "./data-wrangler-comparison-driver.mjs";
+import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
+import { assertDataWranglerPublicUiManifestEntryMatchesPhase } from "./data-wrangler-comparison-public-phase-receipt.mjs";
 import {
   canonicalStudyJson,
   digestStudyValue,
-  readDataWranglerStudyManifestPublication,
-  writeDataWranglerStudyJsonExclusive
+  readDataWranglerStudyManifestPublication
 } from "./data-wrangler-comparison-study.mjs";
+import {
+  digestDurableJsonValue,
+  publishDurableStudyJsonExclusive,
+  recoverDurableStudyJsonPublication
+} from "./durable-study-json.mjs";
 import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
@@ -40,6 +45,8 @@ const MAX_TREE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_RELATIVE_PATH_BYTES = 512;
 const MAX_TREE_DEPTH = 24;
 const READ_BUFFER_BYTES = 1024 * 1024;
+const MAX_PREPARATION_JSON_BYTES = 32 * 1024 * 1024;
+const MAX_KERNELSPEC_BYTES = 64 * 1024;
 const REQUIRED_PACKAGES = Object.freeze(["pandas", "polars", "pyarrow", "jupyter_core", "ipykernel"]);
 
 function fail(message) {
@@ -96,6 +103,107 @@ function fileIdentity(metadata) {
     sizeBytes: Number(metadata.size),
     mtimeNs: metadata.mtimeNs.toString()
   });
+}
+
+export function revalidateDataWranglerPreparationFileIdentity(receipt, label) {
+  if (!isRecord(receipt) || typeof receipt.path !== "string" || !isRecord(receipt.filesystemIdentity)) {
+    fail(`${label} receipt is invalid.`);
+  }
+  const metadata = lstatSync(receipt.path, { bigint: true });
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    !ownerMatches(metadata) ||
+    canonicalStudyJson(fileIdentity(metadata)) !== canonicalStudyJson(receipt.filesystemIdentity)
+  ) {
+    fail(`${label} changed before the measured spawn.`);
+  }
+  return receipt;
+}
+
+function assertBoundedPreparationJsonFile(metadata, maximumBytes, label) {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    !ownerMatches(metadata) ||
+    metadata.size < 1n ||
+    metadata.size > BigInt(maximumBytes)
+  ) {
+    fail(`${label} must be one owned, singly linked regular file within its byte bound.`);
+  }
+}
+
+export function readBoundedDataWranglerPreparationJson(
+  path,
+  label,
+  maximumBytes,
+  { afterOpen = () => undefined } = {}
+) {
+  canonicalAbsolutePath(path, label);
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > MAX_PREPARATION_JSON_BYTES) {
+    fail(`${label} byte bound is invalid.`);
+  }
+  if (typeof afterOpen !== "function") fail(`${label} read hook must be callable.`);
+  const parent = dirname(path);
+  if (realpathSync(parent) !== parent) fail(`${label} parent must not traverse a symbolic link.`);
+  const parentBefore = lstatSync(parent, { bigint: true });
+  if (!parentBefore.isDirectory() || parentBefore.isSymbolicLink() || !ownerMatches(parentBefore)) {
+    fail(`${label} parent must be one owned directory.`);
+  }
+  let parentDescriptor;
+  let descriptor;
+  try {
+    parentDescriptor = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0));
+    const parentOpened = fstatSync(parentDescriptor, { bigint: true });
+    if (parentOpened.dev !== parentBefore.dev || parentOpened.ino !== parentBefore.ino) {
+      fail(`${label} parent changed while it opened.`);
+    }
+    const anchoredPath = `/proc/self/fd/${parentDescriptor}/${basename(path)}`;
+    const before = lstatSync(anchoredPath, { bigint: true });
+    assertBoundedPreparationJsonFile(before, maximumBytes, label);
+    descriptor = openSync(anchoredPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(descriptor, { bigint: true });
+    assertBoundedPreparationJsonFile(opened, maximumBytes, label);
+    if (!sameMetadata(before, opened)) fail(`${label} changed while it opened.`);
+    afterOpen({ path, parentDescriptor, descriptor });
+    const bytes = Buffer.alloc(Number(opened.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, null);
+      if (count === 0) fail(`${label} ended before its declared size.`);
+      offset += count;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    const anchoredAfter = lstatSync(anchoredPath, { bigint: true });
+    const namedParentAfter = lstatSync(parent, { bigint: true });
+    if (
+      !sameMetadata(opened, after) ||
+      !sameMetadata(after, anchoredAfter) ||
+      namedParentAfter.dev !== parentOpened.dev ||
+      namedParentAfter.ino !== parentOpened.ino
+    ) {
+      fail(`${label} or its parent changed while it was read.`);
+    }
+    let value;
+    try {
+      value = JSON.parse(bytes.toString("utf8"));
+    } catch {
+      fail(`${label} is not valid bounded JSON.`);
+    }
+    return Object.freeze({
+      value,
+      receipt: Object.freeze({
+        path,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        filesystemIdentity: fileIdentity(opened)
+      })
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (parentDescriptor !== undefined) closeSync(parentDescriptor);
+  }
 }
 
 export function captureDataWranglerPreparationFile(path, label, { executable = false } = {}) {
@@ -308,7 +416,7 @@ function expectedProductExtensions(manifest, product) {
     product === "open-wrangler"
       ? { extensionId: manifest.candidate.extensionId, version: manifest.candidate.version }
       : { extensionId: manifest.baseline.extensionId, version: manifest.baseline.version };
-  return [...manifest.provenance.commonExtensions.map((entry) => ({ ...entry })), productExtension];
+  return createDataWranglerComparisonTemplateInventory(productExtension);
 }
 
 function assertTemplateInventory(actual, expected) {
@@ -322,8 +430,11 @@ function assertTemplateInventory(actual, expected) {
 }
 
 function verifyKernelSpec(path, pythonPath, manifest) {
-  const file = captureDataWranglerPreparationFile(path, "Comparison preparation kernelspec");
-  const value = JSON.parse(readFileSync(path, "utf8"));
+  const { value, receipt: file } = readBoundedDataWranglerPreparationJson(
+    path,
+    "Comparison preparation kernelspec",
+    MAX_KERNELSPEC_BYTES
+  );
   if (
     !isRecord(value) ||
     !Array.isArray(value.argv) ||
@@ -404,7 +515,7 @@ function validatePreparationReceipt(value) {
   return value;
 }
 
-function normalizePublicUiCaptureBindings(manifest, bindings) {
+function normalizePublicUiCaptureBindings(manifest, bindings, kernel) {
   if (!Array.isArray(bindings) || bindings.length !== 3) {
     fail("Comparison preparation requires two public capability captures and one neither-product control.");
   }
@@ -429,6 +540,7 @@ function normalizePublicUiCaptureBindings(manifest, bindings) {
       binding.kind === "control"
         ? manifest.provenance.controlProfile
         : manifest.provenance.capabilities.find((entry) => entry.fixtureId === binding.fixtureId);
+    const fixture = manifest.fixtures.find((entry) => entry.id === binding.fixtureId);
     if (
       !["capability", "control"].includes(binding.kind) ||
       typeof binding.fixtureId !== "string" ||
@@ -441,11 +553,22 @@ function normalizePublicUiCaptureBindings(manifest, bindings) {
       binding.templateTreeSha256 !== dataWranglerTemplate?.configuredOnlyReceiptSha256 ||
       !SHA256.test(binding.phaseReceiptSha256) ||
       binding.phaseReceiptSha256 !== digestStudyValue(binding.phaseReceipt) ||
+      fixture === undefined ||
       manifestEntry?.fixtureId !== binding.fixtureId ||
       manifestEntry?.context?.captureId !== binding.captureId
     ) {
       fail("Comparison public-UI capture binding does not match its manifest editor, template, fixture, and receipt.");
     }
+    assertDataWranglerPublicUiManifestEntryMatchesPhase(manifestEntry, {
+      kind: binding.kind,
+      fixtureId: binding.fixtureId,
+      phaseReceipt: binding.phaseReceipt,
+      context: manifestEntry.context,
+      editor: manifest.editor,
+      fixture,
+      kernel: { name: kernel.name, displayName: kernel.displayName },
+      python: { implementation: manifest.python.implementation, version: manifest.python.version }
+    });
     return Object.freeze({ ...binding });
   });
   if (
@@ -497,10 +620,6 @@ export async function createDataWranglerComparisonPreparationReceipt(
     editor.installationRoot,
     "Comparison preparation editor installation"
   );
-  const python = captureDataWranglerPreparationFile(pythonPath, "Comparison preparation Python", { executable: true });
-  if (python.sha256 !== manifest.python.executableSha256) {
-    fail("Comparison preparation Python does not match the manifest.");
-  }
   const cacheController = captureDataWranglerPreparationFile(
     cacheControllerPath,
     "Comparison preparation cache controller"
@@ -524,6 +643,21 @@ export async function createDataWranglerComparisonPreparationReceipt(
     return Object.freeze({ id: fixture.id, format: fixture.format, ...receipt });
   });
   const kernel = verifyKernelSpec(kernelspecPath, pythonPath, manifest);
+  const python = captureDataWranglerComparisonPythonEnvironment({
+    pythonPath,
+    kernelspecPath,
+    jupyterEnvironment: kernel.jupyterEnvironment
+  });
+  if (
+    python.sha256 !== manifest.python.executableSha256 ||
+    python.probe.implementation !== manifest.python.implementation ||
+    python.probe.version !== manifest.python.version ||
+    canonicalStudyJson(python.probe.packages) !== canonicalStudyJson(manifest.python.packages) ||
+    python.kernelspec.sha256 !== manifest.python.kernel.kernelspecSha256 ||
+    python.stateSha256 !== manifest.python.environmentSha256
+  ) {
+    fail("Comparison preparation Python, packages, or Jupyter kernel does not match the manifest.");
+  }
   const environment = createEditorAcceptanceEnvironment(process.env, {
     OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
     OPEN_WRANGLER_EDITOR_TEMP_ROOT: studyRoot
@@ -552,7 +686,7 @@ export async function createDataWranglerComparisonPreparationReceipt(
       );
     }
   }
-  const captureBindings = normalizePublicUiCaptureBindings(manifest, publicUiCaptures);
+  const captureBindings = normalizePublicUiCaptureBindings(manifest, publicUiCaptures, kernel);
   const receipt = Object.freeze({
     protocol: DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL,
     manifestPath,
@@ -567,8 +701,10 @@ export async function createDataWranglerComparisonPreparationReceipt(
       installationTreeSha256: editorInstallation.treeSha256,
       executablePath: editor.executable,
       executableSha256: editorExecutable.sha256,
+      executableFilesystemIdentity: editorExecutable.filesystemIdentity,
       cliPath: editor.cli,
-      cliSha256: editorCli.sha256
+      cliSha256: editorCli.sha256,
+      cliFilesystemIdentity: editorCli.filesystemIdentity
     }),
     python,
     cacheController,
@@ -729,25 +865,30 @@ export function retireDataWranglerComparisonTemplateClone(clone) {
 
 export function writeDataWranglerComparisonPreparationReceipt(path, receipt) {
   validatePreparationReceipt(receipt);
-  return writeDataWranglerStudyJsonExclusive(path, receipt);
+  const sha256 = digestDurableJsonValue(receipt);
+  const recovered = recoverDurableStudyJsonPublication(path, sha256);
+  if (recovered.status !== "absent") return Object.freeze({ path: resolve(path), sha256, status: recovered.status });
+  const publication = publishDurableStudyJsonExclusive(path, receipt);
+  return Object.freeze({ path: resolve(path), sha256, status: publication.status });
 }
 
 export function loadDataWranglerComparisonPreparationReceipt(path) {
-  const value = JSON.parse(readFileSync(path, "utf8"));
+  const { value } = readBoundedDataWranglerPreparationJson(
+    resolve(path),
+    "Comparison preparation receipt",
+    MAX_PREPARATION_JSON_BYTES
+  );
   return validatePreparationReceipt(value);
 }
 
 export function probeDataWranglerComparisonPython(pythonPath) {
-  captureDataWranglerPreparationFile(pythonPath, "Comparison preparation Python", { executable: true });
   const source = [
     "import hashlib, importlib, json, platform, sys",
     `names = ${JSON.stringify(REQUIRED_PACKAGES)}`,
     "versions = {name: importlib.import_module(name).__version__ for name in names}",
     "print(json.dumps({'implementation': platform.python_implementation(), 'version': platform.python_version(), 'packages': versions}, sort_keys=True))"
   ].join("\n");
-  const value = JSON.parse(
-    execFileSync(pythonPath, ["-I", "-c", source], { encoding: "utf8", maxBuffer: 64 * 1024, timeout: 30_000 })
-  );
+  const value = JSON.parse(executeIdentityPinnedPreparationInterpreter(pythonPath, ["-I", "-c", source]));
   if (
     value.implementation !== "CPython" ||
     typeof value.version !== "string" ||
@@ -760,4 +901,99 @@ export function probeDataWranglerComparisonPython(pythonPath) {
     version: value.version,
     packages: Object.freeze(REQUIRED_PACKAGES.map((name) => Object.freeze({ name, version: value.packages[name] })))
   });
+}
+
+export function captureDataWranglerComparisonPythonEnvironment({ pythonPath, kernelspecPath, jupyterEnvironment }) {
+  const interpreter = captureDataWranglerPreparationFile(pythonPath, "Comparison preparation Python", {
+    executable: true
+  });
+  const probe = probeDataWranglerComparisonPython(pythonPath);
+  const kernelspec = readBoundedDataWranglerPreparationJson(
+    kernelspecPath,
+    "Comparison preparation kernelspec",
+    MAX_KERNELSPEC_BYTES
+  ).receipt;
+  const jupyter = Object.entries(jupyterEnvironment)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([name, root]) => {
+      if (!["configDir", "dataDir", "path", "runtimeDir"].includes(name)) {
+        fail("Comparison preparation Jupyter environment has an unknown directory.");
+      }
+      return Object.freeze({ name, ...captureDataWranglerProfileTree(root, `Comparison Jupyter ${name}`) });
+    });
+  if (jupyter.length !== 4) fail("Comparison preparation Jupyter environment is incomplete.");
+  const stateSha256 = digestDataWranglerComparisonPythonEnvironment({
+    implementation: probe.implementation,
+    version: probe.version,
+    executableSha256: interpreter.sha256,
+    packages: probe.packages,
+    kernelspecSha256: kernelspec.sha256,
+    jupyter
+  });
+  return Object.freeze({
+    ...interpreter,
+    probe,
+    kernelspec: Object.freeze({ path: kernelspec.path, sha256: kernelspec.sha256 }),
+    jupyter: Object.freeze(jupyter),
+    stateSha256
+  });
+}
+
+export function digestDataWranglerComparisonPythonEnvironment({
+  implementation,
+  version,
+  executableSha256,
+  packages,
+  kernelspecSha256,
+  jupyter
+}) {
+  return digestStudyValue({
+    implementation,
+    version,
+    executableSha256,
+    packages,
+    kernelspecSha256,
+    jupyter: jupyter.map(({ name, treeSha256 }) => ({ name, treeSha256 }))
+  });
+}
+
+export function executeIdentityPinnedPreparationInterpreter(path, args) {
+  canonicalAbsolutePath(path, "Comparison preparation interpreter");
+  if (!Array.isArray(args) || args.some((entry) => typeof entry !== "string" || /[\0\r\n]/u.test(entry))) {
+    fail("Comparison preparation interpreter arguments are invalid.");
+  }
+  let descriptor;
+  try {
+    const before = lstatSync(path, { bigint: true });
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      before.nlink !== 1n ||
+      !ownerMatches(before) ||
+      (before.mode & 0o111n) === 0n
+    ) {
+      fail("Comparison preparation interpreter must be one owned, singly linked executable regular file.");
+    }
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (!sameMetadata(before, opened)) fail("Comparison preparation interpreter changed while it opened.");
+    const output = execFileSync("/proc/self/fd/3", args, {
+      argv0: path,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024,
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", "pipe", descriptor]
+    });
+    const after = fstatSync(descriptor, { bigint: true });
+    const namedAfter = lstatSync(path, { bigint: true });
+    if (!sameMetadata(opened, after) || !sameMetadata(after, namedAfter)) {
+      fail("Comparison preparation interpreter changed while it executed.");
+    }
+    if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > 64 * 1024) {
+      fail("Comparison preparation interpreter output is absent or oversized.");
+    }
+    return output;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }

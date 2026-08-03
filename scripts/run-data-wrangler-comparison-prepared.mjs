@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
+import { createDataWranglerComparisonMeasuredInventory } from "./data-wrangler-comparison-inventory.mjs";
 import {
   assertDataWranglerComparisonArmInventory,
+  createDataWranglerComparisonDriverStudyReceipt,
   createDataWranglerComparisonDriverProfile,
+  installDataWranglerComparisonDriver,
   recoverDataWranglerComparisonDriver
 } from "./data-wrangler-comparison-driver.mjs";
 import { recordOnePreparedDataWranglerComparisonStudyTrial } from "./data-wrangler-comparison-live-trial.mjs";
@@ -17,10 +19,13 @@ import {
   writeDataWranglerStudyJsonExclusive
 } from "./data-wrangler-comparison-study.mjs";
 import {
+  captureDataWranglerComparisonPythonEnvironment,
   cloneDataWranglerComparisonTemplate,
   loadDataWranglerComparisonPreparationReceipt,
   revalidateDataWranglerComparisonPreparationReceipt,
-  retireDataWranglerComparisonTemplateClone
+  revalidateDataWranglerPreparationFileIdentity,
+  retireDataWranglerComparisonTemplateClone,
+  writeDataWranglerComparisonPreparationReceipt
 } from "./data-wrangler-comparison-preparation.mjs";
 import {
   configureEditorAcceptanceTempRoot,
@@ -43,16 +48,12 @@ function sameValue(left, right) {
   return canonicalStudyJson(left) === canonicalStudyJson(right);
 }
 
-function expectedProductExtensions(manifest, product, { driver = true } = {}) {
+function expectedProductExtensions(manifest, product) {
   const measured =
     product === "open-wrangler"
       ? { extensionId: manifest.candidate.extensionId, version: manifest.candidate.version }
       : { extensionId: manifest.baseline.extensionId, version: manifest.baseline.version };
-  return [
-    ...manifest.provenance.commonExtensions.map((entry) => ({ ...entry })),
-    measured,
-    ...(driver ? [{ ...DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY }] : [])
-  ];
+  return createDataWranglerComparisonMeasuredInventory(measured);
 }
 
 function parseInventory(stdout) {
@@ -127,16 +128,18 @@ function createPreparedProvenance({
   preparation,
   profile,
   readProfileInventory,
-  revalidatePreparation
+  revalidatePreparation,
+  prevalidatedDriver,
+  prevalidatedExtensions,
+  pythonBefore,
+  capturePythonEnvironment,
+  minimalRevalidate
 }) {
   let beforeSnapshot;
   return Object.freeze({
     async captureTrialProvenanceBefore(value) {
-      await revalidatePreparation(preparation);
-      const extensions = assertDataWranglerComparisonArmInventory(await readProfileInventory(profile), {
-        product: entry.product,
-        expectedExtensions: expectedProductExtensions(manifest, entry.product)
-      });
+      minimalRevalidate();
+      const extensions = structuredClone(prevalidatedExtensions);
       if (
         !sameValue(value.manifest, manifest) ||
         value.scheduleEntry.id !== entry.id ||
@@ -146,8 +149,9 @@ function createPreparedProvenance({
       }
       beforeSnapshot = Object.freeze({
         extensions: structuredClone(extensions),
-        driver: structuredClone(value.driverBefore),
-        sourceCopy: structuredClone(value.sourceCopy)
+        driver: structuredClone(prevalidatedDriver),
+        sourceCopy: structuredClone(value.sourceCopy),
+        python: structuredClone(pythonBefore)
       });
       return Object.freeze({
         protocol: DATA_WRANGLER_COMPARISON_PREPARED_RUN_PROTOCOL,
@@ -184,6 +188,17 @@ function createPreparedProvenance({
       const proofs = value.rawEvidence?.processProofs;
       if (!isRecord(proofs?.editorRoot)) fail("Prepared comparison omitted its editor process proof.");
       const configuredKernel = proofs.configuredKernel;
+      const pythonAfter = capturePythonEnvironment({
+        pythonPath: preparation.python.path,
+        kernelspecPath: preparation.selectedKernel.path,
+        jupyterEnvironment: preparation.selectedKernel.jupyterEnvironment
+      });
+      if (
+        pythonAfter.stateSha256 !== manifest.python.environmentSha256 ||
+        beforeSnapshot.python.stateSha256 !== pythonAfter.stateSha256
+      ) {
+        fail("Prepared comparison Python packages or Jupyter state changed during the trial.");
+      }
       return Object.freeze({
         candidateBefore: {
           sha256: manifest.candidate.sha256,
@@ -201,12 +216,12 @@ function createPreparedProvenance({
         driverAfter: structuredClone(value.driverAfter),
         pythonBefore: {
           executableSha256: manifest.python.executableSha256,
-          environmentSha256: manifest.python.environmentSha256,
+          environmentSha256: beforeSnapshot.python.stateSha256,
           kernelspecSha256: manifest.python.kernel.kernelspecSha256
         },
         pythonAfter: {
           executableSha256: manifest.python.executableSha256,
-          environmentSha256: manifest.python.environmentSha256,
+          environmentSha256: pythonAfter.stateSha256,
           kernelspecSha256: manifest.python.kernel.kernelspecSha256
         },
         fixtureBefore: { id: fixture.id, sha256: fixture.sha256, filesystemIdentity: fixture.filesystemIdentity },
@@ -234,7 +249,14 @@ function assertCloneName(value) {
 }
 
 export async function runPreparedDataWranglerComparisonEntry(
-  { manifestPath, fragmentsDirectory, intentsDirectory, preparationPath, expectedEntryId },
+  {
+    manifestPath,
+    fragmentsDirectory,
+    intentsDirectory,
+    preparationPath,
+    expectedEntryId,
+    retireOnlyAfterSuccessfulTrial = false
+  },
   environment = process.env,
   overrides = {}
 ) {
@@ -250,8 +272,11 @@ export async function runPreparedDataWranglerComparisonEntry(
     configureTempRoot: configureEditorAcceptanceTempRoot,
     createProfile: createDataWranglerComparisonDriverProfile,
     recoverDriver: recoverDataWranglerComparisonDriver,
+    captureDriver: createDataWranglerComparisonDriverStudyReceipt,
+    installDriver: installDataWranglerComparisonDriver,
     readInventory,
     captureGateProvenance: captureLinuxDataWranglerStudyProvenance,
+    capturePythonEnvironment: captureDataWranglerComparisonPythonEnvironment,
     recordTrial: recordOnePreparedDataWranglerComparisonStudyTrial,
     mkdir: mkdirSync,
     id: randomUUID,
@@ -312,6 +337,44 @@ export async function runPreparedDataWranglerComparisonEntry(
     vsixPath: preparation.driver.vsixPath,
     expectedDriver: manifest.provenance.comparisonDriver
   });
+  await dependencies.installDriver({ receipt: driverReceipt, profile });
+  const prevalidatedDriver = dependencies.captureDriver(driverReceipt);
+  if (!sameValue(prevalidatedDriver, manifest.provenance.comparisonDriver)) {
+    fail("Prepared comparison installed another neutral driver than the manifest records.");
+  }
+  const prevalidatedExtensions = assertDataWranglerComparisonArmInventory(await dependencies.readInventory(profile), {
+    product: entry.product,
+    expectedExtensions: expectedProductExtensions(manifest, entry.product)
+  });
+  const pythonBefore = dependencies.capturePythonEnvironment({
+    pythonPath: preparation.python.path,
+    kernelspecPath: preparation.selectedKernel.path,
+    jupyterEnvironment: preparation.selectedKernel.jupyterEnvironment
+  });
+  if (pythonBefore.stateSha256 !== manifest.python.environmentSha256) {
+    fail("Prepared comparison Python packages or Jupyter state changed before the trial.");
+  }
+  const minimalRevalidate = () => {
+    revalidateDataWranglerPreparationFileIdentity(preparation.candidate, "Prepared comparison candidate");
+    revalidateDataWranglerPreparationFileIdentity(preparation.python, "Prepared comparison Python");
+    revalidateDataWranglerPreparationFileIdentity(preparation.cacheController, "Prepared cache controller");
+    const fixtureReceipt = fixtureForEntry(manifest, entry, preparation);
+    revalidateDataWranglerPreparationFileIdentity(fixtureReceipt, "Prepared comparison fixture");
+    revalidateDataWranglerPreparationFileIdentity(
+      {
+        path: preparation.editor.executablePath,
+        filesystemIdentity: preparation.editor.executableFilesystemIdentity
+      },
+      "Prepared comparison editor executable"
+    );
+    revalidateDataWranglerPreparationFileIdentity(
+      {
+        path: preparation.driver.vsixPath,
+        filesystemIdentity: manifest.provenance.comparisonDriver.vsix.filesystemIdentity
+      },
+      "Prepared neutral-driver VSIX"
+    );
+  };
   const fixture = fixtureForEntry(manifest, entry, preparation);
   const provenance = createPreparedProvenance({
     manifest,
@@ -319,7 +382,12 @@ export async function runPreparedDataWranglerComparisonEntry(
     preparation,
     profile,
     readProfileInventory: dependencies.readInventory,
-    revalidatePreparation: dependencies.revalidatePreparation
+    revalidatePreparation: dependencies.revalidatePreparation,
+    prevalidatedDriver,
+    prevalidatedExtensions,
+    pythonBefore,
+    capturePythonEnvironment: dependencies.capturePythonEnvironment,
+    minimalRevalidate
   });
   const expectedProvenance = dependencies.captureGateProvenance(
     { cpuIds: manifest.provenance.cpu.affinity, display: displayForGate(manifest) },
@@ -371,7 +439,11 @@ export async function runPreparedDataWranglerComparisonEntry(
             receipt: driverReceipt,
             expectedExtensions: expectedProductExtensions(manifest, entry.product),
             expectedTemplate,
-            profile
+            profile,
+            prevalidated: {
+              driver: structuredClone(prevalidatedDriver),
+              installedExtensions: structuredClone(prevalidatedExtensions)
+            }
           }
         }
       },
@@ -382,11 +454,18 @@ export async function runPreparedDataWranglerComparisonEntry(
         neutralDriverDependencies: { readInventory: () => dependencies.readInventory(profile) }
       }
     );
-    completed = true;
+    completed =
+      retireOnlyAfterSuccessfulTrial !== true ||
+      (result.output?.outcome?.status === "success" &&
+        result.output?.outcome?.actionStarted === true &&
+        result.output?.cleanupProof?.status === "complete" &&
+        result.output?.cleanupProof?.treeEmpty === true &&
+        result.output?.sourceCopy?.cleanup?.removed === true &&
+        result.output?.trialProvenance?.revalidatedAfterCleanup === true);
   } finally {
     if (completed) retired = dependencies.retireClone(clone);
   }
-  if (retired?.status !== "retired" || retired.treeEmpty !== true) {
+  if (completed && (retired?.status !== "retired" || retired.treeEmpty !== true)) {
     fail("Prepared comparison profile clone was not retired after its measured trial.");
   }
   return Object.freeze({
@@ -394,7 +473,7 @@ export async function runPreparedDataWranglerComparisonEntry(
     status: result.status,
     receipt: result.receipt,
     output: result.output,
-    cleanup: retired
+    cleanup: retired ?? null
   });
 }
 
@@ -403,32 +482,46 @@ export async function runUnrecordedPreparedDataWranglerComparisonDiagnostic(
   environment = process.env,
   overrides = {}
 ) {
-  const manifest = readDataWranglerStudyManifestPublication(manifestPath);
-  const preparation = loadDataWranglerComparisonPreparationReceipt(preparationPath);
-  await revalidateDataWranglerComparisonPreparationReceipt(preparation);
-  const scratchRoot = mkdtempSync(resolve(preparation.studyRoot, ".diagnostic-"));
-  chmodSync(scratchRoot, 0o700);
+  const dependencies = {
+    readManifest: readDataWranglerStudyManifestPublication,
+    loadPreparation: loadDataWranglerComparisonPreparationReceipt,
+    revalidatePreparation: revalidateDataWranglerComparisonPreparationReceipt,
+    makeTemporaryDirectory: mkdtempSync,
+    chmod: chmodSync,
+    mkdir: mkdirSync,
+    writeManifest: writeDataWranglerStudyJsonExclusive,
+    writePreparation: writeDataWranglerComparisonPreparationReceipt,
+    runEntry: runPreparedDataWranglerComparisonEntry,
+    remove: rmSync,
+    ...overrides
+  };
+  const manifest = dependencies.readManifest(manifestPath);
+  const preparation = dependencies.loadPreparation(preparationPath);
+  await dependencies.revalidatePreparation(preparation);
+  const scratchRoot = dependencies.makeTemporaryDirectory(resolve(preparation.studyRoot, ".diagnostic-"));
+  dependencies.chmod(scratchRoot, 0o700);
   const fragmentsDirectory = resolve(scratchRoot, "fragments");
   const intentsDirectory = resolve(scratchRoot, "intents");
-  mkdirSync(fragmentsDirectory, { mode: 0o700 });
-  mkdirSync(intentsDirectory, { mode: 0o700 });
+  dependencies.mkdir(fragmentsDirectory, { mode: 0o700 });
+  dependencies.mkdir(intentsDirectory, { mode: 0o700 });
   const privateManifestPath = resolve(scratchRoot, "manifest.json");
-  writeDataWranglerStudyJsonExclusive(privateManifestPath, manifest);
+  dependencies.writeManifest(privateManifestPath, manifest);
   const diagnosticPreparation = structuredClone(preparation);
   diagnosticPreparation.manifestPath = privateManifestPath;
   diagnosticPreparation.manifestSha256 = digestStudyValue(manifest);
   const privatePreparationPath = resolve(scratchRoot, "preparation.json");
-  writeDataWranglerStudyJsonExclusive(privatePreparationPath, diagnosticPreparation);
+  dependencies.writePreparation(privatePreparationPath, diagnosticPreparation);
   let result;
   let completed = false;
   try {
-    result = await runPreparedDataWranglerComparisonEntry(
+    result = await dependencies.runEntry(
       {
         manifestPath: privateManifestPath,
         fragmentsDirectory,
         intentsDirectory,
         preparationPath: privatePreparationPath,
-        expectedEntryId: manifest.schedule[0]?.id
+        expectedEntryId: manifest.schedule[0]?.id,
+        retireOnlyAfterSuccessfulTrial: true
       },
       environment,
       {
@@ -440,16 +533,60 @@ export async function runUnrecordedPreparedDataWranglerComparisonDiagnostic(
         }
       }
     );
-    completed = true;
+    const fragment = result.output;
+    const observation = fragment?.resourceObservation;
+    const samples = Array.isArray(observation?.samples) ? observation.samples : [];
+    const successful =
+      fragment?.outcome?.status === "success" &&
+      fragment?.outcome?.actionStarted === true &&
+      observation?.valid === true &&
+      observation?.intervalMs === 200 &&
+      observation?.missedSamples === 0 &&
+      samples.length >= 5 &&
+      fragment?.cleanupProof?.status === "complete" &&
+      fragment?.cleanupProof?.treeEmpty === true &&
+      fragment?.sourceCopy?.cleanup?.removed === true &&
+      fragment?.trialProvenance?.revalidatedAfterCleanup === true &&
+      result.cleanup?.treeEmpty === true;
+    completed = successful;
+    const entry = manifest.schedule[0];
+    const maximumObservedSampledPssBytes =
+      samples.length === 0 ? null : Math.max(...samples.map((sample) => sample.totalPssBytes));
     return Object.freeze({
-      protocol: DATA_WRANGLER_COMPARISON_PREPARED_RUN_PROTOCOL,
+      protocol: "openwrangler-data-wrangler-comparison-unrecorded-diagnostic-v1",
       recorded: false,
       manifestSha256: digestStudyValue(manifest),
-      scheduleEntryId: manifest.schedule[0]?.id,
-      outcome: result.output?.outcome?.status,
-      cleanupVerified: result.cleanup?.treeEmpty === true
+      scheduleEntryId: entry?.id,
+      product: entry?.product,
+      engine: entry?.engine,
+      format: entry?.format,
+      outcome: fragment?.outcome?.status ?? "missing",
+      pssSampleCount: samples.length,
+      memoryMetric: "maximum-observed-sampled-pss",
+      maximumObservedSampledPssBytes,
+      samplingIntervalMs: observation?.intervalMs ?? null,
+      samplingLimitations: {
+        betweenSampleSpikesMayBeMissed: true,
+        processMeasurementsAreSequential: true
+      },
+      dataWranglerBackend:
+        entry?.product === "data-wrangler"
+          ? {
+              sourceEngine: fragment?.engineEvidence?.sourceEngine ?? "unverified",
+              workbenchEngine: fragment?.engineEvidence?.workbenchEngine ?? "unverified",
+              workbenchVerification: fragment?.engineEvidence?.workbenchVerification ?? "not-observed"
+            }
+          : "not-applicable",
+      cleanupVerified: successful,
+      retainedFailureJournal: successful
+        ? false
+        : {
+            retained: true,
+            location: "private preparation study root",
+            reason: "The diagnostic did not complete every public-UI, memory, provenance, and cleanup check."
+          }
     });
   } finally {
-    if (completed) rmSync(scratchRoot, { recursive: true, force: false });
+    if (completed) dependencies.remove(scratchRoot, { recursive: true, force: false });
   }
 }

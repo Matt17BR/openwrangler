@@ -584,6 +584,21 @@ pinned official VS Code build, and runs the public first-use and warm-up journey
 configured-only and warmed profiles for both products. The CSV and Parquet fixtures, cache controller, and neutral
 driver are identified from their actual files, not copied receipts.
 
+The final specification format is checked in as
+[`performance-comparison.spec.schema.json`](performance-comparison.spec.schema.json). To seal a complete reviewed
+draft outside the preparation command, run:
+
+```bash
+npm run comparison:spec -- \
+  --draft /absolute/path/to/reviewed-draft.json \
+  --out /absolute/path/to/reviewed-spec.json
+```
+
+The generator ignores any methodology receipt in the draft. It hashes the checked-in
+`docs/performance-comparison.md`, runs the same manifest validator used by the study, writes through the durable
+specification publisher, and reads the publication back before it succeeds. `comparison:prepare` performs that same
+methodology binding when it builds its private prepared specification.
+
 ```bash
 npm run comparison:prepare -- \
   --spec /absolute/path/to/reviewed-spec.json \
@@ -639,7 +654,8 @@ This diagnostic uses a private scratch ledger. It never writes to the real study
 only after the public action, 200 ms PSS sampling, source-copy removal, process-tree cleanup, and provenance recheck all
 succeed. A failed run leaves that private journal in the disposable profile for inspection. The JSON summary labels
 memory as maximum observed sampled PSS: short spikes can fall between samples, and per-process `smaps_rollup` reads are
-sequential rather than simultaneous. Data Wrangler's backend stays `unverified` unless the public UI identifies it.
+sequential rather than simultaneous. For Data Wrangler, the summary reports the source and workbench engine evidence;
+an engine the public UI does not identify stays `unverified`.
 
 After a successful trial, `run-next` verifies that the editor and kernel process trees are empty and removes only the
 clone it created. If measurement or ownership is uncertain, it deliberately leaves that clone under the preparation
@@ -656,13 +672,13 @@ Their protocol IDs begin with `openwrangler-data-wrangler-study-` or `openwrangl
 validator rejects unknown fields and identities that do not match the manifest or fixed schedule.
 
 The manifest records the machine, CPU policy, AC power, fixture volume, display, extension inventory, editor templates,
-Python environment, control profile, and untimed Data Wrangler Polars capability check. It also binds the ownership
-supervisor to that same Python executable, including its patch version and SHA-256. The capability and control receipts
-retain normalized one-second public-UI traces. Their validators bind the official editor digest, complete extension
-inventory, `--locale=en`, exact `study_frame` schema and sentinels, host output owner, and both launch-action names.
-Tests change the wrapper, receipt digest, context, inventory, source, trace cadence, action count, obstruction state,
-conclusion, and supervisor Python identity independently and in coordinated combinations. These records do not contain
-local paths.
+Python environment, fixture generator and contract, control profile, and untimed Data Wrangler Polars capability check.
+It also binds the ownership supervisor to that same Python executable, including its patch version and SHA-256. The
+capability and control receipts retain normalized one-second public-UI traces. Their validators rebuild the manifest
+claims from those raw records and bind the official editor digest, complete extension inventory, `--locale=en`, exact
+`study_frame` schema and sentinels, host output owner, and both launch-action names. Tests change the wrapper, receipt
+digest, context, inventory, source, trace cadence, action count, obstruction state, conclusion, and supervisor Python
+identity independently and in coordinated combinations. These records do not contain local paths.
 
 `plan` writes the manifest once. Its fixed seed creates ten paired warm blocks for each engine and format. Each product
 runs first five times. One cold AB pair and one cold BA pair follow for every cell. The manifest, fragments, and result

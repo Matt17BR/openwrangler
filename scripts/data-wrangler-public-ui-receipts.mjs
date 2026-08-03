@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
+import {
+  DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
+  createDataWranglerComparisonControlInventory,
+  createDataWranglerComparisonMeasuredInventory
+} from "./data-wrangler-comparison-inventory.mjs";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -34,18 +38,8 @@ export const PUBLIC_UI_DATA_WRANGLER_EXTENSION = Object.freeze({
 const CAPABILITY_KIND = DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND;
 const CONTROL_KIND = NEITHER_PRODUCT_CONTROL_RECEIPT_KIND;
 
-export const PUBLIC_UI_COMMON_EXTENSION_INVENTORY = freezeInventory([
-  DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY,
-  { extensionId: "ms-python.debugpy", version: "2026.6.0" },
-  { extensionId: "ms-python.python", version: "2026.4.0" },
-  { extensionId: "ms-python.vscode-pylance", version: "2026.3.1" },
-  { extensionId: "ms-python.vscode-python-envs", version: "1.36.0" },
-  { extensionId: "ms-toolsai.jupyter", version: "2025.9.1" },
-  { extensionId: "ms-toolsai.jupyter-keymap", version: "1.1.2" },
-  { extensionId: "ms-toolsai.jupyter-renderers", version: "1.3.0" },
-  { extensionId: "ms-toolsai.vscode-jupyter-cell-tags", version: "0.1.9" },
-  { extensionId: "ms-toolsai.vscode-jupyter-slideshow", version: "0.1.6" }
-]);
+export const PUBLIC_UI_BASE_EXTENSION_INVENTORY = freezeInventory(DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS);
+export const PUBLIC_UI_COMMON_EXTENSION_INVENTORY = freezeInventory(createDataWranglerComparisonControlInventory());
 
 export class PublicUiReceiptError extends Error {
   constructor(code, message) {
@@ -417,9 +411,9 @@ export function createPublicUiReceiptContext(context) {
 export function createExpectedPublicUiExtensionInventory(kind) {
   let entries;
   if (kind === CAPABILITY_KIND) {
-    entries = [...PUBLIC_UI_COMMON_EXTENSION_INVENTORY, PUBLIC_UI_DATA_WRANGLER_EXTENSION];
+    entries = createDataWranglerComparisonMeasuredInventory(PUBLIC_UI_DATA_WRANGLER_EXTENSION);
   } else if (kind === CONTROL_KIND) {
-    entries = [...PUBLIC_UI_COMMON_EXTENSION_INVENTORY];
+    entries = createDataWranglerComparisonControlInventory();
   } else {
     fail("invalid-kind", "Public-UI extension inventory kind is invalid.");
   }

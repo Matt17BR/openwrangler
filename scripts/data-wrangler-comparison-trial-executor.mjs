@@ -616,22 +616,19 @@ export async function executeDataWranglerComparisonTrial(
   validateDependencies(dependencies);
 
   let cacheProof = null;
-  let warmCachePreparationStarted = false;
-  let warmCachePrepared = false;
-  const prepareWarmSourceCacheBeforeLaunch = async () => {
-    if (input.cacheState !== "warm") {
-      throw new Error("Comparison trial warm-cache preparation is unavailable for a cold trial.");
+  let cachePreparationStarted = false;
+  let cachePrepared = false;
+  const prepareSourceCacheBeforeLaunch = async () => {
+    if (cachePreparationStarted) {
+      throw new Error("Comparison trial source-cache preparation may run only once.");
     }
-    if (warmCachePreparationStarted) {
-      throw new Error("Comparison trial warm-cache preparation may run only once.");
-    }
-    warmCachePreparationStarted = true;
-    const proof = await prepareSourceCache({ cacheState: "warm" });
+    cachePreparationStarted = true;
+    const proof = await prepareSourceCache({ cacheState: input.cacheState });
     if (!isRecord(proof)) {
-      throw new TypeError("Comparison trial warm-cache preparation did not return a proof object.");
+      throw new TypeError("Comparison trial source-cache preparation did not return a proof object.");
     }
     cacheProof = proof;
-    warmCachePrepared = true;
+    cachePrepared = true;
     return cacheProof;
   };
 
@@ -642,11 +639,12 @@ export async function executeDataWranglerComparisonTrial(
       { ...input.editorPhaseOptions, runId: input.runId, phase: input.phase },
       {
         ...editorRunnerDependencies,
-        ...(input.cacheState === "warm" ? { prepareWarmSourceCacheBeforeLaunch } : {}),
+        prepareSourceCacheBeforeLaunch,
+        ...(input.cacheState === "warm" ? { prepareWarmSourceCacheBeforeLaunch: prepareSourceCacheBeforeLaunch } : {}),
         spawnProcess(...arguments_) {
           try {
-            if (input.cacheState === "warm" && (!warmCachePrepared || !isRecord(cacheProof))) {
-              throw new Error("Comparison trial refused to launch before its fresh warm-cache proof was retained.");
+            if (!cachePrepared || !isRecord(cacheProof)) {
+              throw new Error("Comparison trial refused to launch before its fresh source-cache proof was retained.");
             }
             const child = adapter.spawnProcess(...arguments_);
             spawnObserved.resolve(child);
@@ -816,9 +814,10 @@ export async function executeDataWranglerComparisonTrial(
   };
 
   const evictColdCache = async ({ request }) => {
-    const proof = await prepareSourceCache({ cacheState: "cold", request });
-    cacheProof = proof;
-    return proof;
+    if (input.cacheState !== "cold" || !cachePrepared || !isRecord(cacheProof) || !isRecord(request)) {
+      throw new Error("Comparison trial cold-cache control requested an absent pre-launch proof.");
+    }
+    return cacheProof;
   };
   const controlPromise = Promise.resolve()
     .then(() =>

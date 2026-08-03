@@ -434,7 +434,7 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
         { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
         {
           spawnProcess: supervisorOwnedSpawn,
-          async prepareWarmSourceCacheBeforeLaunch() {
+          async prepareSourceCacheBeforeLaunch() {
             cache = await executorDependencies.prepareSourceCache({ cacheState: "warm" });
             return cache;
           }
@@ -524,8 +524,8 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
   assert.deepEqual(events, [
     "heavy-lease-acquired",
     "ledger-opened",
-    "gate-passed",
     "notebook-written",
+    "gate-passed",
     "executor-started",
     "neutral-driver-installed",
     "neutral-driver-inventory-read",
@@ -556,7 +556,10 @@ test("a failed pre-action gate records only a validated launch-free fragment", a
       events.push("gate-failed");
       return gate;
     },
-    writeNotebook: () => assert.fail("failed gate wrote a notebook"),
+    writeNotebook: (path) => {
+      events.push("notebook-written");
+      return { path, bytes: 100, mode: "0600" };
+    },
     executeTrial: () => assert.fail("failed gate launched an editor"),
     completeTerminalEvidence: () => assert.fail("failed gate requested terminal evidence"),
     validateFragment(fragment) {
@@ -584,6 +587,7 @@ test("a failed pre-action gate records only a validated launch-free fragment", a
   assert.deepEqual(events, [
     "heavy-lease-acquired",
     "ledger-opened",
+    "notebook-written",
     "gate-failed",
     "fragment-validated",
     "fragment-published",
@@ -715,7 +719,7 @@ test("terminal driver receipts survive a rejected measured editor phase", async 
           { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
           {
             spawnProcess: () => undefined,
-            prepareWarmSourceCacheBeforeLaunch: async () => ({ protocol: "test-cache-v1" })
+            prepareSourceCacheBeforeLaunch: () => executorDependencies.prepareSourceCache({ cacheState: "warm" })
           }
         ),
         /measured editor failed/u
@@ -764,6 +768,7 @@ test("terminal driver receipts survive a rejected measured editor phase", async 
         return input().preparedTrial.neutralDriver.expectedExtensions;
       }
     },
+    prepareSourceCache: () => cacheProof(),
     cleanupDependencies: {
       monotonicMilliseconds: () => cleanupClock,
       async wait(milliseconds) {
@@ -1155,7 +1160,7 @@ test("an ambiguous supervisor launch never removes the private source copy", asy
             spawnProcess() {
               throw new Error("injected ambiguous supervisor launch");
             },
-            async prepareWarmSourceCacheBeforeLaunch() {
+            async prepareSourceCacheBeforeLaunch() {
               return await executorDependencies.prepareSourceCache({ cacheState: "warm" });
             }
           }

@@ -212,7 +212,8 @@ checked again before the command returns. CLI specification and fragment inputs 
 no-follow descriptors and checked against their named entries before and after the read. A renamed parent, symlink, or
 replaced directory entry fails the command instead of mixing two ledger generations.
 
-Every trial publishes one fragment after cleanup and input revalidation. The final result is rebuilt from those raw
+Every trial publishes one fragment after cleanup and input revalidation. The fragment directory is checked against a
+fixed file-count and total-byte budget before any fragment is parsed. The final result is rebuilt from those raw
 fragments and must match their hashes before publication. Finalization first publishes a small intent whose filename
 contains the intent SHA-256. The intent binds a real UTC finalization time to the manifest and ordered fragment hashes.
 A retry finds exactly one such intent, validates it against the current ledger, and rebuilds the same result. No intent
@@ -230,15 +231,16 @@ the expected digest needed to settle a linked publication. If the laptop shuts d
 identify the next scheduled trial.
 
 The public runner adds one preparation receipt and one command to that ledger. `comparison:prepare` records the actual
-candidate, official editor installation, CPython environment and kernelspec, fixtures, cache controller, neutral
-driver, and four sealed editor-profile trees. It gets the profiles by completing each product's public setup and
-warm-up journey. Extension inventory checks run against disposable copies, so asking the VS Code CLI for an inventory
-cannot alter a sealed template. Preparation then uses three more disposable clones to capture Data Wrangler's Polars
-action for both fixtures and a thirty-second neither-product control from the real Jupyter UI. It accepts only an exact,
-pointer-usable action on a ready, unobstructed output and fails if either capability is absent or ambiguous. The
-capability/control captures are untimed setup evidence, not any of the 96 study samples. The preparation receipt binds
-each capture to the official editor bytes, configured Data Wrangler profile tree, fixture, and raw phase receipt. The
-receipt is checked again before and after each trial.
+candidate, official editor installation, CPython environment and kernelspec, fixtures, checked-in fixture generator and
+contract, cache controller, neutral driver, and four sealed editor-profile trees. It gets the profiles by completing
+each product's public setup and a separate untimed inline-to-workbench-to-profile warm-up. Extension inventory checks
+run against disposable copies, so asking the VS Code CLI for an inventory cannot alter a sealed template. Preparation
+then uses three more disposable clones to capture Data Wrangler's Polars action for both fixtures and a thirty-second
+neither-product control from the real Jupyter UI. It accepts only an exact, pointer-usable action on a ready,
+unobstructed output and fails if either capability is absent or ambiguous. The capability/control captures are untimed
+setup evidence, not any of the 96 study samples. Their manifest claims are rebuilt from the raw phase records rather
+than trusted as copied summaries. The preparation receipt is checked again before and after each trial, including the
+Python package, kernelspec, and private Jupyter directory state.
 
 `comparison:study -- run-next` reads the durable ledger and chooses its first pending entry. It clones the correct
 configured-only or warmed profile, installs the verified neutral driver into that clone, and derives the notebook,

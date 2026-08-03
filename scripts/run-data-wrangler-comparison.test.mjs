@@ -210,11 +210,22 @@ test("Data Wrangler setup and diagnostic share launch state while only the diagn
     productKey: "open-wrangler",
     diagnosticPhase: COMPARISON_TEST_PHASES["open-wrangler"],
     diagnosticResultPath: "/private/profile/comparison-open-wrangler-result.json",
-    firstUseSetupResultPath: null,
+    firstUseSetupResultPath: "/private/profile/comparison-open-wrangler-setup.json",
     userData,
     jupyterEnvironment: null
   });
-  assert.equal(await runComparisonProductEditorPhases({ phasePlan: openPlan, runPhase: async () => "open" }), "open");
+  const openEvents = [];
+  assert.equal(
+    await runComparisonProductEditorPhases({
+      phasePlan: openPlan,
+      async runPhase(launch) {
+        openEvents.push(launch.kind);
+        return launch.kind === "diagnostic" ? "open" : "setup";
+      }
+    }),
+    "open"
+  );
+  assert.deepEqual(openEvents, ["first-use-setup", "diagnostic"]);
 });
 
 test("comparison output rejects lexical, canonical, symlink, and inode aliases of both protected inputs", async () => {

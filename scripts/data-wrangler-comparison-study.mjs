@@ -6,17 +6,23 @@ import {
   fsyncSync,
   lstatSync,
   mkdirSync,
+  opendirSync,
   openSync,
   readFileSync,
   readdirSync
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createPublicUiReceiptContext,
   validateDataWranglerPolarsCapabilityReceipt,
   validateNeitherProductControlReceipt
 } from "./data-wrangler-public-ui-receipts.mjs";
 import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
+import {
+  DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
+  createDataWranglerComparisonMeasuredInventory
+} from "./data-wrangler-comparison-inventory.mjs";
 import {
   DATA_WRANGLER_COMPARISON_CACHE_CONTROLLER_PROTOCOL,
   DATA_WRANGLER_COMPARISON_CACHE_TOOLCHAIN_PROTOCOL
@@ -40,6 +46,9 @@ export const DATA_WRANGLER_STUDY_SOURCE_CACHE_PROTOCOL = "openwrangler-source-ca
 export const DATA_WRANGLER_STUDY_FINALIZATION_INTENT_PROTOCOL =
   "openwrangler-data-wrangler-study-finalization-intent-v1";
 export const DATA_WRANGLER_STUDY_TRIAL_INTENT_PROTOCOL = "openwrangler-data-wrangler-study-trial-intent-v1";
+export const DATA_WRANGLER_STUDY_METHOD_PATH = fileURLToPath(
+  new URL("../docs/performance-comparison.md", import.meta.url)
+);
 
 export const DATA_WRANGLER_STUDY_PRODUCTS = Object.freeze(["open-wrangler", "data-wrangler"]);
 export const DATA_WRANGLER_STUDY_DEADLINES_MS = Object.freeze({
@@ -56,18 +65,7 @@ export const DATA_WRANGLER_STUDY_MAXIMUM_RESOURCE_SAMPLES =
       250) /
       200
   ) + 1;
-export const DATA_WRANGLER_STUDY_COMMON_EXTENSIONS = Object.freeze([
-  DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY,
-  Object.freeze({ extensionId: "ms-python.debugpy", version: "2026.6.0" }),
-  Object.freeze({ extensionId: "ms-python.python", version: "2026.4.0" }),
-  Object.freeze({ extensionId: "ms-python.vscode-pylance", version: "2026.3.1" }),
-  Object.freeze({ extensionId: "ms-python.vscode-python-envs", version: "1.36.0" }),
-  Object.freeze({ extensionId: "ms-toolsai.jupyter", version: "2025.9.1" }),
-  Object.freeze({ extensionId: "ms-toolsai.jupyter-keymap", version: "1.1.2" }),
-  Object.freeze({ extensionId: "ms-toolsai.jupyter-renderers", version: "1.3.0" }),
-  Object.freeze({ extensionId: "ms-toolsai.vscode-jupyter-cell-tags", version: "0.1.9" }),
-  Object.freeze({ extensionId: "ms-toolsai.vscode-jupyter-slideshow", version: "0.1.6" })
-]);
+export const DATA_WRANGLER_STUDY_COMMON_EXTENSIONS = DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS;
 export const DATA_WRANGLER_STUDY_CELLS = Object.freeze([
   Object.freeze({ id: "pandas-csv", engine: "pandas", format: "csv" }),
   Object.freeze({ id: "polars-csv", engine: "polars", format: "csv" }),
@@ -329,6 +327,49 @@ function validateMethod(method) {
   assertString(method.sha256, SHA256, "Study methodology SHA-256");
 }
 
+export function captureDataWranglerStudyMethodReceipt(path = DATA_WRANGLER_STUDY_METHOD_PATH) {
+  const target = resolve(path);
+  let descriptor;
+  try {
+    const before = lstatSync(target, { bigint: true });
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      before.nlink !== 1n ||
+      !currentUserOwns(before) ||
+      before.size < 1n ||
+      before.size > 2n * 1024n * 1024n
+    ) {
+      fail("Study methodology must be one owned, singly linked Markdown file within 2 MiB.");
+    }
+    descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (!sameFilesystemIdentity(before, opened) || before.size !== opened.size || before.mtimeNs !== opened.mtimeNs) {
+      fail("Study methodology changed while it opened.");
+    }
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    const namedAfter = lstatSync(target, { bigint: true });
+    if (
+      bytes.length !== Number(opened.size) ||
+      !sameFilesystemIdentity(opened, after) ||
+      !sameFilesystemIdentity(after, namedAfter) ||
+      opened.size !== after.size ||
+      after.size !== namedAfter.size ||
+      opened.mtimeNs !== after.mtimeNs ||
+      after.mtimeNs !== namedAfter.mtimeNs
+    ) {
+      fail("Study methodology changed while it was hashed.");
+    }
+    return Object.freeze({
+      protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 function validateCandidate(candidate) {
   exactKeys(candidate, ["extensionId", "version", "sha256", "filesystemIdentity"], "Open Wrangler candidate receipt");
   if (candidate.extensionId !== "Matt17BR.openwrangler") {
@@ -503,6 +544,25 @@ function validateFixtures(fixtures) {
   if (expected.size !== 0) {
     fail("Study fixture set is incomplete.");
   }
+}
+
+function validateFixtureToolchain(toolchain, python) {
+  exactKeys(
+    toolchain,
+    ["protocol", "contractVersion", "implementation", "implementationVersion", "generatorSha256", "contractSha256"],
+    "Study fixture toolchain provenance"
+  );
+  const polars = python.packages.find((entry) => entry.name === "polars");
+  if (
+    toolchain.protocol !== "openwrangler-performance-fixture-toolchain-v1" ||
+    toolchain.contractVersion !== 1 ||
+    toolchain.implementation !== "polars" ||
+    toolchain.implementationVersion !== polars?.version
+  ) {
+    fail("Study fixture toolchain does not match the manifest-pinned Polars environment.");
+  }
+  assertString(toolchain.generatorSha256, SHA256, "Study fixture generator SHA-256");
+  assertString(toolchain.contractSha256, SHA256, "Study fixture contract SHA-256");
 }
 
 function validateStudyMachine(machine) {
@@ -800,7 +860,7 @@ function validateComparisonDriverReceipt(receipt) {
   }
 }
 
-function validateStudyTemplates(templates) {
+function validateStudyTemplates(templates, manifestContext) {
   if (!Array.isArray(templates) || templates.length !== DATA_WRANGLER_STUDY_PRODUCTS.length) {
     fail("Study template provenance must contain both measured products.");
   }
@@ -811,6 +871,8 @@ function validateStudyTemplates(templates) {
         "product",
         "configuredOnlyReceiptSha256",
         "warmedReceiptSha256",
+        "warmupReceiptSha256",
+        "warmupReceipt",
         "publicConfigurationCompleted",
         "publicWarmupCompleted",
         "targetStateAbsent"
@@ -822,6 +884,94 @@ function validateStudyTemplates(templates) {
     }
     assertString(template.configuredOnlyReceiptSha256, SHA256, "Configured-only template receipt SHA-256");
     assertString(template.warmedReceiptSha256, SHA256, "Warmed template receipt SHA-256");
+    assertString(template.warmupReceiptSha256, SHA256, "Public warm-up receipt SHA-256");
+    if (template.warmupReceiptSha256 !== digestStudyValue(template.warmupReceipt)) {
+      fail("Study public warm-up receipt digest does not match its retained evidence.");
+    }
+    const warmup = template.warmupReceipt;
+    exactKeys(
+      warmup,
+      ["protocol", "product", "untimed", "locale", "editorVersion", "study", "milestones", "profiles", "cleanup"],
+      "Study public warm-up receipt"
+    );
+    if (
+      warmup.protocol !== "openwrangler-data-wrangler-public-warmup-phase-v1" ||
+      warmup.product !== template.product ||
+      warmup.untimed !== true ||
+      warmup.locale !== manifestContext.editor.uiLocale ||
+      warmup.editorVersion !== manifestContext.editor.version
+    ) {
+      fail("Study public warm-up receipt does not match its measured product and editor.");
+    }
+    exactKeys(
+      warmup.study,
+      ["engine", "format", "kind", "fixture", "kernel", "sourceReceipt", "pythonImplementation", "pythonVersion"],
+      "Study public warm-up definition"
+    );
+    const csvFixture = manifestContext.fixtures.find((fixture) => fixture.format === "csv");
+    if (
+      warmup.study.engine !== "polars" ||
+      warmup.study.format !== "csv" ||
+      warmup.study.kind !== "warm" ||
+      warmup.study.pythonImplementation !== manifestContext.python.implementation ||
+      warmup.study.pythonVersion !== manifestContext.python.version ||
+      canonicalStudyJson(warmup.study.fixture) !==
+        canonicalStudyJson({
+          id: csvFixture?.id,
+          sha256: csvFixture?.sha256,
+          rows: csvFixture?.rows,
+          columns: csvFixture?.columns
+        }) ||
+      warmup.study.kernel?.name !== manifestContext.python.kernel.kernelspecName ||
+      warmup.study.sourceReceipt?.sha256 !== csvFixture?.sha256
+    ) {
+      fail("Study public warm-up did not use the exact Polars CSV fixture and private CPython kernel.");
+    }
+    exactKeys(
+      warmup.milestones,
+      [
+        "inlineActionMs",
+        "inlineReadyMs",
+        "workbenchActionMs",
+        "workbenchReadyMs",
+        "profileActionMs",
+        "firstProfileReadyMs",
+        "profilesCompleteMs"
+      ],
+      "Study public warm-up milestones"
+    );
+    const orderedMilestones = [
+      warmup.milestones.inlineActionMs,
+      warmup.milestones.inlineReadyMs,
+      warmup.milestones.workbenchActionMs,
+      warmup.milestones.workbenchReadyMs,
+      warmup.milestones.profileActionMs,
+      warmup.milestones.firstProfileReadyMs,
+      warmup.milestones.profilesCompleteMs
+    ];
+    if (
+      orderedMilestones.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0) ||
+      orderedMilestones.some(
+        (value, milestoneIndex) => milestoneIndex > 0 && value < orderedMilestones[milestoneIndex - 1]
+      )
+    ) {
+      fail("Study public warm-up milestones are incomplete or out of order.");
+    }
+    exactKeys(
+      warmup.profiles,
+      ["expectedColumnCount", "completedColumnCount", "canonicalOrder"],
+      "Study public warm-up profiles"
+    );
+    exactKeys(warmup.cleanup, ["closeStatus", "afterVerification"], "Study public warm-up cleanup");
+    if (
+      warmup.profiles.expectedColumnCount !== csvFixture?.columns ||
+      warmup.profiles.completedColumnCount !== csvFixture?.columns ||
+      warmup.profiles.canonicalOrder !== true ||
+      warmup.cleanup.closeStatus !== "succeeded" ||
+      warmup.cleanup.afterVerification !== "matched"
+    ) {
+      fail("Study public warm-up did not profile every column and close cleanly.");
+    }
     if (
       template.publicConfigurationCompleted !== true ||
       template.publicWarmupCompleted !== true ||
@@ -1003,6 +1153,7 @@ function validateStudyProvenance(provenance, manifestContext) {
       "commonExtensions",
       "comparisonDriver",
       "cacheToolchain",
+      "fixtureToolchain",
       "templates",
       "capabilities",
       "controlProfile",
@@ -1022,7 +1173,8 @@ function validateStudyProvenance(provenance, manifestContext) {
   validateStudyCommonExtensions(provenance.commonExtensions);
   validateComparisonDriverReceipt(provenance.comparisonDriver);
   validateCacheToolchain(provenance.cacheToolchain, manifestContext.python);
-  validateStudyTemplates(provenance.templates);
+  validateFixtureToolchain(provenance.fixtureToolchain, manifestContext.python);
+  validateStudyTemplates(provenance.templates, manifestContext);
   const capabilityCaptureIds = validateCapabilityReceipts(provenance.capabilities, manifestContext);
   validateControlProfile(provenance.controlProfile, manifestContext);
   if (capabilityCaptureIds.has(provenance.controlProfile.context.captureId)) {
@@ -3209,7 +3361,7 @@ function expectedTrialExtensionInventory(manifest, product) {
     product === "open-wrangler"
       ? { extensionId: manifest.candidate.extensionId, version: manifest.candidate.version }
       : { extensionId: manifest.baseline.extensionId, version: manifest.baseline.version };
-  return [...manifest.provenance.commonExtensions.map((extension) => ({ ...extension })), productExtension];
+  return createDataWranglerComparisonMeasuredInventory(productExtension);
 }
 
 function validateTrialProvenance(provenance, fragment, entry, manifest) {
@@ -3550,6 +3702,7 @@ function fragmentFileName(fragment) {
 }
 
 const MAXIMUM_STUDY_JSON_BYTES = 32 * 1024 * 1024;
+const MAXIMUM_STUDY_FRAGMENT_LEDGER_BYTES = 256 * 1024 * 1024;
 
 function sameFilesystemIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
@@ -3778,6 +3931,20 @@ export function writeDataWranglerStudyJsonExclusive(path, value, options = {}) {
   return publishOrRecoverStudyJson(path, value, options);
 }
 
+export function writeDataWranglerStudySpecificationExclusive(path, value, options = {}) {
+  buildDataWranglerStudyManifest(value);
+  return publishOrRecoverStudyJson(path, value, options);
+}
+
+export function readDataWranglerStudySpecificationPublication(path, options = {}) {
+  const target = resolve(path);
+  return withPrivateStudyDirectory(dirname(target), options, (lease) => {
+    const specification = readPrivateStudyJson(lease, basename(target), "Study specification", options);
+    buildDataWranglerStudyManifest(specification);
+    return specification;
+  });
+}
+
 export function readDataWranglerStudyManifestPublication(path, options = {}) {
   const target = resolve(path);
   return withPrivateStudyDirectory(dirname(target), options, (lease) =>
@@ -3825,18 +3992,43 @@ export function publishDataWranglerStudyFragment(directory, fragment, manifest, 
 }
 
 function loadDataWranglerStudyFragmentsFromLease(lease, manifest, options) {
-  const listedNames = readdirSync(anchoredStudyPath(lease.descriptor), { encoding: "utf8" });
-  if (!Array.isArray(listedNames) || listedNames.length > 131_072) {
-    fail("Study fragment directory listing exceeds its bound.");
+  const maximumFragments = manifest.schedule.length * 100;
+  const maximumDirectoryEntries = maximumFragments + 64;
+  const directory = opendirSync(anchoredStudyPath(lease.descriptor), { encoding: "utf8" });
+  const names = [];
+  let directoryEntries = 0;
+  let cumulativeBytes = 0n;
+  try {
+    while (true) {
+      const entry = directory.readSync();
+      if (entry === null) break;
+      directoryEntries += 1;
+      if (directoryEntries > maximumDirectoryEntries) {
+        fail("Study fragment directory entry count exceeds its bound.");
+      }
+      if (!entry.name.endsWith(".json")) continue;
+      if (names.length >= maximumFragments) {
+        fail("Study fragment count exceeds the immutable schedule and attempt bound.");
+      }
+      const match = FRAGMENT_FILE.exec(entry.name);
+      if (match === null) {
+        fail("Study fragment directory contains an unexpected JSON filename.");
+      }
+      const metadata = lstatSync(anchoredStudyPath(lease.descriptor, entry.name), { bigint: true });
+      assertPrivateStudyFile(metadata, "Study fragment");
+      cumulativeBytes += metadata.size;
+      if (cumulativeBytes > BigInt(MAXIMUM_STUDY_FRAGMENT_LEDGER_BYTES)) {
+        fail("Study fragment ledger exceeds its cumulative byte bound.");
+      }
+      names.push(entry.name);
+    }
+  } finally {
+    directory.closeSync();
   }
-  const names = listedNames.filter((name) => name.endsWith(".json")).sort();
+  names.sort();
   invokeStudyReadFault(options, "directory-listed");
   const fragments = [];
   for (const name of names) {
-    const match = FRAGMENT_FILE.exec(name);
-    if (match === null) {
-      fail("Study fragment directory contains an unexpected JSON filename.");
-    }
     const fragment = readPrivateStudyJson(lease, name, "Study fragment", options);
     validateDataWranglerStudyFragment(fragment, manifest);
     if (name !== fragmentFileName(fragment)) {

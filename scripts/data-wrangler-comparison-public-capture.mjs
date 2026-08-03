@@ -7,7 +7,7 @@ import {
   recoverDataWranglerComparisonDriver,
   runDataWranglerComparisonNeutralDriverPhase
 } from "./data-wrangler-comparison-driver.mjs";
-import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
+import { createDataWranglerComparisonMeasuredInventory } from "./data-wrangler-comparison-inventory.mjs";
 import { writeDataWranglerComparisonNotebook } from "./data-wrangler-comparison-notebook.mjs";
 import {
   cloneDataWranglerCapturedTemplate,
@@ -16,16 +16,21 @@ import {
 import {
   DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
   NEITHER_PRODUCT_CONTROL_RECEIPT_KIND,
-  createDataWranglerPolarsCapabilityReceipt,
+  PUBLIC_UI_BASE_EXTENSION_INVENTORY,
+  PUBLIC_UI_DATA_WRANGLER_EXTENSION,
   createExpectedPublicUiExtensionInventory,
-  createNeitherProductControlReceipt,
   createPublicUiReceiptContext
 } from "./data-wrangler-public-ui-receipts.mjs";
+import {
+  DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL,
+  deriveDataWranglerPublicUiManifestEntryFromPhase,
+  validateDataWranglerPublicUiCapturePhaseReceipt
+} from "./data-wrangler-comparison-public-phase-receipt.mjs";
 import {
   cleanupDataWranglerComparisonSourceCopy,
   createDataWranglerComparisonSourceCopy
 } from "./data-wrangler-comparison-source-copy.mjs";
-import { canonicalStudyJson, digestStudyValue } from "./data-wrangler-comparison-study.mjs";
+import { digestStudyValue } from "./data-wrangler-comparison-study.mjs";
 import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
@@ -34,7 +39,7 @@ import {
   runEditorAcceptancePhase
 } from "./editor-acceptance.mjs";
 
-export const DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-ui-capture-phase-v1";
+export { DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL };
 
 const PHASE = Object.freeze({
   capability: "comparison-study-data-wrangler-capability",
@@ -43,19 +48,6 @@ const PHASE = Object.freeze({
 
 function fail(message) {
   throw new TypeError(message);
-}
-
-function isRecord(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function exactKeys(value, expected, label) {
-  if (!isRecord(value)) fail(`${label} must be an object.`);
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((entry, index) => entry !== wanted[index])) {
-    fail(`${label} has missing or unknown fields.`);
-  }
 }
 
 function parseInventory(stdout) {
@@ -129,90 +121,6 @@ function sourceContext(captureId, editor, fixture) {
   });
 }
 
-function expectedStudy(fixture, kernel, sourceReceipt) {
-  return {
-    engine: "polars",
-    format: fixture.format,
-    kind: "warm",
-    fixture: {
-      id: fixture.id,
-      sha256: fixture.sha256,
-      rows: fixture.rows,
-      columns: fixture.columns
-    },
-    kernel: { name: kernel.name, displayName: kernel.displayName },
-    sourceReceipt
-  };
-}
-
-function validatePhaseReceipt(raw, { kind, captureId, editor, fixture, kernel, sourceReceipt }) {
-  exactKeys(
-    raw,
-    [
-      "protocol",
-      "captureId",
-      "kind",
-      "locale",
-      "editorVersion",
-      "study",
-      "verification",
-      "observation",
-      "trace",
-      "output",
-      "actions",
-      "conclusion"
-    ],
-    "Public-UI capture phase receipt"
-  );
-  if (
-    raw.protocol !== DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL ||
-    raw.captureId !== captureId ||
-    raw.kind !== kind ||
-    raw.locale !== editor.uiLocale ||
-    raw.editorVersion !== editor.version ||
-    canonicalStudyJson(raw.study) !== canonicalStudyJson(expectedStudy(fixture, kernel, sourceReceipt))
-  ) {
-    fail("Public-UI capture phase does not match its exact editor, source, kernel, and fixture.");
-  }
-  const verification = raw.verification;
-  if (
-    !isRecord(verification) ||
-    verification.phase !== "before-timing" ||
-    verification.pythonImplementation !== "CPython" ||
-    verification.classMatched !== true ||
-    verification.shapeMatched !== true ||
-    verification.columnsMatched !== true ||
-    verification.integerDtypeMatched !== true ||
-    verification.sentinelsMatched !== true ||
-    verification.objectTokenContinuous !== true ||
-    verification.rowDataIncluded !== false ||
-    verification.observedSource?.file?.sha256 !== sourceReceipt.sha256 ||
-    verification.observedSource?.rowCount !== fixture.rows ||
-    verification.observedSource?.columnCount !== fixture.columns
-  ) {
-    fail("Public-UI capture did not verify the exact warm Polars study_frame source.");
-  }
-  return raw;
-}
-
-function evidenceFromPhase(raw, context, kind) {
-  return {
-    captureId: context.captureId,
-    editor: structuredClone(context.editor),
-    extensions: structuredClone(
-      createExpectedPublicUiExtensionInventory(
-        kind === "capability" ? DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND : NEITHER_PRODUCT_CONTROL_RECEIPT_KIND
-      )
-    ),
-    source: structuredClone(context.source),
-    observation: structuredClone(raw.observation),
-    trace: structuredClone(raw.trace),
-    output: structuredClone(raw.output),
-    actions: structuredClone(raw.actions),
-    conclusion: raw.conclusion
-  };
-}
-
 async function uninstallDataWrangler(profile) {
   await runBoundedEditorCliCommand(
     {
@@ -241,6 +149,7 @@ async function runCapturePhase({
   fixture,
   fixturePath,
   kernel,
+  python,
   pythonPath,
   editor,
   driver,
@@ -317,12 +226,9 @@ async function runCapturePhase({
     } else {
       await dependencies.uninstallDataWrangler(profile);
       const controlExtensions = createExpectedPublicUiExtensionInventory(NEITHER_PRODUCT_CONTROL_RECEIPT_KIND).entries;
-      const withoutDriver = controlExtensions.filter(
-        (entry) => entry.extensionId.toLowerCase() !== DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY.extensionId
-      );
       assertExactInventory(
         await dependencies.readInventory(profile),
-        withoutDriver,
+        PUBLIC_UI_BASE_EXTENSION_INVENTORY,
         "Neither-product control before driver"
       );
       await dependencies.installDriver({ receipt: driver, profile });
@@ -347,13 +253,14 @@ async function runCapturePhase({
         "Neither-product control after capture"
       );
     }
-    phase = validatePhaseReceipt(phase, {
+    phase = validateDataWranglerPublicUiCapturePhaseReceipt(phase, {
       kind,
       captureId,
       editor: context.editor,
       fixture,
       kernel,
-      sourceReceipt: sourceCopy.copyReceipt
+      sourceReceipt: sourceCopy.copyReceipt,
+      python
     });
   } catch (error) {
     operationError = error;
@@ -424,6 +331,11 @@ export async function capturePreparedDataWranglerPublicUi(
     expectedDriver: specification.provenance.comparisonDriver
   });
   const publicEditor = structuredClone(specification.editor);
+  assertExactInventory(
+    specification.provenance.commonExtensions,
+    PUBLIC_UI_BASE_EXTENSION_INVENTORY,
+    "Reviewed comparison base dependency inventory"
+  );
   if (
     specification.fixtures.length !== 2 ||
     new Set(specification.fixtures.map((fixture) => fixture.format)).size !== 2 ||
@@ -467,11 +379,7 @@ export async function capturePreparedDataWranglerPublicUi(
       inventoryLabel: `Official VS Code ${plan.kind} public-UI extension inventory`
     });
     const context = sourceContext(captureId, publicEditor, plan.fixture);
-    const expectedExtensions = [
-      ...specification.provenance.commonExtensions.map((entry) => ({ ...entry })),
-      { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
-      { ...DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY }
-    ];
+    const expectedExtensions = createDataWranglerComparisonMeasuredInventory(PUBLIC_UI_DATA_WRANGLER_EXTENSION);
     assertExactInventory(
       expectedExtensions,
       createExpectedPublicUiExtensionInventory(DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND).entries,
@@ -488,6 +396,7 @@ export async function capturePreparedDataWranglerPublicUi(
         fixture: plan.fixture,
         fixturePath: fixturePaths[plan.fixture.format],
         kernel,
+        python: specification.python,
         pythonPath,
         editor,
         driver,
@@ -497,33 +406,25 @@ export async function capturePreparedDataWranglerPublicUi(
         context,
         dependencies
       });
-      const evidence = evidenceFromPhase(raw, context, plan.kind);
+      const manifestEntry = deriveDataWranglerPublicUiManifestEntryFromPhase({
+        kind: plan.kind,
+        fixtureId: plan.fixture.id,
+        phaseReceipt: raw,
+        context,
+        editor: publicEditor,
+        fixture: plan.fixture,
+        kernel,
+        sourceReceipt: raw.study.sourceReceipt,
+        python: specification.python
+      });
       if (plan.kind === "capability") {
-        const receipt = createDataWranglerPolarsCapabilityReceipt(evidence, context);
         if (raw.conclusion !== "available") {
           fail(`Data Wrangler did not expose a stable Polars action for ${plan.fixture.id}.`);
         }
-        capabilities.push({
-          product: "data-wrangler",
-          engine: "polars",
-          availability: "available",
-          method: "public-capability",
-          timed: false,
-          fixtureId: plan.fixture.id,
-          context,
-          receiptSha256: digestStudyValue(receipt),
-          receipt
-        });
+        capabilities.push(manifestEntry);
       } else {
-        const receipt = createNeitherProductControlReceipt(evidence, context);
         if (raw.conclusion !== "neither-product-control") fail("Neither-product control was not conclusive.");
-        controlProfile = {
-          method: "neither-product",
-          fixtureId: plan.fixture.id,
-          context,
-          receiptSha256: digestStudyValue(receipt),
-          receipt
-        };
+        controlProfile = manifestEntry;
       }
       bindings.push({
         kind: plan.kind,

@@ -22,6 +22,7 @@ import {
   authorizeDataWranglerStudyTrialAction,
   buildDataWranglerStudyManifest,
   buildDataWranglerStudyResult,
+  captureDataWranglerStudyMethodReceipt,
   canonicalStudyJson,
   createOrLoadDataWranglerStudyFinalizationIntent,
   digestStudyValue,
@@ -930,7 +931,8 @@ export function runDataWranglerComparisonStudy(
     inputReadOptions = {},
     now = () => new Date(),
     publicationOptions = {},
-    captureCacheToolchain = captureDataWranglerComparisonStudyV2Toolchain
+    captureCacheToolchain = captureDataWranglerComparisonStudyV2Toolchain,
+    captureMethodology = captureDataWranglerStudyMethodReceipt
   } = {}
 ) {
   const options = parseArguments(argv, cwd);
@@ -939,8 +941,12 @@ export function runDataWranglerComparisonStudy(
   }
   if (options.command === "plan") {
     const specification = readBoundedJson(options.spec, "Study specification", inputReadOptions);
-    if (typeof captureCacheToolchain !== "function") {
-      throw new TypeError("Study plan cache-toolchain capture must be a function.");
+    if (typeof captureCacheToolchain !== "function" || typeof captureMethodology !== "function") {
+      throw new TypeError("Study plan methodology and cache-toolchain capture must be functions.");
+    }
+    const observedMethod = captureMethodology();
+    if (canonicalStudyJson(specification?.method) !== canonicalStudyJson(observedMethod)) {
+      throw new Error("Study specification methodology does not match the checked-in reviewed document.");
     }
     const observedCacheToolchain = captureCacheToolchain({
       controllerPath: options.cacheController,

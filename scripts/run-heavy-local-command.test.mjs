@@ -124,23 +124,13 @@ test("public comparison workflows reject contention and accept one inherited lea
     {
       name: "prepare",
       script: guard,
-      arguments: [
-        "comparison:prepare",
-        "--",
-        "node",
-        "scripts/run-data-wrangler-comparison-preparation.mjs"
-      ],
+      arguments: ["comparison:prepare", "--", "node", "scripts/run-data-wrangler-comparison-preparation.mjs"],
       nestedError: /Usage: npm run comparison:prepare/u
     },
     {
       name: "diagnostic",
       script: guard,
-      arguments: [
-        "comparison:diagnostic",
-        "--",
-        "node",
-        "scripts/run-data-wrangler-comparison-diagnostic.mjs"
-      ],
+      arguments: ["comparison:diagnostic", "--", "node", "scripts/run-data-wrangler-comparison-diagnostic.mjs"],
       nestedError: /Usage: node scripts\/run-data-wrangler-comparison-diagnostic/u
     },
     {

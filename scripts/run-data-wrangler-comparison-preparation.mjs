@@ -9,16 +9,22 @@ import {
   captureDataWranglerProfileTree,
   createDataWranglerComparisonPreparationReceipt,
   createDataWranglerTemplateCapture,
+  digestDataWranglerComparisonPythonEnvironment,
   probeDataWranglerComparisonPython,
   queryDataWranglerTemplateInventory,
   writeDataWranglerComparisonPreparationReceipt
 } from "./data-wrangler-comparison-preparation.mjs";
 import { capturePreparedDataWranglerPublicUi } from "./data-wrangler-comparison-public-capture.mjs";
+import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
+import { validateDataWranglerComparisonCanonicalFixtures } from "./data-wrangler-comparison-fixtures.mjs";
+import { capturePreparedProductWarmups } from "./data-wrangler-comparison-warmup.mjs";
 import {
   canonicalStudyJson,
+  captureDataWranglerStudyMethodReceipt,
   digestStudyValue,
-  writeDataWranglerStudyJsonExclusive
+  writeDataWranglerStudySpecificationExclusive
 } from "./data-wrangler-comparison-study.mjs";
+import { captureDataWranglerComparisonStudyV2Toolchain } from "./data-wrangler-comparison-cache-controller.mjs";
 import { configureEditorAcceptanceTempRoot, createEditorAcceptanceEnvironment } from "./editor-acceptance.mjs";
 import { PINNED_REMOTE_WORKSPACE_TARGETS } from "./remote-workspace-acquisition.mjs";
 import { runDataWranglerComparison } from "./run-data-wrangler-comparison.mjs";
@@ -94,7 +100,10 @@ async function candidateIdentity(path) {
   return Object.freeze({ receipt, version: packageJson.version });
 }
 
-function writeKernel(studyRoot, pythonPath, ipykernelVersion) {
+export function writeDataWranglerComparisonKernelSpec(studyRoot, pythonPath, pythonVersion) {
+  if (typeof pythonVersion !== "string" || !/^3\.12(?:\.\d+)?$/u.test(pythonVersion)) {
+    fail("Comparison preparation kernel requires the probed CPython 3.12 version.");
+  }
   const name = `openwrangler-study-${randomUUID().replaceAll("-", "")}`;
   const jupyterRoot = resolve(studyRoot, "jupyter");
   const environment = {
@@ -108,7 +117,7 @@ function writeKernel(studyRoot, pythonPath, ipykernelVersion) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     chmodSync(directory, 0o700);
   }
-  const displayName = `Open Wrangler study CPython ${ipykernelVersion}`;
+  const displayName = `Open Wrangler study CPython ${pythonVersion} (private trial)`;
   const path = resolve(kernelDirectory, "kernel.json");
   const value = {
     argv: [pythonPath, "-I", "-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
@@ -135,7 +144,7 @@ function expectedExtensions(specification, candidateVersion, product) {
     product === "open-wrangler"
       ? { extensionId: "Matt17BR.openwrangler", version: candidateVersion }
       : { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" };
-  return [...specification.provenance.commonExtensions.map((entry) => ({ ...entry })), measured];
+  return createDataWranglerComparisonTemplateInventory(measured);
 }
 
 function assertTemplateInventory(actual, expected) {
@@ -163,14 +172,19 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
     candidateIdentity,
     probePython: probeDataWranglerComparisonPython,
     captureFile: captureDataWranglerPreparationFile,
-    writeStudyJson: writeDataWranglerStudyJsonExclusive,
+    writeStudySpecification: writeDataWranglerStudySpecificationExclusive,
+    captureCacheToolchain: captureDataWranglerComparisonStudyV2Toolchain,
+    captureMethodology: captureDataWranglerStudyMethodReceipt,
+    validateFixtures: validateDataWranglerComparisonCanonicalFixtures,
     plan: runDataWranglerComparisonStudy,
     createReceipt: createDataWranglerComparisonPreparationReceipt,
     writeReceipt: writeDataWranglerComparisonPreparationReceipt,
     capturePublicUi: capturePreparedDataWranglerPublicUi,
+    captureWarmups: capturePreparedProductWarmups,
     ...overrides
   };
   const specification = structuredClone(dependencies.readSpecification(options.spec));
+  specification.method = structuredClone(dependencies.captureMethodology());
   const candidate = await dependencies.candidateIdentity(options.candidate);
   const python = dependencies.probePython(options.python);
   let templateCapture;
@@ -203,35 +217,25 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
   if (studyRoot === undefined || identifiedEditor === undefined || templateCapture === undefined) {
     fail("Comparison preparation smoke did not retain its editor and profile templates.");
   }
-  const templates = templateCapture.values();
+  const smokeTemplates = templateCapture.values();
   const profileEnvironment = createEditorAcceptanceEnvironment(environment, {
     OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
     OPEN_WRANGLER_EDITOR_TEMP_ROOT: studyRoot
   });
   configureEditorAcceptanceTempRoot(studyRoot, profileEnvironment);
-  const templateProvenance = [];
   const templateTrees = new Map();
   for (const product of ["open-wrangler", "data-wrangler"]) {
-    const productTemplates = {};
-    for (const kind of ["configured-only", "warmed"]) {
-      const template = templates.find((entry) => entry.product === product && entry.kind === kind);
-      const inventory = await dependencies.queryInventory(template, identifiedEditor, profileEnvironment);
-      assertTemplateInventory(inventory, expectedExtensions(specification, candidate.version, product));
-      productTemplates[kind] = dependencies.captureTree(template.root).treeSha256;
-      templateTrees.set(`${product}:${kind}`, productTemplates[kind]);
-    }
-    templateProvenance.push({
-      product,
-      configuredOnlyReceiptSha256: productTemplates["configured-only"],
-      warmedReceiptSha256: productTemplates.warmed,
-      publicConfigurationCompleted: true,
-      publicWarmupCompleted: true,
-      targetStateAbsent: true
-    });
+    const template = smokeTemplates.find((entry) => entry.product === product && entry.kind === "configured-only");
+    const inventory = await dependencies.queryInventory(template, identifiedEditor, profileEnvironment);
+    assertTemplateInventory(inventory, expectedExtensions(specification, candidate.version, product));
+    templateTrees.set(`${product}:configured-only`, dependencies.captureTree(template.root).treeSha256);
   }
   const pythonFile = dependencies.captureFile(options.python, "Comparison preparation Python", { executable: true });
   const ipykernel = python.packages.find((entry) => entry.name === "ipykernel");
-  const kernel = writeKernel(studyRoot, options.python, ipykernel.version);
+  const kernel = writeDataWranglerComparisonKernelSpec(studyRoot, options.python, python.version);
+  const jupyterState = Object.entries(kernel.environment)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([name, root]) => ({ name, ...dependencies.captureTree(root) }));
   specification.candidate = {
     extensionId: "Matt17BR.openwrangler",
     version: candidate.version,
@@ -249,10 +253,13 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
     implementation: python.implementation,
     version: python.version,
     executableSha256: pythonFile.sha256,
-    environmentSha256: digestStudyValue({
+    environmentSha256: digestDataWranglerComparisonPythonEnvironment({
+      implementation: python.implementation,
+      version: python.version,
       executableSha256: pythonFile.sha256,
       packages: python.packages,
-      kernelspecSha256: kernel.sha256
+      kernelspecSha256: kernel.sha256,
+      jupyter: jupyterState
     }),
     packages: python.packages.map((entry) => ({ ...entry })),
     kernel: {
@@ -266,6 +273,51 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
   const parquet = dependencies.captureFile(options.parquet, "Comparison preparation Parquet fixture");
   updateFixture(specification, "csv", csv);
   updateFixture(specification, "parquet", parquet);
+  specification.provenance.fixtureToolchain = dependencies.validateFixtures({
+    pythonPath: options.python,
+    fixtures: specification.fixtures.map((fixture) => ({
+      id: fixture.id,
+      format: fixture.format,
+      rows: fixture.rows,
+      columns: fixture.columns,
+      path: fixture.format === "csv" ? options.csv : options.parquet
+    }))
+  });
+  const configuredTemplates = smokeTemplates.filter((entry) => entry.kind === "configured-only");
+  const warmups = await dependencies.captureWarmups(
+    {
+      specification,
+      templates: configuredTemplates,
+      templateTrees,
+      studyRoot,
+      editor: identifiedEditor,
+      pythonPath: options.python,
+      kernel,
+      fixturePath: options.csv,
+      driverDirectory: options.driverDirectory,
+      driverVsixPath: options.driverVsix
+    },
+    profileEnvironment
+  );
+  const templates = Object.freeze([...configuredTemplates, ...warmups.templates]);
+  const warmupByProduct = new Map(warmups.provenance.map((entry) => [entry.product, entry]));
+  for (const template of warmups.templates) {
+    templateTrees.set(`${template.product}:warmed`, template.treeSha256);
+  }
+  const templateProvenance = ["open-wrangler", "data-wrangler"].map((product) => {
+    const warmup = warmupByProduct.get(product);
+    if (warmup === undefined) fail(`Comparison preparation omitted the ${product} public warm-up receipt.`);
+    return {
+      product,
+      configuredOnlyReceiptSha256: templateTrees.get(`${product}:configured-only`),
+      warmedReceiptSha256: templateTrees.get(`${product}:warmed`),
+      warmupReceiptSha256: warmup.receiptSha256,
+      warmupReceipt: structuredClone(warmup.receipt),
+      publicConfigurationCompleted: true,
+      publicWarmupCompleted: true,
+      targetStateAbsent: true
+    };
+  });
   specification.provenance.templates = templateProvenance;
   const publicUi = await dependencies.capturePublicUi(
     {
@@ -284,9 +336,12 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
   );
   specification.provenance.capabilities = publicUi.capabilities.map((entry) => structuredClone(entry));
   specification.provenance.controlProfile = structuredClone(publicUi.controlProfile);
-  delete specification.provenance.cacheToolchain;
+  specification.provenance.cacheToolchain = dependencies.captureCacheToolchain({
+    controllerPath: options.cacheController,
+    pythonExecutablePath: options.python
+  });
   const preparedSpecificationPath = resolve(studyRoot, "prepared-specification.json");
-  dependencies.writeStudyJson(preparedSpecificationPath, specification);
+  dependencies.writeStudySpecification(preparedSpecificationPath, specification);
   const planned = dependencies.plan(
     [
       "plan",

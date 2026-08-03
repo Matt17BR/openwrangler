@@ -3,17 +3,20 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
 import {
   DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
   DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
@@ -24,8 +27,16 @@ import {
   digestStudyValue,
   inspectDataWranglerStudyTrialIntents,
   loadDataWranglerStudyFragments,
-  validateDataWranglerStudyFragment
+  readDataWranglerStudyManifestPublication,
+  readDataWranglerStudySpecificationPublication,
+  validateDataWranglerStudyFragment,
+  writeDataWranglerStudySpecificationExclusive
 } from "./data-wrangler-comparison-study.mjs";
+import {
+  DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL,
+  loadDataWranglerComparisonPreparationReceipt,
+  writeDataWranglerComparisonPreparationReceipt
+} from "./data-wrangler-comparison-preparation.mjs";
 import {
   DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
   NEITHER_PRODUCT_CONTROL_RECEIPT_KIND,
@@ -46,6 +57,7 @@ import {
   runNextDataWranglerComparisonStudyTrial,
   runDataWranglerComparisonStudy
 } from "./run-data-wrangler-comparison-study.mjs";
+import { runUnrecordedPreparedDataWranglerComparisonDiagnostic } from "./run-data-wrangler-comparison-prepared.mjs";
 
 const digest = (value) => value.repeat(64);
 
@@ -73,7 +85,8 @@ function loadActionStartedFragmentFixture() {
     createDataWranglerPolarsCapabilityReceipt,
     createExpectedPublicUiExtensionInventory,
     createNeitherProductControlReceipt,
-    createPublicUiReceiptContext
+    createPublicUiReceiptContext,
+    DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY
   };
   const fixtureSource = `const { ${Object.keys(context).join(", ")} } = globalThis.__runNextFixtureDeps;\nconst digest = (value) => value.repeat(64);\n${source.slice(start)}\n;globalThis.__runNextFixtures = { successFragment };`;
   globalThis.__runNextFixtureDeps = context;
@@ -105,6 +118,10 @@ function planArguments(specificationPath, manifestPath) {
 
 function captureSpecificationCacheToolchain() {
   return structuredClone(studySpecification().provenance.cacheToolchain);
+}
+
+function captureSpecificationMethodology() {
+  return structuredClone(studySpecification().method);
 }
 
 test("study command arguments are explicit and reject missing or repeated paths", () => {
@@ -167,7 +184,8 @@ test("CLI specification and fragment inputs reject symlinks and directory-entry 
         () =>
           runDataWranglerComparisonStudy(planArguments(linkedSpecification, resolve(directory, "manifest.json")), {
             cwd: directory,
-            captureCacheToolchain: captureSpecificationCacheToolchain
+            captureCacheToolchain: captureSpecificationCacheToolchain,
+            captureMethodology: captureSpecificationMethodology
           }),
         /bounded, singly linked regular JSON file/u
       );
@@ -184,6 +202,7 @@ test("CLI specification and fragment inputs reject symlinks and directory-entry 
           runDataWranglerComparisonStudy(planArguments(specification, resolve(directory, "manifest.json")), {
             cwd: directory,
             captureCacheToolchain: captureSpecificationCacheToolchain,
+            captureMethodology: captureSpecificationMethodology,
             inputReadOptions: {
               faultInjector: (point, label) => {
                 if (point === "file-opened" && label === "Study specification") {
@@ -208,7 +227,8 @@ test("CLI specification and fragment inputs reject symlinks and directory-entry 
         writeFileSync(specification, JSON.stringify(studySpecification()));
         runDataWranglerComparisonStudy(planArguments(specification, manifest), {
           cwd: directory,
-          captureCacheToolchain: captureSpecificationCacheToolchain
+          captureCacheToolchain: captureSpecificationCacheToolchain,
+          captureMethodology: captureSpecificationMethodology
         });
         writeFileSync(realFragment, "{}\n");
         if (mode === "symlink") {
@@ -250,6 +270,30 @@ test("CLI specification and fragment inputs reject symlinks and directory-entry 
   }
 });
 
+test("fragment loading rejects an oversized cumulative ledger before parsing any fragment", () => {
+  withDirectory((directory) => {
+    const specificationPath = resolve(directory, "spec.json");
+    const manifestPath = resolve(directory, "manifest.json");
+    const fragmentsDirectory = resolve(directory, "fragments");
+    writeFileSync(specificationPath, JSON.stringify(studySpecification()));
+    const manifest = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
+      cwd: directory,
+      captureCacheToolchain: captureSpecificationCacheToolchain,
+      captureMethodology: captureSpecificationMethodology
+    }).output;
+    mkdirSync(fragmentsDirectory, { mode: 0o700 });
+    for (let attempt = 0; attempt < 9; attempt += 1) {
+      const path = resolve(
+        fragmentsDirectory,
+        `${manifest.schedule[0].id}.attempt-${String(attempt).padStart(2, "0")}.json`
+      );
+      writeFileSync(path, "{}\n", { mode: 0o600 });
+      truncateSync(path, 32 * 1024 * 1024);
+    }
+    assert.throws(() => loadDataWranglerStudyFragments(fragmentsDirectory, manifest), /cumulative byte bound/u);
+  });
+});
+
 test("plan, record, and status preserve one immutable manifest and append-only fragment", () => {
   withDirectory((directory) => {
     const specificationPath = resolve(directory, "spec.json");
@@ -260,13 +304,15 @@ test("plan, record, and status preserve one immutable manifest and append-only f
 
     const planned = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
       cwd: directory,
-      captureCacheToolchain: captureSpecificationCacheToolchain
+      captureCacheToolchain: captureSpecificationCacheToolchain,
+      captureMethodology: captureSpecificationMethodology
     });
     assert.equal(planned.output.schedule.length, 96);
     assert.equal(JSON.parse(readFileSync(manifestPath, "utf8")).studyId, planned.output.studyId);
     const repeatedPlan = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
       cwd: directory,
-      captureCacheToolchain: captureSpecificationCacheToolchain
+      captureCacheToolchain: captureSpecificationCacheToolchain,
+      captureMethodology: captureSpecificationMethodology
     });
     assert.deepEqual(repeatedPlan.output, planned.output);
     assert.equal(repeatedPlan.receipt.status, "complete");
@@ -344,7 +390,8 @@ test("plan captures the actual cache toolchain and rejects caller-supplied drift
       captureCacheToolchain(options) {
         captured = options;
         return observed;
-      }
+      },
+      captureMethodology: captureSpecificationMethodology
     });
     assert.deepEqual(captured, {
       controllerPath,
@@ -361,11 +408,121 @@ test("plan captures the actual cache toolchain and rejects caller-supplied drift
       () =>
         runDataWranglerComparisonStudy(planArguments(mismatchedSpecificationPath, mismatchedManifestPath), {
           cwd: directory,
-          captureCacheToolchain: () => observed
+          captureCacheToolchain: () => observed,
+          captureMethodology: captureSpecificationMethodology
         }),
       /does not match the plan-time observed files/u
     );
     assert.equal(existsSync(mismatchedManifestPath), false);
+  });
+});
+
+test("durable specification and preparation publications feed the production diagnostic readers", async () => {
+  await withDirectory(async (directory) => {
+    const specification = studySpecification();
+    const specificationPath = resolve(directory, "specification.json");
+    const manifestPath = resolve(directory, "manifest.json");
+    const preparationPath = resolve(directory, "preparation.json");
+    writeDataWranglerStudySpecificationExclusive(specificationPath, specification);
+    assert.deepEqual(readDataWranglerStudySpecificationPublication(specificationPath), specification);
+    const manifest = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
+      cwd: directory,
+      captureCacheToolchain: captureSpecificationCacheToolchain,
+      captureMethodology: captureSpecificationMethodology
+    }).output;
+    const path = (name) => resolve(directory, name);
+    const preparation = {
+      protocol: DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL,
+      manifestPath,
+      manifestSha256: digestStudyValue(manifest),
+      studyRoot: directory,
+      candidate: { path: path("candidate.vsix") },
+      editor: {
+        installationRoot: path("editor"),
+        executablePath: path("editor/code"),
+        cliPath: path("editor/code-cli")
+      },
+      python: { path: path("python") },
+      cacheController: { path: path("source-cache-control.py") },
+      driver: { directory: path("driver"), vsixPath: path("driver/driver.vsix") },
+      fixtures: [{ path: path("fixture.csv") }, { path: path("fixture.parquet") }],
+      selectedKernel: {
+        path: path("jupyter/data/kernels/study/kernel.json"),
+        jupyterEnvironment: {
+          dataDir: path("jupyter/data"),
+          runtimeDir: path("jupyter/runtime"),
+          configDir: path("jupyter/config"),
+          path: path("jupyter/path")
+        }
+      },
+      templates: [{}, {}, {}, {}],
+      publicUiCaptures: [{}, {}, {}],
+      createdAtUtc: "2026-08-02T10:00:00.000Z"
+    };
+    writeDataWranglerComparisonPreparationReceipt(preparationPath, preparation);
+    assert.deepEqual(loadDataWranglerComparisonPreparationReceipt(preparationPath), preparation);
+
+    let observedPrivatePublications = false;
+    const summary = await runUnrecordedPreparedDataWranglerComparisonDiagnostic(
+      { manifestPath, preparationPath },
+      {},
+      {
+        revalidatePreparation: async (value) => value,
+        async runEntry(options) {
+          const privateManifest = readDataWranglerStudyManifestPublication(options.manifestPath);
+          const privatePreparation = loadDataWranglerComparisonPreparationReceipt(options.preparationPath);
+          assert.deepEqual(privateManifest, manifest);
+          assert.equal(privatePreparation.manifestPath, options.manifestPath);
+          assert.equal(privatePreparation.manifestSha256, digestStudyValue(privateManifest));
+          observedPrivatePublications = true;
+          return {
+            status: "recorded",
+            receipt: null,
+            cleanup: { status: "retired", treeEmpty: true },
+            output: {
+              outcome: { status: "success", actionStarted: true },
+              resourceObservation: {
+                valid: true,
+                intervalMs: 200,
+                missedSamples: 0,
+                samples: [1, 2, 3, 4, 5].map((totalPssBytes) => ({ totalPssBytes }))
+              },
+              engineEvidence: {
+                sourceEngine: manifest.schedule[0].engine,
+                workbenchEngine: manifest.schedule[0].engine,
+                workbenchVerification: "public-ui-label"
+              },
+              cleanupProof: { status: "complete", treeEmpty: true },
+              sourceCopy: { cleanup: { removed: true } },
+              trialProvenance: { revalidatedAfterCleanup: true }
+            }
+          };
+        }
+      }
+    );
+    assert.equal(observedPrivatePublications, true);
+    assert.equal(summary.cleanupVerified, true);
+    assert.equal(summary.recorded, false);
+  });
+});
+
+test("plan rejects a specification that is not bound to the checked-in reviewed methodology", () => {
+  withDirectory((directory) => {
+    const specificationPath = resolve(directory, "spec.json");
+    const manifestPath = resolve(directory, "manifest.json");
+    const specification = studySpecification();
+    specification.method.sha256 = "9".repeat(64);
+    writeFileSync(specificationPath, JSON.stringify(specification));
+    assert.throws(
+      () =>
+        runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
+          cwd: directory,
+          captureCacheToolchain: captureSpecificationCacheToolchain,
+          captureMethodology: captureSpecificationMethodology
+        }),
+      /does not match the checked-in reviewed document/u
+    );
+    assert.equal(existsSync(manifestPath), false);
   });
 });
 
@@ -381,6 +538,7 @@ test("plan recovers an exact linked publication and creates only a private outpu
         runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
           cwd: directory,
           captureCacheToolchain: captureSpecificationCacheToolchain,
+          captureMethodology: captureSpecificationMethodology,
           publicationOptions: {
             manifest: {
               faultInjector: (point) => {
@@ -399,7 +557,8 @@ test("plan recovers an exact linked publication and creates only a private outpu
     assert.equal(lstatSync(manifestPath).nlink, 2);
     const recovered = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
       cwd: directory,
-      captureCacheToolchain: captureSpecificationCacheToolchain
+      captureCacheToolchain: captureSpecificationCacheToolchain,
+      captureMethodology: captureSpecificationMethodology
     });
     assert.equal(recovered.receipt.status, "recovered");
     assert.equal(lstatSync(manifestPath).nlink, 1);
@@ -789,7 +948,8 @@ function planStudy(directory, dataWranglerPolarsAvailability = "available") {
   writeFileSync(specificationPath, JSON.stringify(studySpecification(dataWranglerPolarsAvailability)));
   const planned = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
     cwd: directory,
-    captureCacheToolchain: captureSpecificationCacheToolchain
+    captureCacheToolchain: captureSpecificationCacheToolchain,
+    captureMethodology: captureSpecificationMethodology
   });
   return { manifestPath, fragmentsDirectory, intentsDirectory, manifest: planned.output };
 }
@@ -914,6 +1074,37 @@ function studyComparisonDriverReceipt() {
       graphSha256: createHash("sha256").update(JSON.stringify(modules), "utf8").digest("hex"),
       modules
     }
+  };
+}
+
+function studyWarmupReceipt(product, editor, fixture) {
+  return {
+    protocol: "openwrangler-data-wrangler-public-warmup-phase-v1",
+    product,
+    untimed: true,
+    locale: editor.uiLocale,
+    editorVersion: editor.version,
+    study: {
+      engine: "polars",
+      format: "csv",
+      kind: "warm",
+      fixture: { id: fixture.id, sha256: fixture.sha256, rows: fixture.rows, columns: fixture.columns },
+      kernel: { name: "python3" },
+      sourceReceipt: { sha256: fixture.sha256 },
+      pythonImplementation: "CPython",
+      pythonVersion: "3.12.10"
+    },
+    milestones: {
+      inlineActionMs: 0,
+      inlineReadyMs: 1,
+      workbenchActionMs: 2,
+      workbenchReadyMs: 3,
+      profileActionMs: 4,
+      firstProfileReadyMs: 5,
+      profilesCompleteMs: 6
+    },
+    profiles: { expectedColumnCount: fixture.columns, completedColumnCount: fixture.columns, canonicalOrder: true },
+    cleanup: { closeStatus: "succeeded", afterVerification: "matched" }
   };
 }
 
@@ -1050,14 +1241,27 @@ function studySpecification(dataWranglerPolarsAvailability = "available") {
           }
         }
       },
-      templates: DATA_WRANGLER_STUDY_PRODUCTS.map((product, index) => ({
-        product,
-        configuredOnlyReceiptSha256: digest(String(index + 1)),
-        warmedReceiptSha256: digest(String(index + 3)),
-        publicConfigurationCompleted: true,
-        publicWarmupCompleted: true,
-        targetStateAbsent: true
-      })),
+      fixtureToolchain: {
+        protocol: "openwrangler-performance-fixture-toolchain-v1",
+        contractVersion: 1,
+        implementation: "polars",
+        implementationVersion: "1.27.1",
+        generatorSha256: digest("e"),
+        contractSha256: digest("f")
+      },
+      templates: DATA_WRANGLER_STUDY_PRODUCTS.map((product, index) => {
+        const warmupReceipt = studyWarmupReceipt(product, editor, fixtures[0]);
+        return {
+          product,
+          configuredOnlyReceiptSha256: digest(String(index + 1)),
+          warmedReceiptSha256: digest(String(index + 3)),
+          warmupReceiptSha256: digestStudyValue(warmupReceipt),
+          warmupReceipt,
+          publicConfigurationCompleted: true,
+          publicWarmupCompleted: true,
+          targetStateAbsent: true
+        };
+      }),
       capabilities: fixtures.map((fixture, index) => {
         const receipt = capabilityReceipts[index];
         return {

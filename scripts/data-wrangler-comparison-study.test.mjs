@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
+import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
 import {
   DATA_WRANGLER_STUDY_CELLS,
   DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
@@ -252,8 +253,8 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
     manifest.fixtures.map((fixture) => fixture.id)
   );
   assert.deepEqual(manifest.provenance.commonExtensions[0], {
-    extensionId: "openwrangler-study.notebook-comparison-driver",
-    version: "1.0.0"
+    extensionId: "ms-python.debugpy",
+    version: "2026.6.0"
   });
   assert.equal(manifest.provenance.comparisonDriver.vsix.sha256, digest("f"));
   assert.equal(manifest.provenance.comparisonDriver.journeyGraph.modules.length, 2);
@@ -2186,6 +2187,37 @@ function studyComparisonDriverReceipt() {
   };
 }
 
+function studyWarmupReceipt(product, editor, fixture) {
+  return {
+    protocol: "openwrangler-data-wrangler-public-warmup-phase-v1",
+    product,
+    untimed: true,
+    locale: editor.uiLocale,
+    editorVersion: editor.version,
+    study: {
+      engine: "polars",
+      format: "csv",
+      kind: "warm",
+      fixture: { id: fixture.id, sha256: fixture.sha256, rows: fixture.rows, columns: fixture.columns },
+      kernel: { name: "python3" },
+      sourceReceipt: { sha256: fixture.sha256 },
+      pythonImplementation: "CPython",
+      pythonVersion: "3.12.10"
+    },
+    milestones: {
+      inlineActionMs: 0,
+      inlineReadyMs: 1,
+      workbenchActionMs: 2,
+      workbenchReadyMs: 3,
+      profileActionMs: 4,
+      firstProfileReadyMs: 5,
+      profilesCompleteMs: 6
+    },
+    profiles: { expectedColumnCount: fixture.columns, completedColumnCount: fixture.columns, canonicalOrder: true },
+    cleanup: { closeStatus: "succeeded", afterVerification: "matched" }
+  };
+}
+
 function studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, ownershipTracker) {
   const controlContext = publicUiContext("33333333-3333-4333-8333-333333333333", editor, fixtures[0]);
   const capabilityCaptureIds = ["22222222-2222-4222-8222-222222222222", "44444444-4444-4444-8444-444444444444"];
@@ -2266,14 +2298,27 @@ function studyProvenance(dataWranglerPolarsAvailability, editor, fixtures, owner
       },
       pythonExecutable: structuredClone(ownershipTracker.pythonExecutable)
     },
-    templates: DATA_WRANGLER_STUDY_PRODUCTS.map((product, index) => ({
-      product,
-      configuredOnlyReceiptSha256: digest(String(index + 1)),
-      warmedReceiptSha256: digest(String(index + 3)),
-      publicConfigurationCompleted: true,
-      publicWarmupCompleted: true,
-      targetStateAbsent: true
-    })),
+    fixtureToolchain: {
+      protocol: "openwrangler-performance-fixture-toolchain-v1",
+      contractVersion: 1,
+      implementation: "polars",
+      implementationVersion: "1.27.1",
+      generatorSha256: digest("e"),
+      contractSha256: digest("f")
+    },
+    templates: DATA_WRANGLER_STUDY_PRODUCTS.map((product, index) => {
+      const warmupReceipt = studyWarmupReceipt(product, editor, fixtures[0]);
+      return {
+        product,
+        configuredOnlyReceiptSha256: digest(String(index + 1)),
+        warmedReceiptSha256: digest(String(index + 3)),
+        warmupReceiptSha256: digestStudyValue(warmupReceipt),
+        warmupReceipt,
+        publicConfigurationCompleted: true,
+        publicWarmupCompleted: true,
+        targetStateAbsent: true
+      };
+    }),
     capabilities,
     controlProfile: {
       method: "neither-product",
@@ -2930,7 +2975,11 @@ function studyTrialProvenance(manifest, scheduleEntry, processProofs, sourceCopy
     scheduleEntry.product === "open-wrangler"
       ? { extensionId: manifest.candidate.extensionId, version: manifest.candidate.version }
       : { extensionId: manifest.baseline.extensionId, version: manifest.baseline.version };
-  const extensions = [...manifest.provenance.commonExtensions.map((extension) => ({ ...extension })), productExtension];
+  const extensions = [
+    ...manifest.provenance.commonExtensions.map((extension) => ({ ...extension })),
+    productExtension,
+    { ...DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY }
+  ];
   return {
     candidateBefore: structuredClone(candidate),
     candidateAfter: structuredClone(candidate),
