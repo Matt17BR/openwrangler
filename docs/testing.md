@@ -52,7 +52,11 @@ Agent checkout lifecycle has a separate, small contract test:
   worktree repositories are terminal dependency-scan nodes, so large declared generated trees are inventoried by the
   deep audit but never recursively searched for nested repositories. This phase covers only self-contained standalone
   clones. Alternate-backed chains and old-registry linked worktrees stay blocked and need separate reviewed migration
-  protocols; a successful phase-1 batch must never be reported as cleanup of the whole historical inventory.
+  protocols; a successful phase-1 batch must never be reported as cleanup of the whole historical inventory. Request
+  and completion interruption tests prove that one exact batch attempt resumes without allocating another generation,
+  while ambiguous or conflicting attempts remain blocked. The public single-adoption API cannot accept the batch's
+  dependency catalog or lock-held capability. Existing-enrollment checks cover quarantined and terminal v1/v2 legacy
+  layouts without requiring the original source path to remain present.
 - `npm run checkout:legacy-audit -- <slug>` uses the fixed `tmp/codex-checkpoints/<slug>` path derived from the bootstrap
   receipt by default. Every audit and adoption also requires one or more `--dependency-root` values copied from the
   bounded discovery that found the candidate. Passing both an absolute `--path` and its immediate absolute parent

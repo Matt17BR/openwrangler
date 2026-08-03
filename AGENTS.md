@@ -162,7 +162,9 @@ checkout on that boot. The later task-start sweep performs the normal identity/a
 removal. Worktree repositories are terminal nodes in dependency-root scans, so generated payloads are audited and
 hashed by their declared allowlist but are not recursively searched for repositories. Bare roots still scan bounded
 non-administration children. Keep dependency roots at the parent directories that directly contain the reviewed
-checkout inventory.
+checkout inventory. An interrupted request or unpublished completion resumes only when its owner, paths, allowlist,
+repository proof, dependency proof, and fresh audit still match the reviewed batch exactly; ambiguous or conflicting
+attempt history stays blocked.
 
 After adoption, `npm run checkout:legacy-archive -- <slug> --owner <task> --revision <revision>` may record a recovery
 archive. The owner and revision must match the adoption and remain bound through archive, enrollment, quarantine,

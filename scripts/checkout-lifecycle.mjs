@@ -3970,13 +3970,12 @@ export function createCheckoutManager(options = {}) {
     return join(paths.legacyArchiveEntries, `${slug}.json`);
   }
 
-  function currentLegacyAdoption(slug) {
+  function retainedLegacyAdoption(slug) {
     const attempts = listLegacyAttempts(slug);
     const entry = readLegacyEntry(slug, attempts);
     if (entry === undefined) {
       fail("legacy-adoption-required", `Legacy checkout ${slug} has no completed adoption record.`);
     }
-    revalidateLegacyEvidenceSource(entry.value.evidence);
     const request = readJsonReceipt(entry.value.request.path, MAXIMUM_ENTRY_BYTES, "Legacy adoption request");
     validateLegacyRequest(request.value, slug, entry.value.generation);
     if (
@@ -3987,6 +3986,12 @@ export function createCheckoutManager(options = {}) {
       fail("invalid-legacy-adoption", "The adopted legacy request no longer matches its completion.");
     }
     return Object.freeze({ entry, request });
+  }
+
+  function currentLegacyAdoption(slug) {
+    const adoption = retainedLegacyAdoption(slug);
+    revalidateLegacyEvidenceSource(adoption.entry.value.evidence);
+    return adoption;
   }
 
   function legacyAdoptionAuthority(adoption) {
@@ -10376,7 +10381,7 @@ export function createCheckoutManager(options = {}) {
       fail("invalid-retirement-kind", "Retirement kind must be managed or legacy.");
     }
     const managedEntry = kind === "managed" ? readEntry(slug) : undefined;
-    const legacyAdoption = kind === "legacy" ? currentLegacyAdoption(slug) : undefined;
+    const legacyAdoption = kind === "legacy" ? retainedLegacyAdoption(slug) : undefined;
     const generation = managedEntry?.generation ?? legacyAdoption.entry.value.generation;
     const originalPath =
       kind === "managed" ? checkoutPathFor(slug) : legacyAdoption.entry.value.evidence.source.checkout;
@@ -11075,21 +11080,13 @@ export function createCheckoutManager(options = {}) {
       }
       try {
         let existingAdoption;
-        if (reservations.legacy.includes(candidate.slug)) {
-          const adoption = currentLegacyAdoption(candidate.slug);
-          const request = adoption.request.value;
-          const target = legacyTargetFromRequest(request);
-          if (
-            request.ownerTask !== candidate.ownerTask ||
-            request.ownerRevision !== 1 ||
-            !isDeepStrictEqual(request.generatedRoots, candidate.generatedRoots) ||
-            !isDeepStrictEqual(request.generatedFiles, candidate.generatedFiles) ||
-            target?.checkoutPath !== candidate.path ||
-            target?.approvedRoot !== candidate.root
-          ) {
-            fail("checkout-slug-reserved", `Checkout slug ${candidate.slug} belongs to another retained adoption.`);
-          }
-          existingAdoption = adoption;
+        let resumableAttempt;
+        const attempts = listLegacyAttempts(candidate.slug);
+        const entry = readLegacyEntry(candidate.slug, attempts);
+        if (entry !== undefined) {
+          existingAdoption = retainedLegacyAdoption(candidate.slug);
+        } else if (reservations.legacy.includes(candidate.slug) && attempts.length === 0) {
+          fail("checkout-slug-reserved", `Checkout slug ${candidate.slug} belongs to other retained legacy history.`);
         }
         const evidence = captureLegacyAudit(
           candidate.slug,
@@ -11103,13 +11100,49 @@ export function createCheckoutManager(options = {}) {
           ),
           catalog
         );
-        if (existingAdoption !== undefined && !isDeepStrictEqual(existingAdoption.entry.value.evidence, evidence)) {
-          fail("legacy-adoption-changed", `The retained adoption for ${candidate.slug} no longer matches the batch.`);
+        const requestMatches = (request) =>
+          request.protocol === LEGACY_ADOPTION_REQUEST_PROTOCOL_V2 &&
+          request.ownerTask === candidate.ownerTask &&
+          request.ownerRevision === 1 &&
+          isDeepStrictEqual(request.generatedRoots, candidate.generatedRoots) &&
+          isDeepStrictEqual(request.generatedFiles, candidate.generatedFiles) &&
+          isDeepStrictEqual(request.target, explicitLegacyTargetFromEvidence(evidence));
+        if (existingAdoption !== undefined) {
+          if (
+            !requestMatches(existingAdoption.request.value) ||
+            !isDeepStrictEqual(existingAdoption.entry.value.evidence, evidence)
+          ) {
+            fail("checkout-slug-reserved", `Checkout slug ${candidate.slug} belongs to another retained adoption.`);
+          }
+        } else if (attempts.length !== 0) {
+          if (attempts.length !== 1 || attempts[0].request === undefined) {
+            fail(
+              "checkout-slug-reserved",
+              `Checkout slug ${candidate.slug} has ambiguous interrupted adoption history.`
+            );
+          }
+          const [attempt] = attempts;
+          if (!requestMatches(attempt.request.value)) {
+            fail("checkout-slug-reserved", `Checkout slug ${candidate.slug} has a conflicting adoption request.`);
+          }
+          if (attempt.completion !== undefined) {
+            if (
+              lstatSync(join(attempt.path, "complete.json"), { bigint: true }).nlink !== 1n ||
+              !isDeepStrictEqual(attempt.completion.value.evidence, evidence)
+            ) {
+              fail(
+                "checkout-slug-reserved",
+                `Checkout slug ${candidate.slug} has a conflicting unpublished completion.`
+              );
+            }
+          }
+          resumableAttempt = attempt;
         }
         return Object.freeze({
           candidate,
           status: "eligible",
           alreadyAdopted: existingAdoption !== undefined,
+          resumableAttempt,
           evidence,
           evidenceSha256: sha256(`${JSON.stringify(evidence)}\n`)
         });
@@ -11170,6 +11203,222 @@ export function createCheckoutManager(options = {}) {
     const slugs = [...new Set(registryFiles().map((file) => file.slug))].sort();
     if (slugs.length > MAXIMUM_ENTRIES) fail("too-many-checkouts", "The checkout registry has too many checkouts.");
     return slugs;
+  }
+
+  function adoptLegacyInternal({
+    slug,
+    ownerTask,
+    generatedRoots = [],
+    generatedFiles = [],
+    checkoutPath,
+    approvedRoot,
+    dependencyRoots,
+    dependencyCatalog = undefined,
+    resumeAttempt = undefined,
+    expectedEvidence = undefined
+  }) {
+    assertSlug(slug);
+    assertOwner(ownerTask);
+    const requestedTarget = requestedExplicitLegacyTarget(slug, checkoutPath, approvedRoot, dependencyRoots);
+    const allowlist = normalizeLegacyGeneratedAllowlist(generatedRoots, generatedFiles);
+    const normalizedRoots = allowlist.filter((item) => item.kind === "directory").map((item) => item.path);
+    const normalizedFiles = allowlist.filter((item) => item.kind === "file").map((item) => item.path);
+    initializeLegacyAdoptionJournal();
+    const reservations = assertSlugAuthorityAvailable(slug, "legacy");
+    const priorAttempts = listLegacyAttempts(slug);
+    if (legacyEntrySlugs(slug).length !== 0) {
+      readLegacyEntry(slug, priorAttempts);
+      fail("legacy-adoption-exists", `Legacy checkout ${slug} is already adopted for review.`);
+    }
+    if (reservations.legacy.length !== 0 && priorAttempts.length === 0) {
+      fail("legacy-adoption-exists", `Legacy checkout ${slug} has retained lifecycle history.`);
+    }
+
+    let attempt;
+    let request;
+    let explicitTarget;
+    if (resumeAttempt === undefined) {
+      attempt = allocateLegacyAttempt(slug);
+      const token = tokenFactory();
+      if (!/^[0-9a-f]{32}$/u.test(token)) fail("invalid-legacy-adoption", "The adoption token is malformed.");
+      assertPersistedJsonFits(
+        {
+          protocol: LEGACY_ADOPTION_REQUEST_PROTOCOL_V2,
+          slug,
+          generation: attempt.generation,
+          ownerTask,
+          ownerRevision: 1,
+          token,
+          generatedRoots: normalizedRoots,
+          generatedFiles: normalizedFiles,
+          target: requestedTarget
+        },
+        "The legacy adoption request"
+      );
+      const preflightEvidence = captureLegacyAudit(
+        slug,
+        normalizedRoots,
+        normalizedFiles,
+        requestedTarget,
+        dependencyCatalog
+      );
+      explicitTarget = explicitLegacyTargetFromEvidence(preflightEvidence);
+      const requestValue = {
+        protocol: LEGACY_ADOPTION_REQUEST_PROTOCOL_V2,
+        slug,
+        generation: attempt.generation,
+        ownerTask,
+        ownerRevision: 1,
+        token,
+        generatedRoots: normalizedRoots,
+        generatedFiles: normalizedFiles,
+        target: explicitTarget
+      };
+      validateLegacyRequest(requestValue, slug, attempt.generation);
+      assertPersistedJsonFits(requestValue, "The legacy adoption request");
+      const requestPath = join(attempt.path, "request.json");
+      writeJsonExclusive(requestPath, requestValue, attempt.identity);
+      request = readJsonReceipt(requestPath, MAXIMUM_ENTRY_BYTES, "Legacy adoption request");
+      validateLegacyRequest(request.value, slug, attempt.generation);
+      if (!isDeepStrictEqual(request.value, requestValue)) {
+        fail("legacy-adoption-changed", "The legacy adoption request changed while it was recorded.");
+      }
+      hooks?.afterLegacyAdoptionRequest?.(attempt, requestValue);
+    } else {
+      if (expectedEvidence === undefined || dependencyCatalog === undefined || priorAttempts.length !== 1) {
+        fail("legacy-adoption-changed", "The interrupted batch adoption no longer has one exact resumable attempt.");
+      }
+      const [retainedAttempt] = priorAttempts;
+      if (
+        retainedAttempt.request === undefined ||
+        retainedAttempt.slug !== resumeAttempt.slug ||
+        retainedAttempt.generation !== resumeAttempt.generation ||
+        retainedAttempt.path !== resumeAttempt.path ||
+        !sameIdentity(retainedAttempt.identity, resumeAttempt.identity) ||
+        !isDeepStrictEqual(retainedAttempt.request, resumeAttempt.request) ||
+        !isDeepStrictEqual(retainedAttempt.completion, resumeAttempt.completion)
+      ) {
+        fail("legacy-adoption-changed", "The interrupted batch adoption attempt changed before it could resume.");
+      }
+      attempt = retainedAttempt;
+      request = retainedAttempt.request;
+      explicitTarget = legacyTargetFromRequest(request.value);
+      if (
+        request.value.protocol !== LEGACY_ADOPTION_REQUEST_PROTOCOL_V2 ||
+        request.value.ownerTask !== ownerTask ||
+        request.value.ownerRevision !== 1 ||
+        !isDeepStrictEqual(request.value.generatedRoots, normalizedRoots) ||
+        !isDeepStrictEqual(request.value.generatedFiles, normalizedFiles) ||
+        !isDeepStrictEqual(explicitTarget, explicitLegacyTargetFromEvidence(expectedEvidence))
+      ) {
+        fail(
+          "legacy-adoption-changed",
+          "The interrupted batch adoption request conflicts with the reviewed candidate."
+        );
+      }
+    }
+
+    const firstEvidence = captureLegacyAudit(slug, normalizedRoots, normalizedFiles, explicitTarget, dependencyCatalog);
+    hooks?.afterFirstLegacyAudit?.(attempt, firstEvidence);
+    const secondEvidence = captureLegacyAudit(
+      slug,
+      normalizedRoots,
+      normalizedFiles,
+      explicitTarget,
+      dependencyCatalog
+    );
+    if (
+      !isDeepStrictEqual(firstEvidence, secondEvidence) ||
+      (expectedEvidence !== undefined && !isDeepStrictEqual(secondEvidence, expectedEvidence))
+    ) {
+      fail("legacy-checkout-changed", "The legacy checkout changed between its reviewed adoption audits.");
+    }
+
+    const requestPath = join(attempt.path, "request.json");
+    revalidatePathIdentity(requestPath, request.identity, "Legacy adoption request");
+    revalidatePathIdentity(attempt.path, attempt.identity, "Legacy adoption attempt", "directory");
+    const completionValue = {
+      protocol: LEGACY_ADOPTION_COMPLETION_PROTOCOL_V2,
+      slug,
+      generation: attempt.generation,
+      ownerTask,
+      ownerRevision: 1,
+      request: {
+        path: requestPath,
+        identity: request.identity,
+        byteLength: request.byteLength,
+        sha256: request.sha256
+      },
+      evidence: secondEvidence
+    };
+    validateLegacyCompletion(completionValue, slug, attempt.generation);
+    assertPersistedJsonFits(completionValue, "The legacy adoption completion");
+    const completionPath = join(attempt.path, "complete.json");
+    let completion;
+    if (attempt.completion === undefined) {
+      hooks?.beforeLegacyAdoptionCompletion?.(attempt, secondEvidence);
+      writeJsonExclusive(completionPath, completionValue, attempt.identity);
+      completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Legacy adoption completion");
+      validateLegacyCompletion(completion.value, slug, attempt.generation);
+      if (!isDeepStrictEqual(completion.value, completionValue)) {
+        fail("legacy-adoption-changed", "The legacy completion changed while it was recorded.");
+      }
+    } else {
+      completion = attempt.completion;
+      if (
+        lstatSync(completionPath, { bigint: true }).nlink !== 1n ||
+        !isDeepStrictEqual(completion.value, completionValue)
+      ) {
+        fail("legacy-adoption-changed", "The unpublished legacy completion conflicts with the reviewed candidate.");
+      }
+    }
+
+    const entriesIdentity = managedIdentities.get(paths.legacyAdoptionEntries);
+    if (entriesIdentity === undefined) fail("unsafe-manager", "The legacy adoption entries were not initialized.");
+    revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
+    hooks?.beforeLegacyAdoptionPublish?.(attempt, completionValue);
+    const publicationEvidence = captureLegacyAudit(
+      slug,
+      normalizedRoots,
+      normalizedFiles,
+      explicitTarget,
+      dependencyCatalog
+    );
+    if (!isDeepStrictEqual(publicationEvidence, secondEvidence)) {
+      fail("legacy-checkout-changed", "The legacy checkout changed before adoption publication.");
+    }
+    revalidatePathIdentity(requestPath, request.identity, "Legacy adoption request");
+    revalidatePathIdentity(completionPath, completion.identity, "Legacy adoption completion");
+    revalidatePathIdentity(attempt.path, attempt.identity, "Legacy adoption attempt", "directory");
+    revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
+    try {
+      linkSync(completionPath, legacyEntryPath(slug));
+      fsyncDirectory(paths.legacyAdoptionEntries);
+    } catch (error) {
+      if (error.code === "EEXIST") {
+        fail("legacy-adoption-exists", `Legacy checkout ${slug} was adopted concurrently.`);
+      }
+      throw error;
+    }
+    hooks?.afterLegacyAdoptionPublish?.(attempt, completionValue);
+    revalidateLegacyEvidenceSource(secondEvidence);
+    revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
+    const recordedAttempts = listLegacyAttempts(slug);
+    const entry = readLegacyEntry(slug, recordedAttempts);
+    if (entry === undefined || !isDeepStrictEqual(entry.value, completionValue)) {
+      fail("legacy-adoption-changed", "The published legacy adoption record changed.");
+    }
+    revalidatePathIdentity(attempt.path, attempt.identity, "Legacy adoption attempt", "directory");
+    return Object.freeze({
+      status: resumeAttempt === undefined ? "adopted-review-required" : "resumed-adoption-review-required",
+      slug,
+      generation: attempt.generation,
+      ownerTask,
+      ownerRevision: 1,
+      evidence: entry.value.evidence,
+      authorizesMove: false,
+      authorizesCleanup: false
+    });
   }
 
   const managerApi = Object.freeze({
@@ -11236,7 +11485,7 @@ export function createCheckoutManager(options = {}) {
                 authorizesMove: false,
                 authorizesCleanup: false
               })
-            : managerApi.legacyAdopt({
+            : adoptLegacyInternal({
                 slug: candidate.slug,
                 ownerTask: candidate.ownerTask,
                 generatedRoots: candidate.generatedRoots,
@@ -11245,7 +11494,8 @@ export function createCheckoutManager(options = {}) {
                 approvedRoot: candidate.root,
                 dependencyRoots: manifest.normalized.dependencyRoots,
                 dependencyCatalog: review.catalog,
-                operationLockHeld: true
+                resumeAttempt: item.resumableAttempt,
+                expectedEvidence: item.evidence
               });
           adopted.push(result);
           hooks?.afterLegacyBatchCandidateAdopt?.(candidate, result);
@@ -11335,167 +11585,20 @@ export function createCheckoutManager(options = {}) {
       generatedFiles = [],
       checkoutPath,
       approvedRoot,
-      dependencyRoots,
-      dependencyCatalog = undefined,
-      operationLockHeld = false
+      dependencyRoots
     }) {
-      assertSlug(slug);
-      assertOwner(ownerTask);
-      const requestedTarget = requestedExplicitLegacyTarget(slug, checkoutPath, approvedRoot, dependencyRoots);
-      const allowlist = normalizeLegacyGeneratedAllowlist(generatedRoots, generatedFiles);
-      const normalizedRoots = allowlist.filter((item) => item.kind === "directory").map((item) => item.path);
-      const normalizedFiles = allowlist.filter((item) => item.kind === "file").map((item) => item.path);
-      const adopt = () => {
-        initializeLegacyAdoptionJournal();
-        const reservations = assertSlugAuthorityAvailable(slug, "legacy");
-        const priorAttempts = listLegacyAttempts(slug);
-        if (legacyEntrySlugs(slug).length !== 0) {
-          readLegacyEntry(slug, priorAttempts);
-          fail("legacy-adoption-exists", `Legacy checkout ${slug} is already adopted for review.`);
-        }
-        if (reservations.legacy.length !== 0 && priorAttempts.length === 0) {
-          fail("legacy-adoption-exists", `Legacy checkout ${slug} has retained lifecycle history.`);
-        }
-        const attempt = allocateLegacyAttempt(slug);
-        const token = tokenFactory();
-        if (!/^[0-9a-f]{32}$/u.test(token)) fail("invalid-legacy-adoption", "The adoption token is malformed.");
-        assertPersistedJsonFits(
-          {
-            protocol: LEGACY_ADOPTION_REQUEST_PROTOCOL_V2,
-            slug,
-            generation: attempt.generation,
-            ownerTask,
-            ownerRevision: 1,
-            token,
-            generatedRoots: normalizedRoots,
-            generatedFiles: normalizedFiles,
-            target: requestedTarget
-          },
-          "The legacy adoption request"
-        );
-        const preflightEvidence =
-          requestedTarget === undefined
-            ? undefined
-            : captureLegacyAudit(slug, normalizedRoots, normalizedFiles, requestedTarget, dependencyCatalog);
-        const explicitTarget =
-          preflightEvidence === undefined ? undefined : explicitLegacyTargetFromEvidence(preflightEvidence);
-        const requestValue = {
-          protocol:
-            explicitTarget === undefined ? LEGACY_ADOPTION_REQUEST_PROTOCOL : LEGACY_ADOPTION_REQUEST_PROTOCOL_V2,
+      return withLock(() =>
+        adoptLegacyInternal({
           slug,
-          generation: attempt.generation,
           ownerTask,
-          ...(explicitTarget === undefined ? {} : { ownerRevision: 1 }),
-          token,
-          generatedRoots: normalizedRoots,
-          generatedFiles: normalizedFiles,
-          ...(explicitTarget === undefined ? {} : { target: explicitTarget })
-        };
-        validateLegacyRequest(requestValue, slug, attempt.generation);
-        assertPersistedJsonFits(requestValue, "The legacy adoption request");
-        const requestPath = join(attempt.path, "request.json");
-        writeJsonExclusive(requestPath, requestValue, attempt.identity);
-        const request = readJsonReceipt(requestPath, MAXIMUM_ENTRY_BYTES, "Legacy adoption request");
-        validateLegacyRequest(request.value, slug, attempt.generation);
-        if (!isDeepStrictEqual(request.value, requestValue)) {
-          fail("legacy-adoption-changed", "The legacy adoption request changed while it was recorded.");
-        }
-        hooks?.afterLegacyAdoptionRequest?.(attempt, requestValue);
-        const firstEvidence = captureLegacyAudit(
-          slug,
-          normalizedRoots,
-          normalizedFiles,
-          explicitTarget,
-          dependencyCatalog
-        );
-        hooks?.afterFirstLegacyAudit?.(attempt, firstEvidence);
-        const secondEvidence = captureLegacyAudit(
-          slug,
-          normalizedRoots,
-          normalizedFiles,
-          explicitTarget,
-          dependencyCatalog
-        );
-        if (!isDeepStrictEqual(firstEvidence, secondEvidence)) {
-          fail("legacy-checkout-changed", "The legacy checkout changed between its two complete audits.");
-        }
-        hooks?.beforeLegacyAdoptionCompletion?.(attempt, secondEvidence);
-        revalidatePathIdentity(requestPath, request.identity, "Legacy adoption request");
-        revalidatePathIdentity(attempt.path, attempt.identity, "Legacy adoption attempt", "directory");
-        const completionValue = {
-          protocol:
-            explicitTarget === undefined ? LEGACY_ADOPTION_COMPLETION_PROTOCOL : LEGACY_ADOPTION_COMPLETION_PROTOCOL_V2,
-          slug,
-          generation: attempt.generation,
-          ownerTask,
-          ...(explicitTarget === undefined ? {} : { ownerRevision: 1 }),
-          request: {
-            path: requestPath,
-            identity: request.identity,
-            byteLength: request.byteLength,
-            sha256: request.sha256
-          },
-          evidence: secondEvidence
-        };
-        validateLegacyCompletion(completionValue, slug, attempt.generation);
-        assertPersistedJsonFits(completionValue, "The legacy adoption completion");
-        const completionPath = join(attempt.path, "complete.json");
-        writeJsonExclusive(completionPath, completionValue, attempt.identity);
-        const completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Legacy adoption completion");
-        validateLegacyCompletion(completion.value, slug, attempt.generation);
-        if (!isDeepStrictEqual(completion.value, completionValue)) {
-          fail("legacy-adoption-changed", "The legacy completion changed while it was recorded.");
-        }
-        const entriesIdentity = managedIdentities.get(paths.legacyAdoptionEntries);
-        if (entriesIdentity === undefined) fail("unsafe-manager", "The legacy adoption entries were not initialized.");
-        revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
-        hooks?.beforeLegacyAdoptionPublish?.(attempt, completionValue);
-        const publicationEvidence = captureLegacyAudit(
-          slug,
-          normalizedRoots,
-          normalizedFiles,
-          explicitTarget,
-          dependencyCatalog
-        );
-        if (!isDeepStrictEqual(publicationEvidence, secondEvidence)) {
-          fail("legacy-checkout-changed", "The legacy checkout changed before adoption publication.");
-        }
-        revalidatePathIdentity(requestPath, request.identity, "Legacy adoption request");
-        revalidatePathIdentity(completionPath, completion.identity, "Legacy adoption completion");
-        revalidatePathIdentity(attempt.path, attempt.identity, "Legacy adoption attempt", "directory");
-        revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
-        try {
-          linkSync(completionPath, legacyEntryPath(slug));
-          fsyncDirectory(paths.legacyAdoptionEntries);
-        } catch (error) {
-          if (error.code === "EEXIST") {
-            fail("legacy-adoption-exists", `Legacy checkout ${slug} was adopted concurrently.`);
-          }
-          throw error;
-        }
-        hooks?.afterLegacyAdoptionPublish?.(attempt, completionValue);
-        revalidateLegacyEvidenceSource(secondEvidence);
-        revalidatePathIdentity(paths.legacyAdoptionEntries, entriesIdentity, "Legacy adoption entries", "directory");
-        const recordedAttempts = listLegacyAttempts(slug);
-        const entry = readLegacyEntry(slug, recordedAttempts);
-        if (entry === undefined || !isDeepStrictEqual(entry.value, completionValue)) {
-          fail("legacy-adoption-changed", "The published legacy adoption record changed.");
-        }
-        revalidatePathIdentity(attempt.path, attempt.identity, "Legacy adoption attempt", "directory");
-        return Object.freeze({
-          status: "adopted-review-required",
-          slug,
-          generation: attempt.generation,
-          ownerTask,
-          ...(explicitTarget === undefined ? {} : { ownerRevision: 1 }),
-          evidence: entry.value.evidence,
-          authorizesMove: false,
-          authorizesCleanup: false
-        });
-      };
-      return operationLockHeld ? adopt() : withLock(adopt);
+          generatedRoots,
+          generatedFiles,
+          checkoutPath,
+          approvedRoot,
+          dependencyRoots
+        })
+      );
     },
-
     legacyArchive({ slug, ownerTask, expectedRevision }) {
       assertSlug(slug);
       assertOwner(ownerTask);
