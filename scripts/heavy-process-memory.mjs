@@ -204,18 +204,25 @@ function createLinuxSampler(rootPid) {
     return selector.select(processRows());
   }
 
-  return samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, (row) => {
-    if (row.state === "Z" || row.state === "X") return 0;
-    const path = metric.kind === "pss" ? `/proc/${row.pid}/smaps_rollup` : `/proc/${row.pid}/status`;
-    try {
-      return parseLinuxMemoryBytes(readFileSync(path, "utf8"), metric.kind);
-    } catch (error) {
-      if (processIdentityStillMatches(row)) {
-        throw new Error(`Memory accounting failed for live Open Wrangler child PID ${row.pid}.`, { cause: error });
+  return samplerFromRows(
+    rootPid,
+    capturedIdentities,
+    metric,
+    ownedRows,
+    (row) => {
+      if (row.state === "Z" || row.state === "X") return 0;
+      const path = metric.kind === "pss" ? `/proc/${row.pid}/smaps_rollup` : `/proc/${row.pid}/status`;
+      try {
+        return parseLinuxMemoryBytes(readFileSync(path, "utf8"), metric.kind);
+      } catch (error) {
+        if (linuxProcessIdentityStillMatches(row)) {
+          throw new Error(`Memory accounting failed for live Open Wrangler child PID ${row.pid}.`, { cause: error });
+        }
+        return 0;
       }
-      return 0;
-    }
-  });
+    },
+    linuxProcessIdentityStillMatches
+  );
 }
 
 function detectLinuxMemoryMetric() {
@@ -241,7 +248,7 @@ function parseLinuxMemoryBytes(contents, kind) {
   return kibibytes * 1024;
 }
 
-function processIdentityStillMatches(row) {
+function linuxProcessIdentityStillMatches(row) {
   try {
     return readLinuxProcessRow(row.pid).identity === row.identity;
   } catch (error) {
@@ -282,7 +289,31 @@ function createMacSampler(rootPid) {
     });
     return selector.select(parseMacProcessRows(stdout));
   }
-  return samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, (row) => row.memoryBytes);
+  return samplerFromRows(
+    rootPid,
+    capturedIdentities,
+    metric,
+    ownedRows,
+    (row) => row.memoryBytes,
+    macProcessIdentityStillMatches
+  );
+}
+
+function macProcessIdentityStillMatches(row) {
+  let stdout;
+  try {
+    stdout = execFileSync("/bin/ps", ["-p", String(row.pid), "-o", "pid=,ppid=,pgid=,rss=,lstart="], {
+      encoding: "utf8",
+      maxBuffer: 4 * 1024,
+      timeout: 2_000,
+      windowsHide: true
+    });
+  } catch (error) {
+    if (error?.status === 1 || error?.code === "ESRCH") return false;
+    throw new Error(`macOS process identity revalidation failed for PID ${row.pid}.`, { cause: error });
+  }
+  const currentRows = parseMacProcessRows(stdout);
+  return currentRows.length === 1 && currentRows[0].pid === row.pid && currentRows[0].identity === row.identity;
 }
 
 function createOwnedProcessSelector(
@@ -312,7 +343,30 @@ function createOwnedProcessSelector(
   };
 }
 
-function samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, memoryBytes) {
+export function signalIdentityCheckedProcessRows(
+  selected,
+  signal,
+  { rootPid, includeRoot = true, currentPid = process.pid, identityStillMatches, killProcess = process.kill } = {}
+) {
+  if (typeof identityStillMatches !== "function" || typeof killProcess !== "function") {
+    throw new Error("Process signaling requires identity verification and a signal primitive.");
+  }
+  for (const row of selected) {
+    if (row.pid === currentPid || (!includeRoot && row.pid === rootPid)) continue;
+    const identityMatches = identityStillMatches(row);
+    if (typeof identityMatches !== "boolean") {
+      throw new Error(`Process identity verification returned an invalid result for PID ${row.pid}.`);
+    }
+    if (!identityMatches) continue;
+    try {
+      killProcess(row.pid, signal);
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+  }
+}
+
+function samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, memoryBytes, identityStillMatches) {
   async function rows() {
     return await ownedRows();
   }
@@ -328,14 +382,11 @@ function samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, memoryB
     },
     async signal(signal, { includeRoot = true } = {}) {
       const selected = await rows();
-      for (const row of selected) {
-        if (row.pid === process.pid || (!includeRoot && row.pid === rootPid)) continue;
-        try {
-          process.kill(row.pid, signal);
-        } catch (error) {
-          if (error?.code !== "ESRCH") throw error;
-        }
-      }
+      signalIdentityCheckedProcessRows(selected, signal, {
+        rootPid,
+        includeRoot,
+        identityStillMatches
+      });
     },
     async active() {
       return (await rows()).filter((row) => row.state !== "Z" && row.state !== "X");

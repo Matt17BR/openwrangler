@@ -14,7 +14,8 @@ import {
   collectOwnedProcessRows,
   parseLinuxProcessStat,
   parseMacProcessRows,
-  resolveHeavyMemoryPolicy
+  resolveHeavyMemoryPolicy,
+  signalIdentityCheckedProcessRows
 } from "./heavy-process-memory.mjs";
 
 const guard = fileURLToPath(new URL("./run-heavy-local-command.mjs", import.meta.url));
@@ -169,6 +170,37 @@ test("process snapshots retain identities and include new process groups below t
     }
   ]);
   assert.throws(() => parseMacProcessRows("not a process row"), /malformed row/u);
+});
+
+test("process signaling revalidates identities immediately and skips reused PIDs", () => {
+  const root = linuxRow(100, 1, 100, "1000");
+  const live = linuxRow(101, 100, 100, "1001");
+  const reused = linuxRow(102, 100, 100, "1002");
+  const wrapper = linuxRow(999, 1, 999, "9990");
+  const currentIdentities = new Map([
+    [101, live.identity],
+    [102, "102:reused-after-selection"]
+  ]);
+  const events = [];
+
+  signalIdentityCheckedProcessRows([root, live, reused, wrapper], "SIGTERM", {
+    rootPid: root.pid,
+    includeRoot: false,
+    currentPid: wrapper.pid,
+    identityStillMatches(row) {
+      events.push(["identity", row.pid]);
+      return currentIdentities.get(row.pid) === row.identity;
+    },
+    killProcess(pid, signal) {
+      events.push(["signal", pid, signal]);
+    }
+  });
+
+  assert.deepEqual(events, [
+    ["identity", 101],
+    ["signal", 101, "SIGTERM"],
+    ["identity", 102]
+  ]);
 });
 
 function linuxRow(pid, ppid, pgid, start) {

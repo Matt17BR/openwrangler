@@ -15,13 +15,15 @@ floor and an 8 GiB ceiling. Before a Linux target starts, a Python 3 helper beco
 pins that helper's process-start identity. A target that changes process group and exits therefore leaves its live
 descendants adopted beneath the still-owned helper; successful completion waits for that helper to drain. A surviving
 descendant makes the command fail and is stopped. The target never launches if the subreaper barrier or process
-accounting cannot be armed. Linux sums proportional set size (PSS), so shared Electron mappings are counted once; it
-labels and uses RSS only when the kernel does not expose `smaps_rollup`. macOS uses RSS and can retain only descendants
-observed through its process snapshots and verified process group; it does not claim Linux-style subreaper containment.
-The wrapper prints the active limit, metric, and observed peak. Set `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` to a positive
-whole number to choose a different limit. `off` explicitly disables the watcher, including Linux subreaper ownership.
-A nested guarded npm command inherits the outer lease and never starts a second watcher. This is a watchdog rather than
-a kernel reservation, so a very abrupt allocation can overshoot between samples.
+accounting cannot be armed. Before signaling any selected PID, Linux rereads its procfs start identity and macOS takes
+a bounded single-PID `ps` snapshot; a process that exited or reused the PID is skipped. Linux sums proportional set size
+(PSS), so shared Electron mappings are counted once; it labels and uses RSS only when the kernel does not expose
+`smaps_rollup`. macOS uses RSS and can retain only descendants observed through its process snapshots and verified
+process group; it does not claim Linux-style subreaper containment. The wrapper prints the active limit, metric, and
+observed peak. Set `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` to a positive whole number to choose a different limit. `off`
+explicitly disables the watcher, including Linux subreaper ownership. A nested guarded npm command inherits the outer
+lease and never starts a second watcher. This is a watchdog rather than a kernel reservation, so a very abrupt
+allocation can overshoot between samples.
 
 Hosted CI keeps its runner-level resource controls and does not apply the local default, so the watchdog does not
 weaken a required test. CI-default and explicit-`off` executions retain the shared lease but do not claim descendant
