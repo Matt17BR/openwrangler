@@ -71,6 +71,47 @@ const MAX_NOTEBOOK_OUTPUT_BYTES = 32 * 1024;
 const NOTEBOOK_CELL_TIMEOUT_MS = 120_000;
 const POINTER_ACTION_TIMEOUT_MS = 10_000;
 const PROFILE_POLL_MS = 25;
+const STUDY_KERNEL_PICKER_ROUTES = Object.freeze([
+  "Select Another Kernel...",
+  "Jupyter Kernel...",
+  "Jupyter",
+  "Local Kernel Specs..."
+] as const);
+
+export type StudyKernelPickerDecision =
+  | { readonly kind: "activate-target" }
+  | { readonly kind: "activate-route"; readonly label: (typeof STUDY_KERNEL_PICKER_ROUTES)[number] }
+  | { readonly kind: "clear-filter" }
+  | { readonly kind: "filter-target" }
+  | { readonly kind: "wait" };
+
+export function studyKernelPickerLabelMatches(candidate: string, targetLabel: string): boolean {
+  if (candidate === targetLabel) return true;
+  const version = /\bCPython (3\.12(?:\.\d+)?)\b/u.exec(targetLabel)?.[1];
+  return version !== undefined && candidate === `${targetLabel} (Python ${version})`;
+}
+
+export function chooseStudyKernelPickerDecision(input: {
+  readonly visibleLabels: readonly string[];
+  readonly targetLabel: string;
+  readonly traversedRoutes: ReadonlySet<string>;
+  readonly filterForTarget: boolean;
+  readonly filterValue: string;
+}): StudyKernelPickerDecision {
+  if (input.visibleLabels.some((label) => studyKernelPickerLabelMatches(label, input.targetLabel))) {
+    return { kind: "activate-target" };
+  }
+  const routePickerVisible = STUDY_KERNEL_PICKER_ROUTES.slice(1).some((label) => input.visibleLabels.includes(label));
+  if (input.filterForTarget && !routePickerVisible) {
+    return input.filterValue === input.targetLabel ? { kind: "wait" } : { kind: "filter-target" };
+  }
+  for (const label of STUDY_KERNEL_PICKER_ROUTES) {
+    if (!input.traversedRoutes.has(label) && input.visibleLabels.includes(label)) {
+      return { kind: "activate-route", label };
+    }
+  }
+  return input.filterValue === "" ? { kind: "wait" } : { kind: "clear-filter" };
+}
 
 type ProductKey = (typeof PHASE_PRODUCTS)[keyof typeof PHASE_PRODUCTS];
 type PublicUiCaptureKind = keyof typeof DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASES;
@@ -2783,7 +2824,10 @@ async function captureDataWranglerPublicWarmup(product: ProductKey): Promise<Dat
   if (primaryError !== undefined && cleanupError !== undefined) throw new AggregateError([primaryError, cleanupError]);
   if (primaryError !== undefined) throw primaryError;
   if (cleanupError !== undefined) throw cleanupError;
-  assert.ok(result?.status === "success" && result.profiles, "The public warm-up did not complete every journey.");
+  assert.ok(
+    result?.status === "success" && result.profiles,
+    `The public warm-up did not complete every journey: ${describeIncompletePublicWarmup(result)}.`
+  );
   assert.equal(result.profiles.completedColumnCount, result.profiles.expectedColumnCount);
   assert.equal(result.finalization.closeStatus, "succeeded");
   assert.equal(result.finalization.afterVerification, "matched");
@@ -2806,6 +2850,17 @@ async function captureDataWranglerPublicWarmup(product: ProductKey): Promise<Dat
   assertPathFreeJson(receipt);
   assert.ok(Buffer.byteLength(JSON.stringify(receipt), "utf8") <= MAX_RECEIPT_BYTES);
   return receipt;
+}
+
+export function describeIncompletePublicWarmup(
+  result: Pick<DataWranglerNotebookTrialPhaseReceipt, "status" | "failure" | "profiles"> | undefined
+): string {
+  if (!result) return "no trial receipt";
+  const failure = result.failure ? `${result.failure.stage}/${result.failure.kind}` : "unclassified";
+  const profiles = result.profiles
+    ? `${result.profiles.completedColumnCount}/${result.profiles.expectedColumnCount}`
+    : "not started";
+  return `status=${result.status}, failure=${failure}, profiles=${profiles}`;
 }
 
 function publicUiCaptureKindFromPhase(phase: string): PublicUiCaptureKind | undefined {
@@ -3400,6 +3455,16 @@ function selectedStudyNotebookTab(notebook: vscode.NotebookDocument): vscode.Tab
   return active;
 }
 
+export function studyNotebookCellRowMatches(
+  label: string,
+  ariaPosition: string | null,
+  ariaSelected: string | null,
+  expectedPosition: number
+): boolean {
+  if (!/^code cell(?:,|$)/iu.test(label)) return false;
+  return ariaPosition === String(expectedPosition) || (ariaPosition === null && ariaSelected === "true");
+}
+
 async function preparePublicStudyRunCellAction(
   page: Page,
   captured: CapturedStudyNotebook,
@@ -3425,18 +3490,31 @@ async function preparePublicStudyRunCellAction(
   };
 
   const deadline = Date.now() + POINTER_ACTION_TIMEOUT_MS;
+  const expectedPosition = cell.index + 1;
   do {
     assertSelection();
     const matches: NotebookTrialActionTarget[] = [];
     for (const frame of comparisonFrames(page).slice(0, 64)) {
-      const selectedRows = frame.locator(
-        '[role="listitem"][aria-selected="true"], [role="option"][aria-selected="true"], [role="treeitem"][aria-selected="true"]'
+      const candidateRows = frame.locator(
+        `[role="listitem"][aria-posinset="${expectedPosition}"], ` +
+          `[role="option"][aria-posinset="${expectedPosition}"], ` +
+          `[role="treeitem"][aria-posinset="${expectedPosition}"], ` +
+          '[role="listitem"][aria-selected="true"], ' +
+          '[role="option"][aria-selected="true"], ' +
+          '[role="treeitem"][aria-selected="true"]'
       );
-      const rowCount = Math.min(await selectedRows.count().catch(() => 0), 16);
+      const rowCount = Math.min(await candidateRows.count().catch(() => 0), 16);
       for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-        const row = selectedRows.nth(rowIndex);
+        const row = candidateRows.nth(rowIndex);
         const label = (await row.getAttribute("aria-label").catch(() => null))?.trim() ?? "";
-        if (!/^code cell(?:,|$)/u.test(label) || !(await row.isVisible().catch(() => false))) continue;
+        const ariaPosition = await row.getAttribute("aria-posinset").catch(() => null);
+        const ariaSelected = await row.getAttribute("aria-selected").catch(() => null);
+        if (
+          !studyNotebookCellRowMatches(label, ariaPosition, ariaSelected, expectedPosition) ||
+          !(await row.isVisible().catch(() => false))
+        ) {
+          continue;
+        }
         const rowBox = await row.boundingBox().catch(() => null);
         if (rowBox && rowBox.width > 0 && rowBox.height > 0) {
           await frame.page().mouse.move(rowBox.x + Math.min(20, rowBox.width / 2), rowBox.y + rowBox.height / 2);
@@ -3480,7 +3558,9 @@ async function selectStudyNotebookKernel(page: Page, captured: CapturedStudyNote
   );
   const deadline = Date.now() + 30_000;
   const traversed = new Set<string>();
+  let filterForTarget = false;
   let targetActivated = false;
+  let latestLabels: readonly string[] = Object.freeze([]);
   try {
     do {
       captured.assertExact("while selecting its private kernel");
@@ -3491,31 +3571,39 @@ async function selectStudyNotebookKernel(page: Page, captured: CapturedStudyNote
         await page.waitForTimeout(25);
         continue;
       }
-      const target = await studyKernelQuickPickRow(quickInput, captured.definition.kernel.displayName);
-      if (target) {
+      const input = quickInput.locator(".quick-input-box input:visible").first();
+      const filterValue = (await input.count().catch(() => 0)) === 1 ? await input.inputValue() : "";
+      latestLabels = await studyKernelQuickPickLabels(quickInput);
+      const decision = chooseStudyKernelPickerDecision({
+        visibleLabels: latestLabels,
+        targetLabel: captured.definition.kernel.displayName,
+        traversedRoutes: traversed,
+        filterForTarget,
+        filterValue
+      });
+      if (decision.kind === "activate-target") {
+        const target = await studyKernelQuickPickRow(quickInput, captured.definition.kernel.displayName, true);
+        assert.ok(target, "The exact private kernel disappeared before pointer activation.");
         await target.click();
         targetActivated = true;
         await boundedPromise(selection, 30_000, "the exact private notebook kernel selection");
         break;
       }
-      let advanced = false;
-      for (const label of ["Select Another Kernel...", "Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."]) {
-        if (traversed.has(label)) continue;
-        const route = await studyKernelQuickPickRow(quickInput, label);
-        if (!route) continue;
-        traversed.add(label);
+      if (decision.kind === "activate-route") {
+        const route = await studyKernelQuickPickRow(quickInput, decision.label);
+        assert.ok(route, `The released Jupyter picker route ${JSON.stringify(decision.label)} disappeared.`);
+        traversed.add(decision.label);
+        filterForTarget = decision.label !== "Select Another Kernel...";
         await route.click();
-        advanced = true;
-        await page.waitForTimeout(50);
-        break;
+        await page.waitForTimeout(100);
+        continue;
       }
-      if (!advanced) {
-        const input = quickInput.locator(".quick-input-box input:visible").first();
-        if ((await input.count().catch(() => 0)) === 1) {
-          await input.fill(captured.definition.kernel.displayName);
-        }
-        await page.waitForTimeout(50);
+      if (decision.kind === "clear-filter") {
+        await input.fill("");
+      } else if (decision.kind === "filter-target") {
+        await input.fill(captured.definition.kernel.displayName);
       }
+      await page.waitForTimeout(100);
     } while (Date.now() < deadline);
   } catch (error) {
     await dismissStudyKernelPicker(page);
@@ -3523,7 +3611,10 @@ async function selectStudyNotebookKernel(page: Page, captured: CapturedStudyNote
   }
   if (!targetActivated) {
     await dismissStudyKernelPicker(page);
-    throw new Error("The released Jupyter picker did not expose the exact trial-private CPython 3.12 kernel.");
+    throw new Error(
+      "The released Jupyter picker did not expose the exact trial-private CPython 3.12 kernel. " +
+        `Final public option labels: ${JSON.stringify(latestLabels.slice(0, 64))}.`
+    );
   }
   captured.assertExact("after selecting its private kernel");
   await waitForStudyKernelLabel(page, captured.definition.kernel.displayName);
@@ -3543,19 +3634,36 @@ async function visibleStudyKernelQuickInput(page: Page): Promise<Locator | undef
   return matches[0];
 }
 
-async function studyKernelQuickPickRow(quickInput: Locator, label: string): Promise<Locator | undefined> {
+async function studyKernelQuickPickRow(
+  quickInput: Locator,
+  label: string,
+  allowPythonVersionSuffix = false
+): Promise<Locator | undefined> {
   const labels = quickInput.locator(".quick-input-list [role='option'] .label-name:visible");
   const count = await labels.count();
   assert.ok(count <= 256, "The released Jupyter kernel picker exceeded 256 visible options.");
   const rows: Locator[] = [];
   for (let index = 0; index < count; index += 1) {
     const candidate = labels.nth(index);
-    if ((await candidate.innerText()).trim() === label) {
+    const candidateLabel = (await candidate.innerText()).trim();
+    if (
+      (allowPythonVersionSuffix && studyKernelPickerLabelMatches(candidateLabel, label)) ||
+      (!allowPythonVersionSuffix && candidateLabel === label)
+    ) {
       rows.push(candidate.locator("xpath=ancestor::*[@role='option'][1]"));
     }
   }
   assert.ok(rows.length <= 1, `The released Jupyter picker exposed duplicate ${JSON.stringify(label)} rows.`);
   return rows[0];
+}
+
+async function studyKernelQuickPickLabels(quickInput: Locator): Promise<readonly string[]> {
+  const labels = quickInput.locator(".quick-input-list [role='option'] .label-name:visible");
+  const count = await labels.count();
+  assert.ok(count <= 256, "The released Jupyter kernel picker exceeded 256 visible options.");
+  const values: string[] = [];
+  for (let index = 0; index < count; index += 1) values.push((await labels.nth(index).innerText()).trim());
+  return values;
 }
 
 async function dismissStudyKernelPicker(page: Page): Promise<void> {
@@ -3565,29 +3673,33 @@ async function dismissStudyKernelPicker(page: Page): Promise<void> {
 }
 
 async function waitForStudyKernelLabel(page: Page, expectedLabel: string): Promise<void> {
-  await waitFor(
-    async () => {
-      let matches = 0;
-      for (const frame of comparisonFrames(page).slice(0, 64)) {
-        const labels = frame.locator(".kernel-action-view-item .kernel-label:visible");
-        const count = Math.min(await labels.count().catch(() => 0), 16);
-        for (let index = 0; index < count; index += 1) {
-          if (
-            (
-              await labels
-                .nth(index)
-                .innerText()
-                .catch(() => "")
-            ).trim() === expectedLabel
-          )
-            matches += 1;
-        }
+  const deadline = Date.now() + 10_000;
+  let latestLabels: readonly string[] = Object.freeze([]);
+  do {
+    const observed: string[] = [];
+    let matches = 0;
+    for (const frame of comparisonFrames(page).slice(0, 64)) {
+      const labels = frame.locator(".kernel-action-view-item .kernel-label:visible");
+      const count = Math.min(await labels.count().catch(() => 0), 16);
+      for (let index = 0; index < count; index += 1) {
+        const label = (
+          await labels
+            .nth(index)
+            .innerText()
+            .catch(() => "")
+        ).trim();
+        observed.push(label);
+        if (studyKernelPickerLabelMatches(label, expectedLabel)) matches += 1;
       }
-      assert.ok(matches <= 1, "The workbench exposed duplicate exact private kernel labels.");
-      return matches === 1;
-    },
-    10_000,
-    "the selected private CPython 3.12 kernel label"
+    }
+    latestLabels = Object.freeze(observed.slice(0, 64));
+    assert.ok(matches <= 1, "The workbench exposed duplicate exact private kernel labels.");
+    if (matches === 1) return;
+    await page.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error(
+    "Timed out waiting for the selected private CPython 3.12 kernel label. " +
+      `Final public toolbar labels: ${JSON.stringify(latestLabels)}.`
   );
 }
 

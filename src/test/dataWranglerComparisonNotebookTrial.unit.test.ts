@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DATA_WRANGLER_NOTEBOOK_TRIAL_PHASE_PROTOCOL,
   DATA_WRANGLER_STUDY_INLINE_ACTION_WINDOW_MS,
+  chooseStudyKernelPickerDecision,
+  describeIncompletePublicWarmup,
   executeDataWranglerNotebookTrialFlow,
   observeNotebookTrialGridScrollState,
   observeNotebookTrialEngineLabel,
@@ -10,6 +12,8 @@ import {
   observeNotebookTrialPointerAction,
   observeNotebookTrialVisibleShape,
   readStudyIpynbCellTags,
+  studyKernelPickerLabelMatches,
+  studyNotebookCellRowMatches,
   validateDataWranglerComparisonSentinelRows,
   validateDataWranglerObservedSentinels,
   validateDataWranglerNotebookTrialPhaseReceipt,
@@ -62,6 +66,145 @@ const STUDY: NotebookTrialDefinition = {
     }
   }
 };
+
+describe("study kernel picker navigation", () => {
+  it("accepts only Jupyter's matching Python-version suffix", () => {
+    const target = "Dataframe comparison study CPython 3.12.13 (private trial)";
+    expect(studyKernelPickerLabelMatches(target, target)).toBe(true);
+    expect(studyKernelPickerLabelMatches(`${target} (Python 3.12.13)`, target)).toBe(true);
+    expect(studyKernelPickerLabelMatches(`${target} (Python 3.12.14)`, target)).toBe(false);
+    expect(studyKernelPickerLabelMatches(`${target} extra`, target)).toBe(false);
+  });
+
+  it("waits for discovery instead of filtering away a late navigation route", () => {
+    expect(
+      chooseStudyKernelPickerDecision({
+        visibleLabels: [],
+        targetLabel: STUDY.kernel.displayName,
+        traversedRoutes: new Set(),
+        filterForTarget: false,
+        filterValue: ""
+      })
+    ).toEqual({ kind: "wait" });
+    expect(
+      chooseStudyKernelPickerDecision({
+        visibleLabels: ["Select Another Kernel..."],
+        targetLabel: STUDY.kernel.displayName,
+        traversedRoutes: new Set(),
+        filterForTarget: false,
+        filterValue: ""
+      })
+    ).toEqual({ kind: "activate-route", label: "Select Another Kernel..." });
+  });
+
+  it("keeps traversing while a kernel-provider route remains visible", () => {
+    expect(
+      chooseStudyKernelPickerDecision({
+        visibleLabels: ["Local Kernel Specs..."],
+        targetLabel: STUDY.kernel.displayName,
+        traversedRoutes: new Set(["Select Another Kernel...", "Jupyter Kernel..."]),
+        filterForTarget: true,
+        filterValue: ""
+      })
+    ).toEqual({ kind: "activate-route", label: "Local Kernel Specs..." });
+    expect(
+      chooseStudyKernelPickerDecision({
+        visibleLabels: ["Local Kernel Specs..."],
+        targetLabel: STUDY.kernel.displayName,
+        traversedRoutes: new Set(["Select Another Kernel...", "Jupyter Kernel...", "Local Kernel Specs..."]),
+        filterForTarget: true,
+        filterValue: ""
+      })
+    ).toEqual({ kind: "wait" });
+  });
+
+  it("filters only after the selected route picker has disappeared", () => {
+    expect(
+      chooseStudyKernelPickerDecision({
+        visibleLabels: ["Python 3"],
+        targetLabel: STUDY.kernel.displayName,
+        traversedRoutes: new Set(["Local Kernel Specs..."]),
+        filterForTarget: true,
+        filterValue: ""
+      })
+    ).toEqual({ kind: "filter-target" });
+    expect(
+      chooseStudyKernelPickerDecision({
+        visibleLabels: [],
+        targetLabel: STUDY.kernel.displayName,
+        traversedRoutes: new Set(["Local Kernel Specs..."]),
+        filterForTarget: true,
+        filterValue: STUDY.kernel.displayName
+      })
+    ).toEqual({ kind: "wait" });
+  });
+
+  it("activates the exact private kernel as soon as it appears", () => {
+    expect(
+      chooseStudyKernelPickerDecision({
+        visibleLabels: [STUDY.kernel.displayName],
+        targetLabel: STUDY.kernel.displayName,
+        traversedRoutes: new Set(),
+        filterForTarget: false,
+        filterValue: ""
+      })
+    ).toEqual({ kind: "activate-target" });
+    expect(
+      chooseStudyKernelPickerDecision({
+        visibleLabels: [`${STUDY.kernel.displayName} (Python 3.12)`],
+        targetLabel: STUDY.kernel.displayName,
+        traversedRoutes: new Set(),
+        filterForTarget: false,
+        filterValue: STUDY.kernel.displayName
+      })
+    ).toEqual({ kind: "activate-target" });
+  });
+});
+
+describe("public warm-up diagnostics", () => {
+  it("reports the failed stage and bounded profile progress without row data", () => {
+    expect(
+      describeIncompletePublicWarmup({
+        status: "failed",
+        failure: { stage: "profiles", kind: "error" },
+        profiles: null
+      })
+    ).toBe("status=failed, failure=profiles/error, profiles=not started");
+
+    expect(
+      describeIncompletePublicWarmup({
+        status: "failed",
+        failure: { stage: "profiles", kind: "timeout" },
+        profiles: {
+          action: {
+            role: "button",
+            accessibleName: "Column profiles and filters",
+            exactNameMatched: true,
+            visible: true,
+            enabled: true,
+            pointerUsable: true,
+            stableFrames: 2
+          },
+          firstUsefulColumn: "c00",
+          expectedColumnCount: 50,
+          completedColumnCount: 7,
+          canonicalOrder: true,
+          rowValuesIncluded: false,
+          columns: []
+        }
+      })
+    ).toBe("status=failed, failure=profiles/timeout, profiles=7/50");
+  });
+});
+
+describe("public notebook cell targeting", () => {
+  it("accepts the measured code-cell position regardless of label case", () => {
+    expect(studyNotebookCellRowMatches("Code cell, 4 lines", "7", "false", 7)).toBe(true);
+    expect(studyNotebookCellRowMatches("code cell, 4 lines", null, "true", 7)).toBe(true);
+    expect(studyNotebookCellRowMatches("Code cell, 4 lines", "6", "true", 7)).toBe(false);
+    expect(studyNotebookCellRowMatches("Markdown cell, 4 lines", "7", "true", 7)).toBe(false);
+  });
+});
 
 describe("study ipynb cell metadata", () => {
   it("reads tags from the built-in ipynb serializer wrapper", () => {

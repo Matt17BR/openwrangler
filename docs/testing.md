@@ -703,7 +703,8 @@ distribution, configured-profile tree, fixture, and capture result in `preparati
 
 Each product warm-up uses the measured notebook driver's real durable request/acknowledgement bridge. Preparation
 responds to the complete warm sequence and checks that the editor receipt contains the same ordered exchanges before it
-accepts the warmed profile.
+accepts the warmed profile. The driver leaves the Jupyter picker search empty until it reaches the local kernelspec
+list, so a late discovery update cannot hide the route to the pinned kernel.
 
 Use the preparation receipt for the dry run and every recorded trial. Both commands choose the next schedule entry,
 clone the matching sealed profile, install the neutral driver into that clone, build all private paths, and run the
