@@ -523,8 +523,9 @@ npm run comparison:feasibility:smoke -- \
 
 `--python` must name a current-user-owned, executable, non-empty, single-link regular file rather than the usual
 virtual-environment symlink. It must be CPython 3.10 through 3.14 with Pandas, Polars, PyArrow, Jupyter Core, and
-ipykernel installed. Polars generates and validates the deterministic fixture manifest; the matched editor comparison
-still uses Pandas for both products. `--out` must be absent: the runner reserves the final path with one exclusive no-follow create, then
+ipykernel installed. Polars generates the deterministic fixture manifest and validates every fixture cell against the
+checked-in row-plus-column rule; the matched editor comparison
+still uses Pandas for both products. The `--out` target must be absent: the runner reserves the final path with one exclusive no-follow create, then
 writes, flushes, and validates only through that bound descriptor. It never replaces an existing file and never
 unlinks an output pathname after creation, so an ancestor or pathname rebind cannot turn failed-publication cleanup
 into deletion of the candidate or interpreter. If publication fails after creation, its partial or complete report
@@ -542,8 +543,9 @@ watching so unrelated first-run notifications cannot alter the readiness boundar
 zero-area accessibility-tree remnants and non-modal VS Code notification toasts, while still requiring the target
 editor and renderer to be pointer-usable. It waits for transient visible workbench surfaces to clear; a persistent
 Quick Input, modal dialog, or pointer obstruction consumes the bounded deadline and fails. Before Data Wrangler's
-ordinary warm-up, a separate untimed editor phase exposes one private, uniquely named Jupyter kernelspec whose
-`argv[0]` is the exact pinned comparison interpreter. The harness launches the public Explorer action and discovers candidates only through
+ordinary warm-up, a separate untimed editor phase exposes one private, uniquely named, product-neutral Jupyter
+kernelspec. Its picker label names the exact CPython 3.12 patch release, and `argv[0]` is the exact pinned comparison
+interpreter. The harness launches the public Explorer action and discovers candidates only through
 public roles plus their computed accessible names. It first accepts exactly one matching kernelspec option exposed
 directly by the product. Otherwise it requires exactly one runtime selector on the post-click Data Wrangler editor
 surface, activates the exact public **Connect using local Python interpreter** route that this action opens (including
@@ -592,6 +594,275 @@ publication. The publishable comparison tracked in [issue #91](https://github.co
 still requires release-sized fixtures, ten samples per product and format, median and p95 reporting, resource and
 machine provenance, cold- and warm-cache controls, matched interaction scenarios, counterbalanced product order,
 and no trimming.
+
+The separate v1.2.1 release study is preregistered in
+[`docs/performance-comparison.md`](performance-comparison.md). Its notebook inline-preview, live-workbench,
+all-column-profile, and PSS boundaries supersede no feasibility-smoke contract above. Results are publishable only
+after that reviewed method, its versioned study protocol, the exact candidate artifact, and all raw scheduled outcomes
+land together.
+
+Every public `comparison:*` npm command holds the repository's shared heavy-command lease for its complete process
+tree. The script contract test enumerates that public command set, so adding an unguarded comparison entry fails CI.
+
+Build the neutral notebook journey, then publish the static preregistration. Its output directory must be private
+mode `0700`, and the target must not already contain a different record.
+
+```bash
+install -d -m 0700 /absolute/path/to/study
+npm run build:test-extension
+
+npm run comparison:preregister -- \
+  --out /absolute/path/to/study/preregistration.json
+```
+
+The preregistration contains the reviewed methodology hash, complete 96-entry schedule, fixed limits and environment
+requirements, compiled neutral-journey graph, package-lock and Playwright pins, and hashes for the packager, fixture
+tools, JavaScript cache harness, Python cache controller, process supervisor, bootstrap, environment capture, study
+validator, and durable publisher. It also binds the exact public npm launch recipes and the complete static module
+graph reachable from preparation and study execution, including local hashes, literal edges, external package names,
+and the TypeScript parser version used to prove that graph.
+It deliberately contains no candidate, editor, machine, fixture, profile, capability, or warm-up evidence. Review
+this file before preparing the study; it is append-only and cannot be changed in place.
+
+Run preparation once under the exact CPU affinity that the study will use. `--cpu-list` must use the canonical Linux
+CPU-list form and must match the process affinity established by `taskset`.
+
+```bash
+taskset --cpu-list 2-5 npm run comparison:prepare -- \
+  --preregistration /absolute/path/to/study/preregistration.json \
+  --candidate /absolute/path/to/openwrangler.vsix \
+  --python /absolute/path/to/cpython-3.12 \
+  --cache-controller /absolute/path/to/python/benchmarks/source_cache_control.py \
+  --csv /absolute/path/to/study-100k-x-50.csv \
+  --parquet /absolute/path/to/study-1m-x-20.parquet \
+  --specification /absolute/path/to/study/specification.json \
+  --manifest /absolute/path/to/study/manifest.json \
+  --preparation /absolute/path/to/study/preparation.json \
+  --cpu-list 2-5
+```
+
+Preparation rehashes every preregistered source and recipe before doing any trial work. It packages and verifies the
+neutral driver inside its own retained private directory; callers do not provide a driver directory or VSIX. It also
+inspects the candidate, CPython environment, deterministic fixtures, CPU and power state, and proves that both fixture
+paths resolve to the same exact study volume,
+storage, official editor, and disposable profiles. It creates the study kernelspec, runs each product's public
+first-use setup, and seals the resulting configured-only profiles. Separate notebook warm-ups validate the public warm
+path; the retained warm seeds are sanitized before the study. Preparation does not run the older CSV/Parquet
+feasibility diagnostic. The supplied
+fixtures must match a fresh generator run byte for byte and pass the full Polars value contract.
+
+The downloaded editor and sanitized configured/warmed profile templates are retained under the ignored
+`node_modules/.cache/openwrangler-comparison/tmp/ow/x-*` tree. This keeps the large extracted trees out of the live
+workspace watch set while preserving the existing `tmp/ow/x-*` ownership and cleanup contract. The runner rejects a
+linked, redirected, foreign-owned, or world-writable ancestor and creates every Open Wrangler-owned cache directory at
+mode `0700`. A group-writable `node_modules` is accepted only below a pinned mode-`0700` repository. Do not run
+`npm ci`, remove `node_modules`, reinstall dependencies, or retire this checkout after preparation and before the final
+result is published. If that private tree disappears, abandon the study and prepare a new one.
+
+The preregistration fixes a minimum of 256 free Linux inotify watches. Before packaging, preparation checks that
+headroom in a disposable `x-*` root under the ignored comparison cache and requires exact-receipt cleanup after either
+outcome. An identity or cleanup failure stops preparation and may retain the root rather than guessing. Checks
+immediately before editor phases continue to use their already-owned private profiles. A measured trial repeats the
+check before its ten-second quiet-system window. If the command reports `inotify-watch-headroom`, free some existing
+file watches or raise the host's inotify watch limit, then rerun the unchanged command. The probe cleans up its own
+empty directories and watchers and does not write host paths into its receipt. A watch counts only after it reports the
+harmless event created in its own sentinel directory before the one-second readiness deadline.
+
+Only after all checks pass does preparation durably publish its journal first. The journal embeds the complete
+specification and authorizes one manifest digest; preparation then publishes that exact specification and derives the
+manifest from it. The specification format is checked in as
+[`performance-comparison.spec.schema.json`](performance-comparison.spec.schema.json), includes the preregistration
+digest, and contains no pending fields. Do not hand-author dynamic receipts. If the process stops after any one of
+those three publications, rerun the same preparation command: it recovers the journal, reconstructs the missing exact
+outputs, and does not regenerate retained roots or timestamps. The planner independently requires the exact
+preregistration, journal, specification path, and manifest path before it writes anything. The private driver and
+opaque-safe profile templates remain available for inspection. The versioned retention policy admits only the
+harness-written `user/User/settings.json` and package directories derived from the exact public CLI inventory, with
+the Data Wrangler package root removed. It skips logs, caches, `globalStorage`, `workspaceStorage`, Marketplace caches,
+extension-owned state, unknown extension-directory entries, and all other user-data paths before stat, open, hash, or
+copy. The settings file must still match the harness-authored pre-launch SHA-256 before and after capture. The
+preparation receipt protocol and each template's exact inventory bind that policy to later clones.
+
+Preparation captures the untimed Polars capabilities itself. For each release fixture it reinstalls the pinned public
+Data Wrangler version into a disposable clone of the sealed, package-free profile, opens a warm Polars `study_frame`,
+and watches the actual Jupyter output through the neutral Playwright driver. The action must appear twice in a row with
+usable pointer geometry. A separate clone removes Data Wrangler and proves for thirty seconds that neither product
+action appears on the same ready Jupyter output. Each capture records the actual editor version, complete extension
+inventory, fixture verification, fixed monotonic observation trace, and source context. A missing, ambiguous,
+timed-out, obstructed, or changed result stops preparation. These three captures are outside the 96 measured trials.
+Their receipt bindings identify the exact editor distribution, configured-profile tree, fixture, and capture result in
+`preparation.json`.
+
+Each product warm-up uses the measured notebook driver's real durable request/acknowledgement bridge. Preparation
+responds to the complete warm sequence and checks that the editor receipt contains the same ordered exchanges before it
+accepts the sanitized warm seed. Every scheduled warm trial repeats that untimed public journey on its disposable
+clone, closes the warm-up editor, and starts the measured journey in a fresh editor process on the same clone. The
+driver leaves the Jupyter picker search empty until it reaches the local kernelspec
+list, so a late discovery update cannot hide the route to the pinned kernel.
+
+Use the preparation receipt for the dry run and every recorded trial. Both commands choose the next schedule entry,
+clone the matching sealed profile, reinstall the pinned public Data Wrangler version when needed, install the neutral
+driver, build all private paths, and run the same measured notebook journey. Callers do not hand-author a per-trial
+preparation file.
+
+```bash
+taskset --cpu-list <manifest-cpu-list> npm run comparison:diagnostic -- \
+  --manifest /absolute/path/to/study/manifest.json \
+  --prepared /absolute/path/to/study/preparation.json
+
+taskset --cpu-list <manifest-cpu-list> npm run comparison:study -- run-next \
+  --manifest /absolute/path/to/study/manifest.json \
+  --fragments /absolute/path/to/study/fragments \
+  --intents /absolute/path/to/study/intents \
+  --preparation /absolute/path/to/study/preparation.json
+
+npm run comparison:study -- status --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments
+npm run comparison:study -- finalize --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --out tmp/comparison-study/result.json
+```
+
+Run `run-next` once per scheduled entry until `status` reports zero pending trials. The command will not skip ahead or
+overwrite a fragment. Its low-level `record` subcommand remains available for importing an independently validated
+fragment, but it is not the normal measurement path.
+
+The diagnostic accepts only the manifest's first scheduled trial and always attempts its public launch action. A
+missing action or a timeout remains failed or undetermined; it is not treated as proof that a product lacks the
+feature.
+
+This diagnostic uses a private scratch ledger. It never writes to the real study ledger and deletes its scratch data
+only after the public action, 200 ms PSS sampling, source-copy removal, process-tree cleanup, and provenance recheck all
+succeed. A failed run leaves that private journal in the disposable profile for inspection. The JSON summary labels
+memory as maximum observed sampled PSS: short spikes can fall between samples, and per-process `smaps_rollup` reads are
+sequential rather than simultaneous. Before a successful run removes its journal, the summary retains the validated
+sampling status and reason, missed-sample count, process-count range, and inline, workbench, profile, and complete-trial
+baseline, maximum, delta, and per-category PSS results. For Data Wrangler, it also reports the source and workbench
+engine evidence; an engine the public UI does not identify stays `unverified`.
+
+After a successful trial, `run-next` verifies that the editor and kernel process trees are empty and removes only the
+clone it created. Safe setup and trial failures retire that clone too. The unrecorded diagnostic has one explicit
+exception: it may retain a failed Open Wrangler clone with its private failure journal. If editor or display process
+ownership is uncertain, the harness does not inspect, move, or delete any product clone, source copy, run root, or
+diagnostic scratch path. This rule is the same for Open Wrangler and Data Wrangler. If cleanup cannot prove that a
+source copy or run root was retired, it leaves the containing clone in place too; deleting the parent must not bypass
+the failed child check. Cleanup holds identity leases on the profile and parent, creates an exclusive random sibling
+quarantine, and atomically renames the profile to its `payload`. It revalidates the absent public path plus the
+quarantine, payload, profile, and parent identities immediately before recursive removal. Replacement or containment
+ambiguity fails closed without deleting the unexpected trees. The
+durable authorization journal prevents an action interrupted after dispatch from being repeated silently. A laptop
+shutdown therefore loses at most the in-flight, pre-authorization setup: rerun `status` and call `run-next` again only
+when the ledger says the entry is safe to run.
+
+`plan` opens and identifies the supplied controller and CPython executable itself. It writes those observed receipts
+into the manifest and rejects a specification that claims a different toolchain. Later cache preparation executes
+those retained files through inherited descriptors and binds the result to the private fixture copy. Other retained
+files have fixed per-kind size limits and are hashed again in the synchronous supervisor-spawn callback. Launch
+evidence then hashes the executable behind the editor process's `/proc` descriptor, so a pathname swap cannot stand in
+for the editor bytes recorded during preparation. The spawn-bound fixture hash reads the immutable preparation file,
+not the separate-inode private copy used by the measured process, so it cannot refill the copy's evicted page-cache
+entries before a cold trial.
+
+The ledger has five versioned formats: manifest, fragment, finalization intent, result, and Linux PSS observation.
+Their protocol IDs begin with `openwrangler-data-wrangler-study-` or `openwrangler-linux-pss-observation-`. Each
+validator rejects unknown fields and identities that do not match the manifest or fixed schedule.
+
+The manifest records the machine, CPU policy, AC power, fixture volume, display, extension inventory, editor templates,
+Python environment, fixture generator and contract, control profile, and untimed Data Wrangler Polars capability check.
+It also binds the ownership supervisor to that same Python executable, including its patch version and SHA-256. The
+capability and control receipts retain normalized one-second public-UI traces. Their validators rebuild the manifest
+claims from those raw records and bind the official editor digest, complete extension inventory, `--locale=en`, exact
+`study_frame` schema and sentinels, host output owner, and both launch-action names. Tests change the wrapper, receipt
+digest, context, inventory, source, trace cadence, action count, obstruction state, conclusion, and supervisor Python
+identity independently and in coordinated combinations. These records do not contain local paths.
+
+`plan` writes the manifest once. Its fixed seed creates ten paired warm blocks for each engine and format. Each product
+runs first five times. One cold AB pair and one cold BA pair follow for every cell. The manifest, fragments, and result
+are published through the durable JSON helper. Integration tests cover exact retry after a complete write and after a
+two-link crash state, rejection of a conflicting retry, private-directory enforcement, and preservation of stale
+one-link temporaries. Manifest and result writes hold one named-path-verified directory lease from recovery through
+publication. Fragment recording uses one such lease for recovery, the current ledger read, schedule validation, and
+publication. Settlement rejects a renamed or rebound parent.
+
+`record` accepts only the next scheduled fragment and never overwrites an attempt. `status` returns the missing work.
+Pre-action failures follow two rules:
+
+- If the first product fails, keep that fragment and skip the unmatched second run. Do not add a placeholder.
+- If the second product fails, keep the first result and the second failure.
+
+The next `status` call schedules both products under a new attempt. This also makes an interrupted half-pair safe to
+resume.
+
+`finalize` stops if planned work remains. It publishes a digest-named finalization intent that binds the manifest,
+ordered fragment hashes, output basename, and a real UTC timestamp. A retry accepts exactly one validated intent and
+rebuilds the result with the same timestamp. Zero intents starts a new finalization; more than one fails. It then
+requires an exact result match before writing the file. Changing an observation and its summary cannot bypass the
+fragment hashes.
+
+The durable JSON tests inject a fault after each file and directory durability boundary. Recovery may remove only the
+unique two-link temporary that shares the target inode. A one-link temporary without a target stays in place. Study
+commands therefore recover with a digest derived from the caller's validated payload or from the digest-named,
+manifest-bound finalization intent, never from an output file alone. Manifest, fragment, and finalization readers hold
+one verified parent-directory descriptor through listing, child reads, and final entry checks. Tests replace both the
+named parent and an opened child entry; neither replacement may enter the accepted ledger. The CLI reads specification
+and fragment input JSON through bounded `O_NOFOLLOW` descriptors, with metadata and named-entry checks around the read;
+symlink and entry-swap fixtures must fail before parsed data reaches a validator.
+
+The result uses Hyndman-Fan type-7 median and p95. It keeps each successful observation plus the paired difference and
+ratio used by the latency and memory checks. Correctness, cleanup, and sampling failures stay in the counts but do not
+enter those summaries.
+
+Every measured fragment identifies its exact fixture and process tree. It includes source-cache proof, source-load
+duration, visible notebook values, the observed workbench engine, and the source check after the trial. Successful
+fragments must also contain a valid resource observation and end with an empty owned process tree. A failed pre-launch
+gate has no cache, engine, process, resource, or cleanup evidence.
+
+The environment gate records complete ten-second attempts as one-second intervals. It covers the pinned CPU set, CPU
+and memory pressure, swap, thermal counters, AC power, governors, display, and machine provenance.
+
+The public UI receipt contains the source shape, a small set of expected visible values, scroll checks, and canonical
+profile columns. Profile checks require integer type, minimum, maximum, no missing values, and either an exact distinct
+value or an approximate interval containing the row count. The receipt contains no DOM, logs, selectors, paths, or
+free-form text.
+
+The deadlines are 45 seconds for inline output, 60 seconds for the workbench, and 135 seconds for complete profiling.
+The resource ledger also caps `inlineActionMs + (workbenchActionMs - inlineReadyMs) + (profileActionMs -
+workbenchReadyMs)` at three seconds. With the
+two-second quiescence, 250 ms terminal overshoot, an inclusive origin sample, and a 200 ms interval, one trial may
+retain at most 1,228 samples.
+A timeout keeps its `>= deadline` bound and failure count but never substitutes that bound into paired calculations.
+If no Data Wrangler Polars action appears during the fixed capability window, the receipt records
+`capability-timeout` and the manifest records `undetermined`. No unsupported claim or launch-free fragment is created;
+the cell stays pending and the study remains release-incomplete.
+
+On Linux, the pinned supervisor verifies child-subreaper and pidfd support before it starts one editor in a new session.
+It uses a full numeric `/proc/<pid>/stat` census, so descendants that double-fork or call `setsid` remain in the owned
+closure after the subreaper adopts them. The sampler reads `/proc/<pid>/smaps_rollup` every 200 ms, verifies PID start
+times, and assigns each owned editor process to one category. The cleanup record is the sorted union of identities seen
+by the sampler and the supervisor. A PID reused during cleanup is retained as invalid evidence, but the replacement is
+still terminated and reaped. It fails on census ambiguity or ownership drift; this is reproducible accounting for
+cooperative measured applications, not a sandbox. A valid observation needs at least five gap-free samples and a
+terminal receipt at the first sample after the two-second quiescence target. Cleanup requires three consecutive empty
+ownership censuses. Every launched trial retains the ownership launch receipt and a valid or explicitly invalid
+resource observation, including setup failures before the public product action. An undetermined capability never
+launches and therefore produces no fragment. Failed pre-launch environment gates retain neither. If cleanup cannot
+prove an empty tree, the runner publishes no fragment.
+The result keeps missed-sample and process-count ranges. PSS is the comparison measure; RSS is diagnostic. Recorded
+study evidence must pass through the packaged notebook UI driver and its parent control bridge. The implementation
+follows the Linux documentation for
+[`/proc`](https://www.kernel.org/doc/html/latest/filesystems/proc.html),
+[child subreapers](https://man7.org/linux/man-pages/man2/pr_set_child_subreaper.2const.html),
+[`pidfd_open`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html), and
+[`pidfd_send_signal`](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html); sample timestamps use
+[`process.hrtime.bigint()`](https://nodejs.org/api/process.html#processhrtimebigint).
+
+The Node supervisor client can be passed directly to `runEditorAcceptancePhase` as its `spawnProcess` function. It
+recomputes the payload argument, environment, policy, and complete invocation digests before launch. The client accepts
+exactly two bounded canonical frames on file descriptor 3, checks the live supervisor and editor identities, and waits
+for the terminal census before it reports completion. A stale receipt, third frame, changed executable, reused PID, or
+process that remains after cleanup invalidates the run.
+
+Timing coordination uses two private sibling files for requests and acknowledgements. Each canonical envelope carries
+the protocol version, run ID, phase, sequence, handshake kind, and a monotonic timestamp. The controller consumes both
+files after every acknowledgement. Unknown fields, stale sequences, replaced file identities, and acknowledgements
+whose timestamp predates the request fail the handshake.
 
 ## Performance fixtures
 

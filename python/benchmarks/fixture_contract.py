@@ -93,14 +93,17 @@ def assert_fixture_contract(path: Path, spec: FixtureSpec) -> None:
     if row_count != spec.rows:
         raise AssertionError(f"Fixture {path.name} has {row_count} rows; expected {spec.rows}.")
 
-    for row_index in spec.sentinel_rows:
-        sentinel = frame.slice(row_index, 1).collect(engine="streaming")
-        if sentinel.height != 1:
-            raise AssertionError(f"Fixture {path.name} is missing sentinel row {row_index}.")
-        values = sentinel.row(0)
-        incorrect = {spec.names[column]: value for column, value in enumerate(values) if value != row_index + column}
-        if incorrect:
-            raise AssertionError(f"Fixture {path.name} has invalid values at sentinel row {row_index}: {incorrect!r}.")
+    row_number = "__openwrangler_fixture_row"
+    indexed = frame.with_row_index(row_number)
+    invalid_counts = indexed.select(
+        [
+            pl.col(name).ne_missing(pl.col(row_number).cast(pl.Int64) + column).cast(pl.UInt64).sum().alias(name)
+            for column, name in enumerate(spec.names)
+        ]
+    ).collect(engine="streaming")
+    incorrect = {name: int(count) for name, count in zip(spec.names, invalid_counts.row(0), strict=True) if count != 0}
+    if incorrect:
+        raise AssertionError(f"Fixture {path.name} has invalid value counts by column: {incorrect!r}.")
 
 
 def _ensure_fixture(path: Path, spec: FixtureSpec) -> None:

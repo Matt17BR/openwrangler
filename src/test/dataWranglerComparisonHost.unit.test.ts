@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -14,6 +16,7 @@ import {
   dataWranglerComparisonKernelLabel,
   isPostClickComparisonSurface,
   prepareComparisonAction,
+  prepareComparisonHostPhase,
   prioritizeDataWranglerRuntimeSelectors,
   requireUniqueComparisonMatch,
   runBoundedComparisonFrameProbe,
@@ -22,6 +25,52 @@ import {
 } from "./extensionHost/dataWranglerComparison";
 
 describe("clean-room comparison host contracts", () => {
+  it("runs either setup-only product without requiring a diagnostic fixture manifest", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ow-comparison-setup-only-"));
+    const runId = "12345678-1234-4234-9234-123456789abc";
+    try {
+      for (const [phase, productKey] of [
+        ["comparison-open-wrangler-setup", "open-wrangler"],
+        ["comparison-data-wrangler-setup", "data-wrangler"]
+      ] as const) {
+        const workspace = resolve(root, productKey);
+        const warmup = resolve(workspace, "warmup.csv");
+        mkdirSync(workspace, { mode: 0o700 });
+        writeFileSync(warmup, "c00,c01\n0,1\n1,2\n", { mode: 0o600 });
+        expect(existsSync(resolve(workspace, "performance-fixtures.json"))).toBe(false);
+
+        const setups: unknown[] = [];
+        const prepared = await prepareComparisonHostPhase(
+          {
+            phase,
+            productKey,
+            runId,
+            workspace,
+            workbench: { page: {} } as never
+          },
+          {
+            async runFirstUseSetup(input) {
+              setups.push(input);
+              expect(readFileSync(input.source, "utf8")).toBe("c00,c01\n0,1\n1,2\n");
+            }
+          }
+        );
+
+        expect(prepared).toEqual({ kind: "setup-only" });
+        expect(setups).toEqual([
+          {
+            productKey,
+            workbench: { page: {} },
+            source: warmup,
+            ...(productKey === "data-wrangler" ? { kernelLabel: `Open Wrangler comparison runtime ${runId}` } : {})
+          }
+        ]);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("allows non-modal VS Code notification toasts without weakening real dialog checks", () => {
     expect(
       comparisonDialogLabelIsNonBlockingNotification(

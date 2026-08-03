@@ -1,0 +1,699 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.spec.schema.json",
+  "title": "Open Wrangler Data Wrangler performance-study specification",
+  "description": "Final prepared specification for the reviewed v1.2.1 notebook comparison. It is emitted only after dynamic evidence capture and is bound to an immutable preregistration receipt. The JavaScript manifest validator remains authoritative for cross-field and cryptographic checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "studyId",
+    "createdAtUtc",
+    "preregistration",
+    "method",
+    "candidate",
+    "baseline",
+    "editor",
+    "python",
+    "fixtures",
+    "provenance"
+  ],
+  "properties": {
+    "studyId": { "$ref": "#/$defs/uuid" },
+    "createdAtUtc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "preregistration": { "$ref": "#/$defs/preregistrationReceipt" },
+    "method": { "$ref": "#/$defs/method" },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "baseline": { "$ref": "#/$defs/baseline" },
+    "editor": { "$ref": "#/$defs/editor" },
+    "python": { "$ref": "#/$defs/python" },
+    "fixtures": { "$ref": "#/$defs/fixtureList" },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$"
+    },
+    "packageVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z._+-]*[0-9A-Za-z]$|^[0-9A-Za-z]$"
+    },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "filesystemIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "inode", "sizeBytes", "mtimeNs"],
+      "properties": {
+        "device": { "type": "string", "pattern": "^[0-9]+$" },
+        "inode": { "type": "string", "pattern": "^[0-9]+$" },
+        "sizeBytes": { "$ref": "#/$defs/positiveInteger" },
+        "mtimeNs": { "type": "string", "pattern": "^[0-9]+$" }
+      }
+    },
+    "immutableFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "filesystemIdentity"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "filesystemIdentity": { "$ref": "#/$defs/filesystemIdentity" }
+      }
+    },
+    "pythonExecutable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "version", "sha256", "filesystemIdentity"],
+      "properties": {
+        "implementation": { "const": "CPython" },
+        "version": { "type": "string", "pattern": "^3\\.12(\\.[0-9]+)?$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "filesystemIdentity": { "$ref": "#/$defs/filesystemIdentity" }
+      }
+    },
+    "method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "sha256", "minimumInotifyWatchHeadroom"],
+      "properties": {
+        "protocol": { "const": "openwrangler-data-wrangler-study-method-v2" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "minimumInotifyWatchHeadroom": { "const": 256 }
+      }
+    },
+    "preregistrationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "sha256", "minimumInotifyWatchHeadroom"],
+      "properties": {
+        "protocol": { "const": "openwrangler-data-wrangler-comparison-preregistration-receipt-v3" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "minimumInotifyWatchHeadroom": { "const": 256 }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extensionId", "version", "sha256", "filesystemIdentity"],
+      "properties": {
+        "extensionId": { "const": "Matt17BR.openwrangler" },
+        "version": { "$ref": "#/$defs/version" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "filesystemIdentity": { "$ref": "#/$defs/filesystemIdentity" }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extensionId", "version"],
+      "properties": {
+        "extensionId": { "const": "ms-toolsai.datawrangler" },
+        "version": { "const": "1.24.2" }
+      }
+    },
+    "editor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sha256", "uiLocale"],
+      "properties": {
+        "id": { "const": "Microsoft.VisualStudioCode" },
+        "version": { "$ref": "#/$defs/version" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "uiLocale": { "const": "en" }
+      }
+    },
+    "pythonPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "enum": ["pandas", "polars", "pyarrow", "jupyter_core", "ipykernel"] },
+        "version": { "$ref": "#/$defs/packageVersion" }
+      }
+    },
+    "python": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "version", "executableSha256", "environmentSha256", "packages", "kernel"],
+      "properties": {
+        "implementation": { "const": "CPython" },
+        "version": { "type": "string", "pattern": "^3\\.12(\\.[0-9]+)?([-+][0-9A-Za-z.-]+)?$" },
+        "executableSha256": { "$ref": "#/$defs/sha256" },
+        "environmentSha256": { "$ref": "#/$defs/sha256" },
+        "packages": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/pythonPackage" },
+                { "type": "object", "properties": { "name": { "const": "pandas" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/pythonPackage" },
+                { "type": "object", "properties": { "name": { "const": "polars" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/pythonPackage" },
+                { "type": "object", "properties": { "name": { "const": "pyarrow" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/pythonPackage" },
+                { "type": "object", "properties": { "name": { "const": "jupyter_core" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/pythonPackage" },
+                { "type": "object", "properties": { "name": { "const": "ipykernel" } } }
+              ]
+            }
+          ],
+          "items": false
+        },
+        "kernel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["implementation", "version", "kernelspecName", "kernelspecSha256"],
+          "properties": {
+            "implementation": { "const": "ipykernel" },
+            "version": { "$ref": "#/$defs/packageVersion" },
+            "kernelspecName": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "kernelspecSha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      }
+    },
+    "fixtureColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "dtype"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^c[0-9]{2}$" },
+        "dtype": { "const": "int64" }
+      }
+    },
+    "fixtureSentinel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rowIndex", "column", "value"],
+      "properties": {
+        "rowIndex": { "type": "integer", "minimum": 0 },
+        "column": { "type": "string", "pattern": "^c[0-9]{2}$" },
+        "value": { "type": "integer" }
+      }
+    },
+    "csvFixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "format", "rows", "columns", "sha256", "filesystemIdentity", "schema", "sentinels"],
+      "properties": {
+        "id": { "const": "csv-100k-50" },
+        "format": { "const": "csv" },
+        "rows": { "const": 100000 },
+        "columns": { "const": 50 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "filesystemIdentity": { "$ref": "#/$defs/filesystemIdentity" },
+        "schema": { "type": "array", "minItems": 50, "maxItems": 50, "items": { "$ref": "#/$defs/fixtureColumn" } },
+        "sentinels": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/fixtureSentinel" } }
+      }
+    },
+    "parquetFixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "format", "rows", "columns", "sha256", "filesystemIdentity", "schema", "sentinels"],
+      "properties": {
+        "id": { "const": "parquet-1m-20" },
+        "format": { "const": "parquet" },
+        "rows": { "const": 1000000 },
+        "columns": { "const": 20 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "filesystemIdentity": { "$ref": "#/$defs/filesystemIdentity" },
+        "schema": { "type": "array", "minItems": 20, "maxItems": 20, "items": { "$ref": "#/$defs/fixtureColumn" } },
+        "sentinels": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/fixtureSentinel" } }
+      }
+    },
+    "fixtureList": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [{ "$ref": "#/$defs/csvFixture" }, { "$ref": "#/$defs/parquetFixture" }],
+      "items": false
+    },
+    "machine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "architecture", "osRelease", "kernelRelease", "machineIdSha256", "totalMemoryBytes"],
+      "properties": {
+        "platform": { "const": "linux" },
+        "architecture": { "const": "x64" },
+        "osRelease": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "kernelRelease": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "machineIdSha256": { "$ref": "#/$defs/sha256" },
+        "totalMemoryBytes": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "cpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vendorId", "model", "logicalProcessorCount", "onlineCpuList", "affinity", "governors"],
+      "properties": {
+        "vendorId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "logicalProcessorCount": { "$ref": "#/$defs/positiveInteger" },
+        "onlineCpuList": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "affinity": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "governors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["processor", "governor"],
+            "properties": {
+              "processor": { "type": "integer", "minimum": 0 },
+              "governor": { "type": "string", "minLength": 1, "maxLength": 64 }
+            }
+          }
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deviceModel",
+        "deviceIdentitySha256",
+        "filesystemType",
+        "mountOptionsSha256",
+        "fixtureVolumeIdentitySha256",
+        "rotational"
+      ],
+      "properties": {
+        "deviceModel": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "deviceIdentitySha256": { "$ref": "#/$defs/sha256" },
+        "filesystemType": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "mountOptionsSha256": { "$ref": "#/$defs/sha256" },
+        "fixtureVolumeIdentitySha256": { "$ref": "#/$defs/sha256" },
+        "rotational": { "type": "boolean" }
+      }
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "widthPx", "heightPx", "deviceScaleFactor", "colorDepth"],
+      "properties": {
+        "mode": { "const": "headless-ozone" },
+        "widthPx": { "$ref": "#/$defs/positiveInteger" },
+        "heightPx": { "$ref": "#/$defs/positiveInteger" },
+        "deviceScaleFactor": { "type": "number", "exclusiveMinimum": 0 },
+        "colorDepth": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "zoom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "theme", "viewportWidthPx", "viewportHeightPx", "rowPageSize", "notebookLayoutSha256"],
+      "properties": {
+        "level": { "type": "number" },
+        "theme": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "viewportWidthPx": { "$ref": "#/$defs/positiveInteger" },
+        "viewportHeightPx": { "$ref": "#/$defs/positiveInteger" },
+        "rowPageSize": { "$ref": "#/$defs/positiveInteger" },
+        "notebookLayoutSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extensionId", "version"],
+      "properties": {
+        "extensionId": { "type": "string", "minLength": 3, "maxLength": 192 },
+        "version": { "$ref": "#/$defs/packageVersion" }
+      }
+    },
+    "fileInventoryEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "comparisonDriver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extensionId", "version", "vsix", "packageFiles", "runtimeDependencies", "journeyGraph"],
+      "properties": {
+        "extensionId": { "const": "openwrangler-study.notebook-comparison-driver" },
+        "version": { "const": "1.0.0" },
+        "vsix": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sha256", "filesystemIdentity", "archive"],
+          "properties": {
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "filesystemIdentity": { "$ref": "#/$defs/filesystemIdentity" },
+            "archive": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["entryCount", "totalUncompressedBytes", "inventorySha256", "entries"],
+              "properties": {
+                "entryCount": { "$ref": "#/$defs/positiveInteger" },
+                "totalUncompressedBytes": { "$ref": "#/$defs/positiveInteger" },
+                "inventorySha256": { "$ref": "#/$defs/sha256" },
+                "entries": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 324,
+                  "items": { "$ref": "#/$defs/fileInventoryEntry" }
+                }
+              }
+            }
+          }
+        },
+        "packageFiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["packageJsonSha256", "extensionSourceSha256"],
+          "properties": {
+            "packageJsonSha256": { "$ref": "#/$defs/sha256" },
+            "extensionSourceSha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "runtimeDependencies": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["playwrightCore"],
+          "properties": {
+            "playwrightCore": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["version", "fileCount", "totalBytes", "treeSha256", "lockIntegrity", "files"],
+              "properties": {
+                "version": { "$ref": "#/$defs/packageVersion" },
+                "fileCount": { "$ref": "#/$defs/positiveInteger" },
+                "totalBytes": { "$ref": "#/$defs/positiveInteger" },
+                "treeSha256": { "$ref": "#/$defs/sha256" },
+                "lockIntegrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$" },
+                "files": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 256,
+                  "items": { "$ref": "#/$defs/fileInventoryEntry" }
+                }
+              }
+            }
+          }
+        },
+        "journeyGraph": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entry", "moduleCount", "totalBytes", "graphSha256", "modules"],
+          "properties": {
+            "entry": { "const": "test/extensionHost/dataWranglerComparisonNotebookTrial.js" },
+            "moduleCount": { "$ref": "#/$defs/positiveInteger" },
+            "totalBytes": { "$ref": "#/$defs/positiveInteger" },
+            "graphSha256": { "$ref": "#/$defs/sha256" },
+            "modules": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": { "$ref": "#/$defs/fileInventoryEntry" }
+            }
+          }
+        }
+      }
+    },
+    "cacheToolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "controller", "pythonExecutable"],
+      "properties": {
+        "protocol": { "const": "openwrangler-data-wrangler-comparison-cache-toolchain-v1" },
+        "controller": { "$ref": "#/$defs/immutableFile" },
+        "pythonExecutable": { "$ref": "#/$defs/pythonExecutable" }
+      }
+    },
+    "fixtureToolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "contractVersion",
+        "implementation",
+        "implementationVersion",
+        "generatorSha256",
+        "contractSha256"
+      ],
+      "properties": {
+        "protocol": { "const": "openwrangler-performance-fixture-toolchain-v1" },
+        "contractVersion": { "const": 1 },
+        "implementation": { "const": "polars" },
+        "implementationVersion": { "$ref": "#/$defs/packageVersion" },
+        "generatorSha256": { "$ref": "#/$defs/sha256" },
+        "contractSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "warmupReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "product",
+        "untimed",
+        "locale",
+        "editorVersion",
+        "study",
+        "milestones",
+        "profiles",
+        "cleanup"
+      ],
+      "properties": {
+        "protocol": { "const": "openwrangler-data-wrangler-public-warmup-phase-v1" },
+        "product": { "enum": ["open-wrangler", "data-wrangler"] },
+        "untimed": { "const": true },
+        "locale": { "const": "en" },
+        "editorVersion": { "$ref": "#/$defs/version" },
+        "study": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine",
+            "format",
+            "kind",
+            "fixture",
+            "kernel",
+            "sourceReceipt",
+            "pythonImplementation",
+            "pythonVersion"
+          ],
+          "properties": {
+            "engine": { "const": "polars" },
+            "format": { "const": "csv" },
+            "kind": { "const": "warm" },
+            "fixture": { "type": "object" },
+            "kernel": { "type": "object" },
+            "sourceReceipt": { "type": "object" },
+            "pythonImplementation": { "const": "CPython" },
+            "pythonVersion": { "type": "string", "pattern": "^3\\.12(\\.[0-9]+)?$" }
+          }
+        },
+        "milestones": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "inlineActionMs",
+            "inlineReadyMs",
+            "workbenchActionMs",
+            "workbenchReadyMs",
+            "profileActionMs",
+            "firstProfileReadyMs",
+            "profilesCompleteMs"
+          ],
+          "properties": {
+            "inlineActionMs": { "type": "number", "minimum": 0 },
+            "inlineReadyMs": { "type": "number", "minimum": 0 },
+            "workbenchActionMs": { "type": "number", "minimum": 0 },
+            "workbenchReadyMs": { "type": "number", "minimum": 0 },
+            "profileActionMs": { "type": "number", "minimum": 0 },
+            "firstProfileReadyMs": { "type": "number", "minimum": 0 },
+            "profilesCompleteMs": { "type": "number", "minimum": 0 }
+          }
+        },
+        "profiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expectedColumnCount", "completedColumnCount", "canonicalOrder"],
+          "properties": {
+            "expectedColumnCount": { "$ref": "#/$defs/positiveInteger" },
+            "completedColumnCount": { "$ref": "#/$defs/positiveInteger" },
+            "canonicalOrder": { "const": true }
+          }
+        },
+        "cleanup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["closeStatus", "afterVerification"],
+          "properties": {
+            "closeStatus": { "const": "succeeded" },
+            "afterVerification": { "const": "matched" }
+          }
+        }
+      }
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product",
+        "configuredOnlyReceiptSha256",
+        "warmedReceiptSha256",
+        "warmupReceiptSha256",
+        "warmupReceipt",
+        "publicConfigurationCompleted",
+        "publicWarmupCompleted",
+        "targetStateAbsent"
+      ],
+      "properties": {
+        "product": { "enum": ["open-wrangler", "data-wrangler"] },
+        "configuredOnlyReceiptSha256": { "$ref": "#/$defs/sha256" },
+        "warmedReceiptSha256": { "$ref": "#/$defs/sha256" },
+        "warmupReceiptSha256": { "$ref": "#/$defs/sha256" },
+        "warmupReceipt": { "$ref": "#/$defs/warmupReceipt" },
+        "publicConfigurationCompleted": { "const": true },
+        "publicWarmupCompleted": { "const": true },
+        "targetStateAbsent": { "const": true }
+      }
+    },
+    "publicUiReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "kind", "evidenceSha256", "evidence"],
+      "properties": {
+        "protocol": { "const": "openwrangler-data-wrangler-public-ui-receipt-v1" },
+        "kind": { "enum": ["data-wrangler-polars-capability", "neither-product-control"] },
+        "evidenceSha256": { "$ref": "#/$defs/sha256" },
+        "evidence": { "type": "object" }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product",
+        "engine",
+        "availability",
+        "method",
+        "timed",
+        "fixtureId",
+        "context",
+        "receiptSha256",
+        "receipt"
+      ],
+      "properties": {
+        "product": { "const": "data-wrangler" },
+        "engine": { "const": "polars" },
+        "availability": { "enum": ["available", "undetermined"] },
+        "method": { "const": "public-capability" },
+        "timed": { "const": false },
+        "fixtureId": { "enum": ["csv-100k-50", "parquet-1m-20"] },
+        "context": { "type": "object" },
+        "receiptSha256": { "$ref": "#/$defs/sha256" },
+        "receipt": { "$ref": "#/$defs/publicUiReceipt" }
+      }
+    },
+    "controlProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "fixtureId", "context", "receiptSha256", "receipt"],
+      "properties": {
+        "method": { "const": "neither-product" },
+        "fixtureId": { "enum": ["csv-100k-50", "parquet-1m-20"] },
+        "context": { "type": "object" },
+        "receiptSha256": { "$ref": "#/$defs/sha256" },
+        "receipt": { "$ref": "#/$defs/publicUiReceipt" }
+      }
+    },
+    "ownershipTracker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "supervisorSource", "pythonExecutable", "invocationPolicySha256"],
+      "properties": {
+        "protocol": { "const": "openwrangler-linux-study-supervisor-v1" },
+        "supervisorSource": { "$ref": "#/$defs/immutableFile" },
+        "pythonExecutable": { "$ref": "#/$defs/pythonExecutable" },
+        "invocationPolicySha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "machine",
+        "cpu",
+        "power",
+        "storage",
+        "display",
+        "zoom",
+        "commonExtensions",
+        "comparisonDriver",
+        "cacheToolchain",
+        "fixtureToolchain",
+        "templates",
+        "capabilities",
+        "controlProfile",
+        "ownershipTracker"
+      ],
+      "properties": {
+        "machine": { "$ref": "#/$defs/machine" },
+        "cpu": { "$ref": "#/$defs/cpu" },
+        "power": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source"],
+          "properties": { "source": { "const": "ac" } }
+        },
+        "storage": { "$ref": "#/$defs/storage" },
+        "display": { "$ref": "#/$defs/display" },
+        "zoom": { "$ref": "#/$defs/zoom" },
+        "commonExtensions": { "type": "array", "minItems": 9, "maxItems": 9, "items": { "$ref": "#/$defs/extension" } },
+        "comparisonDriver": { "$ref": "#/$defs/comparisonDriver" },
+        "cacheToolchain": { "$ref": "#/$defs/cacheToolchain" },
+        "fixtureToolchain": { "$ref": "#/$defs/fixtureToolchain" },
+        "templates": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/template" } },
+        "capabilities": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/capability" } },
+        "controlProfile": { "$ref": "#/$defs/controlProfile" },
+        "ownershipTracker": { "$ref": "#/$defs/ownershipTracker" }
+      }
+    }
+  }
+}

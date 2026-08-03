@@ -168,8 +168,10 @@ def test_existing_invalid_fixtures_are_atomically_regenerated_and_fully_validate
     invalid_csv = pl.DataFrame(
         {name: pl.int_range(column, csv_spec.rows + column, eager=True) for column, name in enumerate(csv_spec.names)}
     ).with_row_index("row")
+    interior_row = csv_spec.rows // 2 + 17
+    assert interior_row not in csv_spec.sentinel_rows
     invalid_csv = invalid_csv.with_columns(
-        pl.when(pl.col("row") == csv_spec.rows // 2).then(pl.lit(-1)).otherwise(pl.col("c03")).alias("c03")
+        pl.when(pl.col("row") == interior_row).then(pl.lit(-1)).otherwise(pl.col("c03")).alias("c03")
     ).drop("row")
     invalid_csv.write_csv(fixtures["csv"])
     pl.DataFrame({"wrong": ["schema"]}).write_parquet(fixtures["parquet"])
