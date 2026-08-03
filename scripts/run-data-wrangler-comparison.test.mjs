@@ -105,8 +105,11 @@ test("comparison retained-root creation rejects linked or writable cache ancesto
 test("comparison retained-root creation rejects group-writable node_modules below a public repository", () => {
   const directory = mkdtempSync(join(tmpdir(), "ow-comparison-private-root-public-"));
   chmodSync(directory, 0o755);
-  mkdirSync(resolve(directory, "node_modules"), { mode: 0o775 });
+  const nodeModules = resolve(directory, "node_modules");
+  mkdirSync(nodeModules, { mode: 0o775 });
+  chmodSync(nodeModules, 0o775);
   try {
+    assert.equal(Number(lstatSync(nodeModules, { bigint: true }).mode & 0o777n), 0o775);
     assert.throws(() => createDataWranglerComparisonPrivateRoot(directory), /safe write permissions/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
