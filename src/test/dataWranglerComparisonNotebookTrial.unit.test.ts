@@ -220,15 +220,9 @@ describe("public warm-up diagnostics", () => {
 });
 
 describe("public notebook cell targeting", () => {
-  it("scopes candidates to the exact zero-based cell index or accessible position", () => {
+  it("scopes candidates to the pinned notebook row structure and exact zero-based cell index", () => {
     expect(studyNotebookCellRowSelector(6)).toBe(
-      '.notebook-editor:visible .monaco-list-row[data-index="6"], ' +
-        '.notebook-editor:visible [role="listitem"][data-index="6"], ' +
-        '.notebook-editor:visible [role="option"][data-index="6"], ' +
-        '.notebook-editor:visible [role="treeitem"][data-index="6"], ' +
-        '.notebook-editor:visible [role="listitem"][aria-posinset="7"], ' +
-        '.notebook-editor:visible [role="option"][aria-posinset="7"], ' +
-        '.notebook-editor:visible [role="treeitem"][aria-posinset="7"]'
+      '.notebookOverlay.notebook-editor:visible .monaco-list-row.code-cell-row[role="listitem"][data-index="6"]'
     );
     expect(() => studyNotebookCellRowSelector(-1)).toThrow(/cell index must be safe/u);
   });
@@ -236,13 +230,13 @@ describe("public notebook cell targeting", () => {
   it("matches exact notebook rows without depending on a Code Cell label", () => {
     expect(
       studyNotebookCellRowMatches({ hasMonacoListRowClass: true, role: null, dataIndex: "6", ariaPosition: null }, 6)
-    ).toBe(true);
+    ).toBe(false);
     expect(
       studyNotebookCellRowMatches(
         { hasMonacoListRowClass: false, role: "listitem", dataIndex: null, ariaPosition: "7" },
         6
       )
-    ).toBe(true);
+    ).toBe(false);
     expect(
       studyNotebookCellRowMatches(
         { hasMonacoListRowClass: true, role: "listitem", dataIndex: "6", ariaPosition: "7" },
@@ -260,7 +254,7 @@ describe("public notebook cell targeting", () => {
         { hasMonacoListRowClass: true, role: "listitem", dataIndex: "6", ariaPosition: "8" },
         6
       )
-    ).toBe(true);
+    ).toBe(false);
     expect(
       studyNotebookCellRowMatches(
         { hasMonacoListRowClass: false, role: "group", dataIndex: null, ariaPosition: "7" },
