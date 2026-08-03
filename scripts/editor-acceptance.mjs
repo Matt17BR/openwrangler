@@ -875,14 +875,98 @@ function isSensitiveEditorEnvironmentValue(value) {
 }
 
 export function describeEditorAcceptanceHarnessFailure(error) {
-  let description;
-  try {
-    description = error instanceof Error ? error.stack || error.message : String(error);
-  } catch {
-    description = "Acceptance failed with an unreadable thrown value.";
+  const unreadableFailure = "Acceptance failed with an unreadable thrown value.";
+  const unreadableChildren = "AggregateError children could not be read safely.";
+  const omittedFailures = "Additional acceptance failures were omitted.";
+  const maximumFailures = 32;
+  const maximumDepth = 8;
+  const pending = [{ value: error, depth: 0 }];
+  const descriptions = [];
+  const seen = new Set();
+  let cursor = 0;
+  let omitted = false;
+
+  while (cursor < pending.length && descriptions.length < maximumFailures) {
+    const { value, depth, fixedDescription } = pending[cursor];
+    cursor += 1;
+
+    if ((typeof value === "object" || typeof value === "function") && value !== null) {
+      if (seen.has(value)) {
+        omitted = true;
+        continue;
+      }
+      seen.add(value);
+    }
+
+    let description = fixedDescription;
+    if (description === undefined) {
+      try {
+        if (value instanceof Error) {
+          const stack = value.stack;
+          if (typeof stack === "string" && stack.length > 0) {
+            description = stack;
+          } else {
+            const message = value.message;
+            description = typeof message === "string" ? message : unreadableFailure;
+          }
+        } else {
+          description = String(value);
+        }
+      } catch {
+        description = unreadableFailure;
+      }
+    }
+    if (description.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS) return OVERSIZED_EDITOR_DIAGNOSTIC;
+
+    const indented = `${"  ".repeat(Math.min(depth, maximumDepth))}${description}`;
+    const candidate = [...descriptions, indented].join("\n");
+    if (candidate.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS) return OVERSIZED_EDITOR_DIAGNOSTIC;
+    descriptions.push(indented);
+
+    let aggregate = false;
+    try {
+      aggregate = value instanceof AggregateError;
+    } catch {
+      // Treat a hostile instanceof hook as a non-aggregate failure.
+    }
+    if (!aggregate) continue;
+    if (depth >= maximumDepth) {
+      omitted = true;
+      continue;
+    }
+
+    let children;
+    let length;
+    try {
+      children = value.errors;
+      if (!Array.isArray(children)) throw new TypeError("AggregateError.errors is not an array.");
+      length = children.length;
+      if (!Number.isSafeInteger(length) || length < 0) throw new TypeError("AggregateError.errors has no safe length.");
+    } catch {
+      pending.push({ fixedDescription: unreadableChildren, depth: depth + 1 });
+      continue;
+    }
+
+    const remainingCapacity = Math.max(0, maximumFailures - descriptions.length - (pending.length - cursor));
+    const retainedLength = Math.min(length, remainingCapacity);
+    for (let index = 0; index < retainedLength; index += 1) {
+      try {
+        pending.push({ value: children[index], depth: depth + 1 });
+      } catch {
+        pending.push({ fixedDescription: unreadableFailure, depth: depth + 1 });
+      }
+    }
+    omitted ||= length > retainedLength;
   }
-  if (description.length <= EDITOR_HARNESS_ERROR_MAX_CHARACTERS) return description;
-  return OVERSIZED_EDITOR_DIAGNOSTIC;
+
+  omitted ||= cursor < pending.length;
+  if (omitted) {
+    const indented = `${"  ".repeat(maximumDepth)}${omittedFailures}`;
+    const candidate = [...descriptions, indented].join("\n");
+    if (candidate.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS) return OVERSIZED_EDITOR_DIAGNOSTIC;
+    descriptions.push(indented);
+  }
+  return descriptions.join("\n");
 }
 
 export function serializeEditorAcceptanceHarnessOutcome(outcome, fallbackEnvelope = {}) {

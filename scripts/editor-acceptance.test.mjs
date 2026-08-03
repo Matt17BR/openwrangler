@@ -5165,6 +5165,104 @@ test("harness failures and result serialization remain within their producer-sid
   assert.equal(serializeEditorAcceptanceHarnessOutcome(circular, envelope), serialized);
 });
 
+test("harness failure descriptions retain bounded AggregateError children", () => {
+  const description = describeEditorAcceptanceHarnessFailure(
+    new AggregateError([new Error("first child failure"), new TypeError("second child failure")], "parent failure")
+  );
+  assert.match(description, /parent failure/u);
+  assert.match(description, /first child failure/u);
+  assert.match(description, /second child failure/u);
+  assert.ok(description.length <= EDITOR_HARNESS_ERROR_MAX_CHARACTERS);
+
+  const manyChildren = Array.from({ length: 100 }, (_, index) => `child-${index}`);
+  const bounded = describeEditorAcceptanceHarnessFailure(new AggregateError(manyChildren, "many failures"));
+  assert.match(bounded, /child-0/u);
+  assert.doesNotMatch(bounded, /child-99/u);
+  assert.match(bounded, /Additional acceptance failures were omitted\./u);
+  assert.ok(bounded.length <= EDITOR_HARNESS_ERROR_MAX_CHARACTERS);
+});
+
+test("harness failure descriptions tolerate cyclic and hostile AggregateError children", () => {
+  const sentinel = "OW_HOSTILE_HARNESS_SENTINEL";
+  const cyclic = new AggregateError([], "cyclic parent");
+  cyclic.errors.push(cyclic, new Error("reachable child"));
+  const cyclicDescription = describeEditorAcceptanceHarnessFailure(cyclic);
+  assert.match(cyclicDescription, /reachable child/u);
+  assert.match(cyclicDescription, /Additional acceptance failures were omitted\./u);
+
+  const hostileGetter = new AggregateError([], "hostile getter");
+  Object.defineProperty(hostileGetter, "errors", {
+    configurable: true,
+    get() {
+      throw new Error(sentinel);
+    }
+  });
+  const getterDescription = describeEditorAcceptanceHarnessFailure(hostileGetter);
+  assert.match(getterDescription, /AggregateError children could not be read safely\./u);
+  assert.doesNotMatch(getterDescription, new RegExp(sentinel, "u"));
+
+  const indexedChildren = [new Error("index-access child")];
+  Object.defineProperty(indexedChildren, Symbol.iterator, {
+    configurable: true,
+    get() {
+      throw new Error(sentinel);
+    }
+  });
+  const hostileIterator = new AggregateError([], "hostile iterator");
+  hostileIterator.errors = indexedChildren;
+  const iteratorDescription = describeEditorAcceptanceHarnessFailure(hostileIterator);
+  assert.match(iteratorDescription, /index-access child/u);
+  assert.doesNotMatch(iteratorDescription, new RegExp(sentinel, "u"));
+
+  const hostileIndex = new AggregateError([], "hostile index");
+  hostileIndex.errors = new Proxy([new Error("unreachable")], {
+    get(target, property, receiver) {
+      if (property === "0") throw new Error(sentinel);
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  const indexDescription = describeEditorAcceptanceHarnessFailure(hostileIndex);
+  assert.match(indexDescription, /Acceptance failed with an unreadable thrown value\./u);
+  assert.doesNotMatch(indexDescription, new RegExp(sentinel, "u"));
+});
+
+test("harness failure descriptions replace oversized and unreadable values with fixed fallbacks", () => {
+  const oversized = describeEditorAcceptanceHarnessFailure(
+    new AggregateError([new Error("x".repeat(EDITOR_HARNESS_ERROR_MAX_CHARACTERS + 1))], "parent")
+  );
+  assert.match(oversized, /complete value exceeded the fixed safety limit\.$/u);
+
+  const sentinel = "OW_UNREADABLE_HARNESS_SENTINEL";
+  const unreadable = new Error("hidden");
+  Object.defineProperty(unreadable, "stack", {
+    configurable: true,
+    get() {
+      throw new Error(sentinel);
+    }
+  });
+  const unreadableDescription = describeEditorAcceptanceHarnessFailure(unreadable);
+  assert.equal(unreadableDescription, "Acceptance failed with an unreadable thrown value.");
+  assert.doesNotMatch(unreadableDescription, new RegExp(sentinel, "u"));
+});
+
+test("the harness failure description remains viable when embedded from its source alone", () => {
+  const oversizedFallback = describeEditorAcceptanceHarnessFailure(
+    new Error("x".repeat(EDITOR_HARNESS_ERROR_MAX_CHARACTERS + 1))
+  );
+  const embedded = Function(
+    "EDITOR_HARNESS_ERROR_MAX_CHARACTERS",
+    "OVERSIZED_EDITOR_DIAGNOSTIC",
+    `"use strict"; return (${describeEditorAcceptanceHarnessFailure.toString()});`
+  )(EDITOR_HARNESS_ERROR_MAX_CHARACTERS, oversizedFallback);
+  const description = embedded(
+    new AggregateError([new Error("embedded first child"), new Error("embedded second child")], "embedded parent")
+  );
+  assert.match(description, /embedded parent/u);
+  assert.match(description, /embedded first child/u);
+  assert.match(description, /embedded second child/u);
+  assert.ok(description.length <= EDITOR_HARNESS_ERROR_MAX_CHARACTERS);
+});
+
 test("POSIX editor process-group probes include descendants and tolerate exited or permission-mixed trees", () => {
   const probes = [];
   assert.equal(
