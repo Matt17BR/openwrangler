@@ -33,6 +33,7 @@ import {
 import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
+  EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS,
   editorAcceptanceProgressPath,
   editorProcessTreeMayBeLive,
   runBoundedEditorCliCommand,
@@ -42,7 +43,7 @@ import { requireLinuxInotifyWatchHeadroom } from "./linux-inotify-watch-headroom
 
 export const DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-warmup-phase-v1";
 export const DATA_WRANGLER_PUBLIC_WARMUP_CONTROL_PROTOCOL = "openwrangler-data-wrangler-public-warmup-control-v1";
-export const DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_TIMEOUT_MS = 120_000;
+export const DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_TIMEOUT_MS = EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS;
 export const DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS = Object.freeze([
   "source-verified",
   "measurement-ready",

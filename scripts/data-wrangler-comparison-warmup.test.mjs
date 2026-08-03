@@ -22,6 +22,7 @@ import {
   runPreparedProductWarmupJourney
 } from "./data-wrangler-comparison-warmup.mjs";
 import { createDataWranglerStudyBridgeController } from "./data-wrangler-study-control-bridge.mjs";
+import { EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS } from "./editor-acceptance.mjs";
 
 const digest = "a".repeat(64);
 
@@ -148,6 +149,7 @@ async function runRealWarmupController(options) {
 }
 
 test("public warm-up gives a clean notebook launch a bounded startup window", async () => {
+  assert.equal(DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_TIMEOUT_MS, EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS);
   const expectedError = new Error("stop after capturing responder options");
   let observedOptions;
   await assert.rejects(

@@ -166,6 +166,7 @@ describe("study kernel picker navigation", () => {
 
 describe("public warm-up diagnostics", () => {
   it("allows a clean notebook to open without changing the measured-trial capture bound", () => {
+    expect(DATA_WRANGLER_PUBLIC_WARMUP_NOTEBOOK_CAPTURE_WINDOW_MS).toBe(300_000);
     expect(dataWranglerNotebookCaptureWindowMs("comparison-study-open-wrangler-warmup")).toBe(
       DATA_WRANGLER_PUBLIC_WARMUP_NOTEBOOK_CAPTURE_WINDOW_MS
     );
