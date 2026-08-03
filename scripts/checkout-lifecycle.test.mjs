@@ -4117,26 +4117,34 @@ test("legacy adoption preflights persistent JSON size before writing a record", 
       repositoryPath: fixture.repository,
       tokenFactory: () => "e".repeat(32)
     });
-    legacyCandidate(fixture, "legacy-record-cap");
-    const generatedRoots = Array.from(
-      { length: 64 },
-      (_, index) => `generated-${String(index).padStart(2, "0")}-${"x".repeat(1005)}`
-    );
+    const generatedFiles = Array.from({ length: 64 }, (_, index) => {
+      const component = "x".repeat(199);
+      return `${String(index).padStart(2, "0")}-${component}/${component}/${component}/${component}/${"x".repeat(213)}.ignored`;
+    });
+    legacyCandidate(fixture, "legacy-record-cap", {
+      configure(checkout) {
+        rmSync(join(checkout, "node_modules"), { recursive: true });
+        unlinkSync(join(checkout, "fixture.ignored"));
+        for (const file of generatedFiles) {
+          const path = join(checkout, file);
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, "generated\n");
+        }
+      }
+    });
     const managed = defaultManager(fixture, { tokenFactory: () => "f".repeat(32) });
     lifecycleError(
       () =>
         managed.legacyAdopt({
           slug: "legacy-record-cap",
           ownerTask: "/root/legacy-record-cap",
-          generatedRoots
+          generatedFiles
         }),
       "legacy-adoption-record-too-large"
     );
     const attempt = join(managed.paths.legacyAdoptionAttempts, "legacy-record-cap.00000001");
-    assert.deepEqual(readdirSync(attempt), []);
-    assert.deepEqual(managed.legacyStatus("legacy-record-cap")[0].attempts, [
-      { generation: 1, state: "allocated-review-required" }
-    ]);
+    assert.equal(existsSync(attempt), false);
+    assert.deepEqual(managed.legacyStatus("legacy-record-cap"), []);
   });
 });
 
