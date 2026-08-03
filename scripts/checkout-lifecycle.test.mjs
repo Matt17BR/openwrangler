@@ -24,7 +24,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
@@ -237,6 +237,18 @@ function explicitLegacyCandidate(fixture, parentName, slug, options = {}) {
   return Object.freeze({ parent, checkout });
 }
 
+function cloneLegacyInto(fixture, parent, slug, options = {}) {
+  const checkout = join(parent, slug);
+  git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, checkout);
+  git(checkout, "config", "user.name", "Checkout Test");
+  git(checkout, "config", "user.email", "checkout@example.invalid");
+  mkdirSync(join(checkout, "node_modules", "example"), { recursive: true });
+  writeFileSync(join(checkout, "node_modules", "example", "index.js"), "generated dependency\n");
+  writeFileSync(join(checkout, "fixture.ignored"), "generated artifact\n");
+  options.configure?.(checkout);
+  return Object.freeze({ parent, checkout });
+}
+
 function writeLegacyBatchManifest(fixture, name, candidates, dependencyRoots) {
   const manifest = join(fixture.root, `${name}.json`);
   writeFileSync(
@@ -245,6 +257,57 @@ function writeLegacyBatchManifest(fixture, name, candidates, dependencyRoots) {
       {
         protocol: "openwrangler-legacy-checkout-batch-v1",
         dependencyRoots,
+        candidates: candidates.map(
+          ({
+            slug,
+            checkout,
+            parent,
+            ownerTask = `/root/${slug}`,
+            generatedRoots = ["node_modules"],
+            generatedFiles = ["fixture.ignored"]
+          }) => ({
+            slug,
+            path: checkout,
+            root: parent,
+            ownerTask,
+            generatedRoots,
+            generatedFiles
+          })
+        )
+      },
+      null,
+      2
+    )}\n`,
+    { mode: 0o600 }
+  );
+  return manifest;
+}
+
+function writeExplicitCatalogBatchManifest(fixture, name, candidates, catalogRoots, repositoryPaths) {
+  const repositories = new Set(repositoryPaths);
+  const manifest = join(fixture.root, `${name}.json`);
+  const roots = catalogRoots.map((root) => ({
+    path: root,
+    entries: readdirSync(root, { withFileTypes: true }).map((entry) => ({
+      name: entry.name,
+      kind: repositories.has(join(root, entry.name))
+        ? "repository"
+        : entry.isSymbolicLink()
+          ? "symlink"
+          : entry.isDirectory()
+            ? "directory"
+            : "file"
+    }))
+  }));
+  writeFileSync(
+    manifest,
+    `${JSON.stringify(
+      {
+        protocol: "openwrangler-legacy-checkout-batch-v2",
+        dependencyCatalog: {
+          protocol: "openwrangler-legacy-dependency-catalog-v1",
+          roots
+        },
         candidates: candidates.map(
           ({
             slug,
@@ -1338,6 +1401,1083 @@ test("legacy batch review scans the dependency universe once and adoption consum
     );
     assert.equal(existsSync(first.checkout), true);
     assert.equal(existsSync(second.checkout), true);
+  });
+});
+
+test("legacy batch v1 keeps accepting candidates below a recursive dependency root", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "a".repeat(32) });
+    const dependencyRoot = join(fixture.root, "batch-recursive-root");
+    const parent = join(dependencyRoot, "nested");
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "batch-recursive-candidate");
+    const manifest = writeLegacyBatchManifest(
+      fixture,
+      "batch-recursive",
+      [{ slug: "batch-recursive-candidate", checkout: candidate.checkout, parent }],
+      [dependencyRoot]
+    );
+
+    const reviewed = defaultManager(fixture).legacyBatchAudit({ manifestPath: manifest });
+
+    assert.equal(reviewed.protocol, "openwrangler-legacy-checkout-batch-review-v1");
+    assert.equal(reviewed.eligibleCount, 1);
+    assert.equal(reviewed.blockedCount, 0);
+  });
+});
+
+test("an explicit legacy catalog attests ordinary trees without following declared symlinks", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "1".repeat(32) });
+    const parent = join(fixture.root, "catalog-broad-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const first = cloneLegacyInto(fixture, parent, "catalog-first");
+    const second = cloneLegacyInto(fixture, parent, "catalog-second");
+    const unrelated = join(parent, "unrelated");
+    const nested = join(unrelated, "deep", "tree", "that", "must", "not", "be", "walked");
+    mkdirSync(nested, { recursive: true });
+    for (let index = 0; index < 200; index += 1) {
+      writeFileSync(join(nested, `${index}.txt`), "unrelated\n");
+    }
+    const unsafeTarget = join(fixture.root, "outside-symlink-target");
+    mkdirSync(unsafeTarget, { mode: 0o700 });
+    symlinkSync("missing-git-admin", join(unsafeTarget, ".git"));
+    symlinkSync(unsafeTarget, join(parent, "unrelated-link"));
+    writeFileSync(join(parent, "notes.txt"), "not a repository\n");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-broad",
+      [
+        { slug: "catalog-first", checkout: first.checkout, parent },
+        { slug: "catalog-second", checkout: second.checkout, parent }
+      ],
+      [parent],
+      [first.checkout, second.checkout]
+    );
+    let scans = 0;
+    let bootId = BOOT_A;
+    const managed = defaultManager(fixture, {
+      readBootId: () => bootId,
+      tokenFactory: () => "2".repeat(32),
+      hooks: {
+        afterLegacyBatchDependencyScan(scan) {
+          scans += 1;
+          assert.equal(scan.mode, "explicit-catalog");
+          assert.equal(scan.catalogEntryCount, 5);
+          assert.equal(scan.visitedEntries, 212);
+        }
+      }
+    });
+
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+
+    assert.equal(scans, 1);
+    assert.equal(reviewed.protocol, "openwrangler-legacy-checkout-batch-review-v2");
+    assert.deepEqual(reviewed.dependencyScan, {
+      mode: "explicit-catalog",
+      catalogEntryCount: 5,
+      rootCount: 1,
+      visitedEntries: 212,
+      repositoryCount: 2
+    });
+    assert.equal(reviewed.eligibleCount, 2);
+    assert.equal(reviewed.blockedCount, 0);
+    assert.equal(reviewed.authorizesAdoption, false);
+    assert.equal(reviewed.authorizesCleanup, false);
+
+    const adopted = managed.legacyBatchAdopt({
+      manifestPath: manifest,
+      expectedReviewSha256: reviewed.reviewSha256
+    });
+    assert.equal(scans, 2);
+    assert.deepEqual(
+      adopted.adopted.map((entry) => entry.slug),
+      ["catalog-first", "catalog-second"]
+    );
+    const archive = managed.legacyArchive({
+      slug: "catalog-first",
+      ownerTask: "/root/catalog-first",
+      expectedRevision: 1
+    });
+    assert.equal(archive.status, "archived-review-required");
+    assert.equal(archive.authorizesMove, false);
+    assert.equal(archive.authorizesCleanup, false);
+    const enrollment = managed.enrollRetirement({
+      kind: "legacy",
+      slug: "catalog-first",
+      ownerTask: "/root/catalog-first",
+      expectedRevision: 1
+    });
+    assert.equal(enrollment.status, "enrolled-next-boot");
+    assert.equal(enrollment.moved, false);
+    assert.equal(enrollment.removed, false);
+    const secondArchive = managed.legacyArchive({
+      slug: "catalog-second",
+      ownerTask: "/root/catalog-second",
+      expectedRevision: 1
+    });
+    assert.equal(secondArchive.status, "archived-review-required");
+    const secondEnrollment = managed.enrollRetirement({
+      kind: "legacy",
+      slug: "catalog-second",
+      ownerTask: "/root/catalog-second",
+      expectedRevision: 1
+    });
+    assert.equal(secondEnrollment.status, "enrolled-next-boot");
+    assert.equal(existsSync(first.checkout), true);
+    assert.equal(existsSync(second.checkout), true);
+    assert.equal(existsSync(join(unsafeTarget, "missing-git-admin")), false);
+    assert.deepEqual(
+      managed.sweep().results.map((result) => result.state),
+      ["waiting-for-next-boot", "waiting-for-next-boot"]
+    );
+    bootId = BOOT_B;
+    const laterSweep = managed.sweep();
+    assert.deepEqual(
+      laterSweep.results.map((result) => result.state),
+      ["retired", "retired"]
+    );
+    assert.equal(existsSync(first.checkout), false);
+    assert.equal(existsSync(second.checkout), false);
+  });
+});
+
+test("an exact checkout list cannot stand in for its complete parent catalog", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "1".repeat(32) });
+    const parent = join(fixture.root, "catalog-omitted-sibling-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-omitted-candidate");
+    writeFileSync(join(candidate.checkout, "borrowed-only.txt"), "not present in the remote\n");
+    git(candidate.checkout, "add", "borrowed-only.txt");
+    git(candidate.checkout, "commit", "-q", "-m", "Add an object borrowed by a sibling");
+    const borrowedHead = git(candidate.checkout, "rev-parse", "HEAD");
+    const dependent = join(parent, "unlisted-dependent");
+    git(parent, "clone", "-q", "--shared", candidate.checkout, dependent);
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-omitted-sibling",
+      [{ slug: "catalog-omitted-candidate", checkout: candidate.checkout, parent }],
+      [parent],
+      [candidate.checkout]
+    );
+    const value = JSON.parse(readFileSync(manifest, "utf8"));
+    value.dependencyCatalog.roots[0].entries = value.dependencyCatalog.roots[0].entries.filter(
+      (entry) => entry.name !== "unlisted-dependent"
+    );
+    writeFileSync(manifest, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    const managed = defaultManager(fixture);
+
+    lifecycleError(() => managed.legacyBatchAudit({ manifestPath: manifest }), "legacy-dependency-universe-changed");
+
+    assert.equal(existsSync(join(managed.paths.root, "legacy-adoptions")), false);
+    assert.equal(git(dependent, "cat-file", "-t", borrowedHead), "commit");
+    assert.equal(
+      resolve(
+        join(dependent, ".git", "objects"),
+        readFileSync(join(dependent, ".git", "objects", "info", "alternates"), "utf8").trim()
+      ),
+      join(candidate.checkout, ".git", "objects")
+    );
+  });
+});
+
+test("explicit catalog descriptor traversal rejects root, directory, repository, and FIFO pathname swaps", () => {
+  const expectCatalogRace = (managed, manifest) => {
+    assert.throws(
+      () => managed.legacyBatchAudit({ manifestPath: manifest }),
+      (error) =>
+        error instanceof CheckoutLifecycleError &&
+        ["legacy-dependency-universe-changed", "legacy-provider-scan-unsafe"].includes(error.code)
+    );
+  };
+
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "1".repeat(32) });
+    const parent = join(fixture.root, "catalog-root-swap");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-root-swap-candidate");
+    const outside = join(fixture.root, "catalog-root-swap-outside");
+    mkdirSync(outside, { mode: 0o700 });
+    writeFileSync(join(outside, "outside.txt"), "must not be traversed\n");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-root-swap",
+      [{ slug: "catalog-root-swap-candidate", checkout: candidate.checkout, parent }],
+      [parent],
+      [candidate.checkout]
+    );
+    let swapped = false;
+    const managed = defaultManager(fixture, {
+      hooks: {
+        afterExplicitCatalogRootOpen({ rootPath }) {
+          if (swapped || rootPath !== parent) return;
+          swapped = true;
+          renameSync(parent, `${parent}.held`);
+          symlinkSync(outside, parent);
+        }
+      }
+    });
+
+    expectCatalogRace(managed, manifest);
+    assert.equal(swapped, true);
+    assert.equal(existsSync(join(outside, "outside.txt")), true);
+  });
+
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "2".repeat(32) });
+    const parent = join(fixture.root, "catalog-directory-swap");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-directory-swap-candidate");
+    const ordinary = join(parent, "ordinary");
+    mkdirSync(ordinary, { mode: 0o700 });
+    const outside = join(fixture.root, "catalog-directory-swap-outside");
+    mkdirSync(join(outside, "outside-child"), { recursive: true, mode: 0o700 });
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-directory-swap",
+      [{ slug: "catalog-directory-swap-candidate", checkout: candidate.checkout, parent }],
+      [parent],
+      [candidate.checkout]
+    );
+    const visited = [];
+    const managed = defaultManager(fixture, {
+      hooks: {
+        beforeExplicitCatalogDirectoryRead({ rootPath, relativePath }) {
+          if (rootPath !== ordinary) return;
+          visited.push(relativePath);
+          if (relativePath !== "" || existsSync(`${ordinary}.held`)) return;
+          renameSync(ordinary, `${ordinary}.held`);
+          symlinkSync(outside, ordinary);
+        }
+      }
+    });
+
+    expectCatalogRace(managed, manifest);
+    assert.deepEqual(visited, [""]);
+    assert.equal(existsSync(join(outside, "outside-child")), true);
+  });
+
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "3".repeat(32) });
+    const parent = join(fixture.root, "catalog-repository-swap");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-repository-swap-candidate");
+    const outside = join(fixture.root, "catalog-repository-swap-outside");
+    mkdirSync(join(outside, ".git"), { recursive: true, mode: 0o700 });
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-repository-swap",
+      [{ slug: "catalog-repository-swap-candidate", checkout: candidate.checkout, parent }],
+      [parent],
+      [candidate.checkout]
+    );
+    let swapped = false;
+    const managed = defaultManager(fixture, {
+      hooks: {
+        beforeExplicitCatalogEntryOpen({ entryName, entryKind }) {
+          if (swapped || entryName !== basename(candidate.checkout) || entryKind !== "repository") return;
+          swapped = true;
+          renameSync(candidate.checkout, `${candidate.checkout}.held`);
+          symlinkSync(outside, candidate.checkout);
+        }
+      }
+    });
+
+    expectCatalogRace(managed, manifest);
+    assert.equal(swapped, true);
+    assert.equal(existsSync(join(outside, ".git")), true);
+  });
+
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "4".repeat(32) });
+    const parent = join(fixture.root, "catalog-file-swap");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-file-swap-candidate");
+    const notes = join(parent, "notes.txt");
+    writeFileSync(notes, "declared file\n");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-file-swap",
+      [{ slug: "catalog-file-swap-candidate", checkout: candidate.checkout, parent }],
+      [parent],
+      [candidate.checkout]
+    );
+    let swapped = false;
+    const managed = defaultManager(fixture, {
+      hooks: {
+        beforeExplicitCatalogEntryOpen({ entryName, entryKind }) {
+          if (swapped || entryName !== "notes.txt" || entryKind !== "file") return;
+          swapped = true;
+          renameSync(notes, `${notes}.held`);
+          const made = spawnSync("mkfifo", [notes], { encoding: "utf8" });
+          assert.equal(made.status, 0, made.stderr);
+        }
+      }
+    });
+
+    const started = Date.now();
+    expectCatalogRace(managed, manifest);
+    assert.equal(swapped, true);
+    assert.ok(Date.now() - started < 2_000, "a FIFO swap must fail without blocking on open");
+  });
+});
+
+test("an explicit catalog rejects repository counts above its descriptor bound before traversal", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "5".repeat(32) });
+    const parent = join(fixture.root, "catalog-repository-bound");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-repository-bound-candidate");
+    const repositoryPaths = [candidate.checkout];
+    for (let index = 0; index < 16; index += 1) {
+      const path = join(parent, `declared-repository-${String(index).padStart(2, "0")}`);
+      mkdirSync(path, { mode: 0o700 });
+      repositoryPaths.push(path);
+    }
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-repository-bound",
+      [{ slug: "catalog-repository-bound-candidate", checkout: candidate.checkout, parent }],
+      [parent],
+      repositoryPaths
+    );
+
+    lifecycleError(
+      () => defaultManager(fixture).legacyBatchAudit({ manifestPath: manifest }),
+      "legacy-provider-scan-unsafe"
+    );
+  });
+});
+
+test("an oversized explicit catalog proof is blocked before lifecycle state is allocated", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "5".repeat(32) });
+    const parent = join(fixture.root, "catalog-persistent-proof-bound");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-persistent-proof-candidate");
+    for (let index = 0; index < 240; index += 1) {
+      const name = `ordinary-${String(index).padStart(3, "0")}-${"x".repeat(160)}`;
+      writeFileSync(join(parent, name), "bounded catalog fixture\n");
+    }
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-persistent-proof-bound",
+      [{ slug: "catalog-persistent-proof-candidate", checkout: candidate.checkout, parent }],
+      [parent],
+      [candidate.checkout]
+    );
+    const managed = defaultManager(fixture);
+
+    const review = managed.legacyBatchAudit({ manifestPath: manifest });
+
+    assert.equal(review.eligibleCount, 0);
+    assert.equal(review.blockedCount, 1);
+    assert.equal(review.candidates[0].code, "legacy-adoption-record-too-large");
+    lifecycleError(
+      () => managed.legacyBatchAdopt({ manifestPath: manifest, expectedReviewSha256: review.reviewSha256 }),
+      "legacy-batch-not-eligible"
+    );
+    assert.equal(existsSync(join(managed.paths.root, "legacy-adoptions")), false);
+    assert.equal(existsSync(candidate.checkout), true);
+  });
+});
+
+test("nested repositories or alternates appearing under an ordinary catalog directory block retirement", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "d".repeat(32) });
+    const parent = join(fixture.root, "catalog-nested-provider-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-nested-provider");
+    const ordinary = join(parent, "ordinary", "nested");
+    mkdirSync(ordinary, { recursive: true, mode: 0o700 });
+    writeFileSync(join(ordinary, "before.txt"), "ordinary before adoption\n");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-nested-provider",
+      [{ slug: "catalog-nested-provider", checkout: candidate.checkout, parent }],
+      [parent],
+      [candidate.checkout]
+    );
+    const managed = defaultManager(fixture, { tokenFactory: () => "e".repeat(32) });
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+    managed.legacyBatchAdopt({ manifestPath: manifest, expectedReviewSha256: reviewed.reviewSha256 });
+    const nestedGit = join(ordinary, ".git");
+    mkdirSync(join(nestedGit, "objects", "info"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(nestedGit, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(nestedGit, "objects", "info", "alternates"), `${join(candidate.checkout, ".git", "objects")}\n`);
+
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "catalog-nested-provider",
+          ownerTask: "/root/catalog-nested-provider",
+          expectedRevision: 1
+        }),
+      "legacy-provider-scan-unsafe"
+    );
+    assert.equal(existsSync(candidate.checkout), true);
+  });
+});
+
+test("metadata-only changes to a declared ordinary catalog directory block retirement", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "f".repeat(32) });
+    const parent = join(fixture.root, "catalog-directory-metadata-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const candidate = cloneLegacyInto(fixture, parent, "catalog-directory-metadata");
+    const ordinary = join(parent, "ordinary");
+    mkdirSync(ordinary, { mode: 0o700 });
+    writeFileSync(join(ordinary, "stable.txt"), "stable before adoption\n");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-directory-metadata",
+      [{ slug: "catalog-directory-metadata", checkout: candidate.checkout, parent }],
+      [parent],
+      [candidate.checkout]
+    );
+    const managed = defaultManager(fixture, { tokenFactory: () => "a".repeat(32) });
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+    managed.legacyBatchAdopt({ manifestPath: manifest, expectedReviewSha256: reviewed.reviewSha256 });
+    chmodSync(ordinary, 0o750);
+
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "catalog-directory-metadata",
+          ownerTask: "/root/catalog-directory-metadata",
+          expectedRevision: 1
+        }),
+      "legacy-cohort-proof-changed"
+    );
+    assert.equal(existsSync(candidate.checkout), true);
+  });
+});
+
+test("explicit catalog roots and entry types remain exact through later archive checks", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "3".repeat(32) });
+    const candidate = explicitLegacyCandidate(fixture, "catalog-stale-root", "catalog-stale");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-stale",
+      [{ slug: "catalog-stale", checkout: candidate.checkout, parent: candidate.parent }],
+      [candidate.parent],
+      [candidate.checkout]
+    );
+    const managed = defaultManager(fixture, { tokenFactory: () => "4".repeat(32) });
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+    managed.legacyBatchAdopt({ manifestPath: manifest, expectedReviewSha256: reviewed.reviewSha256 });
+    writeFileSync(join(candidate.parent, "appeared-after-review.txt"), "hold retirement\n");
+
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "catalog-stale",
+          ownerTask: "/root/catalog-stale",
+          expectedRevision: 1
+        }),
+      "legacy-dependency-universe-changed"
+    );
+    assert.equal(existsSync(candidate.checkout), true);
+  });
+});
+
+test("explicit catalog peers may disappear only through a recorded terminal retirement", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "8".repeat(32) });
+    const parent = join(fixture.root, "catalog-peer-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const first = cloneLegacyInto(fixture, parent, "catalog-peer-first");
+    const second = cloneLegacyInto(fixture, parent, "catalog-peer-second");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-peer",
+      [
+        { slug: "catalog-peer-first", checkout: first.checkout, parent },
+        { slug: "catalog-peer-second", checkout: second.checkout, parent }
+      ],
+      [parent],
+      [first.checkout, second.checkout]
+    );
+    const managed = defaultManager(fixture, { tokenFactory: () => "9".repeat(32) });
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+    managed.legacyBatchAdopt({ manifestPath: manifest, expectedReviewSha256: reviewed.reviewSha256 });
+    const displaced = join(fixture.root, "catalog-peer-displaced");
+    renameSync(first.checkout, displaced);
+
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "catalog-peer-second",
+          ownerTask: "/root/catalog-peer-second",
+          expectedRevision: 1
+        }),
+      "legacy-cohort-peer-not-retired"
+    );
+    assert.equal(existsSync(second.checkout), true);
+    assert.equal(existsSync(displaced), true);
+  });
+});
+
+test("a terminal peer from another explicit cleanup cohort does not authorize disappearance", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "0".repeat(32) });
+    const parent = join(fixture.root, "catalog-cohort-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const retained = cloneLegacyInto(fixture, parent, "catalog-cohort-a");
+    const separatelyRetired = cloneLegacyInto(fixture, parent, "catalog-cohort-z");
+    const cohortManifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-cohort-original",
+      [
+        { slug: "catalog-cohort-a", checkout: retained.checkout, parent },
+        { slug: "catalog-cohort-z", checkout: separatelyRetired.checkout, parent }
+      ],
+      [parent],
+      [retained.checkout, separatelyRetired.checkout]
+    );
+    let adoptionCount = 0;
+    const interruptedManager = defaultManager(fixture, {
+      tokenFactory: () => "1".repeat(32),
+      hooks: {
+        afterLegacyBatchCandidateAdopt() {
+          adoptionCount += 1;
+          if (adoptionCount === 1) throw new Error("stop after the first cohort adoption");
+        }
+      }
+    });
+    const originalReview = interruptedManager.legacyBatchAudit({ manifestPath: cohortManifest });
+    assert.throws(
+      () =>
+        interruptedManager.legacyBatchAdopt({
+          manifestPath: cohortManifest,
+          expectedReviewSha256: originalReview.reviewSha256
+        }),
+      /stop after the first cohort adoption/u
+    );
+    assert.deepEqual(
+      interruptedManager.legacyStatus().map((entry) => entry.slug),
+      ["catalog-cohort-a"]
+    );
+
+    const separateManifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-cohort-separate",
+      [{ slug: "catalog-cohort-z", checkout: separatelyRetired.checkout, parent }],
+      [parent],
+      [retained.checkout, separatelyRetired.checkout]
+    );
+    let bootId = BOOT_A;
+    const managed = defaultManager(fixture, {
+      readBootId: () => bootId,
+      tokenFactory: () => "2".repeat(32)
+    });
+    const separateReview = managed.legacyBatchAudit({ manifestPath: separateManifest });
+    managed.legacyBatchAdopt({
+      manifestPath: separateManifest,
+      expectedReviewSha256: separateReview.reviewSha256
+    });
+    managed.legacyArchive({
+      slug: "catalog-cohort-z",
+      ownerTask: "/root/catalog-cohort-z",
+      expectedRevision: 1
+    });
+    managed.enrollRetirement({
+      kind: "legacy",
+      slug: "catalog-cohort-z",
+      ownerTask: "/root/catalog-cohort-z",
+      expectedRevision: 1
+    });
+    bootId = BOOT_B;
+    assert.deepEqual(
+      managed.sweep().results.map((result) => result.state),
+      ["retired"]
+    );
+    assert.equal(existsSync(separatelyRetired.checkout), false);
+
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "catalog-cohort-a",
+          ownerTask: "/root/catalog-cohort-a",
+          expectedRevision: 1
+        }),
+      "legacy-cohort-peer-not-retired"
+    );
+    assert.equal(existsSync(retained.checkout), true);
+  });
+});
+
+test("explicit catalogs keep linked worktree providers as one complete dependency group", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "5".repeat(32) });
+    const parent = join(fixture.root, "catalog-linked-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const owner = join(parent, "linked-owner");
+    const linked = join(parent, "linked-member");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, owner);
+    git(owner, "worktree", "add", "-q", "-b", "linked-member", linked);
+    const independent = cloneLegacyInto(fixture, parent, "catalog-independent");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-linked",
+      [{ slug: "catalog-independent", checkout: independent.checkout, parent }],
+      [parent],
+      [owner, linked, independent.checkout]
+    );
+    const managed = defaultManager(fixture);
+
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+
+    assert.equal(reviewed.eligibleCount, 1);
+    assert.equal(reviewed.blockedCount, 0);
+    assert.equal(reviewed.dependencyScan.repositoryCount, 2);
+    assert.equal(existsSync(owner), true);
+    assert.equal(existsSync(linked), true);
+
+    const heldManifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-linked-held",
+      [
+        {
+          slug: "linked-owner",
+          checkout: owner,
+          parent,
+          generatedRoots: [],
+          generatedFiles: []
+        }
+      ],
+      [parent],
+      [owner, linked, independent.checkout]
+    );
+    const held = managed.legacyBatchAudit({ manifestPath: heldManifest });
+    assert.equal(held.blockedCount, 1);
+    assert.ok(["legacy-audit-not-eligible", "legacy-linked-worktree-not-adoptable"].includes(held.candidates[0].code));
+    assert.equal(existsSync(owner), true);
+    assert.equal(existsSync(linked), true);
+  });
+});
+
+test("explicit catalogs reject omitted worktree members and inbound object dependencies", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "6".repeat(32) });
+    const parent = join(fixture.root, "catalog-incomplete-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const owner = join(parent, "incomplete-owner");
+    const linked = join(parent, "incomplete-linked");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, owner);
+    git(owner, "worktree", "add", "-q", "-b", "incomplete-linked", linked);
+    const candidate = cloneLegacyInto(fixture, parent, "incomplete-candidate");
+    const incomplete = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-incomplete",
+      [{ slug: "incomplete-candidate", checkout: candidate.checkout, parent }],
+      [parent],
+      [owner, candidate.checkout]
+    );
+    const managed = defaultManager(fixture);
+    lifecycleError(() => managed.legacyBatchAudit({ manifestPath: incomplete }), "legacy-provider-scan-unsafe");
+    assert.equal(existsSync(join(managed.paths.root, "legacy-adoptions")), false);
+
+    const providerRoot = join(fixture.root, "catalog-provider-root");
+    mkdirSync(providerRoot, { mode: 0o700 });
+    const provider = cloneLegacyInto(fixture, providerRoot, "catalog-provider");
+    const dependent = join(providerRoot, "catalog-dependent");
+    git(providerRoot, "clone", "-q", "--shared", provider.checkout, dependent);
+    const providerManifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-provider",
+      [{ slug: "catalog-provider", checkout: provider.checkout, parent: providerRoot }],
+      [providerRoot],
+      [provider.checkout, dependent]
+    );
+    const providerReview = managed.legacyBatchAudit({ manifestPath: providerManifest });
+    assert.equal(providerReview.blockedCount, 1);
+    assert.equal(providerReview.candidates[0].code, "legacy-provider-in-use");
+    assert.equal(existsSync(provider.checkout), true);
+    assert.equal(existsSync(dependent), true);
+  });
+});
+
+test("an explicit catalog groups a linked worktree with its bare base", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "6".repeat(32) });
+    const parent = join(fixture.root, "catalog-bare-worktree-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const bare = join(parent, "catalog-bare-base.git");
+    const linked = join(parent, "catalog-bare-linked");
+    git(parent, "clone", "-q", "--bare", "--branch", "main", fixture.remote, bare);
+    git(parent, `--git-dir=${bare}`, "worktree", "add", "-q", "-b", "catalog-bare-linked", linked);
+    const independent = cloneLegacyInto(fixture, parent, "catalog-bare-independent");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-bare-worktree",
+      [{ slug: "catalog-bare-independent", checkout: independent.checkout, parent }],
+      [parent],
+      [bare, linked, independent.checkout]
+    );
+
+    const review = defaultManager(fixture).legacyBatchAudit({ manifestPath: manifest });
+
+    assert.equal(review.eligibleCount, 1);
+    assert.equal(review.blockedCount, 0);
+    assert.equal(existsSync(bare), true);
+    assert.equal(existsSync(linked), true);
+    assert.equal(existsSync(independent.checkout), true);
+  });
+});
+
+test("an explicit catalog rejects an object alternate outside its reviewed repositories", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "7".repeat(32) });
+    const outside = join(fixture.root, "outside-provider");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, outside);
+    const parent = join(fixture.root, "catalog-outside-alternate-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const shared = join(parent, "catalog-outside-alternate");
+    git(parent, "clone", "-q", "--shared", outside, shared);
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-outside-alternate",
+      [
+        {
+          slug: "catalog-outside-alternate",
+          checkout: shared,
+          parent,
+          generatedRoots: [],
+          generatedFiles: []
+        }
+      ],
+      [parent],
+      [shared]
+    );
+    const openedDirectories = [];
+    const managed = defaultManager(fixture, {
+      hooks: {
+        beforeExplicitCatalogAbsoluteDirectoryOpen({ path }) {
+          openedDirectories.push(path);
+        }
+      }
+    });
+
+    lifecycleError(() => managed.legacyBatchAudit({ manifestPath: manifest }), "legacy-provider-scan-unsafe");
+    assert.equal(openedDirectories.includes(join(outside, ".git", "objects")), false);
+    assert.equal(existsSync(shared), true);
+    assert.equal(existsSync(outside), true);
+    assert.equal(existsSync(join(managed.paths.root, "legacy-adoptions")), false);
+  });
+});
+
+test("an explicit catalog rejects an outside linked-worktree pointer before opening its target", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "7".repeat(32) });
+    const outside = join(fixture.root, "outside-linked-target");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, outside);
+    const parent = join(fixture.root, "catalog-outside-linked-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const owner = join(parent, "catalog-outside-linked-owner");
+    const linked = join(parent, "catalog-outside-linked-member");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, owner);
+    git(owner, "worktree", "add", "-q", "-b", "catalog-outside-linked", linked);
+    writeFileSync(join(linked, ".git"), `gitdir: ${join(outside, ".git")}\n`);
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-outside-linked",
+      [
+        {
+          slug: "catalog-outside-linked-owner",
+          checkout: owner,
+          parent,
+          generatedRoots: [],
+          generatedFiles: []
+        }
+      ],
+      [parent],
+      [owner, linked]
+    );
+    const openedDirectories = [];
+    const managed = defaultManager(fixture, {
+      hooks: {
+        beforeExplicitCatalogAbsoluteDirectoryOpen({ path }) {
+          openedDirectories.push(path);
+        }
+      }
+    });
+
+    lifecycleError(() => managed.legacyBatchAudit({ manifestPath: manifest }), "legacy-provider-scan-unsafe");
+    assert.equal(openedDirectories.includes(join(outside, ".git")), false);
+    assert.equal(existsSync(outside), true);
+    assert.equal(existsSync(owner), true);
+    assert.equal(existsSync(linked), true);
+  });
+});
+
+test("an explicit catalog requires exact linked-worktree pointer spellings", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "7".repeat(32) });
+    const parent = join(fixture.root, "catalog-linked-spelling-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const owner = join(parent, "catalog-linked-spelling-owner");
+    const linked = join(parent, "catalog-linked-spelling-member");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, owner);
+    git(owner, "worktree", "add", "-q", "-b", "catalog-linked-spelling", linked);
+    const pointerPath = join(linked, ".git");
+    const admin = /^gitdir: (.+)\n$/u.exec(readFileSync(pointerPath, "utf8"))[1];
+    writeFileSync(pointerPath, `gitdir: ${dirname(admin)}/unused/../${basename(admin)}\n`);
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-linked-spelling",
+      [{ slug: "catalog-linked-spelling-owner", checkout: owner, parent }],
+      [parent],
+      [owner, linked]
+    );
+
+    lifecycleError(
+      () => defaultManager(fixture).legacyBatchAudit({ manifestPath: manifest }),
+      "legacy-provider-scan-unsafe"
+    );
+    assert.equal(existsSync(owner), true);
+    assert.equal(existsSync(linked), true);
+  });
+
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "7".repeat(32) });
+    const parent = join(fixture.root, "catalog-commondir-spelling-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const owner = join(parent, "catalog-commondir-spelling-owner");
+    const linked = join(parent, "catalog-commondir-spelling-member");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, owner);
+    git(owner, "worktree", "add", "-q", "-b", "catalog-commondir-spelling", linked);
+    const admin = /^gitdir: (.+)\n$/u.exec(readFileSync(join(linked, ".git"), "utf8"))[1];
+    writeFileSync(join(admin, "commondir"), `./../..\n`);
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-commondir-spelling",
+      [{ slug: "catalog-commondir-spelling-owner", checkout: owner, parent }],
+      [parent],
+      [owner, linked]
+    );
+
+    lifecycleError(
+      () => defaultManager(fixture).legacyBatchAudit({ manifestPath: manifest }),
+      "legacy-provider-scan-unsafe"
+    );
+    assert.equal(existsSync(owner), true);
+    assert.equal(existsSync(linked), true);
+  });
+});
+
+test("explicit repository internals reject Git-directory and alternates swaps without leaking descriptors", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "8".repeat(32) });
+    const candidate = explicitLegacyCandidate(fixture, "catalog-gitdir-swap-root", "catalog-gitdir-swap");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-gitdir-swap",
+      [{ slug: "catalog-gitdir-swap", checkout: candidate.checkout, parent: candidate.parent }],
+      [candidate.parent],
+      [candidate.checkout]
+    );
+    let swapped = false;
+    const managed = defaultManager(fixture, {
+      hooks: {
+        beforeExplicitRepositoryGitOpen({ repositoryPath, gitKind }) {
+          if (swapped || repositoryPath !== candidate.checkout || gitKind !== "directory") return;
+          swapped = true;
+          renameSync(join(candidate.checkout, ".git"), join(candidate.checkout, ".git.held"));
+          symlinkSync(".git.held", join(candidate.checkout, ".git"));
+        }
+      }
+    });
+    const descriptorsBefore = readdirSync("/proc/self/fd").length;
+
+    assert.throws(
+      () => managed.legacyBatchAudit({ manifestPath: manifest }),
+      (error) =>
+        error instanceof CheckoutLifecycleError &&
+        ["legacy-dependency-universe-changed", "legacy-provider-scan-unsafe"].includes(error.code)
+    );
+
+    assert.equal(swapped, true);
+    assert.ok(readdirSync("/proc/self/fd").length <= descriptorsBefore + 1);
+    assert.equal(existsSync(join(candidate.checkout, ".git.held", "objects")), true);
+  });
+
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "9".repeat(32) });
+    const parent = join(fixture.root, "catalog-alternates-swap-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const provider = cloneLegacyInto(fixture, parent, "catalog-alternates-provider");
+    const dependent = join(parent, "catalog-alternates-dependent");
+    git(parent, "clone", "-q", "--shared", provider.checkout, dependent);
+    const alternates = join(dependent, ".git", "objects", "info", "alternates");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-alternates-swap",
+      [{ slug: "catalog-alternates-provider", checkout: provider.checkout, parent }],
+      [parent],
+      [provider.checkout, dependent]
+    );
+    let swapped = false;
+    const managed = defaultManager(fixture, {
+      hooks: {
+        beforeExplicitAlternatesOpen({ objectsPath }) {
+          if (swapped || objectsPath !== join(dependent, ".git", "objects")) return;
+          swapped = true;
+          renameSync(alternates, `${alternates}.held`);
+          symlinkSync("alternates.held", alternates);
+        }
+      }
+    });
+    const descriptorsBefore = readdirSync("/proc/self/fd").length;
+
+    assert.throws(
+      () => managed.legacyBatchAudit({ manifestPath: manifest }),
+      (error) =>
+        error instanceof CheckoutLifecycleError &&
+        ["legacy-dependency-universe-changed", "legacy-provider-scan-unsafe"].includes(error.code)
+    );
+
+    assert.equal(swapped, true);
+    assert.ok(readdirSync("/proc/self/fd").length <= descriptorsBefore + 1);
+    assert.equal(existsSync(`${alternates}.held`), true);
+  });
+
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "9".repeat(32) });
+    const parent = join(fixture.root, "catalog-alternate-target-swap-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const provider = cloneLegacyInto(fixture, parent, "catalog-alternate-target-provider");
+    const dependent = join(parent, "catalog-alternate-target-dependent");
+    git(parent, "clone", "-q", "--shared", provider.checkout, dependent);
+    const targetObjects = join(provider.checkout, ".git", "objects");
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-alternate-target-swap",
+      [{ slug: "catalog-alternate-target-provider", checkout: provider.checkout, parent }],
+      [parent],
+      [provider.checkout, dependent]
+    );
+    let swapped = false;
+    const managed = defaultManager(fixture, {
+      hooks: {
+        beforeExplicitAlternateTargetOpen({ targetObjectsPath }) {
+          if (swapped || targetObjectsPath !== targetObjects) return;
+          swapped = true;
+          renameSync(targetObjects, `${targetObjects}.held`);
+          symlinkSync("objects.held", targetObjects);
+        }
+      }
+    });
+    const descriptorsBefore = readdirSync("/proc/self/fd").length;
+
+    assert.throws(
+      () => managed.legacyBatchAudit({ manifestPath: manifest }),
+      (error) =>
+        error instanceof CheckoutLifecycleError &&
+        ["legacy-dependency-universe-changed", "legacy-provider-scan-unsafe"].includes(error.code)
+    );
+
+    assert.equal(swapped, true);
+    assert.ok(readdirSync("/proc/self/fd").length <= descriptorsBefore + 1);
+    assert.equal(existsSync(`${targetObjects}.held`), true);
+  });
+
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "0".repeat(32) });
+    const parent = join(fixture.root, "catalog-linked-component-swap-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const owner = join(parent, "catalog-linked-component-owner");
+    const linked = join(parent, "catalog-linked-component-member");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, owner);
+    git(owner, "worktree", "add", "-q", "-b", "catalog-linked-component", linked);
+    const registry = join(owner, ".git", "worktrees");
+    renameSync(registry, `${registry}.held`);
+    symlinkSync("worktrees.held", registry);
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-linked-component-swap",
+      [
+        {
+          slug: "catalog-linked-component-owner",
+          checkout: owner,
+          parent,
+          generatedRoots: [],
+          generatedFiles: []
+        }
+      ],
+      [parent],
+      [owner, linked]
+    );
+    const descriptorsBefore = readdirSync("/proc/self/fd").length;
+
+    lifecycleError(
+      () => defaultManager(fixture).legacyBatchAudit({ manifestPath: manifest }),
+      "legacy-provider-scan-unsafe"
+    );
+
+    assert.ok(readdirSync("/proc/self/fd").length <= descriptorsBefore + 1);
+    assert.equal(existsSync(`${registry}.held`), true);
+  });
+});
+
+test("an explicit catalog rejects symlink spellings for otherwise cataloged alternate object stores", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "a".repeat(32) });
+    const parent = join(fixture.root, "catalog-alternate-alias-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const provider = cloneLegacyInto(fixture, parent, "catalog-alternate-alias-provider");
+    const dependent = join(parent, "catalog-alternate-alias-dependent");
+    git(parent, "clone", "-q", "--shared", provider.checkout, dependent);
+    const alias = join(parent, "object-store-alias");
+    symlinkSync(join(provider.checkout, ".git", "objects"), alias);
+    writeFileSync(join(dependent, ".git", "objects", "info", "alternates"), `${alias}\n`);
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-alternate-alias",
+      [{ slug: "catalog-alternate-alias-provider", checkout: provider.checkout, parent }],
+      [parent],
+      [provider.checkout, dependent]
+    );
+
+    lifecycleError(
+      () => defaultManager(fixture).legacyBatchAudit({ manifestPath: manifest }),
+      "legacy-provider-scan-unsafe"
+    );
+    assert.equal(existsSync(provider.checkout), true);
+    assert.equal(existsSync(dependent), true);
+  });
+
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "a".repeat(32) });
+    const parent = join(fixture.root, "catalog-alternate-dotdot-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const provider = cloneLegacyInto(fixture, parent, "catalog-alternate-dotdot-provider");
+    const decoy = cloneLegacyInto(fixture, parent, "catalog-alternate-dotdot-decoy");
+    const dependent = join(parent, "catalog-alternate-dotdot-dependent");
+    git(parent, "clone", "-q", "--shared", decoy.checkout, dependent);
+    mkdirSync(join(provider.checkout, ".git", "alias-parent"));
+    const alias = join(decoy.checkout, ".git", "alias");
+    symlinkSync(join(provider.checkout, ".git", "alias-parent"), alias);
+    const deceptive = `${alias}/../objects`;
+    assert.equal(resolve(deceptive), join(decoy.checkout, ".git", "objects"));
+    writeFileSync(join(dependent, ".git", "objects", "info", "alternates"), `${deceptive}\n`);
+    const manifest = writeExplicitCatalogBatchManifest(
+      fixture,
+      "catalog-alternate-dotdot",
+      [{ slug: "catalog-alternate-dotdot-provider", checkout: provider.checkout, parent }],
+      [parent],
+      [provider.checkout, decoy.checkout, dependent]
+    );
+
+    lifecycleError(
+      () => defaultManager(fixture).legacyBatchAudit({ manifestPath: manifest }),
+      "legacy-provider-scan-unsafe"
+    );
+    assert.equal(existsSync(provider.checkout), true);
+    assert.equal(existsSync(decoy.checkout), true);
+    assert.equal(existsSync(dependent), true);
   });
 });
 
@@ -3017,26 +4157,34 @@ test("legacy adoption preflights persistent JSON size before writing a record", 
       repositoryPath: fixture.repository,
       tokenFactory: () => "e".repeat(32)
     });
-    legacyCandidate(fixture, "legacy-record-cap");
-    const generatedRoots = Array.from(
-      { length: 64 },
-      (_, index) => `generated-${String(index).padStart(2, "0")}-${"x".repeat(1005)}`
-    );
+    const generatedFiles = Array.from({ length: 64 }, (_, index) => {
+      const component = "x".repeat(199);
+      return `${String(index).padStart(2, "0")}-${component}/${component}/${component}/${component}/${"x".repeat(213)}.ignored`;
+    });
+    legacyCandidate(fixture, "legacy-record-cap", {
+      configure(checkout) {
+        rmSync(join(checkout, "node_modules"), { recursive: true });
+        unlinkSync(join(checkout, "fixture.ignored"));
+        for (const file of generatedFiles) {
+          const path = join(checkout, file);
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, "generated\n");
+        }
+      }
+    });
     const managed = defaultManager(fixture, { tokenFactory: () => "f".repeat(32) });
     lifecycleError(
       () =>
         managed.legacyAdopt({
           slug: "legacy-record-cap",
           ownerTask: "/root/legacy-record-cap",
-          generatedRoots
+          generatedFiles
         }),
       "legacy-adoption-record-too-large"
     );
     const attempt = join(managed.paths.legacyAdoptionAttempts, "legacy-record-cap.00000001");
-    assert.deepEqual(readdirSync(attempt), []);
-    assert.deepEqual(managed.legacyStatus("legacy-record-cap")[0].attempts, [
-      { generation: 1, state: "allocated-review-required" }
-    ]);
+    assert.equal(existsSync(attempt), false);
+    assert.deepEqual(managed.legacyStatus("legacy-record-cap"), []);
   });
 });
 

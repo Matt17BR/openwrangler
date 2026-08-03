@@ -76,6 +76,8 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 
 54. A non-repository generated directory may bypass the legacy Git-provider scan only through `checkout:artifact-audit` and `checkout:artifact-retire`. The target is one canonical direct child of an explicit reviewed root and stays bound to its owner, revision, path identities, and dry-review SHA-256. The Linux-only audit, archive, move, and purge paths anchor traversal to already-open directory descriptors and never follow symlinks; reject Git markers, hard-linked files, special files, mounts, ownership or filesystem crossings, containment escapes, identity races, non-round-trippable filenames, and fixed-bound overflow. The private recovery tree preserves every regular-file byte and raw symlink target, fsyncs each file and containing directory before publication, and records source identities and hashes in an append-only manifest. An independent restore scan must match before same-boot enrollment. Only a later Linux boot may move the exact directory identity into private quarantine with atomic no-replace semantics; purge compares every remaining entry to that retained archive and uses descriptor-anchored `lstat`, `unlink`, and `rmdir` without following links, so an interrupted purge can resume. Never run this lane against a real artifact before its path, owner, revision, and dry audit have been reviewed.
 
+55. A v2 legacy cleanup manifest replaces broad recursive repository discovery only with a complete reviewed dependency catalog. Every immediate root entry and every relevant repository is explicit, with no more than 16 repositories per catalog. A declared ordinary directory is not opaque: its owned, mount-free tree is recursively attested under fixed depth and entry limits, every nested Git marker is rejected, and its topology, identities, metadata, and raw non-followed symlink targets are repeated from the persisted adoption receipt. Root, repository, Git-directory, common-directory, object-store, worktree-registry, and alternate evidence is pinned as well. Filesystem traversal stays anchored to bounded, no-follow descriptors; mount IDs are checked during each capture but never persisted across boots. Linked-worktree and alternate pointers are resolved in a second pass: an exact cataloged registry or object store must already be held before its target can be opened or inspected. Every worktree registered under one common Git directory is cataloged and held as one dependency group, and every alternate resolves exactly to a cataloged object store. An omitted or reclassified entry, nested repository, missing worktree, outside alternate, inbound dependency, path replacement, root-listing change, or ordinary-tree change blocks adoption or retirement. Dry review proves that the complete request and completion fit their fixed journal limits before reporting a candidate eligible; adoption repeats that proof before it creates any journal directory or attempt. Sequential retirement may omit an earlier cleanup candidate only after that exact path has a retained terminal retirement record whose provider-independent cohort digest matches the same candidates, roots, entry receipts, and repository groups. This lane does not make linked groups eligible and never moves a checkout during audit or adoption.
+
 ## Public writing
 
 Read `docs/writing-style.md` before changing public text. Write like a maintainer explaining a concrete change to
@@ -142,9 +144,16 @@ Phase 1 of legacy cleanup covers only reviewed, self-contained standalone clones
 checkout is safe to remove. Alternate-backed clone chains and linked worktrees owned by an older registry remain
 read-only blocked rows until their own dependency-bound migration protocols are implemented and reviewed.
 
-For a reviewed list of eligible old standalone clones, use a private manifest with protocol
-`openwrangler-legacy-checkout-batch-v1`. It names every candidate's slug, canonical path, immediate root, owner, and
-exact ignored generated files/directories, plus the complete explicit dependency roots. Run
+For a reviewed list of eligible old standalone clones, use a private manifest. Protocol
+`openwrangler-legacy-checkout-batch-v2` is preferred when candidates share a broad parent. Its
+`openwrangler-legacy-dependency-catalog-v1` section lists every immediate entry under each canonical root as
+`repository`, `directory`, `file`, or `symlink`. At most 16 repositories may be listed. Every repository in the reviewed dependency scope must be marked as
+such, including linked worktrees and clones that are not cleanup candidates. Ordinary directories are recursively
+attested under a 50,000-entry, depth-eight global bound. A nested Git marker, mount, special file, ownership change, or
+later topology/metadata change blocks cleanup. Declared symlinks, including those inside ordinary trees, are identity-
+and target-bound, then skipped; they are never followed. The older `openwrangler-legacy-checkout-batch-v1` form remains
+available for small roots and uses a bounded recursive dependency scan. Both forms name every candidate's slug,
+canonical path, immediate root, owner, and exact ignored generated files/directories. Run
 `npm run checkout:legacy-batch-audit -- --manifest /canonical/batch.json` first. The command walks that dependency
 scope once, checks inbound object alternates for every candidate, then gives each clone the same full audit used by
 single adoption. It reports a review SHA-256 and writes no lifecycle record. Fix every blocked row; do not treat a
@@ -161,12 +170,14 @@ The normal cleanup entry point is
 adoptions, archives, and enrollments; otherwise it adopts, creates the full recovery archive, and enrolls each reviewed
 candidate. A crash after any candidate leaves append-only state that the same command can resume. It never moves a
 checkout on that boot. The later task-start sweep performs the normal identity/archive checks before quarantine and
-removal. Worktree repositories are terminal nodes in dependency-root scans, so generated payloads are audited and
-hashed by their declared allowlist but are not recursively searched for repositories. Bare roots still scan bounded
-non-administration children. Keep dependency roots at the parent directories that directly contain the reviewed
-checkout inventory. An interrupted request or unpublished completion resumes only when its owner, paths, allowlist,
-repository proof, dependency proof, and fresh audit still match the reviewed batch exactly; ambiguous or conflicting
-attempt history stays blocked.
+removal. In a v2 catalog, all worktrees returned by one common Git directory must be listed and stay together as one
+dependency group. That group is held if any member is a cleanup candidate. Every object alternate must resolve exactly
+to an object directory in the same catalog; inbound use blocks the provider. In a v1 scan, worktree repositories are
+terminal nodes, so generated payloads are audited and hashed by their declared allowlist but are not recursively
+searched for repositories. Bare roots still scan bounded non-administration children. Keep roots at the parent
+directories that directly contain the reviewed inventory. An interrupted request or unpublished completion resumes
+only when its owner, paths, allowlist, repository proof, dependency proof, and fresh audit still match the reviewed
+batch exactly; ambiguous or conflicting attempt history stays blocked.
 
 After adoption, `npm run checkout:legacy-archive -- <slug> --owner <task> --revision <revision>` may record a recovery
 archive. The owner and revision must match the adoption and remain bound through archive, enrollment, quarantine,
