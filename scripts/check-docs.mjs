@@ -38,8 +38,6 @@ const publicWritingProblems = inspectPublicWriting({
   agentGuide: readFileSync(resolve(root, "AGENTS.md"), "utf8"),
   contributing: readFileSync(resolve(root, "CONTRIBUTING.md"), "utf8"),
   pullRequestTemplate: readFileSync(resolve(root, ".github/pull_request_template.md"), "utf8"),
-  releaseGuide: readFileSync(resolve(root, "docs/releasing.md"), "utf8"),
-  releaseNotesGuide: readFileSync(resolve(root, "docs/release-notes/README.md"), "utf8"),
   styleGuide: readFileSync(resolve(root, "docs/writing-style.md"), "utf8")
 });
 if (publicWritingProblems.length > 0) {

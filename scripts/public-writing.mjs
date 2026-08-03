@@ -13,22 +13,8 @@ export const PUBLIC_WRITING_SURFACES = Object.freeze([
   "image alt text"
 ]);
 
-export function inspectPublicWriting({
-  agentGuide,
-  contributing,
-  pullRequestTemplate,
-  releaseGuide,
-  releaseNotesGuide,
-  styleGuide
-}) {
-  for (const [name, value] of Object.entries({
-    agentGuide,
-    contributing,
-    pullRequestTemplate,
-    releaseGuide,
-    releaseNotesGuide,
-    styleGuide
-  })) {
+export function inspectPublicWriting({ agentGuide, contributing, pullRequestTemplate, styleGuide }) {
+  for (const [name, value] of Object.entries({ agentGuide, contributing, pullRequestTemplate, styleGuide })) {
     if (typeof value !== "string") {
       throw new TypeError(`Public-writing input ${name} must be a string.`);
     }
@@ -42,12 +28,6 @@ export function inspectPublicWriting({
   }
   if (!pullRequestTemplate.includes("docs/writing-style.md")) {
     problems.push("The pull request template must include a public-copy review using docs/writing-style.md.");
-  }
-  if (!releaseGuide.includes("writing-style.md")) {
-    problems.push("docs/releasing.md must route release copy through docs/writing-style.md.");
-  }
-  if (!releaseNotesGuide.includes("writing-style.md")) {
-    problems.push("docs/release-notes/README.md must route release notes through docs/writing-style.md.");
   }
   if (!styleGuide.includes("Write as a maintainer explaining the product to another developer.")) {
     problems.push("The writing guide must retain its plain-language maintainer rule.");

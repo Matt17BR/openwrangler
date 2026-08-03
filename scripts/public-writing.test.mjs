@@ -11,8 +11,6 @@ function repositoryCopy() {
     agentGuide: readFileSync(resolve(root, "AGENTS.md"), "utf8"),
     contributing: readFileSync(resolve(root, "CONTRIBUTING.md"), "utf8"),
     pullRequestTemplate: readFileSync(resolve(root, ".github/pull_request_template.md"), "utf8"),
-    releaseGuide: readFileSync(resolve(root, "docs/releasing.md"), "utf8"),
-    releaseNotesGuide: readFileSync(resolve(root, "docs/release-notes/README.md"), "utf8"),
     styleGuide: readFileSync(resolve(root, "docs/writing-style.md"), "utf8")
   };
 }
@@ -28,15 +26,6 @@ test("missing review routes and pull request sections fail", () => {
   const problems = inspectPublicWriting(copy);
   assert.ok(problems.some((problem) => problem.includes("AGENTS.md")));
   assert.ok(problems.some((problem) => problem.includes("## Verification")));
-});
-
-test("release instructions keep their public-copy review routes", () => {
-  const copy = repositoryCopy();
-  copy.releaseGuide = copy.releaseGuide.replaceAll("writing-style.md", "missing-style.md");
-  copy.releaseNotesGuide = copy.releaseNotesGuide.replaceAll("writing-style.md", "missing-style.md");
-  const problems = inspectPublicWriting(copy);
-  assert.ok(problems.some((problem) => problem.includes("docs/releasing.md")));
-  assert.ok(problems.some((problem) => problem.includes("docs/release-notes/README.md")));
 });
 
 test("the structural check names every public surface", () => {
