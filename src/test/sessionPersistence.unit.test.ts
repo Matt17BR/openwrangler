@@ -6,6 +6,7 @@ import {
   persistenceKey,
   SESSION_STORAGE_KEY
 } from "../extension/sessionPersistence";
+import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 
 const metadata: SessionMetadata = {
   protocolVersion: 2,
@@ -145,6 +146,9 @@ describe("session persistence", () => {
       selectedColumnId: "c:value",
       viewport: { firstVisibleRow: 41, scrollLeft: 320.5 }
     });
+    expect(
+      decodePersistedSession({ ...persisted, runtimeIdentity: runtimeIdentityForDataBackend("polars") })
+    ).toBeUndefined();
   });
 
   it("rejects PySpark state until live-notebook recovery is supported", () => {

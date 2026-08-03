@@ -164,7 +164,16 @@ async function verifyCodePreviewOrigin(browser) {
   await page.evaluate(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { kind: "codePreview", code: "# untrusted replacement", editable: true },
+        data: {
+          kind: "codePreview",
+          code: "# untrusted replacement",
+          editable: true,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "polars",
+            codeDialect: "python.polars"
+          }
+        },
         origin: "https://untrusted.invalid"
       })
     );
@@ -174,18 +183,70 @@ async function verifyCodePreviewOrigin(browser) {
     throw new Error("Code preview accepted a message from another origin.");
   }
 
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          kind: "codePreview",
+          code: "# malformed private identity",
+          editable: true,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "pyspark",
+            codeDialect: "python.polars"
+          }
+        },
+        origin: window.location.origin
+      })
+    );
+  });
+  if ((await page.locator(".cm-content").textContent()) !== before) {
+    throw new Error("Code preview accepted an inconsistent private runtime identity.");
+  }
+
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          kind: "codePreview",
+          code: "# unexpected private field",
+          editable: true,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "polars",
+            codeDialect: "python.polars"
+          },
+          unexpected: true
+        },
+        origin: window.location.origin
+      })
+    );
+  });
+  if ((await page.locator(".cm-content").textContent()) !== before) {
+    throw new Error("Code preview accepted a host message with unknown fields.");
+  }
+
   const readOnlyCode = "# Read-only saved notebook snapshot.";
   await page.evaluate((code) => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { kind: "codePreview", code, editable: false },
+        data: {
+          kind: "codePreview",
+          code,
+          editable: false,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "polars",
+            codeDialect: "python.polars"
+          }
+        },
         origin: window.location.origin
       })
     );
   }, readOnlyCode);
   const content = page.locator(".cm-content");
   await page.waitForFunction((code) => document.querySelector(".cm-content")?.textContent === code, readOnlyCode);
-  if ((await content.getAttribute("aria-label")) !== "Read-only Open Wrangler code preview") {
+  if ((await content.getAttribute("aria-label")) !== "Read-only generated Python code preview") {
     throw new Error("Code preview did not publish its read-only accessible label.");
   }
   if ((await content.getAttribute("contenteditable")) !== "false") {
@@ -196,8 +257,83 @@ async function verifyCodePreviewOrigin(browser) {
   if ((await content.textContent()) !== readOnlyCode) {
     throw new Error("Read-only Code Preview accepted keyboard input.");
   }
+
+  const noDialectCode = "def distributed_frame():\n    return None";
+  await page.evaluate((code) => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          kind: "codePreview",
+          code,
+          editable: false,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "pyspark",
+            codeDialect: null
+          }
+        },
+        origin: window.location.origin
+      })
+    );
+  }, noDialectCode);
+  await page.waitForFunction(
+    (code) =>
+      document.querySelector(".cm-content")?.textContent === code.replaceAll("\n", "") &&
+      document.querySelectorAll(".cm-content .cm-line span").length === 0,
+    noDialectCode
+  );
+  const noDialectIdentity = await page.locator("#root").evaluate((root) => ({ ...root.dataset }));
+  if (
+    noDialectIdentity.runtimeLanguage !== "python" ||
+    noDialectIdentity.dataframeFlavor !== "pyspark" ||
+    noDialectIdentity.codeDialect !== ""
+  ) {
+    throw new Error(`Code preview published the wrong viewing-only identity: ${JSON.stringify(noDialectIdentity)}.`);
+  }
+  if ((await content.getAttribute("aria-label")) !== "Read-only Open Wrangler code preview") {
+    throw new Error("Code preview labeled a viewing-only backend as generated Python code.");
+  }
+  if ((await content.getAttribute("contenteditable")) !== "false") {
+    throw new Error("Code preview made a null-dialect backend editable.");
+  }
+
+  const pandasCode = "def clean_data(df):\n    return df.dropna()";
+  await page.evaluate((code) => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          kind: "codePreview",
+          code,
+          editable: true,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "pandas",
+            codeDialect: "python.pandas"
+          }
+        },
+        origin: window.location.origin
+      })
+    );
+  }, pandasCode);
+  await page.waitForFunction(
+    (code) =>
+      document.querySelector(".cm-content")?.textContent === code.replaceAll("\n", "") &&
+      document.querySelectorAll(".cm-content .cm-line span").length > 0,
+    pandasCode
+  );
+  const pandasIdentity = await page.locator("#root").evaluate((root) => ({ ...root.dataset }));
+  if (
+    pandasIdentity.runtimeLanguage !== "python" ||
+    pandasIdentity.dataframeFlavor !== "pandas" ||
+    pandasIdentity.codeDialect !== "python.pandas"
+  ) {
+    throw new Error(`Code preview published the wrong generated-code identity: ${JSON.stringify(pandasIdentity)}.`);
+  }
+  if ((await content.getAttribute("aria-label")) !== "Editable generated Python code preview") {
+    throw new Error("Code preview did not restore its generated Python label.");
+  }
   await page.close();
-  console.log("Code-preview host origin and read-only behavior verified.");
+  console.log("Code-preview identity, parser, host origin, and read-only behavior verified.");
 }
 
 async function verifyCompactDraftReview(browser) {

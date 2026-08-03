@@ -5,6 +5,8 @@ import { isActiveColumnFilter, viewSortModelSignature } from "../shared/filterMo
 import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
 import { dataBackendLabel } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
+import { isCodePreviewWebviewMessage, type CodePreviewHostMessage } from "../shared/codePreviewMessages";
+import { codeDialectLanguageLabel, runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
@@ -232,7 +234,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     };
     view.webview.html = this.html(view.webview);
     view.webview.onDidReceiveMessage((message: unknown) => {
-      if (!isCodePreviewMessage(message)) return;
+      if (!isCodePreviewWebviewMessage(message)) return;
       if (message.kind === "ready") this.render();
       if (message.kind === "codeChanged" && this.generatedCode) this.displayedCode = message.code;
     });
@@ -254,11 +256,15 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private render(): void {
     if (!this.view) return;
-    void this.view.webview.postMessage({
+    const runtimeIdentity = this.snapshot ? runtimeIdentityForDataBackend(this.snapshot.metadata.backend) : null;
+    const message: CodePreviewHostMessage = {
       kind: "codePreview",
       code: this.displayedCode,
-      editable: Boolean(this.snapshot && this.generatedCode)
-    });
+      editable: Boolean(this.snapshot && this.generatedCode && runtimeIdentity?.codeDialect),
+      runtimeIdentity
+    };
+    this.view.description = codeDialectLanguageLabel(message.runtimeIdentity?.codeDialect ?? null);
+    void this.view.webview.postMessage(message);
   }
 
   private html(webview: vscode.Webview): string {
@@ -1018,12 +1024,6 @@ async function requireTrustedWorkspace(action: string): Promise<boolean> {
   if (vscode.workspace.isTrusted) return true;
   void vscode.window.showWarningMessage(`Trust this workspace before Open Wrangler can ${action}.`);
   return false;
-}
-
-function isCodePreviewMessage(message: unknown): message is { kind: "ready" } | { kind: "codeChanged"; code: string } {
-  if (typeof message !== "object" || message === null || !("kind" in message)) return false;
-  if (message.kind === "ready") return true;
-  return message.kind === "codeChanged" && "code" in message && typeof message.code === "string";
 }
 
 function randomNonce(): string {

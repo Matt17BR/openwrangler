@@ -528,7 +528,8 @@ describe("native operation commands", () => {
     if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
     const posted: unknown[] = [];
     let receive: ((message: unknown) => void) | undefined;
-    provider.resolveWebviewView({
+    const codePreviewView = {
+      description: undefined as string | undefined,
       webview: {
         options: {},
         cspSource: "test-csp",
@@ -542,21 +543,33 @@ describe("native operation commands", () => {
           return { dispose: () => undefined };
         }
       }
-    });
+    };
+    provider.resolveWebviewView(codePreviewView);
 
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
-      editable: false
+      editable: false,
+      runtimeIdentity: {
+        runtimeLanguage: "python",
+        dataframeFlavor: "polars",
+        codeDialect: "python.polars"
+      }
     });
+    expect(codePreviewView.description).toBe("Python");
 
     receive?.({ kind: "codeChanged", code: "raise RuntimeError('should be ignored')" });
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
-      editable: false
+      editable: false,
+      runtimeIdentity: {
+        runtimeLanguage: "python",
+        dataframeFlavor: "polars",
+        codeDialect: "python.polars"
+      }
     });
 
     const editable = noDraftSnapshot();
@@ -565,8 +578,37 @@ describe("native operation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       code: editable.code,
-      editable: true
+      editable: true,
+      runtimeIdentity: {
+        runtimeLanguage: "python",
+        dataframeFlavor: "pandas",
+        codeDialect: "python.pandas"
+      }
     });
+
+    receive?.({ kind: "codeChanged", code: "raise RuntimeError('unknown field')", unexpected: true });
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toMatchObject({ code: editable.code });
+
+    receive?.({ kind: "codeChanged", code: "def clean_data(df):\n    return df.dropna()\n" });
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toMatchObject({ code: "def clean_data(df):\n    return df.dropna()\n" });
+
+    const viewingOnly = noDraftSnapshot();
+    viewingOnly.metadata = { ...viewingOnly.metadata, backend: "pyspark", mode: "viewing" };
+    viewingOnly.code = "# A viewing-only backend cannot expose editable generated code.";
+    registered.setActiveSession(viewingOnly);
+    expect(posted.at(-1)).toEqual({
+      kind: "codePreview",
+      code: viewingOnly.code,
+      editable: false,
+      runtimeIdentity: {
+        runtimeLanguage: "python",
+        dataframeFlavor: "pyspark",
+        codeDialect: null
+      }
+    });
+    expect(codePreviewView.description).toBeUndefined();
   });
 
   it("disambiguates a selected duplicate label by its human column position", () => {
@@ -1092,6 +1134,7 @@ function snapshot(
     sessionId: "session",
     code: "def clean_data(df):\n    return df\n",
     metadata: {
+      backend: "pandas",
       source: { kind: "file", label: "sample.csv", path: "/tmp/sample.csv" },
       ...plan
     } as SessionMetadata,
