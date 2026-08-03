@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { totalmem } from "node:os";
 import { promisify } from "node:util";
@@ -141,9 +141,16 @@ export function collectOwnedProcessRows(
   const byPid = new Map(rows.map((row) => [row.pid, row]));
   const selected = new Map();
   const root = byPid.get(rootPid);
-  if (root) selected.set(root.pid, root);
+  const capturedRootIdentity = capturedIdentities.get(rootPid);
+  const rootIdentityMatches = !root || capturedRootIdentity === undefined || capturedRootIdentity === root.identity;
+  const capturedGroupMemberPresent = rows.some(
+    (row) => row.pgid === rootPid && capturedIdentities.get(row.pid) === row.identity
+  );
+  const processGroupIdentityWitnessed =
+    processGroupVerified && rootIdentityMatches && (root !== undefined || capturedGroupMemberPresent);
+  if (root && rootIdentityMatches) selected.set(root.pid, root);
   for (const row of rows) {
-    if ((processGroupVerified && row.pgid === rootPid) || capturedIdentities.get(row.pid) === row.identity) {
+    if ((processGroupIdentityWitnessed && row.pgid === rootPid) || capturedIdentities.get(row.pid) === row.identity) {
       selected.set(row.pid, row);
     }
   }
@@ -170,7 +177,14 @@ export function createProcessTreeMemorySampler(rootPid, { platform = process.pla
 function createLinuxSampler(rootPid) {
   const capturedIdentities = new Map();
   const metric = detectLinuxMemoryMetric();
-  const selector = createOwnedProcessSelector(rootPid, capturedIdentities);
+  const initialRoot = readLinuxProcessRow(rootPid);
+  if (initialRoot.pgid !== rootPid) {
+    throw new Error(`The guarded process PID ${rootPid} did not own its expected process group.`);
+  }
+  capturedIdentities.set(rootPid, initialRoot.identity);
+  const selector = createOwnedProcessSelector(rootPid, capturedIdentities, {
+    processGroupVerified: true
+  });
 
   function processRows() {
     const rows = [];
@@ -190,25 +204,18 @@ function createLinuxSampler(rootPid) {
     return selector.select(processRows());
   }
 
-  return samplerFromRows(
-    rootPid,
-    capturedIdentities,
-    metric,
-    ownedRows,
-    () => selector.processGroupVerified,
-    (row) => {
-      if (row.state === "Z" || row.state === "X") return 0;
-      const path = metric.kind === "pss" ? `/proc/${row.pid}/smaps_rollup` : `/proc/${row.pid}/status`;
-      try {
-        return parseLinuxMemoryBytes(readFileSync(path, "utf8"), metric.kind);
-      } catch (error) {
-        if (processIdentityStillMatches(row)) {
-          throw new Error(`Memory accounting failed for live Open Wrangler child PID ${row.pid}.`, { cause: error });
-        }
-        return 0;
+  return samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, (row) => {
+    if (row.state === "Z" || row.state === "X") return 0;
+    const path = metric.kind === "pss" ? `/proc/${row.pid}/smaps_rollup` : `/proc/${row.pid}/status`;
+    try {
+      return parseLinuxMemoryBytes(readFileSync(path, "utf8"), metric.kind);
+    } catch (error) {
+      if (processIdentityStillMatches(row)) {
+        throw new Error(`Memory accounting failed for live Open Wrangler child PID ${row.pid}.`, { cause: error });
       }
+      return 0;
     }
-  );
+  });
 }
 
 function detectLinuxMemoryMetric() {
@@ -236,17 +243,36 @@ function parseLinuxMemoryBytes(contents, kind) {
 
 function processIdentityStillMatches(row) {
   try {
-    return parseLinuxProcessStat(readFileSync(`/proc/${row.pid}/stat`, "utf8")).identity === row.identity;
+    return readLinuxProcessRow(row.pid).identity === row.identity;
   } catch (error) {
     if (error?.code === "ENOENT" || error?.code === "ESRCH") return false;
     throw error;
   }
 }
 
+function readLinuxProcessRow(pid) {
+  return parseLinuxProcessStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
+}
+
 function createMacSampler(rootPid) {
   const capturedIdentities = new Map();
   const metric = Object.freeze({ kind: "rss", label: "resident set size (RSS)" });
-  const selector = createOwnedProcessSelector(rootPid, capturedIdentities);
+  const initialRows = parseMacProcessRows(
+    execFileSync("/bin/ps", ["-p", String(rootPid), "-o", "pid=,ppid=,pgid=,rss=,lstart="], {
+      encoding: "utf8",
+      maxBuffer: 4 * 1024,
+      timeout: 2_000,
+      windowsHide: true
+    })
+  );
+  const initialRoot = initialRows.length === 1 && initialRows[0].pid === rootPid ? initialRows[0] : undefined;
+  if (!initialRoot || initialRoot.pgid !== rootPid) {
+    throw new Error(`The guarded process PID ${rootPid} did not own its expected process group.`);
+  }
+  capturedIdentities.set(rootPid, initialRoot.identity);
+  const selector = createOwnedProcessSelector(rootPid, capturedIdentities, {
+    processGroupVerified: true
+  });
   async function ownedRows() {
     const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid=,ppid=,pgid=,rss=,lstart="], {
       encoding: "utf8",
@@ -256,18 +282,15 @@ function createMacSampler(rootPid) {
     });
     return selector.select(parseMacProcessRows(stdout));
   }
-  return samplerFromRows(
-    rootPid,
-    capturedIdentities,
-    metric,
-    ownedRows,
-    () => selector.processGroupVerified,
-    (row) => row.memoryBytes
-  );
+  return samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, (row) => row.memoryBytes);
 }
 
-function createOwnedProcessSelector(rootPid, capturedIdentities) {
-  let processGroupVerified = false;
+function createOwnedProcessSelector(
+  rootPid,
+  capturedIdentities,
+  { processGroupVerified: initiallyVerified = false } = {}
+) {
+  let processGroupVerified = initiallyVerified;
   return {
     get processGroupVerified() {
       return processGroupVerified;
@@ -275,6 +298,10 @@ function createOwnedProcessSelector(rootPid, capturedIdentities) {
     select(rows) {
       const root = rows.find((row) => row.pid === rootPid);
       if (root) {
+        const capturedRootIdentity = capturedIdentities.get(rootPid);
+        if (capturedRootIdentity !== undefined && capturedRootIdentity !== root.identity) {
+          throw new Error(`The guarded process PID ${rootPid} changed identity during process-tree accounting.`);
+        }
         if (root.pgid !== rootPid) {
           throw new Error(`The guarded process PID ${rootPid} did not own its expected process group.`);
         }
@@ -285,7 +312,7 @@ function createOwnedProcessSelector(rootPid, capturedIdentities) {
   };
 }
 
-function samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, processGroupIsVerified, memoryBytes) {
+function samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, memoryBytes) {
   async function rows() {
     return await ownedRows();
   }
@@ -299,18 +326,10 @@ function samplerFromRows(rootPid, capturedIdentities, metric, ownedRows, process
       if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error("Process-tree memory accounting overflowed.");
       return Object.freeze({ bytes, processCount: selected.length, metric });
     },
-    async signal(signal) {
+    async signal(signal, { includeRoot = true } = {}) {
       const selected = await rows();
-      const groupIsOwned = processGroupIsVerified() && selected.some((row) => row.pgid === rootPid);
-      if (process.platform !== "win32" && groupIsOwned) {
-        try {
-          process.kill(-rootPid, signal);
-        } catch (error) {
-          if (error?.code !== "ESRCH") throw error;
-        }
-      }
       for (const row of selected) {
-        if (row.pid === process.pid || (groupIsOwned && row.pgid === rootPid)) continue;
+        if (row.pid === process.pid || (!includeRoot && row.pid === rootPid)) continue;
         try {
           process.kill(row.pid, signal);
         } catch (error) {

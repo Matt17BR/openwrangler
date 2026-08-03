@@ -9,22 +9,27 @@ wait for the existing command instead of starting a duplicate. Nested npm phases
 released automatically when the wrapper exits; there is no lock file to remove after an interruption. Windows uses a
 kernel-owned named pipe so reserved or excluded TCP port ranges cannot prevent the guard from starting.
 
-On a local Linux or macOS machine, the outer wrapper also watches the complete process tree every 250 ms. The default
+On a local Linux or macOS machine, the outer wrapper also samples the owned process tree every 250 ms. The default
 limit is 25% of physical, container-constrained, or currently available memory, whichever is lower, with a 256 MiB
-floor and an 8 GiB ceiling. Linux sums proportional set size (PSS), so
-shared Electron mappings are counted once; it labels and uses RSS only when the kernel does not expose
-`smaps_rollup`. macOS uses RSS. The wrapper prints the active limit, metric, and observed peak. It stops and verifies
-the owned tree if it crosses the limit or if accounting fails. Set `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` to a positive
-whole number to choose a different limit. `off` is the only way to disable it explicitly. A nested guarded npm command
-inherits the outer lease and never starts a second watcher. A command that exits while an owned descendant is still
-running fails and cleans up that descendant instead of leaving a background test process behind.
-This is a watchdog rather than a kernel reservation, so a very abrupt allocation can overshoot between samples.
+floor and an 8 GiB ceiling. Before a Linux target starts, a Python 3 helper becomes a child subreaper and the wrapper
+pins that helper's process-start identity. A target that changes process group and exits therefore leaves its live
+descendants adopted beneath the still-owned helper; successful completion waits for that helper to drain. A surviving
+descendant makes the command fail and is stopped. The target never launches if the subreaper barrier or process
+accounting cannot be armed. Linux sums proportional set size (PSS), so shared Electron mappings are counted once; it
+labels and uses RSS only when the kernel does not expose `smaps_rollup`. macOS uses RSS and can retain only descendants
+observed through its process snapshots and verified process group; it does not claim Linux-style subreaper containment.
+The wrapper prints the active limit, metric, and observed peak. Set `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` to a positive
+whole number to choose a different limit. `off` explicitly disables the watcher, including Linux subreaper ownership.
+A nested guarded npm command inherits the outer lease and never starts a second watcher. This is a watchdog rather than
+a kernel reservation, so a very abrupt allocation can overshoot between samples.
 
 Hosted CI keeps its runner-level resource controls and does not apply the local default, so the watchdog does not
-weaken a required test. Windows keeps the shared lease and forced tree cleanup, but plain Node cannot provide the same
-reliable tree accounting there. An explicit memory limit therefore fails before launch on Windows; run the command in
-a memory-bounded Job Object or container instead. Do not bypass the wrapper, invoke `:run` or `:prepare` scripts
-directly, or drop system caches to make a command fit.
+weaken a required test. CI-default and explicit-`off` executions retain the shared lease but do not claim descendant
+ownership. Windows likewise retains only the lease: once interruption cleanup begins, it requests a best-effort
+`taskkill /T /F` snapshot even if the root has exited by then, but normal completion does not drain or verify re-parented
+descendants. An explicit memory limit therefore fails before launch on Windows; use a memory-bounded Job Object or
+container whenever tree ownership or a memory ceiling is required. Do not bypass the wrapper, invoke `:run` or
+`:prepare` scripts directly, or drop system caches to make a command fit.
 
 Agent checkout lifecycle has a separate, small contract test:
 

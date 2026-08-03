@@ -17,9 +17,11 @@ const LOOPBACK = "127.0.0.1";
 const WINDOWS_PIPE_PREFIX = "\\\\.\\pipe\\openwrangler-heavy-";
 const MEMORY_POLL_MS = 250;
 const NORMAL_TREE_DRAIN_MS = 500;
+const SUPERVISOR_READY_MS = 2_000;
 const TERMINATION_GRACE_MS = 2_000;
 const KILL_GRACE_MS = 3_000;
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
+const linuxSupervisor = resolve(root, "scripts", "linux-process-tree-supervisor.py");
 
 export function parseHeavyCommandArguments(argv) {
   const separator = argv.indexOf("--");
@@ -97,19 +99,124 @@ async function acquireLease(endpoint, token, label) {
   return server;
 }
 
-async function runChild(command, environment, { label, memoryPolicy }) {
-  const resolved = normalizedCommand(command);
-  const child = spawn(resolved.executable, resolved.args, {
+function spawnGuardedCommand(resolved, environment, useLinuxSupervisor) {
+  if (useLinuxSupervisor) {
+    return spawn("python3", [linuxSupervisor, resolved.executable, ...resolved.args], {
+      cwd: root,
+      detached: true,
+      env: environment,
+      stdio: ["inherit", "inherit", "inherit", "pipe", "pipe"],
+      windowsHide: true
+    });
+  }
+  return spawn(resolved.executable, resolved.args, {
     cwd: root,
     detached: process.platform !== "win32",
     env: environment,
     stdio: "inherit",
     windowsHide: true
   });
+}
+
+function createLinuxSupervisorProtocol(child) {
+  const control = child.stdio?.[3];
+  const report = child.stdio?.[4];
+  if (!control || typeof control.write !== "function" || !report || typeof report.on !== "function") {
+    throw new Error("The Linux process supervisor did not expose its private launch barrier.");
+  }
+  const ready = deferred();
+  const targetOutcome = deferred();
+  let buffered = "";
+  let readySeen = false;
+  let targetSeen = false;
+  let failed = false;
+
+  function fail(message) {
+    if (failed) return;
+    failed = true;
+    const error = message instanceof Error ? message : new Error(message);
+    ready.resolve({ kind: "error", error });
+    targetOutcome.resolve({ kind: "error", error });
+  }
+
+  function acceptLine(line) {
+    if (!readySeen && line === "READY") {
+      readySeen = true;
+      ready.resolve({ kind: "ready" });
+      return;
+    }
+    const match = /^TARGET (?:(\d{1,3}) -|- (SIG[A-Z0-9]+))$/u.exec(line);
+    if (readySeen && !targetSeen && match) {
+      const code = match[1] === undefined ? null : Number(match[1]);
+      if (code !== null && code > 255) {
+        fail("The Linux process supervisor reported an invalid target exit code.");
+        return;
+      }
+      targetSeen = true;
+      targetOutcome.resolve({ kind: "exit", code, signal: match[2] ?? null });
+      return;
+    }
+    fail("The Linux process supervisor emitted a malformed or out-of-order control frame.");
+  }
+
+  report.setEncoding("utf8");
+  report.on("data", (chunk) => {
+    if (failed) return;
+    buffered = `${buffered}${chunk}`;
+    if (Buffer.byteLength(buffered, "utf8") > 1_024) {
+      fail("The Linux process supervisor exceeded its bounded control output.");
+      return;
+    }
+    while (buffered.includes("\n")) {
+      const newline = buffered.indexOf("\n");
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      acceptLine(line);
+      if (failed) return;
+    }
+  });
+  report.once("error", (error) =>
+    fail(new Error("The Linux process supervisor control pipe failed.", { cause: error }))
+  );
+  report.once("close", () => {
+    if (buffered.length !== 0 || !targetSeen) {
+      fail("The Linux process supervisor closed before reporting the target outcome.");
+    }
+  });
+  control.once("error", (error) =>
+    fail(new Error("The Linux process supervisor launch barrier failed.", { cause: error }))
+  );
+
+  return Object.freeze({
+    ready: ready.promise,
+    targetOutcome: targetOutcome.promise,
+    async go() {
+      if (!readySeen || failed) {
+        throw new Error("The Linux process supervisor was not ready for launch authorization.");
+      }
+      await new Promise((resolveWrite, rejectWrite) => {
+        control.end("GO\n", "ascii", (error) => {
+          if (error) rejectWrite(new Error("The Linux process supervisor GO frame could not be written."));
+          else resolveWrite();
+        });
+      });
+    },
+    close() {
+      control.destroy();
+      report.destroy();
+    }
+  });
+}
+
+async function runChild(command, environment, { label, memoryPolicy }) {
+  const resolved = normalizedCommand(command);
+  const useLinuxSupervisor = process.platform === "linux" && memoryPolicy.enabled;
+  const child = spawnGuardedCommand(resolved, environment, useLinuxSupervisor);
   const childOutcome = new Promise((resolveChild) => {
     child.once("error", (error) => resolveChild({ kind: "error", error }));
-    child.once("exit", (code, signal) => resolveChild({ kind: "exit", code, signal }));
+    child.once("close", (code, signal) => resolveChild({ kind: "exit", code, signal }));
   });
+  let supervisorProtocol;
   const signalRequest = deferred();
   const onInterrupt = () => signalRequest.resolve("SIGINT");
   const onTerminate = () => signalRequest.resolve("SIGTERM");
@@ -126,7 +233,34 @@ async function runChild(command, environment, { label, memoryPolicy }) {
         return { code: outcome.code, signal: outcome.signal };
       }
       try {
+        if (useLinuxSupervisor) {
+          supervisorProtocol = createLinuxSupervisorProtocol(child);
+          const readiness = await Promise.race([
+            supervisorProtocol.ready,
+            childOutcome.then((outcome) =>
+              outcome.kind === "error"
+                ? outcome
+                : {
+                    kind: "error",
+                    error: new Error("The Linux process supervisor exited before its launch barrier was armed.")
+                  }
+            ),
+            new Promise((resolveReady) => {
+              const timer = setTimeout(
+                () =>
+                  resolveReady({
+                    kind: "error",
+                    error: new Error("The Linux process supervisor launch barrier timed out.")
+                  }),
+                SUPERVISOR_READY_MS
+              );
+              timer.unref();
+            })
+          ]);
+          if (readiness.kind === "error") throw readiness.error;
+        }
         sampler = createProcessTreeMemorySampler(child.pid);
+        if (useLinuxSupervisor) await supervisorProtocol.go();
       } catch (error) {
         let terminationError;
         try {
@@ -156,20 +290,36 @@ async function runChild(command, environment, { label, memoryPolicy }) {
           (error) => ({ kind: "monitor-error", error })
         )
       : new Promise(() => {});
+    const commandOutcome = useLinuxSupervisor ? supervisorProtocol.targetOutcome : childOutcome;
+    const supervisorExit = useLinuxSupervisor
+      ? childOutcome.then((outcome) =>
+          outcome.kind === "error"
+            ? outcome
+            : {
+                kind: "supervisor-exit",
+                outcome
+              }
+        )
+      : new Promise(() => {});
     const winner = await Promise.race([
-      childOutcome,
+      commandOutcome,
+      supervisorExit,
       monitorOutcome,
       signalRequest.promise.then((signal) => ({ kind: "parent-signal", signal }))
     ]);
     if (winner.kind === "exit") {
       monitorAbort.abort();
-      if (sampler && !(await waitForOwnedTreeExit(child.pid, sampler, NORMAL_TREE_DRAIN_MS))) {
+      const treeReleased = useLinuxSupervisor
+        ? await waitForChildExit(child, NORMAL_TREE_DRAIN_MS)
+        : !sampler || (await waitForOwnedTreeExit(child.pid, sampler, NORMAL_TREE_DRAIN_MS));
+      if (!treeReleased) {
         let terminationError;
         try {
-          await terminateChildTree(child, sampler, "SIGTERM");
+          await terminateChildTree(child, sampler, "SIGTERM", { preserveRoot: useLinuxSupervisor });
         } catch (error) {
           terminationError = error;
         }
+        if (useLinuxSupervisor) await boundedChildOutcome(child, childOutcome, KILL_GRACE_MS);
         const orphanError = new Error(
           `Open Wrangler stopped a surviving descendant after "${label}" exited; heavy commands may not leave background processes.`
         );
@@ -181,19 +331,40 @@ async function runChild(command, environment, { label, memoryPolicy }) {
         }
         throw orphanError;
       }
+      if (useLinuxSupervisor) {
+        const supervisorOutcome = await boundedChildOutcome(child, childOutcome, KILL_GRACE_MS);
+        validateLinuxSupervisorOutcome(winner, supervisorOutcome);
+      }
       writeCompletedMemoryObservation(label, sampler, memoryPolicy, memoryObservation);
       return { code: winner.code, signal: winner.signal };
     }
-    if (winner.kind === "error") throw winner.error;
+    if (winner.kind === "supervisor-exit") {
+      throw new Error("The Linux process supervisor exited without reporting the target outcome.");
+    }
+    if (winner.kind === "error") {
+      monitorAbort.abort();
+      let terminationError;
+      try {
+        await terminateChildTree(child, sampler, "SIGKILL", { preserveRoot: useLinuxSupervisor });
+      } catch (error) {
+        terminationError = error;
+      }
+      if (terminationError) {
+        throw new AggregateError(
+          [winner.error, terminationError],
+          `${winner.error.message} Owned-tree cleanup also failed: ${terminationError.message}`
+        );
+      }
+      throw winner.error;
+    }
 
     monitorAbort.abort();
     const terminationSignal = winner.kind === "parent-signal" ? winner.signal : "SIGTERM";
     let terminationError;
     try {
-      await terminateChildTree(child, sampler, terminationSignal);
+      await terminateChildTree(child, sampler, terminationSignal, { preserveRoot: useLinuxSupervisor });
     } catch (error) {
       terminationError = error;
-      signalChildTree(child, "SIGKILL");
     }
     const outcome = await boundedChildOutcome(child, childOutcome, KILL_GRACE_MS);
     if (winner.kind === "memory-limit") {
@@ -229,6 +400,7 @@ async function runChild(command, environment, { label, memoryPolicy }) {
     return { code: outcome.code, signal: outcome.signal };
   } finally {
     monitorAbort.abort();
+    supervisorProtocol?.close();
     process.off("SIGINT", onInterrupt);
     process.off("SIGTERM", onTerminate);
   }
@@ -247,6 +419,13 @@ async function boundedChildOutcome(child, childOutcome, timeoutMs) {
       timer.unref();
     })
   ]);
+}
+
+function validateLinuxSupervisorOutcome(targetOutcome, supervisorOutcome) {
+  if (supervisorOutcome.kind === "error") throw supervisorOutcome.error;
+  if (supervisorOutcome.code !== targetOutcome.code || supervisorOutcome.signal !== targetOutcome.signal) {
+    throw new Error("The Linux process supervisor did not preserve the target command's exit outcome.");
+  }
 }
 
 function deferred() {
@@ -301,20 +480,28 @@ function abortableDelay(milliseconds, signal) {
   });
 }
 
-async function terminateChildTree(child, sampler, firstSignal) {
+export async function terminateChildTree(
+  child,
+  sampler,
+  firstSignal,
+  {
+    preserveRoot = false,
+    platform = process.platform,
+    taskkill = runWindowsTaskKill,
+    waitForChild = waitForChildExit
+  } = {}
+) {
   if (!child.pid) return;
-  if (process.platform === "win32") {
-    signalChildTree(child, firstSignal);
-    if (await waitForChildExit(child, TERMINATION_GRACE_MS)) return;
-    await runWindowsTaskKill(child.pid);
-    if (await waitForChildExit(child, KILL_GRACE_MS)) return;
-    throw new Error(`The guarded Windows process tree rooted at PID ${child.pid} could not be verified as stopped.`);
+  if (platform === "win32") {
+    await taskkill(child.pid);
+    if (await waitForChild(child, KILL_GRACE_MS)) return;
+    throw new Error(`The guarded Windows root process PID ${child.pid} remained after taskkill.`);
   }
 
-  if (sampler) await sampler.signal(firstSignal);
+  if (sampler) await sampler.signal(firstSignal, { includeRoot: !preserveRoot });
   else signalChildTree(child, firstSignal);
   if (await waitForOwnedTreeExit(child.pid, sampler, TERMINATION_GRACE_MS)) return;
-  if (sampler) await sampler.signal("SIGKILL");
+  if (sampler) await sampler.signal("SIGKILL", { includeRoot: !preserveRoot });
   else signalChildTree(child, "SIGKILL");
   if (await waitForOwnedTreeExit(child.pid, sampler, KILL_GRACE_MS)) return;
   throw new Error(`The guarded process tree rooted at PID ${child.pid} remained after SIGKILL.`);

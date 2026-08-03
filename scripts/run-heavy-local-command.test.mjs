@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import {
   heavyCommandLeaseEndpoint,
   heavyCommandLeasePort,
-  parseHeavyCommandArguments
+  parseHeavyCommandArguments,
+  terminateChildTree
 } from "./run-heavy-local-command.mjs";
 import {
   collectOwnedProcessRows,
@@ -128,13 +129,34 @@ test("process snapshots retain identities and include new process groups below t
   assert.equal(captured.get(103), "103:1003");
   assert.equal(captured.get(300), "300:1111", "a reused PID must not inherit ownership");
 
-  const lateSameGroup = linuxRow(104, 1, 100, "1004");
+  const capturedRoot = new Map([
+    [100, "100:1000"],
+    [101, "101:1001"]
+  ]);
+  const reusedRoot = linuxRow(100, 1, 100, "9999");
+  const reusedRootGroup = linuxRow(105, 100, 100, "1005");
   assert.deepEqual(
-    collectOwnedProcessRows([lateSameGroup, unrelated], 100, captured, { processGroupVerified: true }).map(
-      (row) => row.pid
-    ),
-    [104],
-    "verified process-group ownership must survive the root's exit"
+    collectOwnedProcessRows([reusedRoot, reusedRootGroup, unrelated], 100, capturedRoot, {
+      processGroupVerified: true
+    }).map((row) => row.pid),
+    [],
+    "a reused root PID must not acquire its unrelated replacement or process group"
+  );
+  assert.equal(capturedRoot.get(100), "100:1000", "the captured root identity must remain immutable");
+
+  const lateSameGroup = linuxRow(104, 1, 100, "1004");
+  const continuousGroup = new Map(captured);
+  assert.deepEqual(
+    collectOwnedProcessRows([sameGroup, lateSameGroup, unrelated], 100, continuousGroup, {
+      processGroupVerified: true
+    }).map((row) => row.pid),
+    [101, 104],
+    "a captured live member may witness continuity after the group leader exits"
+  );
+  assert.deepEqual(
+    collectOwnedProcessRows([lateSameGroup, unrelated], 100, captured, { processGroupVerified: true }),
+    [],
+    "an unwitnessed process group must not be reacquired after the root exits"
   );
 
   assert.deepEqual(parseMacProcessRows(" 9 1 9 2048 Mon Aug  3 10:20:30 2026\n"), [
@@ -212,6 +234,7 @@ test("public heavy scripts hold the shared lease across their complete transacti
     "test:accessibility",
     "test:webview-acceptance",
     "benchmark:runtime",
+    "comparison:feasibility:smoke",
     "benchmark:installed",
     "package"
   ];
@@ -232,6 +255,26 @@ test("public heavy scripts hold the shared lease across their complete transacti
     scripts["test:packaged-editors"],
     "node scripts/run-heavy-local-command.mjs test:packaged-editors -- npm run test:packaged-editors:prepare --"
   );
+  assert.equal(
+    scripts["comparison:feasibility:smoke"],
+    "node scripts/run-heavy-local-command.mjs comparison:feasibility:smoke -- node scripts/run-data-wrangler-comparison.mjs"
+  );
+});
+
+test("Windows termination always requests taskkill even after the root reports exit", async () => {
+  const events = [];
+  await terminateChildTree({ pid: 1731, exitCode: 0, signalCode: null }, undefined, "SIGTERM", {
+    platform: "win32",
+    taskkill: async (pid) => events.push(["taskkill", pid]),
+    waitForChild: async () => {
+      events.push(["wait", 1731]);
+      return true;
+    }
+  });
+  assert.deepEqual(events, [
+    ["taskkill", 1731],
+    ["wait", 1731]
+  ]);
 });
 
 test(
@@ -292,7 +335,7 @@ test(
     const scope = `openwrangler-heavy-memory-test-${process.pid}-${Date.now()}`;
     const environment = {
       ...cleanLeaseEnvironment(scope),
-      OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "8"
+      OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "32"
     };
     const guarded = captureChild(
       [
@@ -302,7 +345,8 @@ test(
         "--eval",
         "const {spawn}=require('node:child_process');" +
           "const child=spawn(process.execPath,['--eval','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});" +
-          "process.stdout.write(String(child.pid)+'\\n');child.unref();setInterval(()=>{},1000);"
+          "process.stdout.write(String(child.pid)+'\\n');child.unref();" +
+          "const allocation=Buffer.alloc(48*1024*1024,1);setInterval(()=>allocation[0],1000);"
       ],
       environment
     );
@@ -313,9 +357,9 @@ test(
       assert.equal(signal, null, guarded.output().stderr);
       assert.equal(code, 1, guarded.output().stderr);
       assert.equal(Number.isSafeInteger(descendantPid), true, guarded.output().stdout);
-      assert.match(guarded.output().stderr, /memory guard: 8 MiB proportional set size \(PSS\) cap/u);
+      assert.match(guarded.output().stderr, /memory guard: 32 MiB proportional set size \(PSS\) cap/u);
       assert.match(guarded.output().stderr, /stopped "memory-test"/u);
-      assert.match(guarded.output().stderr, /above the 8 MiB local cap/u);
+      assert.match(guarded.output().stderr, /above the 32 MiB local cap/u);
       assert.match(guarded.output().stderr, /Peak observed:/u);
       assert.equal(processIsAlive(descendantPid), false, `captured descendant ${descendantPid} survived the limit`);
     } finally {
@@ -344,7 +388,7 @@ test(
 );
 
 test(
-  "the Linux watchdog rescans a verified process group after the root exits",
+  "the Linux watchdog subreaper captures a detached descendant before the first periodic sample",
   { timeout: 10_000, skip: process.platform !== "linux" },
   async () => {
     const scope = `openwrangler-heavy-memory-late-child-${process.pid}-${Date.now()}`;
@@ -359,7 +403,7 @@ test(
         "node",
         "--eval",
         "const {spawn}=require('node:child_process');" +
-          "const child=spawn(process.execPath,['--eval','setInterval(()=>{},1000)'],{stdio:'ignore'});" +
+          "const child=spawn(process.execPath,['--eval','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});" +
           "process.stdout.write(String(child.pid)+'\\n');child.unref();"
       ],
       environment
@@ -372,7 +416,7 @@ test(
       assert.equal(code, 1, guarded.output().stderr);
       assert.equal(Number.isSafeInteger(descendantPid), true, guarded.output().stdout);
       assert.match(guarded.output().stderr, /surviving descendant after "late-child" exited/u);
-      assert.equal(processIsAlive(descendantPid), false, `late same-group child ${descendantPid} survived cleanup`);
+      assert.equal(processIsAlive(descendantPid), false, `detached child ${descendantPid} survived cleanup`);
     } finally {
       guarded.child.kill("SIGKILL");
       if (descendantPid && processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
