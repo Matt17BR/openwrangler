@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { CANONICAL_RELEASE_ASSET_SPECS } from "./canonical-release-assets.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
+import { validateReleaseNotes } from "./release-notes.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const EXPECTED_REPOSITORY = "Matt17BR/openwrangler";
@@ -106,6 +107,7 @@ function validateInputs({
   channel,
   expectImmutable,
   expectedCommit,
+  releaseNotes,
   releaseTag,
   repository,
   token,
@@ -134,6 +136,7 @@ function validateInputs({
   if (beforeMutation !== undefined && typeof beforeMutation !== "function") {
     throw new Error("beforeMutation must be a function when canonical file revalidation is required.");
   }
+  validateReleaseNotes(releaseNotes);
   if (
     !Array.isArray(assets) ||
     assets.length !== CANONICAL_GITHUB_RELEASE_ASSETS.length ||
@@ -150,6 +153,7 @@ function validateInputs({
   }
   return {
     apiRoot: `${GITHUB_API_BASE}/repos/${repository}`,
+    expectedBody: releaseNotes,
     expectedName: `Open Wrangler ${releaseTag}`,
     prerelease: channel === "preview",
     uploadRoot: `${GITHUB_UPLOAD_BASE}/repos/${repository}`
@@ -228,7 +232,7 @@ async function listMatchingReleases({ apiRoot, fetchImpl, headers, releaseTag })
 
 function validateReleaseMetadata(
   release,
-  { apiRoot, expectImmutable, expectedCommit, expectedName, phase, prerelease, releaseTag, uploadRoot }
+  { apiRoot, expectImmutable, expectedBody, expectedCommit, expectedName, phase, prerelease, releaseTag, uploadRoot }
 ) {
   requirePlainObject(release, "GitHub release");
   const expectedDraft = phase === "draft";
@@ -241,7 +245,7 @@ function validateReleaseMetadata(
     release.tag_name !== releaseTag ||
     release.target_commitish !== expectedCommit ||
     release.name !== expectedName ||
-    typeof release.body !== "string" ||
+    release.body !== expectedBody ||
     release.draft !== expectedDraft ||
     release.prerelease !== prerelease
   ) {
@@ -368,6 +372,7 @@ async function verifyReleaseAssets({ assets, discovered, fetchImpl, headers, req
 async function createDraftRelease({
   apiRoot,
   beforeMutation,
+  expectedBody,
   expectedCommit,
   expectedName,
   fetchImpl,
@@ -378,8 +383,9 @@ async function createDraftRelease({
   await beforeMutation?.();
   const response = await fetchImpl(`${apiRoot}/releases`, {
     body: JSON.stringify({
+      body: expectedBody,
       draft: true,
-      generate_release_notes: true,
+      generate_release_notes: false,
       make_latest: "false",
       name: expectedName,
       prerelease,
@@ -427,6 +433,7 @@ async function uploadAsset({ beforeMutation, expected, fetchImpl, headers, relea
 async function publishDraftRelease({
   apiRoot,
   beforeMutation,
+  expectedBody,
   expectedCommit,
   expectedName,
   fetchImpl,
@@ -437,6 +444,7 @@ async function publishDraftRelease({
   await beforeMutation?.();
   const response = await fetchImpl(`${apiRoot}/releases/${release.id}`, {
     body: JSON.stringify({
+      body: expectedBody,
       draft: false,
       make_latest: prerelease ? "false" : "true",
       name: expectedName,
@@ -462,17 +470,19 @@ export async function publishGitHubRelease({
   expectImmutable,
   expectedCommit,
   fetchImpl = fetch,
+  releaseNotes,
   releaseTag,
   repository,
   token,
   version
 }) {
-  const { apiRoot, expectedName, prerelease, uploadRoot } = validateInputs({
+  const { apiRoot, expectedBody, expectedName, prerelease, uploadRoot } = validateInputs({
     assets,
     beforeMutation,
     channel,
     expectImmutable,
     expectedCommit,
+    releaseNotes,
     releaseTag,
     repository,
     token,
@@ -487,7 +497,16 @@ export async function publishGitHubRelease({
     throw new Error("Existing GitHub release tag points at a different commit.");
   }
 
-  const validation = { apiRoot, expectImmutable, expectedCommit, expectedName, prerelease, releaseTag, uploadRoot };
+  const validation = {
+    apiRoot,
+    expectImmutable,
+    expectedBody,
+    expectedCommit,
+    expectedName,
+    prerelease,
+    releaseTag,
+    uploadRoot
+  };
   let state = await discoverRelease({ apiRoot, fetchImpl, headers, releaseTag });
   if (state.phase === "public") {
     const discovered = validateReleaseMetadata(state.release, { ...validation, phase: "public" });
@@ -502,6 +521,7 @@ export async function publishGitHubRelease({
     const created = await createDraftRelease({
       apiRoot,
       beforeMutation,
+      expectedBody,
       expectedCommit,
       expectedName,
       fetchImpl,
@@ -582,6 +602,7 @@ export async function publishGitHubRelease({
     patched = await publishDraftRelease({
       apiRoot,
       beforeMutation,
+      expectedBody,
       expectedCommit,
       expectedName,
       fetchImpl,

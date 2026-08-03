@@ -250,6 +250,7 @@ test("stable publication rejects a sidecar replacement before creating a GitHub 
       expectedCommit,
       fetchImpl,
       releaseTag: "v1.0.0",
+      releaseNotes: "Reviewed stable release notes.\n",
       repository: "Matt17BR/openwrangler",
       sourceCommit: expectedCommit,
       sourcePackageJson: JSON.stringify(sourceManifest),

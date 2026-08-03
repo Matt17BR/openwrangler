@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { publishGitHubRelease } from "./github-release-publisher.mjs";
 import {
   parseGitHubImmutableReleaseExpectation,
   publishGitHubStableRelease
 } from "./publish-github-stable-release.mjs";
+import { readReleaseNotesFromCommit } from "./release-notes.mjs";
 
 const repository = "Matt17BR/openwrangler";
 const apiRoot = `https://api.github.com/repos/${repository}`;
 const uploadRoot = `https://uploads.github.com/repos/${repository}`;
 const expectedCommit = "a".repeat(40);
+const releaseNotes = "Open Wrangler now publishes release notes from the tagged source.\n";
 const stable = Object.freeze({ channel: "stable", releaseTag: "v1.2.3", version: "1.2.3" });
 const preview = Object.freeze({ channel: "preview", releaseTag: "v0.3.0", version: "0.3.0" });
 const assets = [
@@ -68,7 +74,7 @@ function releaseMetadata({
 } = {}) {
   return {
     assets: releaseAssets,
-    body: "GitHub-generated release notes",
+    body: releaseNotes,
     draft,
     id: releaseId,
     immutable,
@@ -196,9 +202,11 @@ function githubFixture({
       );
       const body = JSON.parse(options.body);
       assert.equal(body.draft, true);
-      assert.equal(body.generate_release_notes, true);
+      assert.equal(body.body, releaseNotes);
+      assert.equal(body.generate_release_notes, false);
       assert.equal(body.make_latest, "false");
       const created = releaseMetadata({
+        body: body.body,
         channel: body.prerelease ? "preview" : "stable",
         draft: true,
         releaseId: 71,
@@ -214,6 +222,7 @@ function githubFixture({
       const release = releases.find((candidate) => candidate.id === Number(patchMatch[1]));
       assert.ok(release);
       const body = JSON.parse(options.body);
+      assert.equal(body.body, releaseNotes);
       assert.equal(body.draft, false);
       assert.equal(body.make_latest, body.prerelease ? "false" : "true");
       if (publishConflict) {
@@ -280,6 +289,7 @@ function publish(fetchImpl, options = {}) {
     expectImmutable: options.expectImmutable ?? false,
     expectedCommit,
     fetchImpl,
+    releaseNotes,
     releaseTag: release.releaseTag,
     repository,
     token: "test-token",
@@ -318,6 +328,100 @@ test("creates a draft, verifies all three assets, and only then publishes", asyn
   assert.deepEqual(mutationMethods, ["POST", "POST", "POST", "POST", "PATCH"]);
 });
 
+test("reads release notes from the exact commit instead of the mutable checkout", (context) => {
+  const root = mkdtempSync(join(tmpdir(), "ow-release-notes-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  mkdirSync(join(root, "docs", "release-notes"), { recursive: true });
+  const notesPath = join(root, "docs", "release-notes", "1.2.3.md");
+  writeFileSync(notesPath, releaseNotes);
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Open Wrangler",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "release notes"
+    ],
+    {
+      cwd: root
+    }
+  );
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  writeFileSync(notesPath, "Unreviewed working-tree replacement.\n");
+  assert.equal(readReleaseNotesFromCommit({ commit, root, version: "1.2.3" }), releaseNotes);
+  assert.throws(() => readReleaseNotesFromCommit({ commit, root, version: "1.2.4" }), /must contain release notes/u);
+
+  writeFileSync(notesPath, Buffer.from([0x23, 0x20, 0x52, 0x65, 0x6c, 0x65, 0x61, 0x73, 0x65, 0x0a, 0xff, 0x0a]));
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Open Wrangler",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "invalid release notes"
+    ],
+    { cwd: root }
+  );
+  const invalidCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  assert.throws(
+    () => readReleaseNotesFromCommit({ commit: invalidCommit, root, version: "1.2.3" }),
+    /must be valid UTF-8/u
+  );
+
+  writeFileSync(notesPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("# Release\nCafé\n")]));
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Open Wrangler",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "byte-order mark"
+    ],
+    { cwd: root }
+  );
+  const bomCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  assert.throws(
+    () => readReleaseNotesFromCommit({ commit: bomCommit, root, version: "1.2.3" }),
+    /must use canonical UTF-8 without a byte-order mark/u
+  );
+
+  const unicodeReleaseNotes = "# Release\nCafé users can open 日本語 columns.\n";
+  writeFileSync(notesPath, unicodeReleaseNotes);
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Open Wrangler",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "unicode release notes"
+    ],
+    { cwd: root }
+  );
+  const unicodeCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  assert.equal(readReleaseNotesFromCommit({ commit: unicodeCommit, root, version: "1.2.3" }), unicodeReleaseNotes);
+});
+
 test("revalidates pinned canonical files immediately before every release mutation", async () => {
   const fixture = githubFixture();
   let guardCalls = 0;
@@ -332,6 +436,7 @@ test("revalidates pinned canonical files immediately before every release mutati
       expectImmutable: false,
       expectedCommit,
       fetchImpl: fixture.fetchImpl,
+      releaseNotes,
       releaseTag: stable.releaseTag,
       repository,
       token: "test-token",
@@ -553,6 +658,7 @@ test("rejects malformed release inventory and generic input ambiguity", async ()
       expectImmutable: false,
       expectedCommit,
       fetchImpl: githubFixture().fetchImpl,
+      releaseNotes,
       releaseTag: stable.releaseTag,
       repository,
       token: "test-token",
@@ -567,6 +673,7 @@ test("rejects malformed release inventory and generic input ambiguity", async ()
       expectImmutable: "false",
       expectedCommit,
       fetchImpl: githubFixture().fetchImpl,
+      releaseNotes,
       releaseTag: stable.releaseTag,
       repository,
       token: "test-token",
@@ -581,6 +688,7 @@ test("rejects malformed release inventory and generic input ambiguity", async ()
       expectImmutable: false,
       expectedCommit,
       fetchImpl: githubFixture().fetchImpl,
+      releaseNotes,
       releaseTag: stable.releaseTag,
       repository,
       token: "test-token",
@@ -596,12 +704,44 @@ test("rejects malformed release inventory and generic input ambiguity", async ()
       expectImmutable: false,
       expectedCommit,
       fetchImpl: githubFixture().fetchImpl,
+      releaseNotes,
       releaseTag: stable.releaseTag,
       repository,
       token: "test-token",
       version: stable.version
     }),
     /beforeMutation must be a function/u
+  );
+});
+
+test("rejects missing, malformed, or mismatched release notes before mutation", async () => {
+  for (const invalid of [undefined, "", "spaces only\n   ", "missing newline", "windows\r\n", "nul\0byte\n"]) {
+    await assert.rejects(
+      publishGitHubRelease({
+        assets,
+        channel: stable.channel,
+        expectImmutable: false,
+        expectedCommit,
+        fetchImpl: async () => {
+          throw new Error("invalid release notes must fail before network access");
+        },
+        releaseNotes: invalid,
+        releaseTag: stable.releaseTag,
+        repository,
+        token: "test-token",
+        version: stable.version
+      }),
+      /Release notes must be non-empty UTF-8 Markdown/u
+    );
+  }
+
+  const fixture = githubFixture({
+    initialReleases: [releaseMetadata({ body: "Different release notes.\n", releaseAssets: exactAssets() })]
+  });
+  await assert.rejects(publish(fixture.fetchImpl), /metadata conflicts/u);
+  assert.equal(
+    fixture.requests.some((request) => request.method !== "GET"),
+    false
   );
 });
 
@@ -621,6 +761,7 @@ test("uses the 128 MiB VSIX ceiling without widening bounded sidecars", async ()
         return jsonResponse({ message: "Not Found" }, 404);
       },
       releaseTag: stable.releaseTag,
+      releaseNotes,
       repository,
       token: "test-token",
       version: stable.version
@@ -643,6 +784,7 @@ test("uses the 128 MiB VSIX ceiling without widening bounded sidecars", async ()
           throw new Error("oversized sidecars must fail before network access");
         },
         releaseTag: stable.releaseTag,
+        releaseNotes,
         repository,
         token: "test-token",
         version: stable.version
@@ -661,6 +803,7 @@ test("retains the stable compatibility export", async () => {
     expectImmutable: false,
     expectedCommit,
     fetchImpl: fixture.fetchImpl,
+    releaseNotes,
     releaseTag: stable.releaseTag,
     repository,
     token: "test-token",

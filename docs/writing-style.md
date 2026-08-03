@@ -61,13 +61,14 @@ the body. Avoid turning a roadmap issue into launch copy.
 A commit subject should describe the observable change. Prefer “Reject stale notebook sessions after a kernel
 restart” to “Harden notebook lifecycle.” Keep it short enough to scan in `git log`.
 
-A pull request title should make sense in generated release notes because GitHub uses merged pull requests to build
-them. The body should say what problem prompted it, what changed, how it was tested, and what is still unresolved.
-Do not turn the body into a feature brochure or repeat every implementation detail from the diff.
+A pull request title should make sense in repository history. The body should say what problem prompted it, what
+changed, how it was tested, and what is still unresolved. Do not turn the body into a feature brochure or repeat every
+implementation detail from the diff.
 
 Release notes and registry listings should lead with what a user can now do or what no longer breaks. Internal protocol
-or test work belongs there only when it changes risk, compatibility, or contributor workflow. Check generated GitHub
-notes before publication; a technically correct commit or pull request title can still read badly in a release.
+or test work belongs there only when it changes risk, compatibility, or contributor workflow. Each release has a
+checked-in `docs/release-notes/<version>.md`; GitHub-generated notes are disabled so publication cannot skip that edit.
+The check proves which committed text will ship, not whether a person read it. Review the prose in the release change.
 
 Before publishing text:
 
