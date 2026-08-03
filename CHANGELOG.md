@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- GitHub releases now use the versioned notes stored in the tagged commit instead of generated pull-request summaries.
+  Missing, malformed, invalid UTF-8, oversized, or conflicting notes stop publication before the release is changed.
 - Added bounded draft-pull-request feedback without weakening ready-PR evidence. Draft updates run the existing static
   source lane plus bounded carriers for directly protected matrix names, while the protected `validate` context
   deliberately remains failed until `ready_for_review` reruns the required tier at the same commit. Missing,
