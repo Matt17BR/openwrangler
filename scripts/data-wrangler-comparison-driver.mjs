@@ -285,6 +285,18 @@ function isExactModuleExportsReference(node) {
   );
 }
 
+function isOrdinaryPropertyNamedModule(node) {
+  if (!ts.isIdentifier(node) || node.text !== "module") return false;
+  const parent = node.parent;
+  return (
+    (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+    (ts.isPropertyAssignment(parent) && parent.name === node) ||
+    (ts.isMethodDeclaration(parent) && parent.name === node) ||
+    (ts.isGetAccessorDeclaration(parent) && parent.name === node) ||
+    (ts.isSetAccessorDeclaration(parent) && parent.name === node)
+  );
+}
+
 /**
  * Enumerate literal CommonJS imports in the reviewed source graph. This is an
  * integrity and review aid, not a JavaScript capability boundary: the checked-in
@@ -321,7 +333,12 @@ function staticCommonJsDependencies(source, label) {
         fail(`${label} contains an unsupported module-loader reference.`);
       }
     }
-    if (ts.isIdentifier(node) && node.text === "module" && !isExactModuleExportsReference(node)) {
+    if (
+      ts.isIdentifier(node) &&
+      node.text === "module" &&
+      !isExactModuleExportsReference(node) &&
+      !isOrdinaryPropertyNamedModule(node)
+    ) {
       fail(`${label} contains a CommonJS loader outside the literal import inventory.`);
     }
     ts.forEachChild(node, visit);

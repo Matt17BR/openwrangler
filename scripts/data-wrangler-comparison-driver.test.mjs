@@ -337,6 +337,18 @@ test("the journey proof follows the complete local graph and rejects product or 
   }
 });
 
+test("the journey proof permits dataframe metadata properties named module", () => {
+  const value = fixture();
+  try {
+    writeFileSync(value.testModule, "exports.run = (metadata) => ({ module: metadata.module }).module;\n", {
+      mode: 0o600
+    });
+    assert.doesNotThrow(() => proveDataWranglerComparisonJourneyGraph(value.testModule));
+  } finally {
+    value.cleanup();
+  }
+});
+
 test("packaging rejects bytes that are not the inspected driver archive", async () => {
   const value = fixture();
   try {
