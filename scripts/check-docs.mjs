@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { inspectPreviewReadme } from "./release-documents.mjs";
-import { inspectPerformanceEvidenceSourceReadiness, inspectStableSourceReadiness } from "./release-readiness.mjs";
-import { inspectReleaseWorkflow, inspectStableCandidateWorkflow } from "./release-workflow.mjs";
+import { inspectStableSourceReadiness } from "./release-readiness.mjs";
+import { inspectReleaseWorkflow } from "./release-workflow.mjs";
 import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
@@ -55,29 +55,11 @@ const trackedEvidencePaths = new Set(
 );
 const readmeProblems = packageJson.preview
   ? inspectPreviewReadme(readme)
-  : (() => {
-      const stableProblems = inspectStableSourceReadiness({
-        featureParity,
-        readme,
-        trackedEvidencePaths
-      });
-      if (stableProblems.length === 0) {
-        return [];
-      }
-      const evidenceProblems = inspectPerformanceEvidenceSourceReadiness({
-        featureParity,
-        readme,
-        trackedEvidencePaths,
-        version: packageJson.version
-      });
-      return evidenceProblems.length === 0
-        ? []
-        : [
-            "Non-preview documentation must be either an all-green stable source or the exact two-row performance-evidence source.",
-            ...stableProblems,
-            ...evidenceProblems
-          ];
-    })();
+  : inspectStableSourceReadiness({
+      featureParity,
+      readme,
+      trackedEvidencePaths
+    });
 if (readmeProblems.length > 0) {
   throw new Error(`README release/install region is stale:\n- ${readmeProblems.join("\n- ")}`);
 }
@@ -86,12 +68,6 @@ const releaseWorkflowProblems = inspectReleaseWorkflow(
 );
 if (releaseWorkflowProblems.length > 0) {
   throw new Error(`Release workflow contract is stale:\n- ${releaseWorkflowProblems.join("\n- ")}`);
-}
-const stableCandidateWorkflowProblems = inspectStableCandidateWorkflow(
-  readFileSync(resolve(root, ".github/workflows/stable-candidate.yml"), "utf8")
-);
-if (stableCandidateWorkflowProblems.length > 0) {
-  throw new Error(`Stable candidate workflow contract is stale:\n- ${stableCandidateWorkflowProblems.join("\n- ")}`);
 }
 const stableReleaseWorkflowProblems = inspectStableReleaseWorkflow(
   readFileSync(resolve(root, ".github/workflows/stable-release.yml"), "utf8")

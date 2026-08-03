@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Removed the completed v1.0 performance-evidence workflow and its dedicated maintenance checks. Stable performance
+  acceptance now has one documented path through the canonical stable-release artifact.
 - GitHub releases now use the versioned notes stored in the tagged commit instead of generated pull-request summaries.
   Missing, malformed, invalid UTF-8, oversized, or conflicting notes stop publication before the release is changed.
 - Generated columns now scroll into view even when Cursor finishes laying out Code Preview without sending a resize
