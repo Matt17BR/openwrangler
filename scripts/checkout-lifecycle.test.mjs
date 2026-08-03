@@ -31,6 +31,7 @@ import {
   createCheckoutManager,
   normalizeWorktreeRegistryPath,
   requireSynchronousLifecycleResult,
+  runCheckoutLifecycleCli,
   validateLegacyIndexStages
 } from "./checkout-lifecycle.mjs";
 import {
@@ -4082,6 +4083,852 @@ test("the real CLI audits, adopts, and reports one legacy checkout without movin
       assert.equal(invalid.stdout, "");
     }
     assert.equal(existsSync(checkout), true);
+  });
+});
+
+const BOOT_A = "11111111-1111-4111-8111-111111111111";
+const BOOT_B = "22222222-2222-4222-8222-222222222222";
+
+test("managed retirement waits for a later boot, preserves the branch, and tombstones the slug", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "c".repeat(32)
+    });
+    const archived = archiveForQuarantine(fixture, "later-boot-managed", { manager: managed });
+    const branch = archived.checkout.branch;
+    const head = git(archived.checkout.checkoutPath, "rev-parse", "HEAD");
+
+    const enrollment = managed.enrollRetirement({ kind: "managed", slug: "later-boot-managed" });
+    assert.equal(enrollment.status, "enrolled-next-boot");
+    assert.equal(managed.sweep().results[0].state, "waiting-for-next-boot");
+    assert.equal(existsSync(archived.checkout.checkoutPath), true);
+
+    bootId = BOOT_B;
+    assert.deepEqual(managed.sweep().results, [
+      {
+        kind: "managed",
+        slug: "later-boot-managed",
+        state: "retired",
+        moved: true,
+        removed: true
+      }
+    ]);
+    assert.equal(existsSync(archived.checkout.checkoutPath), false);
+    assert.equal(git(fixture.repository, "rev-parse", `refs/heads/${branch}`), head);
+    assert.equal(managed.status("later-boot-managed")[0].state, "retired");
+    lifecycleError(
+      () =>
+        managed.create({
+          slug: "later-boot-managed",
+          branch: "agent/reused-retired-slug",
+          ownerTask: "/root/reused-retired-slug"
+        }),
+      "checkout-slug-retired"
+    );
+  });
+});
+
+test("retirement reconciles a crash after the managed worktree move", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    let interrupt = true;
+    const options = {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "d".repeat(32)
+    };
+    const managed = manager(fixture, {
+      ...options,
+      hooks: {
+        afterRetirementMoveCommand() {
+          if (interrupt) throw new Error("simulated power loss after move");
+        }
+      }
+    });
+    const archived = archiveForQuarantine(fixture, "move-reconcile", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "move-reconcile" });
+    bootId = BOOT_B;
+    assert.throws(() => managed.sweep(), /simulated power loss/u);
+    assert.equal(existsSync(archived.checkout.checkoutPath), false);
+
+    interrupt = false;
+    const resumed = manager(fixture, options).sweep();
+    assert.equal(resumed.results[0].state, "retired");
+    assert.equal(manager(fixture, options).status("move-reconcile")[0].state, "retired");
+  });
+});
+
+test("a blocked managed move reports progress from the observed layout", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const operationId = "6".repeat(32);
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => operationId
+    });
+    const archived = archiveForQuarantine(fixture, "blocked-move-progress", { manager: managed });
+    const enrollment = managed.enrollRetirement({ kind: "managed", slug: "blocked-move-progress" });
+    const blockedDestination = join(
+      managed.paths.managedRetirementQuarantine,
+      `blocked-move-progress.${enrollment.generation}.${operationId}`
+    );
+    mkdirSync(blockedDestination, { mode: 0o700 });
+
+    bootId = BOOT_B;
+    assert.deepEqual(managed.sweep().results, [
+      {
+        kind: "managed",
+        slug: "blocked-move-progress",
+        state: "held-ambiguous-layout",
+        code: "retirement-layout-blocked",
+        layout: "blocked",
+        journal: "eligible",
+        moved: null,
+        removed: null
+      }
+    ]);
+    assert.equal(existsSync(archived.checkout.checkoutPath), true);
+    assert.equal(existsSync(blockedDestination), true);
+  });
+});
+
+test("existing enrollment rejects absence before purge and archive corruption after purge", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => BOOT_A,
+      tokenFactory: () => "4".repeat(32)
+    });
+    const archived = archiveForQuarantine(fixture, "absent-before-purge", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "absent-before-purge" });
+    git(fixture.repository, "worktree", "remove", archived.checkout.checkoutPath);
+
+    lifecycleError(
+      () => managed.verifyRetirementEnrollment({ kind: "managed", slug: "absent-before-purge" }),
+      "retirement-enrolled-source-changed"
+    );
+  });
+
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "5".repeat(32),
+      hooks: {
+        afterRetirementPurgeCommand(candidate) {
+          if (candidate.slug === "archive-changed-after-purge") throw new Error("stop after managed purge");
+        }
+      }
+    });
+    const archived = archiveForQuarantine(fixture, "archive-changed-after-purge", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "archive-changed-after-purge" });
+    bootId = BOOT_B;
+    assert.throws(() => managed.sweep(), /stop after managed purge/u);
+    writeFileSync(archived.anchor.bundle.path, "corrupt recovery bundle\n");
+
+    lifecycleError(
+      () => managed.verifyRetirementEnrollment({ kind: "managed", slug: "archive-changed-after-purge" }),
+      "retirement-enrolled-source-changed"
+    );
+  });
+});
+
+test("blocked layouts retain durable move progress after quarantine and purge intents", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "3".repeat(32),
+      hooks: {
+        afterRetirementQuarantineRecorded(candidate) {
+          if (candidate.slug !== "blocked-after-quarantine") return;
+          mkdirSync(candidate.originalPath, { mode: 0o700 });
+          throw new CheckoutLifecycleError("retirement-layout-blocked", "blocked after quarantine");
+        },
+        afterRetirementPurgeCommand(candidate) {
+          if (candidate.slug !== "blocked-after-purge") return;
+          mkdirSync(candidate.originalPath, { mode: 0o700 });
+          throw new CheckoutLifecycleError("retirement-layout-blocked", "blocked after purge");
+        }
+      }
+    });
+    archiveForQuarantine(fixture, "blocked-after-quarantine", { manager: managed });
+    archiveForQuarantine(fixture, "blocked-after-purge", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "blocked-after-quarantine" });
+    managed.enrollRetirement({ kind: "managed", slug: "blocked-after-purge" });
+    bootId = BOOT_B;
+
+    assert.deepEqual(managed.sweep().results, [
+      {
+        kind: "managed",
+        slug: "blocked-after-purge",
+        state: "held-ambiguous-layout",
+        code: "retirement-layout-blocked",
+        layout: "blocked",
+        journal: "purge-intent",
+        moved: true,
+        removed: null
+      },
+      {
+        kind: "managed",
+        slug: "blocked-after-quarantine",
+        state: "held-ambiguous-layout",
+        code: "retirement-layout-blocked",
+        layout: "blocked",
+        journal: "quarantine-result",
+        moved: true,
+        removed: null
+      }
+    ]);
+  });
+});
+
+test("managed purge reconciliation re-proves the preserved branch after removal", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    let interrupt = true;
+    const options = {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "7".repeat(32)
+    };
+    const interrupted = manager(fixture, {
+      ...options,
+      hooks: {
+        afterRetirementPurgeCommand(candidate) {
+          if (candidate.slug === "purge-branch-proof" && interrupt) throw new Error("simulated loss after remove");
+        }
+      }
+    });
+    const archived = archiveForQuarantine(fixture, "purge-branch-proof", { manager: interrupted });
+    const head = git(archived.checkout.checkoutPath, "rev-parse", "HEAD");
+    interrupted.enrollRetirement({ kind: "managed", slug: "purge-branch-proof" });
+    bootId = BOOT_B;
+    assert.throws(() => interrupted.sweep(), /simulated loss after remove/u);
+    assert.equal(existsSync(archived.checkout.checkoutPath), false);
+    git(fixture.repository, "update-ref", "-d", `refs/heads/${archived.checkout.branch}`);
+
+    interrupt = false;
+    lifecycleError(() => manager(fixture, options).sweep(), "retirement-branch-lost");
+    git(fixture.repository, "update-ref", `refs/heads/${archived.checkout.branch}`, head);
+    assert.equal(manager(fixture, options).sweep().results[0].state, "retired");
+  });
+});
+
+test("an active checkout is never inferred to be retirement eligible", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { readBootId: () => BOOT_A });
+    create(fixture, "active-resumable", { manager: managed });
+    lifecycleError(
+      () => managed.enrollRetirement({ kind: "managed", slug: "active-resumable" }),
+      "retirement-not-eligible"
+    );
+    assert.equal(managed.status("active-resumable")[0].state, "active");
+    assert.deepEqual(managed.sweep().results, []);
+  });
+});
+
+test("stale retirement evidence can be superseded without overwriting its first attempt", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "superseding-plan", { manager: managed });
+    managed.finish({ slug: "superseding-plan", ownerTask: "/root/superseding-plan", expectedRevision: 1 });
+    const cleanup = entry(fixture, "superseding-plan");
+    managed.planRetirement({
+      slug: "superseding-plan",
+      ownerTask: "/root/superseding-plan",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const firstPath = join(managed.paths.retirements, `superseding-plan.${cleanup.generation}.json`);
+    const first = readFileSync(firstPath);
+    writeFileSync(join(checkout.checkoutPath, "README.md"), "new clean head\n");
+    git(checkout.checkoutPath, "add", "README.md");
+    git(checkout.checkoutPath, "commit", "-q", "-m", "Advance clean checkout");
+
+    const result = managed.planRetirement({
+      slug: "superseding-plan",
+      ownerTask: "/root/superseding-plan",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    assert.equal(result.attempt, 2);
+    assert.deepEqual(readFileSync(firstPath), first);
+    assert.equal(existsSync(join(managed.paths.retirements, `superseding-plan.${cleanup.generation}.2.json`)), true);
+  });
+});
+
+test("retirement planning permits an exact A to B to A evidence history", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "plan-a-b-a", { manager: managed });
+    managed.finish({ slug: "plan-a-b-a", ownerTask: "/root/plan-a-b-a", expectedRevision: 1 });
+    const cleanup = entry(fixture, "plan-a-b-a");
+    const firstHead = git(checkout.checkoutPath, "rev-parse", "HEAD");
+    managed.planRetirement({
+      slug: "plan-a-b-a",
+      ownerTask: "/root/plan-a-b-a",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    writeFileSync(join(checkout.checkoutPath, "README.md"), "evidence B\n");
+    git(checkout.checkoutPath, "add", "README.md");
+    git(checkout.checkoutPath, "commit", "-q", "-m", "Evidence B");
+    managed.planRetirement({
+      slug: "plan-a-b-a",
+      ownerTask: "/root/plan-a-b-a",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    git(checkout.checkoutPath, "reset", "--hard", "-q", firstHead);
+
+    const third = managed.planRetirement({
+      slug: "plan-a-b-a",
+      ownerTask: "/root/plan-a-b-a",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    assert.equal(third.attempt, 3);
+  });
+});
+
+test("a completed archive can be superseded by a new clean head, rearchived, and enrolled", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun(), readBootId: () => BOOT_A });
+    const checkout = create(fixture, "superseding-archive", { manager: managed });
+    managed.finish({ slug: "superseding-archive", ownerTask: "/root/superseding-archive", expectedRevision: 1 });
+    const cleanup = entry(fixture, "superseding-archive");
+    managed.planRetirement({
+      slug: "superseding-archive",
+      ownerTask: "/root/superseding-archive",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const firstArchive = managed.archiveRetirement({
+      slug: "superseding-archive",
+      ownerTask: "/root/superseding-archive",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const firstAttempt = dirname(firstArchive.archivePath);
+    const firstSnapshot = {
+      bundle: readFileSync(firstArchive.archivePath),
+      receipt: readFileSync(join(firstAttempt, "receipt.json")),
+      completion: readFileSync(join(firstAttempt, "complete.json"))
+    };
+
+    writeFileSync(join(checkout.checkoutPath, "README.md"), "new clean head after the first archive\n");
+    git(checkout.checkoutPath, "add", "README.md");
+    git(checkout.checkoutPath, "commit", "-q", "-m", "Advance after archive");
+    const secondPlan = managed.planRetirement({
+      slug: "superseding-archive",
+      ownerTask: "/root/superseding-archive",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const secondArchive = managed.archiveRetirement({
+      slug: "superseding-archive",
+      ownerTask: "/root/superseding-archive",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    assert.equal(secondPlan.attempt, 2);
+    assert.equal(secondArchive.attempt, 2);
+    assert.deepEqual(readFileSync(firstArchive.archivePath), firstSnapshot.bundle);
+    assert.deepEqual(readFileSync(join(firstAttempt, "receipt.json")), firstSnapshot.receipt);
+    assert.deepEqual(readFileSync(join(firstAttempt, "complete.json")), firstSnapshot.completion);
+    const enrollment = managed.enrollRetirement({ kind: "managed", slug: "superseding-archive" });
+    assert.equal(enrollment.status, "enrolled-next-boot");
+    assert.equal(managed.sweep().results[0].state, "waiting-for-next-boot");
+  });
+});
+
+test("retirement enrollment fails if the Linux boot changes before publication", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      hooks: {
+        beforeRetirementEnrollment() {
+          bootId = BOOT_B;
+        }
+      }
+    });
+    archiveForQuarantine(fixture, "enrollment-boot-race", { manager: managed });
+    lifecycleError(
+      () => managed.enrollRetirement({ kind: "managed", slug: "enrollment-boot-race" }),
+      "retirement-boot-changed"
+    );
+    assert.deepEqual(managed.sweep().results, []);
+  });
+});
+
+test("legacy retirement requires explicit archived enrollment and a later boot", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "e".repeat(32) });
+    const checkout = legacyCandidate(fixture, "legacy-later-boot");
+    const managed = defaultManager(fixture, {
+      readBootId: () => bootId,
+      tokenFactory: () => "f".repeat(32)
+    });
+    managed.legacyAdopt({
+      slug: "legacy-later-boot",
+      ownerTask: "/root/legacy-later-boot",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    managed.legacyArchive({ slug: "legacy-later-boot", ownerTask: "/root/legacy-later-boot" });
+    managed.enrollRetirement({ kind: "legacy", slug: "legacy-later-boot" });
+    assert.equal(managed.sweep().results[0].state, "waiting-for-next-boot");
+    assert.equal(existsSync(checkout), true);
+
+    bootId = BOOT_B;
+    assert.equal(managed.sweep().results[0].state, "retired");
+    assert.equal(existsSync(checkout), false);
+    assert.equal(managed.legacyStatus("legacy-later-boot")[0].retirement.state, "retired");
+  });
+});
+
+test("legacy purge resumes after a mid-tree interruption and records detached-HEAD state", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    let interrupt = true;
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "1".repeat(32) });
+    const checkout = legacyCandidate(fixture, "legacy-partial-purge");
+    git(checkout, "checkout", "--detach", "-q");
+    const options = {
+      readBootId: () => bootId,
+      tokenFactory: () => "2".repeat(32)
+    };
+    const managed = defaultManager(fixture, {
+      ...options,
+      hooks: {
+        afterLegacyRetirementEntryRemoved(_root, _child, count) {
+          if (interrupt && count === 1) throw new Error("simulated loss during legacy purge");
+        }
+      }
+    });
+    managed.legacyAdopt({
+      slug: "legacy-partial-purge",
+      ownerTask: "/root/legacy-partial-purge",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    managed.legacyArchive({ slug: "legacy-partial-purge", ownerTask: "/root/legacy-partial-purge" });
+    managed.enrollRetirement({ kind: "legacy", slug: "legacy-partial-purge" });
+    bootId = BOOT_B;
+    assert.throws(() => managed.sweep(), /simulated loss during legacy purge/u);
+    assert.equal(existsSync(checkout), false);
+
+    interrupt = false;
+    const resumed = defaultManager(fixture, options).sweep();
+    assert.equal(resumed.results[0].state, "retired");
+    const journal = join(defaultManager(fixture, options).paths.legacyRetirementSweeps, "legacy-partial-purge.1");
+    const terminalName = readdirSync(journal).find((name) => name.includes(".retired."));
+    assert.notEqual(terminalName, undefined);
+    assert.equal(JSON.parse(readFileSync(join(journal, terminalName), "utf8")).branchPreserved, false);
+  });
+});
+
+test("legacy purge continuation holds before deleting more when the recovery pack changed", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    let interrupt = true;
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "c".repeat(32) });
+    legacyCandidate(fixture, "legacy-recovery-changed");
+    const options = { readBootId: () => bootId, tokenFactory: () => "d".repeat(32) };
+    const managed = defaultManager(fixture, {
+      ...options,
+      hooks: {
+        afterLegacyRetirementEntryRemoved(_root, _child, count) {
+          if (interrupt && count === 1) throw new Error("simulated partial legacy purge");
+        }
+      }
+    });
+    managed.legacyAdopt({
+      slug: "legacy-recovery-changed",
+      ownerTask: "/root/legacy-recovery-changed",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    const archived = managed.legacyArchive({
+      slug: "legacy-recovery-changed",
+      ownerTask: "/root/legacy-recovery-changed"
+    });
+    managed.enrollRetirement({ kind: "legacy", slug: "legacy-recovery-changed" });
+    bootId = BOOT_B;
+    assert.throws(() => managed.sweep(), /simulated partial legacy purge/u);
+    interrupt = false;
+    const quarantineName = readdirSync(managed.paths.legacyRetirementQuarantine)[0];
+    const quarantine = join(managed.paths.legacyRetirementQuarantine, quarantineName);
+    const before = readdirSync(quarantine).sort();
+    const packDirectory = join(archived.recoveryPath, "objects", "pack");
+    rmSync(
+      join(
+        packDirectory,
+        readdirSync(packDirectory).find((name) => name.endsWith(".pack"))
+      )
+    );
+
+    assert.deepEqual(defaultManager(fixture, options).sweep().results, [
+      {
+        kind: "legacy",
+        slug: "legacy-recovery-changed",
+        state: "held-after-move",
+        code: "legacy-archive-changed",
+        layout: "quarantine",
+        journal: "purge-intent",
+        moved: true,
+        removed: false
+      }
+    ]);
+    assert.deepEqual(readdirSync(quarantine).sort(), before);
+  });
+});
+
+test("legacy retirement holds when mountinfo reports a bind mount below the checkout", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "3".repeat(32) });
+    const checkout = legacyCandidate(fixture, "legacy-bind-mount");
+    const mountPoint = join(checkout, "node_modules");
+    const managed = defaultManager(fixture, {
+      readBootId: () => bootId,
+      readMountInfo: () => `10 1 0:10 / ${mountPoint} rw - none none rw\n`,
+      tokenFactory: () => "4".repeat(32)
+    });
+    managed.legacyAdopt({
+      slug: "legacy-bind-mount",
+      ownerTask: "/root/legacy-bind-mount",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    managed.legacyArchive({ slug: "legacy-bind-mount", ownerTask: "/root/legacy-bind-mount" });
+    managed.enrollRetirement({ kind: "legacy", slug: "legacy-bind-mount" });
+    bootId = BOOT_B;
+    assert.deepEqual(managed.sweep().results, [
+      {
+        kind: "legacy",
+        slug: "legacy-bind-mount",
+        state: "held",
+        code: "retirement-mount-present",
+        layout: "original",
+        journal: "quarantine-intent",
+        moved: false,
+        removed: false
+      }
+    ]);
+    assert.equal(existsSync(checkout), true);
+  });
+});
+
+test("legacy enrollment accepts linked-worktree siblings but holds an inbound shared-clone provider", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "5".repeat(32) });
+    const checkout = legacyCandidate(fixture, "legacy-provider");
+    const linked = join(fixture.repository, "tmp", "codex-checkpoints", "linked-sibling");
+    git(fixture.repository, "worktree", "add", "-q", "-b", "agent/linked-sibling", linked, "HEAD");
+    const managed = defaultManager(fixture, {
+      readBootId: () => bootId,
+      tokenFactory: () => "6".repeat(32)
+    });
+    managed.legacyAdopt({
+      slug: "legacy-provider",
+      ownerTask: "/root/legacy-provider",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    managed.legacyArchive({ slug: "legacy-provider", ownerTask: "/root/legacy-provider" });
+    managed.enrollRetirement({ kind: "legacy", slug: "legacy-provider" });
+    const dependent = join(fixture.repository, "tmp", "codex-checkpoints", "shared-dependent");
+    git(fixture.root, "clone", "-q", "--shared", checkout, dependent);
+
+    bootId = BOOT_B;
+    assert.deepEqual(managed.sweep().results, [
+      {
+        kind: "legacy",
+        slug: "legacy-provider",
+        state: "held",
+        code: "legacy-provider-in-use",
+        layout: "original",
+        journal: "eligible",
+        moved: false,
+        removed: false
+      }
+    ]);
+    assert.equal(existsSync(checkout), true);
+    assert.equal(git(dependent, "fsck", "--strict", "--full", "--no-dangling"), "");
+  });
+});
+
+test("one held retirement candidate does not block a later exact candidate", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "9".repeat(32)
+    });
+    const held = archiveForQuarantine(fixture, "a-held-retirement", { manager: managed });
+    const exact = archiveForQuarantine(fixture, "b-exact-retirement", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "a-held-retirement" });
+    managed.enrollRetirement({ kind: "managed", slug: "b-exact-retirement" });
+    writeFileSync(join(held.checkout.checkoutPath, "late-user-file.txt"), "keep this\n");
+
+    bootId = BOOT_B;
+    assert.deepEqual(managed.sweep().results, [
+      {
+        kind: "managed",
+        slug: "a-held-retirement",
+        state: "held",
+        code: "retirement-not-eligible",
+        layout: "original",
+        journal: "eligible",
+        moved: false,
+        removed: false
+      },
+      {
+        kind: "managed",
+        slug: "b-exact-retirement",
+        state: "retired",
+        moved: true,
+        removed: true
+      }
+    ]);
+    assert.equal(readFileSync(join(held.checkout.checkoutPath, "late-user-file.txt"), "utf8"), "keep this\n");
+    assert.equal(existsSync(exact.checkout.checkoutPath), false);
+  });
+});
+
+test("a held candidate reports durable progress after quarantine while a later candidate retires", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "a".repeat(32),
+      hooks: {
+        afterRetirementQuarantineRecorded(candidate) {
+          if (candidate.slug === "a-held-after-move") {
+            throw new CheckoutLifecycleError("retirement-not-eligible", "candidate-local hold");
+          }
+        }
+      }
+    });
+    archiveForQuarantine(fixture, "a-held-after-move", { manager: managed });
+    const exact = archiveForQuarantine(fixture, "b-after-move-exact", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "a-held-after-move" });
+    managed.enrollRetirement({ kind: "managed", slug: "b-after-move-exact" });
+    bootId = BOOT_B;
+
+    assert.deepEqual(managed.sweep().results, [
+      {
+        kind: "managed",
+        slug: "a-held-after-move",
+        state: "held-after-move",
+        code: "retirement-not-eligible",
+        layout: "quarantine",
+        journal: "quarantine-result",
+        moved: true,
+        removed: false
+      },
+      { kind: "managed", slug: "b-after-move-exact", state: "retired", moved: true, removed: true }
+    ]);
+    assert.equal(existsSync(exact.checkout.checkoutPath), false);
+  });
+});
+
+test("a held candidate reports an already committed purge while a later candidate retires", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "b".repeat(32),
+      hooks: {
+        afterRetirementPurgeCommand(candidate) {
+          if (candidate.slug === "a-held-after-purge") {
+            throw new CheckoutLifecycleError("retirement-source-changed", "candidate-local hold");
+          }
+        }
+      }
+    });
+    archiveForQuarantine(fixture, "a-held-after-purge", { manager: managed });
+    const exact = archiveForQuarantine(fixture, "b-after-purge-exact", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "a-held-after-purge" });
+    managed.enrollRetirement({ kind: "managed", slug: "b-after-purge-exact" });
+    bootId = BOOT_B;
+
+    assert.deepEqual(managed.sweep().results, [
+      {
+        kind: "managed",
+        slug: "a-held-after-purge",
+        state: "held-after-purge",
+        code: "retirement-source-changed",
+        layout: "absent",
+        journal: "purge-intent",
+        moved: true,
+        removed: true
+      },
+      { kind: "managed", slug: "b-after-purge-exact", state: "retired", moved: true, removed: true }
+    ]);
+    assert.equal(existsSync(exact.checkout.checkoutPath), false);
+  });
+});
+
+test("a global registry change aborts sweep before later candidates are touched", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "8".repeat(32),
+      hooks: {
+        beforeRetirementMove(candidate) {
+          if (candidate.slug === "a-global-stop") {
+            throw new CheckoutLifecycleError("registry-changed", "shared authority changed");
+          }
+        }
+      }
+    });
+    const stopped = archiveForQuarantine(fixture, "a-global-stop", { manager: managed });
+    const later = archiveForQuarantine(fixture, "b-global-untouched", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "a-global-stop" });
+    managed.enrollRetirement({ kind: "managed", slug: "b-global-untouched" });
+    bootId = BOOT_B;
+
+    lifecycleError(() => managed.sweep(), "registry-changed");
+    assert.equal(existsSync(stopped.checkout.checkoutPath), true);
+    assert.equal(existsSync(later.checkout.checkoutPath), true);
+  });
+});
+
+test("the public retire command finishes, archives, and enrolls without moving in the current boot", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "one-command-retire", { manager: managed });
+    const output = { write() {} };
+    const result = runCheckoutLifecycleCli(
+      ["retire", "one-command-retire", "--owner", "/root/one-command-retire", "--revision", "1"],
+      {
+        repositoryPath: fixture.repository,
+        managerRoot: fixture.managerRoot,
+        readBootId: () => bootId,
+        tokenFactory: () => "8".repeat(32),
+        stdout: output
+      }
+    );
+    assert.equal(result.status, "retirement-enrolled");
+    assert.equal(existsSync(checkout.checkoutPath), true);
+    assert.equal(
+      runCheckoutLifecycleCli(["sweep"], {
+        repositoryPath: fixture.repository,
+        managerRoot: fixture.managerRoot,
+        readBootId: () => bootId,
+        stdout: output
+      }).results[0].state,
+      "waiting-for-next-boot"
+    );
+    bootId = BOOT_B;
+    assert.equal(
+      runCheckoutLifecycleCli(["sweep"], {
+        repositoryPath: fixture.repository,
+        managerRoot: fixture.managerRoot,
+        readBootId: () => bootId,
+        stdout: output
+      }).results[0].state,
+      "retired"
+    );
+  });
+});
+
+test("the public retire command reuses an exact enrollment and rejects a changed source", () => {
+  withRepository((fixture) => {
+    const operationId = "9".repeat(32);
+    const run = fixtureRun();
+    const managed = manager(fixture, { run });
+    const checkout = create(fixture, "repeat-retire", { manager: managed });
+    const output = { write() {} };
+    const options = {
+      repositoryPath: fixture.repository,
+      managerRoot: fixture.managerRoot,
+      run,
+      readBootId: () => BOOT_A,
+      tokenFactory: () => operationId,
+      stdout: output
+    };
+    const command = ["retire", "repeat-retire", "--owner", "/root/repeat-retire", "--revision", "1"];
+    const evidenceTree = () =>
+      Object.fromEntries(
+        Object.entries(managerTreeBytes(fixture)).filter(
+          ([path]) => path.startsWith("archives/") || path.startsWith("retirements/")
+        )
+      );
+
+    const enrolled = runCheckoutLifecycleCli(command, options);
+    assert.equal(enrolled.status, "retirement-enrolled");
+    const enrolledTree = evidenceTree();
+    assert.deepEqual(runCheckoutLifecycleCli(command, options), {
+      status: "already-enrolled",
+      kind: "managed",
+      slug: "repeat-retire",
+      generation: enrolled.enrollment.generation,
+      layout: "original",
+      journal: "eligible",
+      moved: false,
+      removed: false
+    });
+    assert.deepEqual(evidenceTree(), enrolledTree);
+
+    writeFileSync(join(checkout.checkoutPath, "README.md"), "changed after retirement enrollment\n");
+    git(checkout.checkoutPath, "add", "README.md");
+    git(checkout.checkoutPath, "commit", "-q", "-m", "Change enrolled source");
+    lifecycleError(() => runCheckoutLifecycleCli(command, options), "retirement-enrolled-source-changed");
+    assert.deepEqual(evidenceTree(), enrolledTree);
+  });
+});
+
+test("the public retire command supersedes a stale completed archive before enrollment", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun(), readBootId: () => BOOT_A });
+    const archived = archiveForQuarantine(fixture, "retire-stale-archive", { manager: managed });
+    writeFileSync(join(archived.checkout.checkoutPath, "README.md"), "new clean head before composite retire\n");
+    git(archived.checkout.checkoutPath, "add", "README.md");
+    git(archived.checkout.checkoutPath, "commit", "-q", "-m", "Advance before composite retire");
+
+    const result = runCheckoutLifecycleCli(
+      ["retire", "retire-stale-archive", "--owner", "/root/retire-stale-archive", "--revision", "1"],
+      {
+        repositoryPath: fixture.repository,
+        managerRoot: fixture.managerRoot,
+        readBootId: () => BOOT_A,
+        tokenFactory: () => "0".repeat(32),
+        stdout: { write() {} }
+      }
+    );
+    assert.equal(result.status, "retirement-enrolled");
+    assert.equal(
+      existsSync(join(managed.paths.retirements, `retire-stale-archive.${archived.cleanup.generation}.2.json`)),
+      true
+    );
+    assert.equal(
+      existsSync(
+        join(managed.paths.archives, `retire-stale-archive.${archived.cleanup.generation}.2`, "complete.json")
+      ),
+      true
+    );
+    assert.equal(managed.sweep().results[0].state, "waiting-for-next-boot");
   });
 });
 

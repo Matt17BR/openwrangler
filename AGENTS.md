@@ -146,66 +146,47 @@ Each lifecycle command also takes a short-lived cross-process mutex. Its PID det
 never determines task ownership or abandonment. Registry changes and mutex claims/releases are append-only numbered
 files created with exclusive paths. Never rewrite either journal while the manager root remains in use.
 
-After the task reports its final result, run
-`npm run checkout:finish -- <slug> --owner <task> --revision <n>`. Finish records a durable `cleanup-pending` state; it
-does not delete or move the checkout. Inspect `npm run checkout:audit -- <slug>` before a reviewed manual cleanup. The
-audit reports receipt, Git-admin backlink, index-flag, tracked-worktree, staged, and untracked/ignored checks, but is not
-itself authorization to delete anything.
+Run `npm run checkout:sweep` at the start of every task. Sweep only processes explicitly enrolled checkouts. One held
+candidate is reported without preventing later exact candidates from retiring. It never uses PID death, elapsed time,
+or timestamps as abandonment evidence.
 
-`checkout:audit` does not acquire the lifecycle mutex, append registry state, or adopt an interrupted create.
-`checkout:status` is the explicit recovery command that may adopt a fully registered interrupted create.
+At successful task completion, run the single normal command
+`npm run checkout:retire -- <slug> --owner <task> --revision <n>`. It records explicit finish, writes fresh retirement
+evidence (or an append-only superseding attempt), creates and verifies the recovery archive, and enrolls the exact
+checkout with the current Linux boot ID. It does not move or remove anything. An OOM, SIGKILL, shutdown, dirty tree,
+stale receipt, incomplete archive, or failed check leaves the checkout resumable and reports the exact blocking code.
+Re-running the command validates and reuses an exact enrollment; if the source changed after enrollment, it stops
+without writing another plan or archive. Do not replace this command with a remembered sequence of lower-level
+commands.
 
-After review, `npm run checkout:plan-retirement -- <slug> --owner <task> --revision <n> --generation <n>` may append a
-separate private evidence receipt while leaving the checkout `cleanup-pending`. It requires two matching clean reads
-and binds the source entry, checkout and Git-admin identities, worktree registry, status, index stages, and index
-flags. Evidence commands bind the linked-worktree common-directory file, use the exact recorded Git admin/worktree
-paths, reject tracked gitlinks and configured external content filters, strip inherited Git routing/config variables,
-disable replacement objects, hooks, and filesystem monitors, and forbid lazy object fetching. The receipt records that
-recovery, process-use, and mount checks were not performed and must be proven before any future movement.
-Planning does not move or delete anything and never authorizes either action.
+Older `cleanup-pending` worktrees can be prepared with `checkout:plan-retirement` and
+`checkout:archive-retirement`, then explicitly enrolled with
+`npm run checkout:enroll-retirement -- <slug> --kind managed`. A stale plan is never overwritten: the next reviewed
+plan uses a numbered evidence attempt, and only the latest exact plan can anchor enrollment. If clean checkout evidence
+changes after an archive completes, the old plan and archive remain immutable and a new plan needs its own numbered
+archive. Adopted legacy clones use
+`npm run checkout:enroll-retirement -- <slug> --kind legacy` only after their exact `legacy-archive` completion.
 
-Once that evidence exists, `npm run checkout:archive-retirement -- <slug> --owner <task> --revision <n>
---generation <n>` may create a private recovery bundle. It includes common refs, local-only refs, and each linked
-worktree HEAD. Every main or linked-worktree `ORIG_HEAD` is added as an explicit bundle root. The command stops if any
-worktree has a private `refs/worktree/*`, `refs/bisect/*`, or `refs/rewritten/*` ref, because `git bundle --all` would
-miss it. It also stops on target-worktree operation metadata or a target `HEAD` reflog commit that is not reachable from
-the advertised recovery roots. Shallow, partial, promisor, filtered, grafted, or alternate-backed repositories also
-stop for review.
+On a genuinely different boot, sweep reacquires the lifecycle mutex and repeats the exact clean status, index,
+registration, path-identity, and recovery-archive checks immediately before action. Managed worktrees move with
+ordinary unforced `git worktree move` into the private logical quarantine and are removed with ordinary unforced
+`git worktree remove`; their branches and recovery archives stay intact. Legacy clones move by one same-filesystem
+rename, then a bounded same-filesystem traversal removes the verified quarantine without following symlinks. Every
+intent precedes its action. Linux mount information is checked immediately before every legacy move or purge; a mount,
+including a same-filesystem bind mount, holds that candidate. Once a purge intent is durable, an interrupted legacy
+traversal resumes only from the exact quarantined root and immutable archive anchors. A later sweep reconciles a crash
+before or after move/removal and blocks on any ambiguous layout. Before legacy enrollment, move, and purge, the manager
+also checks whether another repository below the managed `tmp/codex-checkpoints` root names the candidate as an object
+alternate. This prevents retiring providers for known sibling checkouts; it cannot prove that unrelated clones elsewhere
+on the machine have no dependency. The local maintenance threat model assumes no hostile same-UID write, pathname
+replacement, or mount race after the boot barrier and durable purge intent. It does not claim protection against a
+malicious process already running as the user.
 
-The command streams the bundle with one pack thread and checks a conservative free-space budget first. It then
-unbundles into a new private bare repository kept beside the bundle, resolves every advertised head, packs its
-deterministic recovery refs, and runs strict `git fsck`. Only then does it write the receipt and completion marker.
-Failed runs remain in numbered directories; at most eight are allowed per checkout generation. Archive commands
-deliberately have no deadline yet: killing only Git's direct process can orphan pack or index children. A future
-deadline requires the POSIX process-group attestor and the new proof-only Windows armed Job Object client to be wired
-into this command and reviewed together. They are not lifecycle commands. An external interruption leaves the numbered
-attempt in place. Neither a completed archive nor an interrupted attempt authorizes movement or cleanup. Process-use
-and mount checks remain separate review steps.
-
-The quarantine journal is currently read-only. `npm run checkout:quarantine-status -- <slug>` validates any retained
-journal against the exact completed archive, then reports its latest intent or classified result. Records are
-append-only, numbered, hash-chained, and bound to one checkout generation, one derived original path, and one derived
-quarantine path. The classifier distinguishes direction-relative `pre` and `post` layouts from `partial` and
-`indeterminate` layouts, but it never reads the filesystem or authorizes an action. Until a later platform-owned mover
-and fresh reconciliation pass exist, any quarantine journal retained for the slug blocks create, handoff, finish,
-retirement planning, archive creation, and abandon, even when it names an older entry generation. Status checks that
-guard before adopting an interrupted create, so a journal cannot be hidden by reconciliation. There is no quarantine
-or restore command in this version.
-Every status keeps `authorizesCleanup: false`; process-use and mount checks remain deferred.
-
-Do not reuse this reader as a mover preflight. Its missing-root result and recorded pre/post classifications are status
-only. A future writer must add durable root initialization, a fresh platform-owned filesystem/Git observation, and
-process-use and mount proofs before any move. The current final reread detects changes during its bounded scan; it does
-not claim to exclude same-UID interference after the scan returns, which is safe only because every journal state
-blocks mutation. Historical-generation directories are checked for safe names and private directory identity, but
-only the current generation's records receive the full anchor and chain audit.
-
-Automatic purge is not implemented. JavaScript's path-based recursive removal cannot safely survive a child-directory
-rebind, and Git/network child ownership needs a platform helper before cleanup can be automated. Keep pending entries
-until that reviewed helper exists or a maintainer completes an explicit audit and manual cleanup. `checkout:abandon`
-records cleanup pending for an adopted checkout and `abandoned-review-required` for a pre-adoption entry; it never
-discards work, even when `--expect-head absent` was observed. Never override retention with `--force`, `rm -rf`, manual
-registry edits, branch deletion, or `git worktree prune`.
+Retirement ends in an append-only tombstone. Managed slugs are permanently reserved after retirement; choose a new
+slug instead of rebinding old recovery history. Never use `--force`, `rm -rf`, manual registry edits, branch deletion,
+or `git worktree prune`. `checkout:finish` remains a low-level retention-only command, `checkout:audit` remains
+read-only, and `checkout:abandon` never infers that interrupted work is disposable. The older
+`checkout:quarantine-status` journal is still read-only and is not authority for the new retirement sweep.
 
 ## Required checks
 

@@ -80,7 +80,9 @@ Agent checkout lifecycle has a separate, small contract test:
   removes a worktree, deletes a ref, or authorizes cleanup.
 - `checkout:archive-retirement` streams `git bundle --all` through an exclusive file descriptor into a numbered private
   attempt directory. Pack creation uses one thread, small delta windows and caches, plus a conservative free-space
-  preflight. No more than eight failed attempts are retained for one checkout generation.
+  preflight. No more than eight attempts are retained for one checkout generation. A completion stays bound to the
+  exact retirement-plan file receipt that produced it; a later plan needs a later archive and does not rewrite either
+  earlier record.
   The command stops on shallow or partial repositories, promisor packs, content filters, grafts, object alternates, or
   private per-worktree refs that `--all` would miss. It binds the branch to the head captured by retirement planning,
   so ordinary commits made after checkout creation remain valid. Main and linked-worktree `ORIG_HEAD` values become
@@ -115,13 +117,33 @@ Agent checkout lifecycle has a separate, small contract test:
   Windows Job Objects. A direct-child timeout could leave `pack-objects` or `index-pack` running. External interruption
   instead leaves the current numbered attempt untouched for review.
 
-- Automatic recursive purge is deliberately absent. Tests reproduce the valuable-file timing race, hidden tracked
-  edits, child/root rebinding, partial Git-admin deletion, late unrelated-worktree branch attachment, entry-generation
-  collision/rebinding, and operation-lock rebinding and verify that every byte remains. Registry state uses exclusive,
-  append-only numbered files. Mutex claims and matching release records use the same no-overwrite design; a planted
-  claim or release path fails closed and remains byte-for-byte intact. A future automatic cleaner needs
-  descriptor-anchored traversal and attested descendant-process completion. Until then, never substitute `--force`,
-  global pruning, branch deletion, manual registry edits, or path-based recursive removal.
+- `checkout:retire` is the normal end-of-task command. It finishes the managed checkout, records the latest exact
+  retirement plan, writes a new numbered recovery archive when that plan does not already have one, and enrolls the
+  checkout with the current Linux boot ID. Plans and archives are append-only. Tests cover stale evidence, A-to-B-to-A
+  evidence history, a clean commit after a completed archive, and a boot change immediately before enrollment. The
+  command never moves a checkout during the boot that enrolled it. An exact rerun validates and reuses the enrollment;
+  a source change after enrollment fails before creating another plan or archive.
+
+- `checkout:sweep` acts only on explicitly enrolled candidates and only after the boot ID changes. Managed checkouts use
+  ordinary, unforced `git worktree move` and `git worktree remove`; the branch is re-proved even when a previous process
+  stopped after removal. Legacy clones use one same-filesystem rename and a bounded no-follow traversal. Linux
+  `mountinfo` is checked immediately before every legacy move and traversal, so bind mounts are held even when they use
+  the same device. After a durable purge intent, a partial legacy traversal resumes from the exact root identity and
+  immutable archive receipts instead of asking Git to read an already partial repository. Tests interrupt after the
+  managed move, after managed removal, and during the legacy tree walk. Detached legacy HEADs record that no branch was
+  preserved.
+
+  Provider checks inspect repositories below the managed legacy root and hold a candidate while a sibling object
+  alternate points into it. A real linked-worktree sibling remains valid, while a `git clone --shared` dependent blocks
+  its provider. This scan does not make claims about unrelated clones elsewhere on the machine. The local maintenance
+  model also excludes hostile same-UID writes, replacements, and mount races after the boot barrier and durable purge
+  intent.
+
+  Candidate-local failures report the observed journal and layout, including whether a move or purge already committed,
+  then allow later candidates to proceed. Shared registry or archive corruption still stops the complete sweep. Tests
+  cover held candidates before movement, after quarantine, and after purge, plus a global registry-change fail-stop.
+  Terminal tombstones permanently reserve managed slugs. No path uses `--force`, global pruning, branch deletion, or
+  manual journal edits.
 
 - `npm run typecheck` checks the extension and webview projects independently.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.

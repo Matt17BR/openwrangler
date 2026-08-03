@@ -15,11 +15,15 @@ import {
   mkdtempSync,
   openSync,
   opendirSync,
+  readFileSync,
   readlinkSync,
   readSync,
   realpathSync,
+  renameSync,
+  rmdirSync,
   rmSync,
   statfsSync,
+  unlinkSync,
   writeFileSync,
   writeSync
 } from "node:fs";
@@ -45,6 +49,8 @@ const LEGACY_ADOPTION_COMPLETION_PROTOCOL = "openwrangler-legacy-checkout-adopti
 const LEGACY_ARCHIVE_REQUEST_PROTOCOL = "openwrangler-legacy-recovery-archive-request-v1";
 const LEGACY_ARCHIVE_RECEIPT_PROTOCOL = "openwrangler-legacy-recovery-archive-v1";
 const LEGACY_ARCHIVE_COMPLETION_PROTOCOL = "openwrangler-legacy-recovery-archive-completion-v1";
+const RETIREMENT_SWEEP_PROTOCOL = "openwrangler-checkout-retirement-sweep-v1";
+const RETIREMENT_TOMBSTONE_PROTOCOL = "openwrangler-checkout-retirement-tombstone-v1";
 const MAXIMUM_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_BUNDLE_HEADER_BYTES = 4 * 1024 * 1024;
 const ARCHIVE_SPACE_MULTIPLIER = 8n;
@@ -67,6 +73,10 @@ const MAXIMUM_QUARANTINE_RECORDS = 128;
 const MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS = 8;
 const MAXIMUM_LEGACY_ADOPTION_ATTEMPTS = 8;
 const MAXIMUM_LEGACY_ARCHIVE_ATTEMPTS = 8;
+const MAXIMUM_RETIREMENT_PLAN_ATTEMPTS = 8;
+const MAXIMUM_RETIREMENT_SWEEP_RECORDS = 5;
+const MAXIMUM_RETIREMENT_TREE_ENTRIES = 2_000_000;
+const MAXIMUM_RETIREMENT_TREE_DEPTH = 128;
 const MAXIMUM_LEGACY_OBJECTS = 1_000_000;
 const MAXIMUM_LEGACY_OBJECT_MANIFEST_BYTES = 128 * 1024 * 1024;
 const MAXIMUM_LEGACY_RECOVERY_METADATA_BYTES = 16 * 1024 * 1024;
@@ -109,6 +119,11 @@ const LEGACY_ADOPTION_ATTEMPT_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)
 const LEGACY_ADOPTION_ENTRY_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.json$/u;
 const LEGACY_ARCHIVE_ATTEMPT_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([0-9]{8})\.([1-8])$/u;
 const LEGACY_ARCHIVE_ENTRY_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.json$/u;
+const RETIREMENT_PLAN_FILE_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})(?:\.([2-8]))?\.json$/u;
+const RETIREMENT_SWEEP_DIRECTORY_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})$/u;
+const RETIREMENT_SWEEP_RECORD_PATTERN =
+  /^([0-9]{8})\.(eligible|quarantine-intent|quarantine-result|purge-intent|retired)\.([0-9a-f]{32})\.json$/u;
+const BOOT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const MANAGER_REMOTE_FETCH = "+refs/heads/*:refs/remotes/origin/*";
 
 export class CheckoutLifecycleError extends Error {
@@ -2404,7 +2419,13 @@ function normalizePaths(root) {
     legacyAdoptionEntries: join(managerRoot, "legacy-adoptions", "entries"),
     legacyArchives: join(managerRoot, "legacy-archives"),
     legacyArchiveAttempts: join(managerRoot, "legacy-archives", "attempts"),
-    legacyArchiveEntries: join(managerRoot, "legacy-archives", "entries")
+    legacyArchiveEntries: join(managerRoot, "legacy-archives", "entries"),
+    retirementSweeps: join(managerRoot, "retirement-sweeps"),
+    managedRetirementSweeps: join(managerRoot, "retirement-sweeps", "managed"),
+    legacyRetirementSweeps: join(managerRoot, "retirement-sweeps", "legacy"),
+    retirementQuarantine: join(managerRoot, "retirement-quarantine"),
+    managedRetirementQuarantine: join(managerRoot, "retirement-quarantine", "managed"),
+    legacyRetirementQuarantine: join(managerRoot, "retirement-quarantine", "legacy")
   });
 }
 
@@ -2423,6 +2444,8 @@ export function createCheckoutManager(options = {}) {
   const tokenFactory = options.tokenFactory ?? randomToken;
   const isProcessAlive = options.isProcessAlive ?? processIsAlive;
   const statFilesystem = options.statfs ?? statfsSync;
+  const readBootId = options.readBootId ?? (() => readFileSync("/proc/sys/kernel/random/boot_id", "utf8"));
+  const readMountInfo = options.readMountInfo ?? (() => readFileSync("/proc/self/mountinfo", "utf8"));
   const hooks = options.hooks;
   const entryIdentities = new WeakMap();
   const managedIdentities = new Map();
@@ -2537,6 +2560,85 @@ export function createCheckoutManager(options = {}) {
     }
     assertPrivateDirectory(paths.archives, paths.archives);
     revalidatePathIdentity(paths.archives, identity, paths.archives, "directory");
+  }
+
+  function initializeRetirementSweepJournal() {
+    for (const path of [
+      paths.retirementSweeps,
+      paths.managedRetirementSweeps,
+      paths.legacyRetirementSweeps,
+      paths.retirementQuarantine,
+      paths.managedRetirementQuarantine,
+      paths.legacyRetirementQuarantine
+    ]) {
+      const identity = managedIdentities.get(path);
+      if (identity === undefined) managedIdentities.set(path, ensurePrivateDirectory(path));
+      else {
+        assertPrivateDirectory(path, path);
+        revalidatePathIdentity(path, identity, path, "directory");
+      }
+    }
+  }
+
+  function currentBootId() {
+    if (process.platform !== "linux" && options.readBootId === undefined) {
+      fail("retirement-unsupported", "Automatic checkout retirement currently requires Linux boot IDs.");
+    }
+    let value;
+    try {
+      value = String(readBootId()).trim().toLowerCase();
+    } catch (error) {
+      fail("boot-id-unavailable", `The current Linux boot ID could not be read: ${error.message}`);
+    }
+    if (!BOOT_ID_PATTERN.test(value)) {
+      fail("boot-id-unavailable", "The current Linux boot ID is malformed.");
+    }
+    return value;
+  }
+
+  function decodeMountInfoPath(value) {
+    if (typeof value !== "string" || value === "" || /\\(?!(?:040|011|012|134))/u.test(value)) {
+      fail("mount-info-unavailable", "Linux mount information contains a malformed path.");
+    }
+    return value.replace(/\\(040|011|012|134)/gu, (_match, octal) => String.fromCharCode(Number.parseInt(octal, 8)));
+  }
+
+  function linuxMountPoints() {
+    if (process.platform !== "linux" && options.readMountInfo === undefined) {
+      fail("retirement-unsupported", "Automatic legacy checkout retirement requires Linux mount information.");
+    }
+    let text;
+    try {
+      text = String(readMountInfo());
+    } catch (error) {
+      fail("mount-info-unavailable", `Linux mount information could not be read: ${error.message}`);
+    }
+    if (Buffer.byteLength(text, "utf8") > MAXIMUM_COMMAND_OUTPUT_BYTES || (text !== "" && !text.endsWith("\n"))) {
+      fail("mount-info-unavailable", "Linux mount information is too large or truncated.");
+    }
+    const points = [];
+    for (const line of text.split("\n")) {
+      if (line === "") continue;
+      const separator = line.indexOf(" - ");
+      const fields = separator === -1 ? [] : line.slice(0, separator).split(" ");
+      if (fields.length < 6 || !/^[1-9][0-9]*$/u.test(fields[0]) || !/^[1-9][0-9]*$/u.test(fields[1])) {
+        fail("mount-info-unavailable", "Linux mount information is malformed.");
+      }
+      const decoded = decodeMountInfoPath(fields[4]);
+      if (!isAbsolute(decoded)) fail("mount-info-unavailable", "Linux mount information has a relative mount point.");
+      points.push(resolve(decoded));
+    }
+    return Object.freeze(points);
+  }
+
+  function assertNoMountAtOrBelow(path) {
+    const target = resolve(path);
+    if (linuxMountPoints().some((point) => point === target || isContained(target, point))) {
+      fail(
+        "retirement-mount-present",
+        "The legacy checkout contains a mount point and cannot be retired automatically."
+      );
+    }
   }
 
   function initializeLegacyAdoptionJournal() {
@@ -3477,6 +3579,12 @@ export function createCheckoutManager(options = {}) {
         }
         const current = entry?.value;
         const archive = legacyArchiveStatus(entrySlug);
+        const retirement = retirementOverlay(
+          "legacy",
+          entrySlug,
+          current?.generation ?? null,
+          current?.evidence.source.checkout ?? candidateOriginalPath("legacy", entrySlug)
+        );
         return Object.freeze({
           slug: entrySlug,
           state: current === undefined ? "interrupted-review-required" : current.evidence.state,
@@ -3501,6 +3609,7 @@ export function createCheckoutManager(options = {}) {
             )
           ),
           ...(archive === undefined ? {} : { archive }),
+          ...(retirement.state === "not-enrolled" ? {} : { retirement }),
           authorizesMove: false,
           authorizesCleanup: false
         });
@@ -5108,10 +5217,43 @@ export function createCheckoutManager(options = {}) {
     return join(paths.locks, `${generation}.${kind}.json`);
   }
 
-  function retirementPath(slug, generation) {
+  function retirementPath(slug, generation, attempt = 1) {
     assertSlug(slug);
     assertGeneration(generation);
-    return join(paths.retirements, `${slug}.${generation}.json`);
+    if (!Number.isSafeInteger(attempt) || attempt < 1 || attempt > MAXIMUM_RETIREMENT_PLAN_ATTEMPTS) {
+      fail("invalid-registry", "The retirement-plan attempt is out of range.");
+    }
+    return join(paths.retirements, `${slug}.${generation}${attempt === 1 ? "" : `.${attempt}`}.json`);
+  }
+
+  function listRetirementPlans(entry) {
+    initializeRetirementJournal();
+    const rootIdentity = managedIdentities.get(paths.retirements);
+    if (rootIdentity === undefined) fail("unsafe-manager", "The retirement journal was not initialized.");
+    const matches = [];
+    for (const item of readDirectoryBounded(
+      paths.retirements,
+      MAXIMUM_ENTRIES * MAXIMUM_RETIREMENT_PLAN_ATTEMPTS,
+      "The retirement journal"
+    )) {
+      const match = RETIREMENT_PLAN_FILE_PATTERN.exec(item.name);
+      if (!item.isFile() || item.isSymbolicLink() || match === null) {
+        fail("invalid-registry", "The retirement journal contains an unknown entry.");
+      }
+      if (match[1] !== entry.slug || Number(match[2]) !== entry.generation) continue;
+      const attempt = match[3] === undefined ? 1 : Number(match[3]);
+      const path = join(paths.retirements, item.name);
+      const loaded = readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, `Retirement evidence for ${entry.slug}`);
+      validateRetirementEvidence(loaded.value, entry);
+      revalidatePathIdentity(path, loaded.identity, `Retirement evidence for ${entry.slug}`);
+      matches.push(Object.freeze({ attempt, path, ...loaded }));
+    }
+    matches.sort((left, right) => left.attempt - right.attempt);
+    if (matches.some((plan, index) => plan.attempt !== index + 1)) {
+      fail("invalid-registry", "The retirement journal contains an attempt gap.");
+    }
+    revalidatePathIdentity(paths.retirements, rootIdentity, "The retirement journal", "directory");
+    return Object.freeze(matches);
   }
 
   function archiveAttemptPath(slug, generation, attempt) {
@@ -5430,9 +5572,11 @@ export function createCheckoutManager(options = {}) {
         ? [...base, "checkout"]
         : value?.state === "cleanup-pending"
           ? [...base, "checkout", "cleanupRequest"]
-          : value?.state === "abandoned-review-required"
-            ? [...base, "cleanupRequest"]
-            : base;
+          : value?.state === "retired"
+            ? [...base, "checkout", "cleanupRequest", "tombstone"]
+            : value?.state === "abandoned-review-required"
+              ? [...base, "cleanupRequest"]
+              : base;
     exactKeys(value, keys, `Managed checkout ${slug}`);
     if (
       value.protocol !== ENTRY_PROTOCOL ||
@@ -5440,7 +5584,7 @@ export function createCheckoutManager(options = {}) {
       !Number.isSafeInteger(value.generation) ||
       value.generation < 1 ||
       value.generation > MAXIMUM_ENTRY_GENERATIONS ||
-      !["creating", "active", "cleanup-pending", "abandoned-review-required"].includes(value.state) ||
+      !["creating", "active", "cleanup-pending", "retired", "abandoned-review-required"].includes(value.state) ||
       !Number.isSafeInteger(value.revision) ||
       value.revision < 1 ||
       !SHA_PATTERN.test(value.baseCommit)
@@ -5459,8 +5603,8 @@ export function createCheckoutManager(options = {}) {
     ) {
       fail("repository-changed", "The managed checkout belongs to another repository.");
     }
-    if (["active", "cleanup-pending"].includes(value.state)) validateCheckoutReceipt(value.checkout, value);
-    if (["cleanup-pending", "abandoned-review-required"].includes(value.state)) {
+    if (["active", "cleanup-pending", "retired"].includes(value.state)) validateCheckoutReceipt(value.checkout, value);
+    if (["cleanup-pending", "retired", "abandoned-review-required"].includes(value.state)) {
       exactKeys(value.cleanupRequest, ["protocol", "requestedBy", "requestedRevision", "reason"], "Cleanup request");
       if (
         value.cleanupRequest.protocol !== CLEANUP_REQUEST_PROTOCOL ||
@@ -5472,6 +5616,20 @@ export function createCheckoutManager(options = {}) {
         fail("invalid-registry", "The cleanup request is malformed.");
       }
       assertOwner(value.cleanupRequest.requestedBy, "cleanup requester");
+    }
+    if (value.state === "retired") {
+      exactKeys(value.tombstone, ["protocol", "record"], "Retirement tombstone");
+      exactKeys(value.tombstone.record, ["path", "identity", "byteLength", "sha256"], "Retirement tombstone record");
+      validateIdentity(value.tombstone.record.identity, "Retirement tombstone record identity");
+      if (
+        value.tombstone.protocol !== RETIREMENT_TOMBSTONE_PROTOCOL ||
+        typeof value.tombstone.record.path !== "string" ||
+        !Number.isSafeInteger(value.tombstone.record.byteLength) ||
+        value.tombstone.record.byteLength < 1 ||
+        !/^[0-9a-f]{64}$/u.test(value.tombstone.record.sha256)
+      ) {
+        fail("invalid-registry", "The retirement tombstone is malformed.");
+      }
     }
     return value;
   }
@@ -5506,18 +5664,22 @@ export function createCheckoutManager(options = {}) {
       if (!((next.state === "active" && handoff) || (next.state === "cleanup-pending" && sameOwnerRevision))) {
         fail("invalid-registry", `Managed checkout ${previous.slug} has an invalid active transition.`);
       }
+    } else if (previous.state === "retired") {
+      fail("invalid-registry", `Managed checkout ${previous.slug} changes after its terminal tombstone.`);
+    } else if (previous.state === "cleanup-pending" && next.state === "retired" && sameOwnerRevision) {
+      // Terminal retirement is the only cleanup transition that does not hand off ownership.
     } else if (next.state !== previous.state || !handoff) {
       fail("invalid-registry", `Managed checkout ${previous.slug} has an invalid review transition.`);
     }
     if (handoff && next.ownerTask === previous.ownerTask) {
       fail("invalid-registry", `Managed checkout ${previous.slug} handoff does not change owner.`);
     }
-    if (["active", "cleanup-pending"].includes(previous.state)) {
+    if (["active", "cleanup-pending", "retired"].includes(previous.state)) {
       if (!isDeepStrictEqual(previous.checkout, next.checkout)) {
         fail("invalid-registry", `Managed checkout ${previous.slug} changes its checkout receipt.`);
       }
     }
-    if (["cleanup-pending", "abandoned-review-required"].includes(previous.state)) {
+    if (["cleanup-pending", "retired", "abandoned-review-required"].includes(previous.state)) {
       if (!isDeepStrictEqual(previous.cleanupRequest, next.cleanupRequest)) {
         fail("invalid-registry", `Managed checkout ${previous.slug} changes its cleanup request.`);
       }
@@ -6094,18 +6256,9 @@ export function createCheckoutManager(options = {}) {
   }
 
   function readRetirementPlan(entry) {
-    initializeRetirementJournal();
-    const path = retirementPath(entry.slug, entry.generation);
-    if (!existsSync(path)) fail("retirement-evidence-missing", "Retirement evidence must be recorded first.");
-    const loaded = readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, `Retirement evidence for ${entry.slug}`);
-    validateRetirementEvidence(loaded.value, entry);
-    return Object.freeze({
-      path,
-      identity: loaded.identity,
-      byteLength: loaded.byteLength,
-      sha256: loaded.sha256,
-      value: loaded.value
-    });
+    const plans = listRetirementPlans(entry);
+    if (plans.length === 0) fail("retirement-evidence-missing", "Retirement evidence must be recorded first.");
+    return plans.at(-1);
   }
 
   function revalidateRetirementPlan(plan, entry) {
@@ -6590,17 +6743,35 @@ export function createCheckoutManager(options = {}) {
           fail("invalid-archive", "The archive journal contains an invalid attempt.");
         }
         attempts.push(attempt);
-        if (existsSync(join(paths.archives, item.name, "complete.json"))) {
-          fail("archive-evidence-exists", "A completed recovery archive already exists.");
-        }
       }
     }
     if (new Set(attempts).size !== attempts.length) fail("invalid-archive", "The archive journal is ambiguous.");
     return attempts.sort((left, right) => left - right);
   }
 
-  function createArchiveAttempt(slug, generation) {
+  function retirementPlanFileReceipt(plan) {
+    return Object.freeze({
+      path: plan.path,
+      identity: plan.identity,
+      byteLength: plan.byteLength,
+      sha256: plan.sha256
+    });
+  }
+
+  function archiveReceiptBindsPlan(receipt, plan) {
+    return isDeepStrictEqual(receipt?.source?.retirementPlan, retirementPlanFileReceipt(plan));
+  }
+
+  function createArchiveAttempt(slug, generation, plan) {
     const prior = archiveAttempts(slug, generation);
+    for (const priorAttempt of prior) {
+      const priorPath = archiveAttemptPath(slug, generation, priorAttempt);
+      if (!existsSync(join(priorPath, "complete.json"))) continue;
+      const receipt = readJsonReceipt(join(priorPath, "receipt.json"), MAXIMUM_ENTRY_BYTES, "Archive receipt");
+      if (archiveReceiptBindsPlan(receipt.value, plan)) {
+        fail("archive-evidence-exists", "A completed recovery archive already exists for this retirement plan.");
+      }
+    }
     const attempt = (prior.at(-1) ?? 0) + 1;
     if (attempt > MAXIMUM_ARCHIVE_ATTEMPTS) fail("archive-attempts-exhausted", "Too many archive attempts exist.");
     const path = archiveAttemptPath(slug, generation, attempt);
@@ -7184,22 +7355,42 @@ export function createCheckoutManager(options = {}) {
     return assertPrivateDirectory(path, label);
   }
 
-  function readRetirementPlanForAnchor(entry) {
-    const rootIdentity = optionalPrivateDirectory(paths.retirements, "The retirement journal");
-    if (rootIdentity === null) {
-      fail("retirement-evidence-missing", "Retirement evidence for the quarantine anchor is missing.");
+  function readCompletedArchiveBinding(entry, attempt, plans) {
+    assertArchiveAttemptContents(
+      attempt,
+      ["archive.bundle", "receipt.json", "complete.json"],
+      ["verification-template", "verification.git"]
+    );
+    const receiptPath = join(attempt.path, "receipt.json");
+    const receipt = readJsonReceipt(receiptPath, MAXIMUM_ENTRY_BYTES, "Archive receipt");
+    const matchingPlans = plans.filter((plan) => archiveReceiptBindsPlan(receipt.value, plan));
+    if (matchingPlans.length !== 1) {
+      fail("invalid-archive", "A completed recovery archive is not bound to one exact retained retirement plan.");
     }
-    const path = retirementPath(entry.slug, entry.generation);
-    const loaded = readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, `Retirement evidence for ${entry.slug}`);
-    validateRetirementEvidence(loaded.value, entry);
-    revalidatePathIdentity(path, loaded.identity, `Retirement evidence for ${entry.slug}`);
-    revalidatePathIdentity(paths.retirements, rootIdentity, "The retirement journal", "directory");
-    return Object.freeze({ path, ...loaded });
+    const plan = matchingPlans[0];
+    validateArchiveReceipt(receipt.value, entry, attempt, plan);
+    const receiptFile = Object.freeze({
+      path: receiptPath,
+      identity: receipt.identity,
+      byteLength: receipt.byteLength,
+      sha256: receipt.sha256
+    });
+    const completionPath = join(attempt.path, "complete.json");
+    const completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Archive completion");
+    validateCompletion(
+      completion.value,
+      entry,
+      attempt,
+      receipt.value.archive.bundle,
+      receiptFile,
+      receipt.value.archive.verification
+    );
+    return Object.freeze({ plan, receiptPath, receipt, receiptFile, completionPath, completion });
   }
 
   function readCompletedArchiveAnchor(entry) {
     const rootIdentity = optionalPrivateDirectory(paths.archives, "The archive journal");
-    if (rootIdentity === null) fail("archive-evidence-missing", "A completed recovery archive is required.");
+    if (rootIdentity === null) fail("retirement-archive-missing", "This checkout has no completed recovery archive.");
     const matches = [];
     for (const item of readDirectoryBounded(paths.archives, MAXIMUM_ARCHIVE_DIRECTORIES, "The archive journal")) {
       const match = ARCHIVE_ATTEMPT_PATTERN.exec(item.name);
@@ -7219,33 +7410,30 @@ export function createCheckoutManager(options = {}) {
         );
       }
     }
-    const completedAttempts = matches.filter(({ completed }) => completed);
-    if (completedAttempts.length !== 1) {
-      fail("invalid-archive", "Exactly one completed recovery archive must anchor a quarantine journal.");
+    matches.sort((left, right) => left.attempt - right.attempt);
+    if (matches.some((candidate, index) => candidate.attempt !== index + 1)) {
+      fail("invalid-archive", "The archive journal contains an attempt gap.");
     }
-    const attempt = completedAttempts[0];
-    if (matches.some((candidate) => candidate.attempt > attempt.attempt)) {
-      fail("invalid-archive", "An archive attempt follows the completed recovery archive.");
+    const plans = listRetirementPlans(entry);
+    const currentPlan = plans.at(-1);
+    const completedAttempts = matches
+      .filter(({ completed }) => completed)
+      .map((attempt) => Object.freeze({ attempt, binding: readCompletedArchiveBinding(entry, attempt, plans) }));
+    if (completedAttempts.length === 0 || currentPlan === undefined) {
+      fail("retirement-archive-missing", "This checkout has no completed recovery archive.");
     }
-    assertArchiveAttemptContents(
-      attempt,
-      ["archive.bundle", "receipt.json", "complete.json"],
-      ["verification-template", "verification.git"]
-    );
-    const plan = readRetirementPlanForAnchor(entry);
+    const currentCompleted = completedAttempts.filter(({ binding }) => binding.plan.attempt === currentPlan.attempt);
+    if (currentCompleted.length === 0) {
+      fail("retirement-archive-stale", "The current retirement plan needs its own completed recovery archive.");
+    }
+    const authoritative = currentCompleted.at(-1);
+    const attempt = authoritative.attempt;
+    const plan = authoritative.binding.plan;
     const bundle = {
       path: join(attempt.path, "archive.bundle"),
       ...captureArchiveFile(join(attempt.path, "archive.bundle"), "Recovery bundle")
     };
-    const receiptPath = join(attempt.path, "receipt.json");
-    const receipt = readJsonReceipt(receiptPath, MAXIMUM_ENTRY_BYTES, "Archive receipt");
-    validateArchiveReceipt(receipt.value, entry, attempt, plan);
-    const receiptFile = {
-      path: receiptPath,
-      identity: receipt.identity,
-      byteLength: receipt.byteLength,
-      sha256: receipt.sha256
-    };
+    const { receiptPath, receipt, receiptFile, completionPath, completion } = authoritative.binding;
     const verification = {
       template: receipt.value.archive.verification.template,
       repository: captureVerificationRepository(
@@ -7268,8 +7456,6 @@ export function createCheckoutManager(options = {}) {
     ) {
       fail("archive-changed", "The completed recovery archive no longer matches its receipt.");
     }
-    const completionPath = join(attempt.path, "complete.json");
-    const completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Archive completion");
     validateCompletion(completion.value, entry, attempt, bundle, receiptFile, verification);
     const anchor = Object.freeze({
       attempt: attempt.attempt,
@@ -7602,6 +7788,1242 @@ export function createCheckoutManager(options = {}) {
         requestedRevision: entry.revision,
         reason: "abandon"
       }
+    });
+  }
+
+  function sweepRoot(kind) {
+    if (kind === "managed") return paths.managedRetirementSweeps;
+    if (kind === "legacy") return paths.legacyRetirementSweeps;
+    fail("invalid-retirement-kind", "Retirement kind must be managed or legacy.");
+  }
+
+  function sweepQuarantineRoot(kind) {
+    if (kind === "managed") return paths.managedRetirementQuarantine;
+    if (kind === "legacy") return paths.legacyRetirementQuarantine;
+    fail("invalid-retirement-kind", "Retirement kind must be managed or legacy.");
+  }
+
+  function sweepJournalPath(kind, slug, generation) {
+    assertSlug(slug);
+    assertGeneration(generation);
+    return join(sweepRoot(kind), `${slug}.${generation}`);
+  }
+
+  function sweepQuarantinePath(kind, slug, generation, operationId) {
+    assertSlug(slug);
+    assertGeneration(generation);
+    if (!/^[0-9a-f]{32}$/u.test(operationId)) fail("invalid-retirement-journal", "Operation ID is malformed.");
+    return join(sweepQuarantineRoot(kind), `${slug}.${generation}.${operationId}`);
+  }
+
+  function sweepRecordReceipt(record) {
+    return Object.freeze({
+      path: record.path,
+      identity: record.loaded.identity,
+      byteLength: record.loaded.byteLength,
+      sha256: record.loaded.sha256
+    });
+  }
+
+  function validateSweepPrevious(value, previous) {
+    exactKeys(value, ["path", "identity", "byteLength", "sha256"], "Previous retirement record");
+    validateIdentity(value.identity, "Previous retirement record identity");
+    const receipt = sweepRecordReceipt(previous);
+    if (!isDeepStrictEqual(value, receipt)) {
+      fail("invalid-retirement-journal", "The retirement record chain is broken.");
+    }
+  }
+
+  function validateSweepSource(kind, source) {
+    if (kind === "managed") {
+      exactKeys(source, ["entry", "plan", "archiveCompletion"], "Managed retirement source");
+    } else {
+      exactKeys(source, ["adoption", "archiveCompletion", "archiveReceipt"], "Legacy retirement source");
+    }
+    for (const [label, record] of Object.entries(source)) {
+      exactKeys(record, ["path", "identity", "byteLength", "sha256"], `${label} retirement receipt`);
+      validateIdentity(record.identity, `${label} retirement receipt identity`);
+      if (
+        typeof record.path !== "string" ||
+        !Number.isSafeInteger(record.byteLength) ||
+        record.byteLength < 1 ||
+        !/^[0-9a-f]{64}$/u.test(record.sha256)
+      ) {
+        fail("invalid-retirement-journal", `${label} retirement receipt is malformed.`);
+      }
+    }
+  }
+
+  function validateSweepRecord(record, previous, expected) {
+    const value = record.loaded.value;
+    const common = ["protocol", "kind", "candidateKind", "slug", "generation", "sequence", "operationId", "previous"];
+    const extra =
+      record.kind === "eligible"
+        ? ["eligibleBootId", "originalPath", "originalIdentity", "source"]
+        : record.kind === "quarantine-intent"
+          ? ["bootId", "originalPath", "quarantinePath"]
+          : record.kind === "quarantine-result"
+            ? ["bootId", "quarantinePath", "location"]
+            : record.kind === "purge-intent"
+              ? ["bootId", "quarantinePath"]
+              : ["bootId", "quarantinePath", "branchPreserved"];
+    exactKeys(value, [...common, ...extra], `Retirement ${record.kind} record`);
+    if (
+      value.protocol !== RETIREMENT_SWEEP_PROTOCOL ||
+      value.kind !== record.kind ||
+      value.candidateKind !== expected.kind ||
+      value.slug !== expected.slug ||
+      value.generation !== expected.generation ||
+      value.sequence !== record.sequence ||
+      value.operationId !== record.operationId
+    ) {
+      fail("invalid-retirement-journal", `Retirement ${record.kind} record is malformed.`);
+    }
+    if (previous === undefined) {
+      if (record.kind !== "eligible" || value.previous !== null) {
+        fail("invalid-retirement-journal", "A retirement journal must begin with eligibility.");
+      }
+    } else validateSweepPrevious(value.previous, previous);
+    if (record.kind === "eligible") {
+      if (!BOOT_ID_PATTERN.test(value.eligibleBootId)) {
+        fail("invalid-retirement-journal", "The eligibility boot ID is malformed.");
+      }
+      validateIdentity(value.originalIdentity, "Retirement source identity");
+      if (value.originalPath !== expected.originalPath) {
+        fail("invalid-retirement-journal", "The retirement source path changed.");
+      }
+      validateSweepSource(expected.kind, value.source);
+    } else {
+      if (!BOOT_ID_PATTERN.test(value.bootId) || value.quarantinePath !== expected.quarantinePath) {
+        fail("invalid-retirement-journal", `Retirement ${record.kind} record has an invalid boot or path.`);
+      }
+      if (record.kind === "quarantine-intent" && value.originalPath !== expected.originalPath) {
+        fail("invalid-retirement-journal", "The quarantine intent changes the original path.");
+      }
+      if (record.kind === "quarantine-result" && value.location !== "quarantine") {
+        fail("invalid-retirement-journal", "The quarantine result is not coherent.");
+      }
+      if (record.kind === "retired" && typeof value.branchPreserved !== "boolean") {
+        fail("invalid-retirement-journal", "The retirement tombstone has an invalid branch result.");
+      }
+    }
+  }
+
+  function readSweepRecords(kind, slug, generation, originalPath) {
+    const path = sweepJournalPath(kind, slug, generation);
+    if (!existsSync(path)) return Object.freeze([]);
+    const identity = assertPrivateDirectory(path, "Retirement sweep journal");
+    const names = readDirectoryBounded(path, MAXIMUM_RETIREMENT_SWEEP_RECORDS, "Retirement sweep journal")
+      .map((item) => {
+        const match = RETIREMENT_SWEEP_RECORD_PATTERN.exec(item.name);
+        if (!item.isFile() || item.isSymbolicLink() || match === null) {
+          fail("invalid-retirement-journal", "A retirement journal contains an unknown entry.");
+        }
+        return Object.freeze({ name: item.name, sequence: Number(match[1]), kind: match[2], operationId: match[3] });
+      })
+      .sort((left, right) => left.sequence - right.sequence);
+    const records = [];
+    const operationId = names[0]?.operationId;
+    const quarantinePath = operationId === undefined ? null : sweepQuarantinePath(kind, slug, generation, operationId);
+    for (const [index, named] of names.entries()) {
+      if (
+        named.sequence !== index + 1 ||
+        named.operationId !== operationId ||
+        named.name !== `${String(named.sequence).padStart(8, "0")}.${named.kind}.${named.operationId}.json`
+      ) {
+        fail("invalid-retirement-journal", "The retirement journal has a sequence gap or operation mismatch.");
+      }
+      const recordPath = join(path, named.name);
+      const loaded = readJsonReceipt(recordPath, MAXIMUM_ENTRY_BYTES, `Retirement record ${named.sequence}`);
+      const record = Object.freeze({ ...named, path: recordPath, loaded });
+      validateSweepRecord(record, records.at(-1), { kind, slug, generation, originalPath, quarantinePath });
+      records.push(record);
+    }
+    const expectedKinds = ["eligible", "quarantine-intent", "quarantine-result", "purge-intent", "retired"];
+    if (records.some((record, index) => record.kind !== expectedKinds[index])) {
+      fail("invalid-retirement-journal", "The retirement journal has an invalid state transition.");
+    }
+    revalidatePathIdentity(path, identity, "Retirement sweep journal", "directory");
+    return Object.freeze(records);
+  }
+
+  function appendSweepRecord(kind, slug, generation, originalPath, value) {
+    initializeRetirementSweepJournal();
+    const journal = sweepJournalPath(kind, slug, generation);
+    const parent = sweepRoot(kind);
+    const parentIdentity = managedIdentities.get(parent);
+    if (parentIdentity === undefined) fail("unsafe-manager", "The retirement sweep journal was not initialized.");
+    if (!existsSync(journal)) {
+      if (value.sequence !== 1) fail("invalid-retirement-journal", "A retirement journal is missing eligibility.");
+      mkdirSync(journal, { mode: 0o700 });
+      chmodSync(journal, 0o700);
+      fsyncDirectory(parent);
+    }
+    const journalIdentity = assertPrivateDirectory(journal, "Retirement sweep journal");
+    revalidatePathIdentity(parent, parentIdentity, "Retirement sweep parent", "directory");
+    const records = readSweepRecords(kind, slug, generation, originalPath);
+    if (records.length + 1 !== value.sequence) {
+      fail("retirement-state-changed", "The retirement journal advanced concurrently.");
+    }
+    const expectedPrevious = records.length === 0 ? null : sweepRecordReceipt(records.at(-1));
+    if (!isDeepStrictEqual(value.previous, expectedPrevious)) {
+      fail("invalid-retirement-journal", "The new retirement record has the wrong predecessor.");
+    }
+    const name = `${String(value.sequence).padStart(8, "0")}.${value.kind}.${value.operationId}.json`;
+    const destination = join(journal, name);
+    writeJsonExclusive(destination, value, journalIdentity);
+    const loaded = readJsonReceipt(destination, MAXIMUM_ENTRY_BYTES, `Retirement ${value.kind} record`);
+    const record = Object.freeze({
+      sequence: value.sequence,
+      kind: value.kind,
+      operationId: value.operationId,
+      path: destination,
+      loaded
+    });
+    const quarantinePath = sweepQuarantinePath(kind, slug, generation, value.operationId);
+    validateSweepRecord(record, records.at(-1), { kind, slug, generation, originalPath, quarantinePath });
+    return record;
+  }
+
+  function receiptFromLoaded(path, loaded) {
+    return Object.freeze({
+      path,
+      identity: loaded.identity,
+      byteLength: loaded.byteLength,
+      sha256: loaded.sha256
+    });
+  }
+
+  function sameRetirementTargetEvidence(left, right) {
+    const withoutRegistryInventory = (value) => ({
+      ...value,
+      git: {
+        ...value.git,
+        worktreeListSha256: "unrelated-worktrees-ignored",
+        worktreeRecordCount: 0
+      }
+    });
+    return isDeepStrictEqual(withoutRegistryInventory(left), withoutRegistryInventory(right));
+  }
+
+  function assertReceiptMatches(expected, loaded, label) {
+    if (
+      loaded.path !== expected.path ||
+      !sameIdentity(loaded.identity, expected.identity) ||
+      loaded.byteLength !== expected.byteLength ||
+      loaded.sha256 !== expected.sha256
+    ) {
+      fail("retirement-source-changed", `${label} changed after enrollment.`);
+    }
+  }
+
+  function captureManagedEnrollment(slug) {
+    const entry = readEntry(slug);
+    if (entry.state !== "cleanup-pending" || entry.cleanupRequest.reason !== "finish") {
+      fail("retirement-not-eligible", "Only an explicitly finished managed checkout can be enrolled.");
+    }
+    const plan = readRetirementPlan(entry);
+    const first = captureRetirementEvidence(entry);
+    if (!sameRetirementTargetEvidence(first, plan.value)) {
+      fail("retirement-evidence-stale", "The current retirement evidence is stale; record a superseding plan first.");
+    }
+    const archive = readCompletedArchiveAnchor(entry);
+    const second = captureRetirementEvidence(entry);
+    if (!sameRetirementTargetEvidence(second, plan.value)) {
+      fail("retirement-evidence-stale", "The checkout changed while retirement enrollment was checked.");
+    }
+    const entryLoaded = readJsonReceipt(
+      entryPath(entry.slug, entry.generation),
+      MAXIMUM_ENTRY_BYTES,
+      `Managed checkout ${entry.slug}`
+    );
+    const source = Object.freeze({
+      entry: receiptFromLoaded(entryPath(entry.slug, entry.generation), entryLoaded),
+      plan: Object.freeze({
+        path: plan.path,
+        identity: plan.identity,
+        byteLength: plan.byteLength,
+        sha256: plan.sha256
+      }),
+      archiveCompletion: archive.completion
+    });
+    return Object.freeze({
+      kind: "managed",
+      slug,
+      generation: entry.generation,
+      originalPath: checkoutPathFor(slug),
+      originalIdentity: entry.checkout.directory,
+      source,
+      entry,
+      plan,
+      archive
+    });
+  }
+
+  function providerScanObjectsDirectory(candidate, name) {
+    const gitPath = join(candidate, ".git");
+    let metadata;
+    try {
+      metadata = lstatSync(gitPath, { bigint: true });
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      fail("legacy-provider-scan-unsafe", "A known checkout Git path could not be inspected safely.");
+    }
+    if (metadata.isSymbolicLink() || !currentUserOwns(metadata)) {
+      fail("legacy-provider-scan-unsafe", "A known checkout has an unsafe Git path.");
+    }
+    let gitDirectory;
+    if (metadata.isDirectory()) gitDirectory = gitPath;
+    else if (metadata.isFile()) {
+      const file = readBoundedFile(gitPath, 8192, `Linked-worktree Git file for ${name}`);
+      const match = /^gitdir: ([^\0\r\n]+)\n$/u.exec(file.text);
+      if (match === null) fail("legacy-provider-scan-unsafe", "A known linked worktree has a malformed Git file.");
+      gitDirectory = resolve(candidate, match[1]);
+    } else fail("legacy-provider-scan-unsafe", "A known checkout has an unsupported Git path.");
+    const gitMetadata = lstatSync(gitDirectory, { bigint: true });
+    if (
+      !gitMetadata.isDirectory() ||
+      gitMetadata.isSymbolicLink() ||
+      !currentUserOwns(gitMetadata) ||
+      realpathSync(gitDirectory) !== resolve(gitDirectory)
+    ) {
+      fail("legacy-provider-scan-unsafe", "A known checkout has an unsafe Git directory.");
+    }
+    const commondirPath = join(gitDirectory, "commondir");
+    let hasCommondir;
+    try {
+      lstatSync(commondirPath, { bigint: true });
+      hasCommondir = true;
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        fail("legacy-provider-scan-unsafe", "A known checkout common directory could not be inspected safely.");
+      }
+      hasCommondir = false;
+    }
+    if (!hasCommondir) return join(gitDirectory, "objects");
+    const commondir = readBoundedFile(commondirPath, 8192, `Linked-worktree common directory for ${name}`);
+    const match = /^([^\0\r\n]+)\n$/u.exec(commondir.text);
+    if (match === null)
+      fail("legacy-provider-scan-unsafe", "A known linked worktree has a malformed common directory.");
+    const commonDirectory = resolve(gitDirectory, match[1]);
+    const commonMetadata = lstatSync(commonDirectory, { bigint: true });
+    if (
+      !commonMetadata.isDirectory() ||
+      commonMetadata.isSymbolicLink() ||
+      !currentUserOwns(commonMetadata) ||
+      realpathSync(commonDirectory) !== resolve(commonDirectory)
+    ) {
+      fail("legacy-provider-scan-unsafe", "A known linked worktree has an unsafe common Git directory.");
+    }
+    return join(commonDirectory, "objects");
+  }
+
+  function assertNoLegacyProviderDependents(providerPath, providerSlug) {
+    const parent = dirname(providerPath);
+    const parentMetadata = lstatSync(parent, { bigint: true });
+    if (
+      !parentMetadata.isDirectory() ||
+      parentMetadata.isSymbolicLink() ||
+      !currentUserOwns(parentMetadata) ||
+      realpathSync(parent) !== resolve(parent)
+    ) {
+      fail("legacy-provider-scan-unsafe", "The managed legacy checkout root is unsafe.");
+    }
+    const parentIdentity = identityOf(parentMetadata);
+    const providerObjects = resolve(providerPath, ".git", "objects");
+    const entries = readDirectoryBounded(parent, MAXIMUM_ENTRIES, "Legacy checkout provider scan");
+    for (const item of entries) {
+      if (item.name === providerSlug) continue;
+      if (item.isSymbolicLink()) {
+        fail("legacy-provider-scan-unsafe", "The managed legacy checkout root contains a symbolic link.");
+      }
+      if (!item.isDirectory()) continue;
+      const candidate = join(parent, item.name);
+      const objectsDirectory = providerScanObjectsDirectory(candidate, item.name);
+      if (objectsDirectory === null) continue;
+      const alternatesPath = join(objectsDirectory, "info", "alternates");
+      try {
+        lstatSync(alternatesPath, { bigint: true });
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        fail("legacy-provider-scan-unsafe", "A known checkout alternate could not be inspected safely.");
+      }
+      const alternates = readBoundedFile(
+        alternatesPath,
+        MAXIMUM_LEGACY_CONFIG_BYTES,
+        `Legacy alternate provider scan for ${item.name}`
+      ).text;
+      if (alternates !== "" && !alternates.endsWith("\n")) {
+        fail("legacy-provider-scan-unsafe", "A known legacy checkout has malformed object alternates.");
+      }
+      for (const line of alternates.split("\n").filter(Boolean)) {
+        if (line.includes("\0") || line.includes("\r")) {
+          fail("legacy-provider-scan-unsafe", "A known legacy checkout has malformed object alternates.");
+        }
+        const alternate = resolve(objectsDirectory, line);
+        let target = alternate;
+        try {
+          target = realpathSync(alternate);
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            fail("legacy-provider-scan-unsafe", "A known legacy checkout alternate could not be resolved safely.");
+          }
+        }
+        if (
+          alternate === providerObjects ||
+          isContained(providerObjects, alternate) ||
+          target === providerObjects ||
+          isContained(providerObjects, target)
+        ) {
+          fail("legacy-provider-in-use", `Legacy checkout ${providerSlug} still provides Git objects to ${item.name}.`);
+        }
+      }
+    }
+    revalidatePathIdentity(parent, parentIdentity, "Legacy checkout provider-scan root", "directory");
+  }
+
+  function captureLegacyEnrollment(slug) {
+    const adoption = currentLegacyAdoption(slug);
+    const attempts = listLegacyArchiveAttempts(slug);
+    const archiveEntry = readLegacyArchiveEntry(slug, attempts);
+    if (
+      archiveEntry === undefined ||
+      archiveEntry.value.adoptionGeneration !== adoption.entry.value.generation ||
+      archiveEntry.value.state !== "archived-review-required"
+    ) {
+      fail("retirement-not-eligible", "The legacy checkout needs one exact completed recovery archive.");
+    }
+    assertNoLegacyProviderDependents(adoption.entry.value.evidence.source.checkout, slug);
+    legacyArchiveStatus(slug);
+    const request = adoption.request.value;
+    const first = captureLegacyAudit(slug, request.generatedRoots, request.generatedFiles);
+    assertAuditMatchesAdoption(first, adoption);
+    legacyArchiveStatus(slug);
+    const second = captureLegacyAudit(slug, request.generatedRoots, request.generatedFiles);
+    assertAuditMatchesAdoption(second, adoption);
+    assertNoLegacyProviderDependents(adoption.entry.value.evidence.source.checkout, slug);
+    const source = Object.freeze({
+      adoption: receiptFromLoaded(adoption.entry.path, adoption.entry),
+      archiveCompletion: receiptFromLoaded(archiveEntry.path, archiveEntry),
+      archiveReceipt: receiptFromLoaded(join(archiveEntry.attempt.path, "receipt.json"), archiveEntry.attempt.receipt)
+    });
+    return Object.freeze({
+      kind: "legacy",
+      slug,
+      generation: adoption.entry.value.generation,
+      originalPath: adoption.entry.value.evidence.source.checkout,
+      originalIdentity: adoption.entry.value.evidence.source.checkoutIdentity,
+      source,
+      adoption,
+      archiveEntry
+    });
+  }
+
+  function enrollmentFor(kind, slug) {
+    return kind === "managed" ? captureManagedEnrollment(slug) : captureLegacyEnrollment(slug);
+  }
+
+  function revalidateManagedEnrollment(eligible) {
+    exactReceiptRead(eligible.source.entry, "Managed retirement entry");
+    exactReceiptRead(eligible.source.plan, "Managed retirement plan");
+    exactReceiptRead(eligible.source.archiveCompletion, "Managed recovery archive completion");
+    const current = captureManagedEnrollment(eligible.slug);
+    if (
+      current.generation !== eligible.generation ||
+      current.originalPath !== eligible.originalPath ||
+      !sameIdentity(current.originalIdentity, eligible.originalIdentity) ||
+      !isDeepStrictEqual(current.source, eligible.source)
+    ) {
+      fail("retirement-source-changed", "The managed checkout no longer matches its enrollment.");
+    }
+    return current;
+  }
+
+  function revalidateLegacyEnrollment(eligible) {
+    const current = captureLegacyEnrollment(eligible.slug);
+    if (
+      current.generation !== eligible.generation ||
+      current.originalPath !== eligible.originalPath ||
+      !sameIdentity(current.originalIdentity, eligible.originalIdentity) ||
+      !isDeepStrictEqual(current.source, eligible.source)
+    ) {
+      fail("retirement-source-changed", "The legacy checkout no longer matches its enrollment.");
+    }
+    return current;
+  }
+
+  function exactReceiptRead(expected, label, expectedLinks = 1n) {
+    const loaded = readJsonReceipt(expected.path, MAXIMUM_ENTRY_BYTES, label, expectedLinks);
+    assertReceiptMatches(expected, { path: expected.path, ...loaded }, label);
+    return loaded;
+  }
+
+  function requireRetirementGit(entry, worktreePath, args, label, statuses = [0]) {
+    const result = auditCheckoutGit(run, paths, worktreePath, entry.checkout.gitAdmin.path, args);
+    if (!statuses.includes(result.status)) fail("retirement-not-eligible", `${label} could not be proven.`);
+    return result;
+  }
+
+  function revalidateManagedQuarantine(eligible, quarantinePath) {
+    const entryLoaded = exactReceiptRead(eligible.source.entry, "Managed retirement entry");
+    const entry = validateEntry(entryLoaded.value, eligible.slug);
+    if (
+      entry.state !== "cleanup-pending" ||
+      entry.cleanupRequest.reason !== "finish" ||
+      entry.generation !== eligible.generation
+    ) {
+      fail("retirement-source-changed", "The managed retirement entry is no longer eligible.");
+    }
+    const planLoaded = exactReceiptRead(eligible.source.plan, "Managed retirement plan");
+    validateRetirementEvidence(planLoaded.value, entry);
+    const archive = readCompletedArchiveAnchor(entry);
+    if (!isDeepStrictEqual(archive.completion, eligible.source.archiveCompletion)) {
+      fail("retirement-source-changed", "The managed recovery archive changed after enrollment.");
+    }
+    revalidatePathIdentity(quarantinePath, eligible.originalIdentity, "Quarantined managed checkout", "directory");
+    const registry = worktreeRegistry(true);
+    const records = registry.records.filter((record) => record.path === quarantinePath);
+    if (
+      records.length !== 1 ||
+      Object.keys(records[0]).sort().join("\0") !== ["HEAD", "branch", "path"].sort().join("\0") ||
+      registry.records.some((record) => record.path !== quarantinePath && isContained(quarantinePath, record.path))
+    ) {
+      fail("retirement-layout-blocked", "The quarantined managed worktree registration is ambiguous.");
+    }
+    const record = records[0];
+    const gitFile = readGitFile(quarantinePath);
+    if (
+      !sameIdentity(gitFile.identity, entry.checkout.gitFile.identity) ||
+      gitFile.text !== entry.checkout.gitFile.content
+    ) {
+      fail("retirement-source-changed", "The quarantined checkout Git file changed.");
+    }
+    revalidatePathIdentity(entry.checkout.gitAdmin.path, entry.checkout.gitAdmin.identity, "Git admin", "directory");
+    const backlink = readBoundedFile(join(entry.checkout.gitAdmin.path, "gitdir"), 8192, "Checkout Git admin backlink");
+    if (backlink.text !== `${quarantinePath}${sep}.git\n` && backlink.text !== `${quarantinePath}/.git\n`) {
+      fail("retirement-layout-blocked", "The quarantined checkout backlink is incoherent.");
+    }
+    const branch = requireRetirementGit(
+      entry,
+      quarantinePath,
+      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      "Branch"
+    ).stdout.trim();
+    const head = requireRetirementGit(entry, quarantinePath, ["rev-parse", "--verify", "HEAD"], "HEAD").stdout.trim();
+    const config = requireRetirementGit(
+      entry,
+      quarantinePath,
+      ["config", "--null", "--name-only", "--list"],
+      "Git configuration"
+    ).stdout;
+    const status = requireRetirementGit(
+      entry,
+      quarantinePath,
+      ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=all"],
+      "Status"
+    ).stdout;
+    const flags = requireRetirementGit(entry, quarantinePath, ["ls-files", "-v", "-z"], "Index flags").stdout;
+    const stages = requireRetirementGit(entry, quarantinePath, ["ls-files", "--stage", "-z"], "Index stages").stdout;
+    const unsafeFlags = flags
+      .split("\0")
+      .filter(Boolean)
+      .filter((line) => line[0] !== "H").length;
+    const gitlinks = stages
+      .split("\0")
+      .filter(Boolean)
+      .filter((line) => line.startsWith("160000 ")).length;
+    const tracked = requireRetirementGit(
+      entry,
+      quarantinePath,
+      ["diff-files", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "--"],
+      "Tracked worktree",
+      [0, 1]
+    ).status;
+    const staged = requireRetirementGit(
+      entry,
+      quarantinePath,
+      ["diff-index", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "HEAD", "--"],
+      "Staged worktree",
+      [0, 1]
+    ).status;
+    if (
+      branch !== entry.branch ||
+      head !== planLoaded.value.git.head ||
+      record.HEAD !== head ||
+      record.branch !== `refs/heads/${entry.branch}` ||
+      parseStatus(status).length !== 0 ||
+      configuredContentFilterKeys(config).length !== 0 ||
+      unsafeFlags !== 0 ||
+      gitlinks !== 0 ||
+      tracked !== 0 ||
+      staged !== 0
+    ) {
+      fail("retirement-not-eligible", "The quarantined managed checkout is no longer clean and exact.");
+    }
+    const confirmedArchive = readCompletedArchiveAnchor(entry);
+    if (!isDeepStrictEqual(confirmedArchive.completion, eligible.source.archiveCompletion)) {
+      fail("retirement-source-changed", "The managed recovery archive changed during purge checks.");
+    }
+    return Object.freeze({ entry, branchRef: `refs/heads/${entry.branch}`, head });
+  }
+
+  function requireLegacyRetirementGit(checkoutPath, args, label, statuses = [0]) {
+    const result = run("git", args, {
+      cwd: checkoutPath,
+      allowFailure: true,
+      env: auditGitEnvironment()
+    });
+    if (!statuses.includes(result.status)) fail("retirement-not-eligible", `${label} could not be proven.`);
+    return result;
+  }
+
+  function revalidateLegacyArchiveReceipts(eligible) {
+    const adoption = exactReceiptRead(eligible.source.adoption, "Legacy adoption entry", 2n);
+    const archiveCompletion = exactReceiptRead(eligible.source.archiveCompletion, "Legacy archive completion", 2n);
+    const archiveReceipt = exactReceiptRead(eligible.source.archiveReceipt, "Legacy archive receipt");
+    if (
+      adoption.value.generation !== eligible.generation ||
+      archiveCompletion.value.adoptionGeneration !== eligible.generation ||
+      archiveReceipt.value.adoptionGeneration !== eligible.generation
+    ) {
+      fail("retirement-source-changed", "The legacy archive no longer belongs to the enrolled adoption.");
+    }
+    const attempt = {
+      slug: eligible.slug,
+      adoptionGeneration: eligible.generation,
+      attempt: archiveCompletion.value.attempt,
+      path: dirname(eligible.source.archiveReceipt.path),
+      identity: assertPrivateDirectory(dirname(eligible.source.archiveReceipt.path), "Legacy archive attempt directory")
+    };
+    // The standard archive status path performs the expensive recovery proof while the source still exists.
+    // After quarantine, the three immutable anchors above remain the authority for purge reconciliation.
+    return Object.freeze({ adoption, archiveCompletion, archiveReceipt, attempt });
+  }
+
+  function revalidateLegacyQuarantine(eligible, quarantinePath) {
+    const anchors = revalidateLegacyArchiveReceipts(eligible);
+    const evidence = anchors.adoption.value.evidence;
+    assertNoLegacyProviderDependents(eligible.originalPath, eligible.slug);
+    assertNoMountAtOrBelow(quarantinePath);
+    revalidatePathIdentity(quarantinePath, eligible.originalIdentity, "Quarantined legacy checkout", "directory");
+    revalidatePathIdentity(
+      join(quarantinePath, ".git"),
+      evidence.source.gitDirectoryIdentity,
+      "Legacy Git directory",
+      "directory"
+    );
+    const configNames = requireLegacyRetirementGit(
+      quarantinePath,
+      ["config", "--local", "--no-includes", "--null", "--name-only", "--list"],
+      "Legacy configuration"
+    ).stdout;
+    if (
+      configuredContentFilterKeys(configNames).length !== 0 ||
+      unsafeArchiveConfigKeys(configNames).length !== 0 ||
+      unsafeLegacyConfigKeys(configNames).length !== 0
+    ) {
+      fail("retirement-not-eligible", "The quarantined legacy checkout has unsafe Git configuration.");
+    }
+    const head = requireLegacyRetirementGit(
+      quarantinePath,
+      ["rev-parse", "--verify", "HEAD^{commit}"],
+      "Legacy HEAD"
+    ).stdout.trim();
+    const tree = requireLegacyRetirementGit(
+      quarantinePath,
+      ["rev-parse", "--verify", "HEAD^{tree}"],
+      "Legacy tree"
+    ).stdout.trim();
+    const branchResult = requireLegacyRetirementGit(
+      quarantinePath,
+      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      "Legacy branch",
+      [0, 1]
+    );
+    const branch = branchResult.status === 0 ? branchResult.stdout.trim() : null;
+    const status = requireLegacyRetirementGit(
+      quarantinePath,
+      ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"],
+      "Legacy status"
+    ).stdout;
+    const statusRecords = parseStatus(status);
+    const allowlist = evidence.generated.allowlist;
+    if (
+      head !== evidence.git.head ||
+      tree !== evidence.git.headTree ||
+      branch !== evidence.git.branch ||
+      statusRecords.some((item) => item.kind !== "ignored" || !legacyPathIsAllowed(item.path, allowlist))
+    ) {
+      fail("retirement-not-eligible", "The quarantined legacy checkout changed after enrollment.");
+    }
+    const flags = requireLegacyRetirementGit(quarantinePath, ["ls-files", "-v", "-z"], "Legacy index flags").stdout;
+    const stages = requireLegacyRetirementGit(
+      quarantinePath,
+      ["ls-files", "--stage", "-z"],
+      "Legacy index stages"
+    ).stdout;
+    if (
+      flags
+        .split("\0")
+        .filter(Boolean)
+        .some((line) => line[0] !== "H")
+    ) {
+      fail("retirement-not-eligible", "The quarantined legacy checkout has unsafe index flags.");
+    }
+    validateLegacyIndexStages(stages);
+    if (
+      requireLegacyRetirementGit(
+        quarantinePath,
+        ["diff-files", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--"],
+        "Legacy tracked worktree",
+        [0, 1]
+      ).status !== 0 ||
+      requireLegacyRetirementGit(
+        quarantinePath,
+        [
+          "diff-index",
+          "--cached",
+          "--quiet",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--ignore-submodules=none",
+          "HEAD",
+          "--"
+        ],
+        "Legacy staged worktree",
+        [0, 1]
+      ).status !== 0
+    ) {
+      fail("retirement-not-eligible", "The quarantined legacy checkout is not clean.");
+    }
+    const inventory = captureLegacyGeneratedInventory(quarantinePath, allowlist);
+    if (!isDeepStrictEqual(inventory, evidence.generated.inventory)) {
+      fail("retirement-not-eligible", "Generated legacy content changed after enrollment.");
+    }
+    requireLegacyRetirementGit(quarantinePath, ["fsck", "--strict", "--full", "--no-dangling"], "Legacy fsck");
+    assertNoLegacyProviderDependents(eligible.originalPath, eligible.slug);
+    assertNoMountAtOrBelow(quarantinePath);
+    revalidateLegacyArchiveReceipts(eligible);
+    return Object.freeze({ branchPreserved: evidence.git.branch !== null, head });
+  }
+
+  function revalidateLegacyPurgeContinuation(eligible, quarantinePath) {
+    const anchors = revalidateLegacyArchiveReceipts(eligible);
+    assertNoLegacyProviderDependents(eligible.originalPath, eligible.slug);
+    revalidatePathIdentity(quarantinePath, eligible.originalIdentity, "Legacy purge quarantine", "directory");
+    assertNoMountAtOrBelow(quarantinePath);
+    revalidateLegacyRecoveryRepository(anchors.archiveReceipt.value, anchors.attempt);
+    revalidateLegacyArchiveReceipts(eligible);
+    return Object.freeze({ branchPreserved: anchors.adoption.value.evidence.git.branch !== null });
+  }
+
+  function verifyManagedBranchPreserved(eligible) {
+    const entryLoaded = exactReceiptRead(eligible.source.entry, "Managed retirement entry");
+    const entry = validateEntry(entryLoaded.value, eligible.slug);
+    const planLoaded = exactReceiptRead(eligible.source.plan, "Managed retirement plan");
+    validateRetirementEvidence(planLoaded.value, entry);
+    const archive = readCompletedArchiveAnchor(entry);
+    if (!isDeepStrictEqual(archive.completion, eligible.source.archiveCompletion)) {
+      fail("retirement-source-changed", "The managed recovery archive changed after the worktree was removed.");
+    }
+    const branchRef = `refs/heads/${entry.branch}`;
+    const preserved = commonGit(run, paths, repository, ["rev-parse", "--verify", `${branchRef}^{commit}`], {
+      allowFailure: true,
+      env: auditGitEnvironment()
+    });
+    if (preserved.status !== 0 || preserved.stdout.trim() !== planLoaded.value.git.head) {
+      fail("retirement-branch-lost", "Git did not preserve the managed checkout branch.");
+    }
+    return true;
+  }
+
+  function legacyBranchPreserved(eligible) {
+    const anchors = revalidateLegacyArchiveReceipts(eligible);
+    assertNoLegacyProviderDependents(eligible.originalPath, eligible.slug);
+    revalidateLegacyRecoveryRepository(anchors.archiveReceipt.value, anchors.attempt);
+    return anchors.adoption.value.evidence.git.branch !== null;
+  }
+
+  function removeTreeNoFollow(rootPath, expectedIdentity) {
+    revalidatePathIdentity(rootPath, expectedIdentity, "Retirement quarantine", "directory");
+    assertNoMountAtOrBelow(rootPath);
+    const rootMetadata = lstatSync(rootPath, { bigint: true });
+    const rootDevice = rootMetadata.dev;
+    let entries = 0;
+    const visit = (path, depth) => {
+      if (depth > MAXIMUM_RETIREMENT_TREE_DEPTH) {
+        fail("retirement-tree-too-large", "The retirement quarantine exceeds the depth limit.");
+      }
+      const directory = opendirSync(path);
+      try {
+        for (;;) {
+          const item = directory.readSync();
+          if (item === null) break;
+          entries += 1;
+          if (entries > MAXIMUM_RETIREMENT_TREE_ENTRIES) {
+            fail("retirement-tree-too-large", "The retirement quarantine exceeds the entry limit.");
+          }
+          const child = join(path, item.name);
+          const metadata = lstatSync(child, { bigint: true });
+          if (!currentUserOwns(metadata) || metadata.dev !== rootDevice) {
+            fail("unsafe-retirement-tree", "The retirement quarantine crosses ownership or filesystem boundaries.");
+          }
+          if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+            visit(child, depth + 1);
+            rmdirSync(child);
+          } else unlinkSync(child);
+          hooks?.afterLegacyRetirementEntryRemoved?.(rootPath, child, entries);
+        }
+      } finally {
+        directory.closeSync();
+      }
+    };
+    visit(rootPath, 0);
+    revalidatePathIdentity(rootPath, expectedIdentity, "Retirement quarantine", "directory");
+    rmdirSync(rootPath);
+    fsyncDirectory(dirname(rootPath));
+  }
+
+  function enrollRetirement(kind, slug) {
+    const enrollment = enrollmentFor(kind, slug);
+    const existing = readSweepRecords(kind, slug, enrollment.generation, enrollment.originalPath);
+    if (existing.length !== 0) {
+      fail("retirement-already-enrolled", `${kind} checkout ${slug} is already enrolled for retirement.`);
+    }
+    const operationId = tokenFactory();
+    if (!/^[0-9a-f]{32}$/u.test(operationId)) fail("invalid-retirement-journal", "Operation ID is malformed.");
+    const quarantinePath = sweepQuarantinePath(kind, slug, enrollment.generation, operationId);
+    if (existsSync(quarantinePath)) {
+      fail("retirement-layout-blocked", "The retirement quarantine destination already exists.");
+    }
+    const bootId = currentBootId();
+    hooks?.beforeRetirementEnrollment?.(enrollment, bootId);
+    const confirmed = enrollmentFor(kind, slug);
+    if (
+      confirmed.generation !== enrollment.generation ||
+      confirmed.originalPath !== enrollment.originalPath ||
+      !sameIdentity(confirmed.originalIdentity, enrollment.originalIdentity) ||
+      !isDeepStrictEqual(confirmed.source, enrollment.source)
+    ) {
+      fail("retirement-source-changed", "The checkout changed while retirement enrollment was prepared.");
+    }
+    if (currentBootId() !== bootId) {
+      fail("retirement-boot-changed", "The Linux boot ID changed while retirement enrollment was prepared.");
+    }
+    const record = appendSweepRecord(kind, slug, enrollment.generation, enrollment.originalPath, {
+      protocol: RETIREMENT_SWEEP_PROTOCOL,
+      kind: "eligible",
+      candidateKind: kind,
+      slug,
+      generation: enrollment.generation,
+      sequence: 1,
+      operationId,
+      previous: null,
+      eligibleBootId: bootId,
+      originalPath: enrollment.originalPath,
+      originalIdentity: enrollment.originalIdentity,
+      source: enrollment.source
+    });
+    return Object.freeze({
+      status: "enrolled-next-boot",
+      kind,
+      slug,
+      generation: enrollment.generation,
+      eligibleBootId: bootId,
+      record: sweepRecordReceipt(record),
+      moved: false,
+      removed: false
+    });
+  }
+
+  function verifyExistingRetirementEnrollment(kind, slug) {
+    if (kind !== "managed") {
+      fail("invalid-retirement-kind", "Only managed retirement reruns use this check.");
+    }
+    const entry = readEntry(slug);
+    const originalPath = checkoutPathFor(slug);
+    const records = readSweepRecords(kind, slug, entry.generation, originalPath);
+    if (records.length === 0) fail("retirement-not-enrolled", `Managed checkout ${slug} is not enrolled.`);
+    const eligible = records[0].loaded.value;
+    const candidate = { kind, slug, generation: entry.generation, originalPath };
+    const layout = candidateLayout(candidate, records[0]);
+    try {
+      const allowedLayouts = {
+        eligible: ["original"],
+        "quarantine-intent": ["original", "quarantine"],
+        "quarantine-result": ["quarantine"],
+        "purge-intent": ["quarantine", "absent"],
+        retired: ["absent"]
+      };
+      if (!allowedLayouts[records.at(-1).kind].includes(layout.state)) {
+        fail("retirement-layout-blocked", "The enrolled checkout layout does not match its durable journal stage.");
+      }
+      if (layout.state === "original") revalidateManagedEnrollment(eligible);
+      else if (layout.state === "quarantine") revalidateManagedQuarantine(eligible, layout.quarantinePath);
+      else if (layout.state === "absent") verifyManagedBranchPreserved(eligible);
+      else fail("retirement-layout-blocked", "The enrolled checkout layout is ambiguous.");
+    } catch (error) {
+      if (
+        error instanceof CheckoutLifecycleError &&
+        [
+          "checkout-changed",
+          "archive-changed",
+          "retirement-archive-missing",
+          "retirement-archive-stale",
+          "retirement-evidence-stale",
+          "retirement-layout-blocked",
+          "retirement-not-eligible",
+          "retirement-source-changed"
+        ].includes(error.code)
+      ) {
+        fail(
+          "retirement-enrolled-source-changed",
+          "The checkout no longer matches its immutable retirement enrollment. Resume or review it explicitly."
+        );
+      }
+      throw error;
+    }
+    const progress = retirementHoldResult(candidate, records, layout, "retirement-already-enrolled");
+    return Object.freeze({
+      status: "already-enrolled",
+      kind,
+      slug,
+      generation: entry.generation,
+      layout: progress.layout,
+      journal: progress.journal,
+      moved: progress.moved,
+      removed: progress.removed
+    });
+  }
+
+  function candidateOriginalPath(kind, slug) {
+    if (kind === "managed") return checkoutPathFor(slug);
+    const source = repository.bootstrapSourceRepository;
+    if (source === undefined) fail("legacy-bootstrap-required", "Legacy retirement requires a bootstrap source.");
+    return join(source.topLevel, "tmp", "codex-checkpoints", slug);
+  }
+
+  function listSweepCandidates(kind) {
+    const root = sweepRoot(kind);
+    if (!existsSync(root)) return Object.freeze([]);
+    const identity = assertPrivateDirectory(root, `${kind} retirement sweep journal`);
+    const candidates = readDirectoryBounded(root, MAXIMUM_ENTRIES, `${kind} retirement sweep journal`).map((item) => {
+      const match = RETIREMENT_SWEEP_DIRECTORY_PATTERN.exec(item.name);
+      if (!item.isDirectory() || item.isSymbolicLink() || match === null) {
+        fail("invalid-retirement-journal", `The ${kind} retirement journal contains an unknown entry.`);
+      }
+      const slug = match[1];
+      const generation = Number(match[2]);
+      return Object.freeze({ kind, slug, generation, originalPath: candidateOriginalPath(kind, slug) });
+    });
+    revalidatePathIdentity(root, identity, `${kind} retirement sweep journal`, "directory");
+    return Object.freeze(candidates.sort((left, right) => left.slug.localeCompare(right.slug)));
+  }
+
+  function candidateLayout(candidate, eligible) {
+    const records = candidate.kind === "managed" ? worktreeRecords(true) : [];
+    const operationId = eligible.loaded.value.operationId;
+    const quarantinePath = sweepQuarantinePath(candidate.kind, candidate.slug, candidate.generation, operationId);
+    const inspect = (path) => {
+      let metadata;
+      try {
+        metadata = lstatSync(path, { bigint: true });
+      } catch (error) {
+        if (error.code === "ENOENT") return "absent";
+        throw error;
+      }
+      return metadata.isDirectory() &&
+        !metadata.isSymbolicLink() &&
+        currentUserOwns(metadata) &&
+        sameIdentity(identityOf(metadata), eligible.loaded.value.originalIdentity)
+        ? "exact"
+        : "mismatch";
+    };
+    const originalObservation = inspect(candidate.originalPath);
+    const quarantineObservation = inspect(quarantinePath);
+    const original = originalObservation === "exact";
+    const quarantine = quarantineObservation === "exact";
+    const observations = { original: originalObservation, quarantine: quarantineObservation };
+    if (originalObservation === "mismatch" || quarantineObservation === "mismatch") {
+      return Object.freeze({ state: "blocked", original, quarantine, quarantinePath, records, observations });
+    }
+    if (candidate.kind === "managed") {
+      const atOriginal = records.filter((record) => record.path === candidate.originalPath);
+      const atQuarantine = records.filter((record) => record.path === quarantinePath);
+      if (atOriginal.length > 1 || atQuarantine.length > 1) {
+        return Object.freeze({ state: "blocked", original, quarantine, quarantinePath, records, observations });
+      }
+      if (original && !quarantine && atOriginal.length === 1 && atQuarantine.length === 0)
+        return Object.freeze({ state: "original", original, quarantine, quarantinePath, records, observations });
+      if (!original && quarantine && atOriginal.length === 0 && atQuarantine.length === 1)
+        return Object.freeze({ state: "quarantine", original, quarantine, quarantinePath, records, observations });
+      if (!original && !quarantine && atOriginal.length === 0 && atQuarantine.length === 0)
+        return Object.freeze({ state: "absent", original, quarantine, quarantinePath, records, observations });
+      return Object.freeze({ state: "blocked", original, quarantine, quarantinePath, records, observations });
+    }
+    if (original && !quarantine)
+      return Object.freeze({ state: "original", original, quarantine, quarantinePath, observations });
+    if (!original && quarantine)
+      return Object.freeze({ state: "quarantine", original, quarantine, quarantinePath, observations });
+    if (!original && !quarantine)
+      return Object.freeze({ state: "absent", original, quarantine, quarantinePath, observations });
+    return Object.freeze({ state: "blocked", original, quarantine, quarantinePath, observations });
+  }
+
+  function appendCandidateRecord(candidate, records, kind, fields) {
+    const eligible = records[0];
+    return appendSweepRecord(candidate.kind, candidate.slug, candidate.generation, candidate.originalPath, {
+      protocol: RETIREMENT_SWEEP_PROTOCOL,
+      kind,
+      candidateKind: candidate.kind,
+      slug: candidate.slug,
+      generation: candidate.generation,
+      sequence: records.length + 1,
+      operationId: eligible.operationId,
+      previous: sweepRecordReceipt(records.at(-1)),
+      ...fields
+    });
+  }
+
+  function appendManagedTombstone(entry, retiredRecord) {
+    if (entry.state === "retired") return entry;
+    if (entry.state !== "cleanup-pending" || entry.cleanupRequest.reason !== "finish") {
+      fail("retirement-source-changed", "The managed checkout cannot receive a retirement tombstone.");
+    }
+    return appendEntry(entry, {
+      ...entry,
+      state: "retired",
+      tombstone: {
+        protocol: RETIREMENT_TOMBSTONE_PROTOCOL,
+        record: sweepRecordReceipt(retiredRecord)
+      }
+    });
+  }
+
+  function retirementHoldResult(candidate, records, layout, code) {
+    const latest = records.at(-1).kind;
+    const moved =
+      latest === "retired" || records.length >= 3 || layout.state === "quarantine"
+        ? true
+        : layout.state === "original"
+          ? false
+          : null;
+    const removed =
+      latest === "retired" || (records.length >= 4 && layout.state === "absent")
+        ? true
+        : ["original", "quarantine"].includes(layout.state)
+          ? false
+          : null;
+    const state =
+      layout.state === "quarantine"
+        ? "held-after-move"
+        : layout.state === "absent" && ["purge-intent", "retired"].includes(latest)
+          ? "held-after-purge"
+          : ["absent", "blocked"].includes(layout.state)
+            ? "held-ambiguous-layout"
+            : "held";
+    return Object.freeze({
+      kind: candidate.kind,
+      slug: candidate.slug,
+      state,
+      code,
+      layout: layout.state,
+      journal: latest,
+      moved,
+      removed
+    });
+  }
+
+  function observeRetirementHold(candidate, code) {
+    const records = readSweepRecords(candidate.kind, candidate.slug, candidate.generation, candidate.originalPath);
+    if (records.length === 0) fail("invalid-retirement-journal", "The held candidate lost its eligibility record.");
+    return retirementHoldResult(candidate, records, candidateLayout(candidate, records[0]), code);
+  }
+
+  function sweepOne(candidate, bootId) {
+    let records = [...readSweepRecords(candidate.kind, candidate.slug, candidate.generation, candidate.originalPath)];
+    if (records.length === 0) fail("invalid-retirement-journal", "The retirement journal has no eligibility record.");
+    const eligible = records[0];
+    if (eligible.loaded.value.eligibleBootId === bootId) {
+      return Object.freeze({
+        kind: candidate.kind,
+        slug: candidate.slug,
+        state: "waiting-for-next-boot",
+        moved: false,
+        removed: false
+      });
+    }
+    let layout = candidateLayout(candidate, eligible);
+    if (layout.state === "blocked") {
+      return retirementHoldResult(candidate, records, layout, "retirement-layout-blocked");
+    }
+
+    if (records.length === 1 || (records.length === 2 && layout.state === "original")) {
+      if (layout.state !== "original") {
+        if (records.length === 2 && layout.state === "quarantine") {
+          // The move committed before its result record was published; reconcile below.
+        } else {
+          return retirementHoldResult(candidate, records, layout, "retirement-layout-blocked");
+        }
+      } else {
+        const expected = eligible.loaded.value;
+        if (candidate.kind === "managed") revalidateManagedEnrollment(expected);
+        else revalidateLegacyEnrollment(expected);
+        if (records.length === 1) {
+          const intent = appendCandidateRecord(candidate, records, "quarantine-intent", {
+            bootId,
+            originalPath: candidate.originalPath,
+            quarantinePath: layout.quarantinePath
+          });
+          records.push(intent);
+        }
+        hooks?.beforeRetirementMove?.(candidate, layout);
+        if (candidate.kind === "managed") {
+          const result = commonGit(
+            run,
+            paths,
+            repository,
+            ["worktree", "move", candidate.originalPath, layout.quarantinePath],
+            { allowFailure: true, env: auditGitEnvironment() }
+          );
+          hooks?.afterRetirementMoveCommand?.(candidate, result);
+        } else {
+          assertNoLegacyProviderDependents(candidate.originalPath, candidate.slug);
+          assertNoMountAtOrBelow(candidate.originalPath);
+          try {
+            renameSync(candidate.originalPath, layout.quarantinePath);
+            fsyncDirectory(dirname(candidate.originalPath));
+            fsyncDirectory(dirname(layout.quarantinePath));
+          } catch (error) {
+            if (error.code === "EXDEV") {
+              fail("retirement-cross-device", "Legacy quarantine must stay on the source filesystem.");
+            }
+            if (error.code !== "ENOENT") throw error;
+          }
+          hooks?.afterRetirementMoveCommand?.(candidate, { status: 0 });
+        }
+        layout = candidateLayout(candidate, eligible);
+      }
+    }
+    if (records.length === 2) {
+      if (layout.state !== "quarantine") {
+        return retirementHoldResult(candidate, records, layout, "retirement-layout-blocked");
+      }
+      const result = appendCandidateRecord(candidate, records, "quarantine-result", {
+        bootId,
+        quarantinePath: layout.quarantinePath,
+        location: "quarantine"
+      });
+      records.push(result);
+      hooks?.afterRetirementQuarantineRecorded?.(candidate, result);
+    }
+
+    layout = candidateLayout(candidate, eligible);
+    if (records.length === 3 || (records.length === 4 && layout.state === "quarantine")) {
+      if (layout.state !== "quarantine") {
+        if (records.length === 4 && layout.state === "absent") {
+          // The purge committed before its tombstone record was published; reconcile below.
+        } else {
+          return retirementHoldResult(candidate, records, layout, "retirement-layout-blocked");
+        }
+      } else {
+        const expected = eligible.loaded.value;
+        if (candidate.kind === "managed") revalidateManagedQuarantine(expected, layout.quarantinePath);
+        else if (records.length === 4) revalidateLegacyPurgeContinuation(expected, layout.quarantinePath);
+        else revalidateLegacyQuarantine(expected, layout.quarantinePath);
+        if (records.length === 3) {
+          const intent = appendCandidateRecord(candidate, records, "purge-intent", {
+            bootId,
+            quarantinePath: layout.quarantinePath
+          });
+          records.push(intent);
+        }
+        hooks?.beforeRetirementPurge?.(candidate, layout);
+        if (candidate.kind === "managed") {
+          const result = commonGit(run, paths, repository, ["worktree", "remove", layout.quarantinePath], {
+            allowFailure: true,
+            env: auditGitEnvironment()
+          });
+          hooks?.afterRetirementPurgeCommand?.(candidate, result);
+        } else {
+          assertNoLegacyProviderDependents(expected.originalPath, expected.slug);
+          removeTreeNoFollow(layout.quarantinePath, expected.originalIdentity);
+          hooks?.afterRetirementPurgeCommand?.(candidate, { status: 0 });
+        }
+        layout = candidateLayout(candidate, eligible);
+        if (layout.state === "absent" && candidate.kind === "managed") verifyManagedBranchPreserved(expected);
+      }
+    }
+    if (records.length === 4) {
+      if (layout.state !== "absent") {
+        return retirementHoldResult(candidate, records, layout, "retirement-layout-blocked");
+      }
+      const expected = eligible.loaded.value;
+      const branchPreserved =
+        candidate.kind === "managed" ? verifyManagedBranchPreserved(expected) : legacyBranchPreserved(expected);
+      const retired = appendCandidateRecord(candidate, records, "retired", {
+        bootId,
+        quarantinePath: layout.quarantinePath,
+        branchPreserved
+      });
+      records.push(retired);
+      if (candidate.kind === "managed") {
+        appendManagedTombstone(readEntry(candidate.slug), retired);
+      }
+    } else if (records.length === 5 && candidate.kind === "managed") {
+      appendManagedTombstone(readEntry(candidate.slug), records[4]);
+    }
+    return Object.freeze({ kind: candidate.kind, slug: candidate.slug, state: "retired", moved: true, removed: true });
+  }
+
+  function sweepRetirements() {
+    initializeRetirementSweepJournal();
+    const bootId = currentBootId();
+    const candidates = [...listSweepCandidates("managed"), ...listSweepCandidates("legacy")];
+    const heldCodes = new Set([
+      "checkout-changed",
+      "legacy-adoption-changed",
+      "legacy-archive-changed",
+      "legacy-audit-not-eligible",
+      "legacy-checkout-changed",
+      "legacy-provider-in-use",
+      "retirement-archive-missing",
+      "retirement-archive-stale",
+      "retirement-cross-device",
+      "retirement-layout-blocked",
+      "retirement-mount-present",
+      "retirement-not-eligible",
+      "retirement-source-changed",
+      "retirement-state-changed",
+      "retirement-tree-too-large",
+      "unsafe-retirement-tree"
+    ]);
+
+    const results = candidates.map((candidate) => {
+      try {
+        return sweepOne(candidate, bootId);
+      } catch (error) {
+        if (!(error instanceof CheckoutLifecycleError) || !heldCodes.has(error.code)) throw error;
+        return observeRetirementHold(candidate, error.code);
+      }
+    });
+    return Object.freeze({
+      bootId,
+      results: Object.freeze(results)
+    });
+  }
+
+  function retirementOverlay(kind, slug, generation, originalPath) {
+    if (generation === null || generation === undefined) return Object.freeze({ state: "not-enrolled" });
+    const records = readSweepRecords(kind, slug, generation, originalPath);
+    if (records.length === 0) return Object.freeze({ state: "not-enrolled" });
+    const eligible = records[0].loaded.value;
+    const latest = records.at(-1);
+    return Object.freeze({
+      state: latest.kind,
+      eligibleBootId: eligible.eligibleBootId,
+      recordCount: records.length,
+      terminal: latest.kind === "retired"
     });
   }
 
@@ -7944,6 +9366,23 @@ export function createCheckoutManager(options = {}) {
       });
     },
 
+    enrollRetirement({ kind, slug }) {
+      assertSlug(slug);
+      if (!["managed", "legacy"].includes(kind)) {
+        fail("invalid-retirement-kind", "Retirement kind must be managed or legacy.");
+      }
+      return withLock(() => enrollRetirement(kind, slug));
+    },
+
+    verifyRetirementEnrollment({ kind, slug }) {
+      assertSlug(slug);
+      return withLock(() => verifyExistingRetirementEnrollment(kind, slug));
+    },
+
+    sweep() {
+      return withLock(() => sweepRetirements());
+    },
+
     create({ slug, ownerTask, branch, base = "HEAD", remote = "origin", generatedRoots = [] }) {
       assertSlug(slug);
       assertOwner(ownerTask);
@@ -7953,8 +9392,16 @@ export function createCheckoutManager(options = {}) {
       return withLock(() => {
         assertNoQuarantineHistoryForSlug(slug);
         const checkoutPath = checkoutPathFor(slug);
-        if (registryFiles().some((file) => file.slug === slug) || existsSync(checkoutPath))
+        if (registryFiles().some((file) => file.slug === slug)) {
+          if (readEntry(slug).state === "retired") {
+            fail(
+              "checkout-slug-retired",
+              `Checkout ${slug} is permanently tombstoned; choose a new slug so its recovery history stays unambiguous.`
+            );
+          }
           fail("checkout-exists", `Checkout ${slug} exists.`);
+        }
+        if (existsSync(checkoutPath)) fail("checkout-exists", `Checkout ${slug} exists.`);
         const selectedBranch = branch ?? `agent/${slug}-${tokenFactory().slice(0, 8)}`;
         if (
           run("git", ["check-ref-format", "--branch", selectedBranch], {
@@ -8008,6 +9455,12 @@ export function createCheckoutManager(options = {}) {
             const checkoutPath = checkoutPathFor(entry.slug);
             const record = worktreeRecord(checkoutPath);
             const quarantine = readQuarantineOverlay(entry);
+            const retirement = retirementOverlay(
+              "managed",
+              entry.slug,
+              entry.state === "retired" ? entry.generation - 1 : entry.generation,
+              checkoutPath
+            );
             return Object.freeze({
               slug: entry.slug,
               state: entry.state,
@@ -8019,7 +9472,8 @@ export function createCheckoutManager(options = {}) {
               registered: record !== undefined,
               head: record?.HEAD ?? null,
               cleanupReviewRequired: ["cleanup-pending", "abandoned-review-required"].includes(entry.state),
-              quarantine
+              quarantine,
+              ...(retirement.state === "not-enrolled" ? {} : { retirement })
             });
           })
         )
@@ -8089,7 +9543,12 @@ export function createCheckoutManager(options = {}) {
           fail("checkout-not-active", "An incomplete create cannot request cleanup.");
         }
         entry = requestCleanup(entry, "finish");
-        return Object.freeze({ status: "cleanup-review-required", slug, audit: auditEntry(entry) });
+        return Object.freeze({
+          status: "cleanup-review-required",
+          slug,
+          generation: entry.generation,
+          audit: auditEntry(entry)
+        });
       });
     },
 
@@ -8108,11 +9567,22 @@ export function createCheckoutManager(options = {}) {
         if (retirementJournalIdentity === undefined) {
           fail("unsafe-manager", "The retirement journal was not initialized.");
         }
-        const destination = retirementPath(slug, entry.generation);
-        if (existsSync(destination)) {
-          fail("retirement-evidence-exists", "Retirement evidence already exists for this checkout generation.");
-        }
+        const priorPlans = listRetirementPlans(entry);
         const firstEvidence = captureRetirementEvidence(entry);
+        if (isDeepStrictEqual(priorPlans.at(-1)?.value, firstEvidence)) {
+          fail(
+            "retirement-evidence-exists",
+            "Current retirement evidence already exists for this checkout generation."
+          );
+        }
+        if (priorPlans.length >= MAXIMUM_RETIREMENT_PLAN_ATTEMPTS) {
+          fail(
+            "retirement-evidence-attempts-exhausted",
+            "The retirement evidence journal has no remaining attempt slots."
+          );
+        }
+        const attempt = priorPlans.length + 1;
+        const destination = retirementPath(slug, entry.generation, attempt);
         hooks?.beforeRetirementEvidenceWrite?.(entry, firstEvidence);
         const secondEvidence = captureRetirementEvidence(entry);
         if (!isDeepStrictEqual(firstEvidence, secondEvidence)) {
@@ -8144,6 +9614,7 @@ export function createCheckoutManager(options = {}) {
           ownerTask: entry.ownerTask,
           revision: entry.revision,
           generation: entry.generation,
+          attempt,
           checkoutState: entry.state,
           authorizesCleanup: false,
           evidence: written.value
@@ -8174,7 +9645,7 @@ export function createCheckoutManager(options = {}) {
         initializeArchiveJournal();
         const archiveRootIdentity = managedIdentities.get(paths.archives);
         if (archiveRootIdentity === undefined) fail("unsafe-manager", "The archive journal was not initialized.");
-        const attempt = createArchiveAttempt(slug, entry.generation);
+        const attempt = createArchiveAttempt(slug, entry.generation, plan);
         const bundle = createBundle(attempt, firstGit.pseudorefs);
         hooks?.afterArchiveBundleWrite?.(entry, attempt, bundle);
         const namedBundle = captureArchiveFile(bundle.path, "Recovery bundle");
@@ -8480,6 +9951,9 @@ function validateCliInvocation(positionals, values) {
     ["quarantine-status", { minimum: 1, maximum: 2, options: [] }],
     ["handoff", { minimum: 2, maximum: 2, options: ["owner", "to", "revision"] }],
     ["finish", { minimum: 2, maximum: 2, options: ["owner", "revision"] }],
+    ["retire", { minimum: 2, maximum: 2, options: ["owner", "revision"] }],
+    ["enroll-retirement", { minimum: 2, maximum: 2, options: ["kind"] }],
+    ["sweep", { minimum: 1, maximum: 1, options: [] }],
     ["plan-retirement", { minimum: 2, maximum: 2, options: ["owner", "revision", "generation"] }],
     ["archive-retirement", { minimum: 2, maximum: 2, options: ["owner", "revision", "generation"] }],
     ["abandon", { minimum: 2, maximum: 2, options: ["expect-owner", "expect-head", "revision"] }]
@@ -8488,7 +9962,7 @@ function validateCliInvocation(positionals, values) {
   if (specification === undefined) {
     fail(
       "invalid-cli",
-      "Use bootstrap, legacy-audit, legacy-adopt, legacy-archive, legacy-status, create, status, audit, quarantine-status, handoff, finish, plan-retirement, archive-retirement, or abandon."
+      "Use bootstrap, legacy-audit, legacy-adopt, legacy-archive, legacy-status, create, status, audit, quarantine-status, handoff, finish, retire, enroll-retirement, sweep, plan-retirement, archive-retirement, or abandon."
     );
   }
   const suppliedOptions = Object.entries(values)
@@ -8516,6 +9990,7 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       branch: { type: "string" },
       base: { type: "string" },
       remote: { type: "string" },
+      kind: { type: "string" },
       "expect-owner": { type: "string" },
       "expect-head": { type: "string" },
       "generated-root": { type: "string", multiple: true },
@@ -8568,6 +10043,53 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
     });
   } else if (command === "finish") {
     result = manager.finish({ slug, ownerTask: values.owner, expectedRevision: parseRevision(values.revision) });
+  } else if (command === "retire") {
+    const initial = manager.status(slug)[0];
+    if (initial.state === "retired") {
+      result = Object.freeze({ status: "already-retired", slug, retirement: initial.retirement });
+    } else if (initial.retirement !== undefined) {
+      result = manager.verifyRetirementEnrollment({ kind: "managed", slug });
+    } else {
+      const finished = manager.finish({
+        slug,
+        ownerTask: values.owner,
+        expectedRevision: parseRevision(values.revision)
+      });
+      try {
+        manager.planRetirement({
+          slug,
+          ownerTask: values.owner,
+          expectedRevision: parseRevision(values.revision),
+          expectedGeneration: finished.generation
+        });
+      } catch (error) {
+        if (!(error instanceof CheckoutLifecycleError) || error.code !== "retirement-evidence-exists") throw error;
+      }
+      let enrollment;
+      try {
+        enrollment = manager.enrollRetirement({ kind: "managed", slug });
+      } catch (error) {
+        if (error instanceof CheckoutLifecycleError && error.code === "retirement-already-enrolled") {
+          enrollment = manager.verifyRetirementEnrollment({ kind: "managed", slug });
+        } else if (
+          error instanceof CheckoutLifecycleError &&
+          ["retirement-archive-missing", "retirement-archive-stale"].includes(error.code)
+        ) {
+          manager.archiveRetirement({
+            slug,
+            ownerTask: values.owner,
+            expectedRevision: parseRevision(values.revision),
+            expectedGeneration: finished.generation
+          });
+          enrollment = manager.enrollRetirement({ kind: "managed", slug });
+        } else throw error;
+      }
+      result = Object.freeze({ status: "retirement-enrolled", slug, finished, enrollment });
+    }
+  } else if (command === "enroll-retirement") {
+    result = manager.enrollRetirement({ kind: values.kind, slug });
+  } else if (command === "sweep") {
+    result = manager.sweep();
   } else if (command === "plan-retirement") {
     result = manager.planRetirement({
       slug,
