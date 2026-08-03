@@ -301,6 +301,33 @@ function pathIsInside(parent, candidate) {
   );
 }
 
+function assertRollbackIdentities({
+  rootDescriptor,
+  rootPath,
+  sourcePath,
+  targetPath,
+  rootState,
+  canonicalSnapshot,
+  copySnapshot
+}) {
+  const rootOpened = fstatSync(rootDescriptor, { bigint: true });
+  const rootNamed = lstatSync(rootPath, { bigint: true });
+  const canonicalNamed = lstatSync(sourcePath, { bigint: true });
+  const targetNamed = lstatSync(targetPath, { bigint: true });
+  const targetSnapshot = fileSnapshot(targetNamed);
+  if (
+    rootState === undefined ||
+    canonicalSnapshot === undefined ||
+    !sameRootSnapshot(rootState, rootSnapshot(rootOpened)) ||
+    !sameRootSnapshot(rootState, rootSnapshot(rootNamed)) ||
+    !sameFileSnapshot(canonicalSnapshot, fileSnapshot(canonicalNamed)) ||
+    !sameFileSnapshot(copySnapshot, targetSnapshot) ||
+    sameFileIdentity(canonicalSnapshot, targetSnapshot)
+  ) {
+    fail("An incomplete comparison source copy could not be identified safely for cleanup.");
+  }
+}
+
 /**
  * Copy one canonical fixture into a current-user-owned private root.
  *
@@ -490,19 +517,18 @@ export function createDataWranglerComparisonSourceCopy(
     }
     if (rootDescriptor !== undefined && copySnapshot !== undefined) {
       try {
-        const rootOpened = fstatSync(rootDescriptor, { bigint: true });
-        const rootNamed = lstatSync(rootPath, { bigint: true });
-        const targetNamed = lstatSync(targetPath, { bigint: true });
-        if (
-          rootState === undefined ||
-          !sameRootSnapshot(rootState, rootSnapshot(rootOpened)) ||
-          !sameRootSnapshot(rootState, rootSnapshot(rootNamed)) ||
-          !sameFileSnapshot(copySnapshot, fileSnapshot(targetNamed)) ||
-          (canonicalSnapshot !== undefined && sameFileIdentity(canonicalSnapshot, fileSnapshot(targetNamed)))
-        ) {
-          fail("An incomplete comparison source copy could not be identified safely for cleanup.");
-        }
+        const rollbackIdentity = {
+          rootDescriptor,
+          rootPath,
+          sourcePath,
+          targetPath,
+          rootState,
+          canonicalSnapshot,
+          copySnapshot
+        };
+        assertRollbackIdentities(rollbackIdentity);
         faultInjector?.("before-rollback-unlink");
+        assertRollbackIdentities(rollbackIdentity);
         unlinkSync(anchoredCopyPath(rootDescriptor, targetName));
       } catch (error) {
         cleanupErrors.push(error);

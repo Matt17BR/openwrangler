@@ -767,6 +767,52 @@ test("an ownership-uncertain inventory query leaves its scratch profile untouche
   });
 });
 
+test("nested profile-copy cleanup uncertainty preserves the inventory scratch ancestor", async () => {
+  await withDirectory(async (root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    const childCleanup = createDataWranglerComparisonCleanupUnsettledError(
+      [new Error("inventory profile cleanup identity changed")],
+      "Inventory profile cleanup is unsettled."
+    );
+    const nestedError = new AggregateError([childCleanup], "Inventory profile copy failed.");
+    let scratchRoot;
+    let retirementCalls = 0;
+    await assert.rejects(
+      queryDataWranglerTemplateInventory(
+        {
+          product: "open-wrangler",
+          kind: "configured-only",
+          root: templateRoot,
+          sandboxArgs: [],
+          inventory: []
+        },
+        { cli: "/editor/code" },
+        {},
+        {
+          copyTree(_source, target) {
+            scratchRoot = resolve(target, "..");
+            privateDirectory(target);
+            privateDirectory(resolve(target, "user"));
+            writeFileSync(resolve(target, "user", "replacement.txt"), "preserve this tree\n", { mode: 0o600 });
+            throw nestedError;
+          },
+          retireScratch() {
+            retirementCalls += 1;
+          }
+        }
+      ),
+      (error) => error === nestedError && dataWranglerComparisonCleanupMayBeUnsettled(error)
+    );
+    assert.equal(retirementCalls, 0);
+    assert.equal(
+      readFileSync(resolve(scratchRoot, "profile", "user", "replacement.txt"), "utf8"),
+      "preserve this tree\n"
+    );
+  });
+});
+
 test("Data Wrangler inventory is rebuilt from its pinned public Marketplace reference", async () => {
   await withDirectory(async (root) => {
     const templateRoot = privateDirectory(resolve(root, "template"));
@@ -1141,6 +1187,102 @@ test("source-copy cleanup uncertainty prevents the containing public-capture clo
         error.errors.length === 2 &&
         error.errors[0] === phaseError &&
         error.errors[1] === cleanupError
+    );
+    assert.equal(cloneRetirementCalls, 0);
+  });
+});
+
+test("run-kernel cleanup uncertainty prevents the containing public-capture clone from being retired", async () => {
+  await withDirectory(async (root) => {
+    const editor = { version: "1.130.0" };
+    const fixture = {
+      id: "csv-100k-50",
+      format: "csv",
+      rows: 100_000,
+      columns: 50,
+      sha256: "b".repeat(64),
+      schema: [{ name: "c00", dtype: "int64" }],
+      sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+    };
+    const parquetFixture = {
+      id: "parquet-1m-20",
+      format: "parquet",
+      rows: 1_000_000,
+      columns: 20,
+      sha256: "c".repeat(64),
+      schema: [{ name: "c00", dtype: "int64" }],
+      sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+    };
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    const kernelCleanup = createDataWranglerComparisonCleanupUnsettledError(
+      [new Error("public capture run-kernel tree contains a replacement")],
+      "Public capture run-kernel cleanup is unsettled."
+    );
+    const nestedError = new AggregateError([kernelCleanup], "Public capture run-kernel setup failed.");
+    let cloneRetirementCalls = 0;
+    await assert.rejects(
+      capturePreparedDataWranglerPublicUi(
+        {
+          specification: {
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            editor: {
+              id: "Microsoft.VisualStudioCode",
+              version: editor.version,
+              sha256: "a".repeat(64),
+              uiLocale: "en"
+            },
+            fixtures: [fixture, parquetFixture],
+            provenance: {
+              commonExtensions: PUBLIC_UI_BASE_EXTENSION_INVENTORY,
+              comparisonDriver: {}
+            }
+          },
+          templates: [
+            {
+              product: "data-wrangler",
+              kind: "configured-only",
+              root: templateRoot,
+              editor,
+              sandboxArgs: []
+            }
+          ],
+          templateTrees: new Map([["data-wrangler:configured-only", "d".repeat(64)]]),
+          studyRoot: root,
+          editor,
+          pythonPath: resolve(root, "python"),
+          kernel: {},
+          fixturePaths: { csv: resolve(root, "fixture.csv"), parquet: resolve(root, "fixture.parquet") },
+          driverDirectory: resolve(root, "driver"),
+          driverVsixPath: resolve(root, "driver.vsix")
+        },
+        {},
+        {
+          id: () => "12222222-2222-4222-8222-222222222222",
+          recoverDriver: () => ({}),
+          cloneTemplate(_template, { cloneRoot }) {
+            return {
+              root: privateDirectory(cloneRoot),
+              userData: privateDirectory(resolve(cloneRoot, "user")),
+              extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+              sandboxArgs: []
+            };
+          },
+          async installOpaqueExtension() {},
+          retireClone() {
+            cloneRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          createEnvironment: () => ({}),
+          configureTempRoot() {},
+          createProfile: (value) => value,
+          materializeKernel() {
+            throw nestedError;
+          }
+        }
+      ),
+      (error) => error === nestedError && dataWranglerComparisonCleanupMayBeUnsettled(error)
     );
     assert.equal(cloneRetirementCalls, 0);
   });
@@ -1686,7 +1828,7 @@ test("public run-next retires its clone when any pre-trial profile setup step fa
   });
 });
 
-async function runPreparedOpenWranglerFailure(root, trialError) {
+async function runPreparedOpenWranglerFailure(root, trialError, { materializeError } = {}) {
   const manifest = {
     candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
     baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
@@ -1758,6 +1900,7 @@ async function runPreparedOpenWranglerFailure(root, trialError) {
         createProfile: () => ({ authentic: "profile" }),
         async installOpaqueExtension() {},
         materializeKernel({ runRoot }) {
+          if (materializeError !== undefined) throw materializeError;
           const jupyterRoot = privateDirectory(resolve(runRoot, "jupyter"));
           return {
             jupyterEnvironment: {
@@ -1812,6 +1955,23 @@ test("public run-next leaves an ownership-uncertain measured-trial clone untouch
     trialError.details = { treeVerifiedStopped: false };
     const result = await runPreparedOpenWranglerFailure(root, trialError);
     assert.equal(result.thrown, trialError);
+    assert.equal(result.retirementCalls, 0);
+    assert.equal(existsSync(result.cloneRoot), true);
+  });
+});
+
+test("public run-next preserves its clone after nested run-kernel cleanup uncertainty", async () => {
+  await withDirectory(async (root) => {
+    const kernelCleanup = createDataWranglerComparisonCleanupUnsettledError(
+      [new Error("scheduled run-kernel tree contains a replacement")],
+      "Scheduled run-kernel cleanup is unsettled."
+    );
+    const nestedError = new AggregateError([kernelCleanup], "Scheduled run-kernel materialization failed.");
+    const result = await runPreparedOpenWranglerFailure(root, new Error("recording must not start"), {
+      materializeError: nestedError
+    });
+    assert.equal(result.thrown, nestedError);
+    assert.equal(dataWranglerComparisonCleanupMayBeUnsettled(result.thrown), true);
     assert.equal(result.retirementCalls, 0);
     assert.equal(existsSync(result.cloneRoot), true);
   });

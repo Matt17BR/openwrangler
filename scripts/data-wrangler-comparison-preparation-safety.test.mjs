@@ -18,6 +18,10 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
+  createDataWranglerComparisonCleanupUnsettledError,
+  dataWranglerComparisonCleanupMayBeUnsettled
+} from "./data-wrangler-comparison-cleanup-safety.mjs";
+import {
   captureDataWranglerPreparationFile,
   createDataWranglerConfiguredTemplateCapture,
   executeIdentityPinnedPreparationInterpreter,
@@ -396,4 +400,105 @@ test("configured capture retires its source and every identity-known target afte
     assert.equal(existsSync(privateRoot), false);
     assert.equal(existsSync(resolve(studyRoot, "templates", "data-wrangler", "configured-only")), false);
   }
+});
+
+test("configured capture preserves its target ancestor after nested child cleanup uncertainty", async (t) => {
+  const root = withRoot(t, "ow-preparation-configured-child-cleanup-");
+  const studyRoot = resolve(root, "study");
+  const privateRoot = resolve(root, "bootstrap-profile");
+  const userData = resolve(privateRoot, "user");
+  const extensions = resolve(privateRoot, "extensions");
+  mkdirSync(studyRoot, { mode: 0o700 });
+  mkdirSync(resolve(userData, "User"), { recursive: true, mode: 0o700 });
+  mkdirSync(extensions, { mode: 0o700 });
+  writeFileSync(resolve(userData, "User", "settings.json"), "{}\n", { mode: 0o600 });
+
+  const childCleanup = createDataWranglerComparisonCleanupUnsettledError(
+    [new Error("configured child cleanup identity changed")],
+    "Configured user capture cleanup is unsettled."
+  );
+  const nestedError = new AggregateError([childCleanup], "Configured user capture failed.");
+  const retirementLabels = [];
+  let retainedTarget;
+  const capture = createDataWranglerConfiguredTemplateCapture(studyRoot, {
+    copyTree(_source, target, label) {
+      assert.match(label, /configured user-data capture/u);
+      retainedTarget = target;
+      mkdirSync(target, { mode: 0o700 });
+      writeFileSync(resolve(target, "replacement.txt"), "preserve this tree\n", { mode: 0o600 });
+      throw nestedError;
+    },
+    retire(_receipt, label) {
+      retirementLabels.push(label);
+    }
+  });
+
+  await assert.rejects(
+    capture.capture({
+      product: "open-wrangler",
+      kind: "configured-only",
+      privateRoot,
+      userData,
+      extensions,
+      editor: {},
+      sandboxArgs: [],
+      installedExtensions: ["matt17br.openwrangler@1.2.1"],
+      settingsSha256: EMPTY_SETTINGS_SHA256
+    }),
+    (error) => error === nestedError && dataWranglerComparisonCleanupMayBeUnsettled(error)
+  );
+  assert.deepEqual(retirementLabels, ["Comparison open-wrangler configured source profile"]);
+  assert.equal(readFileSync(resolve(retainedTarget, "replacement.txt"), "utf8"), "preserve this tree\n");
+  assert.equal(existsSync(resolve(studyRoot, "templates", "open-wrangler", "configured-only")), true);
+});
+
+test("profile copier tags a real operation and child-retirement failure", async (t) => {
+  const root = withRoot(t, "ow-preparation-profile-copy-cleanup-");
+  const studyRoot = resolve(root, "study");
+  const privateRoot = resolve(root, "bootstrap-profile");
+  const userData = resolve(privateRoot, "user");
+  const extensions = resolve(privateRoot, "extensions");
+  const settingsPath = resolve(userData, "User", "settings.json");
+  const settingsReferent = resolve(root, "settings-referent.json");
+  mkdirSync(studyRoot, { mode: 0o700 });
+  mkdirSync(resolve(userData, "User"), { recursive: true, mode: 0o700 });
+  mkdirSync(extensions, { mode: 0o700 });
+  writeFileSync(settingsReferent, "{}\n", { mode: 0o600 });
+  symlinkSync(settingsReferent, settingsPath);
+
+  const childRetirementError = new Error("copied child retirement identity changed");
+  const retirementLabels = [];
+  const capture = createDataWranglerConfiguredTemplateCapture(studyRoot, {
+    captureSettings() {
+      return { sha256: EMPTY_SETTINGS_SHA256 };
+    },
+    retireCopiedTree() {
+      throw childRetirementError;
+    },
+    retire(_receipt, label) {
+      retirementLabels.push(label);
+    }
+  });
+
+  await assert.rejects(
+    capture.capture({
+      product: "open-wrangler",
+      kind: "configured-only",
+      privateRoot,
+      userData,
+      extensions,
+      editor: {},
+      sandboxArgs: [],
+      installedExtensions: ["matt17br.openwrangler@1.2.1"],
+      settingsSha256: EMPTY_SETTINGS_SHA256
+    }),
+    (error) =>
+      error instanceof AggregateError &&
+      dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+      error.errors.includes(childRetirementError) &&
+      error.errors.some((nested) => /unowned or linked entry/u.test(String(nested?.message ?? nested)))
+  );
+  assert.deepEqual(retirementLabels, ["Comparison open-wrangler configured source profile"]);
+  assert.equal(existsSync(resolve(studyRoot, "templates", "open-wrangler", "configured-only", "user")), true);
+  assert.equal(readFileSync(settingsReferent, "utf8"), "{}\n");
 });

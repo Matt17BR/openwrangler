@@ -18,6 +18,10 @@ import {
   rmSync
 } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  createDataWranglerComparisonCleanupUnsettledError,
+  dataWranglerComparisonCleanupMayBeUnsettled
+} from "./data-wrangler-comparison-cleanup-safety.mjs";
 import { recoverDataWranglerComparisonDriver } from "./data-wrangler-comparison-driver.mjs";
 import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
 import { assertDataWranglerPublicUiManifestEntryMatchesPhase } from "./data-wrangler-comparison-public-phase-receipt.mjs";
@@ -569,7 +573,15 @@ function isRetainedProfilePath(relativePath, extensionRoots) {
   return RETAINED_USER_DATA_DIRECTORIES.has(relativePath) || RETAINED_USER_DATA_FILES.has(relativePath);
 }
 
-function copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label, rootPrefix = "", extensionInventory = []) {
+function copyOpaqueSafeProfileTree(
+  sourceRoot,
+  targetRoot,
+  label,
+  rootPrefix = "",
+  extensionInventory = [],
+  { retireTarget = removeOwnedDirectoryReceipt } = {}
+) {
+  if (typeof retireTarget !== "function") fail(`${label} target-retirement dependency must be callable.`);
   canonicalAbsolutePath(sourceRoot, `${label} source`);
   canonicalAbsolutePath(targetRoot, `${label} target`);
   if (rootPrefix !== "" && !["user", "extensions"].includes(rootPrefix)) {
@@ -630,9 +642,12 @@ function copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label, rootPrefix = "
     return revalidateOwnedDirectoryReceipt(ownedTarget, `${label} target`);
   } catch (operationError) {
     try {
-      removeOwnedDirectoryReceipt(ownedTarget, `${label} target`);
+      retireTarget(ownedTarget, `${label} target`);
     } catch (cleanupError) {
-      throw new AggregateError([operationError, cleanupError], `${label} copy and cleanup both failed.`);
+      throw createDataWranglerComparisonCleanupUnsettledError(
+        [operationError, cleanupError],
+        `${label} copy and cleanup both failed.`
+      );
     }
     throw operationError;
   }
@@ -868,7 +883,12 @@ export async function queryDataWranglerTemplateInventory(
   } catch (error) {
     operationError = error;
   }
-  if (operationError !== undefined && editorProcessTreeMayBeLive(operationError)) throw operationError;
+  if (
+    operationError !== undefined &&
+    (editorProcessTreeMayBeLive(operationError) || dataWranglerComparisonCleanupMayBeUnsettled(operationError))
+  ) {
+    throw operationError;
+  }
   let cleanupError;
   try {
     retireScratch(scratchReceipt, "Comparison inventory scratch");
@@ -1301,6 +1321,7 @@ export function createDataWranglerConfiguredTemplateCapture(studyRoot, overrides
     captureReceipt: captureOwnedDirectoryReceipt,
     captureSettings: captureDataWranglerPreparationFile,
     copyTree: copyOpaqueSafeProfileTree,
+    retireCopiedTree: removeOwnedDirectoryReceipt,
     retire: removeOwnedDirectoryReceipt,
     targetSetupCheckpoint() {},
     ...overrides
@@ -1365,14 +1386,16 @@ export function createDataWranglerConfiguredTemplateCapture(studyRoot, overrides
           targetUser,
           `Comparison ${product} configured user-data capture`,
           "user",
-          inventory
+          inventory,
+          { retireTarget: dependencies.retireCopiedTree }
         );
         dependencies.copyTree(
           extensions,
           targetExtensions,
           `Comparison ${product} configured extension capture`,
           "extensions",
-          inventory
+          inventory,
+          { retireTarget: dependencies.retireCopiedTree }
         );
         const targetSettings = dependencies.captureSettings(
           resolve(targetUser, "User", "settings.json"),
@@ -1401,7 +1424,11 @@ export function createDataWranglerConfiguredTemplateCapture(studyRoot, overrides
       } catch (error) {
         cleanupErrors.push(error);
       }
-      if ((operationError !== undefined || cleanupErrors.length > 0) && targetReceipt !== undefined) {
+      if (
+        (operationError !== undefined || cleanupErrors.length > 0) &&
+        targetReceipt !== undefined &&
+        !dataWranglerComparisonCleanupMayBeUnsettled(operationError)
+      ) {
         try {
           dependencies.retire(targetReceipt, `Comparison ${product} configured template`);
         } catch (error) {

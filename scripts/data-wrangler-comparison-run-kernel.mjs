@@ -16,6 +16,7 @@ import {
   writeSync
 } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { createDataWranglerComparisonCleanupUnsettledError } from "./data-wrangler-comparison-cleanup-safety.mjs";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const KERNEL_NAME = /^dataframe-comparison-study-[a-z0-9][a-z0-9._-]{0,95}$/u;
@@ -555,6 +556,12 @@ export function materializeDataWranglerComparisonRunKernel({ runRoot, kernel }, 
   const failures = [operationError, ...sourceCloseErrors, cleanupError, ...directoryCloseErrors].filter(
     (error) => error !== undefined
   );
+  if (cleanupError !== undefined) {
+    throw createDataWranglerComparisonCleanupUnsettledError(
+      failures,
+      "Run-local Jupyter materialization or exact cleanup failed; its created tree could not be retired safely."
+    );
+  }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) {
     throw new AggregateError(failures, "Run-local Jupyter materialization or exact cleanup failed.");
