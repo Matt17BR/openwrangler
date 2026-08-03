@@ -86,16 +86,23 @@ Agent checkout lifecycle has a separate, small contract test:
   The command stops on shallow or partial repositories, promisor packs, content filters, grafts, object alternates, or
   private per-worktree refs that `--all` would miss. It binds the branch to the head captured by retirement planning,
   so ordinary commits made after checkout creation remain valid. Main and linked-worktree `ORIG_HEAD` values become
-  explicit bundle roots. Unsupported target operation metadata fails closed, as does a target `HEAD` reflog that is the
-  only remaining route to a commit.
+  explicit bundle roots. A target-worktree `FETCH_HEAD` is accepted only when its bounded Git line structure is valid;
+  human-readable descriptions remain opaque bytes. Every listed OID must resolve in the source and already be
+  reachable from the recovery roots, then recovery resolves those exact OIDs again before completion. The version 2
+  receipt binds the exact file, while a version 1 receipt proves it was absent under the older fail-closed policy.
+  Enrollment, the pre-move check, and the pre-purge check all compare the current file with that binding. Unsupported
+  target operation metadata fails closed, as does a target `HEAD` reflog or `FETCH_HEAD` entry that is the only
+  remaining route to an object.
 
   Header checks and `git bundle verify` are not the recovery proof. The command also unbundles into a new private bare
   repository kept inside the attempt, publishes a deterministic verification ref for every unique advertised OID,
   packs those refs, and runs `git fsck --full --strict` from those roots. The receipt and completion marker bind that
   repository's file manifest. Tests cover post-creation commits, common and local-only refs (including a blob ref), a
-  unique linked-worktree `ORIG_HEAD`, reflog-only work, operation state, more than 4,096 recovery roots, recovery into
-  an empty repository, truncated pack data, prerequisites, interrupted attempts, ref races, grafts, private worktree
-  refs, partial-clone config, promisor markers, and planted files. The archive omits worktree files, repository
+  unique linked-worktree `ORIG_HEAD`, multiple merge/no-merge `FETCH_HEAD` lines with opaque descriptions, malformed,
+  missing, and `FETCH_HEAD`-only objects, post-completion and post-enrollment `FETCH_HEAD` changes, version 1 receipts,
+  reflog-only work, operation state, more than 4,096 recovery roots, recovery into an empty repository, truncated pack
+  data, prerequisites, interrupted attempts, ref races, grafts, private worktree refs, partial-clone config, promisor
+  markers, and planted files. The archive omits worktree files, repository
   configuration, hooks, and unreachable objects; it refuses cleanup evidence when the target reflog would make that
   omission lose a commit. It uses no network and does not move, remove, prune, rename, unlink, or change a source ref.
   Process-use and mount checks stay pending, and no archive result authorizes cleanup.
