@@ -14,6 +14,7 @@ export const FULL_MATRIX_CI_JOBS = Object.freeze([
   "linux-packaged-editor",
   "coverage",
   "python-matrix",
+  "native-r-contract",
   "extension-host",
   "native-script-portability",
   "native-extension-host",

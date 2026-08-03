@@ -93,6 +93,7 @@
     "test:scripts:media:run": "node --max-old-space-size=1024 --test --test-concurrency=1 scripts/public-media-surfaces.test.mjs scripts/readme-media.test.mjs",
     "test:scripts:native": "node --test scripts/windows-job-supervisor.native.test.mjs",
     "test:ts": "vitest run",
+    "test:r-contract": "node scripts/run-r-contract-tests.mjs",
     "test:python-environment-smoke": "vitest run --config vite.python-environment-smoke.config.ts",
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
     "test:extension-host": "node scripts/run-heavy-local-command.mjs test:extension-host -- npm run test:extension-host:run",

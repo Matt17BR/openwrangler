@@ -30,6 +30,23 @@ The shared architecture will keep three facts separate:
 These are separate properties rather than aliases for one `backend` value. Shared types will be introduced with the
 runtime slice that uses them, not ahead of an implementation.
 
+The first implementation slice is a transport-neutral frame/page contract. It has these invariants:
+
+- The producer runs in R and accepts only canonical base `data.frame`, tibble, and `data.table` classes.
+- Every capture owns an isolated R snapshot. `data.table` snapshots use `data.table::copy()`.
+- Column identity is positional, so duplicate and non-syntactic names remain usable without rewriting the source.
+- R-specific factor, ordered-factor, Date, POSIXct, difftime, and integer64 metadata crosses the boundary explicitly.
+- Plain-double `NA`, `NaN`, positive infinity, and negative infinity remain distinct typed values. Non-finite
+  classed temporal values and fractional Dates are rejected instead of being relabeled or rounded.
+- Row, column, cell, factor-level, text, and encoded-payload limits are checked by the R producer and again by the
+  TypeScript decoder. The producer accounts for metadata and cells while building a page and stops before allocating
+  a complete oversized page or JSON string.
+- Unsupported classes, explicit row names, nested columns, and unrecognized attributes fail before a page is
+  published. The contract does not silently flatten them.
+
+This contract is internal groundwork. It does not add R to the Python `DataBackend` union, Python protocol v2, the
+session coordinator, commands, or the public support matrix.
+
 IRkernel is the first supported R transport. A notebook launch must stay bound to the exact `NotebookDocument` and
 kernel captured when the user starts it. Kernel lookup, dispatch, recovery, and cleanup may not retarget through the
 active editor, a matching URI, a replacement document, or another R session.
@@ -71,4 +88,6 @@ and plain R support may be advertised only after their exact-document helpers pa
   stay native to the selected language and dataframe flavor.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
+- R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and
+  packaged-editor tests remain required before any user-facing R claim.
 - A preview label does not relax notebook ownership, cleanup, or packaged-editor acceptance.

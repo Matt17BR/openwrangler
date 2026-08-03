@@ -23,7 +23,10 @@ export const allowedVsixEntryPatterns = [
   /^extension\/python\/openwrangler_runtime\/$/u,
   /^extension\/python\/openwrangler_runtime\/[^/]+\.py$/u,
   /^extension\/python\/openwrangler_runtime\/engines\/$/u,
-  /^extension\/python\/openwrangler_runtime\/engines\/[^/]+\.py$/u
+  /^extension\/python\/openwrangler_runtime\/engines\/[^/]+\.py$/u,
+  /^extension\/r\/$/u,
+  /^extension\/r\/openwrangler_runtime\/$/u,
+  /^extension\/r\/openwrangler_runtime\/frame_contract\.R$/u
 ];
 
 export const requiredVsixEntries = [
@@ -46,6 +49,7 @@ export const requiredVsixEntries = [
   "extension/media/activity-icon.svg",
   "extension/media/icon.png",
   "extension/media/icon-128.png",
+  "extension/r/openwrangler_runtime/frame_contract.R",
   "extension/python/openwrangler_runtime/dependency_guard.py",
   "extension/python/openwrangler_runtime/server.py",
   "extension/python/openwrangler_runtime/version.py"
