@@ -52,7 +52,11 @@ const LEGACY_ADOPTION_REQUEST_PROTOCOL_V2 = "openwrangler-legacy-checkout-adopti
 const LEGACY_ADOPTION_COMPLETION_PROTOCOL = "openwrangler-legacy-checkout-adoption-completion-v1";
 const LEGACY_ADOPTION_COMPLETION_PROTOCOL_V2 = "openwrangler-legacy-checkout-adoption-completion-v2";
 const LEGACY_BATCH_MANIFEST_PROTOCOL = "openwrangler-legacy-checkout-batch-v1";
+const LEGACY_BATCH_MANIFEST_PROTOCOL_V2 = "openwrangler-legacy-checkout-batch-v2";
 const LEGACY_BATCH_REVIEW_PROTOCOL = "openwrangler-legacy-checkout-batch-review-v1";
+const LEGACY_BATCH_REVIEW_PROTOCOL_V2 = "openwrangler-legacy-checkout-batch-review-v2";
+const LEGACY_DEPENDENCY_CATALOG_PROTOCOL = "openwrangler-legacy-dependency-catalog-v1";
+const LEGACY_DEPENDENCY_UNIVERSE_PROTOCOL = "openwrangler-legacy-dependency-universe-v2";
 const LEGACY_ARCHIVE_REQUEST_PROTOCOL_V1 = "openwrangler-legacy-recovery-archive-request-v1";
 const LEGACY_ARCHIVE_REQUEST_PROTOCOL = "openwrangler-legacy-recovery-archive-request-v2";
 const LEGACY_ARCHIVE_RECEIPT_PROTOCOL_V1 = "openwrangler-legacy-recovery-archive-v1";
@@ -134,6 +138,9 @@ const MAXIMUM_DISCOVERY_CANDIDATES = 2_048;
 const MAXIMUM_LEGACY_BATCH_MANIFEST_BYTES = 1024 * 1024;
 const MAXIMUM_LEGACY_BATCH_CANDIDATES = MAXIMUM_ENTRIES;
 const MAXIMUM_LEGACY_BATCH_DEPENDENCY_ENTRIES = 2_000_000;
+const MAXIMUM_LEGACY_EXPLICIT_CATALOG_ENTRIES = 4_096;
+const MAXIMUM_LEGACY_EXPLICIT_DIRECTORY_ENTRIES = 50_000;
+const MAXIMUM_LEGACY_EXPLICIT_REPOSITORIES = 16;
 const MAXIMUM_DEPENDENCY_REPOSITORIES = 2_048;
 const MAXIMUM_REPOSITORY_ROOTS = 256;
 const MAXIMUM_LEGACY_ADMIN_ENTRIES = 1_000_000;
@@ -3419,12 +3426,7 @@ export function createCheckoutManager(options = {}) {
       const repositoryProof = candidate.explicit ? captureLegacyRepositoryProof(snapshot) : undefined;
       const dependencyUniverse = candidate.explicit
         ? dependencyCatalog === undefined
-          ? captureLegacyDependencyUniverse(
-              candidate.checkout,
-              slug,
-              explicitTarget.dependencyRoots ?? explicitTarget.dependencyUniverse?.roots.map((root) => root.path),
-              explicitTarget.dependencyUniverse
-            )
+          ? captureRecordedLegacyDependencyUniverse(candidate.checkout, slug, explicitTarget)
           : dependencyCatalog.proofFor(candidate.checkout, slug, explicitTarget.dependencyUniverse)
         : undefined;
       revalidatePathIdentity(
@@ -4193,6 +4195,49 @@ export function createCheckoutManager(options = {}) {
 
   function legacyTargetFromRequest(request) {
     return request.protocol === LEGACY_ADOPTION_REQUEST_PROTOCOL_V2 ? request.target : undefined;
+  }
+
+  function preflightLegacyAdoptionRecords({
+    slug,
+    generation,
+    ownerTask,
+    token,
+    generatedRoots,
+    generatedFiles,
+    target,
+    evidence
+  }) {
+    const requestValue = {
+      protocol: LEGACY_ADOPTION_REQUEST_PROTOCOL_V2,
+      slug,
+      generation,
+      ownerTask,
+      ownerRevision: 1,
+      token,
+      generatedRoots,
+      generatedFiles,
+      target
+    };
+    validateLegacyRequest(requestValue, slug, generation);
+    const requestByteLength = assertPersistedJsonFits(requestValue, "The legacy adoption request");
+    assertPersistedJsonFits(
+      {
+        protocol: LEGACY_ADOPTION_COMPLETION_PROTOCOL_V2,
+        slug,
+        generation,
+        ownerTask,
+        ownerRevision: 1,
+        request: {
+          path: join(legacyAttemptPath(slug, generation), "request.json"),
+          identity: { device: "9".repeat(20), inode: "9".repeat(20) },
+          byteLength: requestByteLength,
+          sha256: "f".repeat(64)
+        },
+        evidence
+      },
+      "The legacy adoption completion"
+    );
+    return requestValue;
   }
 
   function requestedExplicitLegacyTarget(slug, checkoutPath, approvedRoot, dependencyRoots) {
@@ -9288,6 +9333,135 @@ export function createCheckoutManager(options = {}) {
   }
 
   function validateLegacyDependencyUniverse(value, providerPath) {
+    if (value?.protocol === LEGACY_DEPENDENCY_UNIVERSE_PROTOCOL) {
+      exactKeys(
+        value,
+        [
+          "protocol",
+          "roots",
+          "cleanupCandidates",
+          "cohortSha256",
+          "repositoryGroups",
+          "providerObjectsPath",
+          "repositoryCount",
+          "repositoriesSha256"
+        ],
+        "Explicit legacy dependency universe"
+      );
+      if (
+        !Array.isArray(value.roots) ||
+        value.roots.length < 1 ||
+        value.roots.length > MAXIMUM_DISCOVERY_ROOTS ||
+        !Array.isArray(value.cleanupCandidates) ||
+        value.cleanupCandidates.length < 1 ||
+        value.cleanupCandidates.length > MAXIMUM_LEGACY_BATCH_CANDIDATES ||
+        !/^[0-9a-f]{64}$/u.test(value.cohortSha256) ||
+        !Array.isArray(value.repositoryGroups) ||
+        value.repositoryGroups.length < 1 ||
+        value.repositoryGroups.length > MAXIMUM_DEPENDENCY_REPOSITORIES ||
+        value.providerObjectsPath !== resolve(providerPath, ".git", "objects") ||
+        !Number.isSafeInteger(value.repositoryCount) ||
+        value.repositoryCount < 0 ||
+        value.repositoryCount > MAXIMUM_DEPENDENCY_REPOSITORIES ||
+        !/^[0-9a-f]{64}$/u.test(value.repositoriesSha256)
+      ) {
+        fail("invalid-legacy-adoption", "The explicit legacy dependency universe is malformed.");
+      }
+      const catalogRoots = value.roots.map((root) => {
+        exactKeys(
+          root,
+          ["path", "identity", "entries", "entryReceipts", "entriesSha256"],
+          "Explicit dependency root proof"
+        );
+        validateIdentity(root.identity, "Explicit dependency root identity");
+        if (
+          !Array.isArray(root.entryReceipts) ||
+          root.entryReceipts.length !== root.entries.length ||
+          root.entryReceipts.some((receipt, index) => {
+            exactKeys(receipt, ["name", "sha256"], "Explicit dependency entry receipt");
+            return receipt.name !== root.entries[index]?.name || !/^[0-9a-f]{64}$/u.test(receipt.sha256);
+          }) ||
+          root.entriesSha256 !== explicitCatalogEntryReceiptsSha256(root.entryReceipts)
+        ) {
+          fail("invalid-legacy-adoption", "An explicit dependency root proof is malformed.");
+        }
+        return Object.freeze({ path: root.path, entries: root.entries });
+      });
+      const normalized = normalizeLegacyDependencyCatalog({
+        protocol: LEGACY_DEPENDENCY_CATALOG_PROTOCOL,
+        roots: catalogRoots
+      });
+      if (
+        !isDeepStrictEqual(
+          normalized.roots,
+          Object.freeze(value.roots.map((root) => Object.freeze({ path: root.path, entries: root.entries })))
+        )
+      ) {
+        fail("invalid-legacy-adoption", "Explicit dependency roots are not in canonical order.");
+      }
+      const providerRoot = value.roots.find((root) => root.path === dirname(providerPath));
+      if (
+        providerRoot === undefined ||
+        !providerRoot.entries.some((entry) => entry.name === basename(providerPath) && entry.kind === "repository")
+      ) {
+        fail("invalid-legacy-adoption", "The explicit dependency universe omits its provider repository.");
+      }
+      const repositoryPaths = value.roots.flatMap((root) =>
+        root.entries.filter((entry) => entry.kind === "repository").map((entry) => join(root.path, entry.name))
+      );
+      const cleanupCandidates = [...value.cleanupCandidates].sort((left, right) =>
+        Buffer.compare(Buffer.from(left), Buffer.from(right))
+      );
+      if (
+        new Set(value.cleanupCandidates).size !== value.cleanupCandidates.length ||
+        !isDeepStrictEqual(value.cleanupCandidates, cleanupCandidates) ||
+        !value.cleanupCandidates.includes(providerPath) ||
+        value.cleanupCandidates.some(
+          (path) =>
+            typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path || !repositoryPaths.includes(path)
+        )
+      ) {
+        fail("invalid-legacy-adoption", "The explicit dependency cleanup cohort is malformed.");
+      }
+      const groupedPaths = [];
+      for (const group of value.repositoryGroups) {
+        exactKeys(group, ["memberPaths", "recordSha256"], "Explicit dependency repository group");
+        if (
+          !Array.isArray(group.memberPaths) ||
+          group.memberPaths.length < 1 ||
+          group.memberPaths.length > MAXIMUM_WORKTREE_RECORDS ||
+          !/^[0-9a-f]{64}$/u.test(group.recordSha256) ||
+          new Set(group.memberPaths).size !== group.memberPaths.length ||
+          !isDeepStrictEqual(group.memberPaths, [...group.memberPaths].sort()) ||
+          group.memberPaths.some((path) => !repositoryPaths.includes(path))
+        ) {
+          fail("invalid-legacy-adoption", "An explicit dependency repository group is malformed.");
+        }
+        groupedPaths.push(...group.memberPaths);
+      }
+      if (
+        new Set(groupedPaths).size !== groupedPaths.length ||
+        !isDeepStrictEqual([...groupedPaths].sort(), [...repositoryPaths].sort())
+      ) {
+        fail("invalid-legacy-adoption", "Explicit dependency repository groups are incomplete.");
+      }
+      if (
+        value.cohortSha256 !== explicitCatalogCohortSha256(value.roots, value.cleanupCandidates, value.repositoryGroups)
+      ) {
+        fail("invalid-legacy-adoption", "The explicit dependency cleanup cohort digest is malformed.");
+      }
+      const providerGroups = value.repositoryGroups.filter((group) => group.memberPaths.includes(providerPath));
+      const otherGroups = value.repositoryGroups.filter((group) => !group.memberPaths.includes(providerPath));
+      if (
+        providerGroups.length !== 1 ||
+        providerGroups[0].memberPaths.length !== 1 ||
+        value.repositoryCount !== otherGroups.length ||
+        value.repositoriesSha256 !== explicitCatalogRepositoryGroupsSha256(otherGroups)
+      ) {
+        fail("invalid-legacy-adoption", "The explicit dependency repository proof is malformed.");
+      }
+      return value;
+    }
     exactKeys(
       value,
       ["roots", "maxDepth", "providerObjectsPath", "repositoryCount", "repositoriesSha256"],
@@ -9371,6 +9545,71 @@ export function createCheckoutManager(options = {}) {
     return Object.freeze(normalized);
   }
 
+  function normalizeLegacyDependencyCatalog(value, options = {}) {
+    exactKeys(value, ["protocol", "roots"], "Legacy dependency catalog");
+    if (
+      value.protocol !== LEGACY_DEPENDENCY_CATALOG_PROTOCOL ||
+      !Array.isArray(value.roots) ||
+      value.roots.length < 1 ||
+      value.roots.length > MAXIMUM_DISCOVERY_ROOTS
+    ) {
+      fail("invalid-legacy-batch", "The explicit dependency catalog has an unsupported protocol or root count.");
+    }
+    let entryCount = 0;
+    const roots = value.roots.map((root) => {
+      exactKeys(root, ["path", "entries"], "Legacy dependency catalog root");
+      if (
+        typeof root.path !== "string" ||
+        !isAbsolute(root.path) ||
+        resolve(root.path) !== root.path ||
+        !Array.isArray(root.entries) ||
+        (options.allowEmptyRoots !== true && root.entries.length < 1)
+      ) {
+        fail("invalid-legacy-batch", "Every explicit dependency root needs a canonical path and entries.");
+      }
+      const entries = root.entries.map((entry) => {
+        exactKeys(entry, ["name", "kind"], "Legacy dependency catalog entry");
+        if (
+          typeof entry.name !== "string" ||
+          entry.name === "" ||
+          entry.name === "." ||
+          entry.name === ".." ||
+          entry.name.includes("\0") ||
+          entry.name.includes("/") ||
+          entry.name.includes("\\") ||
+          Buffer.byteLength(entry.name, "utf8") > 255 ||
+          !["repository", "directory", "file", "symlink"].includes(entry.kind)
+        ) {
+          fail("invalid-legacy-batch", "An explicit dependency entry has an unsafe name or kind.");
+        }
+        entryCount += 1;
+        if (entryCount > MAXIMUM_LEGACY_EXPLICIT_CATALOG_ENTRIES) {
+          fail("invalid-legacy-batch", "The explicit dependency catalog has too many entries.");
+        }
+        return Object.freeze({ name: entry.name, kind: entry.kind });
+      });
+      entries.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
+      if (new Set(entries.map((entry) => entry.name)).size !== entries.length) {
+        fail("invalid-legacy-batch", "Explicit dependency entry names must be unique within each root.");
+      }
+      return Object.freeze({ path: root.path, entries: Object.freeze(entries) });
+    });
+    roots.sort((left, right) => left.path.localeCompare(right.path));
+    const rootPaths = roots.map((root) => root.path);
+    if (
+      new Set(rootPaths).size !== rootPaths.length ||
+      rootPaths.some((left, index) =>
+        rootPaths.some((right, other) => index !== other && isSameOrContained(right, left))
+      )
+    ) {
+      fail("invalid-legacy-batch", "Explicit dependency roots must be unique and non-overlapping.");
+    }
+    return Object.freeze({
+      protocol: LEGACY_DEPENDENCY_CATALOG_PROTOCOL,
+      roots: Object.freeze(roots)
+    });
+  }
+
   function readLegacyBatchManifest(manifestPath) {
     let canonicalPath;
     try {
@@ -9388,31 +9627,40 @@ export function createCheckoutManager(options = {}) {
     }
     const loaded = readJson(manifestPath, MAXIMUM_LEGACY_BATCH_MANIFEST_BYTES, "Legacy batch manifest", undefined);
     const value = loaded.value;
-    exactKeys(value, ["protocol", "dependencyRoots", "candidates"], "Legacy batch manifest");
+    const catalogManifest = value?.protocol === LEGACY_BATCH_MANIFEST_PROTOCOL_V2;
+    exactKeys(
+      value,
+      catalogManifest ? ["protocol", "dependencyCatalog", "candidates"] : ["protocol", "dependencyRoots", "candidates"],
+      "Legacy batch manifest"
+    );
     if (
-      value.protocol !== LEGACY_BATCH_MANIFEST_PROTOCOL ||
-      !Array.isArray(value.dependencyRoots) ||
-      value.dependencyRoots.length < 1 ||
-      value.dependencyRoots.length > MAXIMUM_DISCOVERY_ROOTS ||
+      ![LEGACY_BATCH_MANIFEST_PROTOCOL, LEGACY_BATCH_MANIFEST_PROTOCOL_V2].includes(value.protocol) ||
       !Array.isArray(value.candidates) ||
       value.candidates.length < 1 ||
       value.candidates.length > MAXIMUM_LEGACY_BATCH_CANDIDATES
     ) {
       fail("invalid-legacy-batch", "The legacy batch manifest has an unsupported protocol or item count.");
     }
-    const dependencyRoots = value.dependencyRoots.map((root) => {
-      if (typeof root !== "string" || !isAbsolute(root) || resolve(root) !== root) {
-        fail("invalid-legacy-batch", "Every dependency root must be an explicit canonical absolute path.");
+    const dependencyCatalog = catalogManifest ? normalizeLegacyDependencyCatalog(value.dependencyCatalog) : undefined;
+    const dependencyRoots = catalogManifest
+      ? dependencyCatalog.roots.map((root) => root.path)
+      : value.dependencyRoots.map((root) => {
+          if (typeof root !== "string" || !isAbsolute(root) || resolve(root) !== root) {
+            fail("invalid-legacy-batch", "Every dependency root must be an explicit canonical absolute path.");
+          }
+          return root;
+        });
+    if (!catalogManifest) {
+      if (
+        dependencyRoots.length < 1 ||
+        dependencyRoots.length > MAXIMUM_DISCOVERY_ROOTS ||
+        new Set(dependencyRoots).size !== dependencyRoots.length ||
+        dependencyRoots.some((left, index) =>
+          dependencyRoots.some((right, other) => index !== other && isSameOrContained(right, left))
+        )
+      ) {
+        fail("invalid-legacy-batch", "Dependency roots must be unique and non-overlapping.");
       }
-      return root;
-    });
-    if (
-      new Set(dependencyRoots).size !== dependencyRoots.length ||
-      dependencyRoots.some((left, index) =>
-        dependencyRoots.some((right, other) => index !== other && isSameOrContained(right, left))
-      )
-    ) {
-      fail("invalid-legacy-batch", "Dependency roots must be unique and non-overlapping.");
     }
     const candidates = value.candidates.map((candidate) => {
       exactKeys(
@@ -9431,7 +9679,12 @@ export function createCheckoutManager(options = {}) {
         resolve(candidate.root) !== candidate.root ||
         dirname(candidate.path) !== candidate.root ||
         basename(candidate.path) !== candidate.slug ||
-        !dependencyRoots.some((root) => isContained(root, candidate.path))
+        (catalogManifest
+          ? !dependencyRoots.includes(candidate.root) ||
+            !dependencyCatalog.roots
+              .find((root) => root.path === candidate.root)
+              ?.entries.some((entry) => entry.name === candidate.slug && entry.kind === "repository")
+          : !dependencyRoots.some((root) => isContained(root, candidate.path)))
       ) {
         fail(
           "invalid-legacy-batch",
@@ -9456,8 +9709,9 @@ export function createCheckoutManager(options = {}) {
       fail("invalid-legacy-batch", "Legacy batch candidate slugs and paths must be unique.");
     }
     const normalized = Object.freeze({
-      protocol: LEGACY_BATCH_MANIFEST_PROTOCOL,
+      protocol: value.protocol,
       dependencyRoots: Object.freeze([...dependencyRoots].sort()),
+      ...(dependencyCatalog === undefined ? {} : { dependencyCatalog }),
       candidates: Object.freeze(candidates)
     });
     revalidatePathIdentity(manifestPath, loaded.identity, "Legacy batch manifest");
@@ -9500,6 +9754,1629 @@ export function createCheckoutManager(options = {}) {
         .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
         .join("")
     );
+  }
+
+  function explicitCatalogEntryKind(metadata) {
+    if (metadata.isSymbolicLink()) return "symlink";
+    if (metadata.isDirectory()) return "directory";
+    if (metadata.isFile()) return "file";
+    return "special";
+  }
+
+  function explicitCatalogEntryReceiptsSha256(receipts) {
+    return sha256(receipts.map((receipt) => `${receipt.name}\0${receipt.sha256}\n`).join(""));
+  }
+
+  function explicitCatalogRepositoryGroupsSha256(groups) {
+    return sha256(
+      groups
+        .map((group) => `${group.memberPaths.join("\0")}\0${group.recordSha256}\n`)
+        .sort()
+        .join("")
+    );
+  }
+
+  function explicitCatalogCohortSha256(roots, cleanupCandidates, repositoryGroups) {
+    return sha256(
+      `${JSON.stringify({
+        protocol: "openwrangler-legacy-dependency-cohort-v1",
+        roots: roots.map((root) => ({
+          path: root.path,
+          identity: root.identity,
+          entriesSha256: root.entriesSha256
+        })),
+        cleanupCandidates,
+        repositoryGroups
+      })}\n`
+    );
+  }
+
+  function assertCatalogDirectoryEntriesAreNotRepository(entries, directoryPath) {
+    const names = new Set(entries.map((entry) => entry.name));
+    if (names.has(".git")) {
+      fail(
+        "legacy-provider-scan-unsafe",
+        `Explicit dependency entry ${directoryPath} is a repository but was cataloged as an ordinary directory.`
+      );
+    }
+    if (["HEAD", "objects", "refs"].every((name) => names.has(name))) {
+      fail(
+        "legacy-provider-scan-unsafe",
+        `Explicit dependency entry ${directoryPath} has a bare-repository signature but was cataloged as ordinary.`
+      );
+    }
+  }
+
+  function assertCatalogMount(descriptor, expectedMountId, label) {
+    if (descriptorMountId(descriptor, label) !== expectedMountId) {
+      fail("legacy-provider-scan-unsafe", `${label} crosses a mount boundary.`);
+    }
+  }
+
+  function openExplicitCatalogDirectoryAt(parentDescriptor, name, observed, expectedMountId, label) {
+    let opened;
+    try {
+      opened = openArtifactChildDirectoryDescriptor(parentDescriptor, name, observed, label);
+      assertCatalogMount(opened.descriptor, expectedMountId, label);
+      return opened;
+    } catch (error) {
+      if (opened !== undefined) closeSync(opened.descriptor);
+      if (!(error instanceof CheckoutLifecycleError)) throw error;
+      if (error.code === "artifact-changed") {
+        fail("legacy-dependency-universe-changed", `${label} changed before descriptor-relative inspection.`);
+      }
+      if (error.code.startsWith("artifact-")) {
+        fail("legacy-provider-scan-unsafe", `${label} is unsafe: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  function openExplicitCatalogAbsoluteDirectory(path, label, expectedIdentity = undefined, retainParent = false) {
+    if (path === "/" || dirname(path) === path) {
+      fail("legacy-provider-scan-unsafe", `${label} cannot be a filesystem root.`);
+    }
+    hooks?.beforeExplicitCatalogAbsoluteDirectoryOpen?.(Object.freeze({ path, label }));
+    let parent;
+    try {
+      parent = openArtifactDirectoryDescriptor(dirname(path), `${label} parent`, undefined, false);
+      const parentMountId = descriptorMountId(parent.descriptor, `${label} parent`);
+      const observed = lstatSync(artifactDescriptorPath(parent.descriptor, basename(path)), { bigint: true });
+      if (
+        !observed.isDirectory() ||
+        observed.isSymbolicLink() ||
+        !currentUserOwns(observed) ||
+        (expectedIdentity !== undefined && !sameIdentity(identityOf(observed), expectedIdentity))
+      ) {
+        fail("legacy-provider-scan-unsafe", `${label} is not the expected owned directory.`);
+      }
+      const opened = openExplicitCatalogDirectoryAt(parent.descriptor, basename(path), observed, parentMountId, label);
+      const result = Object.freeze({
+        ...opened,
+        mountId: parentMountId,
+        parentMetadata: parent.metadata,
+        ...(retainParent ? { parentDescriptor: parent.descriptor } : {})
+      });
+      if (retainParent) parent = undefined;
+      return result;
+    } catch (error) {
+      if (error instanceof CheckoutLifecycleError) {
+        if (error.code === "artifact-changed") {
+          fail("legacy-dependency-universe-changed", `${label} changed before descriptor-relative inspection.`);
+        }
+        if (error.code.startsWith("artifact-")) {
+          fail("legacy-provider-scan-unsafe", `${label} is unsafe: ${error.message}`);
+        }
+        throw error;
+      }
+      fail("legacy-provider-scan-unsafe", `${label} could not be opened without following links: ${error.message}`);
+    } finally {
+      if (parent !== undefined) closeSync(parent.descriptor);
+    }
+  }
+
+  function openExplicitCatalogFileDescriptor(parentDescriptor, name, observed, expectedMountId, label) {
+    let descriptor;
+    try {
+      descriptor = openSync(
+        artifactDescriptorPath(parentDescriptor, name),
+        constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0) | (constants.O_CLOEXEC ?? 0)
+      );
+      const metadata = fstatSync(descriptor, { bigint: true });
+      if (!metadata.isFile() || !currentUserOwns(metadata) || !sameArtifactStat(metadata, observed)) {
+        fail("legacy-dependency-universe-changed", `${label} changed before descriptor-relative inspection.`);
+      }
+      assertCatalogMount(descriptor, expectedMountId, label);
+      return Object.freeze({ descriptor, metadata });
+    } catch (error) {
+      if (descriptor !== undefined) closeSync(descriptor);
+      if (error instanceof CheckoutLifecycleError) throw error;
+      fail("legacy-dependency-universe-changed", `${label} could not be opened without following links.`);
+    }
+  }
+
+  function readExplicitCatalogFile(parentDescriptor, name, observed, expectedMountId, maximumBytes, label) {
+    const opened = openExplicitCatalogFileDescriptor(parentDescriptor, name, observed, expectedMountId, label);
+    try {
+      if (opened.metadata.size > BigInt(maximumBytes)) {
+        fail("legacy-provider-scan-unsafe", `${label} exceeds its fixed byte limit.`);
+      }
+      const bytes = Buffer.allocUnsafe(Number(opened.metadata.size));
+      let offset = 0;
+      while (offset < bytes.length) {
+        const count = readSync(opened.descriptor, bytes, offset, bytes.length - offset, offset);
+        if (count === 0) fail("legacy-dependency-universe-changed", `${label} changed while it was read.`);
+        offset += count;
+      }
+      const after = fstatSync(opened.descriptor, { bigint: true });
+      const named = lstatSync(artifactDescriptorPath(parentDescriptor, name), { bigint: true });
+      if (!sameArtifactStat(opened.metadata, after) || !sameArtifactStat(opened.metadata, named)) {
+        fail("legacy-dependency-universe-changed", `${label} changed while it was read.`);
+      }
+      let text;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        fail("legacy-provider-scan-unsafe", `${label} is not strict UTF-8.`);
+      }
+      return Object.freeze({
+        text,
+        bytes,
+        identity: identityOf(opened.metadata),
+        stat: opened.metadata,
+        sha256: sha256(bytes)
+      });
+    } finally {
+      closeSync(opened.descriptor);
+    }
+  }
+
+  function explicitCatalogStatRecord(metadata) {
+    return Object.freeze({
+      ...artifactStatRecord(metadata),
+      nlink: metadata.nlink.toString()
+    });
+  }
+
+  function captureExplicitCatalogDirectoryTree(
+    directoryDescriptor,
+    directoryPath,
+    directoryMetadata,
+    budget,
+    expectedMountId
+  ) {
+    const hash = createHash("sha256");
+    const rootDevice = directoryMetadata.dev;
+    let entryCount = 0;
+
+    const add = (record, countAgainstBudget = true) => {
+      entryCount += 1;
+      if (countAgainstBudget) budget.visitedEntries += 1;
+      if (budget.visitedEntries > MAXIMUM_LEGACY_EXPLICIT_DIRECTORY_ENTRIES) {
+        fail(
+          "legacy-provider-scan-unsafe",
+          "The recursively attested ordinary-directory catalog exceeded its fixed entry limit."
+        );
+      }
+      hash.update(`${JSON.stringify(record)}\n`);
+    };
+
+    const visit = (descriptor, logicalPath, observed, relativePath, depth) => {
+      if (depth > MAXIMUM_DISCOVERY_DEPTH) {
+        fail("legacy-provider-scan-unsafe", "An ordinary dependency directory exceeds its fixed depth limit.");
+      }
+      const before = fstatSync(descriptor, { bigint: true });
+      if (
+        !before.isDirectory() ||
+        !currentUserOwns(before) ||
+        before.dev !== rootDevice ||
+        !sameArtifactStat(before, observed)
+      ) {
+        fail("legacy-dependency-universe-changed", `Ordinary dependency directory ${logicalPath} changed.`);
+      }
+      assertCatalogMount(descriptor, expectedMountId, `Ordinary dependency directory ${logicalPath}`);
+      add({ kind: "directory", path: relativePath, ...explicitCatalogStatRecord(before) }, relativePath !== "");
+      hooks?.beforeExplicitCatalogDirectoryRead?.(Object.freeze({ rootPath: directoryPath, relativePath }));
+      const entries = readArtifactDirectoryBounded(
+        descriptor,
+        `Ordinary dependency directory ${logicalPath}`,
+        MAXIMUM_LEGACY_EXPLICIT_DIRECTORY_ENTRIES - budget.visitedEntries + 1
+      ).sort((left, right) => Buffer.compare(left.nameBytes, right.nameBytes));
+      assertCatalogDirectoryEntriesAreNotRepository(entries, logicalPath);
+      for (const entry of entries) {
+        const reference = artifactDescriptorPath(descriptor, entry.name);
+        const childPath = join(logicalPath, entry.name);
+        const childRelative = relativePath === "" ? entry.name : `${relativePath}/${entry.name}`;
+        const metadata = lstatSync(reference, { bigint: true });
+        if (!currentUserOwns(metadata) || metadata.dev !== rootDevice) {
+          fail("legacy-provider-scan-unsafe", `Ordinary dependency entry ${childPath} is not locally owned.`);
+        }
+        if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+          const child = openExplicitCatalogDirectoryAt(
+            descriptor,
+            entry.name,
+            metadata,
+            expectedMountId,
+            `Ordinary dependency directory ${childPath}`
+          );
+          try {
+            visit(child.descriptor, childPath, child.metadata, childRelative, depth + 1);
+          } finally {
+            closeSync(child.descriptor);
+          }
+          const named = lstatSync(reference, { bigint: true });
+          if (!sameArtifactStat(metadata, named)) {
+            fail("legacy-dependency-universe-changed", `Ordinary dependency directory ${childPath} changed.`);
+          }
+          continue;
+        }
+        if (metadata.isFile() && !metadata.isSymbolicLink()) {
+          const file = openExplicitCatalogFileDescriptor(
+            descriptor,
+            entry.name,
+            metadata,
+            expectedMountId,
+            `Ordinary dependency file ${childPath}`
+          );
+          try {
+            const after = fstatSync(file.descriptor, { bigint: true });
+            const named = lstatSync(reference, { bigint: true });
+            if (!sameArtifactStat(metadata, after) || !sameArtifactStat(metadata, named)) {
+              fail("legacy-dependency-universe-changed", `Ordinary dependency file ${childPath} changed.`);
+            }
+            add({ kind: "file", path: childRelative, ...explicitCatalogStatRecord(metadata) });
+          } finally {
+            closeSync(file.descriptor);
+          }
+          continue;
+        }
+        if (metadata.isSymbolicLink()) {
+          const target = readlinkSync(reference, { encoding: "buffer" });
+          if (target.byteLength > MAXIMUM_ARTIFACT_SYMLINK_BYTES) {
+            fail("legacy-provider-scan-unsafe", `Ordinary dependency symlink ${childPath} is too long.`);
+          }
+          const after = lstatSync(reference, { bigint: true });
+          if (!sameArtifactStat(metadata, after)) {
+            fail("legacy-dependency-universe-changed", `Ordinary dependency symlink ${childPath} changed.`);
+          }
+          add({
+            kind: "symlink",
+            path: childRelative,
+            ...explicitCatalogStatRecord(metadata),
+            targetBase64: target.toString("base64")
+          });
+          continue;
+        }
+        fail("legacy-provider-scan-unsafe", `Ordinary dependency entry ${childPath} is a special file.`);
+      }
+      const after = fstatSync(descriptor, { bigint: true });
+      if (!sameArtifactStat(before, after)) {
+        fail("legacy-dependency-universe-changed", `Ordinary dependency directory ${logicalPath} changed.`);
+      }
+      assertCatalogMount(descriptor, expectedMountId, `Ordinary dependency directory ${logicalPath}`);
+    };
+
+    assertNoMountAtOrBelow(directoryPath);
+    visit(directoryDescriptor, directoryPath, directoryMetadata, "", 0);
+    assertNoMountAtOrBelow(directoryPath);
+    return Object.freeze({ entryCount: entryCount - 1, sha256: hash.digest("hex") });
+  }
+
+  function captureExplicitCatalogRepository(directoryPath, directoryHandle, directoryMountId) {
+    const directoryIdentity = identityOf(directoryHandle.metadata);
+    const entries = readArtifactDirectoryBounded(
+      directoryHandle.descriptor,
+      `Explicit dependency repository ${directoryPath}`,
+      MAXIMUM_DISCOVERY_ENTRIES
+    );
+    const entriesByName = new Map(entries.map((entry) => [entry.name, entry]));
+    const metadataFor = (name) => {
+      try {
+        return lstatSync(artifactDescriptorPath(directoryHandle.descriptor, name), { bigint: true });
+      } catch (error) {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      }
+    };
+    const dotGitMetadata = metadataFor(".git");
+    const looksBare = ["HEAD", "objects", "refs"].every((name) => entriesByName.has(name));
+    if (looksBare && dotGitMetadata !== undefined) {
+      fail("legacy-provider-scan-unsafe", "An explicit dependency is ambiguous between bare and worktree layouts.");
+    }
+    const descriptorReceipts = [];
+    const pointerReceipts = [];
+
+    if (looksBare) {
+      const headMetadata = metadataFor("HEAD");
+      const configMetadata = metadataFor("config");
+      const objectsMetadata = metadataFor("objects");
+      const refsMetadata = metadataFor("refs");
+      if (
+        !headMetadata?.isFile() ||
+        headMetadata.isSymbolicLink() ||
+        (configMetadata !== undefined && (!configMetadata.isFile() || configMetadata.isSymbolicLink())) ||
+        !objectsMetadata?.isDirectory() ||
+        objectsMetadata.isSymbolicLink() ||
+        !refsMetadata?.isDirectory() ||
+        refsMetadata.isSymbolicLink()
+      ) {
+        fail("legacy-provider-scan-unsafe", "An explicit dependency has an unsafe bare-repository signature.");
+      }
+      const head = readExplicitCatalogFile(
+        directoryHandle.descriptor,
+        "HEAD",
+        headMetadata,
+        directoryMountId,
+        MAXIMUM_LEGACY_REF_BYTES,
+        "Bare dependency HEAD"
+      );
+      descriptorReceipts.push(
+        Object.freeze({
+          parentDescriptor: directoryHandle.descriptor,
+          name: "HEAD",
+          observed: head.stat,
+          mountId: directoryMountId,
+          maximumBytes: MAXIMUM_LEGACY_REF_BYTES,
+          sha256: head.sha256,
+          label: "Bare dependency HEAD"
+        })
+      );
+      const symbolicHead = /^ref: ([^\0\r\n]+)\n$/u.exec(head.text);
+      if (symbolicHead === null) {
+        if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?\n$/u.test(head.text)) {
+          fail("legacy-provider-scan-unsafe", "A bare dependency has a malformed HEAD.");
+        }
+      } else {
+        const checked = run("git", ["check-ref-format", symbolicHead[1]], {
+          cwd: inheritedDescriptorPath(directoryHandle.descriptor),
+          allowFailure: true,
+          env: auditGitEnvironment()
+        });
+        if (checked.status !== 0) fail("legacy-provider-scan-unsafe", "A bare dependency has an invalid HEAD ref.");
+      }
+      let config = null;
+      if (configMetadata !== undefined) {
+        config = readExplicitCatalogFile(
+          directoryHandle.descriptor,
+          "config",
+          configMetadata,
+          directoryMountId,
+          MAXIMUM_LEGACY_CONFIG_BYTES,
+          "Bare dependency configuration"
+        );
+        descriptorReceipts.push(
+          Object.freeze({
+            parentDescriptor: directoryHandle.descriptor,
+            name: "config",
+            observed: config.stat,
+            mountId: directoryMountId,
+            maximumBytes: MAXIMUM_LEGACY_CONFIG_BYTES,
+            sha256: config.sha256,
+            label: "Bare dependency configuration"
+          })
+        );
+        const configFile = openExplicitCatalogFileDescriptor(
+          directoryHandle.descriptor,
+          "config",
+          configMetadata,
+          directoryMountId,
+          "Bare dependency configuration"
+        );
+        try {
+          const bare = run(
+            "git",
+            [
+              "config",
+              "--file",
+              inheritedDescriptorPath(configFile.descriptor),
+              "--no-includes",
+              "--type=bool",
+              "--get",
+              "core.bare"
+            ],
+            {
+              cwd: inheritedDescriptorPath(directoryHandle.descriptor),
+              allowFailure: true,
+              env: auditGitEnvironment()
+            }
+          );
+          if (bare.status !== 0 || bare.stdout.trim() !== "true") {
+            fail("legacy-provider-scan-unsafe", "A dependency has bare markers without core.bare=true.");
+          }
+        } finally {
+          closeSync(configFile.descriptor);
+        }
+      }
+      const objects = openExplicitCatalogDirectoryAt(
+        directoryHandle.descriptor,
+        "objects",
+        objectsMetadata,
+        directoryMountId,
+        "Bare dependency object directory"
+      );
+      let refs;
+      try {
+        refs = openExplicitCatalogDirectoryAt(
+          directoryHandle.descriptor,
+          "refs",
+          refsMetadata,
+          directoryMountId,
+          "Bare dependency refs directory"
+        );
+      } catch (error) {
+        closeSync(objects.descriptor);
+        throw error;
+      }
+      let transferredObjects = false;
+      try {
+        assertCatalogMount(objects.descriptor, directoryMountId, "Bare dependency object directory");
+        assertCatalogMount(refs.descriptor, directoryMountId, "Bare dependency refs directory");
+        const result = Object.freeze({
+          path: directoryPath,
+          pathIdentity: directoryIdentity,
+          pathMetadata: directoryHandle.metadata,
+          pathDescriptor: directoryHandle.descriptor,
+          pathMountId: directoryMountId,
+          kind: "bare",
+          gitDirectory: directoryPath,
+          gitIdentity: directoryIdentity,
+          gitDescriptor: directoryHandle.descriptor,
+          gitMountId: directoryMountId,
+          commonGitDirectory: directoryPath,
+          commonGitIdentity: directoryIdentity,
+          commonGitDescriptor: directoryHandle.descriptor,
+          commonGitMountId: directoryMountId,
+          objectsDirectory: join(directoryPath, "objects"),
+          objectsIdentity: identityOf(objects.metadata),
+          objectsMetadata: objects.metadata,
+          objectsDescriptor: objects.descriptor,
+          objectsMountId: directoryMountId,
+          repositoryState: Object.freeze({
+            kind: "bare",
+            objectsDirectory: join(directoryPath, "objects"),
+            objectsIdentity: identityOf(objects.metadata),
+            head: Object.freeze({ path: join(directoryPath, "HEAD"), identity: head.identity, sha256: head.sha256 }),
+            config:
+              config === null
+                ? Object.freeze({ path: join(directoryPath, "config"), present: false })
+                : Object.freeze({
+                    path: join(directoryPath, "config"),
+                    present: true,
+                    identity: config.identity,
+                    sha256: config.sha256
+                  }),
+            refs: Object.freeze({ path: join(directoryPath, "refs"), identity: identityOf(refs.metadata) })
+          }),
+          pointerReceipts: Object.freeze(pointerReceipts),
+          descriptorReceipts: Object.freeze(descriptorReceipts),
+          ownedDescriptors: Object.freeze([objects.descriptor])
+        });
+        transferredObjects = true;
+        return result;
+      } finally {
+        closeSync(refs.descriptor);
+        if (!transferredObjects) closeSync(objects.descriptor);
+      }
+    }
+
+    if (
+      dotGitMetadata === undefined ||
+      dotGitMetadata.isSymbolicLink() ||
+      !currentUserOwns(dotGitMetadata) ||
+      (!dotGitMetadata.isDirectory() && !dotGitMetadata.isFile())
+    ) {
+      fail("legacy-provider-scan-unsafe", "An explicit repository has an unsafe or missing .git entry.");
+    }
+    hooks?.beforeExplicitRepositoryGitOpen?.(
+      Object.freeze({ repositoryPath: directoryPath, gitKind: dotGitMetadata.isDirectory() ? "directory" : "file" })
+    );
+    if (dotGitMetadata.isFile()) {
+      const pointer = readExplicitCatalogFile(
+        directoryHandle.descriptor,
+        ".git",
+        dotGitMetadata,
+        directoryMountId,
+        MAXIMUM_WORKTREE_FIELD_BYTES,
+        "Explicit worktree .git pointer"
+      );
+      const match = /^gitdir: ([^\0\r\n]+)\n$/u.exec(pointer.text);
+      if (match === null) fail("legacy-provider-scan-unsafe", "An explicit worktree has a malformed .git pointer.");
+      const gitDirectory = resolve(directoryPath, match[1]);
+      if (match[1] !== gitDirectory) {
+        fail("legacy-provider-scan-unsafe", "An explicit worktree .git pointer is not an exact canonical path.");
+      }
+      pointerReceipts.push(
+        Object.freeze({ path: join(directoryPath, ".git"), identity: pointer.identity, sha256: pointer.sha256 })
+      );
+      descriptorReceipts.push(
+        Object.freeze({
+          parentDescriptor: directoryHandle.descriptor,
+          name: ".git",
+          observed: pointer.stat,
+          mountId: directoryMountId,
+          maximumBytes: MAXIMUM_WORKTREE_FIELD_BYTES,
+          sha256: pointer.sha256,
+          label: "Explicit worktree .git pointer"
+        })
+      );
+      return Object.freeze({
+        path: directoryPath,
+        pathIdentity: directoryIdentity,
+        pathMetadata: directoryHandle.metadata,
+        pathDescriptor: directoryHandle.descriptor,
+        pathMountId: directoryMountId,
+        kind: "linked-worktree-pending",
+        gitDirectory,
+        pointerReceipts: Object.freeze(pointerReceipts),
+        descriptorReceipts: Object.freeze(descriptorReceipts),
+        ownedDescriptors: Object.freeze([])
+      });
+    }
+
+    const gitDirectory = join(directoryPath, ".git");
+    const gitHandle = openExplicitCatalogDirectoryAt(
+      directoryHandle.descriptor,
+      ".git",
+      dotGitMetadata,
+      directoryMountId,
+      "Explicit dependency Git directory"
+    );
+    let objects;
+    let transferredDescriptors = false;
+    try {
+      assertCatalogMount(gitHandle.descriptor, directoryMountId, "Explicit dependency Git directory");
+      let commondirMetadata;
+      try {
+        commondirMetadata = lstatSync(artifactDescriptorPath(gitHandle.descriptor, "commondir"), { bigint: true });
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      if (commondirMetadata !== undefined) {
+        fail("legacy-provider-scan-unsafe", "A standalone explicit repository has an unexpected commondir pointer.");
+      }
+      let objectsMetadata;
+      try {
+        objectsMetadata = lstatSync(artifactDescriptorPath(gitHandle.descriptor, "objects"), { bigint: true });
+      } catch {
+        fail("legacy-provider-scan-unsafe", "An explicit dependency object directory is missing.");
+      }
+      if (!objectsMetadata.isDirectory() || objectsMetadata.isSymbolicLink() || !currentUserOwns(objectsMetadata)) {
+        fail("legacy-provider-scan-unsafe", "An explicit dependency object directory is unsafe.");
+      }
+      objects = openExplicitCatalogDirectoryAt(
+        gitHandle.descriptor,
+        "objects",
+        objectsMetadata,
+        directoryMountId,
+        "Explicit dependency object directory"
+      );
+      assertCatalogMount(objects.descriptor, directoryMountId, "Explicit dependency object directory");
+      const result = Object.freeze({
+        path: directoryPath,
+        pathIdentity: directoryIdentity,
+        pathMetadata: directoryHandle.metadata,
+        pathDescriptor: directoryHandle.descriptor,
+        pathMountId: directoryMountId,
+        kind: "standalone",
+        gitDirectory,
+        gitIdentity: identityOf(gitHandle.metadata),
+        gitMetadata: gitHandle.metadata,
+        gitDescriptor: gitHandle.descriptor,
+        gitMountId: directoryMountId,
+        commonGitDirectory: gitDirectory,
+        commonGitIdentity: identityOf(gitHandle.metadata),
+        commonGitMetadata: gitHandle.metadata,
+        commonGitDescriptor: gitHandle.descriptor,
+        commonGitMountId: directoryMountId,
+        objectsDirectory: join(gitDirectory, "objects"),
+        objectsIdentity: identityOf(objects.metadata),
+        objectsMetadata: objects.metadata,
+        objectsDescriptor: objects.descriptor,
+        objectsMountId: directoryMountId,
+        repositoryState: Object.freeze({
+          kind: "worktree",
+          objectsDirectory: join(gitDirectory, "objects"),
+          objectsIdentity: identityOf(objects.metadata)
+        }),
+        pointerReceipts: Object.freeze(pointerReceipts),
+        descriptorReceipts: Object.freeze(descriptorReceipts),
+        ownedDescriptors: Object.freeze([gitHandle.descriptor, objects.descriptor])
+      });
+      transferredDescriptors = true;
+      return result;
+    } finally {
+      if (!transferredDescriptors) {
+        if (objects !== undefined) closeSync(objects.descriptor);
+        closeSync(gitHandle.descriptor);
+      }
+    }
+  }
+
+  function resolveExplicitCatalogLinkedRepository(repository, baseGroupsByWorktreesPath) {
+    const registryPath = dirname(repository.gitDirectory);
+    const baseGroup = baseGroupsByWorktreesPath.get(registryPath);
+    const adminName = basename(repository.gitDirectory);
+    if (
+      baseGroup === undefined ||
+      adminName === "" ||
+      adminName === "." ||
+      adminName === ".." ||
+      join(registryPath, adminName) !== repository.gitDirectory
+    ) {
+      fail("legacy-provider-scan-unsafe", "A linked worktree points outside the reviewed Git registries.");
+    }
+    let registryMetadata;
+    try {
+      registryMetadata = lstatSync(artifactDescriptorPath(baseGroup.commonGitDescriptor, "worktrees"), {
+        bigint: true
+      });
+    } catch {
+      fail("legacy-provider-scan-unsafe", "A linked worktree points to a missing reviewed Git registry.");
+    }
+    if (!registryMetadata.isDirectory() || registryMetadata.isSymbolicLink() || !currentUserOwns(registryMetadata)) {
+      fail("legacy-provider-scan-unsafe", "A linked worktree points to an unsafe reviewed Git registry.");
+    }
+    const registry = openExplicitCatalogDirectoryAt(
+      baseGroup.commonGitDescriptor,
+      "worktrees",
+      registryMetadata,
+      baseGroup.commonGitMountId,
+      "Explicit Git linked-worktree registry"
+    );
+    let gitHandle;
+    let transferred = false;
+    try {
+      let gitMetadata;
+      try {
+        gitMetadata = lstatSync(artifactDescriptorPath(registry.descriptor, adminName), { bigint: true });
+      } catch {
+        fail("legacy-provider-scan-unsafe", "A linked worktree points to a missing reviewed registry entry.");
+      }
+      if (!gitMetadata.isDirectory() || gitMetadata.isSymbolicLink() || !currentUserOwns(gitMetadata)) {
+        fail("legacy-provider-scan-unsafe", "A linked worktree points to an unsafe reviewed registry entry.");
+      }
+      gitHandle = openExplicitCatalogDirectoryAt(
+        registry.descriptor,
+        adminName,
+        gitMetadata,
+        baseGroup.commonGitMountId,
+        `Explicit linked-worktree entry ${adminName}`
+      );
+      let commondirMetadata;
+      try {
+        commondirMetadata = lstatSync(artifactDescriptorPath(gitHandle.descriptor, "commondir"), { bigint: true });
+      } catch {
+        fail("legacy-provider-scan-unsafe", "An explicit worktree has no common-directory pointer.");
+      }
+      if (!commondirMetadata.isFile() || commondirMetadata.isSymbolicLink() || !currentUserOwns(commondirMetadata)) {
+        fail("legacy-provider-scan-unsafe", "An explicit worktree has an unsafe common-directory pointer.");
+      }
+      const pointer = readExplicitCatalogFile(
+        gitHandle.descriptor,
+        "commondir",
+        commondirMetadata,
+        baseGroup.commonGitMountId,
+        MAXIMUM_WORKTREE_FIELD_BYTES,
+        "Explicit worktree common-directory pointer"
+      );
+      const match = /^([^\0\r\n]+)\n$/u.exec(pointer.text);
+      if (
+        match === null ||
+        match[1] !== "../.." ||
+        resolve(repository.gitDirectory, match[1]) !== baseGroup.commonGitDirectory
+      ) {
+        fail("legacy-provider-scan-unsafe", "An explicit worktree points outside its reviewed common Git directory.");
+      }
+      const pointerReceipts = Object.freeze([
+        ...repository.pointerReceipts,
+        Object.freeze({
+          path: join(repository.gitDirectory, "commondir"),
+          identity: pointer.identity,
+          sha256: pointer.sha256
+        })
+      ]);
+      const descriptorReceipts = Object.freeze([
+        ...repository.descriptorReceipts,
+        Object.freeze({
+          parentDescriptor: gitHandle.descriptor,
+          name: "commondir",
+          observed: pointer.stat,
+          mountId: baseGroup.commonGitMountId,
+          maximumBytes: MAXIMUM_WORKTREE_FIELD_BYTES,
+          sha256: pointer.sha256,
+          label: "Explicit worktree common-directory pointer"
+        })
+      ]);
+      const result = Object.freeze({
+        ...repository,
+        kind: "linked-worktree",
+        gitIdentity: identityOf(gitHandle.metadata),
+        gitMetadata: gitHandle.metadata,
+        gitDescriptor: gitHandle.descriptor,
+        gitMountId: baseGroup.commonGitMountId,
+        commonGitDirectory: baseGroup.commonGitDirectory,
+        commonGitIdentity: baseGroup.commonGitIdentity,
+        commonGitMetadata: baseGroup.commonGitMetadata ?? baseGroup.pathMetadata,
+        commonGitDescriptor: baseGroup.commonGitDescriptor,
+        commonGitMountId: baseGroup.commonGitMountId,
+        objectsDirectory: baseGroup.objectsDirectory,
+        objectsIdentity: baseGroup.objectsIdentity,
+        objectsMetadata: baseGroup.objectsMetadata,
+        objectsDescriptor: baseGroup.objectsDescriptor,
+        objectsMountId: baseGroup.objectsMountId,
+        repositoryState: Object.freeze({
+          kind: "worktree",
+          objectsDirectory: baseGroup.objectsDirectory,
+          objectsIdentity: baseGroup.objectsIdentity
+        }),
+        pointerReceipts,
+        descriptorReceipts,
+        ownedDescriptors: Object.freeze([gitHandle.descriptor])
+      });
+      transferred = true;
+      return result;
+    } finally {
+      closeSync(registry.descriptor);
+      if (!transferred && gitHandle !== undefined) closeSync(gitHandle.descriptor);
+    }
+  }
+
+  function readExplicitRepositoryAlternates(repository, objectsToGroup) {
+    const alternatesPath = join(repository.objectsDirectory, "info", "alternates");
+    let infoMetadata;
+    try {
+      infoMetadata = lstatSync(artifactDescriptorPath(repository.objectsDescriptor, "info"), { bigint: true });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    let infoHandle;
+    let file = null;
+    if (infoMetadata !== undefined) {
+      if (!infoMetadata.isDirectory() || infoMetadata.isSymbolicLink() || !currentUserOwns(infoMetadata)) {
+        fail("legacy-provider-scan-unsafe", "An explicit repository has an unsafe objects/info directory.");
+      }
+      infoHandle = openExplicitCatalogDirectoryAt(
+        repository.objectsDescriptor,
+        "info",
+        infoMetadata,
+        repository.objectsMountId,
+        "Explicit dependency objects/info directory"
+      );
+      assertCatalogMount(
+        infoHandle.descriptor,
+        repository.objectsMountId,
+        "Explicit dependency objects/info directory"
+      );
+      let alternatesMetadata;
+      try {
+        alternatesMetadata = lstatSync(artifactDescriptorPath(infoHandle.descriptor, "alternates"), { bigint: true });
+      } catch (error) {
+        if (error.code !== "ENOENT") {
+          closeSync(infoHandle.descriptor);
+          throw error;
+        }
+      }
+      if (alternatesMetadata !== undefined) {
+        if (
+          !alternatesMetadata.isFile() ||
+          alternatesMetadata.isSymbolicLink() ||
+          !currentUserOwns(alternatesMetadata)
+        ) {
+          closeSync(infoHandle.descriptor);
+          fail("legacy-provider-scan-unsafe", "An explicit repository has an unsafe alternates file.");
+        }
+        hooks?.beforeExplicitAlternatesOpen?.(Object.freeze({ objectsPath: repository.objectsDirectory }));
+        try {
+          file = readExplicitCatalogFile(
+            infoHandle.descriptor,
+            "alternates",
+            alternatesMetadata,
+            repository.objectsMountId,
+            MAXIMUM_LEGACY_CONFIG_BYTES,
+            "Explicit dependency object alternates"
+          );
+        } catch (error) {
+          closeSync(infoHandle.descriptor);
+          throw error;
+        }
+      }
+    }
+    let retainedInfo = false;
+    try {
+      const text = file?.text ?? "";
+      if (text !== "" && !text.endsWith("\n")) {
+        fail("legacy-provider-scan-unsafe", "An explicit repository has malformed object alternates.");
+      }
+      const targets = text
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          if (line.includes("\0") || line.includes("\r")) {
+            fail("legacy-provider-scan-unsafe", "An explicit repository has malformed object alternates.");
+          }
+          const requested = resolve(repository.objectsDirectory, line);
+          if (line !== requested) {
+            fail("legacy-provider-scan-unsafe", "An explicit repository alternate is not an exact canonical path.");
+          }
+          const targetGroup = objectsToGroup.get(requested);
+          if (targetGroup === undefined) {
+            fail("legacy-provider-scan-unsafe", "An explicit repository alternate is outside the reviewed catalog.");
+          }
+          let namedMetadata;
+          try {
+            namedMetadata = lstatSync(artifactDescriptorPath(targetGroup.commonGitDescriptor, "objects"), {
+              bigint: true
+            });
+          } catch {
+            fail("legacy-dependency-universe-changed", "A reviewed alternate object directory disappeared.");
+          }
+          if (
+            !namedMetadata.isDirectory() ||
+            namedMetadata.isSymbolicLink() ||
+            !sameArtifactStat(namedMetadata, targetGroup.objectsMetadata)
+          ) {
+            fail("legacy-dependency-universe-changed", "A reviewed alternate object directory changed.");
+          }
+          hooks?.beforeExplicitAlternateTargetOpen?.(
+            Object.freeze({
+              objectsPath: repository.objectsDirectory,
+              targetObjectsPath: targetGroup.objectsDirectory
+            })
+          );
+          const target = openExplicitCatalogDirectoryAt(
+            targetGroup.commonGitDescriptor,
+            "objects",
+            namedMetadata,
+            targetGroup.commonGitMountId,
+            "Explicit dependency alternate object directory"
+          );
+          closeSync(target.descriptor);
+          return Object.freeze({
+            requested,
+            canonical: targetGroup.objectsDirectory,
+            identity: targetGroup.objectsIdentity
+          });
+        });
+      const result = Object.freeze({
+        path: alternatesPath,
+        present: file !== null,
+        identity: file?.identity ?? null,
+        text,
+        targets: Object.freeze(targets),
+        runtime: Object.freeze({
+          infoDescriptor: infoHandle?.descriptor,
+          infoMetadata,
+          fileStat: file?.stat,
+          mountId: repository.objectsMountId
+        })
+      });
+      retainedInfo = true;
+      return result;
+    } finally {
+      if (!retainedInfo && infoHandle !== undefined) closeSync(infoHandle.descriptor);
+    }
+  }
+
+  function revalidateExplicitCatalogRepository(repository) {
+    for (const receipt of repository.descriptorReceipts) {
+      const current = readExplicitCatalogFile(
+        receipt.parentDescriptor,
+        receipt.name,
+        receipt.observed,
+        receipt.mountId,
+        receipt.maximumBytes,
+        receipt.label
+      );
+      if (current.sha256 !== receipt.sha256) {
+        fail("legacy-dependency-universe-changed", `${receipt.label} changed during inspection.`);
+      }
+    }
+    const descriptorChecks = [
+      {
+        descriptor: repository.pathDescriptor,
+        metadata: repository.pathMetadata,
+        mountId: repository.pathMountId,
+        path: repository.path,
+        identity: repository.pathIdentity,
+        label: "Explicit dependency repository"
+      },
+      {
+        descriptor: repository.gitDescriptor,
+        metadata: repository.gitMetadata ?? repository.pathMetadata,
+        mountId: repository.gitMountId,
+        path: repository.gitDirectory,
+        identity: repository.gitIdentity,
+        label: "Explicit dependency Git directory",
+        anchoredByGroup: repository.kind === "linked-worktree"
+      },
+      {
+        descriptor: repository.commonGitDescriptor,
+        metadata: repository.commonGitMetadata ?? repository.pathMetadata,
+        mountId: repository.commonGitMountId,
+        path: repository.commonGitDirectory,
+        identity: repository.commonGitIdentity,
+        label: "Explicit dependency common Git directory",
+        anchoredByGroup: repository.kind === "linked-worktree"
+      },
+      {
+        descriptor: repository.objectsDescriptor,
+        metadata: repository.objectsMetadata,
+        mountId: repository.objectsMountId,
+        path: repository.objectsDirectory,
+        identity: repository.objectsIdentity,
+        label: "Explicit dependency object directory",
+        anchoredByGroup: repository.kind === "linked-worktree"
+      }
+    ];
+    const seen = new Set();
+    for (const check of descriptorChecks) {
+      if (!seen.has(check.descriptor)) {
+        const current = fstatSync(check.descriptor, { bigint: true });
+        if (!sameArtifactStat(check.metadata, current)) {
+          fail("legacy-dependency-universe-changed", `${check.label} changed during inspection.`);
+        }
+        assertCatalogMount(check.descriptor, check.mountId, check.label);
+        seen.add(check.descriptor);
+      }
+      if (!check.anchoredByGroup) {
+        const reopened = openExplicitCatalogAbsoluteDirectory(check.path, check.label, check.identity);
+        try {
+          if (descriptorMountId(reopened.descriptor, check.label) !== check.mountId) {
+            fail("legacy-dependency-universe-changed", `${check.label} changed mounts during inspection.`);
+          }
+        } finally {
+          closeSync(reopened.descriptor);
+        }
+      }
+    }
+  }
+
+  function revalidateExplicitRepositoryAlternates(repository, prior, objectsToGroup) {
+    if (prior.runtime.infoDescriptor !== undefined) {
+      const current = fstatSync(prior.runtime.infoDescriptor, { bigint: true });
+      if (!sameArtifactStat(prior.runtime.infoMetadata, current)) {
+        fail("legacy-dependency-universe-changed", "An explicit objects/info directory changed.");
+      }
+      assertCatalogMount(
+        prior.runtime.infoDescriptor,
+        prior.runtime.mountId,
+        "Explicit dependency objects/info directory"
+      );
+    }
+    const next = readExplicitRepositoryAlternates(repository, objectsToGroup);
+    try {
+      const comparable = (value) =>
+        Object.freeze({
+          path: value.path,
+          present: value.present,
+          identity: value.identity,
+          text: value.text,
+          targets: value.targets
+        });
+      if (!isDeepStrictEqual(comparable(prior), comparable(next))) {
+        fail("legacy-dependency-universe-changed", "Explicit dependency object alternates changed.");
+      }
+    } finally {
+      if (next.runtime.infoDescriptor !== undefined) closeSync(next.runtime.infoDescriptor);
+    }
+  }
+
+  function validateExplicitCatalogGitConfiguration(group) {
+    let metadata;
+    try {
+      metadata = lstatSync(artifactDescriptorPath(group.commonGitDescriptor, "config"), { bigint: true });
+    } catch {
+      fail("legacy-provider-scan-unsafe", "An explicit Git group has no readable common configuration.");
+    }
+    if (!metadata.isFile() || metadata.isSymbolicLink() || !currentUserOwns(metadata)) {
+      fail("legacy-provider-scan-unsafe", "An explicit Git group has an unsafe common configuration.");
+    }
+    const initial = readExplicitCatalogFile(
+      group.commonGitDescriptor,
+      "config",
+      metadata,
+      group.commonGitMountId,
+      MAXIMUM_LEGACY_CONFIG_BYTES,
+      "Explicit Git common configuration"
+    );
+    const opened = openExplicitCatalogFileDescriptor(
+      group.commonGitDescriptor,
+      "config",
+      metadata,
+      group.commonGitMountId,
+      "Explicit Git common configuration"
+    );
+    try {
+      const selector = ["config", "--file", inheritedDescriptorPath(opened.descriptor), "--no-includes"];
+      const keys = run("git", [...selector, "--name-only", "--list"], {
+        cwd: inheritedDescriptorPath(group.commonGitDescriptor),
+        allowFailure: true,
+        env: auditGitEnvironment()
+      });
+      if (
+        keys.status !== 0 ||
+        keys.stdout
+          .split("\n")
+          .filter(Boolean)
+          .some((key) => {
+            const normalized = key.toLowerCase();
+            return normalized.startsWith("include.") || normalized.startsWith("includeif.");
+          })
+      ) {
+        fail("legacy-provider-scan-unsafe", "An explicit Git group uses unsupported configuration includes.");
+      }
+      const worktreeConfig = run("git", [...selector, "--type=bool", "--get", "extensions.worktreeConfig"], {
+        cwd: inheritedDescriptorPath(group.commonGitDescriptor),
+        allowFailure: true,
+        env: auditGitEnvironment()
+      });
+      if (
+        ![0, 1].includes(worktreeConfig.status) ||
+        (worktreeConfig.status === 0 && worktreeConfig.stdout.trim() !== "false")
+      ) {
+        fail("legacy-provider-scan-unsafe", "An explicit Git group uses unsupported per-worktree configuration.");
+      }
+    } finally {
+      closeSync(opened.descriptor);
+    }
+    return initial;
+  }
+
+  function captureExplicitCatalogWorktreeRegistry(group) {
+    const baseMembers = group.members.filter(
+      (member) =>
+        (member.kind === "standalone" && member.gitDirectory === group.commonGitDirectory) ||
+        (member.kind === "bare" && member.path === group.commonGitDirectory)
+    );
+    if (baseMembers.length !== 1) {
+      fail("legacy-provider-scan-unsafe", "An explicit Git group must catalog exactly one common base repository.");
+    }
+    const linkedMembers = group.members.filter((member) => member.kind === "linked-worktree");
+    const worktreesPath = join(group.commonGitDirectory, "worktrees");
+    let worktreesMetadata;
+    try {
+      worktreesMetadata = lstatSync(artifactDescriptorPath(group.commonGitDescriptor, "worktrees"), { bigint: true });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (worktreesMetadata === undefined) {
+      if (linkedMembers.length !== 0) {
+        fail("legacy-provider-scan-unsafe", "An explicit Git group is missing its linked-worktree registry.");
+      }
+      return Object.freeze(group.members.map((member) => member.path).sort());
+    }
+    if (!worktreesMetadata.isDirectory() || worktreesMetadata.isSymbolicLink() || !currentUserOwns(worktreesMetadata)) {
+      fail("legacy-provider-scan-unsafe", "An explicit Git group has an unsafe linked-worktree registry.");
+    }
+    const registry = openExplicitCatalogDirectoryAt(
+      group.commonGitDescriptor,
+      "worktrees",
+      worktreesMetadata,
+      group.commonGitMountId,
+      "Explicit Git linked-worktree registry"
+    );
+    try {
+      const entries = readArtifactDirectoryBounded(
+        registry.descriptor,
+        "Explicit Git linked-worktree registry",
+        MAXIMUM_LEGACY_EXPLICIT_REPOSITORIES
+      ).sort((left, right) => Buffer.compare(left.nameBytes, right.nameBytes));
+      const membersByAdminName = new Map();
+      for (const member of linkedMembers) {
+        if (dirname(member.gitDirectory) !== worktreesPath) {
+          fail("legacy-provider-scan-unsafe", "A linked worktree points outside its common registry.");
+        }
+        const name = basename(member.gitDirectory);
+        if (membersByAdminName.has(name)) {
+          fail("legacy-provider-scan-unsafe", "Linked worktrees claim the same registry entry.");
+        }
+        membersByAdminName.set(name, member);
+      }
+      if (
+        !isDeepStrictEqual(
+          entries.map((entry) => entry.name),
+          [...membersByAdminName.keys()].sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
+        )
+      ) {
+        fail("legacy-provider-scan-unsafe", "An explicit Git group omits or invents a linked-worktree entry.");
+      }
+      for (const entry of entries) {
+        const member = membersByAdminName.get(entry.name);
+        const adminReference = artifactDescriptorPath(registry.descriptor, entry.name);
+        const adminMetadata = lstatSync(adminReference, { bigint: true });
+        if (
+          member === undefined ||
+          !adminMetadata.isDirectory() ||
+          adminMetadata.isSymbolicLink() ||
+          !currentUserOwns(adminMetadata) ||
+          !sameIdentity(identityOf(adminMetadata), member.gitIdentity)
+        ) {
+          fail("legacy-provider-scan-unsafe", "A linked-worktree registry entry is unsafe or misbound.");
+        }
+        const admin = openExplicitCatalogDirectoryAt(
+          registry.descriptor,
+          entry.name,
+          adminMetadata,
+          group.commonGitMountId,
+          `Explicit linked-worktree entry ${entry.name}`
+        );
+        try {
+          const adminEntries = readArtifactDirectoryBounded(
+            admin.descriptor,
+            `Explicit linked-worktree entry ${entry.name}`,
+            MAXIMUM_DISCOVERY_ENTRIES
+          );
+          const gitdirEntry = adminEntries.find((item) => item.name === "gitdir");
+          if (gitdirEntry === undefined) {
+            fail("legacy-provider-scan-unsafe", "A linked-worktree registry entry has no reciprocal gitdir file.");
+          }
+          for (const adminEntry of adminEntries) {
+            const reference = artifactDescriptorPath(admin.descriptor, adminEntry.name);
+            const metadata = lstatSync(reference, { bigint: true });
+            if (!currentUserOwns(metadata) || metadata.isSymbolicLink()) {
+              fail("legacy-provider-scan-unsafe", "A linked-worktree registry entry contains an unsafe path.");
+            }
+            if (metadata.isDirectory()) {
+              const child = openExplicitCatalogDirectoryAt(
+                admin.descriptor,
+                adminEntry.name,
+                metadata,
+                group.commonGitMountId,
+                `Explicit linked-worktree directory ${adminEntry.name}`
+              );
+              closeSync(child.descriptor);
+            } else if (metadata.isFile()) {
+              const file = openExplicitCatalogFileDescriptor(
+                admin.descriptor,
+                adminEntry.name,
+                metadata,
+                group.commonGitMountId,
+                `Explicit linked-worktree file ${adminEntry.name}`
+              );
+              closeSync(file.descriptor);
+            } else {
+              fail("legacy-provider-scan-unsafe", "A linked-worktree registry entry contains a special file.");
+            }
+          }
+          const gitdirMetadata = lstatSync(artifactDescriptorPath(admin.descriptor, "gitdir"), { bigint: true });
+          const gitdir = readExplicitCatalogFile(
+            admin.descriptor,
+            "gitdir",
+            gitdirMetadata,
+            group.commonGitMountId,
+            MAXIMUM_WORKTREE_FIELD_BYTES,
+            "Explicit linked-worktree reciprocal pointer"
+          );
+          if (gitdir.text !== `${join(member.path, ".git")}\n`) {
+            fail("legacy-provider-scan-unsafe", "A linked-worktree reciprocal pointer does not match its member.");
+          }
+          const adminAfter = fstatSync(admin.descriptor, { bigint: true });
+          const namedAdmin = lstatSync(adminReference, { bigint: true });
+          if (!sameArtifactStat(adminMetadata, adminAfter) || !sameArtifactStat(adminMetadata, namedAdmin)) {
+            fail("legacy-dependency-universe-changed", "A linked-worktree registry entry changed during inspection.");
+          }
+        } finally {
+          closeSync(admin.descriptor);
+        }
+      }
+      const registryAfter = fstatSync(registry.descriptor, { bigint: true });
+      const namedRegistry = lstatSync(artifactDescriptorPath(group.commonGitDescriptor, "worktrees"), {
+        bigint: true
+      });
+      if (!sameArtifactStat(worktreesMetadata, registryAfter) || !sameArtifactStat(worktreesMetadata, namedRegistry)) {
+        fail("legacy-dependency-universe-changed", "The linked-worktree registry changed during inspection.");
+      }
+      return Object.freeze(group.members.map((member) => member.path).sort());
+    } finally {
+      closeSync(registry.descriptor);
+    }
+  }
+
+  function captureExplicitLegacyDependencyCatalog(
+    dependencyCatalog,
+    candidates,
+    expectedCatalogSha256 = undefined,
+    options = {}
+  ) {
+    const normalizedCatalog = normalizeLegacyDependencyCatalog(dependencyCatalog, options);
+    const candidatePaths = new Set(candidates.map((candidate) => candidate.path));
+    const rootEvidence = [];
+    const repositories = [];
+    const repositoryPathSet = new Set(
+      normalizedCatalog.roots.flatMap((root) =>
+        root.entries.filter((entry) => entry.kind === "repository").map((entry) => join(root.path, entry.name))
+      )
+    );
+    if (repositoryPathSet.size > MAXIMUM_LEGACY_EXPLICIT_REPOSITORIES) {
+      fail(
+        "legacy-provider-scan-unsafe",
+        `An explicit dependency catalog may name at most ${MAXIMUM_LEGACY_EXPLICIT_REPOSITORIES} repositories.`
+      );
+    }
+    const traversalBudget = { visitedEntries: 0 };
+    const ownedDescriptors = new Set();
+    try {
+      for (const root of normalizedCatalog.roots) {
+        assertNoMountAtOrBelow(root.path);
+        const rootHandle = openExplicitCatalogAbsoluteDirectory(
+          root.path,
+          `Explicit dependency root ${root.path}`,
+          undefined,
+          true
+        );
+        const rootIdentity = identityOf(rootHandle.metadata);
+        let rootMountId;
+        try {
+          rootMountId = descriptorMountId(rootHandle.descriptor, `Explicit dependency root ${root.path}`);
+          hooks?.afterExplicitCatalogRootOpen?.(Object.freeze({ rootPath: root.path }));
+          const actualEntries = readArtifactDirectoryBounded(
+            rootHandle.descriptor,
+            "Explicit dependency root",
+            MAXIMUM_LEGACY_EXPLICIT_CATALOG_ENTRIES
+          ).sort((left, right) => Buffer.compare(left.nameBytes, right.nameBytes));
+          assertCatalogDirectoryEntriesAreNotRepository(actualEntries, root.path);
+          traversalBudget.visitedEntries += actualEntries.length;
+          if (traversalBudget.visitedEntries > MAXIMUM_LEGACY_EXPLICIT_DIRECTORY_ENTRIES) {
+            fail("legacy-provider-scan-unsafe", "The explicit dependency catalog has too many observed entries.");
+          }
+          const expectedNames = root.entries.map((entry) => entry.name);
+          const actualNames = actualEntries.map((entry) => entry.name);
+          if (!isDeepStrictEqual(actualNames, expectedNames)) {
+            fail(
+              "legacy-dependency-universe-changed",
+              "An explicit dependency root no longer has its reviewed entries."
+            );
+          }
+          const entryReceipts = [];
+          for (const entry of root.entries) {
+            const entryPath = join(root.path, entry.name);
+            const entryReference = artifactDescriptorPath(rootHandle.descriptor, entry.name);
+            const metadata = lstatSync(entryReference, { bigint: true });
+            const actualKind = explicitCatalogEntryKind(metadata);
+            const kindMatches =
+              actualKind === entry.kind || (entry.kind === "repository" && actualKind === "directory");
+            if (!kindMatches || actualKind === "special" || !currentUserOwns(metadata)) {
+              fail(
+                "legacy-provider-scan-unsafe",
+                `Explicit dependency entry ${entryPath} has an unexpected type or owner.`
+              );
+            }
+            hooks?.beforeExplicitCatalogEntryOpen?.(
+              Object.freeze({ rootPath: root.path, entryName: entry.name, entryKind: entry.kind })
+            );
+            const identity = identityOf(metadata);
+            let symlink = null;
+            let directoryTree = null;
+            if (entry.kind === "symlink") {
+              const target = readlinkSync(entryReference, { encoding: "buffer" });
+              if (target.byteLength > MAXIMUM_ARTIFACT_SYMLINK_BYTES) {
+                fail("legacy-provider-scan-unsafe", "An explicit dependency symbolic link target is too large.");
+              }
+              const after = lstatSync(entryReference, { bigint: true });
+              if (!sameArtifactStat(metadata, after)) {
+                fail("legacy-dependency-universe-changed", "An explicit dependency symbolic link changed while read.");
+              }
+              symlink = Object.freeze({ byteLength: target.byteLength, sha256: sha256(target) });
+            } else if (entry.kind === "file") {
+              const file = openExplicitCatalogFileDescriptor(
+                rootHandle.descriptor,
+                entry.name,
+                metadata,
+                rootMountId,
+                `Explicit dependency file ${entryPath}`
+              );
+              try {
+                const after = fstatSync(file.descriptor, { bigint: true });
+                const named = lstatSync(entryReference, { bigint: true });
+                if (!sameArtifactStat(metadata, after) || !sameArtifactStat(metadata, named)) {
+                  fail("legacy-dependency-universe-changed", `Explicit dependency file ${entryPath} changed.`);
+                }
+              } finally {
+                closeSync(file.descriptor);
+              }
+            } else {
+              const child = openExplicitCatalogDirectoryAt(
+                rootHandle.descriptor,
+                entry.name,
+                metadata,
+                rootMountId,
+                `Explicit dependency directory ${entryPath}`
+              );
+              if (entry.kind === "directory") {
+                try {
+                  directoryTree = captureExplicitCatalogDirectoryTree(
+                    child.descriptor,
+                    entryPath,
+                    child.metadata,
+                    traversalBudget,
+                    rootMountId
+                  );
+                } finally {
+                  closeSync(child.descriptor);
+                }
+              } else {
+                let transferredRepository = false;
+                try {
+                  const repository = captureExplicitCatalogRepository(entryPath, child, rootMountId);
+                  repositories.push(repository);
+                  ownedDescriptors.add(repository.pathDescriptor);
+                  for (const descriptor of repository.ownedDescriptors) ownedDescriptors.add(descriptor);
+                  transferredRepository = true;
+                } finally {
+                  if (!transferredRepository) closeSync(child.descriptor);
+                }
+              }
+              const named = lstatSync(entryReference, { bigint: true });
+              if (!sameArtifactStat(metadata, named)) {
+                fail("legacy-dependency-universe-changed", `Explicit dependency directory ${entryPath} changed.`);
+              }
+            }
+            const entryRecord = `${entry.kind}\0${entry.name}\0${identity.device}\0${identity.inode}\0${metadata.mode.toString()}\0${metadata.nlink.toString()}\0${metadata.size.toString()}\0${metadata.mtimeNs.toString()}\0${metadata.ctimeNs.toString()}\0${symlink === null ? "-" : `${symlink.byteLength}\0${symlink.sha256}`}\0${directoryTree === null ? "-" : `${directoryTree.entryCount}\0${directoryTree.sha256}`}\n`;
+            entryReceipts.push(Object.freeze({ name: entry.name, sha256: sha256(entryRecord) }));
+          }
+          const confirmedEntries = readArtifactDirectoryBounded(
+            rootHandle.descriptor,
+            "Explicit dependency root",
+            MAXIMUM_LEGACY_EXPLICIT_CATALOG_ENTRIES
+          )
+            .sort((left, right) => Buffer.compare(left.nameBytes, right.nameBytes))
+            .map((entry) => entry.name);
+          const rootAfter = fstatSync(rootHandle.descriptor, { bigint: true });
+          if (
+            !isDeepStrictEqual(confirmedEntries, expectedNames) ||
+            !sameArtifactStat(rootHandle.metadata, rootAfter)
+          ) {
+            fail("legacy-dependency-universe-changed", `Explicit dependency root ${root.path} changed.`);
+          }
+          assertCatalogMount(rootHandle.descriptor, rootMountId, `Explicit dependency root ${root.path}`);
+          const parentAfter = fstatSync(rootHandle.parentDescriptor, { bigint: true });
+          const namedRoot = lstatSync(artifactDescriptorPath(rootHandle.parentDescriptor, basename(root.path)), {
+            bigint: true
+          });
+          if (
+            !sameArtifactStat(rootHandle.parentMetadata, parentAfter) ||
+            !sameArtifactStat(rootHandle.metadata, namedRoot)
+          ) {
+            fail(
+              "legacy-dependency-universe-changed",
+              `Explicit dependency root ${root.path} moved during inspection.`
+            );
+          }
+          const anchoredConfirmation = openExplicitCatalogDirectoryAt(
+            rootHandle.parentDescriptor,
+            basename(root.path),
+            namedRoot,
+            rootMountId,
+            `Explicit dependency root ${root.path}`
+          );
+          closeSync(anchoredConfirmation.descriptor);
+          rootEvidence.push(
+            Object.freeze({
+              path: root.path,
+              identity: rootIdentity,
+              entries: root.entries,
+              entryReceipts: Object.freeze(entryReceipts),
+              entriesSha256: explicitCatalogEntryReceiptsSha256(entryReceipts)
+            })
+          );
+        } finally {
+          closeSync(rootHandle.descriptor);
+          closeSync(rootHandle.parentDescriptor);
+        }
+        const confirmedRoot = openExplicitCatalogAbsoluteDirectory(
+          root.path,
+          `Explicit dependency root ${root.path}`,
+          rootIdentity
+        );
+        try {
+          if (descriptorMountId(confirmedRoot.descriptor, `Explicit dependency root ${root.path}`) !== rootMountId) {
+            fail("legacy-dependency-universe-changed", `Explicit dependency root ${root.path} changed mounts.`);
+          }
+        } finally {
+          closeSync(confirmedRoot.descriptor);
+        }
+        assertNoMountAtOrBelow(root.path);
+      }
+      if ([...candidatePaths].some((path) => !repositoryPathSet.has(path))) {
+        fail("legacy-provider-scan-unsafe", "Every batch candidate must be a repository in the explicit catalog.");
+      }
+      const baseGroupsByWorktreesPath = new Map();
+      for (const repositoryState of repositories) {
+        if (repositoryState.kind === "linked-worktree-pending") continue;
+        const worktreesPath = join(repositoryState.commonGitDirectory, "worktrees");
+        if (baseGroupsByWorktreesPath.has(worktreesPath)) {
+          fail("legacy-provider-scan-unsafe", "An explicit Git registry has more than one cataloged base.");
+        }
+        baseGroupsByWorktreesPath.set(worktreesPath, repositoryState);
+      }
+      for (let index = 0; index < repositories.length; index += 1) {
+        const repositoryState = repositories[index];
+        if (repositoryState.kind !== "linked-worktree-pending") continue;
+        const resolved = resolveExplicitCatalogLinkedRepository(repositoryState, baseGroupsByWorktreesPath);
+        repositories[index] = resolved;
+        for (const descriptor of resolved.ownedDescriptors) ownedDescriptors.add(descriptor);
+      }
+      const groupsByCommonPath = new Map();
+      for (const repositoryState of repositories) {
+        const prior = groupsByCommonPath.get(repositoryState.commonGitDirectory);
+        if (prior !== undefined && !sameIdentity(prior.commonGitIdentity, repositoryState.commonGitIdentity)) {
+          fail("legacy-provider-scan-unsafe", "One explicit Git group changed common-directory identity.");
+        }
+        if (prior === undefined) {
+          groupsByCommonPath.set(repositoryState.commonGitDirectory, {
+            commonGitDirectory: repositoryState.commonGitDirectory,
+            commonGitIdentity: repositoryState.commonGitIdentity,
+            commonGitMetadata: repositoryState.commonGitMetadata ?? repositoryState.pathMetadata,
+            commonGitDescriptor: repositoryState.commonGitDescriptor,
+            commonGitMountId: repositoryState.commonGitMountId,
+            objectsDirectory: repositoryState.objectsDirectory,
+            objectsIdentity: repositoryState.objectsIdentity,
+            objectsMetadata: repositoryState.objectsMetadata,
+            objectsDescriptor: repositoryState.objectsDescriptor,
+            objectsMountId: repositoryState.objectsMountId,
+            members: [repositoryState]
+          });
+        } else {
+          if (
+            prior.objectsDirectory !== repositoryState.objectsDirectory ||
+            !sameIdentity(prior.objectsIdentity, repositoryState.objectsIdentity)
+          ) {
+            fail("legacy-provider-scan-unsafe", "One explicit Git group has inconsistent object storage.");
+          }
+          prior.members.push(repositoryState);
+        }
+      }
+      const groups = [];
+      const objectsToGroup = new Map();
+      for (const group of groupsByCommonPath.values()) {
+        if (objectsToGroup.has(group.objectsDirectory)) {
+          fail("legacy-provider-scan-unsafe", "Distinct explicit Git groups claim the same object directory.");
+        }
+        objectsToGroup.set(group.objectsDirectory, group);
+      }
+      for (const group of groupsByCommonPath.values()) {
+        const commonConfiguration = validateExplicitCatalogGitConfiguration(group);
+        const worktreePaths = captureExplicitCatalogWorktreeRegistry(group);
+        const memberPaths = group.members.map((member) => member.path).sort();
+        if (!isDeepStrictEqual(worktreePaths, memberPaths)) {
+          fail(
+            "legacy-provider-scan-unsafe",
+            `Explicit Git group ${group.commonGitDirectory} does not enumerate every registered worktree.`
+          );
+        }
+        const alternates = readExplicitRepositoryAlternates(group, objectsToGroup);
+        if (alternates.runtime.infoDescriptor !== undefined) ownedDescriptors.add(alternates.runtime.infoDescriptor);
+        for (const target of alternates.targets) {
+          const targetGroup = objectsToGroup.get(target.canonical);
+          if (
+            target.requested !== target.canonical ||
+            targetGroup === undefined ||
+            !sameIdentity(target.identity, targetGroup.objectsIdentity)
+          ) {
+            fail(
+              "legacy-provider-scan-unsafe",
+              `Explicit Git group ${group.commonGitDirectory} has an alternate outside the reviewed catalog.`
+            );
+          }
+        }
+        const memberRecords = group.members
+          .map((member) => {
+            const pointers = member.pointerReceipts
+              .map(
+                (pointer) => `${pointer.path}\0${pointer.identity.device}\0${pointer.identity.inode}\0${pointer.sha256}`
+              )
+              .sort()
+              .join("\0");
+            const bare =
+              member.kind === "bare"
+                ? `${member.repositoryState.head.identity.device}\0${member.repositoryState.head.identity.inode}\0${member.repositoryState.head.sha256}\0${member.repositoryState.config.present ? `${member.repositoryState.config.identity.device}\0${member.repositoryState.config.identity.inode}\0${member.repositoryState.config.sha256}` : "config-absent"}\0${member.repositoryState.refs.identity.device}\0${member.repositoryState.refs.identity.inode}`
+                : "-";
+            return `${member.kind}\0${member.path}\0${member.pathIdentity.device}\0${member.pathIdentity.inode}\0${member.gitDirectory}\0${member.gitIdentity.device}\0${member.gitIdentity.inode}\0${pointers}\0${bare}`;
+          })
+          .sort();
+        const worktreePathsSha256 = sha256(`${worktreePaths.join("\0")}\0`);
+        const record = `${group.commonGitDirectory}\0${group.commonGitIdentity.device}\0${group.commonGitIdentity.inode}\0${group.objectsDirectory}\0${group.objectsIdentity.device}\0${group.objectsIdentity.inode}\0${memberRecords.join("\n")}\0${worktreePathsSha256}\0${alternates.present ? `${alternates.identity.device}\0${alternates.identity.inode}` : "absent"}\0${sha256(alternates.text)}\n`;
+        groups.push(
+          Object.freeze({
+            ...group,
+            members: Object.freeze(group.members),
+            memberPaths: Object.freeze(memberPaths),
+            worktreePathsSha256,
+            alternates,
+            record
+          })
+        );
+        const confirmedConfiguration = readExplicitCatalogFile(
+          group.commonGitDescriptor,
+          "config",
+          commonConfiguration.stat,
+          group.commonGitMountId,
+          MAXIMUM_LEGACY_CONFIG_BYTES,
+          "Explicit Git common configuration"
+        );
+        if (confirmedConfiguration.sha256 !== commonConfiguration.sha256) {
+          fail("legacy-dependency-universe-changed", "An explicit Git common configuration changed.");
+        }
+      }
+      for (const group of groups) {
+        revalidateExplicitRepositoryAlternates(group, group.alternates, objectsToGroup);
+        for (const member of group.members) revalidateExplicitCatalogRepository(member);
+      }
+      groups.sort((left, right) => left.commonGitDirectory.localeCompare(right.commonGitDirectory));
+      const repositoryGroups = Object.freeze(
+        groups.map((group) => Object.freeze({ memberPaths: group.memberPaths, recordSha256: sha256(group.record) }))
+      );
+      const repositoryRecordsSha256 = explicitCatalogRepositoryGroupsSha256(repositoryGroups);
+      const catalogSha256 = sha256(
+        `${rootEvidence
+          .map((root) => `${root.path}\0${root.identity.device}\0${root.identity.inode}\0${root.entriesSha256}\n`)
+          .join("")}${groups.map((group) => group.record).join("")}`
+      );
+      if (expectedCatalogSha256 !== undefined && catalogSha256 !== expectedCatalogSha256) {
+        fail("legacy-dependency-universe-changed", "The reviewed explicit dependency catalog changed.");
+      }
+      const groupForPath = new Map(groups.flatMap((group) => group.memberPaths.map((path) => [path, group])));
+      const proofFor = (providerPath, providerSlug, expected = undefined) => {
+        const providerGroup = groupForPath.get(providerPath);
+        if (providerGroup === undefined) {
+          fail("legacy-provider-scan-unsafe", "The explicit dependency catalog omitted the candidate repository.");
+        }
+        if (providerGroup.memberPaths.length !== 1 || providerGroup.members[0].kind !== "standalone") {
+          fail(
+            "legacy-linked-worktree-not-adoptable",
+            `Legacy checkout ${providerSlug} belongs to a linked-worktree provider group and stays on hold.`
+          );
+        }
+        for (const group of groups) {
+          if (group === providerGroup) continue;
+          if (group.alternates.targets.some((target) => target.canonical === providerGroup.objectsDirectory)) {
+            fail(
+              "legacy-provider-in-use",
+              `Legacy checkout ${providerSlug} still provides Git objects to ${group.commonGitDirectory}.`
+            );
+          }
+        }
+        const otherGroups = groups.filter((group) => group !== providerGroup);
+        const otherGroupProofs = repositoryGroups.filter((group) => !group.memberPaths.includes(providerPath));
+        const proof = Object.freeze({
+          protocol: LEGACY_DEPENDENCY_UNIVERSE_PROTOCOL,
+          roots: Object.freeze(rootEvidence),
+          cleanupCandidates: Object.freeze(
+            [...candidatePaths].sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
+          ),
+          cohortSha256: explicitCatalogCohortSha256(
+            rootEvidence,
+            [...candidatePaths].sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right))),
+            repositoryGroups
+          ),
+          repositoryGroups,
+          providerObjectsPath: providerGroup.objectsDirectory,
+          repositoryCount: otherGroups.length,
+          repositoriesSha256: explicitCatalogRepositoryGroupsSha256(otherGroupProofs)
+        });
+        validateLegacyDependencyUniverse(proof, providerPath);
+        if (expected !== undefined && !isDeepStrictEqual(proof, expected)) {
+          fail("legacy-dependency-universe-changed", "The reviewed explicit dependency catalog changed.");
+        }
+        return proof;
+      };
+      return Object.freeze({
+        mode: "explicit-catalog",
+        roots: Object.freeze(rootEvidence),
+        visitedEntries: traversalBudget.visitedEntries,
+        repositoryCount: groups.length,
+        repositoryGroups,
+        repositoryRecordsSha256,
+        catalogEntryCount: normalizedCatalog.roots.reduce((count, root) => count + root.entries.length, 0),
+        catalogSha256,
+        proofFor,
+        revalidate() {
+          captureExplicitLegacyDependencyCatalog(normalizedCatalog, [], catalogSha256, options);
+        }
+      });
+    } finally {
+      for (const descriptor of ownedDescriptors) closeSync(descriptor);
+    }
   }
 
   function captureLegacyBatchDependencyCatalog(dependencyRoots, candidates) {
@@ -9871,6 +11748,109 @@ export function createCheckoutManager(options = {}) {
     return proof;
   }
 
+  function captureRecordedLegacyDependencyUniverse(providerPath, providerSlug, explicitTarget) {
+    const expected = explicitTarget.dependencyUniverse;
+    if (expected?.protocol === LEGACY_DEPENDENCY_UNIVERSE_PROTOCOL) {
+      return revalidateExplicitLegacyDependencyUniverse(providerPath, providerSlug, expected, true);
+    }
+    return captureLegacyDependencyUniverse(
+      providerPath,
+      providerSlug,
+      explicitTarget.dependencyRoots ?? expected?.roots.map((root) => root.path),
+      expected
+    );
+  }
+
+  function catalogPeerHasTerminalRetirement(candidatePath, cohortSha256) {
+    const slug = basename(candidatePath);
+    let adoption;
+    try {
+      adoption = retainedLegacyAdoption(slug);
+      const dependencyUniverse = legacyDependencyUniverse(adoption);
+      if (
+        dependencyUniverse.protocol !== LEGACY_DEPENDENCY_UNIVERSE_PROTOCOL ||
+        dependencyUniverse.cohortSha256 !== cohortSha256
+      ) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+    if (adoption.entry.value.evidence.source.checkout !== candidatePath) return false;
+    const records = readSweepRecords("legacy", slug, adoption.entry.value.generation, candidatePath);
+    return records.at(-1)?.kind === "retired";
+  }
+
+  function revalidateExplicitLegacyDependencyUniverse(providerPath, providerSlug, expected, providerPresent) {
+    const removed = new Set();
+    for (const candidatePath of expected.cleanupCandidates) {
+      let present;
+      try {
+        lstatSync(candidatePath, { bigint: true });
+        present = true;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        present = false;
+      }
+      if (candidatePath === providerPath) {
+        if (present !== providerPresent) {
+          fail("legacy-dependency-universe-changed", "The provider path does not match its retirement stage.");
+        }
+        if (!present) removed.add(candidatePath);
+      } else if (!present) {
+        if (!catalogPeerHasTerminalRetirement(candidatePath, expected.cohortSha256)) {
+          fail("legacy-cohort-peer-not-retired", "A cleanup cohort peer disappeared without terminal retirement.");
+        }
+        removed.add(candidatePath);
+      }
+    }
+    const catalog = Object.freeze({
+      protocol: LEGACY_DEPENDENCY_CATALOG_PROTOCOL,
+      roots: Object.freeze(
+        expected.roots.map((root) =>
+          Object.freeze({
+            path: root.path,
+            entries: Object.freeze(root.entries.filter((entry) => !removed.has(join(root.path, entry.name))))
+          })
+        )
+      )
+    });
+    const remainingCandidates = expected.cleanupCandidates
+      .filter((candidatePath) => !removed.has(candidatePath))
+      .map((path) => Object.freeze({ path }));
+    const captured = captureExplicitLegacyDependencyCatalog(catalog, remainingCandidates, undefined, {
+      allowEmptyRoots: true
+    });
+    const expectedGroups = expected.repositoryGroups.filter(
+      (group) => !group.memberPaths.some((path) => removed.has(path))
+    );
+    if (
+      captured.roots.length !== expected.roots.length ||
+      !isDeepStrictEqual(captured.repositoryGroups, expectedGroups) ||
+      captured.repositoryRecordsSha256 !== explicitCatalogRepositoryGroupsSha256(expectedGroups) ||
+      captured.roots.some((root, index) => {
+        const prior = expected.roots[index];
+        const retainedNames = new Set(
+          prior.entries.filter((entry) => !removed.has(join(prior.path, entry.name))).map((entry) => entry.name)
+        );
+        const expectedEntries = prior.entries.filter((entry) => retainedNames.has(entry.name));
+        const expectedReceipts = prior.entryReceipts.filter((receipt) => retainedNames.has(receipt.name));
+        return (
+          root.path !== prior.path ||
+          !sameIdentity(root.identity, prior.identity) ||
+          !isDeepStrictEqual(root.entries, expectedEntries) ||
+          !isDeepStrictEqual(root.entryReceipts, expectedReceipts) ||
+          root.entriesSha256 !== explicitCatalogEntryReceiptsSha256(expectedReceipts)
+        );
+      })
+    ) {
+      fail("legacy-cohort-proof-changed", "The dependency catalog changed during cohort retirement.");
+    }
+    if (providerPresent) captured.proofFor(providerPath, providerSlug);
+    captured.revalidate();
+    return expected;
+  }
+
   function legacyDependencyUniverse(adoption) {
     const target = legacyTargetFromRequest(adoption.request.value);
     if (target?.dependencyUniverse === undefined) {
@@ -9883,13 +11863,20 @@ export function createCheckoutManager(options = {}) {
     return target.dependencyUniverse;
   }
 
-  function revalidateLegacyDependencyUniverse(adoption) {
+  function revalidateLegacyDependencyUniverse(adoption, providerPresent = true) {
     const expected = legacyDependencyUniverse(adoption);
-    return captureLegacyDependencyUniverse(
+    if (expected.protocol === LEGACY_DEPENDENCY_UNIVERSE_PROTOCOL) {
+      return revalidateExplicitLegacyDependencyUniverse(
+        adoption.entry.value.evidence.source.checkout,
+        adoption.entry.value.slug,
+        expected,
+        providerPresent
+      );
+    }
+    return captureRecordedLegacyDependencyUniverse(
       adoption.entry.value.evidence.source.checkout,
       adoption.entry.value.slug,
-      expected.roots.map((root) => root.path),
-      expected
+      Object.freeze({ dependencyUniverse: expected })
     );
   }
 
@@ -10204,7 +12191,18 @@ export function createCheckoutManager(options = {}) {
     if (anchors.historical) {
       const providerPath = anchors.adoption.value.evidence.source.checkout;
       captureLegacyDependencyUniverse(providerPath, eligible.slug, [dirname(providerPath)]);
-    } else revalidateLegacyDependencyUniverse(anchors.adoptionRecord);
+    } else {
+      const providerPath = anchors.adoption.value.evidence.source.checkout;
+      let providerPresent;
+      try {
+        lstatSync(providerPath, { bigint: true });
+        providerPresent = true;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        providerPresent = false;
+      }
+      revalidateLegacyDependencyUniverse(anchors.adoptionRecord, providerPresent);
+    }
     // The standard archive status path performs the expensive recovery proof while the source still exists.
     // After quarantine, the three immutable anchors above remain the authority for purge reconciliation.
     return anchors;
@@ -10821,6 +12819,8 @@ export function createCheckoutManager(options = {}) {
       "legacy-archive-changed",
       "legacy-audit-not-eligible",
       "legacy-checkout-changed",
+      "legacy-cohort-peer-not-retired",
+      "legacy-cohort-proof-changed",
       "legacy-dependency-universe-changed",
       "legacy-provider-in-use",
       "legacy-provider-scan-unsafe",
@@ -11128,13 +13128,15 @@ export function createCheckoutManager(options = {}) {
   }
 
   function captureLegacyBatchReview(manifest) {
-    const catalog = captureLegacyBatchDependencyCatalog(
-      manifest.normalized.dependencyRoots,
-      manifest.normalized.candidates
-    );
+    const explicitCatalog = manifest.normalized.dependencyCatalog !== undefined;
+    const catalog = explicitCatalog
+      ? captureExplicitLegacyDependencyCatalog(manifest.normalized.dependencyCatalog, manifest.normalized.candidates)
+      : captureLegacyBatchDependencyCatalog(manifest.normalized.dependencyRoots, manifest.normalized.candidates);
     hooks?.afterLegacyBatchDependencyScan?.({
+      mode: catalog.mode ?? "recursive-roots",
       visitedEntries: catalog.visitedEntries,
-      repositoryCount: catalog.repositoryCount
+      repositoryCount: catalog.repositoryCount,
+      ...(catalog.catalogEntryCount === undefined ? {} : { catalogEntryCount: catalog.catalogEntryCount })
     });
     const reservations = slugAuthorityReservations();
     const classified = manifest.normalized.candidates.map((candidate) => {
@@ -11206,6 +13208,18 @@ export function createCheckoutManager(options = {}) {
           }
           resumableAttempt = attempt;
         }
+        if (existingAdoption === undefined && resumableAttempt === undefined) {
+          preflightLegacyAdoptionRecords({
+            slug: candidate.slug,
+            generation: (attempts.at(-1)?.generation ?? 0) + 1,
+            ownerTask: candidate.ownerTask,
+            token: "0".repeat(32),
+            generatedRoots: candidate.generatedRoots,
+            generatedFiles: candidate.generatedFiles,
+            target: explicitLegacyTargetFromEvidence(evidence),
+            evidence
+          });
+        }
         return Object.freeze({
           candidate,
           status: "eligible",
@@ -11239,9 +13253,10 @@ export function createCheckoutManager(options = {}) {
       )
     );
     const reviewCore = Object.freeze({
-      protocol: LEGACY_BATCH_REVIEW_PROTOCOL,
+      protocol: explicitCatalog ? LEGACY_BATCH_REVIEW_PROTOCOL_V2 : LEGACY_BATCH_REVIEW_PROTOCOL,
       manifestSha256: manifest.sha256,
       dependencyScan: Object.freeze({
+        ...(explicitCatalog ? { mode: "explicit-catalog", catalogEntryCount: catalog.catalogEntryCount } : {}),
         rootCount: catalog.roots.length,
         visitedEntries: catalog.visitedEntries,
         repositoryCount: catalog.repositoryCount
@@ -11291,7 +13306,6 @@ export function createCheckoutManager(options = {}) {
     const allowlist = normalizeLegacyGeneratedAllowlist(generatedRoots, generatedFiles);
     const normalizedRoots = allowlist.filter((item) => item.kind === "directory").map((item) => item.path);
     const normalizedFiles = allowlist.filter((item) => item.kind === "file").map((item) => item.path);
-    initializeLegacyAdoptionJournal();
     const reservations = assertSlugAuthorityAvailable(slug, "legacy");
     const priorAttempts = listLegacyAttempts(slug);
     if (legacyEntrySlugs(slug).length !== 0) {
@@ -11306,23 +13320,12 @@ export function createCheckoutManager(options = {}) {
     let request;
     let explicitTarget;
     if (resumeAttempt === undefined) {
-      attempt = allocateLegacyAttempt(slug);
+      const generation = (priorAttempts.at(-1)?.generation ?? 0) + 1;
+      if (generation > MAXIMUM_LEGACY_ADOPTION_ATTEMPTS) {
+        fail("legacy-adoption-attempts-exhausted", "The legacy adoption journal has no remaining attempt slots.");
+      }
       const token = tokenFactory();
       if (!/^[0-9a-f]{32}$/u.test(token)) fail("invalid-legacy-adoption", "The adoption token is malformed.");
-      assertPersistedJsonFits(
-        {
-          protocol: LEGACY_ADOPTION_REQUEST_PROTOCOL_V2,
-          slug,
-          generation: attempt.generation,
-          ownerTask,
-          ownerRevision: 1,
-          token,
-          generatedRoots: normalizedRoots,
-          generatedFiles: normalizedFiles,
-          target: requestedTarget
-        },
-        "The legacy adoption request"
-      );
       const preflightEvidence = captureLegacyAudit(
         slug,
         normalizedRoots,
@@ -11331,19 +13334,21 @@ export function createCheckoutManager(options = {}) {
         dependencyCatalog
       );
       explicitTarget = explicitLegacyTargetFromEvidence(preflightEvidence);
-      const requestValue = {
-        protocol: LEGACY_ADOPTION_REQUEST_PROTOCOL_V2,
+      const requestValue = preflightLegacyAdoptionRecords({
         slug,
-        generation: attempt.generation,
+        generation,
         ownerTask,
-        ownerRevision: 1,
         token,
         generatedRoots: normalizedRoots,
         generatedFiles: normalizedFiles,
-        target: explicitTarget
-      };
-      validateLegacyRequest(requestValue, slug, attempt.generation);
-      assertPersistedJsonFits(requestValue, "The legacy adoption request");
+        target: explicitTarget,
+        evidence: preflightEvidence
+      });
+      initializeLegacyAdoptionJournal();
+      attempt = allocateLegacyAttempt(slug);
+      if (attempt.generation !== generation) {
+        fail("legacy-adoption-changed", "The next legacy adoption attempt changed after preflight.");
+      }
       const requestPath = join(attempt.path, "request.json");
       writeJsonExclusive(requestPath, requestValue, attempt.identity);
       request = readJsonReceipt(requestPath, MAXIMUM_ENTRY_BYTES, "Legacy adoption request");
@@ -11353,6 +13358,7 @@ export function createCheckoutManager(options = {}) {
       }
       hooks?.afterLegacyAdoptionRequest?.(attempt, requestValue);
     } else {
+      initializeLegacyAdoptionJournal();
       if (expectedEvidence === undefined || dependencyCatalog === undefined || priorAttempts.length !== 1) {
         fail("legacy-adoption-changed", "The interrupted batch adoption no longer has one exact resumable attempt.");
       }
@@ -11532,7 +13538,31 @@ export function createCheckoutManager(options = {}) {
     return `${base}/${name}`;
   }
 
-  function openArtifactDirectoryDescriptor(path, label, expectedIdentity = undefined) {
+  function inheritedDescriptorPath(descriptor) {
+    return `/proc/${process.pid}/fd/${descriptor}`;
+  }
+
+  function descriptorMountId(descriptor, label) {
+    requireArtifactDescriptorTraversal();
+    let infoDescriptor;
+    try {
+      infoDescriptor = openSync(`/proc/self/fdinfo/${descriptor}`, constants.O_RDONLY | (constants.O_CLOEXEC ?? 0));
+      const buffer = Buffer.allocUnsafe(8193);
+      const count = readSync(infoDescriptor, buffer, 0, buffer.length, 0);
+      if (count === buffer.length) fail("artifact-unsafe", `${label} has oversized descriptor metadata.`);
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, count));
+      const matches = [...text.matchAll(/^mnt_id:\s+([1-9][0-9]*)$/gmu)];
+      if (matches.length !== 1) fail("artifact-unsafe", `${label} has ambiguous mount identity.`);
+      return matches[0][1];
+    } catch (error) {
+      if (error instanceof CheckoutLifecycleError) throw error;
+      fail("artifact-unsafe", `${label} mount identity could not be read: ${error.message}`);
+    } finally {
+      if (infoDescriptor !== undefined) closeSync(infoDescriptor);
+    }
+  }
+
+  function openArtifactDirectoryDescriptor(path, label, expectedIdentity = undefined, requireOwned = true) {
     requireArtifactDescriptorTraversal();
     if (!isAbsolute(path) || resolve(path) !== path) {
       fail("artifact-unsafe", `${label} is not an absolute canonical path.`);
@@ -11549,7 +13579,7 @@ export function createCheckoutManager(options = {}) {
       const metadata = fstatSync(descriptor, { bigint: true });
       if (
         !metadata.isDirectory() ||
-        !currentUserOwns(metadata) ||
+        (requireOwned && !currentUserOwns(metadata)) ||
         (expectedIdentity !== undefined && !sameIdentity(identityOf(metadata), expectedIdentity))
       ) {
         fail("artifact-unsafe", `${label} is not the expected owned directory.`);
@@ -11612,13 +13642,13 @@ export function createCheckoutManager(options = {}) {
     else syncArtifactDirectoryHook(path, descriptor);
   }
 
-  function readArtifactDirectoryBounded(directoryDescriptor, label) {
+  function readArtifactDirectoryBounded(directoryDescriptor, label, maximumEntries = MAXIMUM_ARTIFACT_ENTRIES) {
     const directory = opendirSync(artifactDescriptorPath(directoryDescriptor), { encoding: "buffer" });
     const entries = [];
     try {
       let item;
       while ((item = directory.readSync()) !== null) {
-        if (entries.length === MAXIMUM_ARTIFACT_ENTRIES) {
+        if (entries.length === maximumEntries) {
           fail("artifact-too-large", `${label} exceeds its fixed entry limit.`);
         }
         let name;
