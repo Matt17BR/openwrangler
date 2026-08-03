@@ -48,8 +48,8 @@ The workflow-structure contract has exactly one pull-request owner, `Fast feedba
 Linux-owned `scripts/*.test.mjs` contract has exactly one owner, `Contract tests`; and the extracted compiled Job
 Object supervisor smoke has exactly one owner, `Native script contracts (Windows)`. macOS no longer repeats the
 general corpus; its native extension-host and packaged VS Code/Cursor jobs remain unchanged. The local
-`npm run test:scripts` command remains the complete superset of all three groups. Its filesystem-derived regression
-requires the workflow, portable, and native file sets to be pairwise disjoint and their union to equal the actual
+`npm run test:scripts` command remains the complete superset of all four groups. Its filesystem-derived regression
+requires the workflow, portable, media, and native file sets to be pairwise disjoint and their union to equal the actual
 `scripts/*.test.mjs` inventory, while the parsed workflow rejects a second CI owner for any group.
 
 The coverage lane is the single authoritative owner of the complete TypeScript and Python suites. It installs and
