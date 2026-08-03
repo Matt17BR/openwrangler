@@ -1,6 +1,11 @@
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 1L || !args[[1L]] %in% c("data.frame", "tibble", "data.table")) {
-  stop("Usage: emit_frame_contract.R data.frame|tibble|data.table", call. = FALSE)
+if (
+  length(args) < 1L ||
+    length(args) > 2L ||
+    !args[[1L]] %in% c("data.frame", "tibble", "data.table") ||
+    (length(args) == 2L && !identical(args[[2L]], "sorted"))
+) {
+  stop("Usage: emit_frame_contract.R data.frame|tibble|data.table [sorted]", call. = FALSE)
 }
 
 source("r/openwrangler_runtime/frame_contract.R", local = FALSE)
@@ -35,4 +40,18 @@ frame <- switch(
 )
 
 capture <- openwrangler_r_frame_contract$capture_frame(frame)
-cat(openwrangler_r_frame_contract$encode_page(capture, row_limit = 3L, column_limit = 20L))
+if (length(args) == 2L) {
+  column_name <- names(frame)[[1L]]
+  cat(openwrangler_r_frame_contract$encode_view_page(
+    capture,
+    sort_rules = list(list(
+      column = list(id = "r:c:0", name = column_name),
+      direction = "desc",
+      nulls = "last"
+    )),
+    row_limit = 3L,
+    column_limit = 20L
+  ))
+} else {
+  cat(openwrangler_r_frame_contract$encode_page(capture, row_limit = 3L, column_limit = 20L))
+}

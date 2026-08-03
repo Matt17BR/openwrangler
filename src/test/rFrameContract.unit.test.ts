@@ -97,6 +97,70 @@ describe("native R frame contract decoder", () => {
     ]);
   });
 
+  it("accepts unique source row identities in logical view order", () => {
+    const candidate = minimalContract();
+    candidate.shape = { rows: 3, columns: 1 };
+    const page = candidate.page as Record<string, unknown>;
+    page.limit = 2;
+    page.totalRows = 3;
+    page.rows = [
+      {
+        id: "r:r:2",
+        rowNumber: 2,
+        values: [{ kind: "integer", raw: "3", display: "3", isNull: false, isNaN: false }]
+      },
+      {
+        id: "r:r:0",
+        rowNumber: 0,
+        values: [{ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false }]
+      }
+    ];
+
+    expect(decodeCandidate(candidate).page.rows.map(({ id, rowNumber }) => ({ id, rowNumber }))).toEqual([
+      { id: "r:r:2", rowNumber: 2 },
+      { id: "r:r:0", rowNumber: 0 }
+    ]);
+  });
+
+  it.each([
+    [
+      "duplicate source row identities",
+      (rows: Array<Record<string, unknown>>) => {
+        rows[1]!.id = "r:r:2";
+        rows[1]!.rowNumber = 2;
+      }
+    ],
+    [
+      "an out-of-range source row identity",
+      (rows: Array<Record<string, unknown>>) => {
+        rows[0]!.id = "r:r:3";
+        rows[0]!.rowNumber = 3;
+      }
+    ]
+  ])("rejects %s in a logical view page", (_label, mutate) => {
+    const candidate = minimalContract();
+    candidate.shape = { rows: 3, columns: 1 };
+    const page = candidate.page as Record<string, unknown>;
+    page.limit = 2;
+    page.totalRows = 3;
+    const rows = [
+      {
+        id: "r:r:2",
+        rowNumber: 2,
+        values: [{ kind: "integer", raw: "3", display: "3", isNull: false, isNaN: false }]
+      },
+      {
+        id: "r:r:0",
+        rowNumber: 0,
+        values: [{ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false }]
+      }
+    ];
+    mutate(rows);
+    page.rows = rows;
+
+    expect(() => decodeCandidate(candidate)).toThrow(TypeError);
+  });
+
   it.each([
     ["unknown top-level fields", (candidate: Record<string, unknown>) => (candidate.extra = true)],
     [
@@ -187,6 +251,24 @@ describe("native R frame contract decoder", () => {
     expect(() => decodeRFramePageJson("x".repeat(R_FRAME_CONTRACT_LIMITS.payloadBytes + 1))).toThrow(
       "exceeds the byte limit"
     );
+  });
+
+  it.each([
+    ["R integer", "-2147483648", false],
+    ["bit64 integer64", "-9223372036854775808", true]
+  ])("rejects the %s NA sentinel as an ordinary value", (_label, raw, integer64) => {
+    const candidate = minimalContract();
+    const column = (candidate.schema as Array<Record<string, unknown>>)[0]!;
+    if (integer64) {
+      column.rawType = "integer64";
+      column.semantics = { kind: "integer64", storageMode: "double", classes: ["integer64"] };
+    }
+    const page = candidate.page as Record<string, unknown>;
+    (page.rows as Array<Record<string, unknown>>)[0]!.values = [
+      { kind: "integer", raw, display: raw, isNull: false, isNaN: false }
+    ];
+
+    expect(() => decodeCandidate(candidate)).toThrow("outside the");
   });
 
   it.each(["0001-01-01", "2000-02-29", "9999-12-31"])("accepts the valid ISO date %s", (value) => {

@@ -75,6 +75,49 @@ assert_identical(base_page$page$rows[[3L]]$values[[3L]]$kind, "infinity", "infin
 assert_identical(base_page$page$rows[[3L]]$values[[3L]]$sign, 1L, "infinity sign changed")
 assert_true(jsonlite::validate(openwrangler_r_frame_contract$encode_page(base_capture, row_limit = 3L)), "JSON is invalid")
 
+ambient_frame <- data.frame(
+  amount = 1234.5,
+  instant = structure(0.25, class = c("POSIXct", "POSIXt"))
+)
+ambient_capture <- openwrangler_r_frame_contract$capture_frame(ambient_frame)
+original_out_dec <- getOption("OutDec")
+original_tz <- Sys.getenv("TZ", unset = NA_character_)
+options(OutDec = ",")
+Sys.setenv(TZ = "America/New_York")
+ambient_page_new_york <- openwrangler_r_frame_contract$materialize_page(
+  ambient_capture,
+  row_limit = 1L,
+  column_limit = 2L
+)
+options(OutDec = ".")
+Sys.setenv(TZ = "Asia/Tokyo")
+ambient_page_tokyo <- openwrangler_r_frame_contract$materialize_page(
+  ambient_capture,
+  row_limit = 1L,
+  column_limit = 2L
+)
+options(OutDec = original_out_dec)
+if (is.na(original_tz)) {
+  Sys.unsetenv("TZ")
+} else {
+  Sys.setenv(TZ = original_tz)
+}
+assert_identical(
+  ambient_page_new_york$page$rows[[1L]]$values,
+  ambient_page_tokyo$page$rows[[1L]]$values,
+  "R cell display changed with ambient OutDec or TZ"
+)
+assert_identical(
+  ambient_page_new_york$page$rows[[1L]]$values[[1L]]$display,
+  "1234.5",
+  "double display did not retain a JSON-safe decimal point"
+)
+assert_identical(
+  ambient_page_new_york$page$rows[[1L]]$values[[2L]]$display,
+  "1970-01-01T00:00:00.250000",
+  "a timezone-less POSIXct value was not displayed in UTC"
+)
+
 base_snapshot <- get("snapshot", envir = base_capture, inherits = FALSE)
 base_snapshot[[1L]][1L] <- FALSE
 assert_identical(base_frame[[1L]][1L], TRUE, "base snapshot mutation reached the source frame")
@@ -98,6 +141,150 @@ assert_identical(table_page$frameSemantics$keyColumnIds, I("r:c:0"), "data.table
 table_snapshot <- get("snapshot", envir = table_capture, inherits = FALSE)
 table_snapshot[, value := "changed"]
 assert_true(identical(table_frame, table_before), "data.table snapshot mutation reached the source frame")
+
+sort_rule <- function(id, name, direction = "asc", nulls = "last") {
+  list(column = list(id = id, name = name), direction = direction, nulls = nulls)
+}
+
+sort_frame <- data.frame(
+  group = c("b", "a", "a", "b", NA, "a", "a"),
+  score = c(2, 1, 1, 1, 9, NA, NaN),
+  marker = seq_len(7L),
+  stringsAsFactors = FALSE
+)
+sort_capture <- openwrangler_r_frame_contract$capture_frame(sort_frame)
+sort_page <- openwrangler_r_frame_contract$materialize_view_page(
+  sort_capture,
+  sort_rules = list(
+    sort_rule("r:c:0", "group", "asc", "last"),
+    sort_rule("r:c:1", "score", "desc", "first")
+  ),
+  row_limit = 7L,
+  column_limit = 3L
+)
+assert_identical(
+  vapply(sort_page$page$rows, `[[`, integer(1L), "rowNumber"),
+  c(5L, 6L, 1L, 2L, 0L, 3L, 4L),
+  "native R multi-sort priority or stable tie ordering changed"
+)
+assert_identical(
+  vapply(sort_page$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", c(5L, 6L, 1L, 2L, 0L, 3L, 4L)),
+  "sorted pages did not preserve source row identities"
+)
+assert_identical(sort_frame$marker, seq_len(7L), "view sorting mutated the source frame")
+
+duplicate_sort_frame <- data.frame(
+  duplicate = c(1L, 2L),
+  duplicate = c("z", "a"),
+  check.names = FALSE
+)
+duplicate_sort_capture <- openwrangler_r_frame_contract$capture_frame(duplicate_sort_frame)
+duplicate_sort_page <- openwrangler_r_frame_contract$materialize_view_page(
+  duplicate_sort_capture,
+  list(sort_rule("r:c:1", "duplicate")),
+  row_limit = 2L,
+  column_limit = 2L
+)
+assert_identical(
+  vapply(duplicate_sort_page$page$rows, `[[`, integer(1L), "rowNumber"),
+  c(1L, 0L),
+  "a duplicate column name was not resolved by positional ID"
+)
+
+sort_window <- openwrangler_r_frame_contract$materialize_view_page(
+  sort_capture,
+  sort_rules = list(sort_rule("r:c:0", "group")),
+  row_offset = 1L,
+  row_limit = 3L,
+  column_offset = 2L,
+  column_limit = 1L
+)
+assert_identical(sort_window$page$offset, 1, "sorted page offset changed")
+assert_identical(sort_window$page$columnIds, I("r:c:2"), "sorted page projection changed")
+assert_identical(
+  vapply(sort_window$page$rows, `[[`, integer(1L), "rowNumber"),
+  c(2L, 5L, 6L),
+  "sorted pagination did not slice the logical order"
+)
+
+wide_sort_frame <- data.frame(
+  wide = bit64::as.integer64(c(
+    "9223372036854775807",
+    "-9223372036854775807",
+    "0",
+    "-10",
+    "10",
+    "9223372036854775807",
+    NA
+  ))
+)
+wide_sort_capture <- openwrangler_r_frame_contract$capture_frame(wide_sort_frame)
+wide_sort_ascending <- openwrangler_r_frame_contract$materialize_view_page(
+  wide_sort_capture,
+  list(sort_rule("r:c:0", "wide", "asc", "last")),
+  row_limit = 7L,
+  column_limit = 1L
+)
+assert_identical(
+  vapply(wide_sort_ascending$page$rows, `[[`, integer(1L), "rowNumber"),
+  c(1L, 3L, 2L, 4L, 0L, 5L, 6L),
+  "integer64 ascending order lost precision or stability"
+)
+wide_sort_descending <- openwrangler_r_frame_contract$materialize_view_page(
+  wide_sort_capture,
+  list(sort_rule("r:c:0", "wide", "desc", "first")),
+  row_limit = 7L,
+  column_limit = 1L
+)
+assert_identical(
+  vapply(wide_sort_descending$page$rows, `[[`, integer(1L), "rowNumber"),
+  c(6L, 0L, 5L, 4L, 2L, 3L, 1L),
+  "integer64 descending order lost precision, null placement, or stability"
+)
+
+assert_error(
+  openwrangler_r_frame_contract$materialize_view_page(
+    sort_capture,
+    list(sort_rule("r:c:0", "stale name"))
+  ),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_view_page(
+    sort_capture,
+    list(sort_rule("r:c:7", "group"))
+  ),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_view_page(
+    sort_capture,
+    list(sort_rule("r:c:0", "group"), sort_rule("r:c:0", "group", "desc"))
+  ),
+  "each column only once"
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_view_page(
+    sort_capture,
+    list(sort_rule("r:c:0", "group", "sideways"))
+  ),
+  "must be one of"
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_view_page(
+    sort_capture,
+    list(c(sort_rule("r:c:0", "group"), list(extra = TRUE)))
+  ),
+  "missing or unknown fields"
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_view_page(
+    sort_capture,
+    setNames(list(sort_rule("r:c:0", "group")), "named")
+  ),
+  "unnamed list"
+)
 
 explicit_names <- data.frame(value = 1:2, row.names = c("left", "right"))
 assert_error(openwrangler_r_frame_contract$capture_frame(explicit_names), "unsupported-row-names")

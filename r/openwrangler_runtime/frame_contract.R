@@ -5,6 +5,7 @@ openwrangler_r_frame_contract <- local({
   maximum_page_rows <- 1000L
   maximum_page_columns <- 256L
   maximum_page_cells <- 100000L
+  maximum_sort_rules <- 64L
   maximum_factor_levels <- 100000L
   maximum_text_bytes <- 8192L
   maximum_name_bytes <- 1024L
@@ -159,7 +160,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   display_double <- function(value) {
-    format(value, digits = 15L, trim = TRUE, scientific = FALSE)
+    format(value, digits = 15L, trim = TRUE, scientific = FALSE, decimal.mark = ".")
   }
 
   cell_missing <- function() {
@@ -379,7 +380,7 @@ openwrangler_r_frame_contract <- local({
     }
     if (kind == "datetime") {
       exact <- exact_double(unclass(value))
-      timezone <- semantics$timezone %||% ""
+      timezone <- semantics$timezone %||% "UTC"
       display <- format(value, tz = timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE)
       display <- bounded_utf8(display, label)
       spend_json_string(budget, exact, label)
@@ -450,6 +451,129 @@ openwrangler_r_frame_contract <- local({
     json_array(ids)
   }
 
+  exact_named_list <- function(value, fields, label) {
+    if (!is.list(value) || is.object(value)) {
+      abort("invalid-view-query", sprintf("%s must be a plain named list", label))
+    }
+    attribute_names <- names(attributes(value)) %||% character()
+    if (!identical(attribute_names, "names")) {
+      abort("invalid-view-query", sprintf("%s has unsupported attributes", label))
+    }
+    field_names <- names(value)
+    if (
+      length(field_names) != length(fields) ||
+        anyNA(field_names) ||
+        any(field_names == "") ||
+        anyDuplicated(field_names) ||
+        !setequal(field_names, fields)
+    ) {
+      abort("invalid-view-query", sprintf("%s has missing or unknown fields", label))
+    }
+    value
+  }
+
+  scalar_choice <- function(value, choices, label) {
+    if (!is.character(value) || length(value) != 1L || is.na(value) || !value %in% choices) {
+      abort("invalid-view-query", sprintf("%s must be one of: %s", label, paste(choices, collapse = ", ")))
+    }
+    value
+  }
+
+  resolve_sort_rules <- function(sort_rules, descriptor) {
+    maximum_rules_for_frame <- min(maximum_sort_rules, descriptor$shape$columns)
+    if (
+      !is.list(sort_rules) ||
+        is.object(sort_rules) ||
+        !is.null(attributes(sort_rules)) ||
+        length(sort_rules) > maximum_rules_for_frame
+    ) {
+      abort(
+        "invalid-view-query",
+        sprintf("sort_rules must be an unnamed list of no more than %d rules", maximum_rules_for_frame)
+      )
+    }
+
+    resolved <- lapply(seq_along(sort_rules), function(index) {
+      label <- sprintf("sort_rules[[%d]]", index)
+      rule <- exact_named_list(sort_rules[[index]], c("column", "direction", "nulls"), label)
+      reference <- exact_named_list(rule$column, c("id", "name"), paste0(label, "$column"))
+      column_id <- bounded_utf8(reference$id, paste0(label, "$column$id"), maximum_name_bytes)
+      column_name <- bounded_utf8(reference$name, paste0(label, "$column$name"), maximum_name_bytes)
+      schema_ids <- vapply(descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      position <- match(column_id, schema_ids)
+      if (is.na(position) || !identical(descriptor$schema[[position]]$name, column_name)) {
+        abort("stale-column", sprintf("%s does not match the captured schema", paste0(label, "$column")))
+      }
+      list(
+        position = position,
+        columnId = column_id,
+        direction = scalar_choice(rule$direction, c("asc", "desc"), paste0(label, "$direction")),
+        nulls = scalar_choice(rule$nulls, c("first", "last"), paste0(label, "$nulls"))
+      )
+    })
+    column_ids <- vapply(resolved, `[[`, character(1L), "columnId", USE.NAMES = FALSE)
+    if (anyDuplicated(column_ids)) {
+      abort("invalid-view-query", "sort_rules may address each column only once")
+    }
+    resolved
+  }
+
+  order_integer64 <- function(values, decreasing) {
+    text <- as.character(values)
+    negative <- startsWith(text, "-")
+    digits <- ifelse(negative, substring(text, 2L), text)
+    negative_positions <- which(negative)
+    nonnegative_positions <- which(!negative)
+
+    order_group <- function(positions, reverse_magnitude) {
+      if (length(positions) == 0L) return(integer())
+      positions[base::order(
+        nchar(digits[positions], type = "bytes"),
+        digits[positions],
+        decreasing = reverse_magnitude,
+        method = "radix"
+      )]
+    }
+
+    if (decreasing) {
+      c(order_group(nonnegative_positions, TRUE), order_group(negative_positions, FALSE))
+    } else {
+      c(order_group(negative_positions, TRUE), order_group(nonnegative_positions, FALSE))
+    }
+  }
+
+  order_present_values <- function(values, semantics, decreasing) {
+    if (semantics$kind == "integer64") return(order_integer64(values, decreasing))
+    base::order(values, decreasing = decreasing, method = "radix", na.last = NA)
+  }
+
+  sorted_row_positions <- function(capture, sort_rules) {
+    descriptor <- capture$descriptor
+    resolved <- resolve_sort_rules(sort_rules, descriptor)
+    row_positions <- seq_len(descriptor$shape$rows)
+    if (length(resolved) == 0L || length(row_positions) == 0L) return(row_positions)
+
+    for (rule_index in rev(seq_along(resolved))) {
+      rule <- resolved[[rule_index]]
+      column <- capture$snapshot[[rule$position]][row_positions]
+      missing <- is.na(column)
+      missing_positions <- row_positions[missing]
+      present_positions <- which(!missing)
+      present_order <- order_present_values(
+        column[present_positions],
+        descriptor$schema[[rule$position]]$semantics,
+        identical(rule$direction, "desc")
+      )
+      ordered_present <- row_positions[present_positions[present_order]]
+      row_positions <- if (identical(rule$nulls, "first")) {
+        c(missing_positions, ordered_present)
+      } else {
+        c(ordered_present, missing_positions)
+      }
+    }
+    row_positions
+  }
+
   capture_frame <- function(value) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
@@ -515,8 +639,9 @@ openwrangler_r_frame_contract <- local({
     capture
   }
 
-  materialize_page <- function(
+  materialize_rows <- function(
     capture,
+    row_order,
     row_offset = 0L,
     row_limit = 100L,
     column_offset = 0L,
@@ -543,7 +668,8 @@ openwrangler_r_frame_contract <- local({
     if (row_count * column_count > maximum_page_cells) {
       abort("page-too-large", sprintf("a page may contain at most %d cells", maximum_page_cells))
     }
-    row_positions <- if (row_count == 0L) integer() else seq.int(row_offset + 1L, length.out = row_count)
+    logical_rows <- if (row_count == 0L) integer() else seq.int(row_offset + 1L, length.out = row_count)
+    row_positions <- row_order[logical_rows]
     column_positions <- if (column_count == 0L) integer() else seq.int(column_offset + 1L, length.out = column_count)
     selected_schema <- descriptor$schema[column_positions]
     column_ids <- vapply(selected_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
@@ -588,12 +714,61 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  encode_page <- function(...) {
+  materialize_page <- function(
+    capture,
+    row_offset = 0L,
+    row_limit = 100L,
+    column_offset = 0L,
+    column_limit = 100L
+  ) {
+    if (
+      !inherits(capture, "openwrangler_r_frame_capture") ||
+        !is.environment(capture) ||
+        !environmentIsLocked(capture)
+    ) {
+      abort("invalid-capture", "capture must come from capture_frame")
+    }
+    materialize_rows(
+      capture,
+      seq_len(capture$descriptor$shape$rows),
+      row_offset,
+      row_limit,
+      column_offset,
+      column_limit
+    )
+  }
+
+  materialize_view_page <- function(
+    capture,
+    sort_rules = list(),
+    row_offset = 0L,
+    row_limit = 100L,
+    column_offset = 0L,
+    column_limit = 100L
+  ) {
+    if (
+      !inherits(capture, "openwrangler_r_frame_capture") ||
+        !is.environment(capture) ||
+        !environmentIsLocked(capture)
+    ) {
+      abort("invalid-capture", "capture must come from capture_frame")
+    }
+    materialize_rows(
+      capture,
+      sorted_row_positions(capture, sort_rules),
+      row_offset,
+      row_limit,
+      column_offset,
+      column_limit
+    )
+  }
+
+  encode_contract <- function(value) {
     if (!requireNamespace("jsonlite", quietly = TRUE)) {
       abort("missing-package", "jsonlite is required to encode an R frame page")
     }
     payload <- jsonlite::toJSON(
-      materialize_page(...),
+      value,
       auto_unbox = TRUE,
       digits = NA,
       na = "null",
@@ -606,16 +781,27 @@ openwrangler_r_frame_contract <- local({
     enc2utf8(as.character(payload))
   }
 
+  encode_page <- function(...) {
+    encode_contract(materialize_page(...))
+  }
+
+  encode_view_page <- function(...) {
+    encode_contract(materialize_view_page(...))
+  }
+
   list(
     capture_frame = capture_frame,
     materialize_page = materialize_page,
+    materialize_view_page = materialize_view_page,
     encode_page = encode_page,
+    encode_view_page = encode_view_page,
     limits = list(
       rows = maximum_rows,
       columns = maximum_columns,
       pageRows = maximum_page_rows,
       pageColumns = maximum_page_columns,
       pageCells = maximum_page_cells,
+      sortRules = maximum_sort_rules,
       factorLevels = maximum_factor_levels,
       textBytes = maximum_text_bytes,
       nameBytes = maximum_name_bytes,

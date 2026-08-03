@@ -6,6 +6,7 @@ export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   pageRows: 1_000,
   pageColumns: 256,
   pageCells: 100_000,
+  sortRules: 64,
   factorLevels: 100_000,
   textBytes: 8_192,
   nameBytes: 1_024,
@@ -366,13 +367,17 @@ function decodePage(
     fail("R frame page exceeds the cell limit.");
   }
   const rows = Object.freeze(
-    record.rows.map((row, index) => decodeRow(row, offset + index, expectedColumns, `page.rows[${index}]`))
+    record.rows.map((row, index) => decodeRow(row, shape.rows, expectedColumns, `page.rows[${index}]`))
   );
+  if (new Set(rows.map((row) => row.id)).size !== rows.length) {
+    fail("R frame page row identities must be unique.");
+  }
   return Object.freeze({ offset, limit, totalRows, columnOffset, columnLimit, columnIds, rows });
 }
 
-function decodeRow(value: unknown, rowNumber: number, columns: readonly RColumnSchema[], label: string): RFrameRow {
+function decodeRow(value: unknown, totalRows: number, columns: readonly RColumnSchema[], label: string): RFrameRow {
   const record = exactRecord(value, ["id", "rowNumber", "values"]);
+  const rowNumber = boundedInteger(record.rowNumber, `${label}.rowNumber`, Math.max(0, totalRows - 1));
   if (record.id !== `r:r:${rowNumber}` || record.rowNumber !== rowNumber) {
     fail(`${label} has an invalid stable row identity.`);
   }
@@ -477,7 +482,7 @@ function validateRawValue(raw: string, semantics: RColumnSemantics, label: strin
   if (semantics.kind === "integer") {
     if (!exactIntegerPattern.test(raw)) fail(`${label}.raw is not an exact R integer.`);
     const value = Number(raw);
-    if (!Number.isInteger(value) || value < -2_147_483_648 || value > 2_147_483_647) {
+    if (!Number.isInteger(value) || value < -2_147_483_647 || value > 2_147_483_647) {
       fail(`${label}.raw is outside the R integer range.`);
     }
     return;
@@ -485,7 +490,7 @@ function validateRawValue(raw: string, semantics: RColumnSemantics, label: strin
   if (semantics.kind === "integer64") {
     if (!exactIntegerPattern.test(raw)) fail(`${label}.raw is not an exact integer64 value.`);
     const value = BigInt(raw);
-    if (value < signedInteger64Minimum || value > signedInteger64Maximum) {
+    if (value <= signedInteger64Minimum || value > signedInteger64Maximum) {
       fail(`${label}.raw is outside the signed integer64 range.`);
     }
     return;

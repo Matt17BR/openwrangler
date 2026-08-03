@@ -57,13 +57,14 @@ R support is not available in the extension yet. The first implementation is an 
 base `data.frame`, tibble, and `data.table`. It produces bounded typed pages and has a strict TypeScript decoder. It
 does not use Python or change the current Python support matrix.
 
-| Surface                                      | Availability | Status  | Recorded evidence                           | Remaining acceptance gate                         |
-| -------------------------------------------- | ------------ | ------- | ------------------------------------------- | ------------------------------------------------- |
-| Native R frame snapshot and typed page       | Internal     | Partial | Focused producer and decoder contract suite | Hosted R 4.4/4.5 and IRkernel lifecycle gates     |
-| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Real cross-language fixtures for all three  | Real notebook discovery, paging, and profiling    |
-| Notebook workbench                           | No           | Planned | No command or coordinator wiring            | Packaged VS Code/Cursor IRkernel acceptance       |
-| R cleaning operations and generated code     | No           | Planned | Frame semantics only                        | Native R IR, adapters, code generation, and tests |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR       | Stable broker or Open Wrangler-owned helper       |
+| Surface                                      | Availability | Status  | Recorded evidence                           | Remaining acceptance gate                          |
+| -------------------------------------------- | ------------ | ------- | ------------------------------------------- | -------------------------------------------------- |
+| Native R frame snapshot and typed page       | Internal     | Partial | Focused producer and decoder contract suite | Hosted R 4.4/4.5 and IRkernel lifecycle gates      |
+| Native R ordered viewing sorts               | Internal     | Partial | Stable pure-R sorts and decoder fixtures    | Live-session filtering, sorting, and UI acceptance |
+| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Real cross-language fixtures for all three  | Real notebook discovery, paging, and profiling     |
+| Notebook workbench                           | No           | Planned | No command or coordinator wiring            | Packaged VS Code/Cursor IRkernel acceptance        |
+| R cleaning operations and generated code     | No           | Planned | Frame semantics only                        | Native R IR, adapters, code generation, and tests  |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR       | Stable broker or Open Wrangler-owned helper        |
 
 ## DuckDB file-backed preview matrix
 

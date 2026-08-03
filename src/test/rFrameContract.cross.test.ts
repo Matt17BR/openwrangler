@@ -6,8 +6,10 @@ import { decodeRFramePageJson, type RDataframeFlavor } from "../extension/r/rFra
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const rscript = process.env.RSCRIPT ?? "Rscript";
 
-function emitFrame(flavor: "data.frame" | "tibble" | "data.table") {
-  const result = spawnSync(rscript, ["--vanilla", "r/tests/emit_frame_contract.R", flavor], {
+function emitFrame(flavor: "data.frame" | "tibble" | "data.table", view?: "sorted") {
+  const args = ["--vanilla", "r/tests/emit_frame_contract.R", flavor];
+  if (view) args.push(view);
+  const result = spawnSync(rscript, args, {
     cwd: resolve(__dirname, "../.."),
     encoding: "utf8",
     timeout: 30_000,
@@ -84,5 +86,17 @@ describe.skipIf(!enabled)("R to TypeScript frame contract", () => {
   it("retains data.table key identity", () => {
     const frame = emitFrame("data.table");
     expect(frame.frameSemantics.keyColumnIds).toEqual(["r:c:0"]);
+  });
+
+  it("decodes a sorted R page with stable source row identities", () => {
+    const frame = emitFrame("data.frame", "sorted");
+
+    expect(frame.page.offset).toBe(0);
+    expect(frame.page.rows.map(({ id, rowNumber }) => ({ id, rowNumber }))).toEqual([
+      { id: "r:r:0", rowNumber: 0 },
+      { id: "r:r:2", rowNumber: 2 },
+      { id: "r:r:1", rowNumber: 1 }
+    ]);
+    expect(frame.page.rows.map((row) => row.values[0]?.display)).toEqual(["1", "-2", "NA"]);
   });
 });
