@@ -23,7 +23,9 @@ export interface NotebookOutputPayload {
 }
 
 export function normalizeNotebookOutputPayload(value: unknown): NotebookOutputPayload | undefined {
-  if (!isRecord(value) || value.mimeVersion !== 2) return undefined;
+  if (!hasExactKeys(value, ["mimeVersion", "metadata", "page", "summaries"]) || value.mimeVersion !== 2) {
+    return undefined;
+  }
   if (!hasBoundedSavedOutputContainers(value.metadata, value.page, value.summaries, true)) return undefined;
   const page = migrateLegacyFullWidthPage(value.metadata, value.page);
   if (!hasBoundedSavedOutputContainers(value.metadata, page, value.summaries)) return undefined;
@@ -313,4 +315,10 @@ function migrateLegacyFullWidthPage(metadata: unknown, page: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }

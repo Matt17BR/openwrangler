@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { OPEN_WRANGLER_MIME_V2, normalizeNotebookOutputPayload } from "../shared/notebookOutput";
+import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 
 const page = {
   offset: 0,
@@ -42,6 +43,22 @@ describe("notebook output", () => {
     expect(OPEN_WRANGLER_MIME_V2).toBe("application/vnd.openwrangler.viewer.v2+json");
     const normalized = normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page, summaries: [] });
     expect(normalized?.mimeVersion).toBe(2);
+  });
+
+  it("keeps private runtime identity outside the saved MIME payload", () => {
+    const runtimeIdentity = runtimeIdentityForDataBackend("polars");
+
+    expect(
+      normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page, summaries: [], runtimeIdentity })
+    ).toBeUndefined();
+    expect(
+      normalizeNotebookOutputPayload({
+        mimeVersion: 2,
+        metadata: { ...metadata, runtimeIdentity },
+        page,
+        summaries: []
+      })
+    ).toBeUndefined();
   });
 
   it("accepts only notebook-producing backends", () => {

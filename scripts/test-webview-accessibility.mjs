@@ -164,7 +164,16 @@ async function verifyCodePreviewOrigin(browser) {
   await page.evaluate(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { kind: "codePreview", code: "# untrusted replacement", editable: true },
+        data: {
+          kind: "codePreview",
+          code: "# untrusted replacement",
+          editable: true,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "polars",
+            codeDialect: "python"
+          }
+        },
         origin: "https://untrusted.invalid"
       })
     );
@@ -174,11 +183,63 @@ async function verifyCodePreviewOrigin(browser) {
     throw new Error("Code preview accepted a message from another origin.");
   }
 
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          kind: "codePreview",
+          code: "# malformed private identity",
+          editable: true,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "pyspark",
+            codeDialect: "python"
+          }
+        },
+        origin: window.location.origin
+      })
+    );
+  });
+  if ((await page.locator(".cm-content").textContent()) !== before) {
+    throw new Error("Code preview accepted an inconsistent private runtime identity.");
+  }
+
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          kind: "codePreview",
+          code: "# unexpected private field",
+          editable: true,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "polars",
+            codeDialect: "python"
+          },
+          unexpected: true
+        },
+        origin: window.location.origin
+      })
+    );
+  });
+  if ((await page.locator(".cm-content").textContent()) !== before) {
+    throw new Error("Code preview accepted a host message with unknown fields.");
+  }
+
   const readOnlyCode = "# Read-only saved notebook snapshot.";
   await page.evaluate((code) => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { kind: "codePreview", code, editable: false },
+        data: {
+          kind: "codePreview",
+          code,
+          editable: false,
+          runtimeIdentity: {
+            runtimeLanguage: "python",
+            dataframeFlavor: "polars",
+            codeDialect: "python"
+          }
+        },
         origin: window.location.origin
       })
     );

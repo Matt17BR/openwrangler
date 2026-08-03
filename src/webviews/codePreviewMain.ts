@@ -4,6 +4,7 @@ import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
+import { isCodePreviewHostMessage } from "../shared/codePreviewMessages";
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -85,18 +86,7 @@ const editor = new EditorView({
 window.addEventListener("message", (event: MessageEvent<unknown>) => {
   if (event.origin !== window.location.origin) return;
   const message = event.data;
-  if (
-    typeof message !== "object" ||
-    message === null ||
-    !("kind" in message) ||
-    message.kind !== "codePreview" ||
-    !("code" in message) ||
-    typeof message.code !== "string" ||
-    !("editable" in message) ||
-    typeof message.editable !== "boolean"
-  ) {
-    return;
-  }
+  if (!isCodePreviewHostMessage(message)) return;
   const changes =
     editor.state.doc.toString() === message.code
       ? undefined

@@ -21,6 +21,7 @@ import {
   MAX_VIEW_VALUE_TEXT_CHARACTERS,
   truncateViewValueTextToCodePoints
 } from "../shared/viewValueLimits";
+import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 
 const validateTransportSchema = new Ajv({ strict: false }).compile(transportSchema);
 
@@ -1063,6 +1064,37 @@ describe("protocol-v2 request validation", () => {
       ).toBe(true);
     }
   );
+
+  it("keeps host runtime identity outside every protocol-v2 payload", () => {
+    const runtimeIdentity = runtimeIdentityForDataBackend("polars");
+    const openRequest = requests.find((request) => request.kind === "openSession");
+    const openedResponse = responses.find((response) => response.kind === "sessionOpened");
+    if (!openRequest || !openedResponse) throw new Error("Expected canonical open fixtures.");
+
+    expect(isOpenWranglerRequest({ ...openRequest, runtimeIdentity })).toBe(false);
+    expect(isOpenWranglerResponse({ ...openedResponse, runtimeIdentity })).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...openedResponse,
+        metadata: { ...openedResponse.metadata, runtimeIdentity }
+      })
+    ).toBe(false);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "request-private-runtime-identity",
+        priority: "interactive",
+        request: { ...openRequest, runtimeIdentity }
+      })
+    ).toBe(false);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "response-private-runtime-identity",
+        response: { ...openedResponse, runtimeIdentity }
+      })
+    ).toBe(false);
+  });
 
   it("accepts DuckDB as a first-class file backend", () => {
     expect(

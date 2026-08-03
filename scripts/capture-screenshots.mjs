@@ -1060,7 +1060,16 @@ function writeCodePreviewHarness(fileName, code, outputName) {
       postMessage(message) {
         if (message.kind === "ready") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "codePreview", code: ${stringifyForInlineScript(code)}, editable: true },
+            data: {
+              kind: "codePreview",
+              code: ${stringifyForInlineScript(code)},
+              editable: true,
+              runtimeIdentity: {
+                runtimeLanguage: "python",
+                dataframeFlavor: "polars",
+                codeDialect: "python"
+              }
+            },
             origin: window.location.origin
           })), 20);
         }

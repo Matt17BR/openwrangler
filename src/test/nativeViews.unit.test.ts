@@ -548,7 +548,12 @@ describe("native operation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
-      editable: false
+      editable: false,
+      runtimeIdentity: {
+        runtimeLanguage: "python",
+        dataframeFlavor: "polars",
+        codeDialect: "python"
+      }
     });
 
     receive?.({ kind: "codeChanged", code: "raise RuntimeError('should be ignored')" });
@@ -556,7 +561,12 @@ describe("native operation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       code: expect.stringMatching(/Read-only saved notebook snapshot/u),
-      editable: false
+      editable: false,
+      runtimeIdentity: {
+        runtimeLanguage: "python",
+        dataframeFlavor: "polars",
+        codeDialect: "python"
+      }
     });
 
     const editable = noDraftSnapshot();
@@ -565,8 +575,21 @@ describe("native operation commands", () => {
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       code: editable.code,
-      editable: true
+      editable: true,
+      runtimeIdentity: {
+        runtimeLanguage: "python",
+        dataframeFlavor: "pandas",
+        codeDialect: "python"
+      }
     });
+
+    receive?.({ kind: "codeChanged", code: "raise RuntimeError('unknown field')", unexpected: true });
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toMatchObject({ code: editable.code });
+
+    receive?.({ kind: "codeChanged", code: "def clean_data(df):\n    return df.dropna()\n" });
+    receive?.({ kind: "ready" });
+    expect(posted.at(-1)).toMatchObject({ code: "def clean_data(df):\n    return df.dropna()\n" });
   });
 
   it("disambiguates a selected duplicate label by its human column position", () => {
@@ -1092,6 +1115,7 @@ function snapshot(
     sessionId: "session",
     code: "def clean_data(df):\n    return df\n",
     metadata: {
+      backend: "pandas",
       source: { kind: "file", label: "sample.csv", path: "/tmp/sample.csv" },
       ...plan
     } as SessionMetadata,
