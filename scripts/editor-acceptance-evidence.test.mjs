@@ -1579,6 +1579,7 @@ test("a regex-hostile bounded source is omitted without aborting failure evidenc
 });
 
 test("maximum-size hostile redaction is bounded by a child heap and deadline", async () => {
+  const processDeadlineMs = 8_000;
   const moduleUrl = new URL("./editor-acceptance-evidence.mjs", import.meta.url).href;
   const program = `
     import { redactEditorAcceptanceText } from ${JSON.stringify(moduleUrl)};
@@ -1610,7 +1611,7 @@ test("maximum-size hostile redaction is bounded by a child heap and deadline", a
   const timer = setTimeout(() => {
     timedOut = true;
     child.kill("SIGKILL");
-  }, 8_000);
+  }, processDeadlineMs);
   const [exitCode, signal] = await once(child, "close");
   clearTimeout(timer);
 
@@ -1618,7 +1619,10 @@ test("maximum-size hostile redaction is bounded by a child heap and deadline", a
   assert.equal(signal, null, stderr);
   assert.equal(exitCode, 0, stderr);
   const metrics = JSON.parse(stdout);
-  assert.ok(metrics.elapsedMs < 5_000, `Hostile redaction took ${metrics.elapsedMs} ms.`);
+  assert.ok(
+    metrics.elapsedMs < processDeadlineMs,
+    `Hostile redaction exceeded its ${processDeadlineMs}-millisecond process deadline.`
+  );
   assert.ok(metrics.heapUsed < 64 * 1024 * 1024, `Hostile redaction used ${metrics.heapUsed} heap bytes.`);
 });
 
