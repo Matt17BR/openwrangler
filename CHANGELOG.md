@@ -6,6 +6,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- GitHub releases now use the versioned notes stored in the tagged commit instead of generated pull-request summaries.
+  Missing, malformed, invalid UTF-8, oversized, or conflicting notes stop publication before the release is changed.
+- Generated columns now scroll into view even when Cursor finishes laying out Code Preview without sending a resize
+  event. The retry stops after a fixed number of frames and cancels immediately when you scroll or click the grid.
 - Added bounded draft-pull-request feedback without weakening ready-PR evidence. Draft updates run the existing static
   source lane plus bounded carriers for directly protected matrix names, while the protected `validate` context
   deliberately remains failed until `ready_for_review` reruns the required tier at the same commit. Missing,

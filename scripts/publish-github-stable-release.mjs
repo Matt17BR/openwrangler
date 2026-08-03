@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withPinnedCanonicalReleaseAssets } from "./canonical-release-assets.mjs";
 import { parseGitHubImmutableReleaseExpectation, publishGitHubRelease } from "./github-release-publisher.mjs";
+import { readReleaseNotesFromCommit } from "./release-notes.mjs";
 import { verifyPinnedCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
 
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
@@ -34,6 +35,7 @@ export async function publishVerifiedGitHubStableRelease({
   expectedCommit,
   fetchImpl,
   releaseTag,
+  releaseNotes,
   repository,
   sourceCommit,
   sourcePackageJson,
@@ -56,6 +58,7 @@ export async function publishVerifiedGitHubStableRelease({
       expectedCommit: receipt.sourceCommit,
       fetchImpl,
       releaseTag: receipt.releaseTag,
+      releaseNotes,
       repository,
       token,
       version: receipt.version
@@ -71,13 +74,19 @@ async function runCli() {
   }
   const root = realpathSync.native(resolve(import.meta.dirname, ".."));
   const directory = resolve(process.argv[2]);
+  const sourceCommit = exactHead(root);
   const result = await publishVerifiedGitHubStableRelease({
     directory,
     expectImmutable: parseGitHubImmutableReleaseExpectation(process.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED),
     expectedCommit: process.env.EXPECTED_SHA,
     repository: process.env.GITHUB_REPOSITORY,
     releaseTag: process.env.RELEASE_TAG,
-    sourceCommit: exactHead(root),
+    releaseNotes: readReleaseNotesFromCommit({
+      commit: sourceCommit,
+      root,
+      version: process.env.RELEASE_TAG?.slice(1)
+    }),
+    sourceCommit,
     sourcePackageJson: readFileSync(join(root, "package.json"), "utf8"),
     token: process.env.GITHUB_TOKEN
   });
