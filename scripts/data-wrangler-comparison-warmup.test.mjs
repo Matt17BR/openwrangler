@@ -17,6 +17,21 @@ const digest = "a".repeat(64);
 function capturePreparedProductWarmups(input, environment, overrides = {}) {
   return capturePreparedProductWarmupsImplementation(input, environment, {
     requireWatchHeadroom: async () => ({ passed: true }),
+    installOpaqueExtension: async () => ({ status: "test-install" }),
+    captureTemplate(_sourceRoot, targetRoot) {
+      privateDirectory(targetRoot);
+      return {
+        root: targetRoot,
+        rootIdentity: { device: "1", inode: "2", mode: 0o700, owner: "1", group: "1" },
+        entryCount: 0,
+        totalBytes: 0,
+        treeSha256: digest
+      };
+    },
+    retireClone(clone) {
+      rmSync(clone.root, { recursive: true, force: false });
+      return { status: "retired", treeEmpty: true };
+    },
     ...overrides
   });
 }
