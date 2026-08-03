@@ -3235,34 +3235,44 @@ function createRealNotebookTrialDependencies(
 }
 
 async function captureStudyNotebook(): Promise<CapturedStudyNotebook> {
-  const uris = await vscode.workspace.findFiles("*.ipynb", "**/.ipynb_checkpoints/**", 2);
-  assert.equal(uris.length, 1, "The notebook trial workspace must contain exactly one study notebook.");
-  const uri = uris[0]!;
+  let notebook: vscode.NotebookDocument | undefined;
+  await waitFor(
+    () => {
+      const open = vscode.workspace.notebookDocuments.filter((candidate) => !candidate.isClosed);
+      assert.ok(open.length <= 1, "The notebook trial must not observe an unrelated open notebook.");
+      notebook = open[0];
+      return notebook !== undefined;
+    },
+    30_000,
+    "the exact study notebook document opened by VS Code"
+  );
+  assert.ok(notebook, "VS Code reported notebook readiness without one open notebook document.");
+  const exactNotebook = notebook;
+  const uri = exactNotebook.uri;
   const openMatches = (): vscode.NotebookDocument[] =>
     vscode.workspace.notebookDocuments.filter(
       (candidate) => !candidate.isClosed && candidate.uri.toString() === uri.toString()
     );
-  assert.ok(openMatches().length <= 1, "The study notebook URI is already open through duplicate document objects.");
-  const notebook = openMatches()[0] ?? (await vscode.workspace.openNotebookDocument(uri));
-  assert.equal(notebook.notebookType, "jupyter-notebook", "The study source must open as a Jupyter notebook.");
-  const editor = await vscode.window.showNotebookDocument(notebook, {
+  assert.equal(openMatches().length, 1, "The study notebook URI must identify exactly one open document object.");
+  assert.equal(exactNotebook.notebookType, "jupyter-notebook", "The study source must open as a Jupyter notebook.");
+  const editor = await vscode.window.showNotebookDocument(exactNotebook, {
     viewColumn: vscode.ViewColumn.One,
     preserveFocus: false,
     preview: false
   });
-  assert.equal(editor.notebook, notebook);
-  const definition = decodeStudyNotebookDefinition(notebook);
+  assert.equal(editor.notebook, exactNotebook);
+  const definition = decodeStudyNotebookDefinition(exactNotebook);
   const tagged = {
-    setup: requireTaggedStudyCell(notebook, "ow-study-setup"),
-    before: requireTaggedStudyCell(notebook, "ow-study-before-timing"),
-    measured: requireTaggedStudyCell(notebook, "ow-study-measured"),
-    after: requireTaggedStudyCell(notebook, "ow-study-after-workbench")
+    setup: requireTaggedStudyCell(exactNotebook, "ow-study-setup"),
+    before: requireTaggedStudyCell(exactNotebook, "ow-study-before-timing"),
+    measured: requireTaggedStudyCell(exactNotebook, "ow-study-measured"),
+    after: requireTaggedStudyCell(exactNotebook, "ow-study-after-workbench")
   };
-  assert.equal(notebook.cellCount, 5, "The study notebook must retain its exact notice and four code cells.");
-  assert.equal(notebook.cellAt(1), tagged.setup);
-  assert.equal(notebook.cellAt(2), tagged.before);
-  assert.equal(notebook.cellAt(3), tagged.measured);
-  assert.equal(notebook.cellAt(4), tagged.after);
+  assert.equal(exactNotebook.cellCount, 5, "The study notebook must retain its exact notice and four code cells.");
+  assert.equal(exactNotebook.cellAt(1), tagged.setup);
+  assert.equal(exactNotebook.cellAt(2), tagged.before);
+  assert.equal(exactNotebook.cellAt(3), tagged.measured);
+  assert.equal(exactNotebook.cellAt(4), tagged.after);
   const measuredSource = tagged.measured.document.getText().trimEnd();
   assert.equal(
     measuredSource,
@@ -3277,15 +3287,15 @@ async function captureStudyNotebook(): Promise<CapturedStudyNotebook> {
   const assertExact = (checkpoint: string): void => {
     const matches = openMatches();
     assert.equal(matches.length, 1, `The study notebook URI must identify one open object ${checkpoint}.`);
-    assert.equal(matches[0], notebook, `The exact study notebook object changed ${checkpoint}.`);
-    assert.equal(notebook.isClosed, false, `The exact study notebook closed ${checkpoint}.`);
-    assert.equal(notebook.cellCount, 5, `The exact study notebook cell count changed ${checkpoint}.`);
+    assert.equal(matches[0], exactNotebook, `The exact study notebook object changed ${checkpoint}.`);
+    assert.equal(exactNotebook.isClosed, false, `The exact study notebook closed ${checkpoint}.`);
+    assert.equal(exactNotebook.cellCount, 5, `The exact study notebook cell count changed ${checkpoint}.`);
     for (const [cell, source] of sources) {
       assert.equal(cell.document.getText(), source, `A study cell source changed ${checkpoint}.`);
     }
   };
   assertExact("after capture");
-  return { notebook, editor, definition, cells: tagged, assertExact };
+  return { notebook: exactNotebook, editor, definition, cells: tagged, assertExact };
 }
 
 function decodeStudyNotebookDefinition(notebook: vscode.NotebookDocument): NotebookTrialDefinition {
