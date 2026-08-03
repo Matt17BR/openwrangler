@@ -6,16 +6,6 @@ import { pathToFileURL } from "node:url";
 const COMMIT_SHA = /^[0-9a-f]{40}$/u;
 const ROOT_NON_PACKAGED_DOCUMENTATION = new Set(["AGENTS.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md"]);
 const PACKAGED_DOCUMENT_PATHS = new Set(["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]);
-const CHECKOUT_LIFECYCLE_PATHS = new Set([
-  "AGENTS.md",
-  "docs/testing.md",
-  "scripts/checkout-lifecycle.mjs",
-  "scripts/checkout-lifecycle.test.mjs"
-]);
-const CHECKOUT_LIFECYCLE_IMPLEMENTATION_PATHS = new Set([
-  "scripts/checkout-lifecycle.mjs",
-  "scripts/checkout-lifecycle.test.mjs"
-]);
 
 function isCanonicalRepositoryPath(path) {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) return false;
@@ -52,15 +42,6 @@ export function isPackageOnlyChangeSet({ eventName, changedPaths }) {
   );
 }
 
-export function isInternalToolingOnlyChangeSet({ eventName, changedPaths }) {
-  if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
-  if (eventName !== "pull_request" || changedPaths.length === 0) return false;
-  return (
-    changedPaths.every((path) => isCanonicalRepositoryPath(path) && CHECKOUT_LIFECYCLE_PATHS.has(path)) &&
-    changedPaths.some((path) => CHECKOUT_LIFECYCLE_IMPLEMENTATION_PATHS.has(path))
-  );
-}
-
 export function parsePullRequestDraft({ eventName, value }) {
   if (eventName === "pull_request") {
     if (value === "true") return true;
@@ -78,13 +59,11 @@ export function classifyCiChange({ eventName, changedPaths, pullRequestDraft }) 
   const draftPullRequest = parsePullRequestDraft({ eventName, value: pullRequestDraft });
   const documentationOnly = isDocumentationOnlyChangeSet({ eventName, changedPaths });
   const packageOnly = isPackageOnlyChangeSet({ eventName, changedPaths });
-  const internalToolingOnly = isInternalToolingOnlyChangeSet({ eventName, changedPaths });
-  const lightweightOnly = documentationOnly || internalToolingOnly || draftPullRequest;
-  const fullMatrixRequired = !documentationOnly && !internalToolingOnly && !packageOnly && !draftPullRequest;
+  const lightweightOnly = documentationOnly || draftPullRequest;
+  const fullMatrixRequired = !documentationOnly && !packageOnly && !draftPullRequest;
   return {
     documentationOnly,
     draftPullRequest,
-    internalToolingOnly,
     lightweightOnly,
     packageOnly,
     fullMatrixRequired,
@@ -153,7 +132,6 @@ function main(environment) {
     [
       `documentation_only=${classification.documentationOnly}`,
       `draft_pull_request=${classification.draftPullRequest}`,
-      `internal_tooling_only=${classification.internalToolingOnly}`,
       `lightweight_only=${classification.lightweightOnly}`,
       `package_only=${classification.packageOnly}`,
       `full_matrix_required=${classification.fullMatrixRequired}`,
