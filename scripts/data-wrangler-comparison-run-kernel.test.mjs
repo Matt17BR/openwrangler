@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { relative, resolve, sep } from "node:path";
 import test from "node:test";
+import { dataWranglerComparisonCleanupMayBeUnsettled } from "./data-wrangler-comparison-cleanup-safety.mjs";
 import { captureDataWranglerPreparationFile } from "./data-wrangler-comparison-preparation.mjs";
 import { materializeDataWranglerComparisonRunKernel } from "./data-wrangler-comparison-run-kernel.mjs";
 
@@ -177,6 +178,7 @@ test("retains a failed tree when cleanup finds a foreign descendant", () => {
     const runRoot = privateDirectory(resolve(root, "run"));
     const kernel = createKernel(root);
     const foreignText = "foreign descendant\n";
+    const operationError = new Error("forced post-publication failure");
     assert.throws(
       () =>
         materializeDataWranglerComparisonRunKernel(
@@ -187,11 +189,14 @@ test("retains a failed tree when cleanup finds a foreign descendant", () => {
                 mode: 0o600,
                 flag: "wx"
               });
-              throw new Error("forced post-publication failure");
+              throw operationError;
             }
           }
         ),
-      /materialization or exact cleanup failed/iu
+      (error) =>
+        error instanceof AggregateError &&
+        dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+        error.errors.includes(operationError)
     );
     const foreignPath = resolve(runRoot, "jupyter", "runtime", "foreign.txt");
     assert.equal(readFileSync(foreignPath, "utf8"), foreignText);

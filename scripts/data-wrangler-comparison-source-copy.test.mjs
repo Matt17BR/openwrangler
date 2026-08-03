@@ -189,6 +189,43 @@ linuxTest("an unsettled creation rollback is marked and leaves a replacement unt
   }
 });
 
+linuxTest("creation rollback revalidates a replacement immediately before unlink", () => {
+  const current = fixture();
+  try {
+    const operationError = new Error("injected source-copy creation failure");
+    const replacement = Buffer.from("foreign replacement after validation\n", "utf8");
+    assert.throws(
+      () =>
+        createDataWranglerComparisonSourceCopy(
+          {
+            canonicalPath: current.source,
+            privateRoot: current.privateRoot,
+            name: "source.csv"
+          },
+          {
+            faultInjector(checkpoint) {
+              if (checkpoint === "after-copy-created") throw operationError;
+              assert.equal(checkpoint, "before-rollback-unlink");
+              unlinkSync(current.copy);
+              writeFileSync(current.copy, replacement, { flag: "wx", mode: 0o600 });
+            }
+          }
+        ),
+      (error) =>
+        error instanceof AggregateError &&
+        dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+        error.errors.includes(operationError) &&
+        error.errors.some((nested) =>
+          /could not be identified safely for cleanup/u.test(String(nested?.message ?? nested))
+        )
+    );
+    assert.deepEqual(readFileSync(current.copy), replacement);
+    assert.deepEqual(readFileSync(current.source), current.sourceBytes);
+  } finally {
+    removeFixture(current.root);
+  }
+});
+
 linuxTest("rejects non-private roots, linked sources, and unsafe copy names", () => {
   const current = fixture();
   try {

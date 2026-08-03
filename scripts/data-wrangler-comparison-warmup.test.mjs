@@ -3,7 +3,10 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, unlin
 import { tmpdir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 import test from "node:test";
-import { dataWranglerComparisonCleanupMayBeUnsettled } from "./data-wrangler-comparison-cleanup-safety.mjs";
+import {
+  createDataWranglerComparisonCleanupUnsettledError,
+  dataWranglerComparisonCleanupMayBeUnsettled
+} from "./data-wrangler-comparison-cleanup-safety.mjs";
 import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
 import { createDataWranglerComparisonSourceCopy } from "./data-wrangler-comparison-source-copy.mjs";
 import {
@@ -572,6 +575,77 @@ test("source-copy cleanup uncertainty prevents the containing warm-up clone from
     );
     assert.equal(runRootRetirementCalls, 0);
     assert.equal(cloneRetirementCalls, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("run-kernel cleanup uncertainty preserves the warm-up run root and clone", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-kernel-ancestor-"));
+  try {
+    chmodSync(root, 0o700);
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernelCleanup = createDataWranglerComparisonCleanupUnsettledError(
+      [new Error("run-kernel tree contains a foreign descendant")],
+      "Run-kernel cleanup is unsettled."
+    );
+    const nestedError = new AggregateError([kernelCleanup], "Run-kernel materialization failed.");
+    let cloneRetirementCalls = 0;
+    let runRootRetirementCalls = 0;
+    await assert.rejects(
+      capturePreparedProductWarmups(
+        {
+          specification: {
+            candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            fixtures: [fixture],
+            provenance: { comparisonDriver: {} }
+          },
+          templates: [
+            { product: "open-wrangler", kind: "configured-only", root: resolve(root, "configured"), sandboxArgs: [] }
+          ],
+          templateTrees: new Map([["open-wrangler:configured-only", digest]]),
+          studyRoot: root,
+          editor: { version: "1.109.2" },
+          pythonPath: "/python",
+          kernel: {},
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix"
+        },
+        {},
+        {
+          id: () => "16250000-0000-4000-8000-000000000000",
+          recoverDriver() {},
+          cloneTemplate: (_template, { cloneRoot }) => ({
+            root: privateDirectory(cloneRoot),
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: []
+          }),
+          retireClone() {
+            cloneRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          retireRunRoot() {
+            runRootRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          createEnvironment: () => ({}),
+          configureTempRoot() {},
+          materializeKernel() {
+            throw nestedError;
+          }
+        }
+      ),
+      (error) => error === nestedError && dataWranglerComparisonCleanupMayBeUnsettled(error)
+    );
+    assert.equal(runRootRetirementCalls, 0);
+    assert.equal(cloneRetirementCalls, 0);
+    assert.equal(
+      existsSync(resolve(root, "warmup-clones", "open-wrangler-16250000-0000-4000-8000-000000000000")),
+      true
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
