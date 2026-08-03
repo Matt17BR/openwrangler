@@ -502,7 +502,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /sidebar keeps operations, dataset health, filters, sorts, and cleaning history beside the grid/u
   );
   assert.match(readme, /14,285 matching rows/u);
-  assert.match(readme, /automatic delimiter, encoding, quote, and header detection/u);
+  assert.match(
+    readme,
+    /CSV and TSV files detect their delimiter, encoding, quote character, and header automatically/u
+  );
   assert.match(readme, /^## Open files$/mu);
   assert.match(
     readme,
@@ -516,11 +519,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Column search covers the full schema and includes data-type icons/u);
   assert.match(readme, /Hover or focus any histogram bin to see its range and row count/u);
   assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
-  assert.match(readme, /Choose from 27 built-in operations/u);
-  assert.match(readme, /preview shows the changed values and generated Polars code/u);
+  assert.match(readme, /Open Wrangler includes 27 operations/u);
+  assert.match(readme, /A formula draft highlights changed values and shows generated Polars code/u);
   assert.match(readme, /Insert generated code into the notebook that opened the dataframe/u);
   assert.match(readme, /\*\*Open in Open Wrangler\*\* loads the current live dataframe/u);
-  assert.match(readme, /DuckDB relations are view-only and do not require dataframe conversion/u);
+  assert.match(readme, /DuckDB relations stay in DuckDB while you filter, sort, page, and profile them/u);
   assert.match(
     readme,
     /Experimental PySpark 4\.2\.x support provides viewing, filtering, sorting, paging, and profiles/u
@@ -565,10 +568,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /Issue \[#91\][\s\S]{0,120}tracks a planned comparison with Microsoft Data\s+Wrangler using the same files, editor, Python environment, and actions\./u
   );
-  assert.match(
-    readme,
-    /\*\*Next in v1:\*\*[\s\S]{0,220}#36[\s\S]{0,220}#86[\s\S]{0,220}#91[\s\S]{0,180}currently\s+experimental/u
-  );
+  assert.match(readme, /\*\*Next in v1:\*\*[\s\S]{0,220}issues\/36[\s\S]{0,220}issues\/86[\s\S]{0,220}issues\/91/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   assert.match(readme, /\*\*v2:\*\* add native R data frames[\s\S]{0,200}#87/u);
 
