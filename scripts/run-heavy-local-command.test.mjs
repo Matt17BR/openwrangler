@@ -490,7 +490,7 @@ test("public heavy scripts hold the shared lease across their complete transacti
   ]);
   assert.equal(
     scripts["comparison:prepare"],
-    "node scripts/run-heavy-local-command.mjs comparison:prepare -- npm run comparison:prepare:run"
+    "node scripts/run-heavy-local-command.mjs comparison:prepare -- npm run comparison:prepare:run --"
   );
   assert.equal(
     scripts["comparison:prepare:run"],
@@ -498,7 +498,7 @@ test("public heavy scripts hold the shared lease across their complete transacti
   );
   assert.equal(
     scripts["comparison:preregister"],
-    "node scripts/run-heavy-local-command.mjs comparison:preregister -- npm run comparison:preregister:run"
+    "node scripts/run-heavy-local-command.mjs comparison:preregister -- npm run comparison:preregister:run --"
   );
   assert.equal(
     scripts["comparison:preregister:run"],

@@ -81,10 +81,10 @@ const EXECUTION_GRAPH_PARSER = Object.freeze({
 const RELATIVE_MODULE_SPECIFIER = /^\.\.?\/[A-Za-z0-9._/-]+\.(?:mjs|js|cjs)$/u;
 const EXTERNAL_MODULE_SPECIFIER = /^(?:node:[a-z0-9_/-]+|@?[A-Za-z0-9][A-Za-z0-9._/-]*)$/u;
 const PREPARE_LAUNCH_RECIPE =
-  "node scripts/run-heavy-local-command.mjs comparison:prepare -- npm run comparison:prepare:run";
+  "node scripts/run-heavy-local-command.mjs comparison:prepare -- npm run comparison:prepare:run --";
 const PREPARE_RUN_RECIPE = "npm run build:test-extension && node scripts/run-data-wrangler-comparison-preparation.mjs";
 const PREREGISTER_LAUNCH_RECIPE =
-  "node scripts/run-heavy-local-command.mjs comparison:preregister -- npm run comparison:preregister:run";
+  "node scripts/run-heavy-local-command.mjs comparison:preregister -- npm run comparison:preregister:run --";
 const PREREGISTER_RUN_RECIPE =
   "npm run build:test-extension && node scripts/generate-data-wrangler-comparison-preregistration.mjs";
 const STUDY_LAUNCH_RECIPE =
