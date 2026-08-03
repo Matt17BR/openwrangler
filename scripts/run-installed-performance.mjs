@@ -1773,7 +1773,7 @@ async function runEditorPerformancePhases({
     "window.menuStyle": "custom",
     "files.simpleDialog.enable": true,
     "extensions.autoCheckUpdates": false,
-    "extensions.autoUpdate": false
+    "extensions.autoUpdate": "off"
   });
   writeEditorAcceptanceHarness(harness);
   await createVSIX({

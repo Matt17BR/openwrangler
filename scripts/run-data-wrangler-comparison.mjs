@@ -1975,11 +1975,11 @@ function prepareComparisonDiagnosticWorkspace(workspace, fixtureRoot) {
   );
 }
 
-function comparisonEditorSettings(python) {
+export function comparisonEditorSettings(python) {
   return {
     "telemetry.telemetryLevel": "off",
     "extensions.autoCheckUpdates": false,
-    "extensions.autoUpdate": false,
+    "extensions.autoUpdate": "off",
     "extensions.ignoreRecommendations": true,
     "git.enabled": false,
     "git.openRepositoryInParentFolders": "never",

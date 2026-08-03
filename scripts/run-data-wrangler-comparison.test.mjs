@@ -27,6 +27,7 @@ import {
   assertComparisonPathSeparation,
   bootstrapDataWranglerComparisonConfiguredProfiles,
   captureComparisonInputFile,
+  comparisonEditorSettings,
   createComparisonProductEditorPhasePlan,
   dataWranglerComparisonKernelLabel,
   comparisonPythonCommandMatches,
@@ -54,6 +55,12 @@ const OPEN_WRANGLER_RUN_ID = "11111111-1111-4111-8111-111111111111";
 const DATA_WRANGLER_RUN_ID = "22222222-2222-4222-8222-222222222222";
 // The runner is Linux x64-only, and these fixtures intentionally exercise Linux inode and symlink semantics.
 const test = (name, callback) => nodeTest(name, { skip: process.platform !== "linux" }, callback);
+
+test("comparison profiles author VS Code's canonical disabled auto-update value", () => {
+  const settings = comparisonEditorSettings("/private/python");
+  assert.equal(settings["extensions.autoUpdate"], "off");
+  assert.equal(settings["extensions.autoCheckUpdates"], false);
+});
 
 test("comparison retained roots use the ignored node_modules cache and keep the tmp/ow/x suffix", () => {
   const directory = mkdtempSync(join(tmpdir(), "ow-comparison-private-root-"));

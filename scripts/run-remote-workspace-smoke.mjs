@@ -657,7 +657,7 @@ function writeLocalEditorSettings(paths, sshConfig) {
     "remote.SSH.maxReconnectionAttempts": 0,
     "telemetry.telemetryLevel": "off",
     "update.mode": "none",
-    "extensions.autoUpdate": false,
+    "extensions.autoUpdate": "off",
     "extensions.autoCheckUpdates": false,
     "workbench.enableExperiments": false,
     "workbench.startupEditor": "none",
