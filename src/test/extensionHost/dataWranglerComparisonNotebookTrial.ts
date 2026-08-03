@@ -45,6 +45,14 @@ export const DATA_WRANGLER_STUDY_REQUIRED_LOCALE = "en";
 export const DATA_WRANGLER_STUDY_INLINE_ACTION_WINDOW_MS = 45_000;
 export const DATA_WRANGLER_STUDY_WORKBENCH_WINDOW_MS = 60_000;
 export const DATA_WRANGLER_STUDY_PROFILE_WINDOW_MS = 135_000;
+export const DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-ui-capture-phase-v1";
+export const DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASES = Object.freeze({
+  capability: "comparison-study-data-wrangler-capability",
+  control: "comparison-study-neither-product-control"
+} as const);
+const PUBLIC_UI_CAPTURE_ABSENCE_WINDOW_MS = 30_000;
+const PUBLIC_UI_CAPTURE_MAX_GAP_MS = 1_000;
+const PUBLIC_UI_CAPTURE_POLL_MS = 500;
 
 const PHASE_PRODUCTS = Object.freeze({
   "comparison-study-open-wrangler-trial": "open-wrangler",
@@ -61,6 +69,7 @@ const POINTER_ACTION_TIMEOUT_MS = 10_000;
 const PROFILE_POLL_MS = 25;
 
 type ProductKey = (typeof PHASE_PRODUCTS)[keyof typeof PHASE_PRODUCTS];
+type PublicUiCaptureKind = keyof typeof DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASES;
 type Engine = "pandas" | "polars";
 type Format = "csv" | "parquet";
 type TrialKind = "warm" | "cold";
@@ -277,6 +286,48 @@ export interface DataWranglerNotebookTrialPhaseReceipt {
   };
   readonly milestones: NotebookTrialMilestones;
   readonly absoluteMilestones: NotebookTrialAbsoluteMilestones;
+}
+
+interface PublicUiCaptureAction {
+  readonly product: ProductKey;
+  readonly accessibleName: string;
+  readonly matchCount: number;
+  readonly pointerUsable: boolean;
+}
+
+interface PublicUiCaptureOutput {
+  readonly ready: true;
+  readonly busy: false;
+  readonly obstructed: false;
+  readonly owner: "host-jupyter";
+}
+
+interface PublicUiCaptureSample {
+  readonly atMonotonicMs: number;
+  readonly output: PublicUiCaptureOutput;
+  readonly actions: readonly PublicUiCaptureAction[];
+}
+
+export interface DataWranglerPublicUiCapturePhaseReceipt {
+  readonly protocol: typeof DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL;
+  readonly captureId: string;
+  readonly kind: PublicUiCaptureKind;
+  readonly locale: typeof DATA_WRANGLER_STUDY_REQUIRED_LOCALE;
+  readonly editorVersion: string;
+  readonly study: NotebookTrialDefinition;
+  readonly verification: NotebookTrialVerificationEvidence;
+  readonly observation: {
+    readonly clock: "linux-monotonic";
+    readonly startedAtMonotonicMs: number;
+    readonly endedAtMonotonicMs: number;
+    readonly absenceDeadlineAtMonotonicMs: number;
+    readonly maxGapMs: typeof PUBLIC_UI_CAPTURE_MAX_GAP_MS;
+    readonly sampleCount: number;
+  };
+  readonly trace: readonly PublicUiCaptureSample[];
+  readonly output: PublicUiCaptureOutput;
+  readonly actions: readonly PublicUiCaptureAction[];
+  readonly conclusion: "available" | "capability-timeout" | "neither-product-control";
 }
 
 export interface NotebookTrialFlowDependencies {
@@ -2582,8 +2633,11 @@ interface CapturedStudyNotebook {
   assertExact(checkpoint: string): void;
 }
 
-export async function run(): Promise<DataWranglerNotebookTrialPhaseReceipt> {
-  const product = studyProductFromPhase(requiredEnvironment("OPEN_WRANGLER_TEST_PHASE"));
+export async function run(): Promise<DataWranglerNotebookTrialPhaseReceipt | DataWranglerPublicUiCapturePhaseReceipt> {
+  const phase = requiredEnvironment("OPEN_WRANGLER_TEST_PHASE");
+  const captureKind = publicUiCaptureKindFromPhase(phase);
+  if (captureKind !== undefined) return captureDataWranglerPublicUi(captureKind);
+  const product = studyProductFromPhase(phase);
   const publicSurfaceAvailability = studyPublicSurfaceAvailabilityFromEnvironment();
   if (publicSurfaceAvailability === "undetermined") {
     throw new Error("An undetermined capability must skip the editor phase entirely.");
@@ -2642,6 +2696,176 @@ export async function run(): Promise<DataWranglerNotebookTrialPhaseReceipt> {
   assert.ok(result, "Notebook trial completed without its strict phase receipt.");
   recordProgress("comparison-study:phase-receipt");
   return result;
+}
+
+function publicUiCaptureKindFromPhase(phase: string): PublicUiCaptureKind | undefined {
+  for (const [kind, expected] of Object.entries(DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASES) as [
+    PublicUiCaptureKind,
+    string
+  ][]) {
+    if (phase === expected) return kind;
+  }
+  return undefined;
+}
+
+function monotonicMilliseconds(): number {
+  return Number(process.hrtime.bigint() / 1_000_000n);
+}
+
+async function captureDataWranglerPublicUi(
+  kind: PublicUiCaptureKind
+): Promise<DataWranglerPublicUiCapturePhaseReceipt> {
+  assert.equal(
+    vscode.env.language,
+    DATA_WRANGLER_STUDY_REQUIRED_LOCALE,
+    "The public-UI capture requires VS Code launched with --locale=en."
+  );
+  const captureId = requiredEnvironment("OPEN_WRANGLER_TEST_RUN_ID");
+  recordProgress("comparison-study:public-ui-workbench-connect");
+  const { page } = await connectToEditorWorkbench();
+  await waitForWorkbenchReady(page);
+  recordProgress("comparison-study:public-ui-notebook-capture");
+  const captured = await captureStudyNotebook();
+  await selectStudyNotebookKernel(page, captured);
+  await executeStudyNotebookCell(captured, captured.cells.setup, "comparison-study:public-ui-setup");
+  await executeStudyNotebookCell(captured, captured.cells.before, "comparison-study:public-ui-verification");
+  const verification = readStudyVerification(captured.cells.before, captured.definition, "before-timing");
+  await executeStudyNotebookCell(captured, captured.cells.measured, "comparison-study:public-ui-output");
+  await waitFor(
+    async () => (await publicUiCaptureOutput(page)) !== undefined,
+    30_000,
+    "one ready, idle, unobstructed Jupyter dataframe output"
+  );
+
+  let startedAtMonotonicMs: number | undefined;
+  let absenceDeadlineAtMonotonicMs: number | undefined;
+  const trace: PublicUiCaptureSample[] = [];
+  while (trace.length < 64) {
+    captured.assertExact("during the public-UI capability observation");
+    let atMonotonicMs = monotonicMilliseconds();
+    if (trace.length > 0 && atMonotonicMs <= trace.at(-1)!.atMonotonicMs) {
+      await page.waitForTimeout(1);
+      atMonotonicMs = monotonicMilliseconds();
+    }
+    startedAtMonotonicMs ??= atMonotonicMs;
+    absenceDeadlineAtMonotonicMs ??= startedAtMonotonicMs + PUBLIC_UI_CAPTURE_ABSENCE_WINDOW_MS;
+    const output = await publicUiCaptureOutput(page);
+    assert.ok(output, "The verified Jupyter dataframe output disappeared or became obstructed during capture.");
+    const actions = await publicUiCaptureActions(page);
+    assert.ok(
+      trace.length === 0 || atMonotonicMs - trace.at(-1)!.atMonotonicMs <= PUBLIC_UI_CAPTURE_MAX_GAP_MS,
+      "The public-UI capture exceeded its one-second observation cadence."
+    );
+    trace.push({ atMonotonicMs, output, actions });
+    assert.ok(trace.length <= 64, "The public-UI capture exceeded its fixed sample bound.");
+
+    const openWrangler = actions[0]!;
+    const dataWrangler = actions[1]!;
+    assert.equal(openWrangler.matchCount, 0, "Open Wrangler appeared in an isolated public-UI capture.");
+    if (kind === "capability") {
+      const stable =
+        trace.length >= 2 &&
+        trace.slice(-2).every((sample) => {
+          const action = sample.actions[1]!;
+          return action.matchCount === 1 && action.pointerUsable;
+        });
+      if (stable) break;
+      assert.ok(
+        dataWrangler.matchCount === 0 || (dataWrangler.matchCount === 1 && dataWrangler.pointerUsable),
+        "The Data Wrangler action was ambiguous or not pointer-usable."
+      );
+    } else {
+      assert.equal(dataWrangler.matchCount, 0, "Data Wrangler appeared in the neither-product control.");
+    }
+    const now = monotonicMilliseconds();
+    if (now >= absenceDeadlineAtMonotonicMs) break;
+    await page.waitForTimeout(Math.min(PUBLIC_UI_CAPTURE_POLL_MS, absenceDeadlineAtMonotonicMs - now));
+    if (trace.length % 12 === 0) recordProgress("comparison-study:public-ui-observing");
+  }
+
+  const final = trace.at(-1)!;
+  assert.ok(startedAtMonotonicMs !== undefined && absenceDeadlineAtMonotonicMs !== undefined);
+  const dataWranglerAvailable = final.actions[1]!.matchCount === 1 && final.actions[1]!.pointerUsable;
+  const conclusion =
+    kind === "control" ? "neither-product-control" : dataWranglerAvailable ? "available" : "capability-timeout";
+  if (kind === "control" || conclusion === "capability-timeout") {
+    assert.ok(
+      final.atMonotonicMs >= absenceDeadlineAtMonotonicMs,
+      "An absence capture ended before its full thirty-second monotonic deadline."
+    );
+  }
+  recordProgress("comparison-study:public-ui-capture-complete");
+  const receipt: DataWranglerPublicUiCapturePhaseReceipt = {
+    protocol: DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL,
+    captureId,
+    kind,
+    locale: DATA_WRANGLER_STUDY_REQUIRED_LOCALE,
+    editorVersion: vscode.version,
+    study: captured.definition,
+    verification,
+    observation: {
+      clock: "linux-monotonic",
+      startedAtMonotonicMs,
+      endedAtMonotonicMs: final.atMonotonicMs,
+      absenceDeadlineAtMonotonicMs,
+      maxGapMs: PUBLIC_UI_CAPTURE_MAX_GAP_MS,
+      sampleCount: trace.length
+    },
+    trace,
+    output: final.output,
+    actions: final.actions,
+    conclusion
+  };
+  const serialized = JSON.stringify(receipt);
+  assert.ok(
+    Buffer.byteLength(serialized, "utf8") <= MAX_RECEIPT_BYTES,
+    "The public-UI capture receipt exceeded its fixed 32 KiB bound."
+  );
+  assertPathFreeJson(receipt);
+  return receipt;
+}
+
+async function publicUiCaptureOutput(page: Page): Promise<PublicUiCaptureOutput | undefined> {
+  let readyCount = 0;
+  let obstructed = false;
+  for (const frame of comparisonFrames(page).slice(0, 64)) {
+    if (!(await frameChainIsVisibleAndPointerUsable(frame).catch(() => false))) continue;
+    const evidence = await frame
+      .evaluate(observeComparisonGridReadiness, DEFAULT_COMPARISON_GRID_READINESS_INPUT)
+      .catch(() => null);
+    if (evidence) readyCount += 1;
+    const overlays = frame.locator(
+      '.quick-input-widget:visible, .monaco-dialog-box:visible, [role="dialog"][aria-modal="true"]:visible'
+    );
+    if ((await overlays.count().catch(() => 0)) > 0) obstructed = true;
+  }
+  assert.ok(readyCount <= 1, "The notebook exposed more than one matching public dataframe output.");
+  if (readyCount !== 1 || obstructed) return undefined;
+  return { ready: true, busy: false, obstructed: false, owner: "host-jupyter" };
+}
+
+async function publicUiCaptureActions(page: Page): Promise<readonly PublicUiCaptureAction[]> {
+  const openWrangler = await discoverExactInlineActionTargets(page, "open-wrangler");
+  const dataWrangler = await discoverExactInlineActionTargets(page, "data-wrangler");
+  try {
+    assert.ok(openWrangler.length <= 1 && dataWrangler.length <= 1, "A public launch action was ambiguous.");
+    return [
+      {
+        product: "open-wrangler",
+        accessibleName: "Open in Open Wrangler",
+        matchCount: openWrangler.length,
+        pointerUsable: openWrangler.length === 1
+      },
+      {
+        product: "data-wrangler",
+        accessibleName: "Open 'study_frame' in Data Wrangler",
+        matchCount: dataWrangler.length,
+        pointerUsable: dataWrangler.length === 1
+      }
+    ];
+  } finally {
+    await disposeActionTargets([...openWrangler, ...dataWrangler]);
+  }
 }
 
 function createRealNotebookTrialDependencies(

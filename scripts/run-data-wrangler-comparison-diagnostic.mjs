@@ -35,6 +35,8 @@ import {
 } from "./editor-acceptance.mjs";
 import { captureLinuxDataWranglerStudyProvenance } from "./linux-data-wrangler-study-gate.mjs";
 import { readBoundedJson } from "./run-installed-performance.mjs";
+import { DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL } from "./data-wrangler-comparison-preparation.mjs";
+import { runUnrecordedPreparedDataWranglerComparisonDiagnostic } from "./run-data-wrangler-comparison-prepared.mjs";
 
 export const DATA_WRANGLER_COMPARISON_DIAGNOSTIC_PROTOCOL =
   "openwrangler-data-wrangler-comparison-unrecorded-diagnostic-v1";
@@ -623,7 +625,11 @@ export async function runOneUnrecordedDataWranglerComparisonDiagnostic(
 
 async function main() {
   const options = parseDataWranglerComparisonDiagnosticArguments(process.argv.slice(2));
-  const result = await runOneUnrecordedDataWranglerComparisonDiagnostic(options);
+  const rawPreparation = readBoundedJson(options.preparationPath, MAXIMUM_PREPARATION_BYTES);
+  const result =
+    rawPreparation?.protocol === DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL
+      ? await runUnrecordedPreparedDataWranglerComparisonDiagnostic(options)
+      : await runOneUnrecordedDataWranglerComparisonDiagnostic(options);
   process.stdout.write(`${canonicalStudyJson(result)}\n`);
 }
 

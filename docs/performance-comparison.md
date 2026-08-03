@@ -229,6 +229,24 @@ invalidated pair. Retry the interrupted `plan`, `record`, or `finalize` command 
 the expected digest needed to settle a linked publication. If the laptop shuts down, the retained fragments still
 identify the next scheduled trial.
 
+The public runner adds one preparation receipt and one command to that ledger. `comparison:prepare` records the actual
+candidate, official editor installation, CPython environment and kernelspec, fixtures, cache controller, neutral
+driver, and four sealed editor-profile trees. It gets the profiles by completing each product's public setup and
+warm-up journey. Extension inventory checks run against disposable copies, so asking the VS Code CLI for an inventory
+cannot alter a sealed template. Preparation then uses three more disposable clones to capture Data Wrangler's Polars
+action for both fixtures and a thirty-second neither-product control from the real Jupyter UI. It accepts only an exact,
+pointer-usable action on a ready, unobstructed output and fails if either capability is absent or ambiguous. The
+capability/control captures are untimed setup evidence, not any of the 96 study samples. The preparation receipt binds
+each capture to the official editor bytes, configured Data Wrangler profile tree, fixture, and raw phase receipt. The
+receipt is checked again before and after each trial.
+
+`comparison:study -- run-next` reads the durable ledger and chooses its first pending entry. It clones the correct
+configured-only or warmed profile, installs the verified neutral driver into that clone, and derives the notebook,
+source-copy, request, acknowledgement, Jupyter, and editor paths itself. A successful run publishes one fragment,
+proves terminal cleanup, and deletes that clone. A thrown or ownership-uncertain run leaves the clone in place and
+publishes nothing. The unrecorded diagnostic calls this same path with a private scratch ledger; it cannot become a
+second, easier measurement implementation.
+
 Median and p95 use Hyndman-Fan type-7 interpolation. For ten ordered values, p95 is
 `x9 + 0.55 * (x10 - x9)`. The raw JSON binds each observation to its block ID and includes the schedule seed, cache
 proof, correctness status, and milestone times. Invalid observations use one fixed reason class. They do not include

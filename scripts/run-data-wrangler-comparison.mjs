@@ -452,7 +452,8 @@ export async function runDataWranglerComparison(options, environment = process.e
         privateRoot,
         fixtureRoot,
         testModule,
-        environment: runEnvironment
+        environment: runEnvironment,
+        captureTemplate: dependencies.captureTemplate
       });
       dependencies.revalidateInput(inputReceipts.python);
       editorVersion ??= run.editorVersion;
@@ -489,7 +490,10 @@ export async function runDataWranglerComparison(options, environment = process.e
     }
   }
 
-  if (!processTreeUncertain) {
+  if (
+    !processTreeUncertain &&
+    (!dependencies.retainPrivateRoot || primaryError !== undefined || displayError !== undefined)
+  ) {
     try {
       dependencies.removePrivateRoot(rootReceipt);
     } catch (error) {
@@ -646,14 +650,18 @@ export function createComparisonProductEditorPhasePlan(input) {
   return plan;
 }
 
-export async function runComparisonProductEditorPhases({ phasePlan, runPhase }) {
+export async function runComparisonProductEditorPhases({ phasePlan, runPhase, afterPhase = () => undefined }) {
   if (!comparisonProductEditorPhasePlans.has(phasePlan) || typeof runPhase !== "function") {
     throw new TypeError("Comparison product execution requires one authentic phase plan and phase callback.");
+  }
+  if (typeof afterPhase !== "function") {
+    throw new TypeError("Comparison product execution requires a callable post-phase observer.");
   }
   let diagnosticResult;
   let diagnosticCompleted = false;
   for (const phase of phasePlan) {
     const result = await runPhase(phase);
+    await afterPhase(phase, result);
     if (phase.reportsFragment) {
       if (diagnosticCompleted) {
         throw new Error("Comparison product execution encountered more than one reporting diagnostic phase.");
@@ -668,7 +676,7 @@ export async function runComparisonProductEditorPhases({ phasePlan, runPhase }) 
   return diagnosticResult;
 }
 
-async function runComparisonProduct({
+export async function runComparisonProduct({
   productKey,
   editor,
   editorVersion: knownEditorVersion,
@@ -678,9 +686,13 @@ async function runComparisonProduct({
   privateRoot,
   fixtureRoot,
   testModule,
-  environment
+  environment,
+  captureTemplate = () => undefined
 }) {
   requireProductKey(productKey);
+  if (typeof captureTemplate !== "function") {
+    throw new TypeError("Comparison product preparation requires a callable template capture.");
+  }
   revalidateComparisonInputFile(pythonReceipt);
   const python = pythonReceipt.path;
   const profile = mkdtempSync(join(privateRoot, productKey === "open-wrangler" ? "p-o-" : "p-d-"));
@@ -730,6 +742,19 @@ async function runComparisonProduct({
         label: `Official VS Code ${marketplaceInstallLabel(install)} installation`
       });
     }
+  }
+
+  if (productKey === "open-wrangler") {
+    await captureTemplate({
+      product: productKey,
+      kind: "configured-only",
+      privateRoot: profile,
+      userData,
+      extensions,
+      editor: identifiedEditor,
+      sandboxArgs,
+      environment: editorEnvironment
+    });
   }
 
   const runId = randomUUID();
@@ -786,7 +811,21 @@ async function runComparisonProduct({
     runPhase: () =>
       runComparisonProductEditorPhases({
         phasePlan,
-        runPhase: runObservedPhase
+        runPhase: runObservedPhase,
+        afterPhase: async (launch) => {
+          if (productKey === "data-wrangler" && launch.kind === "first-use-setup") {
+            await captureTemplate({
+              product: productKey,
+              kind: "configured-only",
+              privateRoot: profile,
+              userData,
+              extensions,
+              editor: identifiedEditor,
+              sandboxArgs,
+              environment: editorEnvironment
+            });
+          }
+        }
       })
   });
   const fragment = readInstalledPerformanceFragment(
@@ -802,6 +841,16 @@ async function runComparisonProduct({
     installedExtensions,
     candidateSha256: candidateReceipt.sha256,
     configuredPythonProcessObservedDuringProductRun: observed.configuredPythonProcessObservedDuringProductRun
+  });
+  await captureTemplate({
+    product: productKey,
+    kind: "warmed",
+    privateRoot: profile,
+    userData,
+    extensions,
+    editor: identifiedEditor,
+    sandboxArgs,
+    environment: editorEnvironment
   });
   return Object.freeze({ editorVersion, ...evidence });
 }
@@ -1163,6 +1212,8 @@ function comparisonDependencies(overrides) {
     acquireVscode: acquirePinnedVSCodeClient,
     startDisplay: startIsolatedEditorDisplay,
     runProduct: runComparisonProduct,
+    captureTemplate: () => undefined,
+    retainPrivateRoot: false,
     processTreeMayBeLive: editorProcessTreeMayBeLive,
     removePrivateRoot: removeEditorAcceptancePrivateRoot,
     sanitize: sanitizeEditorAcceptanceDiagnostic,

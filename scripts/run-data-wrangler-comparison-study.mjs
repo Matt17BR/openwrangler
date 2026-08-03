@@ -52,6 +52,7 @@ function usage() {
   return [
     "Usage:",
     "  node scripts/run-data-wrangler-comparison-study.mjs plan --spec <spec.json> --out <manifest.json> --cache-controller <source_cache_control.py> --python <python>",
+    "  node scripts/run-data-wrangler-comparison-study.mjs run-next --manifest <manifest.json> --fragments <dir> --intents <dir> --preparation <preparation.json>",
     "  node scripts/run-data-wrangler-comparison-study.mjs record --manifest <manifest.json> --fragments <dir> --fragment <fragment.json>",
     "  node scripts/run-data-wrangler-comparison-study.mjs status --manifest <manifest.json> --fragments <dir>",
     "  node scripts/run-data-wrangler-comparison-study.mjs finalize --manifest <manifest.json> --fragments <dir> --out <result.json>"
@@ -60,11 +61,12 @@ function usage() {
 
 function parseArguments(argv, cwd = process.cwd()) {
   const [command, ...rest] = argv;
-  if (!["plan", "record", "status", "finalize"].includes(command)) {
+  if (!["plan", "run-next", "record", "status", "finalize"].includes(command)) {
     throw new TypeError(usage());
   }
   const allowed = {
     plan: new Set(["--spec", "--out", "--cache-controller", "--python"]),
+    "run-next": new Set(["--manifest", "--fragments", "--intents", "--preparation"]),
     record: new Set(["--manifest", "--fragments", "--fragment"]),
     status: new Set(["--manifest", "--fragments"]),
     finalize: new Set(["--manifest", "--fragments", "--out"])
@@ -932,6 +934,9 @@ export function runDataWranglerComparisonStudy(
   } = {}
 ) {
   const options = parseArguments(argv, cwd);
+  if (options.command === "run-next") {
+    throw new TypeError("Study run-next is asynchronous and must be invoked through the public CLI.");
+  }
   if (options.command === "plan") {
     const specification = readBoundedJson(options.spec, "Study specification", inputReadOptions);
     if (typeof captureCacheToolchain !== "function") {
@@ -1018,7 +1023,19 @@ export function runDataWranglerComparisonStudy(
 }
 
 async function main() {
-  const result = runDataWranglerComparisonStudy(process.argv.slice(2));
+  const arguments_ = process.argv.slice(2);
+  const parsed = parseArguments(arguments_);
+  const result =
+    parsed.command === "run-next"
+      ? await import("./run-data-wrangler-comparison-prepared.mjs").then(({ runPreparedDataWranglerComparisonEntry }) =>
+          runPreparedDataWranglerComparisonEntry({
+            manifestPath: parsed.manifest,
+            fragmentsDirectory: parsed.fragments,
+            intentsDirectory: parsed.intents,
+            preparationPath: parsed.preparation
+          })
+        )
+      : runDataWranglerComparisonStudy(arguments_);
   process.stdout.write(
     canonicalStudyJson({
       command: result.command,

@@ -578,35 +578,74 @@ all-column-profile, and PSS boundaries supersede no feasibility-smoke contract a
 after that reviewed method, its versioned study protocol, the exact candidate artifact, and all raw scheduled outcomes
 land together.
 
-The ledger commands plan the study, record completed fragments, report progress, and finalize the result:
+Prepare the study once. This command inspects the candidate VSIX, selects and hashes the supplied CPython executable,
+checks its Pandas, Polars, PyArrow, Jupyter Core, and ipykernel versions, creates the study kernelspec, acquires the
+pinned official VS Code build, and runs the public first-use and warm-up journeys. It then seals separate
+configured-only and warmed profiles for both products. The CSV and Parquet fixtures, cache controller, and neutral
+driver are identified from their actual files, not copied receipts.
 
 ```bash
-npm run comparison:study -- plan --spec tmp/comparison-study/spec.json --out tmp/comparison-study/manifest.json --cache-controller python/benchmarks/source_cache_control.py --python /absolute/path/to/cpython-3.12
-npm run comparison:study -- status --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments
-npm run comparison:study -- record --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --fragment tmp/comparison-study/next-fragment.json
-npm run comparison:study -- finalize --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --out tmp/comparison-study/result.json
+npm run comparison:prepare -- \
+  --spec /absolute/path/to/reviewed-spec.json \
+  --candidate /absolute/path/to/openwrangler.vsix \
+  --python /absolute/path/to/cpython-3.12 \
+  --cache-controller /absolute/path/to/python/benchmarks/source_cache_control.py \
+  --driver-directory /absolute/path/to/prebuilt-driver \
+  --driver-vsix /absolute/path/to/prebuilt-driver.vsix \
+  --csv /absolute/path/to/study-100k-x-50.csv \
+  --parquet /absolute/path/to/study-1m-x-20.parquet \
+  --manifest /absolute/path/to/study/manifest.json \
+  --preparation /absolute/path/to/study/preparation.json \
+  --smoke-report /absolute/path/to/study/preparation-smoke.json
 ```
 
-Before collecting the full schedule, run one unrecorded diagnostic through the packaged driver and the same public
-notebook UI journey used by the study:
+Preparation captures the untimed Polars capabilities itself. For each release fixture it opens a warm Polars
+`study_frame` in a disposable clone of the sealed Data Wrangler profile and watches the actual Jupyter output through
+the neutral Playwright driver. The action must appear twice in a row with usable pointer geometry. A separate clone
+removes Data Wrangler and proves for thirty seconds that neither product action appears on the same ready Jupyter
+output. Each capture records the actual editor version, complete extension inventory, fixture verification, fixed
+monotonic observation trace, and source context. A missing, ambiguous, timed-out, obstructed, or changed result stops
+preparation. These three captures are outside the 96 measured trials. Their receipt bindings identify the exact editor
+distribution, configured-profile tree, fixture, and capture result in `preparation.json`.
+
+Use the preparation receipt for the dry run and every recorded trial. Both commands choose the next schedule entry,
+clone the matching sealed profile, install the neutral driver into that clone, build all private paths, and run the
+same measured notebook journey. Callers do not hand-author a per-trial preparation file.
 
 ```bash
 taskset --cpu-list <manifest-cpu-list> npm run comparison:diagnostic -- \
-  --manifest /absolute/path/to/manifest.json \
-  --prepared /absolute/path/to/prepared-diagnostic.json
+  --manifest /absolute/path/to/study/manifest.json \
+  --prepared /absolute/path/to/study/preparation.json
+
+taskset --cpu-list <manifest-cpu-list> npm run comparison:study -- run-next \
+  --manifest /absolute/path/to/study/manifest.json \
+  --fragments /absolute/path/to/study/fragments \
+  --intents /absolute/path/to/study/intents \
+  --preparation /absolute/path/to/study/preparation.json
+
+npm run comparison:study -- status --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments
+npm run comparison:study -- finalize --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --out tmp/comparison-study/result.json
 ```
 
-The preparation file names the already reviewed candidate, synthetic fixture, official editor artifact, pinned CPython,
-cache controller, packaged neutral driver, warmed disposable profile, selected study kernelspec, and editor-phase
-options. The command accepts only the manifest's first scheduled trial and always attempts its public launch action.
-A missing action or a timeout leaves the diagnostic failed or undetermined; it is not treated as proof that a product
-lacks the feature.
+Run `run-next` once per scheduled entry until `status` reports zero pending trials. The command will not skip ahead or
+overwrite a fragment. Its low-level `record` subcommand remains available for importing an independently validated
+fragment, but it is not the normal measurement path.
+
+The diagnostic accepts only the manifest's first scheduled trial and always attempts its public launch action. A
+missing action or a timeout remains failed or undetermined; it is not treated as proof that a product lacks the
+feature.
 
 This diagnostic uses a private scratch ledger. It never writes to the real study ledger and deletes its scratch data
 only after the public action, 200 ms PSS sampling, source-copy removal, process-tree cleanup, and provenance recheck all
 succeed. A failed run leaves that private journal in the disposable profile for inspection. The JSON summary labels
 memory as maximum observed sampled PSS: short spikes can fall between samples, and per-process `smaps_rollup` reads are
 sequential rather than simultaneous. Data Wrangler's backend stays `unverified` unless the public UI identifies it.
+
+After a successful trial, `run-next` verifies that the editor and kernel process trees are empty and removes only the
+clone it created. If measurement or ownership is uncertain, it deliberately leaves that clone under the preparation
+root for review. The durable authorization journal prevents an action interrupted after dispatch from being repeated
+silently. A laptop shutdown therefore loses at most the in-flight, pre-authorization setup: rerun `status`, inspect any
+retained clone, and call `run-next` again only when the ledger says the entry is safe to run.
 
 `plan` opens and identifies the supplied controller and CPython executable itself. It writes those observed receipts
 into the manifest and rejects a specification that claims a different toolchain. Later cache preparation executes
