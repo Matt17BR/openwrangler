@@ -243,10 +243,13 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
     () =>
       validateDataWranglerStudyManifest({
         ...manifest,
-        protocol: "openwrangler-data-wrangler-study-manifest-v1"
+        protocol: "openwrangler-data-wrangler-study-manifest-v3"
       }),
     /manifest protocol/u
   );
+  const unbound = structuredClone(manifest);
+  unbound.preregistration.protocol = "openwrangler-data-wrangler-comparison-preregistration-receipt-v0";
+  assert.throws(() => validateDataWranglerStudyManifest(unbound), /preregistration receipt protocol/u);
   assert.match(digestStudyValue(manifest), /^[0-9a-f]{64}$/u);
   assert.deepEqual(
     manifest.provenance.capabilities.map((capability) => capability.fixtureId),
@@ -2101,6 +2104,10 @@ function studyManifest(dataWranglerPolarsAvailability = "available", ownershipTr
   return buildDataWranglerStudyManifest({
     studyId: "11111111-1111-4111-8111-111111111111",
     createdAtUtc: "2026-08-02T10:00:00.000Z",
+    preregistration: {
+      protocol: "openwrangler-data-wrangler-comparison-preregistration-receipt-v2",
+      sha256: digest("0")
+    },
     method: { protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL, sha256: digest("1") },
     candidate: {
       extensionId: "Matt17BR.openwrangler",

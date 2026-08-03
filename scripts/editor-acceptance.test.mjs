@@ -562,6 +562,8 @@ test("editor subprocesses inherit only an explicit platform and isolation allowl
       OPEN_WRANGLER_TEST_PYTHON: "/private/inherited-python"
     },
     {
+      OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
+      OPEN_WRANGLER_EDITOR_TEMP_ROOT: "/private/run",
       OPEN_WRANGLER_TEST_PHASE: "verify",
       OPEN_WRANGLER_TEST_PYTHON: undefined
     }
@@ -574,6 +576,8 @@ test("editor subprocesses inherit only an explicit platform and isolation allowl
     LANG: "en_US.UTF-8",
     LC_CTYPE: "en_US.UTF-8",
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/private/editor-bus",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
+    OPEN_WRANGLER_EDITOR_TEMP_ROOT: "/private/run",
     OPEN_WRANGLER_TEST_PHASE: "verify"
   });
 

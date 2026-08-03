@@ -285,7 +285,15 @@ export async function runPreparedDataWranglerComparisonEntry(
     id: randomUUID,
     ...overrides
   };
+  const preparation = dependencies.loadPreparation(preparationPath);
+  await dependencies.revalidatePreparation(preparation);
+  if (preparation.manifestPath !== manifestPath) {
+    fail("Prepared comparison receipt belongs to another manifest path.");
+  }
   const manifest = dependencies.readManifest(manifestPath);
+  if (preparation.manifestSha256 !== digestStudyValue(manifest)) {
+    fail("Prepared comparison receipt belongs to another manifest.");
+  }
   const fragments = dependencies.loadFragments(fragmentsDirectory, manifest);
   const entry = dependencies.pendingTrials(manifest, fragments)[0];
   if (entry === undefined) {
@@ -293,11 +301,6 @@ export async function runPreparedDataWranglerComparisonEntry(
   }
   if (expectedEntryId !== undefined && expectedEntryId !== entry.id) {
     fail(`Prepared comparison expected ${expectedEntryId}, but the durable ledger selected ${entry.id}.`);
-  }
-  const preparation = dependencies.loadPreparation(preparationPath);
-  await dependencies.revalidatePreparation(preparation);
-  if (preparation.manifestSha256 !== digestStudyValue(manifest) || preparation.manifestPath !== manifestPath) {
-    fail("Prepared comparison receipt belongs to another manifest.");
   }
   const expectedTemplate = templateForEntry(manifest, entry);
   const clonesParent = resolve(preparation.studyRoot, "trial-clones");

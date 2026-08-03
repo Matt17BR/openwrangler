@@ -2,9 +2,13 @@
 
 ## Status
 
-This document preregisters the v1.2.1 comparison methodology. It intentionally contains no results yet. The final
-report must bind every observation to the exact candidate VSIX, editor, extension, Python environment, fixtures, and
-machine described below. Results produced with a different boundary or an unreviewed method are diagnostic only.
+This document defines the reviewed v1.2.1 comparison methodology. Before preparation, `comparison:preregister`
+publishes an immutable record of this method, the full schedule, the fixed limits, the neutral driver recipe, and the
+checked-in tool hashes. It also records the two public entry commands and their complete static JavaScript module
+graph, including every local module hash, literal import edge, external package name, parser version, and public npm
+launch recipe. That record has no candidate, machine, editor-profile, or fixture receipts. Preparation
+captures those changing inputs, binds the final specification to the preregistration digest, and finishes before any
+diagnostic or measured trial may start. The report must bind every observation to that complete specification.
 
 The study is a clean-room, black-box comparison. It may use public product documentation, public UI, official editor
 APIs for neutral setup, and observable process state. It must never inspect, retain, or report Microsoft Data Wrangler
@@ -233,10 +237,14 @@ invalidated pair. Retry the interrupted `plan`, `record`, or `finalize` command 
 the expected digest needed to settle a linked publication. If the laptop shuts down, the retained fragments still
 identify the next scheduled trial.
 
-The public runner adds one preparation receipt and one command to that ledger. Every public `comparison:*` command
-holds the shared heavy-command lease for its complete process tree. `comparison:prepare` records the actual
-candidate, official editor installation, CPython environment and kernelspec, fixtures, checked-in fixture generator and
-contract, cache controller, neutral driver, and four sealed editor-profile trees. It gets the profiles by completing
+The public runner adds one preparation journal and one command to that ledger. Every public `comparison:*` command
+holds the shared heavy-command lease for its complete process tree. `comparison:prepare` first verifies the immutable
+preregistration against the current methodology, schedule, compiled journey graph, full public-command module graph,
+lockfile, npm launch recipes, and tool hashes. The JavaScript cache harness and Python cache controller have separate
+hashes and are checked separately before packaging or editor work. It then
+packages and verifies the neutral driver itself and records the actual candidate, official editor installation,
+CPython environment and kernelspec, fixture volume, CPU/power/storage state, fixture generator and contract, cache
+controller, process supervisor, and four sealed editor-profile trees. It gets the profiles by completing
 each product's public setup and a separate untimed inline-to-workbench-to-profile warm-up. Those warm-ups use the same
 durable, ordered request/acknowledgement bridge as measured trials; preparation must independently observe every
 exchange and match it to the editor receipt. Extension inventory checks
@@ -247,6 +255,14 @@ unobstructed output and fails if either capability is absent or ambiguous. The c
 setup evidence, not any of the 96 study samples. Their manifest claims are rebuilt from the raw phase records rather
 than trusted as copied summaries. The preparation receipt is checked again before and after each trial, including the
 Python package, kernelspec, and private Jupyter directory state.
+
+After all checks finish, preparation writes an append-only journal that contains the complete specification and the
+authorized manifest digest. It then publishes that exact specification and derives the manifest from it. This order
+lets an exact retry finish the transaction after a shutdown at any publication boundary without regenerating private
+editor profiles or changing timestamps. The plan command accepts the specification only when the exact
+preregistration and journal authorize its paths and digests. The final specification contains the preregistration
+digest and no placeholders. There is no supported path for hand-writing dynamic file, machine, profile, capability,
+or driver receipts.
 
 `comparison:study -- run-next` reads the durable ledger and chooses its first pending entry. It clones the correct
 configured-only or warmed profile, installs the verified neutral driver into that clone, and derives the notebook,

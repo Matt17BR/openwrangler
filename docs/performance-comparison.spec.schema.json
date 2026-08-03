@@ -2,12 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.spec.schema.json",
   "title": "Open Wrangler Data Wrangler performance-study specification",
-  "description": "Input contract for the reviewed v1.2.1 notebook comparison. The JavaScript manifest validator remains authoritative for cross-field and cryptographic checks.",
+  "description": "Final prepared specification for the reviewed v1.2.1 notebook comparison. It is emitted only after dynamic evidence capture and is bound to an immutable preregistration receipt. The JavaScript manifest validator remains authoritative for cross-field and cryptographic checks.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "studyId",
     "createdAtUtc",
+    "preregistration",
     "method",
     "candidate",
     "baseline",
@@ -22,6 +23,7 @@
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
     },
+    "preregistration": { "$ref": "#/$defs/preregistrationReceipt" },
     "method": { "$ref": "#/$defs/method" },
     "candidate": { "$ref": "#/$defs/candidate" },
     "baseline": { "$ref": "#/$defs/baseline" },
@@ -90,6 +92,15 @@
       "required": ["protocol", "sha256"],
       "properties": {
         "protocol": { "const": "openwrangler-data-wrangler-study-method-v1" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "preregistrationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "sha256"],
+      "properties": {
+        "protocol": { "const": "openwrangler-data-wrangler-comparison-preregistration-receipt-v2" },
         "sha256": { "$ref": "#/$defs/sha256" }
       }
     },

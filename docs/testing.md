@@ -601,46 +601,64 @@ all-column-profile, and PSS boundaries supersede no feasibility-smoke contract a
 after that reviewed method, its versioned study protocol, the exact candidate artifact, and all raw scheduled outcomes
 land together.
 
-Prepare the study once. This command inspects the candidate VSIX, selects and hashes the supplied CPython executable,
-checks its Pandas, Polars, PyArrow, Jupyter Core, and ipykernel versions, creates the study kernelspec, acquires the
-pinned official VS Code build, and runs the public first-use and warm-up journeys. It then seals separate
-configured-only and warmed profiles for both products. Before it records the supplied CSV and Parquet paths, it runs
-the checked-in fixture generator in a fresh mode-`0700` directory, enforces file-size bounds, and compares both files
-byte for byte with the regenerated output. It then runs the full Polars value contract and records those same file
-receipts. The cache controller and neutral driver are likewise identified from their actual files, not copied receipts.
-
 Every public `comparison:*` npm command holds the repository's shared heavy-command lease for its complete process
 tree. The script contract test enumerates that public command set, so adding an unguarded comparison entry fails CI.
 
-The final specification format is checked in as
-[`performance-comparison.spec.schema.json`](performance-comparison.spec.schema.json). To seal a complete reviewed
-draft outside the preparation command, run:
+Build the neutral notebook journey, then publish the static preregistration. Its output directory must be private
+mode `0700`, and the target must not already contain a different record.
 
 ```bash
-npm run comparison:spec -- \
-  --draft /absolute/path/to/reviewed-draft.json \
-  --out /absolute/path/to/reviewed-spec.json
+install -d -m 0700 /absolute/path/to/study
+npm run build:test-extension
+
+npm run comparison:preregister -- \
+  --out /absolute/path/to/study/preregistration.json
 ```
 
-The generator ignores any methodology receipt in the draft. It hashes the checked-in
-`docs/performance-comparison.md`, runs the same manifest validator used by the study, writes through the durable
-specification publisher, and reads the publication back before it succeeds. `comparison:prepare` performs that same
-methodology binding when it builds its private prepared specification.
+The preregistration contains the reviewed methodology hash, complete 96-entry schedule, fixed limits and environment
+requirements, compiled neutral-journey graph, package-lock and Playwright pins, and hashes for the packager, fixture
+tools, JavaScript cache harness, Python cache controller, process supervisor, bootstrap, environment capture, study
+validator, and durable publisher. It also binds the exact public npm launch recipes and the complete static module
+graph reachable from preparation and study execution, including local hashes, literal edges, external package names,
+and the TypeScript parser version used to prove that graph.
+It deliberately contains no candidate, editor, machine, fixture, profile, capability, or warm-up evidence. Review
+this file before preparing the study; it is append-only and cannot be changed in place.
+
+Run preparation once under the exact CPU affinity that the study will use. `--cpu-list` must use the canonical Linux
+CPU-list form and must match the process affinity established by `taskset`.
 
 ```bash
-npm run comparison:prepare -- \
-  --spec /absolute/path/to/reviewed-spec.json \
+taskset --cpu-list 2-5 npm run comparison:prepare -- \
+  --preregistration /absolute/path/to/study/preregistration.json \
   --candidate /absolute/path/to/openwrangler.vsix \
   --python /absolute/path/to/cpython-3.12 \
   --cache-controller /absolute/path/to/python/benchmarks/source_cache_control.py \
-  --driver-directory /absolute/path/to/prebuilt-driver \
-  --driver-vsix /absolute/path/to/prebuilt-driver.vsix \
   --csv /absolute/path/to/study-100k-x-50.csv \
   --parquet /absolute/path/to/study-1m-x-20.parquet \
+  --specification /absolute/path/to/study/specification.json \
   --manifest /absolute/path/to/study/manifest.json \
   --preparation /absolute/path/to/study/preparation.json \
-  --smoke-report /absolute/path/to/study/preparation-smoke.json
+  --smoke-report /absolute/path/to/study/preparation-smoke.json \
+  --cpu-list 2-5
 ```
+
+Preparation rehashes every preregistered source and recipe before doing any trial work. It packages and verifies the
+neutral driver inside its own retained private directory; callers do not provide a driver directory or VSIX. It also
+inspects the candidate, CPython environment, deterministic fixtures, CPU and power state, and proves that both fixture
+paths resolve to the same exact study volume,
+storage, official editor, and disposable profiles. It creates the study kernelspec, runs public first-use and warm-up
+journeys, and seals separate configured-only and warmed profiles for both products. The supplied fixtures must match a
+fresh generator run byte for byte and pass the full Polars value contract.
+
+Only after all checks pass does preparation durably publish its journal first. The journal embeds the complete
+specification and authorizes one manifest digest; preparation then publishes that exact specification and derives the
+manifest from it. The specification format is checked in as
+[`performance-comparison.spec.schema.json`](performance-comparison.spec.schema.json), includes the preregistration
+digest, and contains no pending fields. Do not hand-author dynamic receipts. If the process stops after any one of
+those three publications, rerun the same preparation command: it recovers the journal, reconstructs the missing exact
+outputs, and does not regenerate retained roots or timestamps. The planner independently requires the exact
+preregistration, journal, specification path, and manifest path before it writes anything. Private driver and profile
+roots remain available for inspection.
 
 Preparation captures the untimed Polars capabilities itself. For each release fixture it opens a warm Polars
 `study_frame` in a disposable clone of the sealed Data Wrangler profile and watches the actual Jupyter output through

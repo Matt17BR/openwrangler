@@ -21,10 +21,15 @@ import { recoverDataWranglerComparisonDriver } from "./data-wrangler-comparison-
 import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
 import { assertDataWranglerPublicUiManifestEntryMatchesPhase } from "./data-wrangler-comparison-public-phase-receipt.mjs";
 import {
+  buildDataWranglerStudyManifest,
   canonicalStudyJson,
-  digestStudyValue,
-  readDataWranglerStudyManifestPublication
+  digestStudyValue
 } from "./data-wrangler-comparison-study.mjs";
+import {
+  assertCurrentDataWranglerComparisonPreregistration,
+  createDataWranglerComparisonPreregistrationReceipt,
+  readDataWranglerComparisonPreregistration
+} from "./data-wrangler-comparison-preregistration.mjs";
 import {
   digestDurableJsonValue,
   publishDurableStudyJsonExclusive,
@@ -36,7 +41,7 @@ import {
   runBoundedEditorCliCommand
 } from "./editor-acceptance.mjs";
 
-export const DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL = "openwrangler-data-wrangler-comparison-preparation-v1";
+export const DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL = "openwrangler-data-wrangler-comparison-preparation-v2";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u;
@@ -501,6 +506,11 @@ function validatePreparationReceipt(value) {
     value,
     [
       "protocol",
+      "preregistrationPath",
+      "preregistrationSha256",
+      "specificationPath",
+      "specificationSha256",
+      "specification",
       "manifestPath",
       "manifestSha256",
       "studyRoot",
@@ -517,10 +527,19 @@ function validatePreparationReceipt(value) {
     ],
     "Comparison preparation receipt"
   );
-  if (value.protocol !== DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL || !SHA256.test(value.manifestSha256)) {
+  if (
+    value.protocol !== DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL ||
+    !SHA256.test(value.preregistrationSha256) ||
+    !SHA256.test(value.specificationSha256) ||
+    !SHA256.test(value.manifestSha256) ||
+    !isRecord(value.specification) ||
+    digestStudyValue(value.specification) !== value.specificationSha256
+  ) {
     fail("Comparison preparation receipt protocol or manifest digest is invalid.");
   }
   for (const [path, label] of [
+    [value.preregistrationPath, "preregistration"],
+    [value.specificationPath, "specification"],
     [value.manifestPath, "manifest"],
     [value.studyRoot, "study root"],
     [value.candidate?.path, "candidate"],
@@ -618,6 +637,11 @@ function normalizePublicUiCaptureBindings(manifest, bindings, kernel) {
 
 export async function createDataWranglerComparisonPreparationReceipt(
   {
+    preregistrationPath,
+    preregistration,
+    specificationPath,
+    specification,
+    manifest,
     manifestPath,
     studyRoot,
     candidatePath,
@@ -634,7 +658,17 @@ export async function createDataWranglerComparisonPreparationReceipt(
   },
   { readInventory = queryDataWranglerTemplateInventory } = {}
 ) {
-  const manifest = readDataWranglerStudyManifestPublication(manifestPath);
+  const expectedManifest = buildDataWranglerStudyManifest(specification);
+  if (canonicalStudyJson(expectedManifest) !== canonicalStudyJson(manifest)) {
+    fail("Comparison preparation manifest is not derived from its exact prepared specification.");
+  }
+  const preregistrationReceipt = createDataWranglerComparisonPreregistrationReceipt(preregistration);
+  if (
+    specification.studyId !== preregistration.studyId ||
+    canonicalStudyJson(specification.preregistration) !== canonicalStudyJson(preregistrationReceipt)
+  ) {
+    fail("Comparison preparation specification is not bound to its exact preregistration.");
+  }
   privateDirectory(studyRoot, "Comparison preparation study root");
   const candidate = captureDataWranglerPreparationFile(candidatePath, "Comparison preparation candidate", {
     maximumBytes: MAX_CANDIDATE_BYTES
@@ -730,6 +764,11 @@ export async function createDataWranglerComparisonPreparationReceipt(
   const captureBindings = normalizePublicUiCaptureBindings(manifest, publicUiCaptures, kernel);
   const receipt = Object.freeze({
     protocol: DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL,
+    preregistrationPath,
+    preregistrationSha256: digestStudyValue(preregistration),
+    specificationPath,
+    specificationSha256: digestStudyValue(specification),
+    specification: structuredClone(specification),
     manifestPath,
     manifestSha256: digestStudyValue(manifest),
     studyRoot,
@@ -767,10 +806,26 @@ export async function createDataWranglerComparisonPreparationReceipt(
 
 export async function revalidateDataWranglerComparisonPreparationReceipt(receipt, dependencies = {}) {
   validatePreparationReceipt(receipt);
-  const manifest = readDataWranglerStudyManifestPublication(receipt.manifestPath);
+  const preregistration = (dependencies.readPreregistration ?? readDataWranglerComparisonPreregistration)(
+    receipt.preregistrationPath
+  );
+  (dependencies.assertCurrentPreregistration ?? assertCurrentDataWranglerComparisonPreregistration)(preregistration);
+  if (
+    digestStudyValue(preregistration) !== receipt.preregistrationSha256 ||
+    canonicalStudyJson(createDataWranglerComparisonPreregistrationReceipt(preregistration)) !==
+      canonicalStudyJson(receipt.specification.preregistration)
+  ) {
+    fail("Comparison preparation preregistration changed.");
+  }
+  const manifest = buildDataWranglerStudyManifest(receipt.specification);
   if (digestStudyValue(manifest) !== receipt.manifestSha256) fail("Comparison preparation manifest changed.");
   const recreated = await createDataWranglerComparisonPreparationReceipt(
     {
+      preregistrationPath: receipt.preregistrationPath,
+      preregistration,
+      specificationPath: receipt.specificationPath,
+      specification: receipt.specification,
+      manifest,
       manifestPath: receipt.manifestPath,
       studyRoot: receipt.studyRoot,
       candidatePath: receipt.candidate.path,

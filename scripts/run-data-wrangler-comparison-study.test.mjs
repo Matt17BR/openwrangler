@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import ts from "typescript";
 import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
 import {
   DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
@@ -39,6 +40,10 @@ import {
   writeDataWranglerComparisonPreparationReceipt
 } from "./data-wrangler-comparison-preparation.mjs";
 import {
+  captureDataWranglerComparisonPreregistration,
+  createDataWranglerComparisonPreregistrationReceipt
+} from "./data-wrangler-comparison-preregistration.mjs";
+import {
   DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND,
   NEITHER_PRODUCT_CONTROL_RECEIPT_KIND,
   PUBLIC_UI_CAPABILITY_ABSENCE_WINDOW_MS,
@@ -56,7 +61,7 @@ import {
   manifestDeclaresDataWranglerPolarsUndetermined,
   parseDataWranglerComparisonStudyArguments,
   runNextDataWranglerComparisonStudyTrial,
-  runDataWranglerComparisonStudy
+  runDataWranglerComparisonStudy as runDataWranglerComparisonStudyRaw
 } from "./run-data-wrangler-comparison-study.mjs";
 import { runUnrecordedPreparedDataWranglerComparisonDiagnostic } from "./run-data-wrangler-comparison-prepared.mjs";
 
@@ -110,11 +115,98 @@ function planArguments(specificationPath, manifestPath) {
     specificationPath,
     "--out",
     manifestPath,
+    "--preregistration",
+    resolve(root, "preregistration.json"),
+    "--preparation",
+    resolve(root, "preparation.json"),
     "--cache-controller",
     resolve(root, "source-cache-control.py"),
     "--python",
     resolve(root, "python")
   ];
+}
+
+function testJourneyGraph() {
+  const modules = [{ path: "test/extensionHost/dataWranglerComparisonNotebookTrial.js", sha256: digest("b") }];
+  return {
+    entry: modules[0].path,
+    moduleCount: 1,
+    totalBytes: 100,
+    graphSha256: createHash("sha256").update(JSON.stringify(modules), "utf8").digest("hex"),
+    modules
+  };
+}
+
+function testExecutionGraph() {
+  const entries = [
+    "scripts/run-data-wrangler-comparison-preparation.mjs",
+    "scripts/run-data-wrangler-comparison-study-entry.mjs"
+  ];
+  const modules = entries.map((path, index) => ({ path, sha256: String(index + 1).repeat(64) }));
+  const edges = entries.map((from) => ({ from, kind: "import", specifier: "node:fs", target: "external:node:fs" }));
+  const value = {
+    protocol: "openwrangler-data-wrangler-comparison-execution-graph-v1",
+    scope: ["scripts/", "src/shared/"],
+    parser: {
+      implementation: "typescript",
+      version: ts.version,
+      scriptKind: "JavaScript",
+      scriptTarget: "Latest"
+    },
+    entries,
+    moduleCount: 2,
+    edgeCount: edges.length,
+    totalBytes: 200,
+    externalSpecifiers: ["node:fs"],
+    modules,
+    edges
+  };
+  return { ...value, graphSha256: digestStudyValue(value) };
+}
+
+const TEST_PREREGISTRATION = captureDataWranglerComparisonPreregistration(
+  {
+    studyId: "11111111-1111-4111-8111-111111111111",
+    createdAtUtc: "2026-08-02T10:00:00.000Z",
+    journeyPath: "/compiled/dataWranglerComparisonNotebookTrial.js"
+  },
+  {
+    captureFile: () => ({ sha256: digest("a") }),
+    captureMethodology: () => ({ protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL, sha256: digest("1") }),
+    proveJourneyGraph: testJourneyGraph,
+    proveExecutionGraph: testExecutionGraph
+  }
+);
+const TEST_PREREGISTRATION_RECEIPT = createDataWranglerComparisonPreregistrationReceipt(TEST_PREREGISTRATION);
+
+function runDataWranglerComparisonStudy(argv, options = {}) {
+  if (argv[0] !== "plan") return runDataWranglerComparisonStudyRaw(argv, options);
+  const valueFor = (flag) => argv[argv.indexOf(flag) + 1];
+  const specificationPath = valueFor("--spec");
+  let specification = studySpecification();
+  try {
+    const metadata = lstatSync(specificationPath);
+    if (metadata.isFile() && !metadata.isSymbolicLink()) {
+      specification = JSON.parse(readFileSync(specificationPath, "utf8"));
+    }
+  } catch {
+    // The production reader owns missing, linked, and swapped-input diagnostics.
+  }
+  const authorization = {
+    preregistrationPath: valueFor("--preregistration"),
+    preregistrationSha256: digestStudyValue(TEST_PREREGISTRATION),
+    specificationPath,
+    specificationSha256: digestStudyValue(specification),
+    specification,
+    manifestPath: valueFor("--out"),
+    manifestSha256: digestStudyValue(buildDataWranglerStudyManifest(specification))
+  };
+  return runDataWranglerComparisonStudyRaw(argv, {
+    readPreregistration: () => TEST_PREREGISTRATION,
+    assertCurrentPreregistration: () => TEST_PREREGISTRATION,
+    loadPreparation: () => authorization,
+    ...options
+  });
 }
 
 function captureSpecificationCacheToolchain() {
@@ -134,6 +226,10 @@ test("study command arguments are explicit and reject missing or repeated paths"
         "spec.json",
         "--out",
         "manifest.json",
+        "--preregistration",
+        "preregistration.json",
+        "--preparation",
+        "preparation.json",
         "--cache-controller",
         "source-cache.py",
         "--python",
@@ -145,6 +241,8 @@ test("study command arguments are explicit and reject missing or repeated paths"
       command: "plan",
       spec: "/work/spec.json",
       out: "/work/manifest.json",
+      preregistration: "/work/preregistration.json",
+      preparation: "/work/preparation.json",
       cacheController: "/work/source-cache.py",
       python: "/work/python"
     }
@@ -375,7 +473,7 @@ test("plan, record, and status preserve one immutable manifest and append-only f
   });
 });
 
-test("plan captures the actual cache toolchain and rejects caller-supplied drift", () => {
+test("plan verifies the authorized cache toolchain and rejects caller-supplied drift", () => {
   withDirectory((directory) => {
     const specificationPath = resolve(directory, "spec.json");
     const manifestPath = resolve(directory, "manifest.json");
@@ -383,7 +481,6 @@ test("plan captures the actual cache toolchain and rejects caller-supplied drift
     const pythonPath = resolve(directory, "python");
     const observed = captureSpecificationCacheToolchain();
     const specification = studySpecification();
-    delete specification.provenance.cacheToolchain;
     writeFileSync(specificationPath, JSON.stringify(specification));
     let captured;
     const planned = runDataWranglerComparisonStudy(planArguments(specificationPath, manifestPath), {
@@ -418,6 +515,41 @@ test("plan captures the actual cache toolchain and rejects caller-supplied drift
   });
 });
 
+test("plan rejects a claimed preregistration digest before cache or publication work", () => {
+  withDirectory((directory) => {
+    const specificationPath = resolve(directory, "specification.json");
+    const manifestPath = resolve(directory, "manifest.json");
+    const specification = studySpecification();
+    writeFileSync(specificationPath, JSON.stringify(specification));
+    let cacheCaptureCalls = 0;
+    assert.throws(
+      () =>
+        runDataWranglerComparisonStudyRaw(planArguments(specificationPath, manifestPath), {
+          cwd: directory,
+          readPreregistration: () => TEST_PREREGISTRATION,
+          assertCurrentPreregistration: () => TEST_PREREGISTRATION,
+          loadPreparation: () => ({
+            preregistrationPath: resolve(directory, "preregistration.json"),
+            preregistrationSha256: "f".repeat(64),
+            specificationPath,
+            specificationSha256: digestStudyValue(specification),
+            specification,
+            manifestPath,
+            manifestSha256: digestStudyValue(buildDataWranglerStudyManifest(specification))
+          }),
+          captureCacheToolchain() {
+            cacheCaptureCalls += 1;
+            return captureSpecificationCacheToolchain();
+          },
+          captureMethodology: captureSpecificationMethodology
+        }),
+      /not authorized by the exact preregistration/u
+    );
+    assert.equal(cacheCaptureCalls, 0);
+    assert.equal(existsSync(manifestPath), false);
+  });
+});
+
 test("durable specification and preparation publications feed the production diagnostic readers", async () => {
   await withDirectory(async (directory) => {
     const specification = studySpecification();
@@ -434,6 +566,11 @@ test("durable specification and preparation publications feed the production dia
     const path = (name) => resolve(directory, name);
     const preparation = {
       protocol: DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL,
+      preregistrationPath: path("preregistration.json"),
+      preregistrationSha256: digestStudyValue(TEST_PREREGISTRATION),
+      specificationPath,
+      specificationSha256: digestStudyValue(specification),
+      specification,
       manifestPath,
       manifestSha256: digestStudyValue(manifest),
       studyRoot: directory,
@@ -1188,6 +1325,7 @@ function studySpecification(dataWranglerPolarsAvailability = "available") {
   return {
     studyId: "11111111-1111-4111-8111-111111111111",
     createdAtUtc: "2026-08-02T10:00:00.000Z",
+    preregistration: structuredClone(TEST_PREREGISTRATION_RECEIPT),
     method: { protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL, sha256: digest("1") },
     candidate: {
       extensionId: "Matt17BR.openwrangler",

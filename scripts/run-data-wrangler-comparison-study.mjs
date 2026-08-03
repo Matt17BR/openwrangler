@@ -39,6 +39,12 @@ import {
 } from "./data-wrangler-comparison-study.mjs";
 import { recoverDurableStudyJsonPublication } from "./durable-study-json.mjs";
 import { captureDataWranglerComparisonStudyV2Toolchain } from "./data-wrangler-comparison-cache-controller.mjs";
+import { loadDataWranglerComparisonPreparationReceipt } from "./data-wrangler-comparison-preparation.mjs";
+import {
+  assertCurrentDataWranglerComparisonPreregistration,
+  createDataWranglerComparisonPreregistrationReceipt,
+  readDataWranglerComparisonPreregistration
+} from "./data-wrangler-comparison-preregistration.mjs";
 
 const MAX_INPUT_BYTES = 32 * 1024 * 1024;
 const MAX_EXECUTION_LOCK_BYTES = 4 * 1024;
@@ -52,7 +58,7 @@ export const DATA_WRANGLER_STUDY_EXECUTION_LOCK_PROTOCOL = "openwrangler-data-wr
 function usage() {
   return [
     "Usage:",
-    "  node scripts/run-data-wrangler-comparison-study.mjs plan --spec <spec.json> --out <manifest.json> --cache-controller <source_cache_control.py> --python <python>",
+    "  node scripts/run-data-wrangler-comparison-study.mjs plan --spec <spec.json> --out <manifest.json> --preregistration <preregistration.json> --preparation <preparation.json> --cache-controller <source_cache_control.py> --python <python>",
     "  node scripts/run-data-wrangler-comparison-study.mjs run-next --manifest <manifest.json> --fragments <dir> --intents <dir> --preparation <preparation.json>",
     "  node scripts/run-data-wrangler-comparison-study.mjs record --manifest <manifest.json> --fragments <dir> --fragment <fragment.json>",
     "  node scripts/run-data-wrangler-comparison-study.mjs status --manifest <manifest.json> --fragments <dir>",
@@ -66,7 +72,7 @@ function parseArguments(argv, cwd = process.cwd()) {
     throw new TypeError(usage());
   }
   const allowed = {
-    plan: new Set(["--spec", "--out", "--cache-controller", "--python"]),
+    plan: new Set(["--spec", "--out", "--preregistration", "--preparation", "--cache-controller", "--python"]),
     "run-next": new Set(["--manifest", "--fragments", "--intents", "--preparation"]),
     record: new Set(["--manifest", "--fragments", "--fragment"]),
     status: new Set(["--manifest", "--fragments"]),
@@ -932,7 +938,10 @@ export function runDataWranglerComparisonStudy(
     now = () => new Date(),
     publicationOptions = {},
     captureCacheToolchain = captureDataWranglerComparisonStudyV2Toolchain,
-    captureMethodology = captureDataWranglerStudyMethodReceipt
+    captureMethodology = captureDataWranglerStudyMethodReceipt,
+    readPreregistration = readDataWranglerComparisonPreregistration,
+    assertCurrentPreregistration = assertCurrentDataWranglerComparisonPreregistration,
+    loadPreparation = loadDataWranglerComparisonPreparationReceipt
   } = {}
 ) {
   const options = parseArguments(argv, cwd);
@@ -941,6 +950,21 @@ export function runDataWranglerComparisonStudy(
   }
   if (options.command === "plan") {
     const specification = readBoundedJson(options.spec, "Study specification", inputReadOptions);
+    const preregistration = readPreregistration(options.preregistration);
+    assertCurrentPreregistration(preregistration);
+    const preparation = loadPreparation(options.preparation);
+    const preregistrationReceipt = createDataWranglerComparisonPreregistrationReceipt(preregistration);
+    if (
+      preparation.preregistrationPath !== options.preregistration ||
+      preparation.preregistrationSha256 !== digestStudyValue(preregistration) ||
+      preparation.specificationPath !== options.spec ||
+      preparation.specificationSha256 !== digestStudyValue(specification) ||
+      preparation.manifestPath !== options.out ||
+      canonicalStudyJson(preparation.specification) !== canonicalStudyJson(specification) ||
+      canonicalStudyJson(specification?.preregistration) !== canonicalStudyJson(preregistrationReceipt)
+    ) {
+      throw new Error("Study plan is not authorized by the exact preregistration and preparation journal.");
+    }
     if (typeof captureCacheToolchain !== "function" || typeof captureMethodology !== "function") {
       throw new TypeError("Study plan methodology and cache-toolchain capture must be functions.");
     }
@@ -972,6 +996,9 @@ export function runDataWranglerComparisonStudy(
     }
     preparedSpecification.provenance.cacheToolchain = structuredClone(observedCacheToolchain);
     const manifest = buildDataWranglerStudyManifest(preparedSpecification);
+    if (digestStudyValue(manifest) !== preparation.manifestSha256) {
+      throw new Error("Study plan does not reconstruct the manifest authorized by preparation.");
+    }
     return {
       command: options.command,
       receipt: writeDataWranglerStudyJsonExclusive(options.out, manifest, publicationOptions.manifest),

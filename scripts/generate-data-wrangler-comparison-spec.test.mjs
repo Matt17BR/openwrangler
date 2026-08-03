@@ -164,6 +164,7 @@ test("checked-in specification schema is draft 2020-12 and covers the validated 
   assert.deepEqual(schema.required, [
     "studyId",
     "createdAtUtc",
+    "preregistration",
     "method",
     "candidate",
     "baseline",

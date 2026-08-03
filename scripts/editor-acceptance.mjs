@@ -712,6 +712,8 @@ const INHERITED_EDITOR_ENVIRONMENT_KEYS = new Set([
 // These values are never copied implicitly. The runner must deliberately pass
 // each one from its phase inputs or explicit capture configuration.
 const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
+  DISPLAY_MODE_ENV,
+  TEMP_ROOT_ENV,
   "OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS",
   "OPEN_WRANGLER_EDITOR_CDP_PORT",
   "OPEN_WRANGLER_EXTENSION_TESTS",

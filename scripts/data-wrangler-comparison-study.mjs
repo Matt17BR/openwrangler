@@ -41,7 +41,7 @@ import {
 } from "./durable-study-json.mjs";
 
 export const DATA_WRANGLER_STUDY_METHOD_PROTOCOL = "openwrangler-data-wrangler-study-method-v1";
-export const DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL = "openwrangler-data-wrangler-study-manifest-v2";
+export const DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL = "openwrangler-data-wrangler-study-manifest-v4";
 export const DATA_WRANGLER_STUDY_FRAGMENT_PROTOCOL = "openwrangler-data-wrangler-study-fragment-v2";
 export const DATA_WRANGLER_STUDY_RESULT_PROTOCOL = "openwrangler-data-wrangler-study-result-v2";
 export const DATA_WRANGLER_STUDY_RESOURCE_PROTOCOL = "openwrangler-linux-pss-observation-v1";
@@ -145,6 +145,7 @@ const PSS_MAXIMUM_TERMINAL_OVERSHOOT_MS = 250;
 const REQUIRED_PYTHON_PACKAGES = Object.freeze(["pandas", "polars", "pyarrow", "jupyter_core", "ipykernel"]);
 const ENVIRONMENT_GATE_PROTOCOL = "openwrangler-linux-data-wrangler-study-gate-v1";
 const ENVIRONMENT_PROVENANCE_PROTOCOL = "openwrangler-linux-data-wrangler-study-provenance-v1";
+const PREREGISTRATION_RECEIPT_PROTOCOL = "openwrangler-data-wrangler-comparison-preregistration-receipt-v2";
 const ENVIRONMENT_SELECTION_POLICY = "accept the first complete passing window and retain every attempted window";
 const ENVIRONMENT_FAILURE_CODES = Object.freeze([
   "sampling-unavailable",
@@ -341,6 +342,14 @@ function validateMethod(method) {
     fail("Study methodology protocol is invalid.");
   }
   assertString(method.sha256, SHA256, "Study methodology SHA-256");
+}
+
+function validatePreregistrationReceipt(receipt) {
+  exactKeys(receipt, ["protocol", "sha256"], "Study preregistration receipt");
+  if (receipt.protocol !== PREREGISTRATION_RECEIPT_PROTOCOL) {
+    fail("Study preregistration receipt protocol is invalid.");
+  }
+  assertString(receipt.sha256, SHA256, "Study preregistration SHA-256");
 }
 
 export function captureDataWranglerStudyMethodReceipt(path = DATA_WRANGLER_STUDY_METHOD_PATH) {
@@ -1274,6 +1283,7 @@ export function validateDataWranglerStudyManifest(manifest) {
       "protocol",
       "studyId",
       "createdAtUtc",
+      "preregistration",
       "method",
       "candidate",
       "baseline",
@@ -1291,6 +1301,7 @@ export function validateDataWranglerStudyManifest(manifest) {
   }
   assertString(manifest.studyId, UUID, "Study ID");
   assertString(manifest.createdAtUtc, ISO_UTC, "Study creation timestamp");
+  validatePreregistrationReceipt(manifest.preregistration);
   validateMethod(manifest.method);
   validateCandidate(manifest.candidate);
   validateBaseline(manifest.baseline);
@@ -1329,7 +1340,18 @@ export function validateDataWranglerStudyManifest(manifest) {
 export function buildDataWranglerStudyManifest(specification) {
   exactKeys(
     specification,
-    ["studyId", "createdAtUtc", "method", "candidate", "baseline", "editor", "python", "fixtures", "provenance"],
+    [
+      "studyId",
+      "createdAtUtc",
+      "preregistration",
+      "method",
+      "candidate",
+      "baseline",
+      "editor",
+      "python",
+      "fixtures",
+      "provenance"
+    ],
     "Data Wrangler study specification"
   );
   const manifest = {

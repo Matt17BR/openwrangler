@@ -85,7 +85,7 @@ test("public heavy scripts hold the shared lease across their complete transacti
     "comparison:diagnostic",
     "comparison:feasibility:smoke",
     "comparison:prepare",
-    "comparison:spec",
+    "comparison:preregister",
     "comparison:study",
     "package"
   ];
@@ -113,7 +113,7 @@ test("public heavy scripts hold the shared lease across their complete transacti
     "comparison:diagnostic",
     "comparison:feasibility:smoke",
     "comparison:prepare",
-    "comparison:spec",
+    "comparison:preregister",
     "comparison:study"
   ]);
 });
@@ -152,10 +152,15 @@ test("public comparison workflows reject contention and accept one inherited lea
       nestedError: /Usage: node scripts\/run-data-wrangler-comparison-diagnostic/u
     },
     {
-      name: "spec generator",
+      name: "preregistration generator",
       script: guard,
-      arguments: ["comparison:spec", "--", "node", "scripts/generate-data-wrangler-comparison-spec.mjs"],
-      nestedError: /Usage: node scripts\/generate-data-wrangler-comparison-spec/u
+      arguments: [
+        "comparison:preregister",
+        "--",
+        "node",
+        "scripts/generate-data-wrangler-comparison-preregistration.mjs"
+      ],
+      nestedError: /Usage: npm run comparison:preregister/u
     },
     {
       name: "study run-next",

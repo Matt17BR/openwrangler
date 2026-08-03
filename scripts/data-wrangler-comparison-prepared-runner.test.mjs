@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
+import ts from "typescript";
 import {
   DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL,
   captureDataWranglerProfileTree,
@@ -18,15 +20,21 @@ import {
   createExpectedPublicUiExtensionInventory
 } from "./data-wrangler-public-ui-receipts.mjs";
 import { digestStudyValue } from "./data-wrangler-comparison-study.mjs";
+import { captureDataWranglerComparisonPreregistration } from "./data-wrangler-comparison-preregistration.mjs";
 import {
   DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
-  createDataWranglerComparisonMeasuredInventory
+  createDataWranglerComparisonMeasuredInventory,
+  createDataWranglerComparisonTemplateInventory
 } from "./data-wrangler-comparison-inventory.mjs";
 import {
   runPreparedDataWranglerComparisonEntry,
   runUnrecordedPreparedDataWranglerComparisonDiagnostic
 } from "./run-data-wrangler-comparison-prepared.mjs";
-import { parseDataWranglerComparisonPreparationArguments } from "./run-data-wrangler-comparison-preparation.mjs";
+import {
+  parseDataWranglerComparisonPreparationArguments,
+  prepareDataWranglerComparisonStudy,
+  publishDataWranglerComparisonPreparationTransaction
+} from "./run-data-wrangler-comparison-preparation.mjs";
 import {
   parseDataWranglerComparisonStudyArguments,
   runDataWranglerComparisonStudy
@@ -52,8 +60,19 @@ function privateDirectory(path) {
 
 function minimalPreparation(root, templates) {
   const path = (name) => resolve(root, name);
+  const specification = {
+    preregistration: {
+      protocol: "openwrangler-data-wrangler-comparison-preregistration-receipt-v2",
+      sha256: "9".repeat(64)
+    }
+  };
   return {
     protocol: DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL,
+    preregistrationPath: path("preregistration.json"),
+    preregistrationSha256: "9".repeat(64),
+    specificationPath: path("specification.json"),
+    specificationSha256: digestStudyValue(specification),
+    specification,
     manifestPath: path("manifest.json"),
     manifestSha256: "a".repeat(64),
     studyRoot: root,
@@ -909,33 +928,448 @@ test("study CLI exposes run-next while the synchronous library API refuses to fa
 
 test("preparation CLI requires every path that it audits or publishes", () => {
   const flags = [
-    "--spec",
-    "spec.json",
+    "--preregistration",
+    "preregistration.json",
     "--candidate",
     "openwrangler.vsix",
     "--python",
     "python",
     "--cache-controller",
     "cache.py",
-    "--driver-directory",
-    "driver",
-    "--driver-vsix",
-    "driver.vsix",
     "--csv",
     "fixture.csv",
     "--parquet",
     "fixture.parquet",
+    "--specification",
+    "specification.json",
     "--manifest",
     "manifest.json",
     "--preparation",
     "preparation.json",
     "--smoke-report",
-    "smoke.json"
+    "smoke.json",
+    "--cpu-list",
+    "2-5"
   ];
   const parsed = parseDataWranglerComparisonPreparationArguments(flags, "/study");
   assert.equal(parsed.candidate, "/study/openwrangler.vsix");
+  assert.equal(parsed.cpuList, "2-5");
   assert.equal(parsed.smokeReport, "/study/smoke.json");
   assert.throws(() => parseDataWranglerComparisonPreparationArguments(flags.slice(0, -2), "/study"), /Usage/u);
+});
+
+test("preparation rejects the wrong Python cache controller before packaging or editor work", async () => {
+  const expectedSha256 = "a".repeat(64);
+  const preregistration = {
+    toolRecipes: {
+      cacheHarnessSha256: expectedSha256,
+      cachePythonControllerSha256: expectedSha256
+    }
+  };
+  let packageCalls = 0;
+  let smokeCalls = 0;
+  await assert.rejects(
+    prepareDataWranglerComparisonStudy(
+      {
+        preregistration: "/study/preregistration.json",
+        candidate: "/study/openwrangler.vsix",
+        python: "/study/python",
+        cacheController: "/study/source_cache_control.py",
+        csv: "/study/fixture.csv",
+        parquet: "/study/fixture.parquet",
+        specification: "/study/specification.json",
+        manifest: "/study/manifest.json",
+        preparation: "/study/preparation.json",
+        smokeReport: "/study/smoke.json",
+        cpuList: "2-5"
+      },
+      {},
+      {
+        readPreregistration: () => preregistration,
+        assertCurrentPreregistration: () => preregistration,
+        captureFile(_path, label) {
+          return {
+            sha256: label.includes("JavaScript harness") ? expectedSha256 : "b".repeat(64)
+          };
+        },
+        async packageDriver() {
+          packageCalls += 1;
+        },
+        async runSmoke() {
+          smokeCalls += 1;
+        }
+      }
+    ),
+    /Python controller changed after preregistration/u
+  );
+  assert.equal(packageCalls, 0);
+  assert.equal(smokeCalls, 0);
+});
+
+test("preparation publication resumes from its exact journal after every boundary crash", async (t) => {
+  const preregistration = { studyId: "11111111-1111-4111-8111-111111111111" };
+  const specification = { studyId: preregistration.studyId, prepared: true };
+  const manifest = { authorized: true };
+  const options = {
+    preregistration: "/study/preregistration.json",
+    specification: "/study/specification.json",
+    manifest: "/study/manifest.json",
+    preparation: "/study/preparation.json",
+    cacheController: "/study/source_cache_control.py",
+    python: "/study/python"
+  };
+  const receipt = {
+    preregistrationPath: options.preregistration,
+    preregistrationSha256: digestStudyValue(preregistration),
+    specificationPath: options.specification,
+    specificationSha256: digestStudyValue(specification),
+    specification,
+    manifestPath: options.manifest,
+    manifestSha256: digestStudyValue(manifest)
+  };
+
+  for (const crashBoundary of ["preparation", "specification", "manifest"]) {
+    await t.test(crashBoundary, async () => {
+      const publications = new Map();
+      const events = [];
+      let injected = false;
+      const publish = (kind, path, value) => {
+        events.push(kind);
+        const canonical = JSON.stringify(value);
+        if (publications.has(path)) {
+          assert.equal(publications.get(path), canonical);
+          return { status: "recovered" };
+        }
+        publications.set(path, canonical);
+        return { status: "published" };
+      };
+      const dependencies = {
+        writeReceipt: (path, value) => publish("preparation", path, value),
+        writeStudySpecification: (path, value) => publish("specification", path, value),
+        plan() {
+          publish("manifest", options.manifest, manifest);
+          return { output: manifest, receipt: { status: "published" } };
+        },
+        publicationBoundary(boundary) {
+          if (!injected && boundary === crashBoundary) {
+            injected = true;
+            throw new Error(`crash after ${boundary}`);
+          }
+        }
+      };
+      await assert.rejects(
+        publishDataWranglerComparisonPreparationTransaction({ options, preregistration, receipt }, dependencies),
+        new RegExp(`crash after ${crashBoundary}`, "u")
+      );
+      const recovered = await publishDataWranglerComparisonPreparationTransaction(
+        { options, preregistration, receipt },
+        dependencies
+      );
+      assert.deepEqual(recovered.manifest, manifest);
+      assert.deepEqual([...publications.keys()], [options.preparation, options.specification, options.manifest]);
+      assert.equal(events.indexOf("preparation") < events.indexOf("specification"), true);
+      assert.equal(events.indexOf("specification") < events.indexOf("manifest"), true);
+    });
+  }
+});
+
+test("a retained preparation journal resumes without rebuilding private editor state", async () => {
+  const preregistration = {
+    studyId: "11111111-1111-4111-8111-111111111111",
+    toolRecipes: {
+      cacheHarnessSha256: "a".repeat(64),
+      cachePythonControllerSha256: "a".repeat(64)
+    }
+  };
+  const specification = { studyId: preregistration.studyId, prepared: true };
+  const manifest = { authorized: true };
+  const options = {
+    preregistration: "/study/preregistration.json",
+    candidate: "/study/openwrangler.vsix",
+    python: "/study/python",
+    cacheController: "/study/source_cache_control.py",
+    csv: "/study/fixture.csv",
+    parquet: "/study/fixture.parquet",
+    specification: "/study/specification.json",
+    manifest: "/study/manifest.json",
+    preparation: "/study/preparation.json",
+    smokeReport: "/study/smoke.json",
+    cpuList: "2-5"
+  };
+  const receipt = {
+    preregistrationPath: options.preregistration,
+    preregistrationSha256: digestStudyValue(preregistration),
+    specificationPath: options.specification,
+    specificationSha256: digestStudyValue(specification),
+    specification,
+    manifestPath: options.manifest,
+    manifestSha256: digestStudyValue(manifest)
+  };
+  let packageCalls = 0;
+  let smokeCalls = 0;
+  let revalidationCalls = 0;
+  const result = await prepareDataWranglerComparisonStudy(
+    options,
+    {},
+    {
+      readPreregistration: () => preregistration,
+      assertCurrentPreregistration: () => preregistration,
+      captureFile: () => ({ sha256: "a".repeat(64) }),
+      captureCacheToolchain: () => ({ controller: { sha256: "a".repeat(64) } }),
+      pathExists: () => true,
+      loadReceipt: () => receipt,
+      async revalidateReceipt(value) {
+        revalidationCalls += 1;
+        return value;
+      },
+      buildManifest: () => manifest,
+      writeReceipt: () => ({ status: "recovered" }),
+      writeStudySpecification: () => ({ status: "published" }),
+      plan: () => ({ output: manifest, receipt: { status: "published" } }),
+      async packageDriver() {
+        packageCalls += 1;
+      },
+      async runSmoke() {
+        smokeCalls += 1;
+      }
+    }
+  );
+  assert.deepEqual(result.manifest, manifest);
+  assert.equal(revalidationCalls, 1);
+  assert.equal(packageCalls, 0);
+  assert.equal(smokeCalls, 0);
+});
+
+test("preparation derives one complete specification from the reviewed preregistration", async () => {
+  await withDirectory(async (root) => {
+    const sha = "a".repeat(64);
+    const filesystemIdentity = {
+      device: "1",
+      inode: "2",
+      sizeBytes: 100,
+      mtimeNs: "3"
+    };
+    const modules = [
+      {
+        path: "test/extensionHost/dataWranglerComparisonNotebookTrial.js",
+        sha256: "b".repeat(64)
+      }
+    ];
+    const journeyGraph = {
+      entry: modules[0].path,
+      moduleCount: 1,
+      totalBytes: 100,
+      graphSha256: createHash("sha256").update(JSON.stringify(modules), "utf8").digest("hex"),
+      modules
+    };
+    const executionEntries = [
+      "scripts/run-data-wrangler-comparison-preparation.mjs",
+      "scripts/run-data-wrangler-comparison-study-entry.mjs"
+    ];
+    const executionModules = executionEntries.map((path, index) => ({
+      path,
+      sha256: String(index + 1).repeat(64)
+    }));
+    const executionEdges = executionEntries.map((from) => ({
+      from,
+      kind: "import",
+      specifier: "node:fs",
+      target: "external:node:fs"
+    }));
+    const executionGraphValue = {
+      protocol: "openwrangler-data-wrangler-comparison-execution-graph-v1",
+      scope: ["scripts/", "src/shared/"],
+      parser: {
+        implementation: "typescript",
+        version: ts.version,
+        scriptKind: "JavaScript",
+        scriptTarget: "Latest"
+      },
+      entries: executionEntries,
+      moduleCount: 2,
+      edgeCount: executionEdges.length,
+      totalBytes: 200,
+      externalSpecifiers: ["node:fs"],
+      modules: executionModules,
+      edges: executionEdges
+    };
+    const executionGraph = {
+      ...executionGraphValue,
+      graphSha256: digestStudyValue(executionGraphValue)
+    };
+    const preregistration = captureDataWranglerComparisonPreregistration(
+      {
+        studyId: "11111111-1111-4111-8111-111111111111",
+        createdAtUtc: "2026-08-03T12:00:00.000Z",
+        journeyPath: "/compiled/dataWranglerComparisonNotebookTrial.js"
+      },
+      {
+        captureFile: () => ({ sha256: sha }),
+        captureMethodology: () => ({
+          protocol: "openwrangler-data-wrangler-study-method-v1",
+          sha256: "c".repeat(64)
+        }),
+        proveJourneyGraph: () => journeyGraph,
+        proveExecutionGraph: () => executionGraph
+      }
+    );
+    const outputRoot = privateDirectory(resolve(root, "output"));
+    const studyRoot = privateDirectory(resolve(root, "retained-study"));
+    const editorRoot = privateDirectory(resolve(studyRoot, "vscode"));
+    const editor = {
+      name: "VS Code",
+      key: "vscode",
+      executable: resolve(editorRoot, "code"),
+      cli: resolve(editorRoot, "bin", "code"),
+      sharedDataDir: true,
+      version: "1.130.0"
+    };
+    const templateSources = new Map();
+    for (const product of ["open-wrangler", "data-wrangler"]) {
+      for (const kind of ["configured-only", "warmed"]) {
+        const source = privateDirectory(resolve(root, "profile-sources", product, kind));
+        const userData = privateDirectory(resolve(source, "user"));
+        const extensions = privateDirectory(resolve(source, "extensions"));
+        writeFileSync(resolve(userData, "settings.json"), "{}\n", { mode: 0o600 });
+        templateSources.set(`${product}:${kind}`, { userData, extensions });
+      }
+    }
+    const options = {
+      preregistration: resolve(root, "preregistration.json"),
+      candidate: resolve(root, "openwrangler.vsix"),
+      python: resolve(root, "python"),
+      cacheController: resolve(root, "cache.py"),
+      csv: resolve(root, "fixture.csv"),
+      parquet: resolve(root, "fixture.parquet"),
+      specification: resolve(outputRoot, "specification.json"),
+      manifest: resolve(outputRoot, "manifest.json"),
+      preparation: resolve(outputRoot, "preparation.json"),
+      smokeReport: resolve(outputRoot, "smoke.json"),
+      cpuList: "2-5"
+    };
+    let publishedSpecification;
+    const capturedEnvironmentFixtures = [];
+    const result = await prepareDataWranglerComparisonStudy(options, process.env, {
+      readPreregistration: () => preregistration,
+      assertCurrentPreregistration: () => preregistration,
+      packageDriver: async ({ directory, vsixPath }) => ({ directory, vsixPath }),
+      createDriverStudyReceipt: () => ({
+        journeyGraph,
+        runtimeDependencies: {
+          playwrightCore: {
+            version: preregistration.driverRecipe.playwrightCore.version,
+            lockIntegrity: preregistration.driverRecipe.playwrightCore.lockIntegrity
+          }
+        }
+      }),
+      captureMethodology: () => preregistration.method,
+      candidateIdentity: async () => ({
+        version: "1.2.1",
+        receipt: { sha256: "d".repeat(64), filesystemIdentity }
+      }),
+      probePython: () => ({
+        implementation: "CPython",
+        version: "3.12.10",
+        packages: [
+          { name: "pandas", version: "2.3.0" },
+          { name: "polars", version: "1.32.0" },
+          { name: "pyarrow", version: "21.0.0" },
+          { name: "jupyter_core", version: "5.8.1" },
+          { name: "ipykernel", version: "6.30.0" }
+        ]
+      }),
+      captureFile: () => ({ sha256: sha, filesystemIdentity }),
+      async runSmoke(_input, _environment, { captureTemplate }) {
+        for (const product of ["open-wrangler", "data-wrangler"]) {
+          for (const kind of ["configured-only", "warmed"]) {
+            const source = templateSources.get(`${product}:${kind}`);
+            await captureTemplate({
+              product,
+              kind,
+              privateRoot: resolve(studyRoot, `${product}-${kind}`),
+              userData: source.userData,
+              extensions: source.extensions,
+              editor,
+              sandboxArgs: []
+            });
+          }
+        }
+      },
+      queryInventory: async (template) =>
+        createDataWranglerComparisonTemplateInventory(
+          template.product === "open-wrangler"
+            ? { extensionId: "Matt17BR.openwrangler", version: "1.2.1" }
+            : { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }
+        ),
+      captureTree: () => ({ treeSha256: "e".repeat(64) }),
+      validateFixtures: () => ({
+        toolchain: { generatorSha256: sha, contractSha256: sha },
+        fixtures: [
+          { format: "csv", sha256: "f".repeat(64), filesystemIdentity },
+          { format: "parquet", sha256: "0".repeat(64), filesystemIdentity }
+        ]
+      }),
+      captureEnvironment: ({ display, fixturePath, zoom }) => {
+        capturedEnvironmentFixtures.push(fixturePath);
+        return {
+          machine: { captured: true },
+          cpu: { affinity: [2, 3, 4, 5] },
+          power: { source: "ac" },
+          storage: { captured: true },
+          display,
+          zoom
+        };
+      },
+      captureWarmups: async () => ({
+        templates: ["open-wrangler", "data-wrangler"].map((product) => ({
+          product,
+          kind: "warmed",
+          root: resolve(studyRoot, "warm", product),
+          sandboxArgs: [],
+          treeSha256: "1".repeat(64)
+        })),
+        provenance: ["open-wrangler", "data-wrangler"].map((product) => ({
+          product,
+          receiptSha256: "2".repeat(64),
+          receipt: { product }
+        }))
+      }),
+      capturePublicUi: async () => ({
+        capabilities: [{ captured: true }],
+        controlProfile: { captured: true },
+        bindings: [{ captured: true }]
+      }),
+      captureCacheToolchain: () => ({ controller: { sha256: sha } }),
+      buildManifest: () => ({ authorized: true }),
+      writeStudySpecification(path, specification) {
+        assert.equal(path, options.specification);
+        assert.equal(JSON.stringify(specification).includes(":null"), false);
+        assert.equal(specification.preregistration.sha256.length, 64);
+        assert.deepEqual(specification.provenance.cpu.affinity, [2, 3, 4, 5]);
+        publishedSpecification = structuredClone(specification);
+        return { status: "published", sha256: "3".repeat(64) };
+      },
+      plan: () => ({ output: { authorized: true }, receipt: { sha256: "4".repeat(64) } }),
+      createReceipt: async ({ driverDirectory, driverVsixPath, specification, manifest }) => {
+        assert.equal(driverDirectory.startsWith(outputRoot), true);
+        assert.equal(driverVsixPath.startsWith(outputRoot), true);
+        return {
+          prepared: true,
+          preregistrationPath: options.preregistration,
+          preregistrationSha256: digestStudyValue(preregistration),
+          specificationPath: options.specification,
+          specificationSha256: digestStudyValue(specification),
+          specification,
+          manifestPath: options.manifest,
+          manifestSha256: digestStudyValue(manifest)
+        };
+      },
+      writeReceipt: () => ({ status: "published", sha256: "5".repeat(64) })
+    });
+    assert.deepEqual(result.specification, publishedSpecification);
+    assert.deepEqual(capturedEnvironmentFixtures, [options.csv, options.parquet]);
+    assert.equal(result.preparation.prepared, true);
+  });
 });
 
 test("comparison product phase observers capture configured state before warmed state", async () => {
