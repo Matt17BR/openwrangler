@@ -6,6 +6,7 @@ import mmap
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
@@ -21,9 +22,24 @@ finally:
     sys.path.remove(str(benchmark_directory))
 
 
+@pytest.fixture
+def running_python_descriptor() -> Iterator[int]:
+    if sys.platform != "linux":
+        pytest.skip("The running-interpreter descriptor contract requires Linux procfs.")
+    descriptor = os.open("/proc/self/exe", os.O_RDONLY)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
 @pytest.mark.parametrize("mode,requested_state", [("cold", "evicted"), ("warm", "resident")])
 def test_study_v2_proof_binds_source_controller_and_running_interpreter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, requested_state: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    running_python_descriptor: int,
+    mode: str,
+    requested_state: str,
 ) -> None:
     source = tmp_path / "trial-copy.parquet"
     source.write_bytes(b"deterministic-study-source" * 10_000)
@@ -37,13 +53,13 @@ def test_study_v2_proof_binds_source_controller_and_running_interpreter(
 
     controller = Path(cast(str, source_cache_control.__file__))
     controller_descriptor = os.open(controller, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    python_descriptor = os.open("/proc/self/exe", os.O_RDONLY)
     source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        result = prepare_study_v2_source_cache(source_descriptor, mode, controller_descriptor, python_descriptor)
+        result = prepare_study_v2_source_cache(
+            source_descriptor, mode, controller_descriptor, running_python_descriptor
+        )
     finally:
         os.close(source_descriptor)
-        os.close(python_descriptor)
         os.close(controller_descriptor)
     source_metadata = source.stat()
     expected_source_identity = {
@@ -112,20 +128,20 @@ def test_study_v2_rejects_controller_drift_after_cache_preparation(
         os.close(source_descriptor)
 
 
-def test_study_v2_rejects_a_descriptor_that_is_not_the_running_controller(tmp_path: Path) -> None:
+def test_study_v2_rejects_a_descriptor_that_is_not_the_running_controller(
+    tmp_path: Path, running_python_descriptor: int
+) -> None:
     source = tmp_path / "trial-copy.csv"
     source.write_bytes(b"c00\n0\n")
     decoy = tmp_path / "source_cache_control.py"
     decoy.write_text("raise SystemExit(1)\n", encoding="utf-8")
     descriptor = os.open(decoy, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    python_descriptor = os.open("/proc/self/exe", os.O_RDONLY)
     source_descriptor = os.open(source, os.O_RDONLY)
     try:
         with pytest.raises(ValueError, match="does not match the running controller"):
-            prepare_study_v2_source_cache(source_descriptor, "warm", descriptor, python_descriptor)
+            prepare_study_v2_source_cache(source_descriptor, "warm", descriptor, running_python_descriptor)
     finally:
         os.close(source_descriptor)
-        os.close(python_descriptor)
         os.close(descriptor)
 
 
