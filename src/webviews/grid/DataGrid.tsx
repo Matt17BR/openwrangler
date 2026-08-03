@@ -85,6 +85,12 @@ const rowHeaderWidth = 58;
 const overscanRows = 8;
 const overscanColumns = 2;
 const scrollQuantizationTolerance = 1;
+// Chromium can publish the final horizontal grid geometry without notifying a
+// ResizeObserver (notably while Cursor reveals another workbench panel). Keep
+// one short, bounded post-layout watch so that silent geometry changes still
+// complete a requested column reveal. Concrete wake signals remain installed
+// after this budget is exhausted and may start another bounded watch.
+const maximumColumnRevealLayoutFrames = 120;
 const maximumRenderedCellCharacters = 4_096;
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
@@ -688,18 +694,23 @@ export function DataGrid({
     let positionRevealed = false;
     let scheduledFrame: number | undefined;
     let resizeObserver: ResizeObserver | undefined;
-    const reveal = (): "pending" | "revealed" | "stale" => {
-      if (scrollerRef.current !== scroller) return "stale";
+    let layoutFramesRemaining = 0;
+    let forceRevealOnNextFrame = false;
+    let lastRevealGeometry: string | undefined;
+    const revealGeometry = (): string => `${scroller.clientWidth}:${scroller.scrollWidth}:${scroller.scrollLeft}`;
+    const requestIsCurrent = (): boolean => {
+      if (scrollerRef.current !== scroller) return false;
       const pending = goToColumnRequestRef.current;
-      if (
-        pending.columnId !== goToColumnId ||
-        pending.requestId !== goToColumnRequestId ||
-        pending.restoreVersion !== viewStateRestoreVersion ||
-        (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
-          handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
-      ) {
-        return "stale";
-      }
+      return (
+        pending.columnId === goToColumnId &&
+        pending.requestId === goToColumnRequestId &&
+        pending.restoreVersion === viewStateRestoreVersion &&
+        (handledGoToColumnRequest.current?.requestId !== goToColumnRequestId ||
+          handledGoToColumnRequest.current.restoreVersion !== viewStateRestoreVersion)
+      );
+    };
+    const reveal = (): "pending" | "revealed" | "stale" => {
+      if (!requestIsCurrent()) return "stale";
 
       const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
       const targetWidth = widths[index] ?? defaultColumnWidth;
@@ -759,6 +770,8 @@ export function DataGrid({
         window.cancelAnimationFrame(scheduledFrame);
         scheduledFrame = undefined;
       }
+      layoutFramesRemaining = 0;
+      forceRevealOnNextFrame = false;
       resizeObserver?.disconnect();
       window.removeEventListener("focus", scheduleAttempt);
       window.removeEventListener("resize", scheduleAttempt);
@@ -776,16 +789,38 @@ export function DataGrid({
     function runScheduledAttempt(): void {
       scheduledFrame = undefined;
       if (!wakeSourcesActive) return;
-      const outcome = reveal();
-      if (outcome === "pending") return;
-      positionRevealed = outcome === "revealed";
-      stopWakeSources();
+      if (!requestIsCurrent()) {
+        stopWakeSources();
+        return;
+      }
+      const geometry = revealGeometry();
+      const shouldReveal = forceRevealOnNextFrame || geometry !== lastRevealGeometry;
+      forceRevealOnNextFrame = false;
+      const outcome = shouldReveal ? reveal() : "pending";
+      lastRevealGeometry = revealGeometry();
+      if (outcome !== "pending") {
+        positionRevealed = outcome === "revealed";
+        stopWakeSources();
+        return;
+      }
+      layoutFramesRemaining = Math.max(0, layoutFramesRemaining - 1);
+      if (layoutFramesRemaining > 0) {
+        scheduledFrame = window.requestAnimationFrame(runScheduledAttempt);
+      }
     }
 
     function scheduleAttempt(): void {
-      // A failed attempt becomes dormant. Concrete layout, projection, or
-      // visibility signals coalesce into one frame instead of a polling loop.
-      if (!wakeSourcesActive || scheduledFrame !== undefined) return;
+      // Concrete layout, projection, or visibility signals force one attempt
+      // and, after a dormant exhaustion, start a fresh bounded geometry watch.
+      if (!wakeSourcesActive) return;
+      forceRevealOnNextFrame = true;
+      if (layoutFramesRemaining === 0) layoutFramesRemaining = maximumColumnRevealLayoutFrames;
+      if (scheduledFrame !== undefined) return;
+      scheduledFrame = window.requestAnimationFrame(runScheduledAttempt);
+    }
+
+    function monitorPostLayoutGeometry(): void {
+      if (!wakeSourcesActive || scheduledFrame !== undefined || layoutFramesRemaining === 0) return;
       scheduledFrame = window.requestAnimationFrame(runScheduledAttempt);
     }
 
@@ -807,11 +842,13 @@ export function DataGrid({
     grid?.addEventListener("transitionend", scheduleAttempt);
     grid?.addEventListener("animationend", scheduleAttempt);
     const initialOutcome = reveal();
+    lastRevealGeometry = revealGeometry();
     if (initialOutcome !== "pending") {
       positionRevealed = initialOutcome === "revealed";
       stopWakeSources();
     } else {
-      scheduleAttempt();
+      layoutFramesRemaining = maximumColumnRevealLayoutFrames;
+      monitorPostLayoutGeometry();
     }
 
     return () => {
