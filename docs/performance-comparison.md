@@ -266,7 +266,9 @@ or driver receipts.
 
 `comparison:study -- run-next` reads the durable ledger and chooses its first pending entry. It clones the correct
 configured-only or warmed profile, installs the verified neutral driver into that clone, and derives the notebook,
-source-copy, request, acknowledgement, Jupyter, and editor paths itself. A successful run publishes one fragment,
+source-copy, request, acknowledgement, Jupyter, and editor paths itself. Each warm-up, capability check, and measured
+trial gets a private copy of the validated kernelspec inside that run's editor root; the retained study-level Jupyter
+directories are never passed to an editor phase. A successful run publishes one fragment,
 proves terminal cleanup, and deletes that clone. A thrown or ownership-uncertain run leaves the clone in place and
 publishes nothing. The unrecorded diagnostic calls this same path with a private scratch ledger; it cannot become a
 second, easier measurement implementation.

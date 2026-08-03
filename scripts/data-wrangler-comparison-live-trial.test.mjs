@@ -157,7 +157,13 @@ function input(overrides = {}) {
       publicSurfaceAvailability: "available",
       editorPhaseOptions: {
         editor: { name: "VS Code" },
-        testModule: "/private/test-module.js"
+        testModule: "/private/test-module.js",
+        jupyterEnvironment: {
+          dataDir: `${PROFILE_ROOT}/trial/jupyter/data`,
+          runtimeDir: `${PROFILE_ROOT}/trial/jupyter/runtime`,
+          configDir: `${PROFILE_ROOT}/trial/jupyter/config`,
+          path: `${PROFILE_ROOT}/trial/jupyter/path`
+        }
       },
       supervisorOptions: { pythonExecutable: "/private/python" },
       processEvidenceOptions: { pythonExecutablePath: "/private/python" },
@@ -852,6 +858,30 @@ test("a recorded trial cannot load a repository extension development path", asy
       {}
     ),
     /cannot override developmentPaths/u
+  );
+});
+
+test("a recorded trial rejects study-level Jupyter directories outside its private profile", async () => {
+  const prepared = input().preparedTrial;
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(
+      input({
+        preparedTrial: {
+          ...prepared,
+          editorPhaseOptions: {
+            ...prepared.editorPhaseOptions,
+            jupyterEnvironment: {
+              dataDir: "/private/study/jupyter/data",
+              runtimeDir: "/private/study/jupyter/runtime",
+              configDir: "/private/study/jupyter/config",
+              path: "/private/study/jupyter/path"
+            }
+          }
+        }
+      }),
+      {}
+    ),
+    /must stay inside the exact private trial root/u
   );
 });
 

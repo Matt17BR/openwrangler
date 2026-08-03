@@ -8,6 +8,7 @@ import {
   cloneDataWranglerCapturedTemplate
 } from "./data-wrangler-comparison-preparation.mjs";
 import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
+import { materializeDataWranglerComparisonRunKernel } from "./data-wrangler-comparison-run-kernel.mjs";
 import {
   cleanupDataWranglerComparisonSourceCopy,
   createDataWranglerComparisonSourceCopy
@@ -277,6 +278,7 @@ export async function capturePreparedProductWarmups(
     captureTree: captureDataWranglerProfileTree,
     controlWarmup: controlDataWranglerPublicWarmup,
     recoverDriver: recoverDataWranglerComparisonDriver,
+    materializeKernel: materializeDataWranglerComparisonRunKernel,
     remove: rmSync,
     ...overrides
   };
@@ -308,6 +310,7 @@ export async function capturePreparedProductWarmups(
       OPEN_WRANGLER_EDITOR_TEMP_ROOT: runRoot
     });
     dependencies.configureTempRoot(runRoot, runEnvironment);
+    const runKernel = dependencies.materializeKernel({ runRoot, kernel });
     const productExtension =
       product === "open-wrangler"
         ? { extensionId: specification.candidate.extensionId, version: specification.candidate.version }
@@ -373,7 +376,7 @@ export async function capturePreparedProductWarmups(
             runId: id,
             progressPath: editorAcceptanceProgressPath(resultPath, id, PHASES[product]),
             requiresWorkbenchCdp: true,
-            jupyterEnvironment: structuredClone(kernel.jupyterEnvironment),
+            jupyterEnvironment: structuredClone(runKernel.jupyterEnvironment),
             comparisonStudyEnvironment: {
               requestPath,
               acknowledgementPath,
@@ -391,8 +394,17 @@ export async function capturePreparedProductWarmups(
       } finally {
         controlAbort.abort("public-warmup-settled");
       }
+      const [phaseOutcome, controlOutcome] = outcomes;
       const failures = outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason);
       if (failures.length > 0) {
+        if (
+          phaseOutcome.status === "rejected" &&
+          controlOutcome.status === "rejected" &&
+          controlAbort.signal.reason === phaseOutcome.reason &&
+          controlOutcome.reason?.code === "aborted"
+        ) {
+          throw phaseOutcome.reason;
+        }
         if (failures.length === 1) throw failures[0];
         throw new AggregateError(failures, "Public notebook warm-up phase and its controller did not both settle.");
       }

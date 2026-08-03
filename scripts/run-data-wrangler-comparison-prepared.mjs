@@ -10,6 +10,7 @@ import {
   recoverDataWranglerComparisonDriver
 } from "./data-wrangler-comparison-driver.mjs";
 import { recordOnePreparedDataWranglerComparisonStudyTrial } from "./data-wrangler-comparison-live-trial.mjs";
+import { materializeDataWranglerComparisonRunKernel } from "./data-wrangler-comparison-run-kernel.mjs";
 import {
   canonicalStudyJson,
   digestStudyValue,
@@ -281,6 +282,7 @@ export async function runPreparedDataWranglerComparisonEntry(
     captureGateProvenance: captureLinuxDataWranglerStudyProvenance,
     capturePythonEnvironment: captureDataWranglerComparisonPythonEnvironment,
     recordTrial: recordOnePreparedDataWranglerComparisonStudyTrial,
+    materializeKernel: materializeDataWranglerComparisonRunKernel,
     mkdir: mkdirSync,
     id: randomUUID,
     ...overrides
@@ -427,6 +429,15 @@ export async function runPreparedDataWranglerComparisonEntry(
   );
   const trialRoot = resolve(clone.root, "trial");
   dependencies.mkdir(trialRoot, { mode: 0o700 });
+  const runKernel = dependencies.materializeKernel({
+    runRoot: trialRoot,
+    kernel: {
+      path: preparation.selectedKernel.path,
+      name: preparation.selectedKernel.name,
+      displayName: preparation.selectedKernel.displayName,
+      sha256: manifest.python.kernel.kernelspecSha256
+    }
+  });
   let result;
   let retired;
   let completed = false;
@@ -452,7 +463,7 @@ export async function runPreparedDataWranglerComparisonEntry(
               ? manifest.provenance.capabilities.find((candidate) => candidate.fixtureId === fixture.id)?.availability
               : "available",
           editorPhaseOptions: {
-            jupyterEnvironment: structuredClone(preparation.selectedKernel.jupyterEnvironment),
+            jupyterEnvironment: structuredClone(runKernel.jupyterEnvironment),
             python: preparation.python.path,
             editorProductVersion: manifest.editor.version,
             requiresWorkbenchCdp: true

@@ -9,6 +9,7 @@ import {
 } from "./data-wrangler-comparison-driver.mjs";
 import { createDataWranglerComparisonMeasuredInventory } from "./data-wrangler-comparison-inventory.mjs";
 import { writeDataWranglerComparisonNotebook } from "./data-wrangler-comparison-notebook.mjs";
+import { materializeDataWranglerComparisonRunKernel } from "./data-wrangler-comparison-run-kernel.mjs";
 import {
   cloneDataWranglerCapturedTemplate,
   retireDataWranglerComparisonTemplateClone
@@ -161,6 +162,7 @@ async function runCapturePhase({
 }) {
   const trialRoot = resolve(clone.root, "public-ui");
   mkdirSync(trialRoot, { mode: 0o700 });
+  const runKernel = dependencies.materializeKernel({ runRoot: trialRoot, kernel });
   const bridgeRoot = resolve(trialRoot, "bridge");
   mkdirSync(bridgeRoot, { mode: 0o700 });
   const sourceCopy = dependencies.createSourceCopy({
@@ -194,7 +196,7 @@ async function runCapturePhase({
       resultPath,
       editorProductVersion: editor.version,
       requiresWorkbenchCdp: true,
-      jupyterEnvironment: structuredClone(kernel.jupyterEnvironment),
+      jupyterEnvironment: structuredClone(runKernel.jupyterEnvironment),
       comparisonStudyEnvironment: {
         requestPath: resolve(bridgeRoot, "request.json"),
         acknowledgementPath: resolve(bridgeRoot, "acknowledgement.json"),
@@ -310,6 +312,7 @@ export async function capturePreparedDataWranglerPublicUi(
     runEditorPhase: runEditorAcceptancePhase,
     readInventory,
     uninstallDataWrangler,
+    materializeKernel: materializeDataWranglerComparisonRunKernel,
     id: randomUUID,
     ...overrides
   };

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import {
@@ -56,6 +56,11 @@ async function withDirectory(callback) {
 function privateDirectory(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   return path;
+}
+
+function isPathInside(root, path) {
+  const value = relative(root, path);
+  return value.length > 0 && value !== ".." && !value.startsWith(`..${sep}`) && !isAbsolute(value);
 }
 
 function minimalPreparation(root, templates) {
@@ -322,6 +327,7 @@ test("preparation captures real capability and control receipts from isolated di
     let captureIndex = 0;
     let controlInventoryRead = 0;
     const clones = [];
+    const localKernelLayouts = [];
     const rawPhase = (kind, captureId, fixture) => {
       const sourceReceipt = sourceReceiptForFixture(fixture);
       const start = 8_000_000 + captureIndex * 100_000;
@@ -454,6 +460,17 @@ test("preparation captures real capability and control receipts from isolated di
         createProfile(value) {
           return { ...value };
         },
+        materializeKernel({ runRoot }) {
+          const jupyterRoot = privateDirectory(resolve(runRoot, "jupyter"));
+          return {
+            jupyterEnvironment: {
+              dataDir: privateDirectory(resolve(jupyterRoot, "data")),
+              runtimeDir: privateDirectory(resolve(jupyterRoot, "runtime")),
+              configDir: privateDirectory(resolve(jupyterRoot, "config")),
+              path: privateDirectory(resolve(jupyterRoot, "path"))
+            }
+          };
+        },
         createSourceCopy: () => {
           const fixture = fixtures[(captureIndex - 1) % fixtures.length];
           return { copyPath: resolve(root, "source-copy"), copyReceipt: sourceReceiptForFixture(fixture) };
@@ -462,6 +479,10 @@ test("preparation captures real capability and control receipts from isolated di
         writeNotebook() {},
         async runNeutralPhase(input) {
           const fixture = fixtures[captureIndex - 1];
+          const runRoot = resolve(input.editorPhaseOptions.workspace, "..");
+          localKernelLayouts.push(
+            Object.values(input.editorPhaseOptions.jupyterEnvironment).every((path) => isPathInside(runRoot, path))
+          );
           return {
             installedExtensions: input.expectedExtensions,
             phaseResult: rawPhase("capability", input.editorPhaseOptions.runId, fixture)
@@ -477,6 +498,10 @@ test("preparation captures real capability and control receipts from isolated di
             : control;
         },
         async runEditorPhase(options) {
+          const runRoot = resolve(options.workspace, "..");
+          localKernelLayouts.push(
+            Object.values(options.jupyterEnvironment).every((path) => isPathInside(runRoot, path))
+          );
           return rawPhase("control", options.runId, fixtures[0]);
         }
       }
@@ -492,6 +517,7 @@ test("preparation captures real capability and control receipts from isolated di
     assert.equal(result.bindings.length, 3);
     assert.ok(result.bindings.every((entry) => entry.templateTreeSha256 === templateTreeSha256));
     assert.equal(controlInventoryRead, 3);
+    assert.deepEqual(localKernelLayouts, [true, true, true]);
     assert.ok(clones.every((clone) => !existsSync(clone.root)));
   });
 });
@@ -502,7 +528,11 @@ test("public run-next derives the pending entry, clone, profile, paths, and reti
       candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
       baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
       editor: { version: "1.106.0" },
-      python: { executableSha256: "b".repeat(64), environmentSha256: "f".repeat(64) },
+      python: {
+        executableSha256: "b".repeat(64),
+        environmentSha256: "f".repeat(64),
+        kernel: { kernelspecSha256: "a".repeat(64) }
+      },
       fixtures: [{ id: "parquet", format: "parquet" }],
       provenance: {
         commonExtensions: DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
@@ -569,6 +599,17 @@ test("public run-next derives the pending entry, clone, profile, paths, and reti
           events.push(["profile", value.templateKind, value.templateReceiptSha256]);
           return { authentic: "profile" };
         },
+        materializeKernel({ runRoot }) {
+          const jupyterRoot = privateDirectory(resolve(runRoot, "jupyter"));
+          return {
+            jupyterEnvironment: {
+              dataDir: privateDirectory(resolve(jupyterRoot, "data")),
+              runtimeDir: privateDirectory(resolve(jupyterRoot, "runtime")),
+              configDir: privateDirectory(resolve(jupyterRoot, "config")),
+              path: privateDirectory(resolve(jupyterRoot, "path"))
+            }
+          };
+        },
         recoverDriver: () => ({ authentic: "driver" }),
         async installDriver() {},
         captureDriver: () => manifest.provenance.comparisonDriver,
@@ -583,6 +624,16 @@ test("public run-next derives the pending entry, clone, profile, paths, and reti
           events.push(["record", input.preparedTrial.scheduleEntryId]);
           assert.equal(input.preparedTrial.sourcePath, preparation.fixtures[1].path);
           assert.equal(input.preparedTrial.neutralDriver.profile.authentic, "profile");
+          const trialRoot = resolve(input.preparedTrial.notebookPath, "..");
+          assert.ok(
+            Object.values(input.preparedTrial.editorPhaseOptions.jupyterEnvironment).every((path) =>
+              isPathInside(trialRoot, path)
+            )
+          );
+          assert.notDeepEqual(
+            input.preparedTrial.editorPhaseOptions.jupyterEnvironment,
+            preparation.selectedKernel.jupyterEnvironment
+          );
           return {
             status: "recorded",
             receipt: { sha256: "e".repeat(64) },
@@ -615,7 +666,11 @@ test("public run-next retains its exact clone when measured execution is uncerta
       candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
       baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
       editor: { version: "1.106.0" },
-      python: { executableSha256: "b".repeat(64), environmentSha256: "f".repeat(64) },
+      python: {
+        executableSha256: "b".repeat(64),
+        environmentSha256: "f".repeat(64),
+        kernel: { kernelspecSha256: "a".repeat(64) }
+      },
       fixtures: [{ id: "csv", format: "csv" }],
       provenance: {
         commonExtensions: DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
@@ -675,6 +730,17 @@ test("public run-next retains its exact clone when measured execution is uncerta
           createEnvironment: () => ({}),
           configureTempRoot() {},
           createProfile: () => ({ authentic: "profile" }),
+          materializeKernel({ runRoot }) {
+            const jupyterRoot = privateDirectory(resolve(runRoot, "jupyter"));
+            return {
+              jupyterEnvironment: {
+                dataDir: privateDirectory(resolve(jupyterRoot, "data")),
+                runtimeDir: privateDirectory(resolve(jupyterRoot, "runtime")),
+                configDir: privateDirectory(resolve(jupyterRoot, "config")),
+                path: privateDirectory(resolve(jupyterRoot, "path"))
+              }
+            };
+          },
           recoverDriver: () => ({ authentic: "driver" }),
           async installDriver() {},
           captureDriver: () => manifest.provenance.comparisonDriver,

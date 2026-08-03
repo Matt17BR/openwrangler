@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { runDataWranglerComparisonStudyV2CacheController } from "./data-wrangler-comparison-cache-controller.mjs";
 import { runDataWranglerComparisonNeutralDriverPhase } from "./data-wrangler-comparison-driver.mjs";
 import { writeDataWranglerComparisonNotebook } from "./data-wrangler-comparison-notebook.mjs";
@@ -96,6 +96,17 @@ function validateKernel(value) {
     fail("Prepared trial kernel identity is invalid.");
   }
   return value;
+}
+
+function validateRunLocalJupyterEnvironment(value, privateRoot) {
+  exactKeys(value, ["dataDir", "runtimeDir", "configDir", "path"], "Prepared run-local Jupyter environment");
+  for (const [field, path] of Object.entries(value)) {
+    absolutePath(path, `Prepared run-local Jupyter ${field}`);
+    const contained = relative(privateRoot, path);
+    if (contained.length === 0 || contained === ".." || contained.startsWith(`..${sep}`) || isAbsolute(contained)) {
+      fail(`Prepared run-local Jupyter ${field} must stay inside the exact private trial root.`);
+    }
+  }
 }
 
 function validatePreparedTrial(value) {
@@ -197,6 +208,10 @@ function validatePreparedTrial(value) {
   if (neutralDriver.profile.privateRoot !== sourceCopy.privateRoot) {
     fail("Prepared source-copy and neutral-driver roots must be the same private trial root.");
   }
+  validateRunLocalJupyterEnvironment(
+    requireRecord(editorPhaseOptions.jupyterEnvironment, "Prepared run-local Jupyter environment"),
+    sourceCopy.privateRoot
+  );
   return value;
 }
 

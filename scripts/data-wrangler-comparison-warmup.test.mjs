@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
+import { captureDataWranglerPreparationFile } from "./data-wrangler-comparison-preparation.mjs";
 import {
   DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS,
   DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL,
@@ -12,6 +13,49 @@ import {
 import { createDataWranglerStudyBridgeController } from "./data-wrangler-study-control-bridge.mjs";
 
 const digest = "a".repeat(64);
+
+function privateDirectory(path) {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  chmodSync(path, 0o700);
+  return path;
+}
+
+function testKernel(root) {
+  const name = "dataframe-comparison-study-private";
+  const displayName = "Dataframe comparison study CPython 3.12.10 (private trial)";
+  const directory = privateDirectory(resolve(root, "canonical-jupyter", "data", "kernels", name));
+  const path = resolve(directory, "kernel.json");
+  writeFileSync(
+    path,
+    `${JSON.stringify({
+      argv: ["/python", "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+      display_name: displayName,
+      language: "python",
+      metadata: { debugger: false }
+    })}\n`,
+    { mode: 0o600, flag: "wx" }
+  );
+  const captured = captureDataWranglerPreparationFile(path, "Warm-up test kernelspec", {
+    maximumBytes: 64 * 1024
+  });
+  return {
+    path,
+    name,
+    displayName,
+    sha256: captured.sha256,
+    jupyterEnvironment: {
+      dataDir: resolve(root, "canonical-jupyter", "data"),
+      runtimeDir: privateDirectory(resolve(root, "canonical-jupyter", "runtime")),
+      configDir: privateDirectory(resolve(root, "canonical-jupyter", "config")),
+      path: privateDirectory(resolve(root, "canonical-jupyter", "path"))
+    }
+  };
+}
+
+function isInside(root, path) {
+  const value = relative(root, path);
+  return value.length > 0 && value !== ".." && !value.startsWith(`..${sep}`);
+}
 
 function receipt(product, editor, fixture, kernel, sourceReceipt, exchanges) {
   return {
@@ -74,11 +118,7 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
   try {
     const editor = { version: "1.109.2" };
     const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
-    const kernel = {
-      name: "dataframe-comparison-study-private",
-      displayName: "Dataframe comparison study CPython 3.12.10 (private trial)",
-      jupyterEnvironment: { dataDir: "/j/data", runtimeDir: "/j/runtime", configDir: "/j/config", path: "/j/path" }
-    };
+    const kernel = testKernel(root);
     const configured = ["open-wrangler", "data-wrangler"].map((product) => ({
       product,
       kind: "configured-only",
@@ -87,6 +127,7 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
     }));
     const templateTrees = new Map(configured.map((entry) => [`${entry.product}:configured-only`, digest]));
     const phases = [];
+    const localKernelLayouts = [];
     const recovered = [];
     let nextId = 0;
     const result = await capturePreparedProductWarmups(
@@ -134,6 +175,12 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
         writeNotebook: () => undefined,
         runPhase: async (options) => {
           phases.push(options);
+          const phaseRoot = dirname(options.workspace);
+          localKernelLayouts.push(
+            Object.values(options.jupyterEnvironment).every(
+              (path) => isInside(phaseRoot, path) && Number(lstatSync(path, { bigint: true }).mode & 0o777n) === 0o700
+            )
+          );
           const product = options.phase.includes("open-wrangler") ? "open-wrangler" : "data-wrangler";
           const exchanges = await runRealWarmupController(options);
           return receipt(
@@ -169,6 +216,8 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
     assert.equal(phases.length, 2);
     assert.ok(phases.every((phase) => phase.developmentPaths[0] === "/driver"));
     assert.ok(phases.every((phase) => phase.requiresWorkbenchCdp === true));
+    assert.deepEqual(localKernelLayouts, [true, true]);
+    assert.ok(phases.every((phase) => phase.jupyterEnvironment.dataDir !== kernel.jupyterEnvironment.dataDir));
     assert.ok(
       phases.every(
         (phase) =>
@@ -193,11 +242,7 @@ test("prepared warm-up rejects a journey that did not profile every column", asy
   try {
     const editor = { version: "1.109.2" };
     const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
-    const kernel = {
-      name: "dataframe-comparison-study-private",
-      displayName: "Dataframe comparison study CPython 3.12.10 (private trial)",
-      jupyterEnvironment: { dataDir: "/j/data", runtimeDir: "/j/runtime", configDir: "/j/config", path: "/j/path" }
-    };
+    const kernel = testKernel(root);
     const configured = ["open-wrangler", "data-wrangler"].map((product) => ({
       product,
       kind: "configured-only",
@@ -268,6 +313,152 @@ test("prepared warm-up rejects a journey that did not profile every column", asy
         }
       ),
       /did not complete inline preview, workbench, profiles, and cleanup exactly/u
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepared warm-up reports the phase failure instead of its derived controller abort", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-abort-"));
+  try {
+    chmodSync(root, 0o700);
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    const phaseError = new Error("editor phase failed");
+    let caught;
+    try {
+      await capturePreparedProductWarmups(
+        {
+          specification: {
+            candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            fixtures: [fixture],
+            provenance: { comparisonDriver: {} }
+          },
+          templates: [
+            { product: "open-wrangler", kind: "configured-only", root: resolve(root, "configured"), sandboxArgs: [] }
+          ],
+          templateTrees: new Map([["open-wrangler:configured-only", digest]]),
+          studyRoot: root,
+          editor: { version: "1.109.2" },
+          pythonPath: "/python",
+          kernel,
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix"
+        },
+        {},
+        {
+          id: () => "00000000-0000-4000-8000-000000000000",
+          recoverDriver: () => undefined,
+          cloneTemplate: (_template, { cloneRoot }) => ({
+            root: privateDirectory(cloneRoot),
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: []
+          }),
+          createEnvironment: () => ({}),
+          configureTempRoot: () => undefined,
+          createSourceCopy: () => ({
+            copyPath: "/private/source.csv",
+            copyReceipt: {
+              sha256: digest,
+              filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+            }
+          }),
+          writeNotebook: () => undefined,
+          readInventory: async () =>
+            createDataWranglerComparisonTemplateInventory({
+              extensionId: "Matt17BR.openwrangler",
+              version: "1.2.1"
+            }),
+          runPhase: async () => {
+            throw phaseError;
+          },
+          controlWarmup: ({ signal }) =>
+            new Promise((_resolvePromise, reject) => {
+              const rejectAbort = () => {
+                const error = new Error("controller aborted after phase failure");
+                error.code = "aborted";
+                reject(error);
+              };
+              signal.addEventListener("abort", rejectAbort, { once: true });
+              if (signal.aborted) rejectAbort();
+            })
+        }
+      );
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(caught, phaseError);
+    assert.equal(caught instanceof AggregateError, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepared warm-up aggregates independent phase and controller failures", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-independent-"));
+  try {
+    chmodSync(root, 0o700);
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    await assert.rejects(
+      capturePreparedProductWarmups(
+        {
+          specification: {
+            candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            fixtures: [fixture],
+            provenance: { comparisonDriver: {} }
+          },
+          templates: [
+            { product: "open-wrangler", kind: "configured-only", root: resolve(root, "configured"), sandboxArgs: [] }
+          ],
+          templateTrees: new Map([["open-wrangler:configured-only", digest]]),
+          studyRoot: root,
+          editor: { version: "1.109.2" },
+          pythonPath: "/python",
+          kernel,
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix"
+        },
+        {},
+        {
+          id: () => "00000000-0000-4000-8000-000000000000",
+          recoverDriver: () => undefined,
+          cloneTemplate: (_template, { cloneRoot }) => ({
+            root: privateDirectory(cloneRoot),
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: []
+          }),
+          createEnvironment: () => ({}),
+          configureTempRoot: () => undefined,
+          createSourceCopy: () => ({
+            copyPath: "/private/source.csv",
+            copyReceipt: {
+              sha256: digest,
+              filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+            }
+          }),
+          writeNotebook: () => undefined,
+          readInventory: async () =>
+            createDataWranglerComparisonTemplateInventory({
+              extensionId: "Matt17BR.openwrangler",
+              version: "1.2.1"
+            }),
+          runPhase: async () => {
+            throw new Error("editor failed independently");
+          },
+          controlWarmup: async () => {
+            throw new Error("controller failed independently");
+          }
+        }
+      ),
+      (error) => error instanceof AggregateError && error.errors.length === 2
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
