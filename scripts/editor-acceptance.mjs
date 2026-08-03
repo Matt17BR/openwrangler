@@ -38,6 +38,7 @@ import {
   removeEditorAcceptancePrivateRoot
 } from "./packaged-editor-orchestration.mjs";
 import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
+import { posixProcessGroupRunning } from "./posix-process-group.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
@@ -4733,17 +4734,7 @@ async function promiseWithDeadline(promise, timeoutMs, message) {
 }
 
 export function editorProcessGroupRunning(pid, signalProcess = process.kill) {
-  try {
-    signalProcess(-pid, 0);
-    return true;
-  } catch (error) {
-    if (error && typeof error === "object" && error.code === "ESRCH") return false;
-    // Darwin reports EPERM when any member of a process group cannot be
-    // signalled. The group still exists, so keep treating it as live and let
-    // termination fall back to the owned group leader before re-probing.
-    if (error && typeof error === "object" && error.code === "EPERM") return true;
-    throw error;
-  }
+  return posixProcessGroupRunning(pid, signalProcess);
 }
 
 async function waitForChildExit(exit, timeoutMs) {

@@ -128,6 +128,41 @@ Every live notebook-variable open reports attempt-scoped kernel acquisition, run
 
 After dispatch, generated-code insertion observes the exact original document for at most 10 seconds and succeeds only when exactly one uniquely marked matching cell is present. A false edit result is rejected; an asynchronous failure or accepted edit whose exact-document result cannot be proved is indeterminate and is never retried or rolled back. Actionless status notifications are not awaited, while confirmations, pickers, and Save dialogs remain awaited.
 
+## Checkout lifecycle tooling
+
+The Linux checkout mover is a process-ownership attestor for a later lifecycle writer; no product or npm command calls
+it yet. A trusted host launcher must create a dedicated read-only cgroup-v2 subtree and supply namespace, mount,
+directory, supervisor, and membership receipts. The helper verifies that authority before `READY`, repeats its
+filesystem and process-use preflight after `GO`, and keeps its private session leader alive through `RESULT`/`ACK`.
+
+Unexpected cgroup members are never signaled by numeric PID. A fixed descriptor-bound `/usr/bin/python3` helper opens
+and validates a pidfd for each exact PID/start-time pair, uses `pidfd_send_signal`, and waits for pidfd `POLLIN`. It
+checks membership around each numeric `/proc` read. Two identical cgroup-membership snapshots bracket the initial
+PID/start-time reads, and each identity is read again before it can become a pidfd target. A PID that is reused outside
+that bracket therefore stops the attempt before arming. A live target that leaves the attested cgroup is still killed,
+but the result is ownership-uncertain. A target that remains live at the kill deadline never reaches the pidfd
+`RESULT`/`ACK` path: the supervisor keeps its exact handle open until `POLLIN`, and the outer helper reports forced
+ownership uncertainty while tearing down its still-owned group. Production Git starts through the same pinned Python
+source so the Git, Python, and source descriptors become close-on-exec. Before its inner `GO`, the exec shim is pinned
+by PID/start time, executable, process group/session, and cgroup; the helper checks the same observation after inner
+`READY` and again immediately before sending `GO`. At both points it also runs the full exclusive-subtree scan with
+the retained shim required, rather than relying only on `/proc/<pid>/cgroup`; a foreign member therefore prevents
+`GO`. The direct Git child's `exit` event starts pidfd containment immediately;
+bounded output-pipe closure is checked only after the cgroup is reconciled. This ordering prevents a detached child
+from blocking cleanup by retaining an inherited pipe. Every mover JSON boundary rejects duplicate decoded keys.
+
+After every Git exit, not only status zero, the helper reconciles the complete filesystem and Git-administration
+layout. Status zero requires the exact moved state. A nonzero status remains an ordinary `git-failed` only if the
+source, absent destination, manager, `.git` link, administration directory, common-directory link, and backlink all
+still match the preflight; a directory-only move, metadata-only change, or ambiguous observation is
+`move-indeterminate` and is never rolled back. This layout reconciliation runs before any late post-exit spawn,
+stream, cgroup, process-group, or output-close error is surfaced, so a partially changed layout cannot be reported as
+an ordinary containment or output failure.
+
+The helper remains deliberately disconnected from checkout quarantine and deletion. Production wiring also remains
+blocked until a trusted host service, such as a systemd transient service, can create and attest the cgroup outside the
+Codex/bubblewrap sandbox.
+
 ## Persistence and identity
 
 Persistence validates retained plans more strictly than a draft-preview request: a by-example step without its canonical saved program is malformed cleaning state and is discarded through the normal cleaning-recovery path instead of being re-synthesized.

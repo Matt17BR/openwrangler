@@ -54,6 +54,39 @@ Agent checkout lifecycle has a separate, small contract test:
   The command has no network path and never changes, moves, or removes the source. A completed archive still reports
   `authorizesMove: false` and `authorizesCleanup: false`. Any later quarantine command must repeat the exact current
   source-versus-archive checks immediately around its move; it cannot treat this completion record as permission.
+- The same focused command runs the Linux-only owned-move contract. Disposable linked worktrees prove that the helper
+  makes no change before `READY` and a later explicit `GO`, invokes the exact unforced `git worktree move`, contains
+  and terminates descendants, and stays alive as its private session leader until the parent acknowledges `RESULT`.
+  Tests inject an explicit PID/mount/user namespace receipt; a missing or mismatched receipt fails before `READY`.
+  They also inject a private test-only cgroup-v2 filesystem and explicit execution receipt. Missing authority, a foreign
+  pre-`READY` member, or a changed cgroup identity fails closed. One fake Git executable runs the real `/usr/bin/git`,
+  launches a detached `setsid` process whose current directory is the moved checkout, and records that process in the
+  fixture cgroup. The target checks that no outer protocol pipe or launch-artifact descriptor reached it. The helper
+  opens and validates its pidfd, signals only through that descriptor, waits for its exact exit, and rejects the otherwise successful move. Another
+  successful real move replaces the worktree backlink with the same bytes under a new inode and must reconcile as
+  `move-indeterminate`.
+  Production launch binds anonymous helper and pidfd-supervisor bytes, Node, fixed `/usr/bin/python3`, and fixed
+  non-user-writable Git through inherited descriptors. A pre-`READY` probe proves that the Python runtime supports
+  pidfds. The Git exec shim marks artifact descriptors close-on-exec. The test suite separately proves that a stale
+  start time is never signaled, a live target leaving the cgroup is contained but reported as ownership-uncertain,
+  a PID reused outside two stable membership snapshots never becomes a pidfd target, and a test-seam target that stays
+  pidfd-live past `SIGKILL` receives no normal `RESULT`/`ACK` release. The Git exec
+  shim test substitutes the retained PID/start time while `READY` is pending and proves that no inner `GO` is sent.
+  A production-trust seam then inserts a stable foreign cgroup member between the post-`READY` scan and the final
+  pre-`GO` scan; all four bracket scans run and no `GO` byte is written. Exact Git `exit` starts containment before
+  inherited output pipes are awaited. Fake Git executables are available
+  only through the test dependency seam. Fixtures also reject malformed or duplicate-key JSON at every protocol
+  boundary, cross or nested mounts, source/destination/manager process use, Git failure, executable changes, stream
+  faults, and invalid session ownership. A no-op success, a partial filesystem move, and nonzero exits after either a
+  directory-only move or metadata-only mutation all return `move-indeterminate`, retain their observed state, and
+  prove there is no automatic rollback. A separate nonzero partial-move case injects a late cgroup-drain fault and
+  still returns `move-indeterminate`, proving that post-exit faults cannot bypass layout reconciliation. An unchanged
+  nonzero exit remains `git-failed`. Seam children
+  that omit streams or never report `close` prove that READY, authorization, move, and abort cleanup always reaches
+  bounded helper-group escalation and rejects ownership uncertainty instead of hanging. The
+  Codex/bubblewrap environment is not a trusted-host namespace or cgroup authority. Production remains disabled until
+  an outside host service can create and attest one dedicated cgroup-v2 subtree, so these tests never move a real
+  managed checkout and the helper is not wired to the lifecycle or quarantine journal yet.
 - `npm run checkout:bootstrap` is explicit and runs only from the ordinary source checkout. It makes a standalone bare
   clone from the local source, records a normal `origin` fetch refspec, and runs strict `fsck` without contacting
   `origin`. Source-side create commands synchronize only the exact locally resolved base commit, then repeat the
