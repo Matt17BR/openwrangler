@@ -9,6 +9,7 @@ import {
   observeNotebookTrialIntegerProfile,
   observeNotebookTrialPointerAction,
   observeNotebookTrialVisibleShape,
+  readStudyIpynbCellTags,
   validateDataWranglerComparisonSentinelRows,
   validateDataWranglerNotebookTrialPhaseReceipt,
   type DataWranglerNotebookTrialPhaseReceipt,
@@ -60,6 +61,29 @@ const STUDY: NotebookTrialDefinition = {
     }
   }
 };
+
+describe("study ipynb cell metadata", () => {
+  it("reads tags from the built-in ipynb serializer wrapper", () => {
+    expect(
+      readStudyIpynbCellTags({
+        execution_count: null,
+        id: "pandas-csv-warm-setup",
+        metadata: { tags: ["ow-study-setup", "remove-cell"] }
+      })
+    ).toEqual(["ow-study-setup", "remove-cell"]);
+  });
+
+  it("does not mistake outer wrapper fields for Jupyter cell metadata", () => {
+    expect(readStudyIpynbCellTags({ tags: ["ow-study-setup"], metadata: {} })).toEqual([]);
+  });
+
+  it("rejects malformed or repeated Jupyter tags", () => {
+    expect(() => readStudyIpynbCellTags({ metadata: { tags: "ow-study-setup" } })).toThrow(/unique non-empty/u);
+    expect(() => readStudyIpynbCellTags({ metadata: { tags: ["ow-study-setup", "ow-study-setup"] } })).toThrow(
+      /unique non-empty/u
+    );
+  });
+});
 
 const OPEN_ACTION: NotebookTrialActionEvidence = {
   role: "button",

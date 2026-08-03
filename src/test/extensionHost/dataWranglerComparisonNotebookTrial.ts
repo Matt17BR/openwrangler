@@ -3349,12 +3349,24 @@ function decodeStudyNotebookDefinition(notebook: vscode.NotebookDocument): Noteb
 function requireTaggedStudyCell(notebook: vscode.NotebookDocument, tag: string): vscode.NotebookCell {
   const matches = [...Array(notebook.cellCount).keys()]
     .map((index) => notebook.cellAt(index))
-    .filter((cell) => {
-      const metadata = cell.metadata as { readonly tags?: unknown };
-      return Array.isArray(metadata.tags) && metadata.tags.includes(tag);
-    });
+    .filter((cell) => readStudyIpynbCellTags(cell.metadata).includes(tag));
   assert.equal(matches.length, 1, `The study notebook must contain exactly one ${tag} cell.`);
   return matches[0]!;
+}
+
+export function readStudyIpynbCellTags(value: unknown): readonly string[] {
+  const wrapper = requireRecord(value, "Study notebook cell wrapper metadata");
+  if (wrapper.metadata === undefined) return [];
+  const metadata = requireRecord(wrapper.metadata, "Study notebook cell metadata");
+  if (metadata.tags === undefined) return [];
+  if (
+    !Array.isArray(metadata.tags) ||
+    metadata.tags.some((tag) => typeof tag !== "string" || tag.length === 0) ||
+    new Set(metadata.tags).size !== metadata.tags.length
+  ) {
+    fail("Study notebook cell tags must be unique non-empty strings.");
+  }
+  return metadata.tags as string[];
 }
 
 function selectedStudyNotebookTab(notebook: vscode.NotebookDocument): vscode.Tab {
