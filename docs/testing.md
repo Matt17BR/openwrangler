@@ -9,6 +9,23 @@ wait for the existing command instead of starting a duplicate. Nested npm phases
 released automatically when the wrapper exits; there is no lock file to remove after an interruption. Windows uses a
 kernel-owned named pipe so reserved or excluded TCP port ranges cannot prevent the guard from starting.
 
+On a local Linux or macOS machine, the outer wrapper also watches the complete process tree every 250 ms. The default
+limit is 25% of physical, container-constrained, or currently available memory, whichever is lower, with a 256 MiB
+floor and an 8 GiB ceiling. Linux sums proportional set size (PSS), so
+shared Electron mappings are counted once; it labels and uses RSS only when the kernel does not expose
+`smaps_rollup`. macOS uses RSS. The wrapper prints the active limit, metric, and observed peak. It stops and verifies
+the owned tree if it crosses the limit or if accounting fails. Set `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` to a positive
+whole number to choose a different limit. `off` is the only way to disable it explicitly. A nested guarded npm command
+inherits the outer lease and never starts a second watcher. A command that exits while an owned descendant is still
+running fails and cleans up that descendant instead of leaving a background test process behind.
+This is a watchdog rather than a kernel reservation, so a very abrupt allocation can overshoot between samples.
+
+Hosted CI keeps its runner-level resource controls and does not apply the local default, so the watchdog does not
+weaken a required test. Windows keeps the shared lease and forced tree cleanup, but plain Node cannot provide the same
+reliable tree accounting there. An explicit memory limit therefore fails before launch on Windows; run the command in
+a memory-bounded Job Object or container instead. Do not bypass the wrapper, invoke `:run` or `:prepare` scripts
+directly, or drop system caches to make a command fit.
+
 Agent checkout lifecycle has a separate, small contract test:
 
 - `npm run test:checkout-lifecycle` creates disposable repositories and worktrees. Its focused cases cover restart

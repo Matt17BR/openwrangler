@@ -9,14 +9,149 @@ import {
   heavyCommandLeasePort,
   parseHeavyCommandArguments
 } from "./run-heavy-local-command.mjs";
+import {
+  collectOwnedProcessRows,
+  parseLinuxProcessStat,
+  parseMacProcessRows,
+  resolveHeavyMemoryPolicy
+} from "./heavy-process-memory.mjs";
 
 const guard = fileURLToPath(new URL("./run-heavy-local-command.mjs", import.meta.url));
 
 function cleanLeaseEnvironment(scope) {
-  const environment = { ...process.env, OPEN_WRANGLER_HEAVY_LEASE_SCOPE: scope };
+  const environment = {
+    ...process.env,
+    OPEN_WRANGLER_HEAVY_LEASE_SCOPE: scope,
+    OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "off"
+  };
   delete environment.OPEN_WRANGLER_HEAVY_LEASE_TOKEN;
   delete environment.OPEN_WRANGLER_HEAVY_LEASE_ADDRESS;
   return environment;
+}
+
+test("local memory policy is conservative, configurable, and never silently asserted on unsupported systems", () => {
+  assert.deepEqual(resolveHeavyMemoryPolicy(memoryPolicyFixture("linux", 64)), {
+    enabled: true,
+    bytes: 8192 * 1024 ** 2,
+    mebibytes: 8192,
+    source: "local-default"
+  });
+  assert.equal(resolveHeavyMemoryPolicy(memoryPolicyFixture("darwin", 16)).mebibytes, 4096);
+  assert.equal(resolveHeavyMemoryPolicy(memoryPolicyFixture("linux", 2)).mebibytes, 512);
+  assert.equal(
+    resolveHeavyMemoryPolicy({
+      environment: {},
+      platform: "linux",
+      totalMemoryBytes: 64 * 1024 ** 3,
+      constrainedMemoryBytes: 8 * 1024 ** 3,
+      availableMemoryBytes: 12 * 1024 ** 3
+    }).mebibytes,
+    2048
+  );
+  assert.equal(
+    resolveHeavyMemoryPolicy({
+      environment: {},
+      platform: "linux",
+      totalMemoryBytes: 64 * 1024 ** 3,
+      constrainedMemoryBytes: Number.MAX_VALUE,
+      availableMemoryBytes: 4 * 1024 ** 3
+    }).mebibytes,
+    1024
+  );
+  assert.deepEqual(resolveHeavyMemoryPolicy({ environment: { CI: "true" }, platform: "linux" }), {
+    enabled: false,
+    source: "continuous-integration"
+  });
+  assert.deepEqual(
+    resolveHeavyMemoryPolicy({
+      environment: { CI: "true", OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "3072" },
+      platform: "linux"
+    }),
+    { enabled: true, bytes: 3072 * 1024 ** 2, mebibytes: 3072, source: "explicit" }
+  );
+  assert.deepEqual(
+    resolveHeavyMemoryPolicy({ environment: { OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "off" }, platform: "win32" }),
+    { enabled: false, source: "explicit-off" }
+  );
+  assert.deepEqual(resolveHeavyMemoryPolicy({ environment: {}, platform: "win32" }), {
+    enabled: false,
+    source: "unsupported-local-platform"
+  });
+  assert.throws(
+    () =>
+      resolveHeavyMemoryPolicy({
+        environment: { OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "2048" },
+        platform: "win32"
+      }),
+    /Job Object or container limit/u
+  );
+  for (const value of ["0", "1.5", "-1", "yes", "131073"]) {
+    assert.throws(
+      () =>
+        resolveHeavyMemoryPolicy({
+          environment: { OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: value },
+          platform: "linux"
+        }),
+      /OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB/u
+    );
+  }
+});
+
+function memoryPolicyFixture(platform, gibibytes) {
+  return {
+    environment: {},
+    platform,
+    totalMemoryBytes: gibibytes * 1024 ** 3,
+    constrainedMemoryBytes: Number.MAX_VALUE,
+    availableMemoryBytes: Number.MAX_VALUE
+  };
+}
+
+test("process snapshots retain identities and include new process groups below the owned root", () => {
+  const root = linuxRow(100, 1, 100, "1000");
+  const sameGroup = linuxRow(101, 1, 100, "1001");
+  const descendant = linuxRow(102, 100, 102, "1002");
+  const grandchild = linuxRow(103, 102, 103, "1003");
+  const unrelated = linuxRow(200, 1, 200, "2000");
+  const captured = new Map([[300, "300:1111"]]);
+  const reused = linuxRow(300, 1, 300, "2222");
+  const selected = collectOwnedProcessRows(
+    [unrelated, grandchild, reused, descendant, sameGroup, root],
+    100,
+    captured,
+    { processGroupVerified: true }
+  );
+  assert.deepEqual(
+    selected.map((row) => row.pid),
+    [100, 101, 102, 103]
+  );
+  assert.equal(captured.get(103), "103:1003");
+  assert.equal(captured.get(300), "300:1111", "a reused PID must not inherit ownership");
+
+  const lateSameGroup = linuxRow(104, 1, 100, "1004");
+  assert.deepEqual(
+    collectOwnedProcessRows([lateSameGroup, unrelated], 100, captured, { processGroupVerified: true }).map(
+      (row) => row.pid
+    ),
+    [104],
+    "verified process-group ownership must survive the root's exit"
+  );
+
+  assert.deepEqual(parseMacProcessRows(" 9 1 9 2048 Mon Aug  3 10:20:30 2026\n"), [
+    {
+      pid: 9,
+      ppid: 1,
+      pgid: 9,
+      identity: "9:Mon Aug  3 10:20:30 2026",
+      memoryBytes: 2 * 1024 ** 2
+    }
+  ]);
+  assert.throws(() => parseMacProcessRows("not a process row"), /malformed row/u);
+});
+
+function linuxRow(pid, ppid, pgid, start) {
+  const fields = ["S", ppid, pgid, pgid, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, start];
+  return parseLinuxProcessStat(`${pid} (node worker ${pid}) ${fields.join(" ")}`);
 }
 
 function captureChild(arguments_, environment) {
@@ -146,6 +281,101 @@ test(
       assert.equal(nested.output().stdout, "nested-ok");
     } finally {
       holder.child.kill("SIGKILL");
+    }
+  }
+);
+
+test(
+  "the Linux watchdog stops an over-budget process tree and reports the observed peak",
+  { timeout: 10_000, skip: process.platform !== "linux" },
+  async () => {
+    const scope = `openwrangler-heavy-memory-test-${process.pid}-${Date.now()}`;
+    const environment = {
+      ...cleanLeaseEnvironment(scope),
+      OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "8"
+    };
+    const guarded = captureChild(
+      [
+        "memory-test",
+        "--",
+        "node",
+        "--eval",
+        "const {spawn}=require('node:child_process');" +
+          "const child=spawn(process.execPath,['--eval','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});" +
+          "process.stdout.write(String(child.pid)+'\\n');child.unref();setInterval(()=>{},1000);"
+      ],
+      environment
+    );
+    let descendantPid;
+    try {
+      const [code, signal] = await once(guarded.child, "close");
+      descendantPid = Number.parseInt(guarded.output().stdout.trim(), 10);
+      assert.equal(signal, null, guarded.output().stderr);
+      assert.equal(code, 1, guarded.output().stderr);
+      assert.equal(Number.isSafeInteger(descendantPid), true, guarded.output().stdout);
+      assert.match(guarded.output().stderr, /memory guard: 8 MiB proportional set size \(PSS\) cap/u);
+      assert.match(guarded.output().stderr, /stopped "memory-test"/u);
+      assert.match(guarded.output().stderr, /above the 8 MiB local cap/u);
+      assert.match(guarded.output().stderr, /Peak observed:/u);
+      assert.equal(processIsAlive(descendantPid), false, `captured descendant ${descendantPid} survived the limit`);
+    } finally {
+      guarded.child.kill("SIGKILL");
+      if (descendantPid && processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
+    }
+  }
+);
+
+test(
+  "the Linux watchdog reports a successful command's peak without changing its exit status",
+  { timeout: 10_000, skip: process.platform !== "linux" },
+  async () => {
+    const scope = `openwrangler-heavy-memory-success-${process.pid}-${Date.now()}`;
+    const environment = {
+      ...cleanLeaseEnvironment(scope),
+      OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "64"
+    };
+    const guarded = captureChild(["memory-success", "--", "node", "--eval", "setTimeout(() => {}, 150)"], environment);
+    const [code, signal] = await once(guarded.child, "close");
+    assert.equal(signal, null, guarded.output().stderr);
+    assert.equal(code, 0, guarded.output().stderr);
+    assert.match(guarded.output().stderr, /memory guard: 64 MiB proportional set size \(PSS\) cap/u);
+    assert.match(guarded.output().stderr, /"memory-success" peak .* \(cap 64 MiB\)/u);
+  }
+);
+
+test(
+  "the Linux watchdog rescans a verified process group after the root exits",
+  { timeout: 10_000, skip: process.platform !== "linux" },
+  async () => {
+    const scope = `openwrangler-heavy-memory-late-child-${process.pid}-${Date.now()}`;
+    const environment = {
+      ...cleanLeaseEnvironment(scope),
+      OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB: "64"
+    };
+    const guarded = captureChild(
+      [
+        "late-child",
+        "--",
+        "node",
+        "--eval",
+        "const {spawn}=require('node:child_process');" +
+          "const child=spawn(process.execPath,['--eval','setInterval(()=>{},1000)'],{stdio:'ignore'});" +
+          "process.stdout.write(String(child.pid)+'\\n');child.unref();"
+      ],
+      environment
+    );
+    let descendantPid;
+    try {
+      const [code, signal] = await once(guarded.child, "close");
+      descendantPid = Number.parseInt(guarded.output().stdout.trim(), 10);
+      assert.equal(signal, null, guarded.output().stderr);
+      assert.equal(code, 1, guarded.output().stderr);
+      assert.equal(Number.isSafeInteger(descendantPid), true, guarded.output().stdout);
+      assert.match(guarded.output().stderr, /surviving descendant after "late-child" exited/u);
+      assert.equal(processIsAlive(descendantPid), false, `late same-group child ${descendantPid} survived cleanup`);
+    } finally {
+      guarded.child.kill("SIGKILL");
+      if (descendantPid && processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
     }
   }
 );
