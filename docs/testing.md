@@ -97,13 +97,39 @@ Agent checkout lifecycle has a separate, small contract test:
   belonging to another lifecycle registry; discovery never migrates or removes it. The public create, status, retire,
   and `task-end` commands also sweep before their main operation.
 - `npm run checkout:legacy-batch-audit -- --manifest <canonical-json>` accepts an explicit bounded list instead of
-  rediscovering a large historical tree for every clone. It scans no more than 2,000,000 directory entries across the
-  manifest's non-overlapping dependency roots once, records every repository and object-alternate relationship, then
-  runs the complete legacy audit for each listed standalone clone. The dry run writes no lifecycle journal and returns
-  one review SHA-256. `checkout:legacy-batch-adopt` requires that exact hash, repeats the scan and audits, and refuses the
-  whole batch if any row is blocked. Tests prove one scan per command rather than one per candidate, exact-review
-  invalidation, no candidate deletion or movement, bounded generated-path suggestions, and fail-closed handling of
-  dirty, linked, and inbound alternate-dependent candidates. `checkout:legacy-batch-retire` resumes partial adoption,
+  rediscovering a large historical tree for every clone. A v1 manifest scans no more than 2,000,000 directory entries
+  across its non-overlapping dependency roots once. A v2 manifest carries an
+  `openwrangler-legacy-dependency-catalog-v1`: no more than 4,096 exact immediate root entries and 16 repositories are
+  declared as repositories, ordinary directories, files, or symlinks. The audit requires the complete root listing,
+  pins every root and entry identity, and hashes declared symlink targets without following them. Root and child
+  traversal uses bounded no-follow descriptors; regular files also use nonblocking opens, and per-capture mount IDs
+  reject same-device bind mounts without becoming persisted cross-boot evidence. An ordinary directory is
+  recursively attested under one global 50,000-entry and depth-eight bound: mounts, special files, non-owned entries,
+  and nested worktree or bare Git markers fail closed, while topology, identity, metadata, and raw symlink-target
+  receipts become part of the persisted catalog proof. Every registered worktree from one canonical common Git
+  directory must appear in the catalog, and the group contributes one dependency record. Worktree and alternate
+  pointers are resolved only after their exact registry or object-store target is already held from the catalog; an
+  outside target is rejected without opening it. Every alternate must resolve without an alias to an object directory
+  in that catalog.
+  Both forms run the complete legacy audit for each listed standalone clone. The dry run writes no lifecycle journal
+  and returns one review SHA-256. `checkout:legacy-batch-adopt` requires that exact hash, repeats the catalog proof and
+  audits, and refuses the whole batch if any row is blocked. Dry review also sizes each candidate's complete request and
+  completion against the 64 KiB journal limit; an oversized proof is blocked before any lifecycle directory or attempt
+  is created. Adoption repeats that preflight before allocating state. The persisted v2 dependency-universe receipt reconstructs
+  and repeats the same catalog checks before archive, enrollment, quarantine, and purge. A later-boot sweep may remove
+  cohort members in sequence; a missing peer is accepted only when its exact adopted path already has a retained
+  terminal retirement record with the same provider-independent cohort digest. Tests prove one dependency pass per
+  command rather than one per candidate, exact-review invalidation, safe handling of non-followed symlinks, rejection
+  of a nested repository or alternate introduced after adoption, same-sweep cohort retirement, rejection of
+  unrecorded and different-cohort missing peers, no candidate deletion or movement, bounded generated-path
+  suggestions, directory-to-symlink and file-to-FIFO pathname swaps, and fail-closed handling of dirty, linked,
+  omitted-worktree, outside-alternate, and inbound alternate-dependent candidates.
+  An exact list of checkout paths cannot replace the complete parent catalog. Git records an object alternate in the
+  borrowing repository, so inspecting a standalone clone cannot show that an unlisted checkout does not depend on its
+  objects. If reviewing the complete parent would inspect unrelated files, that clone stays on hold. A future no-scan
+  migration would need to replace the original path atomically with a small compatibility tombstone backed by the
+  verified recovery object store; removing the path outright is not safe. There is no exact-path cleanup override.
+  `checkout:legacy-batch-retire` resumes partial adoption,
   creates and verifies each all-object archive (including unreachable objects), and enrolls retirement without moving
   anything in the current boot. Crash tests stop between candidates and resume against the same review. Recognized
   worktree repositories are terminal dependency-scan nodes, so large declared generated trees are inventoried by the
