@@ -23,6 +23,7 @@ import {
   rmdirSync,
   rmSync,
   statfsSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
   writeSync
@@ -61,6 +62,35 @@ const LEGACY_ARCHIVE_COMPLETION_PROTOCOL = "openwrangler-legacy-recovery-archive
 const RETIREMENT_SWEEP_PROTOCOL = "openwrangler-checkout-retirement-sweep-v1";
 const LEGACY_RETIREMENT_SWEEP_PROTOCOL = "openwrangler-checkout-retirement-sweep-v2";
 const RETIREMENT_TOMBSTONE_PROTOCOL = "openwrangler-checkout-retirement-tombstone-v1";
+const ARTIFACT_REVIEW_PROTOCOL = "openwrangler-generated-artifact-review-v1";
+const ARTIFACT_REQUEST_PROTOCOL = "openwrangler-generated-artifact-retirement-request-v1";
+const ARTIFACT_ARCHIVE_PROTOCOL = "openwrangler-generated-artifact-archive-v1";
+const ARTIFACT_COMPLETION_PROTOCOL = "openwrangler-generated-artifact-retirement-completion-v1";
+const ARTIFACT_SWEEP_PROTOCOL = "openwrangler-generated-artifact-retirement-sweep-v1";
+const ARTIFACT_RENAME_HELPER_SOURCE = String.raw`import ctypes
+import os
+import stat
+import sys
+
+if len(sys.argv) != 3:
+    raise SystemExit(12)
+source = sys.argv[1].encode("ascii", "strict")
+destination = sys.argv[2].encode("ascii", "strict")
+if not source or not destination or b"/" in source or b"/" in destination or b"\0" in source or b"\0" in destination:
+    raise SystemExit(12)
+if not stat.S_ISDIR(os.fstat(3).st_mode) or not stat.S_ISDIR(os.fstat(4).st_mode):
+    raise SystemExit(12)
+libc = ctypes.CDLL(None, use_errno=True)
+renameat2 = getattr(libc, "renameat2", None)
+if renameat2 is None:
+    raise SystemExit(11)
+renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+renameat2.restype = ctypes.c_int
+if renameat2(3, source, 4, destination, 1) != 0:
+    os.write(2, (str(ctypes.get_errno()) + "\n").encode("ascii"))
+    raise SystemExit(10)
+os.write(1, b"ok\n")
+`;
 const MAXIMUM_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_BUNDLE_HEADER_BYTES = 4 * 1024 * 1024;
 const ARCHIVE_SPACE_MULTIPLIER = 8n;
@@ -123,6 +153,12 @@ const MAXIMUM_ARCHIVE_REFLOG_BYTES = 16 * 1024 * 1024;
 const MAXIMUM_ARCHIVE_REFLOG_ENTRIES = 262_144;
 const MAXIMUM_VERIFICATION_FILES = 4096;
 const MAXIMUM_VERIFICATION_DEPTH = 16;
+const MAXIMUM_ARTIFACT_ATTEMPTS = 8;
+const MAXIMUM_ARTIFACT_ENTRIES = 1_000_000;
+const MAXIMUM_ARTIFACT_DEPTH = 128;
+const MAXIMUM_ARTIFACT_BYTES = 32n * 1024n * 1024n * 1024n;
+const MAXIMUM_ARTIFACT_MANIFEST_BYTES = 256n * 1024n * 1024n;
+const MAXIMUM_ARTIFACT_SYMLINK_BYTES = 64 * 1024;
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const REMOTE_PATTERN = /^[A-Za-z0-9._-]{1,80}$/u;
 const GENERATED_ROOT_PATTERN = /^(?!\.\.?$)[A-Za-z0-9._-]{1,80}$/u;
@@ -145,6 +181,11 @@ const RETIREMENT_SWEEP_DIRECTORY_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9]
 const RETIREMENT_QUARANTINE_DIRECTORY_PATTERN =
   /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})\.([0-9a-f]{32})$/u;
 const RETIREMENT_SWEEP_RECORD_PATTERN =
+  /^([0-9]{8})\.(eligible|quarantine-intent|quarantine-result|purge-intent|retired)\.([0-9a-f]{32})\.json$/u;
+const ARTIFACT_ATTEMPT_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})\.([1-8])$/u;
+const ARTIFACT_ENTRY_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})\.json$/u;
+const ARTIFACT_SWEEP_DIRECTORY_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([1-9][0-9]{0,8})$/u;
+const ARTIFACT_SWEEP_RECORD_PATTERN =
   /^([0-9]{8})\.(eligible|quarantine-intent|quarantine-result|purge-intent|retired)\.([0-9a-f]{32})\.json$/u;
 const BOOT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const MANAGER_REMOTE_FETCH = "+refs/heads/*:refs/remotes/origin/*";
@@ -2540,7 +2581,12 @@ function normalizePaths(root) {
     legacyRetirementSweeps: join(managerRoot, "retirement-sweeps", "legacy"),
     retirementQuarantine: join(managerRoot, "retirement-quarantine"),
     managedRetirementQuarantine: join(managerRoot, "retirement-quarantine", "managed"),
-    legacyRetirementQuarantine: join(managerRoot, "retirement-quarantine", "legacy")
+    legacyRetirementQuarantine: join(managerRoot, "retirement-quarantine", "legacy"),
+    artifactRetirements: join(managerRoot, "artifact-retirements"),
+    artifactAttempts: join(managerRoot, "artifact-retirements", "attempts"),
+    artifactEntries: join(managerRoot, "artifact-retirements", "entries"),
+    artifactSweeps: join(managerRoot, "artifact-retirement-sweeps"),
+    artifactQuarantine: join(managerRoot, "artifact-retirement-quarantine")
   });
 }
 
@@ -2561,6 +2607,8 @@ export function createCheckoutManager(options = {}) {
   const statFilesystem = options.statfs ?? statfsSync;
   const readBootId = options.readBootId ?? (() => readFileSync("/proc/sys/kernel/random/boot_id", "utf8"));
   const readMountInfo = options.readMountInfo ?? (() => readFileSync("/proc/self/mountinfo", "utf8"));
+  const syncArtifactDescriptor = options.syncArtifactDescriptor ?? fsyncSync;
+  const syncArtifactDirectoryHook = options.syncArtifactDirectory;
   const hooks = options.hooks;
   const entryIdentities = new WeakMap();
   const managedIdentities = new Map();
@@ -2769,6 +2817,23 @@ export function createCheckoutManager(options = {}) {
 
   function initializeLegacyArchiveJournal() {
     for (const path of [paths.legacyArchives, paths.legacyArchiveAttempts, paths.legacyArchiveEntries]) {
+      const identity = managedIdentities.get(path);
+      if (identity === undefined) managedIdentities.set(path, ensurePrivateDirectory(path));
+      else {
+        assertPrivateDirectory(path, path);
+        revalidatePathIdentity(path, identity, path, "directory");
+      }
+    }
+  }
+
+  function initializeArtifactJournal() {
+    for (const path of [
+      paths.artifactRetirements,
+      paths.artifactAttempts,
+      paths.artifactEntries,
+      paths.artifactSweeps,
+      paths.artifactQuarantine
+    ]) {
       const identity = managedIdentities.get(path);
       if (identity === undefined) managedIdentities.set(path, ensurePrivateDirectory(path));
       else {
@@ -10769,7 +10834,7 @@ export function createCheckoutManager(options = {}) {
       "unsafe-retirement-tree"
     ]);
 
-    const results = candidates.map((candidate) => {
+    const checkoutResults = candidates.map((candidate) => {
       try {
         return sweepOne(candidate, bootId);
       } catch (error) {
@@ -10777,6 +10842,7 @@ export function createCheckoutManager(options = {}) {
         return observeRetirementHold(candidate, error.code);
       }
     });
+    const results = [...checkoutResults, ...sweepArtifactRetirements(bootId)];
     return Object.freeze({
       bootId,
       results: Object.freeze(results)
@@ -11421,8 +11487,1891 @@ export function createCheckoutManager(options = {}) {
     });
   }
 
+  function artifactStatRecord(metadata) {
+    return Object.freeze({
+      identity: identityOf(metadata),
+      mode: Number(metadata.mode & 0o7777n),
+      size: metadata.size.toString(),
+      mtimeNs: metadata.mtimeNs.toString(),
+      ctimeNs: metadata.ctimeNs.toString()
+    });
+  }
+
+  function sameArtifactStat(left, right) {
+    return (
+      sameIdentity(identityOf(left), identityOf(right)) &&
+      left.mode === right.mode &&
+      left.size === right.size &&
+      left.nlink === right.nlink &&
+      left.mtimeNs === right.mtimeNs &&
+      left.ctimeNs === right.ctimeNs
+    );
+  }
+
+  function requireArtifactDescriptorTraversal() {
+    if (
+      process.platform !== "linux" ||
+      typeof constants.O_DIRECTORY !== "number" ||
+      typeof constants.O_NOFOLLOW !== "number"
+    ) {
+      fail(
+        "artifact-platform-unsupported",
+        "Generated-artifact review and retirement require Linux descriptor-relative filesystem operations."
+      );
+    }
+  }
+
+  function artifactDescriptorPath(descriptor, name = undefined) {
+    const base = `/proc/self/fd/${descriptor}`;
+    if (name === undefined) return base;
+    if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
+      fail("artifact-unsafe", "A generated artifact contains an invalid entry name.");
+    }
+    return `${base}/${name}`;
+  }
+
+  function openArtifactDirectoryDescriptor(path, label, expectedIdentity = undefined) {
+    requireArtifactDescriptorTraversal();
+    if (!isAbsolute(path) || resolve(path) !== path) {
+      fail("artifact-unsafe", `${label} is not an absolute canonical path.`);
+    }
+    const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0);
+    let descriptor;
+    try {
+      descriptor = openSync("/", flags);
+      for (const component of path.split("/").filter((value) => value !== "")) {
+        const next = openSync(artifactDescriptorPath(descriptor, component), flags);
+        closeSync(descriptor);
+        descriptor = next;
+      }
+      const metadata = fstatSync(descriptor, { bigint: true });
+      if (
+        !metadata.isDirectory() ||
+        !currentUserOwns(metadata) ||
+        (expectedIdentity !== undefined && !sameIdentity(identityOf(metadata), expectedIdentity))
+      ) {
+        fail("artifact-unsafe", `${label} is not the expected owned directory.`);
+      }
+      return Object.freeze({ descriptor, metadata });
+    } catch (error) {
+      if (descriptor !== undefined) closeSync(descriptor);
+      if (error instanceof CheckoutLifecycleError) throw error;
+      fail("artifact-unsafe", `${label} could not be opened without following links: ${error.message}`);
+    }
+  }
+
+  function openArtifactChildDirectoryDescriptor(parentDescriptor, name, observed, label) {
+    requireArtifactDescriptorTraversal();
+    let descriptor;
+    try {
+      descriptor = openSync(
+        artifactDescriptorPath(parentDescriptor, name),
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0)
+      );
+      const metadata = fstatSync(descriptor, { bigint: true });
+      if (!metadata.isDirectory() || !currentUserOwns(metadata) || !sameArtifactStat(metadata, observed)) {
+        fail("artifact-changed", `${label} changed before descriptor-relative traversal.`);
+      }
+      return Object.freeze({ descriptor, metadata });
+    } catch (error) {
+      if (descriptor !== undefined) closeSync(descriptor);
+      if (error instanceof CheckoutLifecycleError) throw error;
+      fail("artifact-changed", `${label} could not be opened without following links: ${error.message}`);
+    }
+  }
+
+  function synchronizeArtifactDirectory(descriptor, path) {
+    if (syncArtifactDirectoryHook === undefined) syncArtifactDescriptor(descriptor);
+    else syncArtifactDirectoryHook(path, descriptor);
+  }
+
+  function readArtifactDirectoryBounded(directoryDescriptor, label) {
+    const directory = opendirSync(artifactDescriptorPath(directoryDescriptor), { encoding: "buffer" });
+    const entries = [];
+    try {
+      let item;
+      while ((item = directory.readSync()) !== null) {
+        if (entries.length === MAXIMUM_ARTIFACT_ENTRIES) {
+          fail("artifact-too-large", `${label} exceeds its fixed entry limit.`);
+        }
+        let name;
+        try {
+          name = new TextDecoder("utf-8", { fatal: true }).decode(item.name);
+        } catch {
+          fail("artifact-unsafe", `${label} contains a filename that is not strict UTF-8.`);
+        }
+        if (!Buffer.from(name, "utf8").equals(item.name)) {
+          fail("artifact-unsafe", `${label} contains a filename that cannot round-trip exactly.`);
+        }
+        entries.push(Object.freeze({ name, nameBytes: Buffer.from(item.name) }));
+      }
+    } finally {
+      directory.closeSync();
+    }
+    return entries;
+  }
+
+  function validateArtifactRoot(path, label, expectedIdentity = undefined) {
+    let metadata;
+    try {
+      metadata = lstatSync(path, { bigint: true });
+    } catch {
+      fail("artifact-not-found", `${label} is missing.`);
+    }
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      !currentUserOwns(metadata) ||
+      realpathSync(path) !== path ||
+      (expectedIdentity !== undefined && !sameIdentity(identityOf(metadata), expectedIdentity))
+    ) {
+      fail("artifact-unsafe", `${label} is not the expected owned canonical directory.`);
+    }
+    return Object.freeze({ identity: identityOf(metadata), device: metadata.dev });
+  }
+
+  function normalizeArtifactTarget({ slug, artifactPath, approvedRoot, ownerTask, ownerRevision }) {
+    assertSlug(slug);
+    assertOwner(ownerTask);
+    assertRevision(ownerRevision);
+    if (
+      typeof artifactPath !== "string" ||
+      typeof approvedRoot !== "string" ||
+      !isAbsolute(artifactPath) ||
+      !isAbsolute(approvedRoot) ||
+      resolve(artifactPath) !== artifactPath ||
+      resolve(approvedRoot) !== approvedRoot ||
+      dirname(artifactPath) !== approvedRoot ||
+      basename(artifactPath) !== slug
+    ) {
+      fail(
+        "invalid-artifact-target",
+        "Generated-artifact retirement requires one canonical direct child whose basename matches its slug."
+      );
+    }
+    if (
+      isSameOrContained(paths.root, approvedRoot) ||
+      isSameOrContained(approvedRoot, paths.root) ||
+      isSameOrContained(paths.root, artifactPath) ||
+      isSameOrContained(artifactPath, paths.root)
+    ) {
+      fail("invalid-artifact-target", "Generated artifacts and their reviewed root must stay outside manager state.");
+    }
+    const root = validateArtifactRoot(approvedRoot, "Reviewed artifact root");
+    const artifact = validateArtifactRoot(artifactPath, "Generated artifact");
+    if (root.device !== artifact.device) {
+      fail("artifact-unsafe", "The generated artifact crosses a filesystem boundary at its reviewed root.");
+    }
+    assertNoMountAtOrBelow(artifactPath);
+    return Object.freeze({
+      slug,
+      artifactPath,
+      approvedRoot,
+      ownerTask,
+      ownerRevision,
+      rootIdentity: root.identity,
+      artifactIdentity: artifact.identity,
+      device: artifact.device
+    });
+  }
+
+  function writeArtifactManifestRecord(descriptor, state, record) {
+    const line = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
+    state.manifestBytes += BigInt(line.byteLength);
+    if (state.manifestBytes > MAXIMUM_ARTIFACT_MANIFEST_BYTES) {
+      fail("artifact-too-large", "The exact generated-artifact manifest exceeds its fixed size limit.");
+    }
+    let offset = 0;
+    while (offset < line.length) offset += writeSync(descriptor, line, offset, line.length - offset);
+  }
+
+  function scanArtifactTree(rootPath, expectedIdentity, options = {}) {
+    const rootHandle = openArtifactDirectoryDescriptor(rootPath, "Generated artifact", expectedIdentity);
+    let destinationHandle;
+    if (options.destinationRoot !== undefined) {
+      if (options.destinationIdentity === undefined) {
+        closeSync(rootHandle.descriptor);
+        fail("artifact-unsafe", "Generated-artifact recovery requires its exact destination identity.");
+      }
+      try {
+        destinationHandle = openArtifactDirectoryDescriptor(
+          options.destinationRoot,
+          "Generated-artifact recovery destination",
+          options.destinationIdentity
+        );
+      } catch (error) {
+        closeSync(rootHandle.descriptor);
+        throw error;
+      }
+    }
+    const root = Object.freeze({ identity: identityOf(rootHandle.metadata), device: rootHandle.metadata.dev });
+    const identityHash = createHash("sha256");
+    const semanticHash = createHash("sha256");
+    const state = { entries: 0, directories: 0, files: 0, symlinks: 0, bytes: 0n, manifestBytes: 0n };
+    const manifestDescriptor = options.manifestDescriptor;
+    const destinationRoot = options.destinationRoot;
+
+    const add = (identityRecord, semanticRecord) => {
+      state.entries += 1;
+      if (state.entries > MAXIMUM_ARTIFACT_ENTRIES) {
+        fail("artifact-too-large", "The generated artifact exceeds its fixed entry limit.");
+      }
+      const identityLine = `${JSON.stringify(identityRecord)}\n`;
+      const semanticLine = `${JSON.stringify(semanticRecord)}\n`;
+      identityHash.update(identityLine);
+      semanticHash.update(semanticLine);
+      if (manifestDescriptor !== undefined) writeArtifactManifestRecord(manifestDescriptor, state, identityRecord);
+    };
+
+    const copyFile = (sourceReference, destinationPath, observed, relativePath) => {
+      let sourceDescriptor;
+      let destinationDescriptor;
+      try {
+        sourceDescriptor = openSync(sourceReference, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const before = fstatSync(sourceDescriptor, { bigint: true });
+        if (
+          !before.isFile() ||
+          before.isSymbolicLink() ||
+          before.nlink !== 1n ||
+          !currentUserOwns(before) ||
+          before.dev !== root.device ||
+          !sameIdentity(identityOf(before), identityOf(observed)) ||
+          before.size > MAXIMUM_ARTIFACT_BYTES
+        ) {
+          fail("artifact-unsafe", `Generated artifact file ${relativePath} is unsafe.`);
+        }
+        if (destinationPath !== undefined) {
+          destinationDescriptor = openSync(
+            destinationPath,
+            constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
+            0o600
+          );
+        }
+        const hash = createHash("sha256");
+        const buffer = Buffer.allocUnsafe(1024 * 1024);
+        let offset = 0n;
+        while (offset < before.size) {
+          const length = Number(
+            before.size - offset > BigInt(buffer.length) ? BigInt(buffer.length) : before.size - offset
+          );
+          const count = readSync(sourceDescriptor, buffer, 0, length, Number(offset));
+          if (count === 0) fail("artifact-changed", `Generated artifact file ${relativePath} changed while read.`);
+          hash.update(buffer.subarray(0, count));
+          if (destinationDescriptor !== undefined) {
+            let written = 0;
+            while (written < count) {
+              written += writeSync(destinationDescriptor, buffer, written, count - written);
+            }
+          }
+          offset += BigInt(count);
+        }
+        if (destinationDescriptor !== undefined) {
+          fchmodSync(destinationDescriptor, Number(before.mode & 0o7777n));
+          syncArtifactDescriptor(destinationDescriptor);
+        }
+        const after = fstatSync(sourceDescriptor, { bigint: true });
+        const named = lstatSync(sourceReference, { bigint: true });
+        if (!sameArtifactStat(before, after) || !sameArtifactStat(before, named)) {
+          fail("artifact-changed", `Generated artifact file ${relativePath} changed while read.`);
+        }
+        return Object.freeze({ stat: artifactStatRecord(before), sha256: hash.digest("hex") });
+      } finally {
+        if (destinationDescriptor !== undefined) closeSync(destinationDescriptor);
+        if (sourceDescriptor !== undefined) closeSync(sourceDescriptor);
+      }
+    };
+
+    const visit = (
+      directoryDescriptor,
+      namedReference,
+      relativePath,
+      depth,
+      destinationDescriptor,
+      destinationNamedReference,
+      destinationPath
+    ) => {
+      if (depth > MAXIMUM_ARTIFACT_DEPTH) {
+        fail("artifact-too-large", "The generated artifact exceeds its fixed depth limit.");
+      }
+      const before = fstatSync(directoryDescriptor, { bigint: true });
+      if (
+        !before.isDirectory() ||
+        !currentUserOwns(before) ||
+        before.dev !== root.device ||
+        (relativePath === "" && !sameIdentity(identityOf(before), expectedIdentity))
+      ) {
+        fail("artifact-unsafe", `Generated artifact directory ${relativePath || "."} is unsafe.`);
+      }
+      state.directories += 1;
+      const stat = artifactStatRecord(before);
+      add(
+        { kind: "directory", path: relativePath, ...stat },
+        { kind: "directory", path: relativePath, mode: stat.mode }
+      );
+      if (destinationDescriptor !== undefined) {
+        hooks?.beforeArtifactRecoveryDirectoryWrite?.(Object.freeze({ destinationRoot, relativePath }));
+      }
+      hooks?.beforeArtifactDirectoryRead?.(Object.freeze({ rootPath, relativePath }));
+      const entries = readArtifactDirectoryBounded(directoryDescriptor, "The generated artifact").sort((left, right) =>
+        Buffer.compare(left.nameBytes, right.nameBytes)
+      );
+      for (const item of entries) {
+        if (item.name === ".git") {
+          fail("artifact-repository-marker", "A generated artifact contains a prohibited .git marker.");
+        }
+        if (
+          item.name === "" ||
+          item.name === "." ||
+          item.name === ".." ||
+          item.name.includes("/") ||
+          item.name.includes("\0")
+        ) {
+          fail("artifact-unsafe", "A generated artifact contains an invalid entry name.");
+        }
+        const childReference = artifactDescriptorPath(directoryDescriptor, item.name);
+        const childRelative = relativePath === "" ? item.name : `${relativePath}/${item.name}`;
+        const childDestination =
+          destinationDescriptor === undefined ? undefined : artifactDescriptorPath(destinationDescriptor, item.name);
+        const childDestinationPath = destinationPath === undefined ? undefined : join(destinationPath, item.name);
+        const metadata = lstatSync(childReference, { bigint: true });
+        if (!currentUserOwns(metadata) || metadata.dev !== root.device) {
+          fail(
+            "artifact-unsafe",
+            `Generated artifact entry ${childRelative} crosses ownership or filesystem boundaries.`
+          );
+        }
+        if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+          if (childDestination !== undefined) mkdirSync(childDestination, { mode: 0o700 });
+          const child = openArtifactChildDirectoryDescriptor(
+            directoryDescriptor,
+            item.name,
+            metadata,
+            `Generated artifact directory ${childRelative}`
+          );
+          let destinationChild;
+          try {
+            if (childDestination !== undefined) {
+              const destinationMetadata = lstatSync(childDestination, { bigint: true });
+              destinationChild = openArtifactChildDirectoryDescriptor(
+                destinationDescriptor,
+                item.name,
+                destinationMetadata,
+                `Generated-artifact recovery directory ${childRelative}`
+              );
+            }
+            visit(
+              child.descriptor,
+              childReference,
+              childRelative,
+              depth + 1,
+              destinationChild?.descriptor,
+              childDestination,
+              childDestinationPath
+            );
+          } finally {
+            if (destinationChild !== undefined) closeSync(destinationChild.descriptor);
+            closeSync(child.descriptor);
+          }
+        } else if (metadata.isFile() && !metadata.isSymbolicLink()) {
+          const file = copyFile(childReference, childDestination, metadata, childRelative);
+          state.files += 1;
+          state.bytes += BigInt(file.stat.size);
+          if (state.bytes > MAXIMUM_ARTIFACT_BYTES) {
+            fail("artifact-too-large", "The generated artifact exceeds its fixed byte limit.");
+          }
+          add(
+            { kind: "file", path: childRelative, ...file.stat, sha256: file.sha256 },
+            {
+              kind: "file",
+              path: childRelative,
+              mode: file.stat.mode,
+              size: file.stat.size,
+              sha256: file.sha256
+            }
+          );
+        } else if (metadata.isSymbolicLink()) {
+          if (metadata.nlink !== 1n) {
+            fail("artifact-unsafe", `Generated artifact symlink ${childRelative} has multiple hard links.`);
+          }
+          const target = readlinkSync(childReference, { encoding: "buffer" });
+          if (target.byteLength > MAXIMUM_ARTIFACT_SYMLINK_BYTES) {
+            fail("artifact-too-large", `Generated artifact symlink ${childRelative} is too long.`);
+          }
+          const after = lstatSync(childReference, { bigint: true });
+          if (!sameArtifactStat(metadata, after)) {
+            fail("artifact-changed", `Generated artifact symlink ${childRelative} changed while read.`);
+          }
+          const targetBase64 = target.toString("base64");
+          if (childDestination !== undefined) symlinkSync(target, childDestination);
+          state.symlinks += 1;
+          state.bytes += BigInt(target.byteLength);
+          if (state.bytes > MAXIMUM_ARTIFACT_BYTES) {
+            fail("artifact-too-large", "The generated artifact exceeds its fixed byte limit.");
+          }
+          const linkStat = artifactStatRecord(metadata);
+          add(
+            {
+              kind: "symlink",
+              path: childRelative,
+              ...linkStat,
+              targetBytes: target.byteLength.toString(),
+              targetBase64,
+              targetSha256: sha256(target)
+            },
+            { kind: "symlink", path: childRelative, targetBytes: target.byteLength.toString(), targetBase64 }
+          );
+        } else {
+          fail("artifact-special-file", `Generated artifact entry ${childRelative} is a special file.`);
+        }
+      }
+      const after = fstatSync(directoryDescriptor, { bigint: true });
+      const named = namedReference === undefined ? after : lstatSync(namedReference, { bigint: true });
+      if (!sameArtifactStat(before, after) || !sameArtifactStat(before, named)) {
+        fail("artifact-changed", `Generated artifact directory ${relativePath || "."} changed while scanned.`);
+      }
+      if (destinationDescriptor !== undefined) {
+        fchmodSync(destinationDescriptor, Number(before.mode & 0o7777n));
+        synchronizeArtifactDirectory(destinationDescriptor, destinationPath);
+        const destinationAfter = fstatSync(destinationDescriptor, { bigint: true });
+        const destinationNamed =
+          destinationNamedReference === undefined
+            ? destinationAfter
+            : lstatSync(destinationNamedReference, { bigint: true });
+        if (
+          !destinationAfter.isDirectory() ||
+          !destinationNamed.isDirectory() ||
+          destinationNamed.isSymbolicLink() ||
+          !sameIdentity(identityOf(destinationAfter), identityOf(destinationNamed))
+        ) {
+          fail("artifact-archive-changed", "A generated-artifact recovery directory changed during publication.");
+        }
+      }
+    };
+
+    try {
+      visit(rootHandle.descriptor, undefined, "", 0, destinationHandle?.descriptor, undefined, destinationRoot);
+    } finally {
+      if (destinationHandle !== undefined) closeSync(destinationHandle.descriptor);
+      closeSync(rootHandle.descriptor);
+    }
+    const confirmed = openArtifactDirectoryDescriptor(rootPath, "Generated artifact", expectedIdentity);
+    closeSync(confirmed.descriptor);
+    return Object.freeze({
+      identity: expectedIdentity,
+      entryCount: state.entries,
+      directoryCount: state.directories,
+      fileCount: state.files,
+      symlinkCount: state.symlinks,
+      byteLength: state.bytes.toString(),
+      manifestByteLength: state.manifestBytes.toString(),
+      identitySha256: identityHash.digest("hex"),
+      semanticSha256: semanticHash.digest("hex")
+    });
+  }
+
+  function captureArtifactReview(args) {
+    const target = normalizeArtifactTarget(args);
+    const first = scanArtifactTree(target.artifactPath, target.artifactIdentity);
+    hooks?.betweenArtifactAuditPasses?.(target, first);
+    validateArtifactRoot(target.approvedRoot, "Reviewed artifact root", target.rootIdentity);
+    const second = scanArtifactTree(target.artifactPath, target.artifactIdentity);
+    validateArtifactRoot(target.approvedRoot, "Reviewed artifact root", target.rootIdentity);
+    if (!isDeepStrictEqual(first, second)) {
+      fail("artifact-changed", "The generated artifact changed between its two dry-audit passes.");
+    }
+    const core = Object.freeze({
+      protocol: ARTIFACT_REVIEW_PROTOCOL,
+      slug: target.slug,
+      ownerTask: target.ownerTask,
+      ownerRevision: target.ownerRevision,
+      approvedRoot: target.approvedRoot,
+      rootIdentity: target.rootIdentity,
+      artifactPath: target.artifactPath,
+      artifactIdentity: target.artifactIdentity,
+      snapshot: second
+    });
+    return Object.freeze({
+      target,
+      public: Object.freeze({
+        ...core,
+        reviewSha256: sha256(`${JSON.stringify(core)}\n`),
+        authorizesArchive: false,
+        authorizesMove: false,
+        authorizesCleanup: false
+      })
+    });
+  }
+
+  function artifactAttemptPath(slug, ownerRevision, attempt) {
+    assertSlug(slug);
+    assertRevision(ownerRevision);
+    if (!Number.isSafeInteger(attempt) || attempt < 1 || attempt > MAXIMUM_ARTIFACT_ATTEMPTS) {
+      fail("invalid-artifact-journal", "The generated-artifact attempt is out of range.");
+    }
+    return join(paths.artifactAttempts, `${slug}.${ownerRevision}.${attempt}`);
+  }
+
+  function artifactEntryPath(slug, ownerRevision) {
+    assertSlug(slug);
+    assertRevision(ownerRevision);
+    return join(paths.artifactEntries, `${slug}.${ownerRevision}.json`);
+  }
+
+  function artifactSnapshotCore(snapshot) {
+    return Object.freeze({
+      identity: snapshot.identity,
+      entryCount: snapshot.entryCount,
+      directoryCount: snapshot.directoryCount,
+      fileCount: snapshot.fileCount,
+      symlinkCount: snapshot.symlinkCount,
+      byteLength: snapshot.byteLength,
+      identitySha256: snapshot.identitySha256,
+      semanticSha256: snapshot.semanticSha256
+    });
+  }
+
+  function validateArtifactRequest(value, slug, ownerRevision, attempt) {
+    exactKeys(
+      value,
+      ["protocol", "slug", "ownerTask", "ownerRevision", "attempt", "token", "reviewSha256", "review"],
+      "Generated-artifact retirement request"
+    );
+    if (
+      value.protocol !== ARTIFACT_REQUEST_PROTOCOL ||
+      value.slug !== slug ||
+      value.ownerRevision !== ownerRevision ||
+      value.attempt !== attempt ||
+      !/^[0-9a-f]{32}$/u.test(value.token) ||
+      !/^[0-9a-f]{64}$/u.test(value.reviewSha256)
+    ) {
+      fail("invalid-artifact-journal", "A generated-artifact retirement request is malformed.");
+    }
+    assertOwner(value.ownerTask);
+    if (
+      value.review?.protocol !== ARTIFACT_REVIEW_PROTOCOL ||
+      value.review.slug !== slug ||
+      value.review.ownerTask !== value.ownerTask ||
+      value.review.ownerRevision !== ownerRevision ||
+      value.review.reviewSha256 !== value.reviewSha256
+    ) {
+      fail("invalid-artifact-journal", "A generated-artifact request does not carry its exact reviewed audit.");
+    }
+  }
+
+  function artifactReceiptAnchor(path, loaded) {
+    return Object.freeze({
+      path,
+      identity: loaded.identity,
+      byteLength: loaded.byteLength,
+      sha256: loaded.sha256
+    });
+  }
+
+  function listArtifactAttempts(slug, ownerRevision) {
+    initializeArtifactJournal();
+    const parentIdentity = managedIdentities.get(paths.artifactAttempts);
+    if (parentIdentity === undefined) fail("unsafe-manager", "The artifact attempt journal was not initialized.");
+    const attempts = [];
+    for (const item of readDirectoryBounded(
+      paths.artifactAttempts,
+      MAXIMUM_ENTRIES * MAXIMUM_ARTIFACT_ATTEMPTS,
+      "The generated-artifact attempt journal"
+    )) {
+      const match = ARTIFACT_ATTEMPT_PATTERN.exec(item.name);
+      if (!item.isDirectory() || item.isSymbolicLink() || match === null) {
+        fail("invalid-artifact-journal", "The generated-artifact attempt journal contains an unknown entry.");
+      }
+      if (match[1] !== slug || Number(match[2]) !== ownerRevision) continue;
+      const attempt = Number(match[3]);
+      const path = join(paths.artifactAttempts, item.name);
+      const identity = assertPrivateDirectory(path, "Generated-artifact attempt");
+      const names = readDirectoryBounded(path, 5, "Generated-artifact attempt");
+      const allowed = new Set([
+        "request.json",
+        "source-manifest.jsonl",
+        "recovery",
+        "archive-receipt.json",
+        "complete.json"
+      ]);
+      if (
+        names.some((entry) => !allowed.has(entry.name)) ||
+        new Set(names.map((entry) => entry.name)).size !== names.length
+      ) {
+        fail("invalid-artifact-journal", "A generated-artifact attempt contains an unknown entry.");
+      }
+      const requestPath = join(path, "request.json");
+      const request = existsSync(requestPath)
+        ? readJsonReceipt(requestPath, MAXIMUM_ENTRY_BYTES, "Generated-artifact retirement request")
+        : undefined;
+      if (request !== undefined) validateArtifactRequest(request.value, slug, ownerRevision, attempt);
+      const manifestPath = join(path, "source-manifest.jsonl");
+      const manifest = existsSync(manifestPath)
+        ? captureArchiveFile(manifestPath, "Generated-artifact source manifest")
+        : undefined;
+      const recoveryPath = join(path, "recovery");
+      const recoveryIdentity = existsSync(recoveryPath)
+        ? validateArtifactRoot(recoveryPath, "Generated-artifact recovery tree").identity
+        : undefined;
+      const receiptPath = join(path, "archive-receipt.json");
+      const receipt = existsSync(receiptPath)
+        ? readJsonReceipt(receiptPath, MAXIMUM_ENTRY_BYTES, "Generated-artifact archive receipt")
+        : undefined;
+      const completionPath = join(path, "complete.json");
+      let completion;
+      if (existsSync(completionPath)) {
+        const links = lstatSync(completionPath, { bigint: true }).nlink;
+        if (![1n, 2n].includes(links)) {
+          fail("invalid-artifact-journal", "A generated-artifact completion has an unexpected link count.");
+        }
+        completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Generated-artifact completion", links);
+      }
+      revalidatePathIdentity(path, identity, "Generated-artifact attempt", "directory");
+      attempts.push(
+        Object.freeze({
+          attempt,
+          path,
+          identity,
+          requestPath,
+          request,
+          manifestPath,
+          manifest,
+          recoveryPath,
+          recoveryIdentity,
+          receiptPath,
+          receipt,
+          completionPath,
+          completion
+        })
+      );
+    }
+    attempts.sort((left, right) => left.attempt - right.attempt);
+    if (attempts.some((item, index) => item.attempt !== index + 1)) {
+      fail("invalid-artifact-journal", "The generated-artifact attempt journal contains a gap.");
+    }
+    revalidatePathIdentity(paths.artifactAttempts, parentIdentity, "Generated-artifact attempts", "directory");
+    return Object.freeze(attempts);
+  }
+
+  function readArtifactEntry(slug, ownerRevision, attempts = listArtifactAttempts(slug, ownerRevision)) {
+    initializeArtifactJournal();
+    const names = readDirectoryBounded(paths.artifactEntries, MAXIMUM_ENTRIES, "Generated-artifact entries");
+    for (const item of names) {
+      if (!item.isFile() || item.isSymbolicLink() || ARTIFACT_ENTRY_PATTERN.exec(item.name) === null) {
+        fail("invalid-artifact-journal", "The generated-artifact entry journal contains an unknown entry.");
+      }
+    }
+    const path = artifactEntryPath(slug, ownerRevision);
+    if (!existsSync(path)) return undefined;
+    const entry = readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, "Generated-artifact entry", 2n);
+    const attempt = attempts.find(
+      (candidate) => candidate.completion !== undefined && sameIdentity(candidate.completion.identity, entry.identity)
+    );
+    if (attempt === undefined || !isDeepStrictEqual(attempt.completion.value, entry.value)) {
+      fail("invalid-artifact-journal", "The generated-artifact entry lost its exact completed archive.");
+    }
+    return Object.freeze({ path, ...entry, attempt });
+  }
+
+  function compareArtifactReview(review, expected) {
+    return (
+      review.reviewSha256 === expected.reviewSha256 &&
+      review.slug === expected.slug &&
+      review.ownerTask === expected.ownerTask &&
+      review.ownerRevision === expected.ownerRevision &&
+      review.approvedRoot === expected.approvedRoot &&
+      review.artifactPath === expected.artifactPath &&
+      isDeepStrictEqual(review.rootIdentity, expected.rootIdentity) &&
+      isDeepStrictEqual(review.artifactIdentity, expected.artifactIdentity) &&
+      isDeepStrictEqual(review.snapshot, expected.snapshot)
+    );
+  }
+
+  function validateArtifactArchiveAttempt(attempt, review) {
+    if (
+      attempt.request === undefined ||
+      attempt.manifest === undefined ||
+      attempt.recoveryIdentity === undefined ||
+      attempt.receipt === undefined
+    ) {
+      fail("artifact-archive-incomplete", "The generated-artifact archive attempt is incomplete.");
+    }
+    validateArtifactRequest(attempt.request.value, review.slug, review.ownerRevision, attempt.attempt);
+    if (
+      attempt.request.value.ownerTask !== review.ownerTask ||
+      attempt.request.value.reviewSha256 !== review.reviewSha256 ||
+      !compareArtifactReview(attempt.request.value.review, review)
+    ) {
+      fail("artifact-review-changed", "The generated-artifact archive request does not match the reviewed audit.");
+    }
+    const value = attempt.receipt.value;
+    exactKeys(
+      value,
+      [
+        "protocol",
+        "slug",
+        "ownerTask",
+        "ownerRevision",
+        "attempt",
+        "reviewSha256",
+        "request",
+        "manifest",
+        "recovery",
+        "source"
+      ],
+      "Generated-artifact archive receipt"
+    );
+    const archiveSnapshot = scanArtifactTree(attempt.recoveryPath, attempt.recoveryIdentity);
+    if (
+      value.protocol !== ARTIFACT_ARCHIVE_PROTOCOL ||
+      value.slug !== review.slug ||
+      value.ownerTask !== review.ownerTask ||
+      value.ownerRevision !== review.ownerRevision ||
+      value.attempt !== attempt.attempt ||
+      value.reviewSha256 !== review.reviewSha256 ||
+      !isDeepStrictEqual(value.request, artifactReceiptAnchor(attempt.requestPath, attempt.request)) ||
+      !isDeepStrictEqual(value.manifest, artifactReceiptAnchor(attempt.manifestPath, attempt.manifest)) ||
+      value.recovery.path !== attempt.recoveryPath ||
+      !sameIdentity(value.recovery.identity, attempt.recoveryIdentity) ||
+      !isDeepStrictEqual(value.recovery.snapshot, archiveSnapshot) ||
+      value.source.identitySha256 !== review.snapshot.identitySha256 ||
+      value.source.semanticSha256 !== archiveSnapshot.semanticSha256 ||
+      value.source.semanticSha256 !== review.snapshot.semanticSha256 ||
+      value.source.entryCount !== archiveSnapshot.entryCount ||
+      value.source.byteLength !== archiveSnapshot.byteLength
+    ) {
+      fail("artifact-archive-changed", "The generated-artifact recovery archive does not match its exact receipt.");
+    }
+    return Object.freeze({ archiveSnapshot, value });
+  }
+
+  function validateArtifactCompletion(attempt, review) {
+    if (attempt.completion === undefined) {
+      fail("artifact-archive-incomplete", "The generated-artifact archive lacks a completion record.");
+    }
+    const { value } = attempt.completion;
+    exactKeys(
+      value,
+      ["protocol", "state", "slug", "ownerTask", "ownerRevision", "attempt", "reviewSha256", "request", "archive"],
+      "Generated-artifact completion"
+    );
+    if (
+      value.protocol !== ARTIFACT_COMPLETION_PROTOCOL ||
+      value.state !== "archived-review-required" ||
+      value.slug !== review.slug ||
+      value.ownerTask !== review.ownerTask ||
+      value.ownerRevision !== review.ownerRevision ||
+      value.attempt !== attempt.attempt ||
+      value.reviewSha256 !== review.reviewSha256 ||
+      !isDeepStrictEqual(value.request, artifactReceiptAnchor(attempt.requestPath, attempt.request)) ||
+      !isDeepStrictEqual(value.archive, artifactReceiptAnchor(attempt.receiptPath, attempt.receipt))
+    ) {
+      fail("invalid-artifact-journal", "The generated-artifact completion is malformed or detached.");
+    }
+    return value;
+  }
+
+  function publishArtifactCompletion(attempt, review) {
+    validateArtifactArchiveAttempt(attempt, review);
+    validateArtifactCompletion(attempt, review);
+    const entryPath = artifactEntryPath(review.slug, review.ownerRevision);
+    const entriesIdentity = managedIdentities.get(paths.artifactEntries);
+    if (entriesIdentity === undefined) fail("unsafe-manager", "The generated-artifact entries were not initialized.");
+    revalidatePathIdentity(paths.artifactEntries, entriesIdentity, "Generated-artifact entries", "directory");
+    hooks?.beforeArtifactPublish?.(attempt, review);
+    if (!existsSync(entryPath)) {
+      linkSync(attempt.completionPath, entryPath);
+      fsyncDirectory(paths.artifactEntries);
+    }
+    const entry = readArtifactEntry(
+      review.slug,
+      review.ownerRevision,
+      listArtifactAttempts(review.slug, review.ownerRevision)
+    );
+    if (entry === undefined || !sameIdentity(entry.identity, attempt.completion.identity)) {
+      fail("artifact-journal-changed", "The generated-artifact completion was not published exactly once.");
+    }
+    return entry;
+  }
+
+  function allocateArtifactAttempt(review) {
+    const attempts = listArtifactAttempts(review.slug, review.ownerRevision);
+    if (attempts.length >= MAXIMUM_ARTIFACT_ATTEMPTS) {
+      fail("artifact-attempts-exhausted", "The generated-artifact archive has no remaining attempt slots.");
+    }
+    const attempt = attempts.length + 1;
+    const path = artifactAttemptPath(review.slug, review.ownerRevision, attempt);
+    mkdirSync(path, { mode: 0o700 });
+    chmodSync(path, 0o700);
+    fsyncDirectory(paths.artifactAttempts);
+    return Object.freeze({ attempt, path, identity: assertPrivateDirectory(path, "Generated-artifact attempt") });
+  }
+
+  function createArtifactArchive(review) {
+    const allocation = allocateArtifactAttempt(review);
+    const token = tokenFactory();
+    if (!/^[0-9a-f]{32}$/u.test(token)) fail("invalid-artifact-journal", "The artifact token is malformed.");
+    const requestValue = Object.freeze({
+      protocol: ARTIFACT_REQUEST_PROTOCOL,
+      slug: review.slug,
+      ownerTask: review.ownerTask,
+      ownerRevision: review.ownerRevision,
+      attempt: allocation.attempt,
+      token,
+      reviewSha256: review.reviewSha256,
+      review
+    });
+    assertPersistedJsonFits(requestValue, "Generated-artifact retirement request", "artifact-record-too-large");
+    const requestPath = join(allocation.path, "request.json");
+    writeJsonExclusive(requestPath, requestValue, allocation.identity);
+    const request = readJsonReceipt(requestPath, MAXIMUM_ENTRY_BYTES, "Generated-artifact retirement request");
+    validateArtifactRequest(request.value, review.slug, review.ownerRevision, allocation.attempt);
+    hooks?.afterArtifactRequest?.(allocation, requestValue);
+
+    archiveFreeSpace(BigInt(review.snapshot.byteLength));
+    const recoveryPath = join(allocation.path, "recovery");
+    mkdirSync(recoveryPath, { mode: 0o700 });
+    const recoveryIdentity = validateArtifactRoot(recoveryPath, "Generated-artifact recovery tree").identity;
+    const manifestPath = join(allocation.path, "source-manifest.jsonl");
+    const manifestFile = openEmptyPrivateFile(manifestPath, "Generated-artifact source manifest");
+    let copied;
+    try {
+      copied = scanArtifactTree(review.artifactPath, review.artifactIdentity, {
+        destinationRoot: recoveryPath,
+        destinationIdentity: recoveryIdentity,
+        manifestDescriptor: manifestFile.descriptor
+      });
+      syncArtifactDescriptor(manifestFile.descriptor);
+    } finally {
+      closeSync(manifestFile.descriptor);
+    }
+    const attemptHandle = openArtifactDirectoryDescriptor(
+      allocation.path,
+      "Generated-artifact archive attempt",
+      allocation.identity
+    );
+    try {
+      synchronizeArtifactDirectory(attemptHandle.descriptor, allocation.path);
+    } finally {
+      closeSync(attemptHandle.descriptor);
+    }
+    hooks?.afterArtifactRecoveryDurable?.(allocation, copied);
+    hooks?.afterArtifactArchiveCopy?.(allocation, copied);
+    const manifest = captureArchiveFile(manifestPath, "Generated-artifact source manifest");
+    hooks?.beforeArtifactSourceRecheck?.(allocation, copied);
+    const sourceConfirmed = scanArtifactTree(review.artifactPath, review.artifactIdentity);
+    const archiveConfirmed = scanArtifactTree(recoveryPath, recoveryIdentity);
+    if (
+      !isDeepStrictEqual(artifactSnapshotCore(copied), artifactSnapshotCore(sourceConfirmed)) ||
+      !isDeepStrictEqual(artifactSnapshotCore(sourceConfirmed), artifactSnapshotCore(review.snapshot)) ||
+      sourceConfirmed.semanticSha256 !== archiveConfirmed.semanticSha256 ||
+      sourceConfirmed.entryCount !== archiveConfirmed.entryCount ||
+      sourceConfirmed.byteLength !== archiveConfirmed.byteLength
+    ) {
+      fail("artifact-archive-changed", "The generated artifact or its recovery copy changed during archiving.");
+    }
+    const receiptValue = Object.freeze({
+      protocol: ARTIFACT_ARCHIVE_PROTOCOL,
+      slug: review.slug,
+      ownerTask: review.ownerTask,
+      ownerRevision: review.ownerRevision,
+      attempt: allocation.attempt,
+      reviewSha256: review.reviewSha256,
+      request: artifactReceiptAnchor(requestPath, request),
+      manifest: artifactReceiptAnchor(manifestPath, manifest),
+      recovery: Object.freeze({ path: recoveryPath, identity: recoveryIdentity, snapshot: archiveConfirmed }),
+      source: artifactSnapshotCore(sourceConfirmed)
+    });
+    assertPersistedJsonFits(receiptValue, "Generated-artifact archive receipt", "artifact-record-too-large");
+    const receiptPath = join(allocation.path, "archive-receipt.json");
+    writeJsonExclusive(receiptPath, receiptValue, allocation.identity);
+    const receipt = readJsonReceipt(receiptPath, MAXIMUM_ENTRY_BYTES, "Generated-artifact archive receipt");
+    hooks?.afterArtifactArchiveReceipt?.(allocation, receiptValue);
+
+    const loaded = Object.freeze({
+      ...allocation,
+      requestPath,
+      request,
+      manifestPath,
+      manifest,
+      recoveryPath,
+      recoveryIdentity,
+      receiptPath,
+      receipt,
+      completionPath: join(allocation.path, "complete.json")
+    });
+    validateArtifactArchiveAttempt(loaded, review);
+    const finalSource = scanArtifactTree(review.artifactPath, review.artifactIdentity);
+    if (!isDeepStrictEqual(artifactSnapshotCore(finalSource), artifactSnapshotCore(review.snapshot))) {
+      fail("artifact-changed", "The generated artifact changed before archive completion.");
+    }
+    const completionValue = Object.freeze({
+      protocol: ARTIFACT_COMPLETION_PROTOCOL,
+      state: "archived-review-required",
+      slug: review.slug,
+      ownerTask: review.ownerTask,
+      ownerRevision: review.ownerRevision,
+      attempt: allocation.attempt,
+      reviewSha256: review.reviewSha256,
+      request: artifactReceiptAnchor(requestPath, request),
+      archive: artifactReceiptAnchor(receiptPath, receipt)
+    });
+    assertPersistedJsonFits(completionValue, "Generated-artifact completion", "artifact-record-too-large");
+    hooks?.beforeArtifactCompletion?.(allocation, completionValue);
+    writeJsonExclusive(loaded.completionPath, completionValue, allocation.identity);
+    const completion = readJsonReceipt(loaded.completionPath, MAXIMUM_ENTRY_BYTES, "Generated-artifact completion");
+    return publishArtifactCompletion(Object.freeze({ ...loaded, completion }), review);
+  }
+
+  function ensureArtifactArchive(review) {
+    const attempts = listArtifactAttempts(review.slug, review.ownerRevision);
+    if (
+      attempts.some(
+        (attempt) =>
+          attempt.request !== undefined &&
+          (attempt.request.value.ownerTask !== review.ownerTask ||
+            attempt.request.value.reviewSha256 !== review.reviewSha256 ||
+            !compareArtifactReview(attempt.request.value.review, review))
+      )
+    ) {
+      fail(
+        "artifact-review-changed",
+        "An interrupted artifact attempt at this owner revision belongs to another dry review."
+      );
+    }
+    const existing = readArtifactEntry(review.slug, review.ownerRevision, attempts);
+    if (existing !== undefined) {
+      validateArtifactArchiveAttempt(existing.attempt, review);
+      validateArtifactCompletion(existing.attempt, review);
+      return existing;
+    }
+    const completed = attempts.find((attempt) => attempt.completion !== undefined);
+    if (completed !== undefined) return publishArtifactCompletion(completed, review);
+    return createArtifactArchive(review);
+  }
+
+  function artifactSweepPath(slug, ownerRevision) {
+    return join(paths.artifactSweeps, `${slug}.${ownerRevision}`);
+  }
+
+  function artifactQuarantinePath(slug, ownerRevision, operationId) {
+    return join(paths.artifactQuarantine, `${slug}.${ownerRevision}.${operationId}`);
+  }
+
+  function validateArtifactSweepRecord(record, previous, expected) {
+    const value = record.loaded.value;
+    const common = ["protocol", "kind", "slug", "ownerTask", "ownerRevision", "sequence", "operationId", "previous"];
+    const fields =
+      record.kind === "eligible"
+        ? [
+            ...common,
+            "eligibleBootId",
+            "originalPath",
+            "originalIdentity",
+            "approvedRoot",
+            "rootIdentity",
+            "reviewSha256",
+            "entry"
+          ]
+        : record.kind === "quarantine-intent"
+          ? [...common, "bootId", "originalPath", "quarantinePath"]
+          : record.kind === "quarantine-result"
+            ? [...common, "bootId", "quarantinePath", "location"]
+            : record.kind === "purge-intent"
+              ? [...common, "bootId", "quarantinePath"]
+              : [...common, "bootId", "quarantinePath", "archivePreserved"];
+    exactKeys(value, fields, `Generated-artifact ${record.kind} record`);
+    if (
+      value.protocol !== ARTIFACT_SWEEP_PROTOCOL ||
+      value.kind !== record.kind ||
+      value.slug !== expected.slug ||
+      value.ownerRevision !== expected.ownerRevision ||
+      value.sequence !== record.sequence ||
+      value.operationId !== expected.operationId ||
+      value.ownerTask !== expected.ownerTask ||
+      !isDeepStrictEqual(
+        value.previous,
+        previous === undefined ? null : artifactReceiptAnchor(previous.path, previous.loaded)
+      )
+    ) {
+      fail("invalid-artifact-journal", "A generated-artifact sweep record is malformed or detached.");
+    }
+    if (record.kind === "eligible") {
+      if (
+        !BOOT_ID_PATTERN.test(value.eligibleBootId) ||
+        value.originalPath !== expected.originalPath ||
+        value.approvedRoot !== expected.approvedRoot ||
+        !sameIdentity(value.originalIdentity, expected.originalIdentity) ||
+        !sameIdentity(value.rootIdentity, expected.rootIdentity) ||
+        value.reviewSha256 !== expected.reviewSha256 ||
+        !isDeepStrictEqual(value.entry, expected.entry)
+      ) {
+        fail("invalid-artifact-journal", "Generated-artifact eligibility changed its reviewed authority.");
+      }
+    } else if (
+      !BOOT_ID_PATTERN.test(value.bootId) ||
+      value.quarantinePath !== expected.quarantinePath ||
+      (record.kind === "quarantine-intent" && value.originalPath !== expected.originalPath) ||
+      (record.kind === "quarantine-result" && value.location !== "quarantine") ||
+      (record.kind === "retired" && value.archivePreserved !== true)
+    ) {
+      fail("invalid-artifact-journal", `Generated-artifact ${record.kind} has an invalid path or result.`);
+    }
+  }
+
+  function readArtifactSweepRecords(slug, ownerRevision) {
+    initializeArtifactJournal();
+    const journal = artifactSweepPath(slug, ownerRevision);
+    if (!existsSync(journal)) return Object.freeze([]);
+    const journalIdentity = assertPrivateDirectory(journal, "Generated-artifact sweep journal");
+    const named = readDirectoryBounded(journal, 5, "Generated-artifact sweep journal")
+      .map((item) => {
+        const match = ARTIFACT_SWEEP_RECORD_PATTERN.exec(item.name);
+        if (!item.isFile() || item.isSymbolicLink() || match === null) {
+          fail("invalid-artifact-journal", "A generated-artifact sweep journal contains an unknown entry.");
+        }
+        return Object.freeze({ name: item.name, sequence: Number(match[1]), kind: match[2], operationId: match[3] });
+      })
+      .sort((left, right) => left.sequence - right.sequence);
+    const expectedKinds = ["eligible", "quarantine-intent", "quarantine-result", "purge-intent", "retired"];
+    if (
+      named.some(
+        (item, index) =>
+          item.sequence !== index + 1 ||
+          item.kind !== expectedKinds[index] ||
+          item.operationId !== named[0]?.operationId
+      )
+    ) {
+      fail("invalid-artifact-journal", "A generated-artifact sweep journal has an invalid transition.");
+    }
+    const records = named.map((item) => {
+      const path = join(journal, item.name);
+      return Object.freeze({
+        ...item,
+        path,
+        loaded: readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, `Artifact ${item.kind}`)
+      });
+    });
+    if (records.length !== 0) {
+      const eligible = records[0].loaded.value;
+      const expected = Object.freeze({
+        slug,
+        ownerTask: eligible.ownerTask,
+        ownerRevision,
+        operationId: eligible.operationId,
+        originalPath: eligible.originalPath,
+        originalIdentity: eligible.originalIdentity,
+        approvedRoot: eligible.approvedRoot,
+        rootIdentity: eligible.rootIdentity,
+        reviewSha256: eligible.reviewSha256,
+        entry: eligible.entry,
+        quarantinePath: artifactQuarantinePath(slug, ownerRevision, eligible.operationId)
+      });
+      for (const [index, record] of records.entries())
+        validateArtifactSweepRecord(record, records[index - 1], expected);
+    }
+    revalidatePathIdentity(journal, journalIdentity, "Generated-artifact sweep journal", "directory");
+    return Object.freeze(records);
+  }
+
+  function appendArtifactSweepRecord(slug, ownerRevision, value) {
+    initializeArtifactJournal();
+    const journal = artifactSweepPath(slug, ownerRevision);
+    const parentIdentity = managedIdentities.get(paths.artifactSweeps);
+    if (parentIdentity === undefined) fail("unsafe-manager", "The artifact sweep journal was not initialized.");
+    if (!existsSync(journal)) {
+      if (value.sequence !== 1) fail("invalid-artifact-journal", "Artifact eligibility is missing.");
+      mkdirSync(journal, { mode: 0o700 });
+      chmodSync(journal, 0o700);
+      fsyncDirectory(paths.artifactSweeps);
+    }
+    const journalIdentity = assertPrivateDirectory(journal, "Generated-artifact sweep journal");
+    const records = readArtifactSweepRecords(slug, ownerRevision);
+    if (records.length + 1 !== value.sequence) {
+      fail("artifact-state-changed", "The generated-artifact sweep journal advanced concurrently.");
+    }
+    const prior = records.at(-1);
+    if (
+      !isDeepStrictEqual(value.previous, prior === undefined ? null : artifactReceiptAnchor(prior.path, prior.loaded))
+    ) {
+      fail("invalid-artifact-journal", "The generated-artifact sweep record has the wrong predecessor.");
+    }
+    const destination = join(
+      journal,
+      `${String(value.sequence).padStart(8, "0")}.${value.kind}.${value.operationId}.json`
+    );
+    assertPersistedJsonFits(value, "Generated-artifact sweep record", "artifact-record-too-large");
+    writeJsonExclusive(destination, value, journalIdentity);
+    const loaded = readJsonReceipt(destination, MAXIMUM_ENTRY_BYTES, `Generated-artifact ${value.kind} record`);
+    return Object.freeze({
+      sequence: value.sequence,
+      kind: value.kind,
+      operationId: value.operationId,
+      path: destination,
+      loaded
+    });
+  }
+
+  function artifactAuthority(slug, ownerRevision) {
+    const attempts = listArtifactAttempts(slug, ownerRevision);
+    const entry = readArtifactEntry(slug, ownerRevision, attempts);
+    if (entry === undefined)
+      fail("artifact-archive-missing", "Generated-artifact retirement requires a completed archive.");
+    const review = entry.attempt.request.value.review;
+    validateArtifactArchiveAttempt(entry.attempt, review);
+    validateArtifactCompletion(entry.attempt, review);
+    return Object.freeze({ entry, review });
+  }
+
+  function enrollArtifactRetirement(authority) {
+    const { entry, review } = authority;
+    const existing = readArtifactSweepRecords(review.slug, review.ownerRevision);
+    if (existing.length !== 0) return Object.freeze({ status: "already-enrolled", records: existing.length });
+    const operationId = tokenFactory();
+    if (!/^[0-9a-f]{32}$/u.test(operationId)) fail("invalid-artifact-journal", "Artifact operation ID is malformed.");
+    const quarantinePath = artifactQuarantinePath(review.slug, review.ownerRevision, operationId);
+    if (existsSync(quarantinePath)) fail("artifact-layout-blocked", "The artifact quarantine path already exists.");
+    const bootId = currentBootId();
+    hooks?.beforeArtifactEnrollment?.(authority, bootId);
+    const confirmed = captureArtifactReview({
+      slug: review.slug,
+      artifactPath: review.artifactPath,
+      approvedRoot: review.approvedRoot,
+      ownerTask: review.ownerTask,
+      ownerRevision: review.ownerRevision
+    }).public;
+    if (!compareArtifactReview(confirmed, review) || currentBootId() !== bootId) {
+      fail("artifact-changed", "The generated artifact or boot changed before retirement enrollment.");
+    }
+    const record = appendArtifactSweepRecord(review.slug, review.ownerRevision, {
+      protocol: ARTIFACT_SWEEP_PROTOCOL,
+      kind: "eligible",
+      slug: review.slug,
+      ownerTask: review.ownerTask,
+      ownerRevision: review.ownerRevision,
+      sequence: 1,
+      operationId,
+      previous: null,
+      eligibleBootId: bootId,
+      originalPath: review.artifactPath,
+      originalIdentity: review.artifactIdentity,
+      approvedRoot: review.approvedRoot,
+      rootIdentity: review.rootIdentity,
+      reviewSha256: review.reviewSha256,
+      entry: artifactReceiptAnchor(entry.path, entry)
+    });
+    return Object.freeze({
+      status: "enrolled-next-boot",
+      eligibleBootId: bootId,
+      record: artifactReceiptAnchor(record.path, record.loaded),
+      moved: false,
+      removed: false
+    });
+  }
+
+  function artifactLayout(eligible) {
+    const quarantinePath = artifactQuarantinePath(eligible.slug, eligible.ownerRevision, eligible.operationId);
+    const inspect = (path) => {
+      try {
+        const metadata = lstatSync(path, { bigint: true });
+        return metadata.isDirectory() &&
+          !metadata.isSymbolicLink() &&
+          currentUserOwns(metadata) &&
+          sameIdentity(identityOf(metadata), eligible.originalIdentity)
+          ? "exact"
+          : "mismatch";
+      } catch (error) {
+        if (error.code === "ENOENT") return "absent";
+        throw error;
+      }
+    };
+    const original = inspect(eligible.originalPath);
+    const quarantine = inspect(quarantinePath);
+    if (original === "exact" && quarantine === "absent") return Object.freeze({ state: "original", quarantinePath });
+    if (original === "absent" && quarantine === "exact") return Object.freeze({ state: "quarantine", quarantinePath });
+    if (original === "absent" && quarantine === "absent") return Object.freeze({ state: "absent", quarantinePath });
+    return Object.freeze({ state: "blocked", quarantinePath });
+  }
+
+  function hashArtifactRegularFile(path, observed, label) {
+    let descriptor;
+    try {
+      descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      const before = fstatSync(descriptor, { bigint: true });
+      if (
+        !before.isFile() ||
+        before.nlink !== 1n ||
+        !currentUserOwns(before) ||
+        !sameIdentity(identityOf(before), identityOf(observed))
+      ) {
+        fail("artifact-purge-unsafe", `${label} is not the expected regular file.`);
+      }
+      const hash = createHash("sha256");
+      const buffer = Buffer.allocUnsafe(1024 * 1024);
+      let offset = 0n;
+      while (offset < before.size) {
+        const length = Number(
+          before.size - offset > BigInt(buffer.length) ? BigInt(buffer.length) : before.size - offset
+        );
+        const count = readSync(descriptor, buffer, 0, length, Number(offset));
+        if (count === 0) fail("artifact-purge-unsafe", `${label} changed while read.`);
+        hash.update(buffer.subarray(0, count));
+        offset += BigInt(count);
+      }
+      const after = fstatSync(descriptor, { bigint: true });
+      if (!sameArtifactStat(before, after)) fail("artifact-purge-unsafe", `${label} changed while read.`);
+      return Object.freeze({ sha256: hash.digest("hex"), metadata: before });
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
+    }
+  }
+
+  function artifactManifestMatcher(manifestPath, expectedReceipt) {
+    let descriptor;
+    let iterator;
+    function* records() {
+      try {
+        descriptor = openSync(manifestPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        const before = fstatSync(descriptor, { bigint: true });
+        if (
+          !before.isFile() ||
+          before.nlink !== 1n ||
+          !currentUserOwns(before) ||
+          !sameIdentity(identityOf(before), expectedReceipt.identity) ||
+          before.size !== BigInt(expectedReceipt.byteLength) ||
+          before.size > MAXIMUM_ARTIFACT_MANIFEST_BYTES ||
+          (typeof process.getuid === "function" && (before.mode & 0o777n) !== 0o600n)
+        ) {
+          fail("artifact-purge-unsafe", "The source manifest changed before artifact purge.");
+        }
+        const hash = createHash("sha256");
+        const buffer = Buffer.allocUnsafe(1024 * 1024);
+        let carry = Buffer.alloc(0);
+        let offset = 0n;
+        let count = 0;
+        while (offset < before.size) {
+          const length = Number(
+            before.size - offset > BigInt(buffer.length) ? BigInt(buffer.length) : before.size - offset
+          );
+          const bytesRead = readSync(descriptor, buffer, 0, length, Number(offset));
+          if (bytesRead === 0) fail("artifact-purge-unsafe", "The source manifest changed while read.");
+          const bytes = buffer.subarray(0, bytesRead);
+          hash.update(bytes);
+          const combined = carry.length === 0 ? bytes : Buffer.concat([carry, bytes]);
+          let start = 0;
+          for (;;) {
+            const newline = combined.indexOf(0x0a, start);
+            if (newline === -1) break;
+            const line = combined.subarray(start, newline);
+            if (line.length === 0 || line.length > MAXIMUM_ARTIFACT_SYMLINK_BYTES * 2 + 16 * 1024) {
+              fail("artifact-purge-unsafe", "The source manifest contains an invalid record length.");
+            }
+            let text;
+            let value;
+            try {
+              text = new TextDecoder("utf-8", { fatal: true }).decode(line);
+              rejectDuplicateJsonKeys(text, "Generated-artifact source manifest record");
+              value = JSON.parse(text);
+            } catch (error) {
+              if (error instanceof CheckoutLifecycleError) throw error;
+              fail("artifact-purge-unsafe", `The source manifest is malformed: ${error.message}`);
+            }
+            if (
+              value === null ||
+              typeof value !== "object" ||
+              Array.isArray(value) ||
+              !["directory", "file", "symlink"].includes(value.kind) ||
+              typeof value.path !== "string" ||
+              value.path.includes("\0") ||
+              value.path.split("/").some((part) => (part === "" && value.path !== "") || part === "." || part === "..")
+            ) {
+              fail("artifact-purge-unsafe", "The source manifest contains an invalid path or entry kind.");
+            }
+            validateIdentity(value.identity, "Generated-artifact manifest identity");
+            count += 1;
+            if (count > MAXIMUM_ARTIFACT_ENTRIES) {
+              fail("artifact-too-large", "The source manifest exceeds its fixed entry limit.");
+            }
+            yield Object.freeze(value);
+            start = newline + 1;
+          }
+          carry = Buffer.from(combined.subarray(start));
+          if (carry.length > MAXIMUM_ARTIFACT_SYMLINK_BYTES * 2 + 16 * 1024) {
+            fail("artifact-purge-unsafe", "The source manifest contains an overlong record.");
+          }
+          offset += BigInt(bytesRead);
+        }
+        if (carry.length !== 0 || count === 0 || hash.digest("hex") !== expectedReceipt.sha256) {
+          fail("artifact-purge-unsafe", "The source manifest is truncated, empty, or changed.");
+        }
+        const after = fstatSync(descriptor, { bigint: true });
+        if (!sameArtifactStat(before, after)) {
+          fail("artifact-purge-unsafe", "The source manifest changed while it was consumed.");
+        }
+      } finally {
+        if (descriptor !== undefined) closeSync(descriptor);
+      }
+    }
+    iterator = records();
+    let current = iterator.next();
+    const nextMatching = (path, kind) => {
+      while (!current.done && current.value.path !== path) current = iterator.next();
+      if (current.done || current.value.kind !== kind) {
+        fail("artifact-purge-unsafe", `The quarantine entry ${path || "."} is absent from the source manifest.`);
+      }
+      const value = current.value;
+      current = iterator.next();
+      return value;
+    };
+    return Object.freeze({
+      match(path, kind, metadata) {
+        const value = nextMatching(path, kind);
+        if (!sameIdentity(value.identity, identityOf(metadata)) || value.mode !== Number(metadata.mode & 0o7777n)) {
+          fail("artifact-purge-unsafe", `The quarantine entry ${path || "."} changed identity or mode.`);
+        }
+        return value;
+      },
+      finish() {
+        while (!current.done) current = iterator.next();
+      },
+      close() {
+        iterator.return?.();
+      }
+    });
+  }
+
+  function removeArtifactTreeNoFollow(
+    quarantinePath,
+    expectedIdentity,
+    recoveryPath,
+    recoveryIdentity,
+    manifestPath,
+    manifestReceipt
+  ) {
+    assertNoMountAtOrBelow(quarantinePath);
+    const quarantineParentIdentity = managedIdentities.get(paths.artifactQuarantine);
+    if (dirname(quarantinePath) !== paths.artifactQuarantine || quarantineParentIdentity === undefined) {
+      fail("artifact-purge-unsafe", "The generated-artifact quarantine parent is not manager-owned.");
+    }
+    const quarantineParent = openArtifactDirectoryDescriptor(
+      paths.artifactQuarantine,
+      "Generated-artifact quarantine parent",
+      quarantineParentIdentity
+    );
+    const quarantineName = basename(quarantinePath);
+    const quarantineReference = artifactDescriptorPath(quarantineParent.descriptor, quarantineName);
+    let quarantineObserved;
+    try {
+      quarantineObserved = lstatSync(quarantineReference, { bigint: true });
+    } catch (error) {
+      closeSync(quarantineParent.descriptor);
+      throw error;
+    }
+    if (
+      !quarantineObserved.isDirectory() ||
+      quarantineObserved.isSymbolicLink() ||
+      !sameIdentity(identityOf(quarantineObserved), expectedIdentity)
+    ) {
+      closeSync(quarantineParent.descriptor);
+      fail("artifact-purge-unsafe", "The generated-artifact quarantine changed before purge.");
+    }
+    let quarantineRoot;
+    try {
+      quarantineRoot = openArtifactChildDirectoryDescriptor(
+        quarantineParent.descriptor,
+        quarantineName,
+        quarantineObserved,
+        "Generated-artifact quarantine"
+      );
+    } catch (error) {
+      closeSync(quarantineParent.descriptor);
+      throw error;
+    }
+    let recoveryRoot;
+    try {
+      recoveryRoot = openArtifactDirectoryDescriptor(
+        recoveryPath,
+        "Generated-artifact recovery tree",
+        recoveryIdentity
+      );
+    } catch (error) {
+      closeSync(quarantineRoot.descriptor);
+      closeSync(quarantineParent.descriptor);
+      throw error;
+    }
+    let manifest;
+    try {
+      manifest = artifactManifestMatcher(manifestPath, manifestReceipt);
+    } catch (error) {
+      closeSync(recoveryRoot.descriptor);
+      closeSync(quarantineRoot.descriptor);
+      closeSync(quarantineParent.descriptor);
+      throw error;
+    }
+    let entries = 0;
+    const visit = (currentDescriptor, currentReference, recoveryDescriptor, recoveryReference, relativePath, depth) => {
+      if (depth > MAXIMUM_ARTIFACT_DEPTH) fail("artifact-too-large", "The artifact purge exceeds its depth limit.");
+      const currentMetadata = fstatSync(currentDescriptor, { bigint: true });
+      const recoveryMetadata = fstatSync(recoveryDescriptor, { bigint: true });
+      if (
+        !currentMetadata.isDirectory() ||
+        !recoveryMetadata.isDirectory() ||
+        !currentUserOwns(currentMetadata) ||
+        !currentUserOwns(recoveryMetadata)
+      ) {
+        fail("artifact-purge-unsafe", "Artifact purge encountered an unsafe directory.");
+      }
+      manifest.match(relativePath, "directory", currentMetadata);
+      hooks?.beforeArtifactPurgeDirectoryRead?.(Object.freeze({ quarantinePath, relativePath }));
+      const children = readArtifactDirectoryBounded(currentDescriptor, "Artifact purge directory").sort((left, right) =>
+        Buffer.compare(left.nameBytes, right.nameBytes)
+      );
+      for (const item of children) {
+        entries += 1;
+        if (entries > MAXIMUM_ARTIFACT_ENTRIES)
+          fail("artifact-too-large", "The artifact purge exceeds its entry limit.");
+        const child = artifactDescriptorPath(currentDescriptor, item.name);
+        const recoveryChild = artifactDescriptorPath(recoveryDescriptor, item.name);
+        const childRelative = relativePath === "" ? item.name : `${relativePath}/${item.name}`;
+        const metadata = lstatSync(child, { bigint: true });
+        let recoveryEntry;
+        try {
+          recoveryEntry = lstatSync(recoveryChild, { bigint: true });
+        } catch {
+          fail("artifact-purge-unsafe", "The quarantine contains an entry absent from the verified archive.");
+        }
+        if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+          if (!recoveryEntry.isDirectory() || recoveryEntry.isSymbolicLink()) {
+            fail("artifact-purge-unsafe", "A quarantined directory does not match the verified archive.");
+          }
+          const currentChild = openArtifactChildDirectoryDescriptor(
+            currentDescriptor,
+            item.name,
+            metadata,
+            `Quarantined artifact directory ${childRelative}`
+          );
+          let archivedChild;
+          try {
+            archivedChild = openArtifactChildDirectoryDescriptor(
+              recoveryDescriptor,
+              item.name,
+              recoveryEntry,
+              `Archived artifact directory ${childRelative}`
+            );
+            try {
+              visit(currentChild.descriptor, child, archivedChild.descriptor, recoveryChild, childRelative, depth + 1);
+            } finally {
+              closeSync(archivedChild.descriptor);
+            }
+          } finally {
+            closeSync(currentChild.descriptor);
+          }
+          const confirmed = lstatSync(child, { bigint: true });
+          if (
+            !confirmed.isDirectory() ||
+            confirmed.isSymbolicLink() ||
+            !sameIdentity(identityOf(confirmed), identityOf(metadata))
+          ) {
+            fail("artifact-purge-unsafe", "A quarantined directory changed before removal.");
+          }
+          rmdirSync(child);
+          hooks?.afterArtifactEntryRemoved?.(quarantinePath, child, entries);
+        } else if (metadata.isFile() && !metadata.isSymbolicLink()) {
+          if (!recoveryEntry.isFile() || recoveryEntry.isSymbolicLink()) {
+            fail("artifact-purge-unsafe", "A quarantined file does not match the verified archive.");
+          }
+          const currentFile = hashArtifactRegularFile(child, metadata, "Quarantined artifact file");
+          const archivedFile = hashArtifactRegularFile(recoveryChild, recoveryEntry, "Archived artifact file");
+          const source = manifest.match(childRelative, "file", metadata);
+          if (
+            currentFile.sha256 !== archivedFile.sha256 ||
+            currentFile.sha256 !== source.sha256 ||
+            source.size !== metadata.size.toString() ||
+            currentFile.metadata.size !== archivedFile.metadata.size ||
+            (currentFile.metadata.mode & 0o7777n) !== (archivedFile.metadata.mode & 0o7777n)
+          ) {
+            fail("artifact-purge-unsafe", "A quarantined file does not match the verified archive.");
+          }
+          hooks?.beforeArtifactEntryUnlink?.(quarantinePath, child, entries);
+          const confirmed = lstatSync(child, { bigint: true });
+          if (!sameArtifactStat(metadata, confirmed)) {
+            fail("artifact-purge-unsafe", "A quarantined file changed before unlink.");
+          }
+          unlinkSync(child);
+          hooks?.afterArtifactEntryRemoved?.(quarantinePath, child, entries);
+        } else if (metadata.isSymbolicLink()) {
+          if (!recoveryEntry.isSymbolicLink() || metadata.nlink !== 1n || recoveryEntry.nlink !== 1n) {
+            fail("artifact-purge-unsafe", "A quarantined symlink does not match the verified archive.");
+          }
+          const target = readlinkSync(child, { encoding: "buffer" });
+          const archivedTarget = readlinkSync(recoveryChild, { encoding: "buffer" });
+          const source = manifest.match(childRelative, "symlink", metadata);
+          hooks?.beforeArtifactEntryUnlink?.(quarantinePath, child, entries);
+          const confirmed = lstatSync(child, { bigint: true });
+          if (
+            !sameArtifactStat(metadata, confirmed) ||
+            !target.equals(archivedTarget) ||
+            source.targetBase64 !== target.toString("base64")
+          ) {
+            fail("artifact-purge-unsafe", "A quarantined symlink changed or differs from the archive.");
+          }
+          unlinkSync(child);
+          hooks?.afterArtifactEntryRemoved?.(quarantinePath, child, entries);
+        } else {
+          fail("artifact-purge-unsafe", "Artifact purge encountered a special file.");
+        }
+      }
+      const currentAfter = fstatSync(currentDescriptor, { bigint: true });
+      const currentNamed = lstatSync(currentReference, { bigint: true });
+      const recoveryAfter = fstatSync(recoveryDescriptor, { bigint: true });
+      const recoveryNamed =
+        recoveryReference === undefined ? recoveryAfter : lstatSync(recoveryReference, { bigint: true });
+      if (
+        !currentAfter.isDirectory() ||
+        !currentNamed.isDirectory() ||
+        currentNamed.isSymbolicLink() ||
+        !sameIdentity(identityOf(currentAfter), identityOf(currentMetadata)) ||
+        !sameIdentity(identityOf(currentNamed), identityOf(currentMetadata)) ||
+        !sameArtifactStat(recoveryMetadata, recoveryAfter) ||
+        !sameArtifactStat(recoveryMetadata, recoveryNamed)
+      ) {
+        fail("artifact-purge-unsafe", "An artifact directory changed during descriptor-relative purge.");
+      }
+    };
+    try {
+      visit(quarantineRoot.descriptor, quarantineReference, recoveryRoot.descriptor, undefined, "", 0);
+      manifest.finish();
+      const finalRoot = lstatSync(quarantineReference, { bigint: true });
+      if (
+        !finalRoot.isDirectory() ||
+        finalRoot.isSymbolicLink() ||
+        !sameIdentity(identityOf(finalRoot), expectedIdentity)
+      ) {
+        fail("artifact-purge-unsafe", "The artifact quarantine changed before final removal.");
+      }
+      rmdirSync(quarantineReference);
+      synchronizeArtifactDirectory(quarantineParent.descriptor, paths.artifactQuarantine);
+    } finally {
+      closeSync(recoveryRoot.descriptor);
+      closeSync(quarantineRoot.descriptor);
+      closeSync(quarantineParent.descriptor);
+      manifest.close();
+    }
+  }
+
+  function appendArtifactProgress(records, eligible, kind, fields) {
+    return appendArtifactSweepRecord(eligible.slug, eligible.ownerRevision, {
+      protocol: ARTIFACT_SWEEP_PROTOCOL,
+      kind,
+      slug: eligible.slug,
+      ownerTask: eligible.ownerTask,
+      ownerRevision: eligible.ownerRevision,
+      sequence: records.length + 1,
+      operationId: eligible.operationId,
+      previous: artifactReceiptAnchor(records.at(-1).path, records.at(-1).loaded),
+      ...fields
+    });
+  }
+
+  function renameArtifactNoReplace(sourceParentDescriptor, sourceName, destinationParentDescriptor, destinationName) {
+    requireArtifactDescriptorTraversal();
+    let interpreter;
+    let interpreterMetadata;
+    try {
+      interpreter = realpathSync("/usr/bin/python3");
+      interpreterMetadata = lstatSync(interpreter, { bigint: true });
+    } catch {
+      fail("artifact-platform-unsupported", "Atomic generated-artifact quarantine requires /usr/bin/python3.");
+    }
+    if (
+      !interpreterMetadata.isFile() ||
+      interpreterMetadata.isSymbolicLink() ||
+      interpreterMetadata.nlink !== 1n ||
+      (interpreterMetadata.mode & 0o111n) === 0n
+    ) {
+      fail("artifact-platform-unsupported", "The fixed atomic-rename helper interpreter is unsafe.");
+    }
+    const result = spawnSync(
+      interpreter,
+      ["-I", "-S", "-c", ARTIFACT_RENAME_HELPER_SOURCE, sourceName, destinationName],
+      {
+        encoding: "utf8",
+        env: Object.freeze({ LC_ALL: "C", PYTHONIOENCODING: "utf-8" }),
+        maxBuffer: 4096,
+        stdio: ["ignore", "pipe", "pipe", sourceParentDescriptor, destinationParentDescriptor],
+        timeout: 5000,
+        windowsHide: true
+      }
+    );
+    const interpreterAfter = lstatSync(interpreter, { bigint: true });
+    if (!sameArtifactStat(interpreterMetadata, interpreterAfter)) {
+      fail("artifact-platform-unsupported", "The atomic-rename helper interpreter changed while it ran.");
+    }
+    if (result.status === 0 && result.stdout === "ok\n" && result.stderr === "") return;
+    if (result.status === 10 && /^[0-9]{1,5}\n$/u.test(result.stderr) && result.stdout === "") {
+      const errorNumber = Number(result.stderr.trim());
+      if (errorNumber === 17) fail("artifact-layout-blocked", "The artifact quarantine destination already exists.");
+      if (errorNumber === 2) fail("artifact-source-changed", "The generated artifact disappeared before quarantine.");
+      if (errorNumber === 18) fail("artifact-cross-device", "Artifact quarantine must stay on one filesystem.");
+    }
+    if (result.status === 11) {
+      fail("artifact-platform-unsupported", "Linux renameat2 with RENAME_NOREPLACE is unavailable.");
+    }
+    fail("artifact-unsafe", "The bounded atomic-rename helper failed or returned an invalid response.");
+  }
+
+  function moveArtifactToQuarantine(eligible, quarantinePath) {
+    const quarantineParentIdentity = managedIdentities.get(paths.artifactQuarantine);
+    if (
+      dirname(eligible.originalPath) !== eligible.approvedRoot ||
+      dirname(quarantinePath) !== paths.artifactQuarantine ||
+      quarantineParentIdentity === undefined
+    ) {
+      fail("artifact-layout-blocked", "The artifact move no longer has its exact reviewed parent directories.");
+    }
+    const sourceParent = openArtifactDirectoryDescriptor(
+      eligible.approvedRoot,
+      "Reviewed artifact root",
+      eligible.rootIdentity
+    );
+    let destinationParent;
+    try {
+      destinationParent = openArtifactDirectoryDescriptor(
+        paths.artifactQuarantine,
+        "Generated-artifact quarantine parent",
+        quarantineParentIdentity
+      );
+    } catch (error) {
+      closeSync(sourceParent.descriptor);
+      throw error;
+    }
+    const sourceReference = artifactDescriptorPath(sourceParent.descriptor, basename(eligible.originalPath));
+    const destinationReference = artifactDescriptorPath(destinationParent.descriptor, basename(quarantinePath));
+    try {
+      const source = lstatSync(sourceReference, { bigint: true });
+      if (
+        !source.isDirectory() ||
+        source.isSymbolicLink() ||
+        !currentUserOwns(source) ||
+        !sameIdentity(identityOf(source), eligible.originalIdentity)
+      ) {
+        fail("artifact-source-changed", "The generated artifact changed before descriptor-relative quarantine.");
+      }
+      try {
+        lstatSync(destinationReference, { bigint: true });
+        fail("artifact-layout-blocked", "The artifact quarantine destination already exists.");
+      } catch (error) {
+        if (error instanceof CheckoutLifecycleError) throw error;
+        if (error.code !== "ENOENT") throw error;
+      }
+      hooks?.beforeArtifactRenameNoReplace?.(Object.freeze({ eligible, quarantinePath }));
+      renameArtifactNoReplace(
+        sourceParent.descriptor,
+        basename(eligible.originalPath),
+        destinationParent.descriptor,
+        basename(quarantinePath)
+      );
+      const moved = lstatSync(destinationReference, { bigint: true });
+      if (
+        !moved.isDirectory() ||
+        moved.isSymbolicLink() ||
+        !sameIdentity(identityOf(moved), eligible.originalIdentity)
+      ) {
+        fail("artifact-layout-blocked", "The descriptor-relative artifact move did not preserve exact identity.");
+      }
+      synchronizeArtifactDirectory(destinationParent.descriptor, paths.artifactQuarantine);
+      synchronizeArtifactDirectory(sourceParent.descriptor, eligible.approvedRoot);
+    } finally {
+      closeSync(destinationParent.descriptor);
+      closeSync(sourceParent.descriptor);
+    }
+  }
+
+  function sweepArtifactOne(slug, ownerRevision, bootId) {
+    let records = [...readArtifactSweepRecords(slug, ownerRevision)];
+    if (records.length === 0) fail("invalid-artifact-journal", "The artifact sweep lost its eligibility record.");
+    const eligible = records[0].loaded.value;
+    if (eligible.eligibleBootId === bootId) {
+      return Object.freeze({ kind: "artifact", slug, state: "waiting-for-next-boot", moved: false, removed: false });
+    }
+    const authority = artifactAuthority(slug, ownerRevision);
+    if (
+      authority.review.reviewSha256 !== eligible.reviewSha256 ||
+      !isDeepStrictEqual(artifactReceiptAnchor(authority.entry.path, authority.entry), eligible.entry)
+    ) {
+      fail("artifact-source-changed", "The generated-artifact archive authority changed after enrollment.");
+    }
+    let layout = artifactLayout(eligible);
+    if (layout.state === "blocked") fail("artifact-layout-blocked", "The artifact retirement layout is ambiguous.");
+    if (records.length <= 2 && layout.state === "original") {
+      const current = scanArtifactTree(eligible.originalPath, eligible.originalIdentity);
+      validateArtifactRoot(eligible.approvedRoot, "Reviewed artifact root", eligible.rootIdentity);
+      if (!isDeepStrictEqual(artifactSnapshotCore(current), artifactSnapshotCore(authority.review.snapshot))) {
+        fail("artifact-source-changed", "The generated artifact changed after retirement enrollment.");
+      }
+      validateArtifactArchiveAttempt(authority.entry.attempt, authority.review);
+      if (records.length === 1) {
+        records.push(
+          appendArtifactProgress(records, eligible, "quarantine-intent", {
+            bootId,
+            originalPath: eligible.originalPath,
+            quarantinePath: layout.quarantinePath
+          })
+        );
+      }
+      hooks?.beforeArtifactMove?.(eligible, layout);
+      const confirmed = scanArtifactTree(eligible.originalPath, eligible.originalIdentity);
+      if (!isDeepStrictEqual(artifactSnapshotCore(confirmed), artifactSnapshotCore(authority.review.snapshot))) {
+        fail("artifact-source-changed", "The generated artifact changed immediately before quarantine.");
+      }
+      moveArtifactToQuarantine(eligible, layout.quarantinePath);
+      hooks?.afterArtifactMove?.(eligible);
+      layout = artifactLayout(eligible);
+    }
+    if (records.length === 2) {
+      if (layout.state !== "quarantine")
+        fail("artifact-layout-blocked", "Artifact quarantine did not complete exactly.");
+      records.push(
+        appendArtifactProgress(records, eligible, "quarantine-result", {
+          bootId,
+          quarantinePath: layout.quarantinePath,
+          location: "quarantine"
+        })
+      );
+    }
+    layout = artifactLayout(eligible);
+    if ((records.length === 3 || records.length === 4) && layout.state === "quarantine") {
+      validateArtifactArchiveAttempt(authority.entry.attempt, authority.review);
+      if (records.length === 3) {
+        records.push(
+          appendArtifactProgress(records, eligible, "purge-intent", {
+            bootId,
+            quarantinePath: layout.quarantinePath
+          })
+        );
+      }
+      hooks?.beforeArtifactPurge?.(eligible, layout);
+      removeArtifactTreeNoFollow(
+        layout.quarantinePath,
+        eligible.originalIdentity,
+        authority.entry.attempt.recoveryPath,
+        authority.entry.attempt.recoveryIdentity,
+        authority.entry.attempt.manifestPath,
+        authority.entry.attempt.manifest
+      );
+      hooks?.afterArtifactPurge?.(eligible);
+      layout = artifactLayout(eligible);
+    }
+    if (records.length === 4 && layout.state === "absent") {
+      validateArtifactArchiveAttempt(authority.entry.attempt, authority.review);
+      records.push(
+        appendArtifactProgress(records, eligible, "retired", {
+          bootId,
+          quarantinePath: layout.quarantinePath,
+          archivePreserved: true
+        })
+      );
+    }
+    if (records.length === 5 && layout.state === "absent") {
+      return Object.freeze({ kind: "artifact", slug, state: "retired", moved: true, removed: true });
+    }
+    return Object.freeze({
+      kind: "artifact",
+      slug,
+      state: layout.state === "quarantine" ? "held-after-move" : "held",
+      moved: layout.state !== "original",
+      removed: layout.state === "absent"
+    });
+  }
+
+  function sweepArtifactRetirements(bootId) {
+    initializeArtifactJournal();
+    const candidates = readDirectoryBounded(paths.artifactSweeps, MAXIMUM_ENTRIES, "Artifact sweep journal")
+      .map((item) => {
+        const match = ARTIFACT_SWEEP_DIRECTORY_PATTERN.exec(item.name);
+        if (!item.isDirectory() || item.isSymbolicLink() || match === null) {
+          fail("invalid-artifact-journal", "The artifact sweep journal contains an unknown entry.");
+        }
+        return Object.freeze({ slug: match[1], ownerRevision: Number(match[2]) });
+      })
+      .sort((left, right) => left.slug.localeCompare(right.slug));
+    const held = new Set([
+      "artifact-archive-changed",
+      "artifact-archive-incomplete",
+      "artifact-changed",
+      "artifact-cross-device",
+      "artifact-layout-blocked",
+      "artifact-platform-unsupported",
+      "artifact-purge-unsafe",
+      "artifact-source-changed",
+      "artifact-too-large",
+      "artifact-unsafe",
+      "retirement-mount-present"
+    ]);
+    return Object.freeze(
+      candidates.map((candidate) => {
+        try {
+          return sweepArtifactOne(candidate.slug, candidate.ownerRevision, bootId);
+        } catch (error) {
+          if (!(error instanceof CheckoutLifecycleError) || !held.has(error.code)) throw error;
+          const records = readArtifactSweepRecords(candidate.slug, candidate.ownerRevision);
+          const layout = artifactLayout(records[0].loaded.value);
+          return Object.freeze({
+            kind: "artifact",
+            slug: candidate.slug,
+            state: "held",
+            code: error.code,
+            layout: layout.state,
+            moved: layout.state === "quarantine",
+            removed: layout.state === "absent"
+          });
+        }
+      })
+    );
+  }
+
   const managerApi = Object.freeze({
     paths,
+
+    artifactAudit({ slug, artifactPath, approvedRoot, ownerTask, ownerRevision }) {
+      initializeManager(false);
+      for (const [path, identity] of managedIdentities) {
+        assertPrivateDirectory(path, path);
+        revalidatePathIdentity(path, identity, path, "directory");
+      }
+      revalidatePathIdentity(repository.commonGitDirectory, repository.identity, "Git common directory", "directory");
+      return captureArtifactReview({ slug, artifactPath, approvedRoot, ownerTask, ownerRevision }).public;
+    },
+
+    artifactRetire({ slug, artifactPath, approvedRoot, ownerTask, ownerRevision, expectedReviewSha256 }) {
+      if (typeof expectedReviewSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectedReviewSha256)) {
+        fail("invalid-artifact-review", "Artifact retirement requires the exact SHA-256 from artifact-audit.");
+      }
+      return withLock(() => {
+        const review = captureArtifactReview({ slug, artifactPath, approvedRoot, ownerTask, ownerRevision }).public;
+        if (review.reviewSha256 !== expectedReviewSha256) {
+          fail("artifact-review-changed", "The artifact dry audit changed; review a new audit before retirement.");
+        }
+        const entry = ensureArtifactArchive(review);
+        const enrollment = enrollArtifactRetirement(Object.freeze({ entry, review }));
+        return Object.freeze({
+          status: "artifact-retirement-enrolled",
+          slug,
+          ownerTask,
+          ownerRevision,
+          reviewSha256: expectedReviewSha256,
+          archive: Object.freeze({
+            attempt: entry.attempt.attempt,
+            recoveryPath: entry.attempt.recoveryPath,
+            manifestPath: entry.attempt.manifestPath,
+            sourceBytes: entry.attempt.receipt.value.source.byteLength,
+            entryCount: entry.attempt.receipt.value.source.entryCount
+          }),
+          enrollment,
+          movement: "deferred-until-a-later-boot",
+          authorizesImmediateMove: false
+        });
+      });
+    },
 
     discover({ roots, maxDepth = MAXIMUM_DISCOVERY_DEPTH }) {
       revalidatePathIdentity(repository.commonGitDirectory, repository.identity, "Git common directory", "directory");
@@ -12394,6 +14343,8 @@ function validateCliInvocation(positionals, values) {
     ["task-begin", { minimum: 1, maximum: 1, options: ["root", "max-depth"] }],
     ["task-end", { minimum: 2, maximum: 2, options: ["owner", "revision"] }],
     ["resume", { minimum: 1, maximum: 1, options: ["root", "max-depth"] }],
+    ["artifact-audit", { minimum: 2, maximum: 2, options: ["owner", "revision", "path", "root"] }],
+    ["artifact-retire", { minimum: 2, maximum: 2, options: ["owner", "revision", "path", "root", "review"] }],
     ["legacy-batch-audit", { minimum: 1, maximum: 1, options: ["manifest"] }],
     ["legacy-batch-adopt", { minimum: 1, maximum: 1, options: ["manifest", "review"] }],
     ["legacy-batch-retire", { minimum: 1, maximum: 1, options: ["manifest", "review"] }],
@@ -12428,7 +14379,7 @@ function validateCliInvocation(positionals, values) {
   if (specification === undefined) {
     fail(
       "invalid-cli",
-      "Use bootstrap, discover, task-begin, task-end, resume, legacy-batch-audit, legacy-batch-adopt, legacy-batch-retire, legacy-audit, legacy-adopt, legacy-archive, legacy-status, create, status, audit, quarantine-status, handoff, finish, retire, enroll-retirement, sweep, plan-retirement, archive-retirement, or abandon."
+      "Use bootstrap, discover, task-begin, task-end, resume, artifact-audit, artifact-retire, legacy-batch-audit, legacy-batch-adopt, legacy-batch-retire, legacy-audit, legacy-adopt, legacy-archive, legacy-status, create, status, audit, quarantine-status, handoff, finish, retire, enroll-retirement, sweep, plan-retirement, archive-retirement, or abandon."
     );
   }
   const suppliedOptions = Object.entries(values)
@@ -12490,8 +14441,8 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
   const roots = values.root ?? [];
   const maximumDepth = values["max-depth"] === undefined ? undefined : Number(values["max-depth"]);
   const approvedRoot = roots.length === 1 ? roots[0] : undefined;
-  if (["legacy-audit", "legacy-adopt"].includes(command) && roots.length > 1) {
-    fail("invalid-cli", "Explicit adoption accepts exactly one --root value.");
+  if (["legacy-audit", "legacy-adopt", "artifact-audit", "artifact-retire"].includes(command) && roots.length > 1) {
+    fail("invalid-cli", "The command accepts exactly one --root value.");
   }
   if (command === "discover") {
     result = manager.discover({ roots, ...(maximumDepth === undefined ? {} : { maxDepth: maximumDepth }) });
@@ -12511,6 +14462,23 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       managed,
       legacy,
       discovery
+    });
+  } else if (command === "artifact-audit") {
+    result = manager.artifactAudit({
+      slug,
+      artifactPath: values.path,
+      approvedRoot,
+      ownerTask: values.owner,
+      ownerRevision: parseRevision(values.revision)
+    });
+  } else if (command === "artifact-retire") {
+    result = manager.artifactRetire({
+      slug,
+      artifactPath: values.path,
+      approvedRoot,
+      ownerTask: values.owner,
+      ownerRevision: parseRevision(values.revision),
+      expectedReviewSha256: values.review
     });
   } else if (command === "legacy-batch-audit") {
     result = manager.legacyBatchAudit({ manifestPath: values.manifest });

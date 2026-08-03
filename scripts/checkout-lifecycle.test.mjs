@@ -8,6 +8,7 @@ import {
   existsSync,
   fstatSync,
   ftruncateSync,
+  fsyncSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -15,9 +16,11 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -333,6 +336,579 @@ function fileSnapshot(path) {
     closeSync(descriptor);
   }
 }
+
+function artifactFixture(fixture, slug, configure = undefined) {
+  const parent = join(fixture.root, "generated-artifacts");
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const artifactPath = join(parent, slug);
+  mkdirSync(join(artifactPath, "venv", "bin"), { recursive: true, mode: 0o755 });
+  writeFileSync(join(artifactPath, "venv", "bin", "python"), "synthetic interpreter\n", { mode: 0o755 });
+  writeFileSync(join(artifactPath, "metadata.json"), '{"kind":"fixture"}\n');
+  configure?.({ parent, artifactPath });
+  return Object.freeze({ parent, artifactPath });
+}
+
+function artifactArguments(slug, artifact) {
+  return Object.freeze({
+    slug,
+    artifactPath: artifact.artifactPath,
+    approvedRoot: artifact.parent,
+    ownerTask: `/root/${slug}`,
+    ownerRevision: 1
+  });
+}
+
+test("generated artifacts archive raw symlinks and wait for a later boot before removal", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const seeded = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "1".repeat(32) });
+    create(fixture, "artifact-manager-seed", { manager: seeded });
+    const external = join(fixture.root, "outside.txt");
+    writeFileSync(external, "must survive\n");
+    const artifact = artifactFixture(fixture, "python-comparison", ({ artifactPath }) => {
+      symlinkSync("../../../outside.txt", join(artifactPath, "external-link"));
+      symlinkSync("python", join(artifactPath, "venv", "bin", "python-link"));
+    });
+    const args = artifactArguments("python-comparison", artifact);
+
+    const audit = seeded.artifactAudit(args);
+    assert.equal(audit.authorizesCleanup, false);
+    assert.equal(audit.snapshot.symlinkCount, 2);
+    const retired = seeded.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    assert.equal(retired.status, "artifact-retirement-enrolled");
+    assert.equal(retired.archive.sourceBytes, audit.snapshot.byteLength);
+    assert.equal(readlinkSync(join(retired.archive.recoveryPath, "external-link")), "../../../outside.txt");
+
+    const sameBoot = seeded.sweep().results.find((item) => item.kind === "artifact");
+    assert.equal(sameBoot.state, "waiting-for-next-boot");
+    assert.equal(existsSync(artifact.artifactPath), true);
+    assert.equal(readFileSync(external, "utf8"), "must survive\n");
+
+    const later = manager(fixture, { readBootId: () => bootB, tokenFactory: () => "2".repeat(32) });
+    const result = later.sweep().results.find((item) => item.kind === "artifact");
+    assert.deepEqual(
+      { state: result.state, moved: result.moved, removed: result.removed },
+      { state: "retired", moved: true, removed: true }
+    );
+    assert.equal(existsSync(artifact.artifactPath), false);
+    assert.equal(readFileSync(external, "utf8"), "must survive\n");
+    assert.equal(existsSync(retired.archive.recoveryPath), true);
+    const repeated = later.sweep().results.find((item) => item.kind === "artifact");
+    assert.deepEqual(
+      { state: repeated.state, moved: repeated.moved, removed: repeated.removed },
+      { state: "retired", moved: true, removed: true }
+    );
+  });
+});
+
+test("generated-artifact audit rejects hard links, Git markers, and special files", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { readBootId: () => "11111111-1111-4111-8111-111111111111" });
+    create(fixture, "artifact-rejection-seed", { manager: managed });
+
+    const hard = artifactFixture(fixture, "hard-linked");
+    linkSync(join(hard.artifactPath, "metadata.json"), join(hard.artifactPath, "metadata-copy.json"));
+    lifecycleError(() => managed.artifactAudit(artifactArguments("hard-linked", hard)), "artifact-unsafe");
+
+    const gitFile = artifactFixture(fixture, "git-file-marker");
+    writeFileSync(join(gitFile.artifactPath, "venv", ".git"), "gitdir: elsewhere\n");
+    lifecycleError(
+      () => managed.artifactAudit(artifactArguments("git-file-marker", gitFile)),
+      "artifact-repository-marker"
+    );
+
+    const gitDirectory = artifactFixture(fixture, "git-directory-marker");
+    mkdirSync(join(gitDirectory.artifactPath, "venv", ".git"));
+    lifecycleError(
+      () => managed.artifactAudit(artifactArguments("git-directory-marker", gitDirectory)),
+      "artifact-repository-marker"
+    );
+
+    const special = artifactFixture(fixture, "special-file");
+    const fifo = join(special.artifactPath, "pipe");
+    const created = spawnSync("mkfifo", [fifo], { encoding: "utf8" });
+    assert.equal(created.status, 0, created.stderr);
+    lifecycleError(() => managed.artifactAudit(artifactArguments("special-file", special)), "artifact-special-file");
+  });
+});
+
+test("generated-artifact audit rejects symlink and reviewed-root replacement races", () => {
+  withRepository((fixture) => {
+    const seed = manager(fixture);
+    create(fixture, "artifact-race-seed", { manager: seed });
+    const external = join(fixture.root, "external-a");
+    writeFileSync(external, "a\n");
+    const artifact = artifactFixture(fixture, "symlink-race", ({ artifactPath }) => {
+      symlinkSync("../../external-a", join(artifactPath, "link"));
+    });
+    const swapping = manager(fixture, {
+      hooks: {
+        betweenArtifactAuditPasses() {
+          unlinkSync(join(artifact.artifactPath, "link"));
+          symlinkSync("metadata.json", join(artifact.artifactPath, "link"));
+        }
+      }
+    });
+    lifecycleError(() => swapping.artifactAudit(artifactArguments("symlink-race", artifact)), "artifact-changed");
+
+    const replaced = artifactFixture(fixture, "root-race");
+    const retained = `${replaced.parent}-retained`;
+    const rootSwapping = manager(fixture, {
+      hooks: {
+        betweenArtifactAuditPasses() {
+          renameSync(replaced.parent, retained);
+          mkdirSync(replaced.parent, { mode: 0o700 });
+        }
+      }
+    });
+    lifecycleError(() => rootSwapping.artifactAudit(artifactArguments("root-race", replaced)), "artifact-unsafe");
+  });
+});
+
+test("generated-artifact audit keeps a raced ancestor symlink outside descriptor-relative traversal", () => {
+  withRepository((fixture) => {
+    const seed = manager(fixture);
+    create(fixture, "artifact-ancestor-race-seed", { manager: seed });
+    const external = join(fixture.root, "external-directory");
+    mkdirSync(external, { mode: 0o700 });
+    writeFileSync(join(external, "outside.txt"), "must not be read\n");
+    const artifact = artifactFixture(fixture, "ancestor-symlink-race");
+    let swapped = false;
+    const hostile = manager(fixture, {
+      hooks: {
+        beforeArtifactDirectoryRead({ rootPath, relativePath }) {
+          if (!swapped && rootPath === artifact.artifactPath && relativePath === "venv") {
+            swapped = true;
+            renameSync(join(artifact.artifactPath, "venv"), join(artifact.artifactPath, "venv-retained"));
+            symlinkSync(external, join(artifact.artifactPath, "venv"));
+          }
+        }
+      }
+    });
+    lifecycleError(
+      () => hostile.artifactAudit(artifactArguments("ancestor-symlink-race", artifact)),
+      "artifact-changed"
+    );
+    assert.equal(readFileSync(join(external, "outside.txt"), "utf8"), "must not be read\n");
+  });
+});
+
+test("generated-artifact retirement keeps interrupted attempts and resumes completed publication", () => {
+  withRepository((fixture) => {
+    const boot = "11111111-1111-4111-8111-111111111111";
+    const seed = manager(fixture, { readBootId: () => boot });
+    create(fixture, "artifact-crash-seed", { manager: seed });
+    const firstArtifact = artifactFixture(fixture, "archive-crash");
+    const firstArgs = artifactArguments("archive-crash", firstArtifact);
+    const firstAudit = seed.artifactAudit(firstArgs);
+    const interrupted = manager(fixture, {
+      readBootId: () => boot,
+      tokenFactory: () => "3".repeat(32),
+      hooks: {
+        afterArtifactArchiveReceipt() {
+          throw new Error("simulated archive crash");
+        }
+      }
+    });
+    assert.throws(
+      () => interrupted.artifactRetire({ ...firstArgs, expectedReviewSha256: firstAudit.reviewSha256 }),
+      /simulated archive crash/u
+    );
+    const resumed = manager(fixture, { readBootId: () => boot, tokenFactory: () => "4".repeat(32) }).artifactRetire({
+      ...firstArgs,
+      expectedReviewSha256: firstAudit.reviewSha256
+    });
+    assert.equal(resumed.archive.attempt, 2);
+
+    const secondArtifact = artifactFixture(fixture, "publish-crash");
+    const secondArgs = artifactArguments("publish-crash", secondArtifact);
+    const secondAudit = seed.artifactAudit(secondArgs);
+    const publishCrash = manager(fixture, {
+      readBootId: () => boot,
+      tokenFactory: () => "5".repeat(32),
+      hooks: {
+        beforeArtifactPublish() {
+          throw new Error("simulated publication crash");
+        }
+      }
+    });
+    assert.throws(
+      () => publishCrash.artifactRetire({ ...secondArgs, expectedReviewSha256: secondAudit.reviewSha256 }),
+      /simulated publication crash/u
+    );
+    const published = manager(fixture, { readBootId: () => boot, tokenFactory: () => "6".repeat(32) }).artifactRetire({
+      ...secondArgs,
+      expectedReviewSha256: secondAudit.reviewSha256
+    });
+    assert.equal(published.archive.attempt, 1);
+    assert.equal(lstatSync(join(published.archive.recoveryPath, "..", "complete.json"), { bigint: true }).nlink, 2n);
+
+    const changedArtifact = artifactFixture(fixture, "request-review-change");
+    const changedArgs = artifactArguments("request-review-change", changedArtifact);
+    const oldAudit = seed.artifactAudit(changedArgs);
+    const requestCrash = manager(fixture, {
+      readBootId: () => boot,
+      tokenFactory: () => "7".repeat(32),
+      hooks: {
+        afterArtifactRequest() {
+          throw new Error("simulated request crash");
+        }
+      }
+    });
+    assert.throws(
+      () => requestCrash.artifactRetire({ ...changedArgs, expectedReviewSha256: oldAudit.reviewSha256 }),
+      /simulated request crash/u
+    );
+    writeFileSync(join(changedArtifact.artifactPath, "metadata.json"), '{"kind":"changed"}\n');
+    const newAudit = seed.artifactAudit(changedArgs);
+    lifecycleError(
+      () =>
+        manager(fixture, { readBootId: () => boot }).artifactRetire({
+          ...changedArgs,
+          expectedReviewSha256: newAudit.reviewSha256
+        }),
+      "artifact-review-changed"
+    );
+  });
+});
+
+test("generated-artifact recovery fsyncs files and directories before publication", () => {
+  withRepository((fixture) => {
+    const boot = "11111111-1111-4111-8111-111111111111";
+    const seed = manager(fixture, { readBootId: () => boot });
+    create(fixture, "artifact-durability-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "durable-archive");
+    const args = artifactArguments("durable-archive", artifact);
+    const audit = seed.artifactAudit(args);
+    const events = [];
+    const durable = manager(fixture, {
+      readBootId: () => boot,
+      tokenFactory: () => "c".repeat(32),
+      syncArtifactDescriptor(descriptor) {
+        events.push({ kind: "file", path: readlinkSync(`/proc/self/fd/${descriptor}`) });
+        fsyncSync(descriptor);
+      },
+      syncArtifactDirectory(path, descriptor) {
+        events.push({ kind: "directory", path });
+        fsyncSync(descriptor);
+      }
+    });
+    const retired = durable.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    const attemptPath = dirname(retired.archive.recoveryPath);
+    const recoverySync = events.findIndex(
+      (event) => event.kind === "directory" && event.path === retired.archive.recoveryPath
+    );
+    const manifestSync = events.findIndex(
+      (event) => event.kind === "file" && event.path === retired.archive.manifestPath
+    );
+    const attemptSync = events.findIndex((event) => event.kind === "directory" && event.path === attemptPath);
+    assert.ok(recoverySync >= 0);
+    assert.ok(manifestSync >= 0);
+    assert.ok(attemptSync > recoverySync);
+    assert.ok(attemptSync > manifestSync);
+    for (const event of events.filter(
+      (candidate) => candidate.kind === "file" && candidate.path.startsWith(`${retired.archive.recoveryPath}/`)
+    )) {
+      const parentSync = events.findIndex(
+        (candidate) => candidate.kind === "directory" && candidate.path === dirname(event.path)
+      );
+      assert.ok(parentSync > events.indexOf(event));
+    }
+
+    const interruptedArtifact = artifactFixture(fixture, "durability-crash");
+    const interruptedArgs = artifactArguments("durability-crash", interruptedArtifact);
+    const interruptedAudit = seed.artifactAudit(interruptedArgs);
+    const interrupted = manager(fixture, {
+      readBootId: () => boot,
+      tokenFactory: () => "d".repeat(32),
+      syncArtifactDescriptor: fsyncSync,
+      syncArtifactDirectory(path, descriptor) {
+        fsyncSync(descriptor);
+        if (basename(path) === "recovery") throw new Error("simulated recovery-directory fsync boundary crash");
+      }
+    });
+    assert.throws(
+      () => interrupted.artifactRetire({ ...interruptedArgs, expectedReviewSha256: interruptedAudit.reviewSha256 }),
+      /simulated recovery-directory fsync boundary crash/u
+    );
+    const attempt = readdirSync(interrupted.paths.artifactAttempts).find((name) =>
+      name.startsWith("durability-crash.")
+    );
+    assert.ok(attempt);
+    assert.equal(existsSync(join(interrupted.paths.artifactAttempts, attempt, "complete.json")), false);
+    assert.equal(existsSync(join(interrupted.paths.artifactEntries, "durability-crash.1.json")), false);
+  });
+});
+
+test("generated-artifact archive never writes through a raced recovery symlink", () => {
+  withRepository((fixture) => {
+    const boot = "11111111-1111-4111-8111-111111111111";
+    const seed = manager(fixture, { readBootId: () => boot });
+    create(fixture, "artifact-recovery-race-seed", { manager: seed });
+    const external = join(fixture.root, "outside-recovery-directory");
+    mkdirSync(external, { mode: 0o700 });
+    writeFileSync(join(external, "outside.txt"), "must survive\n");
+    const artifact = artifactFixture(fixture, "recovery-ancestor-swap");
+    const args = artifactArguments("recovery-ancestor-swap", artifact);
+    const audit = seed.artifactAudit(args);
+    let swapped = false;
+    const hostile = manager(fixture, {
+      readBootId: () => boot,
+      tokenFactory: () => "f".repeat(32),
+      hooks: {
+        beforeArtifactRecoveryDirectoryWrite({ destinationRoot, relativePath }) {
+          if (!swapped && relativePath === "venv") {
+            swapped = true;
+            renameSync(join(destinationRoot, "venv"), join(destinationRoot, "venv-retained"));
+            symlinkSync(external, join(destinationRoot, "venv"));
+          }
+        }
+      }
+    });
+    lifecycleError(
+      () => hostile.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 }),
+      "artifact-archive-changed"
+    );
+    assert.deepEqual(readdirSync(external), ["outside.txt"]);
+    assert.equal(readFileSync(join(external, "outside.txt"), "utf8"), "must survive\n");
+  });
+});
+
+test("generated-artifact purge resumes after an interrupted unlink", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const seed = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "7".repeat(32) });
+    create(fixture, "artifact-purge-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "purge-crash", ({ artifactPath }) => {
+      writeFileSync(join(artifactPath, "another.txt"), "another\n");
+    });
+    const args = artifactArguments("purge-crash", artifact);
+    const audit = seed.artifactAudit(args);
+    seed.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    let failed = false;
+    const interrupted = manager(fixture, {
+      readBootId: () => bootB,
+      hooks: {
+        afterArtifactEntryRemoved() {
+          if (!failed) {
+            failed = true;
+            throw new Error("simulated purge crash");
+          }
+        }
+      }
+    });
+    assert.throws(() => interrupted.sweep(), /simulated purge crash/u);
+    assert.equal(existsSync(artifact.artifactPath), false);
+    const resumed = manager(fixture, { readBootId: () => bootB })
+      .sweep()
+      .results.find((item) => item.kind === "artifact" && item.slug === "purge-crash");
+    assert.equal(resumed.state, "retired");
+    assert.equal(resumed.removed, true);
+  });
+});
+
+test("generated-artifact quarantine never replaces a raced destination", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const seed = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "e".repeat(32) });
+    create(fixture, "artifact-no-replace-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "quarantine-no-replace");
+    const args = artifactArguments("quarantine-no-replace", artifact);
+    const audit = seed.artifactAudit(args);
+    seed.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    let planted;
+    const hostile = manager(fixture, {
+      readBootId: () => bootB,
+      hooks: {
+        beforeArtifactRenameNoReplace({ quarantinePath }) {
+          planted = quarantinePath;
+          mkdirSync(quarantinePath, { mode: 0o700 });
+        }
+      }
+    });
+    const result = hostile
+      .sweep()
+      .results.find((item) => item.kind === "artifact" && item.slug === "quarantine-no-replace");
+    assert.equal(result.state, "held");
+    assert.equal(result.code, "artifact-layout-blocked");
+    assert.equal(existsSync(artifact.artifactPath), true);
+    assert.equal(existsSync(planted), true);
+    assert.deepEqual(readdirSync(planted), []);
+  });
+});
+
+test("generated-artifact purge detects a symlink swap before unlinking it", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const outside = join(fixture.root, "outside-purge.txt");
+    writeFileSync(outside, "untouched\n");
+    const seed = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "8".repeat(32) });
+    create(fixture, "artifact-swap-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "purge-swap", ({ artifactPath }) => {
+      symlinkSync("../../outside-purge.txt", join(artifactPath, "a-link"));
+    });
+    const args = artifactArguments("purge-swap", artifact);
+    const audit = seed.artifactAudit(args);
+    seed.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    let swapped = false;
+    const hostile = manager(fixture, {
+      readBootId: () => bootB,
+      hooks: {
+        beforeArtifactEntryUnlink(_root, child) {
+          if (!swapped && child.endsWith("a-link")) {
+            swapped = true;
+            unlinkSync(child);
+            symlinkSync("metadata.json", child);
+          }
+        }
+      }
+    });
+    const result = hostile.sweep().results.find((item) => item.kind === "artifact" && item.slug === "purge-swap");
+    assert.equal(result.state, "held");
+    assert.equal(result.code, "artifact-purge-unsafe");
+    assert.equal(readFileSync(outside, "utf8"), "untouched\n");
+  });
+});
+
+test("generated-artifact purge rejects a new hard link to a quarantined symlink", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const seed = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "1".repeat(32) });
+    create(fixture, "artifact-link-count-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "purge-symlink-hardlink", ({ artifactPath }) => {
+      symlinkSync("metadata.json", join(artifactPath, "a-link"));
+    });
+    const args = artifactArguments("purge-symlink-hardlink", artifact);
+    const audit = seed.artifactAudit(args);
+    seed.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    const retainedLink = join(fixture.root, "retained-symlink-hardlink");
+    let linked = false;
+    const hostile = manager(fixture, {
+      readBootId: () => bootB,
+      hooks: {
+        beforeArtifactPurge(_eligible, layout) {
+          if (!linked) {
+            linked = true;
+            linkSync(join(layout.quarantinePath, "a-link"), retainedLink);
+          }
+        }
+      }
+    });
+    const result = hostile
+      .sweep()
+      .results.find((item) => item.kind === "artifact" && item.slug === "purge-symlink-hardlink");
+    assert.equal(result.state, "held");
+    assert.equal(result.code, "artifact-purge-unsafe");
+    assert.equal(lstatSync(retainedLink, { bigint: true }).isSymbolicLink(), true);
+  });
+});
+
+test("generated-artifact purge never traverses a raced ancestor symlink", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const external = join(fixture.root, "outside-purge-directory");
+    mkdirSync(external, { mode: 0o700 });
+    writeFileSync(join(external, "outside.txt"), "must survive\n");
+    const seed = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "b".repeat(32) });
+    create(fixture, "artifact-ancestor-purge-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "purge-ancestor-swap");
+    const args = artifactArguments("purge-ancestor-swap", artifact);
+    const audit = seed.artifactAudit(args);
+    seed.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    let swapped = false;
+    const hostile = manager(fixture, {
+      readBootId: () => bootB,
+      hooks: {
+        beforeArtifactPurgeDirectoryRead({ quarantinePath, relativePath }) {
+          if (!swapped && relativePath === "venv") {
+            swapped = true;
+            renameSync(join(quarantinePath, "venv"), join(quarantinePath, "venv-retained"));
+            symlinkSync(external, join(quarantinePath, "venv"));
+          }
+        }
+      }
+    });
+    const result = hostile
+      .sweep()
+      .results.find((item) => item.kind === "artifact" && item.slug === "purge-ancestor-swap");
+    assert.equal(result.state, "held");
+    assert.equal(result.code, "artifact-purge-unsafe");
+    assert.equal(readFileSync(join(external, "outside.txt"), "utf8"), "must survive\n");
+  });
+});
+
+test("generated-artifact purge rejects a same-byte file replacement", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const seed = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "a".repeat(32) });
+    create(fixture, "artifact-file-swap-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "purge-file-swap");
+    const args = artifactArguments("purge-file-swap", artifact);
+    const audit = seed.artifactAudit(args);
+    seed.artifactRetire({ ...args, expectedReviewSha256: audit.reviewSha256 });
+    let replaced = false;
+    const hostile = manager(fixture, {
+      readBootId: () => bootB,
+      hooks: {
+        beforeArtifactPurge(_eligible, layout) {
+          if (!replaced) {
+            replaced = true;
+            const path = join(layout.quarantinePath, "metadata.json");
+            const bytes = readFileSync(path);
+            unlinkSync(path);
+            writeFileSync(path, bytes);
+          }
+        }
+      }
+    });
+    const result = hostile.sweep().results.find((item) => item.kind === "artifact" && item.slug === "purge-file-swap");
+    assert.equal(result.state, "held");
+    assert.equal(result.code, "artifact-purge-unsafe");
+    assert.equal(result.removed, false);
+  });
+});
+
+test("the generated-artifact CLI binds owner, revision, path, root, and dry-review hash", () => {
+  withRepository((fixture) => {
+    const boot = "11111111-1111-4111-8111-111111111111";
+    const seed = manager(fixture, { readBootId: () => boot });
+    create(fixture, "artifact-cli-seed", { manager: seed });
+    const artifact = artifactFixture(fixture, "artifact-cli");
+    const options = {
+      repositoryPath: fixture.repository,
+      managerRoot: fixture.managerRoot,
+      readBootId: () => boot,
+      tokenFactory: () => "9".repeat(32),
+      stdout: { write() {} }
+    };
+    const common = [
+      "artifact-cli",
+      "--owner",
+      "/root/artifact-cli",
+      "--revision",
+      "1",
+      "--path",
+      artifact.artifactPath,
+      "--root",
+      artifact.parent
+    ];
+    const audit = runCheckoutLifecycleCli(["artifact-audit", ...common], options);
+    assert.match(audit.reviewSha256, /^[0-9a-f]{64}$/u);
+    const retired = runCheckoutLifecycleCli(["artifact-retire", ...common, "--review", audit.reviewSha256], options);
+    assert.equal(retired.status, "artifact-retirement-enrolled");
+    lifecycleError(
+      () => runCheckoutLifecycleCli(["artifact-retire", ...common, "--review", "0".repeat(64)], options),
+      "artifact-review-changed"
+    );
+  });
+});
 
 test("bootstrap publishes one self-contained bare manager and routes source and child commands to it", () => {
   withRepository((fixture) => {

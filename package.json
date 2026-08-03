@@ -127,6 +127,8 @@
     "checkout:task-begin": "node scripts/checkout-lifecycle.mjs task-begin",
     "checkout:task-end": "node scripts/checkout-lifecycle.mjs task-end",
     "checkout:resume": "node scripts/checkout-lifecycle.mjs resume",
+    "checkout:artifact-audit": "node scripts/checkout-lifecycle.mjs artifact-audit",
+    "checkout:artifact-retire": "node scripts/checkout-lifecycle.mjs artifact-retire",
     "checkout:legacy-batch-audit": "node scripts/checkout-lifecycle.mjs legacy-batch-audit",
     "checkout:legacy-batch-adopt": "node scripts/checkout-lifecycle.mjs legacy-batch-adopt",
     "checkout:legacy-batch-retire": "node scripts/checkout-lifecycle.mjs legacy-batch-retire",

@@ -26,6 +26,31 @@ Agent checkout lifecycle has a separate, small contract test:
   directions through the direct API and CLI, interrupted managed and legacy writes, cleanup-pending state, archives,
   and managed and legacy retirement tombstones. Every retained current or historical journal keeps the authority
   family reservation even when the checkout itself no longer exists.
+- Use `checkout:artifact-audit` for the read-only review of a generated directory that is not a Git checkout. Pass its
+  slug, owner task, revision, canonical path, and canonical parent root explicitly. The target must be a direct child
+  of the reviewed root and its basename must equal the slug. The audit reads the complete tree
+  twice through pinned Linux directory descriptors without following links and returns one review SHA-256. It fails
+  closed when that Linux descriptor interface is unavailable or a filename is not strict, round-trippable UTF-8. It
+  rejects `.git` files or directories, hard-linked
+  regular files, sockets, devices, FIFOs, mounts, ownership or filesystem crossings, containment escapes, replacements,
+  and fixed-bound overflow. Current bounds are 1,000,000 entries, depth 128, 32 GiB of file and link-target bytes,
+  a 256 MiB manifest, 64 KiB per raw link target, and eight append-only archive attempts.
+  `checkout:artifact-retire` takes the same arguments plus `--review <sha256>`. It repeats the audit, copies every
+  regular-file byte and raw link target into a private recovery tree, records source identities and hashes in JSONL,
+  fsyncs every recovery file and containing directory from the leaves upward, scans the recovery tree independently,
+  and rechecks the source before publishing. The conservative shared archive
+  space gate reserves eight times the observed source bytes plus 512 MiB, which covers the source read, recovery copy,
+  manifest, verification, and retained failed attempts without claiming that a partial copy is usable. A crash keeps
+  its numbered attempt; a completed unpublished attempt resumes without copying again.
+  Retirement is enrolled on the current boot but cannot move the source then. A later task-start sweep renames the
+  exact directory identity into mode-`0700` quarantine with Linux `RENAME_NOREPLACE`; the bounded helper uses the fixed
+  isolated `/usr/bin/python3` and fails closed when that syscall or interpreter is unavailable. Purge compares each
+  remaining entry with the verified recovery
+  tree through already-open parent descriptors immediately before `unlink`/`rmdir`, never dereferences a symlink, and
+  can resume after a partial purge.
+  Tests cover an external symlink, source and parent replacement, link swaps, hard links, nested Git markers, a FIFO,
+  archive and publication interruptions, same-boot retention, later-boot removal, and interruption during purge. Do
+  not point either command at a real directory until the dry output and its owner/revision have been reviewed.
 - `npm run checkout:discover -- --root <canonical-root>` performs a bounded, read-only inventory under no more than 16
   explicit, non-overlapping roots. The scanner skips entries observed as symbolic links, revalidates every root and
   traversed path identity, and treats replacement ambiguity as unsafe. It keeps walking after an outer repository so
