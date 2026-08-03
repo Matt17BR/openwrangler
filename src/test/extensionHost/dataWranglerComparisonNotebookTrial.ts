@@ -3322,19 +3322,66 @@ function createRealNotebookTrialDependencies(
 async function captureStudyNotebook(
   timeoutMs = DATA_WRANGLER_STUDY_NOTEBOOK_CAPTURE_WINDOW_MS
 ): Promise<CapturedStudyNotebook> {
+  const startedAt = Date.now();
+  let notebookUri: vscode.Uri | undefined;
+  await waitFor(
+    () => {
+      const candidates = allEditorTabs()
+        .map((tab) => {
+          const input = tab.input;
+          if (
+            input instanceof vscode.TabInputNotebook ||
+            input instanceof vscode.TabInputText ||
+            input instanceof vscode.TabInputCustom
+          ) {
+            return input.uri;
+          }
+          return undefined;
+        })
+        .filter(
+          (candidate): candidate is vscode.Uri =>
+            candidate !== undefined && candidate.scheme === "file" && candidate.path.toLowerCase().endsWith(".ipynb")
+        );
+      assert.ok(candidates.length <= 1, "The notebook trial must not observe an unrelated notebook tab.");
+      notebookUri = candidates[0];
+      return notebookUri !== undefined;
+    },
+    timeoutMs,
+    "the exact study notebook tab opened by VS Code"
+  );
+  assert.ok(notebookUri, "VS Code reported notebook-tab readiness without one exact file URI.");
+  const exactNotebookUri = notebookUri;
+  recordProgress("comparison-study:notebook-open-request");
+  let openError: unknown;
+  let explicitlyOpened: vscode.NotebookDocument | undefined;
+  const openPromise = vscode.workspace.openNotebookDocument(exactNotebookUri).then(
+    (opened) => {
+      explicitlyOpened = opened;
+    },
+    (error: unknown) => {
+      openError = error;
+    }
+  );
   let notebook: vscode.NotebookDocument | undefined;
   await waitFor(
     () => {
-      const open = vscode.workspace.notebookDocuments.filter((candidate) => !candidate.isClosed);
+      if (openError !== undefined) throw openError;
+      const open = vscode.workspace.notebookDocuments.filter(
+        (candidate) => !candidate.isClosed && candidate.uri.toString() === exactNotebookUri.toString()
+      );
       assert.ok(open.length <= 1, "The notebook trial must not observe an unrelated open notebook.");
       notebook = open[0];
       return notebook !== undefined;
     },
-    timeoutMs,
+    Math.max(1, timeoutMs - Math.max(0, Date.now() - startedAt)),
     "the exact study notebook document opened by VS Code"
   );
+  await openPromise;
+  if (openError !== undefined) throw openError;
   assert.ok(notebook, "VS Code reported notebook readiness without one open notebook document.");
   const exactNotebook = notebook;
+  assert.equal(explicitlyOpened, exactNotebook, "The explicit notebook open returned another document object.");
+  recordProgress("comparison-study:notebook-opened");
   const uri = exactNotebook.uri;
   const openMatches = (): vscode.NotebookDocument[] =>
     vscode.workspace.notebookDocuments.filter(
