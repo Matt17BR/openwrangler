@@ -32,9 +32,19 @@ runtime slice that uses them, not ahead of an implementation.
 
 IRkernel is the first supported R transport. A notebook launch must stay bound to the exact `NotebookDocument` and
 kernel captured when the user starts it. Kernel lookup, dispatch, recovery, and cleanup may not retarget through the
-active editor, a matching URI, a replacement document, or another R session. A timed-out or closed view may detach
-from the UI, but cleanup still waits for the original kernel operation to settle before it disposes any resulting
-session.
+active editor, a matching URI, a replacement document, or another R session.
+
+The host creates the candidate session ID before dispatch and maps it to that kernel. A malformed, cancelled, timed
+out, or stale open keeps a continuation on the original operation. When that operation settles, the host makes one
+bounded direct close attempt for the known candidate on the same kernel; it does not look the kernel up again or retry
+against a replacement. A kernel restart ends that kernel's sessions and invalidates the mapping. An operation that
+never settles may detach from the UI, but its ownership record remains until the kernel ends or the continuation can
+perform that close.
+
+The live R object is immutable from Open Wrangler's point of view. Each session works from an isolated snapshot. Before
+any draft, apply, generated-code check, or custom-code evaluation that could mutate an object, the runtime makes a
+fresh isolated copy; `data.table` uses `data.table::copy()`. Acceptance tests must prove that success, failure,
+cancellation, undo, and disposal leave the originating notebook object unchanged.
 
 Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration helper that owns all of the following:
 
@@ -43,8 +53,11 @@ Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration 
 - object discovery and request dispatch;
 - code insertion and confirmation in that same document.
 
-Open Wrangler will not infer this ownership from the active terminal, global R state, or a document path. Each document
-type remains unsupported until its helper and real-editor acceptance exist.
+Open Wrangler will not infer this ownership from the active terminal, global R state, or a document path. Attaching to
+a live variable may use only a documented stable public broker API or an Open Wrangler-owned helper and process. It may
+not inspect private Quarto or vscode-R sockets, temporary state, extension storage, or process-discovery details. Exact
+source-document code insertion can ship independently of live-variable attachment. Each document type remains
+unsupported until its helper and real-editor acceptance exist.
 
 The first public R build will use the `1.99.x` preview channel. It may start only after read-only `data.frame`, tibble,
 and `data.table` sessions pass real IRkernel tests and packaged VS Code and Cursor acceptance. A stable 2.0 release must
