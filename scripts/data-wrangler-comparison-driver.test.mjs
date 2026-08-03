@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -30,6 +35,26 @@ import {
 } from "./data-wrangler-comparison-driver.mjs";
 
 const RUN_ID = "98765db1-ce33-4fa5-966d-16e5a9993383";
+
+function inspectPinnedTestFile(path) {
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    assert.equal(after.dev, before.dev);
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.size, before.size);
+    assert.equal(after.mtimeNs, before.mtimeNs);
+    assert.equal(after.ctimeNs, before.ctimeNs);
+    return Object.freeze({
+      mode: Number(before.mode & 0o777n),
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+  } finally {
+    closeSync(descriptor);
+  }
+}
 
 function fixture() {
   const root = mkdtempSync(resolve(tmpdir(), "ow-neutral-driver-"));
@@ -460,11 +485,9 @@ test("the driver is packaged once, revalidated, and installed through the editor
           invocation = { options, commandOptions };
           const installPath = options.args[options.args.indexOf("--install-extension") + 1];
           assert.notEqual(installPath, value.vsix);
-          assert.equal(Number(lstatSync(installPath, { bigint: true }).mode & 0o777n), 0o400);
-          installedSha256 = (await import("node:crypto"))
-            .createHash("sha256")
-            .update(readFileSync(installPath))
-            .digest("hex");
+          const installed = inspectPinnedTestFile(installPath);
+          assert.equal(installed.mode, 0o400);
+          installedSha256 = installed.sha256;
           return { stdout: "installed\n", stderr: "" };
         }
       }
@@ -492,10 +515,7 @@ test("the driver is packaged once, revalidated, and installed through the editor
           {
             async runCli(options) {
               racedInstallPath = options.args[options.args.indexOf("--install-extension") + 1];
-              racedInstallSha256 = (await import("node:crypto"))
-                .createHash("sha256")
-                .update(readFileSync(racedInstallPath))
-                .digest("hex");
+              racedInstallSha256 = inspectPinnedTestFile(racedInstallPath).sha256;
               renameSync(value.vsix, `${value.vsix}.replaced`);
               writeFileSync(value.vsix, originalBytes, { flag: "wx", mode: 0o600 });
               return { stdout: "installed\n", stderr: "" };
@@ -626,7 +646,13 @@ test("an existing self-contained driver recovers after process state and source-
         revalidateDataWranglerComparisonDriver(receipt, {
           readFile(target, ...args) {
             const contents = readFileSync(target, ...args);
-            if (typeof target === "number" && !reboundDuringRead) {
+            const metadata = typeof target === "number" ? fstatSync(target, { bigint: true }) : undefined;
+            if (
+              metadata !== undefined &&
+              metadata.dev.toString() === receipt.vsix.identity.dev &&
+              metadata.ino.toString() === receipt.vsix.identity.ino &&
+              !reboundDuringRead
+            ) {
               reboundDuringRead = true;
               renameSync(value.vsix, `${value.vsix}.during-read`);
               writeFileSync(value.vsix, originalBytes, { flag: "wx", mode: 0o600 });

@@ -350,7 +350,15 @@ function staticCommonJsDependencies(source, label) {
 function proveJourneyGraph(
   root,
   entry,
-  { exists = existsSync, lstat = lstatSync, readFile = readFileSync, realpath = realpathSync } = {}
+  {
+    close = closeSync,
+    exists = existsSync,
+    fstat = fstatSync,
+    lstat = lstatSync,
+    open = openSync,
+    readFile = readFileSync,
+    realpath = realpathSync
+  } = {}
 ) {
   const pending = [entry];
   const visited = new Set();
@@ -362,25 +370,45 @@ function proveJourneyGraph(
     if (visited.size >= JOURNEY_GRAPH_MAX_FILES) {
       fail("The comparison journey dependency graph exceeds its file bound.");
     }
-    const canonicalPath = realpath(path);
-    const metadata = lstat(path, { bigint: true });
-    const pathWithinRoot = relative(root, canonicalPath).split(sep).join("/");
-    if (
-      canonicalPath !== path ||
-      !metadata.isFile() ||
-      metadata.isSymbolicLink() ||
-      metadata.nlink !== 1n ||
-      (typeof process.getuid === "function" && metadata.uid !== BigInt(process.getuid())) ||
-      (!pathWithinRoot.startsWith("test/extensionHost/") && !pathWithinRoot.startsWith("shared/")) ||
-      pathWithinRoot === "test/extensionHost/index.js"
-    ) {
-      fail("The comparison journey dependency graph left its neutral test/shared roots.");
-    }
-    const source = readFile(path, "utf8");
-    const metadataAfter = lstat(path, { bigint: true });
-    const canonicalPathAfter = realpath(path);
-    if (canonicalPathAfter !== path || !sameMetadata(metadata, metadataAfter)) {
-      fail("The comparison journey dependency graph changed while it was read.");
+    let descriptor;
+    let source;
+    let pathWithinRoot;
+    try {
+      descriptor = open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+      const opened = fstat(descriptor, { bigint: true });
+      const namedOpened = lstat(path, { bigint: true });
+      const canonicalPath = realpath(path);
+      pathWithinRoot = relative(root, canonicalPath).split(sep).join("/");
+      if (
+        canonicalPath !== path ||
+        !opened.isFile() ||
+        opened.isSymbolicLink() ||
+        opened.nlink !== 1n ||
+        !namedOpened.isFile() ||
+        namedOpened.isSymbolicLink() ||
+        namedOpened.nlink !== 1n ||
+        !sameMetadata(opened, namedOpened) ||
+        (typeof process.getuid === "function" && opened.uid !== BigInt(process.getuid())) ||
+        (!pathWithinRoot.startsWith("test/extensionHost/") && !pathWithinRoot.startsWith("shared/")) ||
+        pathWithinRoot === "test/extensionHost/index.js"
+      ) {
+        fail("The comparison journey dependency graph left its neutral test/shared roots.");
+      }
+      source = readFile(descriptor, "utf8");
+      const after = fstat(descriptor, { bigint: true });
+      const namedAfter = lstat(path, { bigint: true });
+      const canonicalPathAfter = realpath(path);
+      if (
+        typeof source !== "string" ||
+        canonicalPathAfter !== path ||
+        !sameMetadata(opened, after) ||
+        !sameMetadata(after, namedAfter) ||
+        Buffer.byteLength(source, "utf8") !== Number(opened.size)
+      ) {
+        fail("The comparison journey dependency graph changed while it was read.");
+      }
+    } finally {
+      if (descriptor !== undefined) close(descriptor);
     }
     const bytes = Buffer.byteLength(source, "utf8");
     totalBytes += bytes;
@@ -420,21 +448,45 @@ function proveJourneyGraph(
 
 export function proveDataWranglerComparisonJourneyGraph(
   testModule,
-  { exists = existsSync, lstat = lstatSync, readFile = readFileSync, realpath = realpathSync } = {}
+  {
+    close = closeSync,
+    exists = existsSync,
+    fstat = fstatSync,
+    lstat = lstatSync,
+    open = openSync,
+    readFile = readFileSync,
+    realpath = realpathSync
+  } = {}
 ) {
   validateTestModulePath(testModule, { lstat, realpath });
   const root = dirname(dirname(dirname(testModule)));
-  return proveJourneyGraph(root, testModule, { exists, lstat, readFile, realpath });
+  return proveJourneyGraph(root, testModule, { close, exists, fstat, lstat, open, readFile, realpath });
 }
 
 function provePackagedJourneyGraph(
   directory,
-  { exists = existsSync, lstat = lstatSync, readFile = readFileSync, realpath = realpathSync } = {}
+  {
+    close = closeSync,
+    exists = existsSync,
+    fstat = fstatSync,
+    lstat = lstatSync,
+    open = openSync,
+    readFile = readFileSync,
+    realpath = realpathSync
+  } = {}
 ) {
   validateCanonicalDirectory(directory, "Comparison-driver directory", { lstat, realpath });
   const root = resolve(directory, "journey");
   validateCanonicalDirectory(root, "Comparison-driver journey directory", { lstat, realpath });
-  return proveJourneyGraph(root, resolve(root, JOURNEY_ENTRY), { exists, lstat, readFile, realpath });
+  return proveJourneyGraph(root, resolve(root, JOURNEY_ENTRY), {
+    close,
+    exists,
+    fstat,
+    lstat,
+    open,
+    readFile,
+    realpath
+  });
 }
 
 function driverManifest() {
@@ -566,9 +618,12 @@ export function validateDataWranglerComparisonDriverBundle({ manifest, source })
 
 export function writeDataWranglerComparisonDriver(directory, testModule, dependencies = {}) {
   const hooks = {
+    close: closeSync,
     exists: existsSync,
+    fstat: fstatSync,
     lstat: lstatSync,
     mkdir: mkdirSync,
+    open: openSync,
     readFile: readFileSync,
     realpath: realpathSync,
     remove: rmSync,
@@ -576,7 +631,10 @@ export function writeDataWranglerComparisonDriver(directory, testModule, depende
     ...dependencies
   };
   const unknown = Object.keys(dependencies).filter(
-    (key) => !["exists", "lstat", "mkdir", "readFile", "realpath", "remove", "writeFile"].includes(key)
+    (key) =>
+      !["close", "exists", "fstat", "lstat", "mkdir", "open", "readFile", "realpath", "remove", "writeFile"].includes(
+        key
+      )
   );
   if (unknown.length > 0) fail(`Unknown comparison-driver dependency ${unknown[0]}.`);
   if (
@@ -589,8 +647,11 @@ export function writeDataWranglerComparisonDriver(directory, testModule, depende
   }
   validateTestModulePath(testModule, hooks);
   const journeyGraph = proveDataWranglerComparisonJourneyGraph(testModule, {
+    close: hooks.close,
     exists: hooks.exists,
+    fstat: hooks.fstat,
     lstat: hooks.lstat,
+    open: hooks.open,
     readFile: hooks.readFile,
     realpath: hooks.realpath
   });
@@ -644,8 +705,11 @@ export function writeDataWranglerComparisonDriver(directory, testModule, depende
       source: writtenSource
     });
     const copiedGraph = provePackagedJourneyGraph(directory, {
+      close: hooks.close,
       exists: hooks.exists,
+      fstat: hooks.fstat,
       lstat: hooks.lstat,
+      open: hooks.open,
       readFile: hooks.readFile,
       realpath: hooks.realpath
     });
@@ -1224,8 +1288,11 @@ export function revalidateDataWranglerComparisonDriver(receipt, dependencies = {
     source
   });
   const journeyGraph = provePackagedJourneyGraph(receipt.directory, {
+    close: hooks.close,
     exists: dependencies.exists ?? existsSync,
+    fstat: hooks.fstat,
     lstat: hooks.lstat,
+    open: hooks.open,
     readFile: hooks.readFile,
     realpath: hooks.realpath
   });
@@ -1347,7 +1414,15 @@ export function recoverDataWranglerComparisonDriver(
   );
   const source = sourceBytes.toString("utf8");
   const bundle = validateDataWranglerComparisonDriverBundle({ manifest, source });
-  const journeyGraph = provePackagedJourneyGraph(directory, { exists, lstat, readFile, realpath });
+  const journeyGraph = provePackagedJourneyGraph(directory, {
+    close: hooks.close,
+    exists,
+    fstat: hooks.fstat,
+    lstat,
+    open: hooks.open,
+    readFile,
+    realpath
+  });
   const capturedPlaywright = capturePlaywrightRuntime(resolve(directory, "node_modules", "playwright-core"), hooks);
   const expectedPlaywright = expectedDriver.runtimeDependencies.playwrightCore;
   if (

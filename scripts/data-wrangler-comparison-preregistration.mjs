@@ -345,20 +345,25 @@ export function captureDataWranglerComparisonPreregistrationFile(
   }
   let descriptor;
   try {
-    const before = lstatSync(target, { bigint: true });
+    try {
+      descriptor = openSync(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    } catch (error) {
+      if (error?.code === "ELOOP") fail(`${label} must be one bounded, owned, singly linked regular file.`);
+      throw error;
+    }
+    const opened = fstatSync(descriptor, { bigint: true });
     if (
-      !before.isFile() ||
-      before.isSymbolicLink() ||
-      before.nlink !== 1n ||
-      before.size < 1n ||
-      before.size > BigInt(maximumBytes) ||
-      (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
+      !opened.isFile() ||
+      opened.isSymbolicLink() ||
+      opened.nlink !== 1n ||
+      opened.size < 1n ||
+      opened.size > BigInt(maximumBytes) ||
+      (typeof process.getuid === "function" && opened.uid !== BigInt(process.getuid()))
     ) {
       fail(`${label} must be one bounded, owned, singly linked regular file.`);
     }
-    descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const opened = fstatSync(descriptor, { bigint: true });
-    if (!sameFile(before, opened)) fail(`${label} changed while it opened.`);
+    const namedOpened = lstatSync(target, { bigint: true });
+    if (!sameFile(opened, namedOpened)) fail(`${label} changed while it opened.`);
     const hash = createHash("sha256");
     const buffer = Buffer.allocUnsafe(1024 * 1024);
     const chunks = includeText ? [] : null;

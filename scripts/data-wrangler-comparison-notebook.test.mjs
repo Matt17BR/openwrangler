@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -36,6 +36,23 @@ const SOURCE_RECEIPT = Object.freeze({
     mtimeNs: "1754100000000000000"
   })
 });
+
+function readPinnedNotebook(path) {
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    const payload = readFileSync(descriptor, "utf8");
+    const after = fstatSync(descriptor, { bigint: true });
+    assert.equal(after.dev, before.dev);
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.size, before.size);
+    assert.equal(after.mtimeNs, before.mtimeNs);
+    assert.equal(after.ctimeNs, before.ctimeNs);
+    return Object.freeze({ mode: Number(before.mode & 0o777n), payload });
+  } finally {
+    closeSync(descriptor);
+  }
+}
 
 function options(engine, format, kind) {
   return {
@@ -200,8 +217,8 @@ test("the writer creates one exclusive 0600 notebook and retains no destination 
     const receipt = writeDataWranglerComparisonNotebook(path, options("pandas", "csv", "warm"));
     assert.equal(receipt.path, path);
     assert.equal(receipt.mode, "0600");
-    assert.equal(statSync(path).mode & 0o777, 0o600);
-    const payload = readFileSync(path, "utf8");
+    const { mode, payload } = readPinnedNotebook(path);
+    assert.equal(mode, 0o600);
     assert.equal(payload.includes(path), false);
     assert.deepEqual(JSON.parse(payload), buildDataWranglerComparisonNotebook(options("pandas", "csv", "warm")));
     assert.deepEqual(readdirSync(directory), ["pandas-csv-warm.ipynb"]);

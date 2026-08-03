@@ -219,26 +219,41 @@ export function readBoundedDataWranglerPreparationJson(
   }
   if (typeof afterOpen !== "function") fail(`${label} read hook must be callable.`);
   const parent = dirname(path);
-  if (realpathSync(parent) !== parent) fail(`${label} parent must not traverse a symbolic link.`);
-  const parentBefore = lstatSync(parent, { bigint: true });
-  if (!parentBefore.isDirectory() || parentBefore.isSymbolicLink() || !ownerMatches(parentBefore)) {
-    fail(`${label} parent must be one owned directory.`);
-  }
   let parentDescriptor;
   let descriptor;
   try {
     parentDescriptor = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0));
     const parentOpened = fstatSync(parentDescriptor, { bigint: true });
-    if (parentOpened.dev !== parentBefore.dev || parentOpened.ino !== parentBefore.ino) {
-      fail(`${label} parent changed while it opened.`);
+    const parentNamed = lstatSync(parent, { bigint: true });
+    if (
+      !parentOpened.isDirectory() ||
+      parentOpened.isSymbolicLink() ||
+      !ownerMatches(parentOpened) ||
+      !parentNamed.isDirectory() ||
+      parentNamed.isSymbolicLink() ||
+      !ownerMatches(parentNamed) ||
+      parentOpened.dev !== parentNamed.dev ||
+      parentOpened.ino !== parentNamed.ino ||
+      realpathSync(parent) !== parent
+    ) {
+      fail(`${label} parent must be one stable owned directory without symbolic-link traversal.`);
     }
     const anchoredPath = `/proc/self/fd/${parentDescriptor}/${basename(path)}`;
-    const before = lstatSync(anchoredPath, { bigint: true });
-    assertBoundedPreparationJsonFile(before, maximumBytes, label);
-    descriptor = openSync(anchoredPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      descriptor = openSync(
+        anchoredPath,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+      );
+    } catch (error) {
+      if (error?.code === "ELOOP")
+        fail(`${label} must be one owned, singly linked regular file within its byte bound.`);
+      throw error;
+    }
     const opened = fstatSync(descriptor, { bigint: true });
+    const namedOpened = lstatSync(anchoredPath, { bigint: true });
     assertBoundedPreparationJsonFile(opened, maximumBytes, label);
-    if (!sameMetadata(before, opened)) fail(`${label} changed while it opened.`);
+    assertBoundedPreparationJsonFile(namedOpened, maximumBytes, label);
+    if (!sameMetadata(opened, namedOpened)) fail(`${label} changed while it opened.`);
     afterOpen({ path, parentDescriptor, descriptor });
     const bytes = Buffer.alloc(Number(opened.size));
     let offset = 0;
@@ -289,21 +304,28 @@ export function captureDataWranglerPreparationFile(
   }
   let descriptor;
   try {
-    const before = lstatSync(path, { bigint: true });
+    try {
+      descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    } catch (error) {
+      if (error?.code === "ELOOP") {
+        fail(`${label} must be one owned, singly linked${executable ? ", executable" : ""} regular file.`);
+      }
+      throw error;
+    }
+    const opened = fstatSync(descriptor, { bigint: true });
     if (
-      !before.isFile() ||
-      before.isSymbolicLink() ||
-      before.nlink !== 1n ||
-      before.size <= 0n ||
-      before.size > BigInt(maximumBytes) ||
-      !ownerMatches(before) ||
-      (executable && (before.mode & 0o111n) === 0n)
+      !opened.isFile() ||
+      opened.isSymbolicLink() ||
+      opened.nlink !== 1n ||
+      opened.size <= 0n ||
+      opened.size > BigInt(maximumBytes) ||
+      !ownerMatches(opened) ||
+      (executable && (opened.mode & 0o111n) === 0n)
     ) {
       fail(`${label} must be one owned, singly linked${executable ? ", executable" : ""} regular file.`);
     }
-    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-    const opened = fstatSync(descriptor, { bigint: true });
-    if (!sameMetadata(before, opened)) fail(`${label} changed while it opened.`);
+    const namedOpened = lstatSync(path, { bigint: true });
+    if (!sameMetadata(opened, namedOpened)) fail(`${label} changed while it opened.`);
     const hash = createHash("sha256");
     const buffer = Buffer.allocUnsafe(READ_BUFFER_BYTES);
     let bytes = 0;
@@ -1729,19 +1751,26 @@ export function executeIdentityPinnedPreparationInterpreter(path, args) {
   }
   let descriptor;
   try {
-    const before = lstatSync(path, { bigint: true });
+    try {
+      descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    } catch (error) {
+      if (error?.code === "ELOOP") {
+        fail("Comparison preparation interpreter must be one owned, singly linked executable regular file.");
+      }
+      throw error;
+    }
+    const opened = fstatSync(descriptor, { bigint: true });
     if (
-      !before.isFile() ||
-      before.isSymbolicLink() ||
-      before.nlink !== 1n ||
-      !ownerMatches(before) ||
-      (before.mode & 0o111n) === 0n
+      !opened.isFile() ||
+      opened.isSymbolicLink() ||
+      opened.nlink !== 1n ||
+      !ownerMatches(opened) ||
+      (opened.mode & 0o111n) === 0n
     ) {
       fail("Comparison preparation interpreter must be one owned, singly linked executable regular file.");
     }
-    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const opened = fstatSync(descriptor, { bigint: true });
-    if (!sameMetadata(before, opened)) fail("Comparison preparation interpreter changed while it opened.");
+    const namedOpened = lstatSync(path, { bigint: true });
+    if (!sameMetadata(opened, namedOpened)) fail("Comparison preparation interpreter changed while it opened.");
     const output = execFileSync("/proc/self/fd/3", args, {
       argv0: path,
       encoding: "utf8",
