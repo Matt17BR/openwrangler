@@ -47,7 +47,7 @@ Opening data or running Python requires a trusted workspace. Open Wrangler stays
 
 ## What you can do
 
-- Pandas and Polars run natively. DuckDB and PySpark also run natively, with experimental viewing-only support.
+- Pandas and Polars provide native viewing and editing. DuckDB and PySpark provide experimental native viewing.
 - Each cleaning step previews changed values and generated code before you apply it.
 - Filters and multi-column sorts change only the view. Exports write a separate file.
 - The grid fetches visible rows and columns on demand. Supported file-backed Polars sources use lazy scans.
@@ -56,7 +56,7 @@ Opening data or running Python requires a trusted workspace. Open Wrangler stays
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/sidebar-overview.png"><img alt="Open Wrangler showing Operations, Summary, Filters and Sorts, and Cleaning Steps beside a dataframe draft" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/sidebar-overview.png" width="1440" height="874"></a>
 
-The sidebar keeps operations, dataset health, filters, sorts, and cleaning history beside the grid. See the
+The sidebar keeps operations, Summary, filters, sorts, and cleaning history beside the grid. See the
 [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) for file entry points,
 by-example transformations, themes, Cursor, DuckDB types, and notebook engines.
 
@@ -152,11 +152,12 @@ Choose Notebook Preview Provider**.
   </tr>
 </table>
 
-DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's Spark session. The first page loads
-without counting or caching the entire dataframe, and the exact row total appears after the last page. Pages must be
-visited in order because Spark does not guarantee a global row order for an unordered dataframe. If a page boundary
-changes, Open Wrangler asks you to reopen the variable. Open Wrangler does not install PySpark, manage cluster
-authentication, or stop the Spark session.
+DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's existing Spark session and loads the
+first page without counting or caching the full dataframe. The exact row total appears when you reach the last page.
+
+PySpark pages are sequential because an unordered Spark dataframe has no guaranteed global row order. If a checked
+page boundary changes, reopen the variable. Open Wrangler does not install PySpark, configure clusters, or stop the
+Spark session.
 
 ## Export
 
@@ -181,8 +182,8 @@ authentication, or stop the Spark session.
 | PySpark 4.2.x, experimental | Not currently supported                | DataFrame                    | Native notebook viewing, filtering, sorting, and profiles   |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
-Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and
-PySpark 4.2 DataFrames. Polars LazyFrames collect when opened from a notebook.
+Notebook variables open with the engine that created them, including Pandas 2 and 3, DuckDB relations, and PySpark
+4.2 DataFrames. Polars LazyFrames collect when opened from a notebook.
 
 To keep a notebook result native to DuckDB, open the relation itself. For example,
 `orders = duckdb.read_csv("orders.csv")`. Calling `orders.df()` explicitly creates a Pandas DataFrame, so Open
@@ -213,8 +214,7 @@ Wrangler using the same files, editor, Python environment, and actions.
 
 ## Roadmap
 
-- **Next in v1:** improve [PySpark workflows](https://github.com/Matt17BR/openwrangler/issues/36), test more
-  [VS Code-based desktop editors](https://github.com/Matt17BR/openwrangler/issues/86), and act on the
+- **Next in v1:** improve [PySpark workflows](https://github.com/Matt17BR/openwrangler/issues/36) and finish the
   [Data Wrangler comparison](https://github.com/Matt17BR/openwrangler/issues/91).
 - **v2:** add native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).
