@@ -5,6 +5,7 @@ import {
   constants,
   cpSync,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -75,6 +76,13 @@ const comparisonProductEditorPhasePlans = new WeakSet();
 
 export const COMPARISON_PRODUCT_FRAGMENT_PROTOCOL = "openwrangler-comparison-product-fragment-v1";
 export const COMPARISON_CONFIGURED_PROFILES_PROTOCOL = "openwrangler-comparison-configured-profiles-v1";
+export const DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS = Object.freeze([
+  "node_modules",
+  ".cache",
+  "openwrangler-comparison",
+  "tmp",
+  "ow"
+]);
 export const DATA_WRANGLER_MARKETPLACE_EXTENSION = `ms-toolsai.datawrangler@${DATA_WRANGLER_BASELINE_VERSION}`;
 export const COMPARISON_TEST_PHASES = Object.freeze({
   "open-wrangler": "comparison-open-wrangler",
@@ -463,6 +471,259 @@ export async function bootstrapDataWranglerComparisonConfiguredProfiles(
   });
 }
 
+function comparisonDirectoryIdentity(metadata) {
+  return Object.freeze({
+    device: metadata.dev,
+    inode: metadata.ino,
+    mode: metadata.mode & 0o777n,
+    owner: metadata.uid,
+    group: metadata.gid
+  });
+}
+
+function sameComparisonDirectoryIdentity(left, right) {
+  return (
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.mode === right.mode &&
+    left.owner === right.owner &&
+    left.group === right.group
+  );
+}
+
+function assertComparisonDirectoryMetadata(metadata, label, { privateMode, allowGroupWritable = false }) {
+  const mode = metadata.mode & 0o777n;
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    (typeof process.getuid === "function" && metadata.uid !== BigInt(process.getuid())) ||
+    (privateMode ? mode !== 0o700n : (mode & (allowGroupWritable ? 0o002n : 0o022n)) !== 0n)
+  ) {
+    throw new Error(
+      privateMode
+        ? `${label} must be one current-user-owned mode-0700 real directory.`
+        : `${label} must be one current-user-owned real directory with safe write permissions.`
+    );
+  }
+}
+
+function comparisonAnchoredChild(parent, name) {
+  if (
+    parent?.descriptor === undefined ||
+    typeof name !== "string" ||
+    name.length === 0 ||
+    name === "." ||
+    name === ".." ||
+    /[\0\r\n/\\]/u.test(name)
+  ) {
+    throw new Error("Comparison private-root component is invalid.");
+  }
+  return `/proc/self/fd/${parent.descriptor}/${name}`;
+}
+
+function revalidateComparisonDirectoryNode(node, label) {
+  const opened = fstatSync(node.descriptor, { bigint: true });
+  const named = lstatSync(node.path, { bigint: true });
+  assertComparisonDirectoryMetadata(opened, label, {
+    privateMode: node.privateMode,
+    allowGroupWritable: node.allowGroupWritable
+  });
+  assertComparisonDirectoryMetadata(named, label, {
+    privateMode: node.privateMode,
+    allowGroupWritable: node.allowGroupWritable
+  });
+  if (
+    !sameComparisonDirectoryIdentity(node.identity, comparisonDirectoryIdentity(opened)) ||
+    !sameComparisonDirectoryIdentity(comparisonDirectoryIdentity(opened), comparisonDirectoryIdentity(named)) ||
+    realpathSync(node.path) !== node.path
+  ) {
+    throw new Error(`${label} changed identity or canonical containment.`);
+  }
+  if (node.parent !== null) {
+    const anchored = lstatSync(comparisonAnchoredChild(node.parent, node.name), { bigint: true });
+    assertComparisonDirectoryMetadata(anchored, label, {
+      privateMode: node.privateMode,
+      allowGroupWritable: node.allowGroupWritable
+    });
+    if (!sameComparisonDirectoryIdentity(comparisonDirectoryIdentity(opened), comparisonDirectoryIdentity(anchored))) {
+      throw new Error(`${label} no longer belongs to its pinned parent.`);
+    }
+  }
+}
+
+function openComparisonDirectoryNode(
+  path,
+  { parent = null, name = null, privateMode, allowGroupWritable = false, label }
+) {
+  const target = resolve(path);
+  if (!isAbsolute(path) || target !== path || /[\0\r\n]/u.test(path)) {
+    throw new Error(`${label} must use one canonical absolute path.`);
+  }
+  const anchored = parent === null ? target : comparisonAnchoredChild(parent, name);
+  const before = lstatSync(anchored, { bigint: true });
+  assertComparisonDirectoryMetadata(before, label, { privateMode, allowGroupWritable });
+  const descriptor = openSync(
+    anchored,
+    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
+  );
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    assertComparisonDirectoryMetadata(opened, label, { privateMode, allowGroupWritable });
+    if (!sameComparisonDirectoryIdentity(comparisonDirectoryIdentity(before), comparisonDirectoryIdentity(opened))) {
+      throw new Error(`${label} changed while it opened.`);
+    }
+    const node = {
+      path: target,
+      parent,
+      name,
+      privateMode,
+      allowGroupWritable,
+      descriptor,
+      identity: comparisonDirectoryIdentity(opened)
+    };
+    revalidateComparisonDirectoryNode(node, label);
+    return node;
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+}
+
+function ensureComparisonDirectoryChild(parent, name, { privateMode, label }) {
+  revalidateComparisonDirectoryNode(parent, "Comparison private-root parent");
+  const path = resolve(parent.path, name);
+  if (dirname(path) !== parent.path) throw new Error(`${label} escaped its pinned parent.`);
+  const anchored = comparisonAnchoredChild(parent, name);
+  let created = false;
+  try {
+    lstatSync(anchored, { bigint: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    mkdirSync(anchored, { recursive: false, mode: 0o700 });
+    created = true;
+  }
+  const node = openComparisonDirectoryNode(path, { parent, name, privateMode, label });
+  try {
+    if (created) {
+      fchmodSync(node.descriptor, 0o700);
+      node.identity = comparisonDirectoryIdentity(fstatSync(node.descriptor, { bigint: true }));
+    }
+    revalidateComparisonDirectoryNode(parent, "Comparison private-root parent");
+    revalidateComparisonDirectoryNode(node, label);
+    return node;
+  } catch (error) {
+    closeSync(node.descriptor);
+    throw error;
+  }
+}
+
+function closeComparisonDirectoryNodes(nodes) {
+  const failures = [];
+  for (const node of [...nodes].reverse()) {
+    try {
+      closeSync(node.descriptor);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Could not close the comparison private-root directory leases.");
+  }
+}
+
+export function createDataWranglerComparisonPrivateRoot(repositoryRoot = root) {
+  if (process.platform !== "linux") {
+    throw new Error("The comparison private-root cache is supported only on Linux.");
+  }
+  const nodes = [];
+  let completed = false;
+  try {
+    const repository = openComparisonDirectoryNode(resolve(repositoryRoot), {
+      privateMode: false,
+      label: "Comparison repository root"
+    });
+    nodes.push(repository);
+    const nodeModulesPath = resolve(repository.path, DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS[0]);
+    const nodeModules = openComparisonDirectoryNode(nodeModulesPath, {
+      parent: repository,
+      name: DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS[0],
+      privateMode: false,
+      // npm commonly creates this directory as 0775. Group write access is harmless only when
+      // the pinned repository ancestor itself is private and cannot be traversed by that group.
+      allowGroupWritable: repository.identity.mode === 0o700n,
+      label: "Comparison node_modules root"
+    });
+    nodes.push(nodeModules);
+
+    let parent = nodeModules;
+    for (const [index, name] of DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS.entries()) {
+      if (index === 0) continue;
+      parent = ensureComparisonDirectoryChild(parent, name, {
+        privateMode: index >= 2,
+        label: `Comparison private-root component ${name}`
+      });
+      nodes.push(parent);
+    }
+    for (const node of nodes) revalidateComparisonDirectoryNode(node, "Comparison private-root chain");
+
+    const createdPath = mkdtempSync(`${comparisonAnchoredChild(parent, "x-")}`);
+    const name = basename(createdPath);
+    if (!/^x-[A-Za-z0-9]{6}$/u.test(name)) {
+      throw new Error("Comparison private-root creation returned an invalid random name.");
+    }
+    const privateRoot = openComparisonDirectoryNode(resolve(parent.path, name), {
+      parent,
+      name,
+      privateMode: true,
+      label: "Comparison retained private root"
+    });
+    nodes.push(privateRoot);
+    for (const node of nodes) revalidateComparisonDirectoryNode(node, "Comparison private-root chain");
+
+    let closed = false;
+    completed = true;
+    return Object.freeze({
+      privateParent: parent.path,
+      privateRoot: privateRoot.path,
+      revalidate() {
+        if (closed) throw new Error("Comparison private-root lease is already closed.");
+        for (const node of nodes) revalidateComparisonDirectoryNode(node, "Comparison private-root chain");
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        closeComparisonDirectoryNodes(nodes);
+      }
+    });
+  } finally {
+    if (!completed) closeComparisonDirectoryNodes(nodes);
+  }
+}
+
+function settleComparisonPrivateRootLease(lease, operation) {
+  let operationError;
+  let result;
+  try {
+    result = operation();
+    lease.revalidate();
+  } catch (error) {
+    operationError = error;
+  }
+  let closeError;
+  try {
+    lease.close();
+  } catch (error) {
+    closeError = error;
+  }
+  if (operationError !== undefined || closeError !== undefined) {
+    throw new AggregateError(
+      [operationError, closeError].filter((error) => error !== undefined),
+      "Could not establish the comparison retained private root."
+    );
+  }
+  return result;
+}
+
 async function runComparisonEditorSession({ options, environment, dependencies, purpose }) {
   dependencies.validatePrivatePathOverrides();
   if (dependencies.platform !== "linux" || dependencies.architecture !== "x64") {
@@ -475,12 +736,14 @@ async function runComparisonEditorSession({ options, environment, dependencies, 
   delete runEnvironment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS;
   runEnvironment.OPEN_WRANGLER_EDITOR_DISPLAY = "headless";
 
-  const privateParent = resolve(root, "tmp", "ow");
-  dependencies.mkdir(privateParent, { recursive: true, mode: 0o700 });
-  const privateRoot = dependencies.mkdtemp(join(privateParent, "x-"));
-  const rootReceipt = dependencies.createPrivateRootReceipt(privateRoot, {
-    containedBy: privateParent
-  });
+  const privateRootLease = dependencies.createPrivateRoot(root);
+  const privateParent = privateRootLease.privateParent;
+  const privateRoot = privateRootLease.privateRoot;
+  const rootReceipt = settleComparisonPrivateRootLease(privateRootLease, () =>
+    dependencies.createPrivateRootReceipt(privateRoot, {
+      containedBy: privateParent
+    })
+  );
   dependencies.configureTempRoot(privateRoot, runEnvironment);
   const privatePaths = [privateRoot, options.candidate, options.python];
 
@@ -1348,8 +1611,7 @@ function comparisonDependencies(overrides) {
     platform: process.platform,
     architecture: process.arch,
     exists: existsSync,
-    mkdir: mkdirSync,
-    mkdtemp: mkdtempSync,
+    createPrivateRoot: createDataWranglerComparisonPrivateRoot,
     createPrivateRootReceipt: createEditorAcceptancePrivateRootReceipt,
     configureTempRoot: configureEditorAcceptanceTempRoot,
     validatePrivatePathOverrides: validateEditorAcceptancePrivatePathOverrides,

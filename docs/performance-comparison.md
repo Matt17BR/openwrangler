@@ -248,7 +248,20 @@ before every warm-up, public capability capture, and measured-trial quiet window
 before an editor or product action starts; other probe or cleanup errors fail the command. The probe uses empty
 directories inside the run's private root. Every watcher must report the event generated in its own directory within
 one second, after which the probe allows one more event-loop turn for queued errors. It closes every watch, removes the
-probe tree, and records no paths. It then
+probe tree, and records no paths.
+
+The retained editor client and profiles live under
+`node_modules/.cache/openwrangler-comparison/tmp/ow/x-*`. VS Code excludes dependency trees from normal workspace
+watching, so extracting the official client cannot consume the watch capacity that the next pre-editor probe is meant
+to verify. The runner opens the real repository and `node_modules` directories without following links, creates each
+private cache component through its pinned parent, and keeps the Open Wrangler-owned subtree at mode `0700`. npm's
+usual group-writable `node_modules` mode is accepted only when the pinned repository itself is mode `0700`; a
+world-writable directory or the same group-writable directory below a traversable repository is rejected. Root cleanup
+still uses the exact `x-*` identity and never removes the shared cache parent. This directory is study state:
+do not run `npm ci`, delete `node_modules`, reinstall dependencies, or retire the checkout between preparation and
+finalization. Losing it fails closed and requires a new study rather than reconstructing editor state from a receipt.
+
+The runner then
 packages and verifies the neutral driver itself and records the actual candidate, official editor installation,
 CPython environment and kernelspec, fixture volume, CPU/power/storage state, fixture generator and contract, cache
 controller, process supervisor, and four sealed editor-profile trees. A setup-only bootstrap installs the locked

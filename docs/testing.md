@@ -682,6 +682,14 @@ first-use setup, and seals the resulting configured-only profiles. Separate note
 profiles used by the study. Preparation does not run the older CSV/Parquet feasibility diagnostic. The supplied
 fixtures must match a fresh generator run byte for byte and pass the full Polars value contract.
 
+The downloaded editor, configured profiles, and warmed profiles are retained under the ignored
+`node_modules/.cache/openwrangler-comparison/tmp/ow/x-*` tree. This keeps the large extracted trees out of the live
+workspace watch set while preserving the existing `tmp/ow/x-*` ownership and cleanup contract. The runner rejects a
+linked, redirected, foreign-owned, or world-writable ancestor and creates every Open Wrangler-owned cache directory at
+mode `0700`. A group-writable `node_modules` is accepted only below a pinned mode-`0700` repository. Do not run
+`npm ci`, remove `node_modules`, reinstall dependencies, or retire this checkout after preparation and before the final
+result is published. If that private tree disappears, abandon the study and prepare a new one.
+
 The preregistration fixes a minimum of 256 free Linux inotify watches. Preparation checks that headroom before it
 packages anything and again immediately before every editor phase. A measured trial repeats the check before its
 ten-second quiet-system window. If the command reports `inotify-watch-headroom`, free some existing file watches or
