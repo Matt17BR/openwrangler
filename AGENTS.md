@@ -136,6 +136,34 @@ move, archive, or delete the clone. `npm run checkout:legacy-status -- [slug]` r
 interrupted attempts. None of these commands authorizes movement or cleanup. Do not run adoption against a real
 candidate until its allowlist and inclusion in the cleanup batch have been reviewed.
 
+Phase 1 of legacy cleanup covers only reviewed, self-contained standalone clones. It does not mean every historical
+checkout is safe to remove. Alternate-backed clone chains and linked worktrees owned by an older registry remain
+read-only blocked rows until their own dependency-bound migration protocols are implemented and reviewed.
+
+For a reviewed list of eligible old standalone clones, use a private manifest with protocol
+`openwrangler-legacy-checkout-batch-v1`. It names every candidate's slug, canonical path, immediate root, owner, and
+exact ignored generated files/directories, plus the complete explicit dependency roots. Run
+`npm run checkout:legacy-batch-audit -- --manifest /canonical/batch.json` first. The command walks that dependency
+scope once, checks inbound object alternates for every candidate, then gives each clone the same full audit used by
+single adoption. It reports a review SHA-256 and writes no lifecycle record. Fix every blocked row; do not treat a
+clean porcelain status as sufficient. To consume the unchanged result, run
+`npm run checkout:legacy-batch-adopt -- --manifest /canonical/batch.json --review <sha256>`. Adoption repeats the one
+global scan, repeats the full candidate audits, and still grants no cleanup authority. Each clone must then receive its
+own all-object recovery archive before retirement enrollment. A manifest cannot adopt linked worktrees, paths outside
+its explicit roots, alternate-backed clones, dirty/untracked work, undeclared ignored content, or a clone that supplies
+objects to another repository. A blocked ignored-content row reports a bounded suggested `generatedRoots` and
+`generatedFiles` declaration; review the paths and their contents before adding them to the private manifest.
+
+The normal cleanup entry point is
+`npm run checkout:legacy-batch-retire -- --manifest /canonical/batch.json --review <sha256>`. It resumes exact prior
+adoptions, archives, and enrollments; otherwise it adopts, creates the full recovery archive, and enrolls each reviewed
+candidate. A crash after any candidate leaves append-only state that the same command can resume. It never moves a
+checkout on that boot. The later task-start sweep performs the normal identity/archive checks before quarantine and
+removal. Worktree repositories are terminal nodes in dependency-root scans, so generated payloads are audited and
+hashed by their declared allowlist but are not recursively searched for repositories. Bare roots still scan bounded
+non-administration children. Keep dependency roots at the parent directories that directly contain the reviewed
+checkout inventory.
+
 After adoption, `npm run checkout:legacy-archive -- <slug> --owner <task> --revision <revision>` may record a recovery
 archive. The owner and revision must match the adoption and remain bound through archive, enrollment, quarantine,
 purge, and the terminal record. The command enumerates every Git object, including unreachable objects, streams them
@@ -159,13 +187,18 @@ linked worktrees found by a bounded scan. It does not descend entries observed a
 root identities, and reports replacement ambiguity instead of authorizing adoption. It continues through an outer
 repository so nested repositories are not hidden. Discovery never adopts or removes anything. Standalone rows are
 adoptable only when their directory name is a valid unused slug and is unique across the result; linked rows include
-the owning common Git directory and remain non-adoptable. Use `npm run checkout:discover -- --root ...` when a read-only inventory is enough. Direct `git clone`
+the owning common Git directory and remain non-adoptable. A linked row that shares the manager repository or bootstrap
+source common Git directory is reported as belonging to another lifecycle registry; retire it through that registry instead of
+trying to adopt or remove it from the current one. Use `npm run checkout:discover -- --root ...` when a read-only inventory is enough. Direct `git clone`
 and `git worktree add` cannot be intercepted reliably, so this task-start inventory is the durable way to expose such
 bypasses. `npm run checkout:resume -- --root ...` performs the same start-of-turn checks after an interruption. Do not
 infer that a discovered path is obsolete.
 
 The coordinating agent creates task isolation with
-`npm run checkout:create -- <slug> --owner <canonical-task-name>`. Add `--generated-root node_modules`, or another
+`npm run checkout:create -- <slug> --owner <canonical-task-name> --base <reviewed-ref-or-commit>`. Run this command
+from the canonical `checkout-control` checkout after its manager receipt exists. Never create from a task branch or a
+checkout that predates that receipt: it can bootstrap a second registry which the canonical manager cannot retire.
+Add `--generated-root node_modules`, or another
 exact top-level directory, only when Git ignores that directory and it is absent from the new checkout. The manager
 creates a registered worktree below `tmp/agent-checkouts`; do not create another full clone or unmanaged worktree.
 Repository Python commands use `scripts/repository-python-environment.mjs` so routine checks do not leave ignored
@@ -187,7 +220,8 @@ enrolled checkouts; one held candidate does not prevent later exact candidates f
 elapsed time, or timestamps as abandonment evidence.
 
 At successful task completion, run the single normal command
-`npm run checkout:retire -- <slug> --owner <task> --revision <n>`. It records explicit finish, writes fresh retirement
+`npm run checkout:task-end -- <slug> --owner <task> --revision <n>` (`checkout:retire` is the equivalent lower-level
+name). It records explicit finish, writes fresh retirement
 evidence (or an append-only superseding attempt), creates and verifies the recovery archive, and enrolls the exact
 checkout with the current Linux boot ID. It does not move or remove anything. An OOM, SIGKILL, shutdown, dirty tree,
 stale receipt, incomplete archive, or failed check leaves the checkout resumable and reports the exact blocking code.
