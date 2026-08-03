@@ -11,12 +11,7 @@ from typing import Literal, TypedDict, cast
 import polars as pl
 import pytest
 
-benchmark_directory = Path(__file__).parents[1] / "benchmarks"
-sys.path.insert(0, str(benchmark_directory))
-try:
-    from fixture_contract import FixtureSpec, assert_fixture_contract
-finally:
-    sys.path.remove(str(benchmark_directory))
+from benchmarks.fixture_contract import FixtureSpec, assert_fixture_contract
 
 
 class _FixtureEvidence(TypedDict):
