@@ -7,6 +7,7 @@ import {
   constants,
   existsSync,
   fstatSync,
+  ftruncateSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -82,6 +83,26 @@ function git(cwd, ...args) {
   return result.stdout.trim();
 }
 
+function gitInput(cwd, input, ...args) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", input });
+  assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function addUnreachableObjectGraph(checkout) {
+  const blob = gitInput(checkout, "unreachable payload\n", "hash-object", "-w", "--stdin");
+  const tree = gitInput(checkout, `100644 blob ${blob}\torphan.txt\n`, "mktree");
+  const commit = git(checkout, "commit-tree", tree, "-m", "Unreachable commit");
+  git(checkout, "tag", "-a", "orphan-tag", commit, "-m", "Unreachable tag");
+  const tag = git(checkout, "rev-parse", "refs/tags/orphan-tag");
+  git(checkout, "tag", "-d", "orphan-tag");
+  return Object.freeze({ blob, tree, commit, tag });
+}
+
+function allObjectManifest(checkout) {
+  return git(checkout, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)", "--batch-all-objects");
+}
+
 function fixtureRun(behavior = {}) {
   return (command, args, options = {}) => {
     if (command === "git") {
@@ -94,10 +115,10 @@ function fixtureRun(behavior = {}) {
       cwd: options.cwd,
       encoding: "utf8",
       env: options.env ?? process.env,
-      input: options.input,
+      input: options.stdinFd === undefined ? options.input : undefined,
       maxBuffer: 4 * 1024 * 1024,
       stdio: [
-        options.input === undefined ? "ignore" : "pipe",
+        options.stdinFd === undefined ? (options.input === undefined ? "ignore" : "pipe") : options.stdinFd,
         options.stdoutFd === undefined ? "pipe" : options.stdoutFd,
         "pipe"
       ]
@@ -171,6 +192,22 @@ function legacyCandidate(fixture, slug, options = {}) {
   writeFileSync(join(checkout, "fixture.ignored"), "generated artifact\n");
   options.configure?.(checkout);
   return checkout;
+}
+
+function adoptedLegacyCandidate(fixture, slug, options = {}) {
+  bootstrapCheckoutManager({
+    repositoryPath: fixture.repository,
+    tokenFactory: () => (options.bootstrapToken ?? "a").repeat(32)
+  });
+  const checkout = legacyCandidate(fixture, slug, options);
+  const managed = defaultManager(fixture, { tokenFactory: () => (options.adoptionToken ?? "b").repeat(32) });
+  managed.legacyAdopt({
+    slug,
+    ownerTask: options.ownerTask ?? `/root/${slug}`,
+    generatedRoots: ["node_modules"],
+    generatedFiles: ["fixture.ignored"]
+  });
+  return Object.freeze({ checkout, managed });
 }
 
 function fileSnapshot(path) {
@@ -345,6 +382,632 @@ test("legacy adoption records two identical audits in an append-only review jour
         }),
       "legacy-adoption-exists"
     );
+  });
+});
+
+test("legacy recovery archive preserves every reachable and unreachable Git object without changing the source", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "1".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-all-objects");
+    const unreachable = addUnreachableObjectGraph(checkout);
+    const behavior = {};
+    const managed = defaultManager(fixture, {
+      run: fixtureRun(behavior),
+      tokenFactory: () => "2".repeat(32)
+    });
+    managed.legacyAdopt({
+      slug: "legacy-all-objects",
+      ownerTask: "/root/legacy-all-objects",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    const sourceManifest = allObjectManifest(checkout);
+    const indexBefore = fileSnapshot(join(checkout, ".git", "index"));
+    const configBefore = fileSnapshot(join(checkout, ".git", "config"));
+    const readmeBefore = fileSnapshot(join(checkout, "README.md"));
+    const result = managed.legacyArchive({
+      slug: "legacy-all-objects",
+      ownerTask: "/root/legacy-all-objects"
+    });
+
+    assert.equal(result.status, "archived-review-required");
+    assert.equal(result.authorizesMove, false);
+    assert.equal(result.authorizesCleanup, false);
+    assert.equal(result.objectCount, sourceManifest.split("\n").length);
+    for (const [type, oid] of Object.entries(unreachable)) {
+      assert.equal(git(result.recoveryPath, "cat-file", "-t", oid), type);
+    }
+    assert.equal(allObjectManifest(result.recoveryPath), sourceManifest);
+    assert.equal(allObjectManifest(checkout), sourceManifest);
+    assert.deepEqual(fileSnapshot(join(checkout, ".git", "index")), indexBefore);
+    assert.deepEqual(fileSnapshot(join(checkout, ".git", "config")), configBefore);
+    assert.deepEqual(fileSnapshot(join(checkout, "README.md")), readmeBefore);
+    assert.deepEqual(behavior.networkCommands ?? [], []);
+    const status = managed.legacyStatus("legacy-all-objects")[0];
+    assert.equal(status.archive.state, "archived-review-required");
+    assert.equal(status.archive.objectCount, result.objectCount);
+    assert.equal(status.archive.packSha256, result.packSha256);
+    assert.equal(status.archive.authorizesMove, false);
+    assert.equal(status.archive.authorizesCleanup, false);
+    assert.equal(
+      behavior.gitCalls.some(
+        ({ args }) => args.includes("fsck") && args.includes("--strict") && args.includes("--full")
+      ),
+      true
+    );
+    assert.equal(
+      behavior.gitCalls.some(({ args }) => args.includes("cat-file") && args.includes("--batch-all-objects")),
+      true
+    );
+  });
+});
+
+test("legacy status rejects changed, corrupt, or rebound recovery repositories", () => {
+  withRepository((fixture) => {
+    const { managed } = adoptedLegacyCandidate(fixture, "legacy-status-extra-object");
+    const archived = managed.legacyArchive({
+      slug: "legacy-status-extra-object",
+      ownerTask: "/root/legacy-status-extra-object"
+    });
+    gitInput(archived.recoveryPath, "late recovery object\n", "hash-object", "-w", "--stdin");
+    lifecycleError(() => managed.legacyStatus("legacy-status-extra-object"), "legacy-archive-changed");
+  });
+
+  withRepository((fixture) => {
+    const { managed } = adoptedLegacyCandidate(fixture, "legacy-status-corrupt-shadow");
+    const archived = managed.legacyArchive({
+      slug: "legacy-status-corrupt-shadow",
+      ownerTask: "/root/legacy-status-corrupt-shadow"
+    });
+    const oid = git(archived.recoveryPath, "rev-parse", "HEAD^{tree}");
+    const directory = join(archived.recoveryPath, "objects", oid.slice(0, 2));
+    mkdirSync(directory, { mode: 0o700 });
+    writeFileSync(join(directory, oid.slice(2)), "corrupt shadow\n", { flag: "wx", mode: 0o600 });
+    lifecycleError(() => managed.legacyStatus("legacy-status-corrupt-shadow"), "legacy-archive-changed");
+  });
+
+  withRepository((fixture) => {
+    const { managed } = adoptedLegacyCandidate(fixture, "legacy-status-rebound-recovery");
+    const archived = managed.legacyArchive({
+      slug: "legacy-status-rebound-recovery",
+      ownerTask: "/root/legacy-status-rebound-recovery"
+    });
+    const retained = join(fixture.root, "retained-recovery.git");
+    renameSync(archived.recoveryPath, retained);
+    mkdirSync(archived.recoveryPath, { mode: 0o700 });
+    lifecycleError(() => managed.legacyStatus("legacy-status-rebound-recovery"), "registry-changed");
+    assert.equal(existsSync(join(retained, "objects", "pack")), true);
+  });
+
+  withRepository((fixture) => {
+    const { managed } = adoptedLegacyCandidate(fixture, "legacy-status-manifest-proof");
+    managed.legacyArchive({
+      slug: "legacy-status-manifest-proof",
+      ownerTask: "/root/legacy-status-manifest-proof"
+    });
+    const checking = defaultManager(fixture, {
+      hooks: {
+        beforeLegacyStatusRecoveryManifestParse(path) {
+          const contents = readFileSync(path, "utf8");
+          writeFileSync(
+            path,
+            contents.replace(/ (\d+)\n/u, (_match, size) => ` ${BigInt(size) + 1n}\n`)
+          );
+        }
+      }
+    });
+    lifecycleError(() => checking.legacyStatus("legacy-status-manifest-proof"), "legacy-checkout-changed");
+  });
+
+  withRepository((fixture) => {
+    const { managed } = adoptedLegacyCandidate(fixture, "legacy-status-late-info-file");
+    managed.legacyArchive({
+      slug: "legacy-status-late-info-file",
+      ownerTask: "/root/legacy-status-late-info-file"
+    });
+    let plantedPath;
+    const checking = defaultManager(fixture, {
+      hooks: {
+        beforeLegacyStatusRecoveryFsck(_attempt, receipt) {
+          plantedPath = join(receipt.recovery.repository.path, "objects", "info", "unknown");
+          writeFileSync(plantedPath, "valuable unknown file\n", { flag: "wx", mode: 0o600 });
+        }
+      }
+    });
+    lifecycleError(() => checking.legacyStatus("legacy-status-late-info-file"), "legacy-archive-changed");
+    assert.equal(readFileSync(plantedPath, "utf8"), "valuable unknown file\n");
+  });
+
+  for (const location of ["root", "logs"]) {
+    withRepository((fixture) => {
+      const slug = `legacy-status-late-${location}-file`;
+      const { managed } = adoptedLegacyCandidate(fixture, slug);
+      managed.legacyArchive({ slug, ownerTask: `/root/${slug}` });
+      let plantedPath;
+      const checking = defaultManager(fixture, {
+        hooks: {
+          beforeLegacyStatusRecoveryFsck(_attempt, receipt) {
+            const parent =
+              location === "root" ? receipt.recovery.repository.path : join(receipt.recovery.repository.path, "logs");
+            assert.equal(existsSync(parent), true);
+            plantedPath = join(parent, "unknown");
+            writeFileSync(plantedPath, `valuable ${location} file\n`, { flag: "wx", mode: 0o600 });
+          }
+        }
+      });
+      lifecycleError(() => checking.legacyStatus(slug), "legacy-archive-changed");
+      assert.equal(readFileSync(plantedPath, "utf8"), `valuable ${location} file\n`);
+    });
+  }
+});
+
+test("legacy recovery archive restores a detached HEAD when the source has no refs", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "3".repeat(32)
+    });
+    const checkout = legacyCandidate(fixture, "legacy-detached-no-refs");
+    const head = git(checkout, "rev-parse", "HEAD");
+    git(checkout, "checkout", "--quiet", "--detach", head);
+    git(checkout, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD");
+    const refs = git(checkout, "for-each-ref", "--format=%(refname)").split("\n").filter(Boolean);
+    for (const ref of refs) git(checkout, "update-ref", "-d", ref);
+    assert.equal(git(checkout, "for-each-ref", "--format=%(refname)"), "");
+
+    const managed = defaultManager(fixture, { tokenFactory: () => "4".repeat(32) });
+    managed.legacyAdopt({
+      slug: "legacy-detached-no-refs",
+      ownerTask: "/root/legacy-detached-no-refs",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    const result = managed.legacyArchive({
+      slug: "legacy-detached-no-refs",
+      ownerTask: "/root/legacy-detached-no-refs"
+    });
+
+    assert.equal(git(result.recoveryPath, "rev-parse", "HEAD"), head);
+    assert.equal(git(result.recoveryPath, "for-each-ref", "--format=%(refname)"), "");
+    assert.equal(allObjectManifest(result.recoveryPath), allObjectManifest(checkout));
+  });
+});
+
+test("legacy recovery archive retains an interrupted request and rejects planted partial-journal files", () => {
+  withRepository((fixture) => {
+    const { checkout } = adoptedLegacyCandidate(fixture, "legacy-archive-interrupted");
+    const before = allObjectManifest(checkout);
+    const interrupted = defaultManager(fixture, {
+      tokenFactory: () => "c".repeat(32),
+      hooks: {
+        afterLegacyArchiveRequest() {
+          throw new Error("simulated interruption");
+        }
+      }
+    });
+    assert.throws(
+      () =>
+        interrupted.legacyArchive({
+          slug: "legacy-archive-interrupted",
+          ownerTask: "/root/legacy-archive-interrupted"
+        }),
+      /simulated interruption/u
+    );
+    const status = defaultManager(fixture).legacyStatus("legacy-archive-interrupted")[0];
+    assert.deepEqual(status.archive.attempts, [
+      { adoptionGeneration: 1, attempt: 1, state: "requested-review-required" }
+    ]);
+    assert.equal(status.archive.authorizesMove, false);
+    assert.equal(status.archive.authorizesCleanup, false);
+    assert.equal(allObjectManifest(checkout), before);
+
+    const planted = defaultManager(fixture, {
+      tokenFactory: () => "d".repeat(32),
+      hooks: {
+        afterLegacyArchiveRequest(attempt) {
+          writeFileSync(join(attempt.path, "planted.bin"), "valuable planted file\n", { flag: "wx", mode: 0o600 });
+          throw new Error("stop after planting");
+        }
+      }
+    });
+    assert.throws(
+      () =>
+        planted.legacyArchive({
+          slug: "legacy-archive-interrupted",
+          ownerTask: "/root/legacy-archive-interrupted"
+        }),
+      /stop after planting/u
+    );
+    lifecycleError(() => defaultManager(fixture).legacyStatus("legacy-archive-interrupted"), "invalid-legacy-archive");
+    const plantedPath = join(
+      planted.paths.legacyArchiveAttempts,
+      "legacy-archive-interrupted.00000001.2",
+      "planted.bin"
+    );
+    assert.equal(readFileSync(plantedPath, "utf8"), "valuable planted file\n");
+  });
+});
+
+test("legacy status enumerates but fails closed on archives detached from their adoption", () => {
+  withRepository((fixture) => {
+    const { managed } = adoptedLegacyCandidate(fixture, "legacy-archive-only-complete");
+    managed.legacyArchive({
+      slug: "legacy-archive-only-complete",
+      ownerTask: "/root/legacy-archive-only-complete"
+    });
+    renameSync(
+      join(managed.paths.legacyAdoptionAttempts, "legacy-archive-only-complete.00000001"),
+      join(fixture.root, "retained-legacy-adoption-attempt")
+    );
+    renameSync(
+      join(managed.paths.legacyAdoptionEntries, "legacy-archive-only-complete.json"),
+      join(fixture.root, "retained-legacy-adoption-entry.json")
+    );
+    lifecycleError(() => managed.legacyStatus("legacy-archive-only-complete"), "legacy-adoption-changed");
+  });
+
+  withRepository((fixture) => {
+    const { managed } = adoptedLegacyCandidate(fixture, "legacy-archive-only-request");
+    const interrupted = defaultManager(fixture, {
+      hooks: {
+        afterLegacyArchiveRequest() {
+          throw new Error("stop after archive request");
+        }
+      }
+    });
+    assert.throws(
+      () =>
+        interrupted.legacyArchive({
+          slug: "legacy-archive-only-request",
+          ownerTask: "/root/legacy-archive-only-request"
+        }),
+      /stop after archive request/u
+    );
+    renameSync(
+      join(managed.paths.legacyAdoptionAttempts, "legacy-archive-only-request.00000001"),
+      join(fixture.root, "retained-request-adoption-attempt")
+    );
+    renameSync(
+      join(managed.paths.legacyAdoptionEntries, "legacy-archive-only-request.json"),
+      join(fixture.root, "retained-request-adoption-entry.json")
+    );
+    lifecycleError(() => managed.legacyStatus(), "legacy-adoption-changed");
+  });
+
+  withRepository((fixture) => {
+    const { managed } = adoptedLegacyCandidate(fixture, "legacy-archive-re-adopted");
+    managed.legacyArchive({
+      slug: "legacy-archive-re-adopted",
+      ownerTask: "/root/legacy-archive-re-adopted"
+    });
+    renameSync(
+      join(managed.paths.legacyAdoptionAttempts, "legacy-archive-re-adopted.00000001"),
+      join(fixture.root, "retained-original-adoption-attempt")
+    );
+    renameSync(
+      join(managed.paths.legacyAdoptionEntries, "legacy-archive-re-adopted.json"),
+      join(fixture.root, "retained-original-adoption-entry.json")
+    );
+    const replacement = defaultManager(fixture, { tokenFactory: () => "e".repeat(32) });
+    const adopted = replacement.legacyAdopt({
+      slug: "legacy-archive-re-adopted",
+      ownerTask: "/root/replacement-adoption",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    assert.equal(adopted.generation, 1);
+    lifecycleError(() => replacement.legacyStatus("legacy-archive-re-adopted"), "legacy-adoption-changed");
+  });
+});
+
+test("legacy recovery archive rejects exact source-object drift and corrupt loose objects", () => {
+  withRepository((fixture) => {
+    const { checkout } = adoptedLegacyCandidate(fixture, "legacy-archive-object-drift");
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "c".repeat(32),
+      hooks: {
+        afterLegacyObjectManifest(_attempt, objects) {
+          if (objects.manifestPath.endsWith("objects.manifest")) {
+            gitInput(checkout, "late unreachable object\n", "hash-object", "-w", "--stdin");
+          }
+        }
+      }
+    });
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "legacy-archive-object-drift",
+          ownerTask: "/root/legacy-archive-object-drift"
+        }),
+      "legacy-checkout-changed"
+    );
+    const attempt = join(managed.paths.legacyArchiveAttempts, "legacy-archive-object-drift.00000001.1");
+    assert.equal(existsSync(join(attempt, "receipt.json")), false);
+    assert.equal(existsSync(join(attempt, "complete.json")), false);
+  });
+
+  withRepository((fixture) => {
+    const { checkout } = adoptedLegacyCandidate(fixture, "legacy-archive-corrupt-object");
+    const graph = addUnreachableObjectGraph(checkout);
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "d".repeat(32),
+      hooks: {
+        afterLegacyObjectManifest() {
+          const path = join(checkout, ".git", "objects", graph.blob.slice(0, 2), graph.blob.slice(2));
+          chmodSync(path, 0o600);
+          writeFileSync(path, "corrupt\n");
+        }
+      }
+    });
+    assert.throws(
+      () =>
+        managed.legacyArchive({
+          slug: "legacy-archive-corrupt-object",
+          ownerTask: "/root/legacy-archive-corrupt-object"
+        }),
+      (error) => error instanceof CheckoutLifecycleError
+    );
+    const attempt = join(managed.paths.legacyArchiveAttempts, "legacy-archive-corrupt-object.00000001.1");
+    assert.equal(existsSync(join(attempt, "complete.json")), false);
+  });
+});
+
+test("legacy recovery archive rechecks objects after metadata capture and after publication", () => {
+  for (const phase of ["metadata", "published"]) {
+    for (const mutation of ["add", "corrupt"]) {
+      withRepository((fixture) => {
+        bootstrapCheckoutManager({
+          repositoryPath: fixture.repository,
+          tokenFactory: () => "6".repeat(32)
+        });
+        const slug = `legacy-${phase}-${mutation}`;
+        const checkout = legacyCandidate(fixture, slug);
+        const protectedOid = gitInput(checkout, "protected loose object\n", "hash-object", "-w", "--stdin");
+        let changed = false;
+        const mutate = () => {
+          if (changed) return;
+          changed = true;
+          if (mutation === "add") {
+            gitInput(checkout, `${phase} late object\n`, "hash-object", "-w", "--stdin");
+            return;
+          }
+          const path = join(checkout, ".git", "objects", protectedOid.slice(0, 2), protectedOid.slice(2));
+          chmodSync(path, 0o600);
+          writeFileSync(path, `${phase} corrupt object\n`);
+        };
+        const managed = defaultManager(fixture, {
+          tokenFactory: () => "7".repeat(32),
+          hooks:
+            phase === "metadata" ? { afterLegacySourceMetadataCapture: mutate } : { afterLegacyArchivePublish: mutate }
+        });
+        managed.legacyAdopt({
+          slug,
+          ownerTask: `/root/${slug}`,
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        });
+        assert.throws(
+          () => managed.legacyArchive({ slug, ownerTask: `/root/${slug}` }),
+          (error) => error instanceof CheckoutLifecycleError
+        );
+        assert.equal(changed, true);
+        const attempt = join(managed.paths.legacyArchiveAttempts, `${slug}.00000001.1`);
+        if (phase === "metadata") {
+          assert.equal(existsSync(join(attempt, "receipt.json")), false);
+          assert.equal(existsSync(join(managed.paths.legacyArchiveEntries, `${slug}.json`)), false);
+        } else {
+          assert.equal(existsSync(join(attempt, "complete.json")), true);
+          assert.equal(existsSync(join(managed.paths.legacyArchiveEntries, `${slug}.json`)), true);
+        }
+      });
+    }
+  }
+});
+
+test("legacy recovery archive rejects pack and index substitution before completion", () => {
+  for (const artifact of ["pack", "index"]) {
+    withRepository((fixture) => {
+      adoptedLegacyCandidate(fixture, `legacy-archive-${artifact}-swap`);
+      const managed = defaultManager(fixture, {
+        tokenFactory: () => "c".repeat(32),
+        hooks: {
+          beforeLegacyArchivePublish(_attempt, receipt) {
+            writeFileSync(receipt.objects[artifact].path, `substituted ${artifact}\n`);
+          }
+        }
+      });
+      assert.throws(
+        () =>
+          managed.legacyArchive({
+            slug: `legacy-archive-${artifact}-swap`,
+            ownerTask: `/root/legacy-archive-${artifact}-swap`
+          }),
+        (error) => error instanceof CheckoutLifecycleError
+      );
+      const attempt = join(managed.paths.legacyArchiveAttempts, `legacy-archive-${artifact}-swap.00000001.1`);
+      assert.equal(existsSync(join(attempt, "receipt.json")), true);
+      assert.equal(existsSync(join(attempt, "complete.json")), false);
+      assert.equal(existsSync(join(managed.paths.legacyArchiveEntries, `legacy-archive-${artifact}-swap.json`)), false);
+    });
+  }
+});
+
+test("legacy recovery archive never uses an overwrite-capable index output or overwrites a planted recovered index", () => {
+  withRepository((fixture) => {
+    adoptedLegacyCandidate(fixture, "legacy-archive-planted-index");
+    let plantedPath;
+    const behavior = {};
+    const managed = defaultManager(fixture, {
+      run: fixtureRun(behavior),
+      tokenFactory: () => "e".repeat(32),
+      hooks: {
+        beforeLegacyRecoveryIndexPack(attempt, packDirectory) {
+          const pack = readFileSync(join(attempt.path, "objects.pack"));
+          const packId = pack.subarray(-20).toString("hex");
+          plantedPath = join(packDirectory, `pack-${packId}.idx`);
+          writeFileSync(plantedPath, "valuable planted index\n", { flag: "wx", mode: 0o600 });
+        }
+      }
+    });
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "legacy-archive-planted-index",
+          ownerTask: "/root/legacy-archive-planted-index"
+        }),
+      "legacy-archive-changed"
+    );
+    assert.equal(readFileSync(plantedPath, "utf8"), "valuable planted index\n");
+    assert.equal(
+      behavior.gitCalls.some(({ args }) => args.includes("-o")),
+      false
+    );
+    assert.equal(
+      existsSync(join(managed.paths.legacyArchiveAttempts, "legacy-archive-planted-index.00000001.1", "index-output")),
+      false
+    );
+  });
+});
+
+test("legacy recovery archive binds a reflog descriptor before a raced pathname size can be used", () => {
+  withRepository((fixture) => {
+    adoptedLegacyCandidate(fixture, "legacy-archive-reflog-race");
+    let retained;
+    let replacement;
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "8".repeat(32),
+      hooks: {
+        afterLegacyReflogOpen(record, sourcePath) {
+          if (record.path !== "HEAD" || retained !== undefined) return;
+          retained = join(fixture.root, "retained-archived-head-reflog");
+          replacement = sourcePath;
+          renameSync(sourcePath, retained);
+          const descriptor = openSync(sourcePath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+          try {
+            ftruncateSync(descriptor, 128 * 1024 * 1024);
+          } finally {
+            closeSync(descriptor);
+          }
+        }
+      }
+    });
+    assert.throws(
+      () =>
+        managed.legacyArchive({
+          slug: "legacy-archive-reflog-race",
+          ownerTask: "/root/legacy-archive-reflog-race"
+        }),
+      (error) => error instanceof CheckoutLifecycleError
+    );
+    assert.notEqual(retained, undefined);
+    assert.notEqual(replacement, undefined);
+    assert.equal(lstatSync(replacement, { bigint: true }).size, 128n * 1024n * 1024n);
+    assert.match(readFileSync(retained, "utf8"), /clone:/u);
+  });
+});
+
+test("legacy recovery archive rejects malformed recovery state and conservative free-space failures", () => {
+  withRepository((fixture) => {
+    const { checkout } = adoptedLegacyCandidate(fixture, "legacy-archive-bad-reflog");
+    writeFileSync(join(checkout, ".git", "logs", "unsupported"), "not a recovery reflog\n");
+    const managed = defaultManager(fixture, { tokenFactory: () => "c".repeat(32) });
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "legacy-archive-bad-reflog",
+          ownerTask: "/root/legacy-archive-bad-reflog"
+        }),
+      "legacy-archive-not-eligible"
+    );
+  });
+
+  withRepository((fixture) => {
+    const { checkout } = adoptedLegacyCandidate(fixture, "legacy-archive-bad-ref");
+    const badRef = join(checkout, ".git", "refs", "heads", "bad..name");
+    writeFileSync(badRef, `${git(checkout, "rev-parse", "HEAD")}\n`, { flag: "wx", mode: 0o600 });
+    const managed = defaultManager(fixture, { tokenFactory: () => "e".repeat(32) });
+    assert.throws(
+      () =>
+        managed.legacyArchive({
+          slug: "legacy-archive-bad-ref",
+          ownerTask: "/root/legacy-archive-bad-ref"
+        }),
+      (error) => error instanceof CheckoutLifecycleError
+    );
+    assert.equal(existsSync(join(managed.paths.legacyArchiveEntries, "legacy-archive-bad-ref.json")), false);
+  });
+
+  withRepository((fixture) => {
+    adoptedLegacyCandidate(fixture, "legacy-archive-no-space");
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "d".repeat(32),
+      statfs: () => ({ bsize: 1n, bavail: 0n })
+    });
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "legacy-archive-no-space",
+          ownerTask: "/root/legacy-archive-no-space"
+        }),
+      "archive-space-insufficient"
+    );
+    const attempt = join(managed.paths.legacyArchiveAttempts, "legacy-archive-no-space.00000001.1");
+    assert.equal(existsSync(join(attempt, "objects.manifest")), true);
+    assert.equal(existsSync(join(attempt, "objects.pack")), false);
+    assert.equal(existsSync(join(attempt, "complete.json")), false);
+  });
+});
+
+test("legacy recovery archive rejects empty and mismatched exact manifests", () => {
+  withRepository((fixture) => {
+    adoptedLegacyCandidate(fixture, "legacy-archive-empty-manifest");
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "c".repeat(32),
+      hooks: {
+        beforeLegacyObjectManifestParse(stem, path) {
+          if (stem === "objects") writeFileSync(path, "");
+        }
+      }
+    });
+    assert.throws(
+      () =>
+        managed.legacyArchive({
+          slug: "legacy-archive-empty-manifest",
+          ownerTask: "/root/legacy-archive-empty-manifest"
+        }),
+      (error) => error instanceof CheckoutLifecycleError
+    );
+    const attempt = join(managed.paths.legacyArchiveAttempts, "legacy-archive-empty-manifest.00000001.1");
+    assert.equal(existsSync(join(attempt, "objects.pack")), false);
+  });
+
+  withRepository((fixture) => {
+    adoptedLegacyCandidate(fixture, "legacy-archive-recovery-mismatch");
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "d".repeat(32),
+      hooks: {
+        beforeLegacyObjectManifestParse(stem, path) {
+          if (stem !== "recovered") return;
+          const contents = readFileSync(path, "utf8");
+          const changed = contents.replace(/ (\d+)\n/u, (_match, size) => ` ${BigInt(size) + 1n}\n`);
+          writeFileSync(path, changed);
+        }
+      }
+    });
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "legacy-archive-recovery-mismatch",
+          ownerTask: "/root/legacy-archive-recovery-mismatch"
+        }),
+      "legacy-checkout-changed"
+    );
+    const attempt = join(managed.paths.legacyArchiveAttempts, "legacy-archive-recovery-mismatch.00000001.1");
+    assert.equal(existsSync(join(attempt, "receipt.json")), false);
+    assert.equal(existsSync(join(attempt, "complete.json")), false);
   });
 });
 
@@ -3386,12 +4049,24 @@ test("the real CLI audits, adopts, and reports one legacy checkout without movin
     });
     assert.equal(adopt.status, 0, adopt.stderr);
     assert.equal(JSON.parse(adopt.stdout).status, "adopted-review-required");
+    const archive = spawnSync(
+      process.execPath,
+      [SCRIPT, "legacy-archive", "legacy-cli", "--owner", "/root/legacy-cli"],
+      { cwd: fixture.repository, encoding: "utf8" }
+    );
+    assert.equal(archive.status, 0, archive.stderr);
+    const archived = JSON.parse(archive.stdout);
+    assert.equal(archived.status, "archived-review-required");
+    assert.equal(archived.authorizesMove, false);
+    assert.equal(archived.authorizesCleanup, false);
+    assert.equal(existsSync(join(archived.recoveryPath, "objects", "pack")), true);
     const status = spawnSync(process.execPath, [SCRIPT, "legacy-status", "legacy-cli"], {
       cwd: fixture.repository,
       encoding: "utf8"
     });
     assert.equal(status.status, 0, status.stderr);
     assert.equal(JSON.parse(status.stdout)[0].state, "adopted-review-required");
+    assert.equal(JSON.parse(status.stdout)[0].archive.state, "archived-review-required");
     for (const args of [
       ["legacy-status", "legacy-cli", "extra"],
       ["legacy-status", "legacy-cli", "--owner", "/root/irrelevant"],

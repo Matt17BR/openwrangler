@@ -7,6 +7,7 @@ import {
   existsSync,
   fchmodSync,
   fstatSync,
+  ftruncateSync,
   fsyncSync,
   linkSync,
   lstatSync,
@@ -22,6 +23,7 @@ import {
   writeFileSync,
   writeSync
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, parseArgs } from "node:util";
@@ -40,6 +42,9 @@ const MANAGER_BOOTSTRAP_PROTOCOL = "openwrangler-checkout-manager-bootstrap-v1";
 const LEGACY_ADOPTION_PROTOCOL = "openwrangler-legacy-checkout-adoption-v1";
 const LEGACY_ADOPTION_REQUEST_PROTOCOL = "openwrangler-legacy-checkout-adoption-request-v1";
 const LEGACY_ADOPTION_COMPLETION_PROTOCOL = "openwrangler-legacy-checkout-adoption-completion-v1";
+const LEGACY_ARCHIVE_REQUEST_PROTOCOL = "openwrangler-legacy-recovery-archive-request-v1";
+const LEGACY_ARCHIVE_RECEIPT_PROTOCOL = "openwrangler-legacy-recovery-archive-v1";
+const LEGACY_ARCHIVE_COMPLETION_PROTOCOL = "openwrangler-legacy-recovery-archive-completion-v1";
 const MAXIMUM_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_BUNDLE_HEADER_BYTES = 4 * 1024 * 1024;
 const ARCHIVE_SPACE_MULTIPLIER = 8n;
@@ -61,6 +66,13 @@ const MAXIMUM_ARCHIVE_ATTEMPTS = 8;
 const MAXIMUM_QUARANTINE_RECORDS = 128;
 const MAXIMUM_MANAGER_BOOTSTRAP_ATTEMPTS = 8;
 const MAXIMUM_LEGACY_ADOPTION_ATTEMPTS = 8;
+const MAXIMUM_LEGACY_ARCHIVE_ATTEMPTS = 8;
+const MAXIMUM_LEGACY_OBJECTS = 1_000_000;
+const MAXIMUM_LEGACY_OBJECT_MANIFEST_BYTES = 128 * 1024 * 1024;
+const MAXIMUM_LEGACY_RECOVERY_METADATA_BYTES = 16 * 1024 * 1024;
+const MAXIMUM_LEGACY_OBJECT_BYTES = 1024n * 1024n * 1024n * 1024n;
+const MAXIMUM_LEGACY_REFLOG_FILES = 32_768;
+const MAXIMUM_LEGACY_REFLOG_BYTES = 64n * 1024n * 1024n;
 const MAXIMUM_LEGACY_GENERATED_ITEMS = 64;
 const MAXIMUM_LEGACY_GENERATED_ENTRIES = 1_000_000;
 const MAXIMUM_LEGACY_GENERATED_DEPTH = 32;
@@ -95,6 +107,8 @@ const MANAGER_BOOTSTRAP_ATTEMPT_PATTERN = /^[0-9]{8}-[0-9a-f]{32}$/u;
 const MANAGER_BOOTSTRAP_SLOT_PATTERN = /^slot-([0-9]{8})$/u;
 const LEGACY_ADOPTION_ATTEMPT_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([0-9]{8})$/u;
 const LEGACY_ADOPTION_ENTRY_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.json$/u;
+const LEGACY_ARCHIVE_ATTEMPT_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.([0-9]{8})\.([1-8])$/u;
+const LEGACY_ARCHIVE_ENTRY_PATTERN = /^([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.json$/u;
 const MANAGER_REMOTE_FETCH = "+refs/heads/*:refs/remotes/origin/*";
 
 export class CheckoutLifecycleError extends Error {
@@ -373,6 +387,179 @@ function captureArchiveFile(path, label) {
   }
 }
 
+function openEmptyPrivateFile(path, label) {
+  let descriptor;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+    if (typeof process.getuid === "function") fchmodSync(descriptor, 0o600);
+    const metadata = fstatSync(descriptor, { bigint: true });
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.nlink !== 1n ||
+      metadata.size !== 0n ||
+      !currentUserOwns(metadata) ||
+      (typeof process.getuid === "function" && (metadata.mode & 0o777n) !== 0o600n)
+    ) {
+      fail("unsafe-legacy-archive", `${label} is not one empty private file.`);
+    }
+    return Object.freeze({ descriptor, identity: identityOf(metadata) });
+  } catch (error) {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (error instanceof CheckoutLifecycleError) throw error;
+    if (error.code === "EEXIST") fail("legacy-archive-changed", `${label} already exists.`);
+    fail("unsafe-legacy-archive", `${label} could not be created safely: ${error.message}`);
+  }
+}
+
+function privatizeOwnedFile(path, label) {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = fstatSync(descriptor, { bigint: true });
+    const identity = identityOf(before);
+    if (!before.isFile() || before.nlink !== 1n || !currentUserOwns(before)) {
+      fail("unsafe-legacy-archive", `${label} is not one owned regular file.`);
+    }
+    fchmodSync(descriptor, 0o600);
+    fsyncSync(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      !sameIdentity(identity, identityOf(after)) ||
+      before.size !== after.size ||
+      (typeof process.getuid === "function" && (after.mode & 0o777n) !== 0o600n)
+    ) {
+      fail("unsafe-legacy-archive", `${label} could not be made private.`);
+    }
+    revalidatePathIdentity(path, identity, label);
+    return identity;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function privatizeOwnedDirectory(path, label) {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+    const before = fstatSync(descriptor, { bigint: true });
+    const identity = identityOf(before);
+    if (!before.isDirectory() || !currentUserOwns(before)) {
+      fail("unsafe-legacy-archive", `${label} is not one owned directory.`);
+    }
+    fchmodSync(descriptor, 0o700);
+    try {
+      fsyncSync(descriptor);
+    } catch (error) {
+      if (process.platform !== "win32" || !["EINVAL", "EPERM"].includes(error.code)) throw error;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      !sameIdentity(identity, identityOf(after)) ||
+      (typeof process.getuid === "function" && (after.mode & 0o777n) !== 0o700n)
+    ) {
+      fail("unsafe-legacy-archive", `${label} could not be made private.`);
+    }
+    revalidatePathIdentity(path, identity, label, "directory");
+    return identity;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function parseLegacyObjectManifest(manifestPath, oidPath, objectFormat) {
+  const objectIdLength = objectFormat === "sha1" ? 40 : objectFormat === "sha256" ? 64 : 0;
+  if (objectIdLength === 0) fail("invalid-legacy-archive", "The object manifest has an unsupported object format.");
+  let manifestDescriptor;
+  let oidDescriptor;
+  try {
+    manifestDescriptor = openSync(manifestPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const metadata = fstatSync(manifestDescriptor, { bigint: true });
+    validateOwnedRegularFile(metadata, "Legacy object manifest", 0o600n);
+    if (metadata.size > BigInt(MAXIMUM_LEGACY_OBJECT_MANIFEST_BYTES)) {
+      fail("legacy-archive-too-large", "The exact object manifest exceeds its fixed size limit.");
+    }
+    const output = openEmptyPrivateFile(oidPath, "Legacy object-name stream");
+    oidDescriptor = output.descriptor;
+    const manifestHash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let carry = Buffer.alloc(0);
+    let offset = 0;
+    let count = 0;
+    let totalObjectBytes = 0n;
+    let priorOid;
+    const consume = (lineBytes) => {
+      if (lineBytes.length === 0 || lineBytes.length > 160) {
+        fail("invalid-legacy-archive", "The exact object manifest contains an invalid line.");
+      }
+      const line = lineBytes.toString("ascii");
+      const match = new RegExp(`^([0-9a-f]{${objectIdLength}}) (blob|tree|commit|tag) (0|[1-9][0-9]{0,39})$`, "u").exec(
+        line
+      );
+      if (match === null || (priorOid !== undefined && match[1] <= priorOid)) {
+        fail("invalid-legacy-archive", "The exact object manifest is malformed or not strictly sorted.");
+      }
+      const size = BigInt(match[3]);
+      count += 1;
+      totalObjectBytes += size;
+      if (count > MAXIMUM_LEGACY_OBJECTS || totalObjectBytes > MAXIMUM_LEGACY_OBJECT_BYTES) {
+        fail("legacy-archive-too-large", "The legacy object store exceeds its fixed archive limits.");
+      }
+      writeSync(oidDescriptor, `${match[1]}\n`, undefined, "ascii");
+      priorOid = match[1];
+    };
+    while (offset < Number(metadata.size)) {
+      const bytesRead = readSync(
+        manifestDescriptor,
+        buffer,
+        0,
+        Math.min(buffer.length, Number(metadata.size) - offset),
+        offset
+      );
+      if (bytesRead === 0) fail("legacy-archive-changed", "The exact object manifest changed while it was parsed.");
+      const bytes = buffer.subarray(0, bytesRead);
+      manifestHash.update(bytes);
+      const combined = carry.length === 0 ? bytes : Buffer.concat([carry, bytes]);
+      let start = 0;
+      for (;;) {
+        const newline = combined.indexOf(0x0a, start);
+        if (newline === -1) break;
+        consume(combined.subarray(start, newline));
+        start = newline + 1;
+      }
+      carry = Buffer.from(combined.subarray(start));
+      if (carry.length > 160) fail("invalid-legacy-archive", "The exact object manifest has an overlong line.");
+      offset += bytesRead;
+    }
+    if (carry.length !== 0 || count === 0) {
+      fail("invalid-legacy-archive", "The exact object manifest is empty or lacks its final newline.");
+    }
+    fsyncSync(oidDescriptor);
+    const after = fstatSync(manifestDescriptor, { bigint: true });
+    if (!sameIdentity(identityOf(metadata), identityOf(after)) || metadata.size !== after.size) {
+      fail("legacy-archive-changed", "The exact object manifest changed while it was parsed.");
+    }
+    const oidReceipt = hashDescriptor(oidDescriptor, "Legacy object-name stream", 0o600n);
+    return Object.freeze({
+      manifest: Object.freeze({
+        identity: identityOf(metadata),
+        byteLength: Number(metadata.size),
+        sha256: manifestHash.digest("hex")
+      }),
+      oids: oidReceipt,
+      objectCount: count,
+      objectBytes: totalObjectBytes.toString()
+    });
+  } finally {
+    if (oidDescriptor !== undefined) closeSync(oidDescriptor);
+    if (manifestDescriptor !== undefined) closeSync(manifestDescriptor);
+  }
+}
+
 function rejectDuplicateJsonKeys(text, label) {
   let offset = 0;
   let nodes = 0;
@@ -521,28 +708,38 @@ function writeJsonExclusive(path, value, expectedParentIdentity = undefined) {
   }
 }
 
-function assertPersistedJsonFits(value, label) {
+function assertPersistedJsonFits(
+  value,
+  label,
+  errorCode = "legacy-adoption-record-too-large",
+  maximumBytes = MAXIMUM_ENTRY_BYTES
+) {
   let byteLength;
   try {
     byteLength = Buffer.byteLength(JSON.stringify(value), "utf8") + 1;
   } catch {
-    fail("legacy-adoption-record-too-large", `${label} cannot be serialized safely.`);
+    fail(errorCode, `${label} cannot be serialized safely.`);
   }
-  if (byteLength > MAXIMUM_ENTRY_BYTES) {
-    fail("legacy-adoption-record-too-large", `${label} exceeds the persistent journal limit.`);
+  if (byteLength > maximumBytes) {
+    fail(errorCode, `${label} exceeds the persistent journal limit.`);
   }
   return byteLength;
 }
 
 function defaultRun(command, args, options = {}) {
   const stdoutFd = options.stdoutFd;
+  const stdinFd = options.stdinFd;
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: "utf8",
     env: options.env ?? process.env,
-    input: options.input,
+    input: stdinFd === undefined ? options.input : undefined,
     maxBuffer: MAXIMUM_COMMAND_OUTPUT_BYTES,
-    stdio: [options.input === undefined ? "ignore" : "pipe", stdoutFd === undefined ? "pipe" : stdoutFd, "pipe"]
+    stdio: [
+      stdinFd === undefined ? (options.input === undefined ? "ignore" : "pipe") : stdinFd,
+      stdoutFd === undefined ? "pipe" : stdoutFd,
+      "pipe"
+    ]
   });
   if (result.error !== undefined) fail("command-failed", `${command} could not start: ${result.error.message}`);
   const normalized = Object.freeze({ status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" });
@@ -1510,7 +1707,7 @@ function parseRefList(output, objectFormat, label, options = {}) {
             return Object.freeze({ oid, ref });
           });
   if (
-    refs.length < 1 ||
+    (refs.length < 1 && options.allowEmpty !== true) ||
     refs.length > MAXIMUM_ARCHIVE_REFS ||
     new Set(refs.map((item) => item.ref)).size !== refs.length
   ) {
@@ -2204,7 +2401,10 @@ function normalizePaths(root) {
     quarantinedCheckouts: join(managerRoot, "quarantined-checkouts"),
     legacyAdoptions: join(managerRoot, "legacy-adoptions"),
     legacyAdoptionAttempts: join(managerRoot, "legacy-adoptions", "attempts"),
-    legacyAdoptionEntries: join(managerRoot, "legacy-adoptions", "entries")
+    legacyAdoptionEntries: join(managerRoot, "legacy-adoptions", "entries"),
+    legacyArchives: join(managerRoot, "legacy-archives"),
+    legacyArchiveAttempts: join(managerRoot, "legacy-archives", "attempts"),
+    legacyArchiveEntries: join(managerRoot, "legacy-archives", "entries")
   });
 }
 
@@ -2222,6 +2422,7 @@ export function createCheckoutManager(options = {}) {
   );
   const tokenFactory = options.tokenFactory ?? randomToken;
   const isProcessAlive = options.isProcessAlive ?? processIsAlive;
+  const statFilesystem = options.statfs ?? statfsSync;
   const hooks = options.hooks;
   const entryIdentities = new WeakMap();
   const managedIdentities = new Map();
@@ -2340,6 +2541,17 @@ export function createCheckoutManager(options = {}) {
 
   function initializeLegacyAdoptionJournal() {
     for (const path of [paths.legacyAdoptions, paths.legacyAdoptionAttempts, paths.legacyAdoptionEntries]) {
+      const identity = managedIdentities.get(path);
+      if (identity === undefined) managedIdentities.set(path, ensurePrivateDirectory(path));
+      else {
+        assertPrivateDirectory(path, path);
+        revalidatePathIdentity(path, identity, path, "directory");
+      }
+    }
+  }
+
+  function initializeLegacyArchiveJournal() {
+    for (const path of [paths.legacyArchives, paths.legacyArchiveAttempts, paths.legacyArchiveEntries]) {
       const identity = managedIdentities.get(path);
       if (identity === undefined) managedIdentities.set(path, ensurePrivateDirectory(path));
       else {
@@ -2620,7 +2832,10 @@ export function createCheckoutManager(options = {}) {
       {
         cwd: paths.root,
         allowFailure: true,
-        env: { ...auditGitEnvironment(), GIT_OBJECT_DIRECTORY: snapshot.objectDirectory }
+        env: { ...auditGitEnvironment(), GIT_OBJECT_DIRECTORY: snapshot.objectDirectory },
+        input: options.input,
+        stdinFd: options.stdinFd,
+        stdoutFd: options.stdoutFd
       }
     );
     if (options.statuses?.includes(result.status)) return result;
@@ -2805,7 +3020,8 @@ export function createCheckoutManager(options = {}) {
           "Legacy references"
         ).stdout,
         objectFormat,
-        "Legacy references"
+        "Legacy references",
+        { allowEmpty: true }
       );
       const generatedInventory = captureLegacyGeneratedInventory(candidate.checkout, allowlist);
       revalidatePathIdentity(
@@ -3231,7 +3447,15 @@ export function createCheckoutManager(options = {}) {
 
   function legacyStatusRows(slug = undefined) {
     const attempts = listLegacyAttempts(slug);
-    const slugs = [...new Set([...attempts.map((attempt) => attempt.slug), ...legacyEntrySlugs(slug)])].sort();
+    const archiveAttempts = listLegacyArchiveAttempts(slug);
+    const slugs = [
+      ...new Set([
+        ...attempts.map((attempt) => attempt.slug),
+        ...legacyEntrySlugs(slug),
+        ...archiveAttempts.map((attempt) => attempt.slug),
+        ...legacyArchiveEntrySlugs(slug)
+      ])
+    ].sort();
     return Object.freeze(
       slugs.map((entrySlug) => {
         const matching = attempts.filter((attempt) => attempt.slug === entrySlug);
@@ -3252,6 +3476,7 @@ export function createCheckoutManager(options = {}) {
           }
         }
         const current = entry?.value;
+        const archive = legacyArchiveStatus(entrySlug);
         return Object.freeze({
           slug: entrySlug,
           state: current === undefined ? "interrupted-review-required" : current.evidence.state,
@@ -3275,11 +3500,1583 @@ export function createCheckoutManager(options = {}) {
               })
             )
           ),
+          ...(archive === undefined ? {} : { archive }),
           authorizesMove: false,
           authorizesCleanup: false
         });
       })
     );
+  }
+
+  function legacyArchiveAttemptPath(slug, adoptionGeneration, attempt) {
+    assertSlug(slug);
+    if (
+      !Number.isSafeInteger(adoptionGeneration) ||
+      adoptionGeneration < 1 ||
+      adoptionGeneration > MAXIMUM_LEGACY_ADOPTION_ATTEMPTS ||
+      !Number.isSafeInteger(attempt) ||
+      attempt < 1 ||
+      attempt > MAXIMUM_LEGACY_ARCHIVE_ATTEMPTS
+    ) {
+      fail("invalid-legacy-archive", "The legacy recovery-archive attempt is out of range.");
+    }
+    return join(paths.legacyArchiveAttempts, `${slug}.${String(adoptionGeneration).padStart(8, "0")}.${attempt}`);
+  }
+
+  function legacyArchiveEntryPath(slug) {
+    assertSlug(slug);
+    return join(paths.legacyArchiveEntries, `${slug}.json`);
+  }
+
+  function currentLegacyAdoption(slug) {
+    const attempts = listLegacyAttempts(slug);
+    const entry = readLegacyEntry(slug, attempts);
+    if (entry === undefined) {
+      fail("legacy-adoption-required", `Legacy checkout ${slug} has no completed adoption record.`);
+    }
+    revalidateLegacyEvidenceSource(entry.value.evidence);
+    const request = readJsonReceipt(entry.value.request.path, MAXIMUM_ENTRY_BYTES, "Legacy adoption request");
+    validateLegacyRequest(request.value, slug, entry.value.generation);
+    if (
+      !sameIdentity(request.identity, entry.value.request.identity) ||
+      request.byteLength !== entry.value.request.byteLength ||
+      request.sha256 !== entry.value.request.sha256
+    ) {
+      fail("invalid-legacy-adoption", "The adopted legacy request no longer matches its completion.");
+    }
+    return Object.freeze({ entry, request });
+  }
+
+  function legacyArchiveAdoptionAnchor(adoption) {
+    return Object.freeze({
+      path: adoption.entry.path,
+      identity: adoption.entry.identity,
+      byteLength: adoption.entry.byteLength,
+      sha256: adoption.entry.sha256,
+      generation: adoption.entry.value.generation
+    });
+  }
+
+  function revalidateLegacyAdoptionAnchor(adoption, anchor) {
+    const attempts = listLegacyAttempts(adoption.entry.value.slug);
+    const current = readLegacyEntry(adoption.entry.value.slug, attempts);
+    if (
+      current === undefined ||
+      current.path !== anchor.path ||
+      !sameIdentity(current.identity, anchor.identity) ||
+      current.byteLength !== anchor.byteLength ||
+      current.sha256 !== anchor.sha256 ||
+      current.value.generation !== anchor.generation ||
+      !isDeepStrictEqual(current.value, adoption.entry.value)
+    ) {
+      fail("legacy-adoption-changed", "The completed legacy adoption changed while its archive was prepared.");
+    }
+    revalidateLegacyEvidenceSource(current.value.evidence);
+  }
+
+  function revalidateLegacyArchiveAdoptionAnchor(request) {
+    const attempts = listLegacyAttempts(request.value.slug);
+    const current = readLegacyEntry(request.value.slug, attempts);
+    if (current === undefined) {
+      fail("legacy-adoption-changed", "The adoption anchored by the legacy archive is no longer published.");
+    }
+    const anchor = legacyArchiveAdoptionAnchor({ entry: current });
+    if (!isDeepStrictEqual(request.value.adoption, anchor)) {
+      fail("legacy-adoption-changed", "The legacy archive no longer belongs to the current adoption record.");
+    }
+  }
+
+  function assertAuditMatchesAdoption(audit, adoption) {
+    if (!isDeepStrictEqual(audit, adoption.entry.value.evidence)) {
+      fail("legacy-checkout-changed", "The legacy checkout no longer matches its completed adoption audit.");
+    }
+  }
+
+  function validateLegacyArchiveRequest(value, slug, adoptionGeneration, attempt) {
+    exactKeys(
+      value,
+      ["protocol", "slug", "adoptionGeneration", "attempt", "ownerTask", "token", "adoption"],
+      "Legacy recovery-archive request"
+    );
+    exactKeys(value.adoption, ["path", "identity", "byteLength", "sha256", "generation"], "Legacy adoption anchor");
+    validateIdentity(value.adoption.identity, "Legacy adoption anchor identity");
+    assertOwner(value.ownerTask);
+    if (
+      value.protocol !== LEGACY_ARCHIVE_REQUEST_PROTOCOL ||
+      value.slug !== slug ||
+      value.adoptionGeneration !== adoptionGeneration ||
+      value.attempt !== attempt ||
+      value.adoption.generation !== adoptionGeneration ||
+      !Number.isSafeInteger(value.adoption.byteLength) ||
+      value.adoption.byteLength < 1 ||
+      !/^[0-9a-f]{64}$/u.test(value.adoption.sha256) ||
+      !/^[0-9a-f]{32}$/u.test(value.token)
+    ) {
+      fail("invalid-legacy-archive", "The legacy recovery-archive request is malformed.");
+    }
+    return value;
+  }
+
+  function allocateLegacyArchiveAttempt(slug, adoptionGeneration) {
+    const prior = listLegacyArchiveAttempts(slug).filter((item) => item.adoptionGeneration === adoptionGeneration);
+    const attemptNumber = (prior.at(-1)?.attempt ?? 0) + 1;
+    if (attemptNumber > MAXIMUM_LEGACY_ARCHIVE_ATTEMPTS) {
+      fail("legacy-archive-attempts-exhausted", "The legacy archive journal has no remaining attempt slots.");
+    }
+    const path = legacyArchiveAttemptPath(slug, adoptionGeneration, attemptNumber);
+    const parentIdentity = managedIdentities.get(paths.legacyArchiveAttempts);
+    if (parentIdentity === undefined) fail("unsafe-manager", "The legacy archive journal was not initialized.");
+    revalidatePathIdentity(paths.legacyArchiveAttempts, parentIdentity, "Legacy archive attempts", "directory");
+    try {
+      mkdirSync(path, { mode: 0o700 });
+      chmodSync(path, 0o700);
+      fsyncDirectory(paths.legacyArchiveAttempts);
+    } catch (error) {
+      if (error.code === "EEXIST") fail("legacy-archive-changed", "The next legacy archive attempt already exists.");
+      throw error;
+    }
+    const identity = assertPrivateDirectory(path, "Legacy recovery-archive attempt");
+    revalidatePathIdentity(paths.legacyArchiveAttempts, parentIdentity, "Legacy archive attempts", "directory");
+    return Object.freeze({ slug, adoptionGeneration, attempt: attemptNumber, path, identity });
+  }
+
+  function captureLegacyArchiveReflogs(snapshot, destinationRoot) {
+    const sourceRoot = snapshot.logsDirectory;
+    const rootEntries = readDirectoryBounded(sourceRoot, 3, "The legacy reflog root").sort((left, right) =>
+      Buffer.compare(Buffer.from(left.name), Buffer.from(right.name))
+    );
+    if (rootEntries.some((item) => !["HEAD", "refs"].includes(item.name))) {
+      fail("legacy-archive-not-eligible", "The legacy reflog root contains unsupported files.");
+    }
+    mkdirSync(destinationRoot, { mode: 0o700 });
+    chmodSync(destinationRoot, 0o700);
+    const destinationIdentity = assertPrivateDirectory(destinationRoot, "Archived legacy reflogs");
+    const records = [];
+    let fileCount = 0;
+    let totalBytes = 0n;
+
+    const visit = (sourceDirectory, destinationDirectory, relativeDirectory, depth) => {
+      if (depth > MAXIMUM_LEGACY_ADMIN_DEPTH) {
+        fail("legacy-archive-not-eligible", "The legacy reflogs are nested too deeply.");
+      }
+      const sourceIdentity = captureLegacyDirectory(sourceDirectory, "Legacy reflog directory");
+      if (destinationDirectory !== destinationRoot) {
+        mkdirSync(destinationDirectory, { mode: 0o700 });
+        chmodSync(destinationDirectory, 0o700);
+      }
+      const destinationDirectoryIdentity = assertPrivateDirectory(destinationDirectory, "Archived reflog directory");
+      const entries = readDirectoryBounded(sourceDirectory, MAXIMUM_LEGACY_REFLOG_FILES, "The legacy reflogs").sort(
+        (left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name))
+      );
+      for (const item of entries) {
+        const sourcePath = join(sourceDirectory, item.name);
+        const destinationPath = join(destinationDirectory, item.name);
+        const relativePath = relativeDirectory === "" ? item.name : `${relativeDirectory}/${item.name}`;
+        const metadata = lstatSync(sourcePath, { bigint: true });
+        if (!currentUserOwns(metadata) || metadata.isSymbolicLink()) {
+          fail("legacy-archive-not-eligible", "A legacy reflog entry is unsafe.");
+        }
+        if (metadata.isDirectory()) {
+          visit(sourcePath, destinationPath, relativePath, depth + 1);
+          continue;
+        }
+        if (!metadata.isFile()) fail("legacy-archive-not-eligible", "A legacy reflog entry is not a file.");
+        fileCount += 1;
+        totalBytes += metadata.size;
+        if (fileCount > MAXIMUM_LEGACY_REFLOG_FILES || totalBytes > MAXIMUM_LEGACY_REFLOG_BYTES) {
+          fail("legacy-archive-too-large", "The legacy reflogs exceed their fixed archive limits.");
+        }
+        copyLegacyAdminFile(
+          sourcePath,
+          destinationPath,
+          `Legacy reflog ${relativePath}`,
+          Number(MAXIMUM_LEGACY_REFLOG_BYTES)
+        );
+        const receipt = captureArchiveFile(destinationPath, `Archived legacy reflog ${relativePath}`);
+        records.push(
+          Object.freeze({
+            path: relativePath,
+            byteLength: receipt.byteLength,
+            sha256: receipt.sha256
+          })
+        );
+      }
+      fsyncDirectory(destinationDirectory);
+      revalidatePathIdentity(sourceDirectory, sourceIdentity, "Legacy reflog directory", "directory");
+      revalidatePathIdentity(
+        destinationDirectory,
+        destinationDirectoryIdentity,
+        "Archived reflog directory",
+        "directory"
+      );
+    };
+
+    const headEntry = rootEntries.find((item) => item.name === "HEAD");
+    if (headEntry !== undefined) {
+      if (!headEntry.isFile() || headEntry.isSymbolicLink()) {
+        fail("legacy-archive-not-eligible", "The legacy HEAD reflog is unsafe.");
+      }
+      const sourcePath = join(sourceRoot, "HEAD");
+      const destinationPath = join(destinationRoot, "HEAD");
+      const metadata = lstatSync(sourcePath, { bigint: true });
+      totalBytes += metadata.size;
+      fileCount += 1;
+      if (totalBytes > MAXIMUM_LEGACY_REFLOG_BYTES) {
+        fail("legacy-archive-too-large", "The legacy reflogs exceed their fixed archive limits.");
+      }
+      copyLegacyAdminFile(sourcePath, destinationPath, "Legacy HEAD reflog", Number(MAXIMUM_LEGACY_REFLOG_BYTES));
+      const receipt = captureArchiveFile(destinationPath, "Archived legacy HEAD reflog");
+      records.push(Object.freeze({ path: "HEAD", byteLength: receipt.byteLength, sha256: receipt.sha256 }));
+    }
+    const refsEntry = rootEntries.find((item) => item.name === "refs");
+    if (refsEntry !== undefined) {
+      if (!refsEntry.isDirectory() || refsEntry.isSymbolicLink()) {
+        fail("legacy-archive-not-eligible", "The legacy ref reflogs are unsafe.");
+      }
+      visit(join(sourceRoot, "refs"), join(destinationRoot, "refs"), "refs", 0);
+    }
+    fsyncDirectory(destinationRoot);
+    revalidatePathIdentity(destinationRoot, destinationIdentity, "Archived legacy reflogs", "directory");
+    revalidatePathIdentity(sourceRoot, snapshot.logsIdentity, "The legacy reflogs", "directory");
+    records.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
+    return Object.freeze({
+      path: destinationRoot,
+      identity: destinationIdentity,
+      fileCount,
+      byteLength: totalBytes.toString(),
+      files: Object.freeze(records)
+    });
+  }
+
+  function captureLegacyRecoveryMetadata(snapshot, destinationRoot) {
+    const objectFormat = requireLegacyGit(
+      snapshot,
+      ["rev-parse", "--show-object-format"],
+      "Legacy archive object format"
+    ).stdout.trim();
+    const refs = parseRefList(
+      requireLegacyGit(
+        snapshot,
+        ["for-each-ref", "--sort=refname", "--format=%(objectname) %(refname)", "refs/"],
+        "Legacy archive references"
+      ).stdout,
+      objectFormat,
+      "Legacy archive references",
+      { allowEmpty: true }
+    );
+    const refNames = new Set(refs.map(({ ref }) => ref));
+    for (const file of snapshot.refFiles) {
+      const localPath = relative(snapshot.refsDirectory, file.path);
+      const components = localPath.split(sep);
+      if (
+        localPath === "" ||
+        isAbsolute(localPath) ||
+        components.some((component) => component === "" || component === "." || component === "..")
+      ) {
+        fail("legacy-archive-not-eligible", "The legacy loose-reference path is unsafe.");
+      }
+      const ref = `refs/${components.join("/")}`;
+      if (!refNames.has(ref)) {
+        fail("legacy-archive-not-eligible", "A legacy loose reference is malformed or hidden from Git.");
+      }
+    }
+    const headFile = readBoundedFile(join(snapshot.gitDirectory, "HEAD"), MAXIMUM_WORKTREE_FIELD_BYTES, "Legacy HEAD");
+    const symbolic = /^ref: (refs\/[A-Za-z0-9._/-]+)\n$/u.exec(headFile.text);
+    const detached = new RegExp(`^([0-9a-f]{${objectFormat === "sha1" ? 40 : 64}})\\n$`, "u").exec(headFile.text);
+    if ((symbolic === null) === (detached === null)) {
+      fail("legacy-archive-not-eligible", "The legacy HEAD file is malformed.");
+    }
+    if (symbolic !== null) {
+      requireLegacyGit(snapshot, ["check-ref-format", symbolic[1]], "Legacy symbolic HEAD target");
+    }
+    let origHead = null;
+    const origHeadPath = join(snapshot.sourceGitDirectory, "ORIG_HEAD");
+    if (entryExistsNoFollow(origHeadPath, "Legacy ORIG_HEAD")) {
+      const file = readBoundedFile(origHeadPath, 256, "Legacy ORIG_HEAD");
+      const match = new RegExp(`^([0-9a-f]{${objectFormat === "sha1" ? 40 : 64}})\\n?$`, "u").exec(file.text);
+      if (match === null) fail("legacy-archive-not-eligible", "The legacy ORIG_HEAD file is malformed.");
+      origHead = file.text;
+    }
+    const reflogs = captureLegacyArchiveReflogs(snapshot, destinationRoot);
+    revalidateLegacyAuditSnapshot(snapshot);
+    return Object.freeze({
+      objectFormat,
+      head: Object.freeze({
+        text: headFile.text,
+        kind: symbolic === null ? "detached" : "symbolic",
+        target: symbolic?.[1] ?? detached[1]
+      }),
+      refs,
+      origHead,
+      reflogs
+    });
+  }
+
+  function normalizedLegacyRecoveryMetadata(metadata) {
+    return Object.freeze({
+      objectFormat: metadata.objectFormat,
+      head: metadata.head,
+      refs: metadata.refs,
+      origHead: metadata.origHead,
+      reflogs: Object.freeze({
+        fileCount: metadata.reflogs.fileCount,
+        byteLength: metadata.reflogs.byteLength,
+        files: metadata.reflogs.files
+      })
+    });
+  }
+
+  function parseLegacyObjectStorePreflight(output, label) {
+    const values = new Map();
+    for (const line of output.trim().split("\n")) {
+      const match = /^([a-z-]+): (0|[1-9][0-9]{0,39})$/u.exec(line);
+      if (match === null || values.has(match[1])) {
+        fail("legacy-archive-not-eligible", `${label} returned malformed object-store size data.`);
+      }
+      values.set(match[1], BigInt(match[2]));
+    }
+    for (const key of ["count", "in-pack", "packs", "size", "size-pack", "prune-packable", "garbage", "size-garbage"]) {
+      if (!values.has(key)) fail("legacy-archive-not-eligible", `${label} omitted required object-store size data.`);
+    }
+    if (values.get("garbage") !== 0n || values.get("prune-packable") !== 0n) {
+      fail("legacy-archive-not-eligible", "The legacy object store contains garbage or duplicate loose objects.");
+    }
+    const storedObjects = values.get("count") + values.get("in-pack");
+    if (storedObjects < 1n || storedObjects > BigInt(MAXIMUM_LEGACY_OBJECTS)) {
+      fail("legacy-archive-too-large", "The legacy object store exceeds the fixed object-count limit.");
+    }
+    const maximumManifestBytes = storedObjects * 160n;
+    if (maximumManifestBytes > BigInt(MAXIMUM_LEGACY_OBJECT_MANIFEST_BYTES)) {
+      fail("legacy-archive-too-large", "The bounded object manifest could exceed its fixed byte limit.");
+    }
+    return Object.freeze({
+      storedObjects: storedObjects.toString(),
+      maximumManifestBytes: maximumManifestBytes.toString()
+    });
+  }
+
+  function preflightLegacyObjectManifest(snapshot) {
+    return parseLegacyObjectStorePreflight(
+      requireLegacyGit(snapshot, ["--no-pager", "count-objects", "-v"], "Legacy object-store size preflight").stdout,
+      "Git"
+    );
+  }
+
+  function createLegacyObjectManifest(snapshot, directory, stem) {
+    preflightLegacyObjectManifest(snapshot);
+    const manifestPath = join(directory, `${stem}.manifest`);
+    const namesPath = join(directory, `${stem}.oids`);
+    const output = openEmptyPrivateFile(manifestPath, "Legacy object manifest");
+    try {
+      requireLegacyGit(
+        snapshot,
+        ["--no-pager", "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)", "--batch-all-objects"],
+        "Legacy all-object enumeration",
+        { stdoutFd: output.descriptor }
+      );
+      fsyncSync(output.descriptor);
+    } finally {
+      closeSync(output.descriptor);
+    }
+    hooks?.beforeLegacyObjectManifestParse?.(stem, manifestPath);
+    revalidatePathIdentity(manifestPath, output.identity, "Legacy object manifest");
+    const parsed = parseLegacyObjectManifest(manifestPath, namesPath, snapshotObjectFormat(snapshot));
+    fsyncDirectory(directory);
+    return Object.freeze({
+      manifestPath,
+      namesPath,
+      objectFormat: snapshotObjectFormat(snapshot),
+      ...parsed
+    });
+  }
+
+  function snapshotObjectFormat(snapshot) {
+    const value = requireLegacyGit(
+      snapshot,
+      ["rev-parse", "--show-object-format"],
+      "Legacy archive object format"
+    ).stdout.trim();
+    if (!["sha1", "sha256"].includes(value)) {
+      fail("legacy-archive-not-eligible", "The legacy repository has an unsupported object format.");
+    }
+    return value;
+  }
+
+  function createLegacyObjectPack(snapshot, attempt, objects) {
+    const packPath = join(attempt.path, "objects.pack");
+    const namesDescriptor = openSync(objects.namesPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const pack = openEmptyPrivateFile(packPath, "Legacy all-object pack");
+    try {
+      requireLegacyGit(
+        snapshot,
+        [
+          "--no-pager",
+          "-c",
+          "pack.threads=1",
+          "-c",
+          "pack.window=4",
+          "-c",
+          "pack.depth=10",
+          "-c",
+          "pack.windowMemory=32m",
+          "-c",
+          "pack.deltaCacheSize=16m",
+          "-c",
+          "core.bigFileThreshold=16m",
+          "pack-objects",
+          "--stdout"
+        ],
+        "Legacy all-object pack creation",
+        { stdinFd: namesDescriptor, stdoutFd: pack.descriptor }
+      );
+      fsyncSync(pack.descriptor);
+    } finally {
+      closeSync(pack.descriptor);
+      closeSync(namesDescriptor);
+    }
+    const packReceipt = captureArchiveFile(packPath, "Legacy all-object pack");
+    fsyncDirectory(attempt.path);
+    revalidateLegacyAuditSnapshot(snapshot);
+    return Object.freeze({
+      pack: Object.freeze({ path: packPath, ...packReceipt })
+    });
+  }
+
+  function compareLegacyObjectManifests(left, right, label) {
+    if (
+      left.objectFormat !== right.objectFormat ||
+      left.objectCount !== right.objectCount ||
+      left.objectBytes !== right.objectBytes ||
+      left.manifest.byteLength !== right.manifest.byteLength ||
+      left.manifest.sha256 !== right.manifest.sha256
+    ) {
+      fail("legacy-checkout-changed", `${label} did not contain the same exact Git objects.`);
+    }
+  }
+
+  function captureLegacyRecoveryObjectManifest(repositoryPath, directory, objectFormat) {
+    parseLegacyObjectStorePreflight(
+      requireArchiveGitCommand(
+        repositoryPath,
+        ["--no-pager", "count-objects", "-v"],
+        "Recovered object-store size preflight"
+      ).stdout,
+      "Recovered Git"
+    );
+    const manifestPath = join(directory, "current.manifest");
+    const output = openEmptyPrivateFile(manifestPath, "Current recovered object manifest");
+    try {
+      requireArchiveGitCommand(
+        repositoryPath,
+        ["--no-pager", "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)", "--batch-all-objects"],
+        "Current recovered all-object enumeration",
+        { stdoutFd: output.descriptor }
+      );
+      fsyncSync(output.descriptor);
+    } finally {
+      closeSync(output.descriptor);
+    }
+    hooks?.beforeLegacyStatusRecoveryManifestParse?.(manifestPath);
+    const parsed = parseLegacyObjectManifest(manifestPath, join(directory, "current.oids"), objectFormat);
+    return Object.freeze({
+      objectFormat,
+      objectCount: parsed.objectCount,
+      objectBytes: parsed.objectBytes,
+      manifest: parsed.manifest
+    });
+  }
+
+  function withLegacyRecoveryStatusWorkspace(callback) {
+    const path = withPrivateUmask(() => mkdtempSync(join(tmpdir(), "ow-legacy-recovery-status-")));
+    chmodSync(path, 0o700);
+    const identity = assertPrivateDirectory(path, "Legacy recovery status workspace");
+    try {
+      return callback(path);
+    } finally {
+      revalidatePathIdentity(path, identity, "Legacy recovery status workspace", "directory");
+      rmSync(path, { recursive: true, force: false });
+    }
+  }
+
+  function revalidateLegacyRecoveryRepository(receipt, attempt) {
+    const recovery = receipt.recovery;
+    const repositoryPath = recovery.repository.path;
+    revalidatePathIdentity(repositoryPath, recovery.repository.identity, "Legacy verification repository", "directory");
+    const objectsPath = join(repositoryPath, "objects");
+    const objectsIdentity = assertPrivateDirectory(objectsPath, "Legacy verification object store");
+    const infoPath = join(objectsPath, "info");
+    const infoIdentity = assertPrivateDirectory(infoPath, "Legacy verification object info");
+    const packPath = join(objectsPath, "pack");
+    const packIdentity = assertPrivateDirectory(packPath, "Legacy verification pack directory");
+    const expectedPackNames = [`pack-${recovery.packId}.idx`, `pack-${recovery.packId}.pack`];
+    const metadataReceipt = readJsonReceipt(
+      receipt.metadata.path,
+      MAXIMUM_LEGACY_RECOVERY_METADATA_BYTES,
+      "Recovery metadata"
+    );
+    if (
+      !sameIdentity(metadataReceipt.identity, receipt.metadata.identity) ||
+      metadataReceipt.byteLength !== receipt.metadata.byteLength ||
+      metadataReceipt.sha256 !== receipt.metadata.sha256
+    ) {
+      fail("legacy-archive-changed", "The recovery metadata changed before status verification.");
+    }
+    validatePersistedLegacyRecoveryMetadata(metadataReceipt.value, attempt);
+    const assertExactObjectLayout = () => {
+      const objectEntries = readDirectoryBounded(objectsPath, 3, "Legacy verification object store")
+        .map((entry) => ({ name: entry.name, directory: entry.isDirectory(), symlink: entry.isSymbolicLink() }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+      if (
+        !isDeepStrictEqual(objectEntries, [
+          { name: "info", directory: true, symlink: false },
+          { name: "pack", directory: true, symlink: false }
+        ])
+      ) {
+        fail("legacy-archive-changed", "The recovered object store gained loose or unknown state.");
+      }
+      if (readDirectoryBounded(infoPath, 1, "Legacy verification object info").length !== 0) {
+        fail("legacy-archive-changed", "The recovered object info directory changed.");
+      }
+      const packEntries = readDirectoryBounded(packPath, 3, "Legacy verification pack directory")
+        .map((entry) => ({ name: entry.name, file: entry.isFile(), symlink: entry.isSymbolicLink() }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+      if (
+        !isDeepStrictEqual(
+          packEntries,
+          [...expectedPackNames].sort().map((name) => ({ name, file: true, symlink: false }))
+        )
+      ) {
+        fail("legacy-archive-changed", "The recovered pack directory changed.");
+      }
+    };
+    const assertExactRepositoryLayout = () => {
+      const expected = new Map();
+      const add = (relativePath, type) => {
+        const prior = expected.get(relativePath);
+        if (prior !== undefined && prior !== type) {
+          fail("invalid-legacy-archive", "The recovery metadata describes a conflicting repository layout.");
+        }
+        expected.set(relativePath, type);
+      };
+      const addFileWithParents = (relativePath) => {
+        const components = relativePath.split("/");
+        for (let index = 1; index < components.length; index += 1) {
+          add(components.slice(0, index).join("/"), "directory");
+        }
+        add(relativePath, "file");
+      };
+      for (const [relativePath, type] of [
+        ["HEAD", "file"],
+        ["config", "file"],
+        ["objects", "directory"],
+        ["objects/info", "directory"],
+        ["objects/pack", "directory"],
+        [`objects/pack/pack-${recovery.packId}.idx`, "file"],
+        [`objects/pack/pack-${recovery.packId}.pack`, "file"],
+        ["refs", "directory"],
+        ["refs/heads", "directory"],
+        ["refs/tags", "directory"]
+      ]) {
+        add(relativePath, type);
+      }
+      if (metadataReceipt.value.origHead !== null) add("ORIG_HEAD", "file");
+      for (const { ref } of metadataReceipt.value.refs) addFileWithParents(ref);
+      for (const reflog of metadataReceipt.value.reflogs.files) addFileWithParents(`logs/${reflog.path}`);
+      if (expected.size > MAXIMUM_LEGACY_ADMIN_ENTRIES) {
+        fail("invalid-legacy-archive", "The recovery repository layout is too large to verify.");
+      }
+
+      const seen = new Set();
+      const visit = (directory, relativeDirectory, depth) => {
+        if (depth > MAXIMUM_LEGACY_ADMIN_DEPTH) {
+          fail("legacy-archive-changed", "The recovery repository is nested too deeply.");
+        }
+        const entries = readDirectoryBounded(
+          directory,
+          MAXIMUM_LEGACY_ADMIN_ENTRIES,
+          "Legacy verification repository layout"
+        );
+        for (const entry of entries) {
+          const relativePath = relativeDirectory === "" ? entry.name : `${relativeDirectory}/${entry.name}`;
+          const expectedType = expected.get(relativePath);
+          if (expectedType === undefined || seen.has(relativePath)) {
+            fail("legacy-archive-changed", "The recovery repository gained unknown or duplicate state.");
+          }
+          let metadata;
+          try {
+            metadata = lstatSync(join(directory, entry.name), { bigint: true });
+          } catch {
+            fail("legacy-archive-changed", "The recovery repository changed while its layout was verified.");
+          }
+          const isExpectedDirectory =
+            expectedType === "directory" &&
+            entry.isDirectory() &&
+            !entry.isSymbolicLink() &&
+            metadata.isDirectory() &&
+            !metadata.isSymbolicLink() &&
+            currentUserOwns(metadata);
+          const isExpectedFile =
+            expectedType === "file" &&
+            entry.isFile() &&
+            !entry.isSymbolicLink() &&
+            metadata.isFile() &&
+            !metadata.isSymbolicLink() &&
+            metadata.nlink === 1n &&
+            currentUserOwns(metadata);
+          if (!isExpectedDirectory && !isExpectedFile) {
+            fail("legacy-archive-changed", "The recovery repository layout changed type or ownership.");
+          }
+          seen.add(relativePath);
+          if (seen.size > MAXIMUM_LEGACY_ADMIN_ENTRIES) {
+            fail("legacy-archive-changed", "The recovery repository layout is too large to verify.");
+          }
+          if (expectedType === "directory") visit(join(directory, entry.name), relativePath, depth + 1);
+        }
+      };
+      visit(repositoryPath, "", 0);
+      if (seen.size !== expected.size) {
+        fail("legacy-archive-changed", "The recovery repository is missing required Git state.");
+      }
+    };
+    assertExactObjectLayout();
+    assertExactRepositoryLayout();
+    hooks?.beforeLegacyStatusRecoveryFsck?.(attempt, receipt);
+    requireArchiveGitCommand(
+      repositoryPath,
+      ["--no-pager", "fsck", "--strict", "--full", "--no-dangling"],
+      "Current recovered repository verification"
+    );
+    withLegacyRecoveryStatusWorkspace((workspace) => {
+      const current = captureLegacyRecoveryObjectManifest(repositoryPath, workspace, receipt.objects.objectFormat);
+      compareLegacyObjectManifests(
+        {
+          objectFormat: receipt.objects.objectFormat,
+          objectCount: receipt.objects.objectCount,
+          objectBytes: receipt.objects.objectBytes,
+          manifest: receipt.objects.manifest
+        },
+        current,
+        "The current recovered object manifest"
+      );
+    });
+    requireArchiveGitCommand(
+      repositoryPath,
+      ["--no-pager", "fsck", "--strict", "--full", "--no-dangling"],
+      "Final recovered repository verification"
+    );
+    for (const [file, label] of [
+      [recovery.pack, "Recovered object pack"],
+      [recovery.index, "Recovered object index"]
+    ]) {
+      assertLegacyArchiveFileMatches(file, label);
+    }
+    assertExactObjectLayout();
+    assertExactRepositoryLayout();
+    revalidatePathIdentity(objectsPath, objectsIdentity, "Legacy verification object store", "directory");
+    revalidatePathIdentity(infoPath, infoIdentity, "Legacy verification object info", "directory");
+    revalidatePathIdentity(packPath, packIdentity, "Legacy verification pack directory", "directory");
+    revalidatePathIdentity(repositoryPath, recovery.repository.identity, "Legacy verification repository", "directory");
+  }
+
+  function writeOwnedPrivateFile(path, bytes, label, expectedIdentity = undefined) {
+    let descriptor;
+    try {
+      const flags =
+        expectedIdentity === undefined
+          ? constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0)
+          : constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0);
+      descriptor = openSync(path, flags, 0o600);
+      const before = fstatSync(descriptor, { bigint: true });
+      if (
+        !before.isFile() ||
+        before.nlink !== 1n ||
+        !currentUserOwns(before) ||
+        (expectedIdentity !== undefined && !sameIdentity(identityOf(before), expectedIdentity))
+      ) {
+        fail("unsafe-legacy-archive", `${label} is not the exact expected output file.`);
+      }
+      fchmodSync(descriptor, 0o600);
+      ftruncateSync(descriptor, 0);
+      const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes, "utf8");
+      let offset = 0;
+      while (offset < buffer.length) offset += writeSync(descriptor, buffer, offset, buffer.length - offset, null);
+      fsyncSync(descriptor);
+      const metadata = fstatSync(descriptor, { bigint: true });
+      if (
+        !metadata.isFile() ||
+        metadata.nlink !== 1n ||
+        !currentUserOwns(metadata) ||
+        !sameIdentity(identityOf(before), identityOf(metadata))
+      ) {
+        fail("unsafe-legacy-archive", `${label} could not be restored safely.`);
+      }
+      revalidatePathIdentity(path, identityOf(before), label);
+    } catch (error) {
+      if (error instanceof CheckoutLifecycleError) throw error;
+      if (error.code === "EEXIST") fail("legacy-archive-changed", `${label} was planted before recovery.`);
+      fail("unsafe-legacy-archive", `${label} could not be written safely: ${error.message}`);
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
+    }
+  }
+
+  function copyArchivedReflogsToRecovery(metadata, verificationPath) {
+    const sourceRoot = metadata.reflogs.path;
+    for (const record of metadata.reflogs.files) {
+      const components = record.path.split("/");
+      if (
+        components.some((component) => component === "" || component === "." || component === "..") ||
+        !(record.path === "HEAD" || record.path.startsWith("refs/"))
+      ) {
+        fail("invalid-legacy-archive", "Archived reflog metadata contains an unsafe path.");
+      }
+      const sourcePath = join(sourceRoot, ...components);
+      let destinationParent = join(verificationPath, "logs");
+      ensurePrivateDirectory(destinationParent);
+      for (const component of components.slice(0, -1)) {
+        destinationParent = join(destinationParent, component);
+        ensurePrivateDirectory(destinationParent);
+      }
+      const destinationPath = join(destinationParent, components.at(-1));
+      let sourceDescriptor;
+      let destination;
+      try {
+        sourceDescriptor = openSync(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        const before = fstatSync(sourceDescriptor, { bigint: true });
+        validateOwnedRegularFile(before, `Archived reflog ${record.path}`, 0o600n);
+        if (
+          before.size !== BigInt(record.byteLength) ||
+          before.size > MAXIMUM_LEGACY_REFLOG_BYTES ||
+          record.byteLength > Number(MAXIMUM_LEGACY_REFLOG_BYTES)
+        ) {
+          fail("legacy-archive-changed", `Archived reflog ${record.path} changed before recovery.`);
+        }
+        hooks?.afterLegacyReflogOpen?.(record, sourcePath, identityOf(before));
+        revalidatePathIdentity(sourcePath, identityOf(before), `Archived reflog ${record.path}`);
+        destination = openEmptyPrivateFile(destinationPath, `Recovered reflog ${record.path}`);
+        const hash = createHash("sha256");
+        const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, record.byteLength));
+        let offset = 0;
+        while (offset < record.byteLength) {
+          const count = readSync(
+            sourceDescriptor,
+            buffer,
+            0,
+            Math.min(buffer.length, record.byteLength - offset),
+            offset
+          );
+          if (count === 0) fail("legacy-archive-changed", "An archived reflog changed while it was restored.");
+          hash.update(buffer.subarray(0, count));
+          let written = 0;
+          while (written < count) {
+            written += writeSync(destination.descriptor, buffer, written, count - written);
+          }
+          offset += count;
+        }
+        fsyncSync(destination.descriptor);
+        const after = fstatSync(sourceDescriptor, { bigint: true });
+        const recovered = hashDescriptor(destination.descriptor, `Recovered reflog ${record.path}`, 0o600n);
+        if (
+          !sameIdentity(identityOf(before), identityOf(after)) ||
+          before.size !== after.size ||
+          before.mode !== after.mode ||
+          before.mtimeNs !== after.mtimeNs ||
+          before.ctimeNs !== after.ctimeNs ||
+          hash.digest("hex") !== record.sha256 ||
+          !sameIdentity(destination.identity, recovered.identity) ||
+          recovered.byteLength !== record.byteLength ||
+          recovered.sha256 !== record.sha256
+        ) {
+          fail("legacy-archive-recovery-failed", `Recovered reflog ${record.path} differs from the archive.`);
+        }
+        revalidatePathIdentity(sourcePath, identityOf(before), `Archived reflog ${record.path}`);
+        revalidatePathIdentity(destinationPath, destination.identity, `Recovered reflog ${record.path}`);
+      } finally {
+        if (destination !== undefined) closeSync(destination.descriptor);
+        if (sourceDescriptor !== undefined) closeSync(sourceDescriptor);
+      }
+    }
+  }
+
+  function proveLegacyArchiveRecovery(attempt, objects, packed, metadata) {
+    const template = createPrivateAttemptDirectory(attempt, "verification-template", "Legacy verification template");
+    const verification = createPrivateAttemptDirectory(attempt, "verification.git", "Legacy verification repository");
+    requireStandaloneArchiveGitCommand(
+      [
+        "init",
+        "--bare",
+        "--quiet",
+        `--object-format=${objects.objectFormat}`,
+        `--template=${template.path}`,
+        verification.path
+      ],
+      attempt.path,
+      "Legacy verification repository initialization"
+    );
+    revalidatePathIdentity(template.path, template.identity, "Legacy verification template", "directory");
+    if (readDirectoryBounded(template.path, 1, "Legacy verification template").length !== 0) {
+      fail("legacy-archive-changed", "The empty legacy verification template changed.");
+    }
+    revalidatePathIdentity(verification.path, verification.identity, "Legacy verification repository", "directory");
+    const verificationHeadIdentity = privatizeOwnedFile(join(verification.path, "HEAD"), "Legacy verification HEAD");
+    const verificationObjectsDirectory = join(verification.path, "objects");
+    privatizeOwnedDirectory(verificationObjectsDirectory, "Legacy verification object store");
+    privatizeOwnedDirectory(join(verificationObjectsDirectory, "info"), "Legacy verification object info");
+    const verificationPackDirectory = join(verificationObjectsDirectory, "pack");
+    const verificationPackIdentity = privatizeOwnedDirectory(
+      verificationPackDirectory,
+      "Legacy verification pack directory"
+    );
+    hooks?.beforeLegacyRecoveryIndexPack?.(attempt, verificationPackDirectory);
+    if (readDirectoryBounded(verificationPackDirectory, 1, "Legacy verification pack directory").length !== 0) {
+      fail("legacy-archive-changed", "The isolated recovery pack directory is not empty.");
+    }
+    const packDescriptor = openSync(packed.pack.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    let installed;
+    try {
+      const currentPack = hashDescriptor(packDescriptor, "Legacy all-object pack", 0o600n);
+      if (
+        !sameIdentity(currentPack.identity, packed.pack.identity) ||
+        currentPack.byteLength !== packed.pack.byteLength ||
+        currentPack.sha256 !== packed.pack.sha256
+      ) {
+        fail("legacy-archive-changed", "The legacy all-object pack changed before recovery.");
+      }
+      revalidatePathIdentity(packed.pack.path, currentPack.identity, "Legacy all-object pack");
+      installed = requireArchiveGitCommand(
+        verification.path,
+        ["--no-pager", "index-pack", "--stdin", "--strict", "--no-rev-index", "--index-version=2"],
+        "Legacy verification pack installation",
+        { stdinFd: packDescriptor }
+      ).stdout.trim();
+    } finally {
+      closeSync(packDescriptor);
+    }
+    const expectedLength = objects.objectFormat === "sha1" ? 40 : 64;
+    const installedMatch = new RegExp(`^pack\\t([0-9a-f]{${expectedLength}})$`, "u").exec(installed);
+    if (installedMatch === null) {
+      fail("legacy-archive-recovery-failed", "The recovered pack identity does not match the archived pack.");
+    }
+    const packId = installedMatch[1];
+    revalidatePathIdentity(
+      verificationPackDirectory,
+      verificationPackIdentity,
+      "Legacy verification pack directory",
+      "directory"
+    );
+    const recoveredPackPath = join(verification.path, "objects", "pack", `pack-${packId}.pack`);
+    const recoveredIndexPath = join(verification.path, "objects", "pack", `pack-${packId}.idx`);
+    const installedNames = readDirectoryBounded(verificationPackDirectory, 3, "Legacy verification pack directory")
+      .map((item) => item.name)
+      .sort();
+    if (!isDeepStrictEqual(installedNames, [`pack-${packId}.idx`, `pack-${packId}.pack`])) {
+      fail("legacy-archive-recovery-failed", "Git produced unexpected recovery pack files.");
+    }
+    privatizeOwnedFile(recoveredPackPath, "Recovered legacy object pack");
+    privatizeOwnedFile(recoveredIndexPath, "Recovered legacy object index");
+    const recoveredPack = captureArchiveFile(recoveredPackPath, "Recovered legacy object pack");
+    const recoveredIndex = captureArchiveFile(recoveredIndexPath, "Recovered legacy object index");
+    if (recoveredPack.byteLength !== packed.pack.byteLength || recoveredPack.sha256 !== packed.pack.sha256) {
+      fail("legacy-archive-recovery-failed", "The recovered pack differs from the archived artifact.");
+    }
+
+    const refInput = metadata.refs.map(({ oid, ref }) => `update ${ref} ${oid}\n`).join("");
+    requireArchiveGitCommand(verification.path, ["--no-pager", "update-ref", "--stdin"], "Legacy reference recovery", {
+      input: refInput
+    });
+    writeOwnedPrivateFile(
+      join(verification.path, "HEAD"),
+      metadata.head.text,
+      "Recovered legacy HEAD",
+      verificationHeadIdentity
+    );
+    if (metadata.origHead !== null) {
+      writeOwnedPrivateFile(join(verification.path, "ORIG_HEAD"), metadata.origHead, "Recovered legacy ORIG_HEAD");
+    }
+    copyArchivedReflogsToRecovery(metadata, verification.path);
+    const recoveredRefs = parseRefList(
+      requireArchiveGitCommand(
+        verification.path,
+        ["--no-pager", "for-each-ref", "--sort=refname", "--format=%(objectname) %(refname)", "refs/"],
+        "Recovered legacy references"
+      ).stdout,
+      objects.objectFormat,
+      "Recovered legacy references",
+      { allowEmpty: true }
+    );
+    if (!isDeepStrictEqual(recoveredRefs, metadata.refs)) {
+      fail("legacy-archive-recovery-failed", "The recovered refs differ from the archived ref map.");
+    }
+    const recoveredHead = readBoundedFile(
+      join(verification.path, "HEAD"),
+      MAXIMUM_WORKTREE_FIELD_BYTES,
+      "Recovered legacy HEAD",
+      0o600n
+    );
+    if (recoveredHead.text !== metadata.head.text) {
+      fail("legacy-archive-recovery-failed", "The recovered HEAD differs from the archived HEAD.");
+    }
+    const recoveredOrigHeadPath = join(verification.path, "ORIG_HEAD");
+    if (metadata.origHead === null) {
+      if (existsSync(recoveredOrigHeadPath)) {
+        fail("legacy-archive-recovery-failed", "The recovered repository gained an unexpected ORIG_HEAD.");
+      }
+    } else {
+      const recoveredOrigHead = readBoundedFile(recoveredOrigHeadPath, 256, "Recovered legacy ORIG_HEAD", 0o600n);
+      if (recoveredOrigHead.text !== metadata.origHead) {
+        fail("legacy-archive-recovery-failed", "The recovered ORIG_HEAD differs from the archived pseudoref.");
+      }
+    }
+    const manifestPath = join(attempt.path, "recovered.manifest");
+    const manifestOutput = openEmptyPrivateFile(manifestPath, "Recovered object manifest");
+    try {
+      requireArchiveGitCommand(
+        verification.path,
+        ["--no-pager", "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)", "--batch-all-objects"],
+        "Recovered all-object enumeration",
+        { stdoutFd: manifestOutput.descriptor }
+      );
+      fsyncSync(manifestOutput.descriptor);
+    } finally {
+      closeSync(manifestOutput.descriptor);
+    }
+    hooks?.beforeLegacyObjectManifestParse?.("recovered", manifestPath);
+    const recoveredObjects = parseLegacyObjectManifest(
+      manifestPath,
+      join(attempt.path, "recovered.oids"),
+      objects.objectFormat
+    );
+    const normalizedRecoveredObjects = Object.freeze({
+      objectFormat: objects.objectFormat,
+      objectCount: recoveredObjects.objectCount,
+      objectBytes: recoveredObjects.objectBytes,
+      manifest: recoveredObjects.manifest
+    });
+    compareLegacyObjectManifests(objects, normalizedRecoveredObjects, "The recovered object manifest");
+    const fsck = requireArchiveGitCommand(
+      verification.path,
+      ["--no-pager", "fsck", "--strict", "--full", "--no-dangling"],
+      "Recovered legacy repository verification"
+    );
+    revalidatePathIdentity(verification.path, verification.identity, "Legacy verification repository", "directory");
+    return Object.freeze({
+      repository: Object.freeze({ path: verification.path, identity: verification.identity }),
+      packId,
+      pack: Object.freeze({ path: recoveredPackPath, ...recoveredPack }),
+      index: Object.freeze({ path: recoveredIndexPath, ...recoveredIndex }),
+      manifest: Object.freeze({ path: manifestPath, ...recoveredObjects.manifest }),
+      names: Object.freeze({ path: join(attempt.path, "recovered.oids"), ...recoveredObjects.oids }),
+      refs: refsReceipt(recoveredRefs),
+      fsck: Object.freeze({
+        mode: "strict-full-no-dangling",
+        stdoutSha256: sha256(fsck.stdout),
+        stderrSha256: sha256(fsck.stderr)
+      })
+    });
+  }
+
+  function persistLegacyRecoveryMetadata(attempt, metadata) {
+    const value = normalizedLegacyRecoveryMetadata(metadata);
+    assertPersistedJsonFits(
+      value,
+      "Legacy recovery metadata",
+      "legacy-archive-record-too-large",
+      MAXIMUM_LEGACY_RECOVERY_METADATA_BYTES
+    );
+    const path = join(attempt.path, "recovery-metadata.json");
+    writeJsonExclusive(path, value, attempt.identity);
+    const receipt = readJsonReceipt(path, MAXIMUM_LEGACY_RECOVERY_METADATA_BYTES, "Legacy recovery metadata");
+    if (!isDeepStrictEqual(receipt.value, value)) {
+      fail("legacy-archive-changed", "The recovery metadata changed while it was recorded.");
+    }
+    return Object.freeze({ path, ...receipt });
+  }
+
+  function validateLegacyArchiveFileReceipt(value, expectedPath, label) {
+    exactKeys(value, ["path", "identity", "byteLength", "sha256"], label);
+    validateIdentity(value.identity, `${label} identity`);
+    if (
+      value.path !== expectedPath ||
+      !Number.isSafeInteger(value.byteLength) ||
+      value.byteLength < 1 ||
+      !/^[0-9a-f]{64}$/u.test(value.sha256)
+    ) {
+      fail("invalid-legacy-archive", `${label} is malformed.`);
+    }
+  }
+
+  function assertLegacyArchiveFileMatches(value, label) {
+    const current = captureArchiveFile(value.path, label);
+    if (
+      !sameIdentity(current.identity, value.identity) ||
+      current.byteLength !== value.byteLength ||
+      current.sha256 !== value.sha256
+    ) {
+      fail("legacy-archive-changed", `${label} changed after it was recorded.`);
+    }
+  }
+
+  function validatePersistedLegacyRecoveryMetadata(value, attempt) {
+    exactKeys(value, ["objectFormat", "head", "refs", "origHead", "reflogs"], "Legacy recovery metadata");
+    exactKeys(value.head, ["text", "kind", "target"], "Legacy recovery HEAD");
+    exactKeys(value.reflogs, ["fileCount", "byteLength", "files"], "Legacy recovery reflogs");
+    const objectIdLength = value.objectFormat === "sha1" ? 40 : value.objectFormat === "sha256" ? 64 : 0;
+    if (
+      objectIdLength === 0 ||
+      !["symbolic", "detached"].includes(value.head.kind) ||
+      typeof value.head.text !== "string" ||
+      typeof value.head.target !== "string" ||
+      (value.origHead !== null &&
+        (typeof value.origHead !== "string" ||
+          new RegExp(`^[0-9a-f]{${objectIdLength}}\\n?$`, "u").exec(value.origHead) === null)) ||
+      !Array.isArray(value.refs) ||
+      value.refs.length > MAXIMUM_ARCHIVE_REFS ||
+      !Array.isArray(value.reflogs.files) ||
+      !Number.isSafeInteger(value.reflogs.fileCount) ||
+      value.reflogs.fileCount !== value.reflogs.files.length ||
+      value.reflogs.fileCount > MAXIMUM_LEGACY_REFLOG_FILES ||
+      !/^(?:0|[1-9][0-9]{0,39})$/u.test(value.reflogs.byteLength)
+    ) {
+      fail("invalid-legacy-archive", "The persisted recovery metadata is malformed.");
+    }
+    const symbolicHead = /^ref: (refs\/[A-Za-z0-9._/-]+)\n$/u.exec(value.head.text);
+    const detachedHead = new RegExp(`^([0-9a-f]{${objectIdLength}})\\n$`, "u").exec(value.head.text);
+    if (
+      (value.head.kind === "symbolic" &&
+        (symbolicHead === null || detachedHead !== null || symbolicHead[1] !== value.head.target)) ||
+      (value.head.kind === "detached" &&
+        (detachedHead === null || symbolicHead !== null || detachedHead[1] !== value.head.target))
+    ) {
+      fail("invalid-legacy-archive", "The persisted recovery HEAD is malformed.");
+    }
+    const parsedRefs = parseRefList(
+      value.refs.map(({ oid, ref }) => `${oid} ${ref}`).join("\n") + "\n",
+      value.objectFormat,
+      "Persisted legacy refs",
+      { allowEmpty: true }
+    );
+    if (!isDeepStrictEqual(parsedRefs, value.refs)) {
+      fail("invalid-legacy-archive", "The persisted legacy refs are not canonical.");
+    }
+    const pathsSeen = new Set();
+    let reflogBytes = 0n;
+    for (const record of value.reflogs.files) {
+      exactKeys(record, ["path", "byteLength", "sha256"], "Archived reflog record");
+      if (
+        typeof record.path !== "string" ||
+        !(record.path === "HEAD" || record.path.startsWith("refs/")) ||
+        record.path.split("/").some((component) => component === "" || component === "." || component === "..") ||
+        pathsSeen.has(record.path) ||
+        !Number.isSafeInteger(record.byteLength) ||
+        record.byteLength < 1 ||
+        !/^[0-9a-f]{64}$/u.test(record.sha256)
+      ) {
+        fail("invalid-legacy-archive", "An archived reflog record is malformed.");
+      }
+      pathsSeen.add(record.path);
+      reflogBytes += BigInt(record.byteLength);
+      if (reflogBytes > MAXIMUM_LEGACY_REFLOG_BYTES) {
+        fail("invalid-legacy-archive", "The archived reflogs exceed their fixed byte limit.");
+      }
+      for (const [root, label] of [
+        [join(attempt.path, "recovery-logs"), "Archived"],
+        [join(attempt.path, "verification.git", "logs"), "Recovered"]
+      ]) {
+        const path = join(root, ...record.path.split("/"));
+        const current = captureArchiveFile(path, `${label} reflog ${record.path}`);
+        if (current.byteLength !== record.byteLength || current.sha256 !== record.sha256) {
+          fail("legacy-archive-changed", `${label} reflog ${record.path} changed.`);
+        }
+      }
+    }
+    if (reflogBytes.toString() !== value.reflogs.byteLength) {
+      fail("invalid-legacy-archive", "The archived reflog byte count is malformed.");
+    }
+    const verificationPath = join(attempt.path, "verification.git");
+    if (value.head.kind === "symbolic") {
+      requireArchiveGitCommand(
+        verificationPath,
+        ["check-ref-format", value.head.target],
+        "Persisted legacy symbolic HEAD target"
+      );
+    }
+    const recoveredHead = readBoundedFile(
+      join(verificationPath, "HEAD"),
+      MAXIMUM_WORKTREE_FIELD_BYTES,
+      "Recovered legacy HEAD",
+      0o600n
+    );
+    if (recoveredHead.text !== value.head.text) {
+      fail("legacy-archive-changed", "The recovered legacy HEAD changed.");
+    }
+    const origHeadPath = join(verificationPath, "ORIG_HEAD");
+    if (value.origHead === null ? existsSync(origHeadPath) : !existsSync(origHeadPath)) {
+      fail("legacy-archive-changed", "The recovered legacy ORIG_HEAD presence changed.");
+    }
+    if (value.origHead !== null) {
+      const recoveredOrigHead = readBoundedFile(origHeadPath, 256, "Recovered legacy ORIG_HEAD", 0o600n);
+      if (recoveredOrigHead.text !== value.origHead) {
+        fail("legacy-archive-changed", "The recovered legacy ORIG_HEAD changed.");
+      }
+    }
+    const recoveredRefs = parseRefList(
+      requireArchiveGitCommand(
+        verificationPath,
+        ["--no-pager", "for-each-ref", "--sort=refname", "--format=%(objectname) %(refname)", "refs/"],
+        "Recovered legacy references"
+      ).stdout,
+      value.objectFormat,
+      "Recovered legacy references",
+      { allowEmpty: true }
+    );
+    if (!isDeepStrictEqual(recoveredRefs, value.refs)) {
+      fail("legacy-archive-changed", "The recovered legacy refs changed.");
+    }
+    return value;
+  }
+
+  function validateLegacyArchiveReceipt(value, attempt, request) {
+    exactKeys(
+      value,
+      [
+        "protocol",
+        "slug",
+        "adoptionGeneration",
+        "attempt",
+        "ownerTask",
+        "request",
+        "adoptionAuditSha256",
+        "objects",
+        "metadata",
+        "recovery",
+        "storage",
+        "state",
+        "authorizesMove",
+        "authorizesCleanup"
+      ],
+      "Legacy recovery-archive receipt"
+    );
+    assertOwner(value.ownerTask);
+    if (
+      value.protocol !== LEGACY_ARCHIVE_RECEIPT_PROTOCOL ||
+      value.slug !== attempt.slug ||
+      value.adoptionGeneration !== attempt.adoptionGeneration ||
+      value.attempt !== attempt.attempt ||
+      value.ownerTask !== request.value.ownerTask ||
+      value.state !== "verified-review-required" ||
+      value.authorizesMove !== false ||
+      value.authorizesCleanup !== false ||
+      !/^[0-9a-f]{64}$/u.test(value.adoptionAuditSha256)
+    ) {
+      fail("invalid-legacy-archive", "The legacy recovery-archive receipt is malformed.");
+    }
+    validateLegacyArchiveFileReceipt(
+      value.request,
+      join(attempt.path, "request.json"),
+      "Legacy archive request receipt"
+    );
+    if (
+      !sameIdentity(value.request.identity, request.identity) ||
+      value.request.byteLength !== request.byteLength ||
+      value.request.sha256 !== request.sha256
+    ) {
+      fail("invalid-legacy-archive", "The legacy archive request receipt changed.");
+    }
+    exactKeys(
+      value.objects,
+      [
+        "objectFormat",
+        "objectCount",
+        "objectBytes",
+        "manifest",
+        "names",
+        "confirmedManifest",
+        "confirmedNames",
+        "pack",
+        "index",
+        "packId"
+      ],
+      "Archived Git objects"
+    );
+    if (
+      !["sha1", "sha256"].includes(value.objects.objectFormat) ||
+      !Number.isSafeInteger(value.objects.objectCount) ||
+      value.objects.objectCount < 1 ||
+      !/^(?:0|[1-9][0-9]{0,39})$/u.test(value.objects.objectBytes) ||
+      !new RegExp(`^[0-9a-f]{${value.objects.objectFormat === "sha1" ? 40 : 64}}$`, "u").test(value.objects.packId)
+    ) {
+      fail("invalid-legacy-archive", "The archived Git object receipt is malformed.");
+    }
+    for (const [item, name, label] of [
+      [value.objects.manifest, "objects.manifest", "Archived object manifest"],
+      [value.objects.names, "objects.oids", "Archived object-name stream"],
+      [value.objects.confirmedManifest, "source-confirmed.manifest", "Confirmed source object manifest"],
+      [value.objects.confirmedNames, "source-confirmed.oids", "Confirmed source object-name stream"],
+      [value.objects.pack, "objects.pack", "Archived object pack"]
+    ]) {
+      validateLegacyArchiveFileReceipt(item, join(attempt.path, name), label);
+      assertLegacyArchiveFileMatches(item, label);
+    }
+    exactKeys(
+      value.recovery,
+      ["repository", "packId", "pack", "index", "manifest", "names", "refs", "fsck"],
+      "Recovery proof"
+    );
+    exactKeys(value.recovery.repository, ["path", "identity"], "Recovery repository");
+    validateIdentity(value.recovery.repository.identity, "Recovery repository identity");
+    if (
+      value.recovery.repository.path !== join(attempt.path, "verification.git") ||
+      value.recovery.packId !== value.objects.packId
+    ) {
+      fail("invalid-legacy-archive", "The recovery repository path or pack identity is invalid.");
+    }
+    revalidatePathIdentity(
+      value.recovery.repository.path,
+      value.recovery.repository.identity,
+      "Recovery repository",
+      "directory"
+    );
+    validateLegacyArchiveFileReceipt(value.metadata, join(attempt.path, "recovery-metadata.json"), "Recovery metadata");
+    assertLegacyArchiveFileMatches(value.metadata, "Recovery metadata");
+    const metadata = readJsonReceipt(value.metadata.path, MAXIMUM_LEGACY_RECOVERY_METADATA_BYTES, "Recovery metadata");
+    validatePersistedLegacyRecoveryMetadata(metadata.value, attempt);
+    validateLegacyArchiveFileReceipt(
+      value.recovery.pack,
+      join(attempt.path, "verification.git", "objects", "pack", `pack-${value.objects.packId}.pack`),
+      "Recovered object pack"
+    );
+    validateLegacyArchiveFileReceipt(
+      value.recovery.index,
+      join(attempt.path, "verification.git", "objects", "pack", `pack-${value.objects.packId}.idx`),
+      "Recovered object index"
+    );
+    validateLegacyArchiveFileReceipt(
+      value.objects.index,
+      join(attempt.path, "verification.git", "objects", "pack", `pack-${value.objects.packId}.idx`),
+      "Archived object index"
+    );
+    if (!isDeepStrictEqual(value.objects.index, value.recovery.index)) {
+      fail("invalid-legacy-archive", "The archive index is not the exact recovery-produced index.");
+    }
+    validateLegacyArchiveFileReceipt(
+      value.recovery.manifest,
+      join(attempt.path, "recovered.manifest"),
+      "Recovered object manifest"
+    );
+    validateLegacyArchiveFileReceipt(value.recovery.names, join(attempt.path, "recovered.oids"), "Recovered names");
+    for (const [item, label] of [
+      [value.recovery.pack, "Recovered object pack"],
+      [value.recovery.index, "Recovered object index"],
+      [value.objects.index, "Archived object index"],
+      [value.recovery.manifest, "Recovered object manifest"],
+      [value.recovery.names, "Recovered names"]
+    ]) {
+      assertLegacyArchiveFileMatches(item, label);
+    }
+    exactKeys(value.recovery.refs, ["count", "sha256"], "Recovered refs");
+    exactKeys(value.recovery.fsck, ["mode", "stdoutSha256", "stderrSha256"], "Recovery fsck");
+    if (
+      value.recovery.fsck.mode !== "strict-full-no-dangling" ||
+      !Number.isSafeInteger(value.recovery.refs.count) ||
+      value.recovery.refs.count < 0 ||
+      !isDeepStrictEqual(value.recovery.refs, refsReceipt(metadata.value.refs)) ||
+      [value.recovery.refs.sha256, value.recovery.fsck.stdoutSha256, value.recovery.fsck.stderrSha256].some(
+        (hash) => !/^[0-9a-f]{64}$/u.test(hash)
+      )
+    ) {
+      fail("invalid-legacy-archive", "The legacy recovery proof is malformed.");
+    }
+    exactKeys(
+      value.storage,
+      ["objectDiskBytes", "multiplier", "reserveBytes", "requiredBytes", "availableBytes"],
+      "Archive storage proof"
+    );
+    for (const field of ["objectDiskBytes", "reserveBytes", "requiredBytes", "availableBytes"]) {
+      if (!/^(?:0|[1-9][0-9]{0,39})$/u.test(value.storage[field])) {
+        fail("invalid-legacy-archive", "The archive storage proof is malformed.");
+      }
+    }
+    if (value.storage.multiplier !== Number(ARCHIVE_SPACE_MULTIPLIER)) {
+      fail("invalid-legacy-archive", "The archive storage multiplier is malformed.");
+    }
+    return value;
+  }
+
+  function validateLegacyArchiveCompletion(value, attempt, receipt) {
+    exactKeys(
+      value,
+      [
+        "protocol",
+        "slug",
+        "adoptionGeneration",
+        "attempt",
+        "ownerTask",
+        "receipt",
+        "state",
+        "authorizesMove",
+        "authorizesCleanup"
+      ],
+      "Legacy archive completion"
+    );
+    assertOwner(value.ownerTask);
+    validateLegacyArchiveFileReceipt(value.receipt, join(attempt.path, "receipt.json"), "Legacy archive receipt file");
+    if (
+      value.protocol !== LEGACY_ARCHIVE_COMPLETION_PROTOCOL ||
+      value.slug !== attempt.slug ||
+      value.adoptionGeneration !== attempt.adoptionGeneration ||
+      value.attempt !== attempt.attempt ||
+      value.ownerTask !== receipt.value.ownerTask ||
+      !sameIdentity(value.receipt.identity, receipt.identity) ||
+      value.receipt.byteLength !== receipt.byteLength ||
+      value.receipt.sha256 !== receipt.sha256 ||
+      value.state !== "archived-review-required" ||
+      value.authorizesMove !== false ||
+      value.authorizesCleanup !== false
+    ) {
+      fail("invalid-legacy-archive", "The legacy archive completion is malformed.");
+    }
+    return value;
+  }
+
+  function listLegacyArchiveAttempts(slug = undefined) {
+    if (!existsSync(paths.legacyArchives)) return Object.freeze([]);
+    const rootIdentity = assertPrivateDirectory(paths.legacyArchives, "Legacy archive journal");
+    const attemptsIdentity = assertPrivateDirectory(paths.legacyArchiveAttempts, "Legacy archive attempts");
+    const entriesIdentity = assertPrivateDirectory(paths.legacyArchiveEntries, "Legacy archive entries");
+    const attempts = [];
+    const knownFiles = new Set([
+      "request.json",
+      "objects.manifest",
+      "objects.oids",
+      "objects.pack",
+      "source-confirmed.manifest",
+      "source-confirmed.oids",
+      "recovery-metadata.json",
+      "recovered.manifest",
+      "recovered.oids",
+      "receipt.json",
+      "complete.json"
+    ]);
+    const knownDirectories = new Set(["recovery-logs", "verification-template", "verification.git"]);
+    for (const item of readDirectoryBounded(
+      paths.legacyArchiveAttempts,
+      MAXIMUM_ENTRIES * MAXIMUM_LEGACY_ADOPTION_ATTEMPTS * MAXIMUM_LEGACY_ARCHIVE_ATTEMPTS,
+      "The legacy archive journal"
+    )) {
+      const match = LEGACY_ARCHIVE_ATTEMPT_PATTERN.exec(item.name);
+      if (!item.isDirectory() || item.isSymbolicLink() || match === null) {
+        fail("invalid-legacy-archive", "The legacy archive journal contains an unknown entry.");
+      }
+      const attemptSlug = match[1];
+      const adoptionGeneration = Number(match[2]);
+      const attemptNumber = Number(match[3]);
+      if (
+        adoptionGeneration < 1 ||
+        adoptionGeneration > MAXIMUM_LEGACY_ADOPTION_ATTEMPTS ||
+        attemptNumber < 1 ||
+        attemptNumber > MAXIMUM_LEGACY_ARCHIVE_ATTEMPTS
+      ) {
+        fail("invalid-legacy-archive", "A legacy archive attempt is out of range.");
+      }
+      const path = join(paths.legacyArchiveAttempts, item.name);
+      const identity = assertPrivateDirectory(path, "Legacy archive attempt");
+      const children = readDirectoryBounded(
+        path,
+        knownFiles.size + knownDirectories.size + 1,
+        "Legacy archive attempt"
+      );
+      if (
+        children.some(
+          (child) =>
+            child.isSymbolicLink() ||
+            (child.isFile()
+              ? !knownFiles.has(child.name)
+              : child.isDirectory()
+                ? !knownDirectories.has(child.name)
+                : true)
+        )
+      ) {
+        fail("invalid-legacy-archive", "A legacy archive attempt contains an unknown or unsafe entry.");
+      }
+      const names = new Set(children.map((child) => child.name));
+      let request;
+      const attempt = Object.freeze({
+        slug: attemptSlug,
+        adoptionGeneration,
+        attempt: attemptNumber,
+        path,
+        identity
+      });
+      if (names.has("request.json")) {
+        request = readJsonReceipt(join(path, "request.json"), MAXIMUM_ENTRY_BYTES, "Legacy archive request");
+        validateLegacyArchiveRequest(request.value, attemptSlug, adoptionGeneration, attemptNumber);
+        revalidateLegacyArchiveAdoptionAnchor(request);
+      } else if (children.length !== 0) {
+        fail("invalid-legacy-archive", "A legacy archive attempt has artifacts without a request.");
+      }
+      let receipt;
+      if (names.has("receipt.json")) {
+        if (request === undefined) fail("invalid-legacy-archive", "A legacy archive receipt has no request.");
+        receipt = readJsonReceipt(join(path, "receipt.json"), MAXIMUM_ENTRY_BYTES, "Legacy archive receipt");
+        validateLegacyArchiveReceipt(receipt.value, attempt, request);
+      }
+      let completion;
+      if (names.has("complete.json")) {
+        if (receipt === undefined) fail("invalid-legacy-archive", "A legacy archive completion has no receipt.");
+        const completionPath = join(path, "complete.json");
+        const links = lstatSync(completionPath, { bigint: true }).nlink;
+        if (![1n, 2n].includes(links)) fail("invalid-legacy-archive", "A legacy archive completion has unsafe links.");
+        completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Legacy archive completion", links);
+        validateLegacyArchiveCompletion(completion.value, attempt, receipt);
+      }
+      revalidatePathIdentity(path, identity, "Legacy archive attempt", "directory");
+      if (slug === undefined || slug === attemptSlug)
+        attempts.push(Object.freeze({ ...attempt, request, receipt, completion }));
+    }
+    attempts.sort(
+      (left, right) =>
+        left.slug.localeCompare(right.slug) ||
+        left.adoptionGeneration - right.adoptionGeneration ||
+        left.attempt - right.attempt
+    );
+    if (
+      new Set(attempts.map((attempt) => `${attempt.slug}:${attempt.adoptionGeneration}:${attempt.attempt}`)).size !==
+        attempts.length ||
+      attempts.some((attempt, index) => {
+        const prior = attempts[index - 1];
+        return (
+          prior?.slug === attempt.slug &&
+          prior.adoptionGeneration === attempt.adoptionGeneration &&
+          attempt.attempt !== prior.attempt + 1
+        );
+      })
+    ) {
+      fail("invalid-legacy-archive", "The legacy archive journal has a duplicate or attempt gap.");
+    }
+    revalidatePathIdentity(paths.legacyArchives, rootIdentity, "Legacy archive journal", "directory");
+    revalidatePathIdentity(paths.legacyArchiveAttempts, attemptsIdentity, "Legacy archive attempts", "directory");
+    revalidatePathIdentity(paths.legacyArchiveEntries, entriesIdentity, "Legacy archive entries", "directory");
+    return Object.freeze(attempts);
+  }
+
+  function readLegacyArchiveEntry(slug, attempts) {
+    const path = legacyArchiveEntryPath(slug);
+    if (!existsSync(path)) return undefined;
+    const entry = readJsonReceipt(path, MAXIMUM_ENTRY_BYTES, "Legacy archive entry", 2n);
+    const attempt = attempts.find(
+      (item) =>
+        item.adoptionGeneration === entry.value.adoptionGeneration &&
+        item.attempt === entry.value.attempt &&
+        item.completion !== undefined &&
+        sameIdentity(item.completion.identity, entry.identity)
+    );
+    if (attempt === undefined)
+      fail("invalid-legacy-archive", "The legacy archive entry has no exact completed attempt.");
+    validateLegacyArchiveCompletion(entry.value, attempt, attempt.receipt);
+    if (!isDeepStrictEqual(entry.value, attempt.completion.value)) {
+      fail("invalid-legacy-archive", "The published legacy archive completion changed.");
+    }
+    return Object.freeze({ path, ...entry, attempt });
+  }
+
+  function legacyArchiveEntrySlugs(slug = undefined) {
+    if (!existsSync(paths.legacyArchives)) return Object.freeze([]);
+    const slugs = readDirectoryBounded(paths.legacyArchiveEntries, MAXIMUM_ENTRIES, "Legacy archive entries").map(
+      (item) => {
+        const match = LEGACY_ARCHIVE_ENTRY_PATTERN.exec(item.name);
+        if (!item.isFile() || item.isSymbolicLink() || match === null) {
+          fail("invalid-legacy-archive", "The legacy archive entries contain an unknown file.");
+        }
+        return match[1];
+      }
+    );
+    if (new Set(slugs).size !== slugs.length) fail("invalid-legacy-archive", "A legacy archive entry is duplicated.");
+    return Object.freeze(slug === undefined ? slugs.sort() : slugs.filter((value) => value === slug));
+  }
+
+  function legacyArchiveStatus(slug) {
+    if (!existsSync(paths.legacyArchives)) return undefined;
+    const attempts = listLegacyArchiveAttempts(slug);
+    const entry = readLegacyArchiveEntry(slug, attempts);
+    for (const attempt of attempts) {
+      if (attempt.request !== undefined) revalidateLegacyArchiveAdoptionAnchor(attempt.request);
+      if (attempt.receipt !== undefined) {
+        revalidateLegacyRecoveryRepository(attempt.receipt.value, attempt);
+      }
+      if (attempt.request !== undefined) revalidateLegacyArchiveAdoptionAnchor(attempt.request);
+      if (attempt.completion !== undefined && attempt === entry?.attempt) {
+        if (lstatSync(join(attempt.path, "complete.json"), { bigint: true }).nlink !== 2n) {
+          fail("invalid-legacy-archive", "The published legacy archive completion lost its hard link.");
+        }
+      } else if (
+        attempt.completion !== undefined &&
+        lstatSync(join(attempt.path, "complete.json"), { bigint: true }).nlink !== 1n
+      ) {
+        fail("invalid-legacy-archive", "An unpublished legacy archive completion has an unexpected hard link.");
+      }
+    }
+    if (attempts.length === 0 && legacyArchiveEntrySlugs(slug).length === 0) return undefined;
+    return Object.freeze({
+      state: entry === undefined ? "interrupted-review-required" : entry.value.state,
+      adoptionGeneration: entry?.value.adoptionGeneration ?? null,
+      attempt: entry?.value.attempt ?? null,
+      objectCount: entry?.attempt.receipt.value.objects.objectCount ?? null,
+      objectBytes: entry?.attempt.receipt.value.objects.objectBytes ?? null,
+      packSha256: entry?.attempt.receipt.value.objects.pack.sha256 ?? null,
+      attempts: Object.freeze(
+        attempts.map((attempt) =>
+          Object.freeze({
+            adoptionGeneration: attempt.adoptionGeneration,
+            attempt: attempt.attempt,
+            state:
+              attempt === entry?.attempt
+                ? "published-review-required"
+                : attempt.completion !== undefined
+                  ? "completed-unpublished-review-required"
+                  : attempt.receipt !== undefined
+                    ? "verified-unpublished-review-required"
+                    : attempt.request !== undefined
+                      ? "requested-review-required"
+                      : "allocated-review-required"
+          })
+        )
+      ),
+      authorizesMove: false,
+      authorizesCleanup: false
+    });
+  }
+
+  function confirmLegacyArchiveSource(adoption, objects, metadata) {
+    const request = adoption.request.value;
+    const audit = captureLegacyAudit(adoption.entry.value.slug, request.generatedRoots, request.generatedFiles);
+    assertAuditMatchesAdoption(audit, adoption);
+    const candidate = legacyCandidatePaths(adoption.entry.value.slug);
+    const snapshot = createLegacyAuditSnapshot(candidate);
+    try {
+      const proveObjects = (stem, label) => {
+        requireLegacyGit(snapshot, ["--no-pager", "fsck", "--strict", "--full", "--no-dangling"], label);
+        const current = createLegacyObjectManifest(snapshot, snapshot.root, stem);
+        compareLegacyObjectManifests(objects, current, "The final source object manifest");
+      };
+      const proveMetadata = (directory) => {
+        const current = captureLegacyRecoveryMetadata(snapshot, join(snapshot.root, directory));
+        if (!isDeepStrictEqual(normalizedLegacyRecoveryMetadata(current), normalizedLegacyRecoveryMetadata(metadata))) {
+          fail("legacy-checkout-changed", "The legacy refs, HEAD, ORIG_HEAD, or reflogs changed during archiving.");
+        }
+      };
+
+      proveObjects("confirmed-before-metadata", "Legacy object verification before metadata confirmation");
+      proveMetadata("confirmed-logs-before");
+      hooks?.afterLegacySourceMetadataCapture?.(adoption.entry.value.slug);
+      proveObjects("confirmed-after-metadata", "Legacy object verification after metadata confirmation");
+      proveMetadata("confirmed-logs-after");
+      hooks?.afterLegacySourceMetadataRecheck?.(adoption.entry.value.slug);
+      proveObjects("confirmed-final", "Final legacy object verification after metadata recheck");
+      revalidateLegacyAuditSnapshot(snapshot);
+    } finally {
+      removeLegacyAuditSnapshot(snapshot);
+    }
+    revalidateLegacyAdoptionAnchor(adoption, legacyArchiveAdoptionAnchor(adoption));
   }
 
   function checkoutPathFor(slug) {
@@ -4340,17 +6137,22 @@ export function createCheckoutManager(options = {}) {
       cwd: options.cwd ?? paths.root,
       allowFailure: true,
       env: auditGitEnvironment(),
-      input: options.input
+      input: options.input,
+      stdinFd: options.stdinFd,
+      stdoutFd: options.stdoutFd
     });
     if (result.status !== 0) fail("archive-command-failed", `${label} failed.`);
     return result;
   }
 
-  function requireStandaloneArchiveGitCommand(args, cwd, label) {
+  function requireStandaloneArchiveGitCommand(args, cwd, label, options = {}) {
     const result = run("git", args, {
       cwd,
       allowFailure: true,
-      env: auditGitEnvironment()
+      env: auditGitEnvironment(),
+      input: options.input,
+      stdinFd: options.stdinFd,
+      stdoutFd: options.stdoutFd
     });
     if (result.status !== 0) fail("archive-command-failed", `${label} failed.`);
     return result;
@@ -4359,7 +6161,7 @@ export function createCheckoutManager(options = {}) {
   function archiveFreeSpace(objectDiskBytes) {
     let filesystem;
     try {
-      filesystem = statfsSync(paths.root, { bigint: true });
+      filesystem = statFilesystem(paths.root, { bigint: true });
     } catch (error) {
       fail("archive-not-eligible", `Archive free space could not be inspected: ${error.message}`);
     }
@@ -5946,6 +7748,202 @@ export function createCheckoutManager(options = {}) {
       });
     },
 
+    legacyArchive({ slug, ownerTask }) {
+      assertSlug(slug);
+      assertOwner(ownerTask);
+      return withLock(() => {
+        initializeLegacyAdoptionJournal();
+        initializeLegacyArchiveJournal();
+        const adoption = currentLegacyAdoption(slug);
+        const adoptionAnchor = legacyArchiveAdoptionAnchor(adoption);
+        const priorArchives = listLegacyArchiveAttempts(slug);
+        if (legacyArchiveEntrySlugs(slug).length !== 0) {
+          readLegacyArchiveEntry(slug, priorArchives);
+          fail("legacy-archive-exists", `Legacy checkout ${slug} already has a published recovery archive.`);
+        }
+        const attempt = allocateLegacyArchiveAttempt(slug, adoption.entry.value.generation);
+        const token = tokenFactory();
+        if (!/^[0-9a-f]{32}$/u.test(token)) fail("invalid-legacy-archive", "The archive token is malformed.");
+        const requestValue = {
+          protocol: LEGACY_ARCHIVE_REQUEST_PROTOCOL,
+          slug,
+          adoptionGeneration: adoption.entry.value.generation,
+          attempt: attempt.attempt,
+          ownerTask,
+          token,
+          adoption: adoptionAnchor
+        };
+        validateLegacyArchiveRequest(requestValue, slug, adoption.entry.value.generation, attempt.attempt);
+        assertPersistedJsonFits(requestValue, "Legacy archive request", "legacy-archive-record-too-large");
+        const requestPath = join(attempt.path, "request.json");
+        writeJsonExclusive(requestPath, requestValue, attempt.identity);
+        const request = readJsonReceipt(requestPath, MAXIMUM_ENTRY_BYTES, "Legacy archive request");
+        validateLegacyArchiveRequest(request.value, slug, adoption.entry.value.generation, attempt.attempt);
+        if (!isDeepStrictEqual(request.value, requestValue)) {
+          fail("legacy-archive-changed", "The legacy archive request changed while it was recorded.");
+        }
+        hooks?.afterLegacyArchiveRequest?.(attempt, requestValue);
+        const firstAudit = captureLegacyAudit(
+          slug,
+          adoption.request.value.generatedRoots,
+          adoption.request.value.generatedFiles
+        );
+        assertAuditMatchesAdoption(firstAudit, adoption);
+        revalidateLegacyAdoptionAnchor(adoption, adoptionAnchor);
+
+        const candidate = legacyCandidatePaths(slug);
+        const snapshot = createLegacyAuditSnapshot(candidate);
+        let objects;
+        let confirmedObjects;
+        let packed;
+        let metadata;
+        let metadataReceipt;
+        let storage;
+        try {
+          requireLegacyGit(
+            snapshot,
+            ["--no-pager", "fsck", "--strict", "--full", "--no-dangling"],
+            "Legacy pre-archive object-store verification"
+          );
+          objects = createLegacyObjectManifest(snapshot, attempt.path, "objects");
+          hooks?.afterLegacyObjectManifest?.(attempt, objects);
+          storage = archiveFreeSpace(BigInt(objects.objectBytes));
+          packed = createLegacyObjectPack(snapshot, attempt, objects);
+          metadata = captureLegacyRecoveryMetadata(snapshot, join(attempt.path, "recovery-logs"));
+          metadataReceipt = persistLegacyRecoveryMetadata(attempt, metadata);
+          confirmedObjects = createLegacyObjectManifest(snapshot, attempt.path, "source-confirmed");
+          compareLegacyObjectManifests(objects, confirmedObjects, "The source object store after packing");
+          requireLegacyGit(
+            snapshot,
+            ["--no-pager", "fsck", "--strict", "--full", "--no-dangling"],
+            "Legacy post-pack object-store verification"
+          );
+          revalidateLegacyAuditSnapshot(snapshot);
+        } finally {
+          removeLegacyAuditSnapshot(snapshot);
+        }
+
+        const recovery = proveLegacyArchiveRecovery(attempt, objects, packed, metadata);
+        const secondAudit = captureLegacyAudit(
+          slug,
+          adoption.request.value.generatedRoots,
+          adoption.request.value.generatedFiles
+        );
+        assertAuditMatchesAdoption(secondAudit, adoption);
+        confirmLegacyArchiveSource(adoption, objects, metadata);
+        const receiptValue = {
+          protocol: LEGACY_ARCHIVE_RECEIPT_PROTOCOL,
+          slug,
+          adoptionGeneration: adoption.entry.value.generation,
+          attempt: attempt.attempt,
+          ownerTask,
+          request: {
+            path: requestPath,
+            identity: request.identity,
+            byteLength: request.byteLength,
+            sha256: request.sha256
+          },
+          adoptionAuditSha256: sha256(JSON.stringify(secondAudit)),
+          objects: {
+            objectFormat: objects.objectFormat,
+            objectCount: objects.objectCount,
+            objectBytes: objects.objectBytes,
+            manifest: { path: objects.manifestPath, ...objects.manifest },
+            names: { path: objects.namesPath, ...objects.oids },
+            confirmedManifest: { path: confirmedObjects.manifestPath, ...confirmedObjects.manifest },
+            confirmedNames: { path: confirmedObjects.namesPath, ...confirmedObjects.oids },
+            pack: packed.pack,
+            index: recovery.index,
+            packId: recovery.packId
+          },
+          metadata: {
+            path: metadataReceipt.path,
+            identity: metadataReceipt.identity,
+            byteLength: metadataReceipt.byteLength,
+            sha256: metadataReceipt.sha256
+          },
+          recovery,
+          storage,
+          state: "verified-review-required",
+          authorizesMove: false,
+          authorizesCleanup: false
+        };
+        validateLegacyArchiveReceipt(receiptValue, attempt, request);
+        assertPersistedJsonFits(receiptValue, "Legacy archive receipt", "legacy-archive-record-too-large");
+        const receiptPath = join(attempt.path, "receipt.json");
+        writeJsonExclusive(receiptPath, receiptValue, attempt.identity);
+        const receipt = readJsonReceipt(receiptPath, MAXIMUM_ENTRY_BYTES, "Legacy archive receipt");
+        validateLegacyArchiveReceipt(receipt.value, attempt, request);
+        if (!isDeepStrictEqual(receipt.value, receiptValue)) {
+          fail("legacy-archive-changed", "The legacy archive receipt changed while it was recorded.");
+        }
+        hooks?.beforeLegacyArchivePublish?.(attempt, receiptValue);
+        confirmLegacyArchiveSource(adoption, objects, metadata);
+        validateLegacyArchiveReceipt(receipt.value, attempt, request);
+        revalidatePathIdentity(requestPath, request.identity, "Legacy archive request");
+        revalidatePathIdentity(receiptPath, receipt.identity, "Legacy archive receipt");
+        const completionValue = {
+          protocol: LEGACY_ARCHIVE_COMPLETION_PROTOCOL,
+          slug,
+          adoptionGeneration: adoption.entry.value.generation,
+          attempt: attempt.attempt,
+          ownerTask,
+          receipt: {
+            path: receiptPath,
+            identity: receipt.identity,
+            byteLength: receipt.byteLength,
+            sha256: receipt.sha256
+          },
+          state: "archived-review-required",
+          authorizesMove: false,
+          authorizesCleanup: false
+        };
+        validateLegacyArchiveCompletion(completionValue, attempt, receipt);
+        assertPersistedJsonFits(completionValue, "Legacy archive completion", "legacy-archive-record-too-large");
+        const completionPath = join(attempt.path, "complete.json");
+        writeJsonExclusive(completionPath, completionValue, attempt.identity);
+        const completion = readJsonReceipt(completionPath, MAXIMUM_ENTRY_BYTES, "Legacy archive completion");
+        validateLegacyArchiveCompletion(completion.value, attempt, receipt);
+        if (!isDeepStrictEqual(completion.value, completionValue)) {
+          fail("legacy-archive-changed", "The legacy archive completion changed while it was recorded.");
+        }
+        const entriesIdentity = managedIdentities.get(paths.legacyArchiveEntries);
+        if (entriesIdentity === undefined) fail("unsafe-manager", "The legacy archive entries were not initialized.");
+        revalidatePathIdentity(paths.legacyArchiveEntries, entriesIdentity, "Legacy archive entries", "directory");
+        confirmLegacyArchiveSource(adoption, objects, metadata);
+        try {
+          linkSync(completionPath, legacyArchiveEntryPath(slug));
+          fsyncDirectory(paths.legacyArchiveEntries);
+        } catch (error) {
+          if (error.code === "EEXIST")
+            fail("legacy-archive-exists", `Legacy checkout ${slug} was archived concurrently.`);
+          throw error;
+        }
+        confirmLegacyArchiveSource(adoption, objects, metadata);
+        hooks?.afterLegacyArchivePublish?.(attempt, completionValue);
+        confirmLegacyArchiveSource(adoption, objects, metadata);
+        const recordedAttempts = listLegacyArchiveAttempts(slug);
+        const entry = readLegacyArchiveEntry(slug, recordedAttempts);
+        if (entry === undefined || !isDeepStrictEqual(entry.value, completionValue)) {
+          fail("legacy-archive-changed", "The published legacy archive record changed.");
+        }
+        return Object.freeze({
+          status: "archived-review-required",
+          slug,
+          adoptionGeneration: adoption.entry.value.generation,
+          attempt: attempt.attempt,
+          ownerTask,
+          objectCount: objects.objectCount,
+          objectBytes: objects.objectBytes,
+          packSha256: packed.pack.sha256,
+          archivePath: attempt.path,
+          recoveryPath: recovery.repository.path,
+          authorizesMove: false,
+          authorizesCleanup: false
+        });
+      });
+    },
+
     create({ slug, ownerTask, branch, base = "HEAD", remote = "origin", generatedRoots = [] }) {
       assertSlug(slug);
       assertOwner(ownerTask);
@@ -6474,6 +8472,7 @@ function validateCliInvocation(positionals, values) {
     ["bootstrap", { minimum: 1, maximum: 1, options: [] }],
     ["legacy-audit", { minimum: 2, maximum: 2, options: ["generated-root", "generated-file"] }],
     ["legacy-adopt", { minimum: 2, maximum: 2, options: ["owner", "generated-root", "generated-file"] }],
+    ["legacy-archive", { minimum: 2, maximum: 2, options: ["owner"] }],
     ["legacy-status", { minimum: 1, maximum: 2, options: [] }],
     ["create", { minimum: 2, maximum: 2, options: ["owner", "branch", "base", "remote", "generated-root"] }],
     ["status", { minimum: 1, maximum: 2, options: [] }],
@@ -6489,7 +8488,7 @@ function validateCliInvocation(positionals, values) {
   if (specification === undefined) {
     fail(
       "invalid-cli",
-      "Use bootstrap, legacy-audit, legacy-adopt, legacy-status, create, status, audit, quarantine-status, handoff, finish, plan-retirement, archive-retirement, or abandon."
+      "Use bootstrap, legacy-audit, legacy-adopt, legacy-archive, legacy-status, create, status, audit, quarantine-status, handoff, finish, plan-retirement, archive-retirement, or abandon."
     );
   }
   const suppliedOptions = Object.entries(values)
@@ -6545,6 +8544,8 @@ export function runCheckoutLifecycleCli(argv = process.argv.slice(2), options = 
       generatedRoots: values["generated-root"] ?? [],
       generatedFiles: values["generated-file"] ?? []
     });
+  } else if (command === "legacy-archive") {
+    result = manager.legacyArchive({ slug, ownerTask: values.owner });
   } else if (command === "legacy-status") result = manager.legacyStatus(slug);
   else if (command === "create") {
     result = manager.create({

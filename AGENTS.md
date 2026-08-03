@@ -116,6 +116,20 @@ move, archive, or delete the clone. `npm run checkout:legacy-status -- [slug]` r
 interrupted attempts. None of these commands authorizes movement or cleanup. Do not run adoption against a real
 candidate until its allowlist and inclusion in the cleanup batch have been reviewed.
 
+After adoption, `npm run checkout:legacy-archive -- <slug> --owner <task>` may record a recovery archive. It enumerates
+every Git object, including unreachable objects, streams them into a pack, records the exact object/type/size manifest,
+and restores the pack, refs, `HEAD`, optional `ORIG_HEAD`, and reflogs into a new private bare repository. The restored
+repository must pass strict `git fsck` and match the source manifest before the append-only completion record is
+published. Every archive attempt stays bound to the exact published adoption record it started from; removing or
+replacing that adoption leaves the archive detached and fails status rather than attaching it to a later adoption with
+the same slug and generation. Status checks the complete recovery repository against the exact derived Git layout both
+before and after running Git; unknown root, ref, reflog, or object-store entries fail closed. The command does not contact
+a remote, change the source clone, move it, or approve its deletion. It has no
+internal timeout: stopping only the direct Git child could leave `pack-objects` or `index-pack` running. An interruption
+leaves the numbered attempt in place for `checkout:legacy-status` and human review. A later quarantine step must compare
+the current source clone with the completed archive again immediately around any move. The archive record alone never
+authorizes quarantine, movement, or cleanup.
+
 The coordinating agent creates task isolation with
 `npm run checkout:create -- <slug> --owner <canonical-task-name>`. Add `--generated-root node_modules`, or another
 exact top-level directory, only when Git ignores that directory and it is absent from the new checkout. The manager
