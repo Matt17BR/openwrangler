@@ -406,7 +406,7 @@ export function createDataWranglerComparisonSourceCopy(
     const anchoredTarget = anchoredCopyPath(rootDescriptor, targetName);
     writableDescriptor = openSync(
       anchoredTarget,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
       COPY_MODE
     );
     fchmodSync(writableDescriptor, COPY_MODE);
@@ -462,17 +462,18 @@ export function createDataWranglerComparisonSourceCopy(
       fail("The private comparison source copy is not byte-identical to its canonical input.");
     }
 
+    const retainedCreation = fstatSync(writableDescriptor, { bigint: true });
+    if (!sameFileSnapshot(copySnapshot, fileSnapshot(retainedCreation))) {
+      fail("The private comparison source copy changed on its creation descriptor.");
+    }
+    copyDescriptor = openSync(`/proc/self/fd/${writableDescriptor}`, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const retained = fstatSync(copyDescriptor, { bigint: true });
+    if (!sameFileSnapshot(copySnapshot, fileSnapshot(retained))) {
+      fail("The private comparison source copy changed while its read-only lease opened.");
+    }
     closeSync(writableDescriptor);
     writableDescriptor = undefined;
-    copyDescriptor = openSync(
-      anchoredTarget,
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
-    );
-    const reopened = fstatSync(copyDescriptor, { bigint: true });
-    if (!sameFileSnapshot(copySnapshot, fileSnapshot(reopened))) {
-      fail("The private comparison source copy changed before its receipt could be retained.");
-    }
-    const copySha256 = hashDescriptor(copyDescriptor, Number(reopened.size), byteBound);
+    const copySha256 = hashDescriptor(copyDescriptor, Number(retained.size), byteBound);
     if (copySha256 !== copyReceipt.sha256) {
       fail("The private comparison source copy failed its descriptor-bound byte check.");
     }

@@ -295,24 +295,33 @@ function readAndRevalidateCanonicalKernel(source, kernel, expectedBytes) {
 function openCanonicalKernel(kernel) {
   const path = validateCanonicalKernelInput(kernel);
   const parent = dirname(path);
-  const parentNamed = lstatSync(parent, { bigint: true });
-  assertPrivateDirectoryMetadata(parentNamed, "Canonical comparison kernelspec parent");
-  if (realpathSync(parent) !== parent) fail("Canonical comparison kernelspec parent must not traverse a link.");
   let parentDescriptor;
   let descriptor;
   try {
     parentDescriptor = openDirectoryDescriptor(parent);
     const parentOpened = fstatSync(parentDescriptor, { bigint: true });
+    const parentNamed = lstatSync(parent, { bigint: true });
     assertPrivateDirectoryMetadata(parentOpened, "Canonical comparison kernelspec parent");
-    if (!sameStableIdentity(parentNamed, parentOpened)) {
+    assertPrivateDirectoryMetadata(parentNamed, "Canonical comparison kernelspec parent");
+    if (!sameStableIdentity(parentNamed, parentOpened) || realpathSync(parent) !== parent) {
       fail("The canonical comparison kernelspec parent changed while it opened.");
     }
     const anchoredPath = `/proc/self/fd/${parentDescriptor}/kernel.json`;
-    const named = lstatSync(anchoredPath, { bigint: true });
-    assertOwnedKernelFile(named, "Canonical comparison kernelspec");
-    descriptor = openSync(anchoredPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      descriptor = openSync(
+        anchoredPath,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+      );
+    } catch (error) {
+      if (error?.code === "ELOOP") {
+        fail("The canonical comparison kernelspec must be one owned, singly linked mode-600 regular file.");
+      }
+      throw error;
+    }
     const opened = fstatSync(descriptor, { bigint: true });
+    const named = lstatSync(anchoredPath, { bigint: true });
     assertOwnedKernelFile(opened, "Canonical comparison kernelspec");
+    assertOwnedKernelFile(named, "Canonical comparison kernelspec");
     if (!sameFileSnapshot(named, opened)) fail("The canonical comparison kernelspec changed while it opened.");
     const source = {
       path,
@@ -362,7 +371,7 @@ function publishKernelFile(kernelDirectory, bytes, expectedSha256, files, hooks)
   try {
     descriptor = openSync(
       anchored,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
       0o600
     );
     const created = fstatSync(descriptor, { bigint: true });
@@ -371,36 +380,30 @@ function publishKernelFile(kernelDirectory, bytes, expectedSha256, files, hooks)
     files.push(node);
     writeDescriptorExactly(descriptor, bytes, "Run-local published kernelspec");
     fsyncSync(descriptor);
-    closeSync(descriptor);
-    descriptor = undefined;
-    const afterWrite = lstatSync(anchored, { bigint: true });
+    const afterWrite = fstatSync(descriptor, { bigint: true });
+    const namedAfterWrite = lstatSync(anchored, { bigint: true });
     assertOwnedKernelFile(afterWrite, "Run-local published kernelspec");
-    if (!sameStableIdentity(node.identity, afterWrite)) {
+    assertOwnedKernelFile(namedAfterWrite, "Run-local published kernelspec");
+    if (!sameStableIdentity(node.identity, afterWrite) || !sameFileSnapshot(afterWrite, namedAfterWrite)) {
       fail("The run-local kernelspec changed identity while it was written.");
     }
     node.identity = afterWrite;
     const published = revalidateFileNode(node, "Run-local published kernelspec");
-    let readDescriptor;
-    try {
-      readDescriptor = openSync(anchored, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      const opened = fstatSync(readDescriptor, { bigint: true });
-      assertOwnedKernelFile(opened, "Run-local published kernelspec");
-      if (!sameFileSnapshot(published, opened)) fail("The run-local kernelspec changed while it reopened.");
-      const publishedBytes = readDescriptorPositionally(
-        readDescriptor,
-        Number(opened.size),
-        "Run-local published kernelspec"
-      );
-      const after = fstatSync(readDescriptor, { bigint: true });
-      if (
-        !sameFileSnapshot(opened, after) ||
-        !publishedBytes.equals(bytes) ||
-        digest(publishedBytes) !== expectedSha256
-      ) {
-        fail("The run-local kernelspec bytes do not match the canonical kernelspec.");
-      }
-    } finally {
-      if (readDescriptor !== undefined) closeSync(readDescriptor);
+    const retained = fstatSync(descriptor, { bigint: true });
+    assertOwnedKernelFile(retained, "Run-local published kernelspec");
+    if (!sameFileSnapshot(published, retained)) fail("The run-local kernelspec changed on its retained descriptor.");
+    const publishedBytes = readDescriptorPositionally(
+      descriptor,
+      Number(retained.size),
+      "Run-local published kernelspec"
+    );
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      !sameFileSnapshot(retained, after) ||
+      !publishedBytes.equals(bytes) ||
+      digest(publishedBytes) !== expectedSha256
+    ) {
+      fail("The run-local kernelspec bytes do not match the canonical kernelspec.");
     }
     revalidateFileNode(node, "Run-local published kernelspec");
     revalidateDirectoryNode(kernelDirectory, "Run-local kernelspec parent");

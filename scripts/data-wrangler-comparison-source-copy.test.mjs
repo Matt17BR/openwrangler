@@ -1,19 +1,23 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
   fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   renameSync,
   readSync,
   rmSync,
   symlinkSync,
   unlinkSync,
-  writeFileSync
+  writeFileSync,
+  writeSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -44,10 +48,21 @@ function removeFixture(root) {
   rmSync(root, { force: true, recursive: true });
 }
 
+function readPinnedTestDescriptor(descriptor, size) {
+  const bytes = Buffer.alloc(size);
+  assert.equal(readSync(descriptor, bytes, 0, size, 0), size);
+  return bytes;
+}
+
 linuxTest("creates one exclusive mode-0600 byte-identical copy with authentic distinct receipts", () => {
   const current = fixture();
+  let sourceDescriptor;
   try {
-    const sourceBefore = lstatSync(current.source, { bigint: true });
+    sourceDescriptor = openSync(
+      current.source,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+    );
+    const sourceBefore = fstatSync(sourceDescriptor, { bigint: true });
     const handle = createDataWranglerComparisonSourceCopy({
       canonicalPath: current.source,
       privateRoot: current.privateRoot,
@@ -59,7 +74,7 @@ linuxTest("creates one exclusive mode-0600 byte-identical copy with authentic di
     assert.equal(handle.mode, "0600");
     assert.equal(handle.byteIdentical, true);
     assert.deepEqual(readFileSync(current.copy), current.sourceBytes);
-    assert.deepEqual(readFileSync(current.source), current.sourceBytes);
+    assert.deepEqual(readPinnedTestDescriptor(sourceDescriptor, current.sourceBytes.length), current.sourceBytes);
     assert.equal(lstatSync(current.copy).mode & 0o777, 0o600);
     assert.equal(handle.canonicalReceipt.sha256, handle.copyReceipt.sha256);
     assert.equal(handle.canonicalReceipt.filesystemIdentity.sizeBytes, handle.copyReceipt.filesystemIdentity.sizeBytes);
@@ -78,12 +93,16 @@ linuxTest("creates one exclusive mode-0600 byte-identical copy with authentic di
     const cleanup = cleanupDataWranglerComparisonSourceCopy(handle);
     assert.equal(cleanup.removed, true);
     assert.equal(existsSync(current.copy), false);
-    assert.deepEqual(readFileSync(current.source), current.sourceBytes);
-    const sourceAfter = lstatSync(current.source, { bigint: true });
+    assert.deepEqual(readPinnedTestDescriptor(sourceDescriptor, current.sourceBytes.length), current.sourceBytes);
+    const sourceAfter = fstatSync(sourceDescriptor, { bigint: true });
+    const sourceNamedAfter = lstatSync(current.source, { bigint: true });
     assert.equal(sourceAfter.dev, sourceBefore.dev);
     assert.equal(sourceAfter.ino, sourceBefore.ino);
+    assert.equal(sourceNamedAfter.dev, sourceBefore.dev);
+    assert.equal(sourceNamedAfter.ino, sourceBefore.ino);
     assert.throws(() => cleanupDataWranglerComparisonSourceCopy(handle), /unknown or already settled/u);
   } finally {
+    if (sourceDescriptor !== undefined) closeSync(sourceDescriptor);
     removeFixture(current.root);
   }
 });
@@ -103,6 +122,7 @@ linuxTest("descriptor borrowing exposes only the pinned copy and blocks concurre
       const bytes = Buffer.alloc(current.sourceBytes.length);
       assert.equal(readSync(descriptor, bytes, 0, bytes.length, 0), bytes.length);
       assert.deepEqual(bytes, current.sourceBytes);
+      assert.throws(() => writeSync(descriptor, Buffer.from("x"), 0, 1, 0), { code: "EBADF" });
       assert.throws(() => cleanupDataWranglerComparisonSourceCopy(handle), /descriptor is still in use/u);
       assert.throws(
         () => withDataWranglerComparisonSourceCopyDescriptor(handle, () => undefined),
