@@ -14,6 +14,13 @@ import {
 } from "./data-wrangler-comparison-source-copy.mjs";
 import { canonicalStudyJson, digestStudyValue } from "./data-wrangler-comparison-study.mjs";
 import {
+  DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+  DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
+  createDataWranglerStudyBridgeResponder,
+  validateDataWranglerStudyBridgeAcknowledgement,
+  validateDataWranglerStudyBridgeRequest
+} from "./data-wrangler-study-control-bridge.mjs";
+import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
   editorAcceptanceProgressPath,
@@ -22,6 +29,17 @@ import {
 } from "./editor-acceptance.mjs";
 
 export const DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-warmup-phase-v1";
+export const DATA_WRANGLER_PUBLIC_WARMUP_CONTROL_PROTOCOL = "openwrangler-data-wrangler-public-warmup-control-v1";
+export const DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS = Object.freeze([
+  "source-verified",
+  "measurement-ready",
+  "sampling-origin",
+  "inline-baseline",
+  "workbench-baseline",
+  "profile-baseline",
+  "sampling-stop",
+  "cleanup-census"
+]);
 const PHASES = Object.freeze({
   "open-wrangler": "comparison-study-open-wrangler-warmup",
   "data-wrangler": "comparison-study-data-wrangler-warmup"
@@ -81,7 +99,101 @@ function assertInventory(actual, expected) {
   }
 }
 
-function validateWarmupReceipt(raw, { product, editor, fixture, kernel, sourceReceipt }) {
+function sameBridgeEnvelope(left, right) {
+  return canonicalStudyJson(left) === canonicalStudyJson(right);
+}
+
+export function validateDataWranglerPublicWarmupControlReceipt(value, { runId, phase } = {}) {
+  if (
+    value?.protocol !== DATA_WRANGLER_PUBLIC_WARMUP_CONTROL_PROTOCOL ||
+    value.runId !== runId ||
+    value.phase !== phase ||
+    value.requestProtocol !== DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL ||
+    value.acknowledgementProtocol !== DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL ||
+    !Array.isArray(value.completedExchanges) ||
+    value.completedExchanges.length !== DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS.length
+  ) {
+    fail("Public notebook warm-up control receipt is malformed or incomplete.");
+  }
+  let previousAcknowledgement = 0n;
+  const completedExchanges = value.completedExchanges.map((candidate, sequence) => {
+    const request = validateDataWranglerStudyBridgeRequest(candidate?.request);
+    const acknowledgement = validateDataWranglerStudyBridgeAcknowledgement(candidate?.acknowledgement);
+    const expectedKind = DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS[sequence];
+    if (
+      request.runId !== runId ||
+      request.phase !== phase ||
+      request.sequence !== sequence ||
+      request.kind !== expectedKind ||
+      acknowledgement.runId !== runId ||
+      acknowledgement.phase !== phase ||
+      acknowledgement.sequence !== sequence ||
+      acknowledgement.kind !== expectedKind
+    ) {
+      fail("Public notebook warm-up control exchange is stale or out of order.");
+    }
+    const requestTime = BigInt(request.monotonicNanoseconds);
+    const acknowledgementTime = BigInt(acknowledgement.monotonicNanoseconds);
+    if (requestTime < previousAcknowledgement || acknowledgementTime < requestTime) {
+      fail("Public notebook warm-up control exchange clock order is invalid.");
+    }
+    previousAcknowledgement = acknowledgementTime;
+    return Object.freeze({ request, acknowledgement });
+  });
+  return Object.freeze({
+    protocol: value.protocol,
+    runId,
+    phase,
+    requestProtocol: value.requestProtocol,
+    acknowledgementProtocol: value.acknowledgementProtocol,
+    completedExchanges: Object.freeze(completedExchanges)
+  });
+}
+
+export async function controlDataWranglerPublicWarmup(
+  { requestPath, acknowledgementPath, runId, phase, signal = new AbortController().signal } = {},
+  { createResponder = createDataWranglerStudyBridgeResponder, responderOptions } = {}
+) {
+  if (typeof createResponder !== "function") fail("Public notebook warm-up control requires a responder factory.");
+  if (
+    signal === null ||
+    typeof signal !== "object" ||
+    typeof signal.aborted !== "boolean" ||
+    typeof signal.addEventListener !== "function"
+  ) {
+    fail("Public notebook warm-up control requires an AbortSignal.");
+  }
+  const responder = createResponder({ requestPath, acknowledgementPath, runId, phase }, responderOptions);
+  if (
+    responder === null ||
+    typeof responder !== "object" ||
+    typeof responder.waitForRequest !== "function" ||
+    typeof responder.acknowledge !== "function"
+  ) {
+    fail("Public notebook warm-up responder is malformed.");
+  }
+  const completedExchanges = [];
+  for (let sequence = 0; sequence < DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS.length; sequence += 1) {
+    const kind = DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS[sequence];
+    const original = await responder.waitForRequest(sequence, kind, signal);
+    const request = validateDataWranglerStudyBridgeRequest(original);
+    const acknowledgement = validateDataWranglerStudyBridgeAcknowledgement(responder.acknowledge(original));
+    completedExchanges.push(Object.freeze({ request, acknowledgement }));
+  }
+  return validateDataWranglerPublicWarmupControlReceipt(
+    {
+      protocol: DATA_WRANGLER_PUBLIC_WARMUP_CONTROL_PROTOCOL,
+      runId,
+      phase,
+      requestProtocol: DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
+      acknowledgementProtocol: DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+      completedExchanges
+    },
+    { runId, phase }
+  );
+}
+
+function validateWarmupReceipt(raw, { product, editor, fixture, kernel, sourceReceipt, controlReceipt }) {
   if (
     raw?.protocol !== DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL ||
     raw.product !== product ||
@@ -104,7 +216,16 @@ function validateWarmupReceipt(raw, { product, editor, fixture, kernel, sourceRe
     raw.profiles?.completedColumnCount !== fixture.columns ||
     raw.profiles?.canonicalOrder !== true ||
     raw.cleanup?.closeStatus !== "succeeded" ||
-    raw.cleanup?.afterVerification !== "matched"
+    raw.cleanup?.afterVerification !== "matched" ||
+    raw.controlBridge?.clock !== "process-hrtime-bigint" ||
+    raw.controlBridge?.authoritativeForStudy !== true ||
+    raw.controlBridge?.requestProtocol !== DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL ||
+    raw.controlBridge?.acknowledgementProtocol !== DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL ||
+    !Array.isArray(raw.controlBridge?.exchanges) ||
+    raw.controlBridge.exchanges.length !== controlReceipt.completedExchanges.length ||
+    raw.controlBridge.exchanges.some(
+      (exchange, index) => !sameBridgeEnvelope(exchange, controlReceipt.completedExchanges[index])
+    )
   ) {
     fail("Public notebook warm-up did not complete inline preview, workbench, profiles, and cleanup exactly.");
   }
@@ -154,6 +275,7 @@ export async function capturePreparedProductWarmups(
     runPhase: runEditorAcceptancePhase,
     readInventory,
     captureTree: captureDataWranglerProfileTree,
+    controlWarmup: controlDataWranglerPublicWarmup,
     recoverDriver: recoverDataWranglerComparisonDriver,
     remove: rmSync,
     ...overrides
@@ -223,36 +345,62 @@ export async function capturePreparedProductWarmups(
     });
     let completed = false;
     try {
-      const raw = await dependencies.runPhase(
-        {
-          editor,
-          workspace: notebookPath,
-          userData: clone.userData,
-          extensions: clone.extensions,
-          developmentPaths: [driverDirectory],
-          python: pythonPath,
-          phase: PHASES[product],
-          resultPath,
-          editorProductVersion: editor.version,
+      const controlAbort = new AbortController();
+      const controlPromise = Promise.resolve().then(() =>
+        dependencies.controlWarmup({
+          requestPath,
+          acknowledgementPath,
           runId: id,
-          progressPath: editorAcceptanceProgressPath(resultPath, id, PHASES[product]),
-          requiresWorkbenchCdp: true,
-          jupyterEnvironment: structuredClone(kernel.jupyterEnvironment),
-          comparisonStudyEnvironment: {
-            requestPath,
-            acknowledgementPath,
-            sourcePath: sourceCopy.copyPath,
-            publicSurfaceAvailability: "available"
-          }
-        },
-        { environment: runEnvironment }
+          phase: PHASES[product],
+          signal: controlAbort.signal
+        })
       );
+      const phasePromise = Promise.resolve().then(() =>
+        dependencies.runPhase(
+          {
+            editor,
+            workspace: notebookPath,
+            userData: clone.userData,
+            extensions: clone.extensions,
+            developmentPaths: [driverDirectory],
+            python: pythonPath,
+            phase: PHASES[product],
+            resultPath,
+            editorProductVersion: editor.version,
+            runId: id,
+            progressPath: editorAcceptanceProgressPath(resultPath, id, PHASES[product]),
+            requiresWorkbenchCdp: true,
+            jupyterEnvironment: structuredClone(kernel.jupyterEnvironment),
+            comparisonStudyEnvironment: {
+              requestPath,
+              acknowledgementPath,
+              sourcePath: sourceCopy.copyPath,
+              publicSurfaceAvailability: "available"
+            }
+          },
+          { environment: runEnvironment }
+        )
+      );
+      void phasePromise.catch((error) => controlAbort.abort(error));
+      let outcomes;
+      try {
+        outcomes = await Promise.allSettled([phasePromise, controlPromise]);
+      } finally {
+        controlAbort.abort("public-warmup-settled");
+      }
+      const failures = outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason);
+      if (failures.length > 0) {
+        if (failures.length === 1) throw failures[0];
+        throw new AggregateError(failures, "Public notebook warm-up phase and its controller did not both settle.");
+      }
+      const [raw, controlReceipt] = outcomes.map((outcome) => outcome.value);
       const receipt = validateWarmupReceipt(raw, {
         product,
         editor,
         fixture,
         kernel,
-        sourceReceipt: sourceCopy.copyReceipt
+        sourceReceipt: sourceCopy.copyReceipt,
+        controlReceipt
       });
       dependencies.cleanupSourceCopy(sourceCopy);
       dependencies.recoverDriver({ directory: driverDirectory, vsixPath: driverVsixPath, expectedDriver });

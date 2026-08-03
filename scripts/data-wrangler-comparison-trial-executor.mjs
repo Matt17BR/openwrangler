@@ -593,6 +593,7 @@ export async function executeDataWranglerComparisonTrial(
     controlTrial = controlDataWranglerComparisonMeasuredTrial,
     validateControlReceipt = validateDataWranglerComparisonTrialControlReceipt,
     prepareSourceCache,
+    revalidatePreparedInputsAtSpawn = () => undefined,
     signalSupervisor = defaultSignalSupervisor,
     completeTerminalEvidence = defaultCompleteTerminalEvidence,
     editorRunnerDependencies = {},
@@ -608,6 +609,7 @@ export async function executeDataWranglerComparisonTrial(
     controlTrial,
     validateControlReceipt,
     prepareSourceCache,
+    revalidatePreparedInputsAtSpawn,
     signalSupervisor,
     completeTerminalEvidence,
     editorRunnerDependencies,
@@ -618,18 +620,24 @@ export async function executeDataWranglerComparisonTrial(
   let cacheProof = null;
   let cachePreparationStarted = false;
   let cachePrepared = false;
-  const prepareSourceCacheBeforeLaunch = async () => {
+  const prepareSourceCacheOnce = async ({ cacheState, request }) => {
     if (cachePreparationStarted) {
       throw new Error("Comparison trial source-cache preparation may run only once.");
     }
     cachePreparationStarted = true;
-    const proof = await prepareSourceCache({ cacheState: input.cacheState });
+    const proof = await prepareSourceCache({ cacheState, ...(request === undefined ? {} : { request }) });
     if (!isRecord(proof)) {
       throw new TypeError("Comparison trial source-cache preparation did not return a proof object.");
     }
     cacheProof = proof;
     cachePrepared = true;
     return cacheProof;
+  };
+  const prepareWarmSourceCacheBeforeLaunch = async () => {
+    if (input.cacheState !== "warm") {
+      throw new Error("Comparison trial warm source-cache preparation was requested for a cold trial.");
+    }
+    return await prepareSourceCacheOnce({ cacheState: "warm" });
   };
 
   const adapter = validateAdapter(createSupervisorAdapter(input.supervisorOptions));
@@ -639,12 +647,23 @@ export async function executeDataWranglerComparisonTrial(
       { ...input.editorPhaseOptions, runId: input.runId, phase: input.phase },
       {
         ...editorRunnerDependencies,
-        prepareSourceCacheBeforeLaunch,
-        ...(input.cacheState === "warm" ? { prepareWarmSourceCacheBeforeLaunch: prepareSourceCacheBeforeLaunch } : {}),
+        ...(input.cacheState === "warm"
+          ? {
+              prepareSourceCacheBeforeLaunch: prepareWarmSourceCacheBeforeLaunch,
+              prepareWarmSourceCacheBeforeLaunch
+            }
+          : {}),
         spawnProcess(...arguments_) {
           try {
-            if (!cachePrepared || !isRecord(cacheProof)) {
+            if (input.cacheState === "warm" && (!cachePrepared || !isRecord(cacheProof))) {
               throw new Error("Comparison trial refused to launch before its fresh source-cache proof was retained.");
+            }
+            if (input.cacheState === "cold" && (cachePreparationStarted || cachePrepared || cacheProof !== null)) {
+              throw new Error("Comparison trial refused to launch after premature cold-cache preparation.");
+            }
+            const revalidation = revalidatePreparedInputsAtSpawn();
+            if (revalidation !== undefined && isRecord(revalidation) && typeof revalidation.then === "function") {
+              throw new TypeError("Comparison trial spawn-bound input revalidation must be synchronous.");
             }
             const child = adapter.spawnProcess(...arguments_);
             spawnObserved.resolve(child);
@@ -710,12 +729,16 @@ export async function executeDataWranglerComparisonTrial(
       samplerOptions: input.samplerOptions
     });
   } catch (error) {
+    // A cold proof becomes study evidence only after the controller asks for
+    // and acknowledges eviction. Setup failed before that controller existed,
+    // so retain only a warm preload proof in the terminal receipt.
+    const retainedSetupProof = input.cacheState === "warm" ? cacheProof : null;
     return completeAfterSetupFailure({
       input,
       adapter,
       editorSettlement,
       launchReceipt,
-      cacheProof,
+      cacheProof: retainedSetupProof,
       processProofs,
       failure: error,
       failureBoundary,
@@ -814,10 +837,10 @@ export async function executeDataWranglerComparisonTrial(
   };
 
   const evictColdCache = async ({ request }) => {
-    if (input.cacheState !== "cold" || !cachePrepared || !isRecord(cacheProof) || !isRecord(request)) {
-      throw new Error("Comparison trial cold-cache control requested an absent pre-launch proof.");
+    if (input.cacheState !== "cold" || !isRecord(request)) {
+      throw new Error("Comparison trial cold-cache control requested an invalid post-verification eviction.");
     }
-    return cacheProof;
+    return await prepareSourceCacheOnce({ cacheState: "cold", request: structuredClone(request) });
   };
   const controlPromise = Promise.resolve()
     .then(() =>
@@ -900,6 +923,12 @@ export async function executeDataWranglerComparisonTrial(
   const completion = await adapter.waitForCompletion();
   const notebookPhaseReceipt = editor.status === "fulfilled" ? editor.value : null;
   const controlReceipt = control.status === "fulfilled" ? control.value : null;
+  const retainedCacheProof =
+    input.cacheState === "warm"
+      ? cacheProof
+      : isRecord(controlReceipt?.coldCacheProof)
+        ? controlReceipt.coldCacheProof
+        : null;
 
   const terminalEvidence = await completeTerminalEvidence({
     input,
@@ -908,7 +937,7 @@ export async function executeDataWranglerComparisonTrial(
     processProofs,
     notebookPhaseReceipt,
     controlReceipt,
-    cacheProof
+    cacheProof: retainedCacheProof
   });
 
   if (preActionProofError !== undefined) {
@@ -929,7 +958,7 @@ export async function executeDataWranglerComparisonTrial(
       status: "pre-action-process-proof-failure",
       notebookPhaseReceipt: null,
       controlReceipt,
-      cacheProof,
+      cacheProof: retainedCacheProof,
       processProofs,
       launchReceipt,
       supervisorCompletion: completion,
@@ -982,7 +1011,7 @@ export async function executeDataWranglerComparisonTrial(
       input,
       notebookPhaseReceipt: null,
       controlReceipt,
-      cacheProof,
+      cacheProof: retainedCacheProof,
       processProofs,
       launchReceipt,
       supervisorCompletion: completion,
@@ -1000,7 +1029,7 @@ export async function executeDataWranglerComparisonTrial(
     input,
     notebookPhaseReceipt,
     controlReceipt,
-    cacheProof,
+    cacheProof: retainedCacheProof,
     processProofs,
     launchReceipt,
     supervisorCompletion: completion,

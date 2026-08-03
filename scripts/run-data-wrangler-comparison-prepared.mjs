@@ -16,9 +16,12 @@ import {
   loadDataWranglerStudyFragments,
   pendingDataWranglerStudyTrials,
   readDataWranglerStudyManifestPublication,
+  summarizeDataWranglerStudyTrialResource,
   writeDataWranglerStudyJsonExclusive
 } from "./data-wrangler-comparison-study.mjs";
 import {
+  DATA_WRANGLER_PREPARATION_FILE_LIMITS,
+  captureDataWranglerPreparationFile,
   captureDataWranglerComparisonPythonEnvironment,
   cloneDataWranglerComparisonTemplate,
   loadDataWranglerComparisonPreparationReceipt,
@@ -355,25 +358,51 @@ export async function runPreparedDataWranglerComparisonEntry(
     fail("Prepared comparison Python packages or Jupyter state changed before the trial.");
   }
   const minimalRevalidate = () => {
-    revalidateDataWranglerPreparationFileIdentity(preparation.candidate, "Prepared comparison candidate");
-    revalidateDataWranglerPreparationFileIdentity(preparation.python, "Prepared comparison Python");
-    revalidateDataWranglerPreparationFileIdentity(preparation.cacheController, "Prepared cache controller");
+    revalidateDataWranglerPreparationFileIdentity(preparation.candidate, "Prepared comparison candidate", {
+      maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.candidate
+    });
+    revalidateDataWranglerPreparationFileIdentity(preparation.python, "Prepared comparison Python", {
+      executable: true,
+      maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.pythonExecutable
+    });
+    revalidateDataWranglerPreparationFileIdentity(preparation.cacheController, "Prepared cache controller", {
+      maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.cacheController
+    });
+    // This is the immutable preparation fixture, not the separate-inode
+    // private copy whose cache state the measured trial controls.
     const fixtureReceipt = fixtureForEntry(manifest, entry, preparation);
-    revalidateDataWranglerPreparationFileIdentity(fixtureReceipt, "Prepared comparison fixture");
+    revalidateDataWranglerPreparationFileIdentity(fixtureReceipt, "Prepared comparison fixture", {
+      maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.fixture
+    });
     revalidateDataWranglerPreparationFileIdentity(
       {
         path: preparation.editor.executablePath,
+        sha256: preparation.editor.executableSha256,
         filesystemIdentity: preparation.editor.executableFilesystemIdentity
       },
-      "Prepared comparison editor executable"
+      "Prepared comparison editor executable",
+      {
+        executable: true,
+        maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.editorExecutable
+      }
     );
     revalidateDataWranglerPreparationFileIdentity(
       {
         path: preparation.driver.vsixPath,
+        sha256: manifest.provenance.comparisonDriver.vsix.sha256,
         filesystemIdentity: manifest.provenance.comparisonDriver.vsix.filesystemIdentity
       },
-      "Prepared neutral-driver VSIX"
+      "Prepared neutral-driver VSIX",
+      { maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.driverVsix }
     );
+    const kernelspec = captureDataWranglerPreparationFile(
+      preparation.selectedKernel.path,
+      "Prepared comparison kernelspec",
+      { maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.kernelspec }
+    );
+    if (kernelspec.sha256 !== manifest.python.kernel.kernelspecSha256) {
+      fail("Prepared comparison kernelspec changed before the measured spawn.");
+    }
   };
   const fixture = fixtureForEntry(manifest, entry, preparation);
   const provenance = createPreparedProvenance({
@@ -427,6 +456,8 @@ export async function runPreparedDataWranglerComparisonEntry(
           },
           supervisorOptions: { pythonExecutable: preparation.python.path },
           processEvidenceOptions: {
+            editorExecutablePath: preparation.editor.executablePath,
+            editorExecutableSha256: preparation.editor.executableSha256,
             pythonExecutablePath: preparation.python.path,
             pythonExecutableSha256: manifest.python.executableSha256
           },
@@ -451,6 +482,7 @@ export async function runPreparedDataWranglerComparisonEntry(
         captureTrialProvenanceBefore: provenance.captureTrialProvenanceBefore,
         revalidateTrialProvenanceAfter: provenance.revalidateTrialProvenanceAfter,
         gateDependencies: { environment: profileEnvironment },
+        executorDependencies: { revalidatePreparedInputsAtSpawn: minimalRevalidate },
         neutralDriverDependencies: { readInventory: () => dependencies.readInventory(profile) }
       }
     );
@@ -492,6 +524,7 @@ export async function runUnrecordedPreparedDataWranglerComparisonDiagnostic(
     writeManifest: writeDataWranglerStudyJsonExclusive,
     writePreparation: writeDataWranglerComparisonPreparationReceipt,
     runEntry: runPreparedDataWranglerComparisonEntry,
+    summarizeResource: summarizeDataWranglerStudyTrialResource,
     remove: rmSync,
     ...overrides
   };
@@ -548,10 +581,15 @@ export async function runUnrecordedPreparedDataWranglerComparisonDiagnostic(
       fragment?.sourceCopy?.cleanup?.removed === true &&
       fragment?.trialProvenance?.revalidatedAfterCleanup === true &&
       result.cleanup?.treeEmpty === true;
-    completed = successful;
     const entry = manifest.schedule[0];
+    const resourceSummary = Object.freeze({
+      valid: observation?.valid ?? null,
+      sampleCount: samples.length,
+      ...dependencies.summarizeResource(fragment)
+    });
     const maximumObservedSampledPssBytes =
       samples.length === 0 ? null : Math.max(...samples.map((sample) => sample.totalPssBytes));
+    completed = successful;
     return Object.freeze({
       protocol: "openwrangler-data-wrangler-comparison-unrecorded-diagnostic-v1",
       recorded: false,
@@ -569,6 +607,7 @@ export async function runUnrecordedPreparedDataWranglerComparisonDiagnostic(
         betweenSampleSpikesMayBeMissed: true,
         processMeasurementsAreSequential: true
       },
+      resourceSummary,
       dataWranglerBackend:
         entry?.product === "data-wrangler"
           ? {

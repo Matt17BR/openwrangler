@@ -341,7 +341,7 @@ test("preparation captures real capability and control receipts from isolated di
           format: fixture.format,
           kind: "warm",
           fixture: { id: fixture.id, sha256: fixture.sha256, rows: fixture.rows, columns: fixture.columns },
-          kernel: { name: "openwrangler-study-test", displayName: "Study kernel" },
+          kernel: { name: "dataframe-comparison-study-test", displayName: "Study kernel" },
           sourceReceipt
         },
         verification: {
@@ -395,7 +395,7 @@ test("preparation captures real capability and control receipts from isolated di
         editor,
         pythonPath: resolve(root, "python"),
         kernel: {
-          name: "openwrangler-study-test",
+          name: "dataframe-comparison-study-test",
           displayName: "Study kernel",
           jupyterEnvironment: {
             dataDir: resolve(root, "jupyter", "data"),
@@ -689,6 +689,28 @@ test("the prepared diagnostic removes its private journal only after complete su
     const entry = { id: "warm-polars-csv-r01-dw", product: "data-wrangler", engine: "polars", format: "csv" };
     const manifest = { schedule: [entry] };
     const preparation = { studyRoot: root };
+    const memorySummary = {
+      memoryMetric: "maximum-observed-sampled-pss",
+      samplingLimitations: {
+        configuredIntervalMs: 200,
+        processMeasurementsAreSequential: true,
+        betweenSampleSpikesMayBeMissed: true
+      },
+      status: "valid",
+      reasonClass: null,
+      intervalMs: 200,
+      missedSamples: 0,
+      processCountRange: { minimum: 2, maximum: 4 },
+      segments: {
+        inline: {
+          baselinePssBytes: 10,
+          maximumObservedSampledPssBytes: 30,
+          deltaPssBytes: 20,
+          processCountRange: { minimum: 2, maximum: 3 },
+          categories: { "editor-main": { baselinePssBytes: 8, maximumObservedSampledPssBytes: 24, deltaPssBytes: 16 } }
+        }
+      }
+    };
     let scratchRoot;
     const result = await runUnrecordedPreparedDataWranglerComparisonDiagnostic(
       { manifestPath: resolve(root, "manifest.json"), preparationPath: resolve(root, "preparation.json") },
@@ -699,6 +721,11 @@ test("the prepared diagnostic removes its private journal only after complete su
         revalidatePreparation: async () => preparation,
         writeManifest() {},
         writePreparation() {},
+        summarizeResource(fragment) {
+          assert.equal(existsSync(scratchRoot), true);
+          assert.equal(fragment.outcome.status, "success");
+          return memorySummary;
+        },
         async runEntry(options) {
           scratchRoot = resolve(options.manifestPath, "..");
           assert.equal(options.retireOnlyAfterSuccessfulTrial, true);
@@ -730,6 +757,7 @@ test("the prepared diagnostic removes its private journal only after complete su
     assert.equal(existsSync(scratchRoot), false);
     assert.equal(result.cleanupVerified, true);
     assert.equal(result.maximumObservedSampledPssBytes, 50);
+    assert.deepEqual(result.resourceSummary, { valid: true, sampleCount: 5, ...memorySummary });
     assert.deepEqual(result.dataWranglerBackend, {
       sourceEngine: "polars",
       workbenchEngine: "pandas",
@@ -753,6 +781,14 @@ test("an incomplete prepared diagnostic retains its private journal without expo
         revalidatePreparation: async () => {},
         writeManifest() {},
         writePreparation() {},
+        summarizeResource: () => ({
+          status: "valid",
+          reasonClass: null,
+          intervalMs: 200,
+          missedSamples: 0,
+          processCountRange: { minimum: 1, maximum: 1 },
+          segments: null
+        }),
         async runEntry(options) {
           scratchRoot = resolve(options.manifestPath, "..");
           return {
@@ -780,6 +816,50 @@ test("an incomplete prepared diagnostic retains its private journal without expo
     assert.equal(result.retainedFailureJournal.retained, true);
     assert.equal(JSON.stringify(result).includes(scratchRoot), false);
     assert.equal(result.dataWranglerBackend, "not-applicable");
+  });
+});
+
+test("a diagnostic retains its journal if full memory summarization fails", async () => {
+  await withDirectory(async (root) => {
+    const entry = { id: "warm-pandas-csv-r01-ow", product: "open-wrangler", engine: "pandas", format: "csv" };
+    const manifest = { schedule: [entry] };
+    let scratchRoot;
+    await assert.rejects(
+      runUnrecordedPreparedDataWranglerComparisonDiagnostic(
+        { manifestPath: resolve(root, "manifest.json"), preparationPath: resolve(root, "preparation.json") },
+        {},
+        {
+          readManifest: () => manifest,
+          loadPreparation: () => ({ studyRoot: root }),
+          revalidatePreparation: async () => {},
+          writeManifest() {},
+          writePreparation() {},
+          summarizeResource() {
+            throw new Error("memory summary rejected");
+          },
+          async runEntry(options) {
+            scratchRoot = resolve(options.manifestPath, "..");
+            return {
+              cleanup: { treeEmpty: true },
+              output: {
+                outcome: { status: "success", actionStarted: true },
+                resourceObservation: {
+                  valid: true,
+                  intervalMs: 200,
+                  missedSamples: 0,
+                  samples: [1, 2, 3, 4, 5].map((totalPssBytes) => ({ totalPssBytes }))
+                },
+                cleanupProof: { status: "complete", treeEmpty: true },
+                sourceCopy: { cleanup: { removed: true } },
+                trialProvenance: { revalidatedAfterCleanup: true }
+              }
+            };
+          }
+        }
+      ),
+      /memory summary rejected/u
+    );
+    assert.equal(existsSync(scratchRoot), true);
   });
 });
 

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import { DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY } from "./data-wrangler-comparison-driver-contract.mjs";
 import {
   DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
   DATA_WRANGLER_STUDY_DEADLINES_MS,
@@ -66,6 +67,7 @@ function loadStudyFixtures() {
     createHash,
     digestStudyValue,
     buildDataWranglerStudyManifest,
+    DATA_WRANGLER_COMPARISON_DRIVER_INVENTORY_ENTRY,
     DATA_WRANGLER_STUDY_COMMON_EXTENSIONS,
     DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
     DATA_WRANGLER_STUDY_PRODUCTS,
@@ -293,7 +295,7 @@ function phaseReceipt({ entry, fixture, status = "success", failure = null, valu
       format: entry.format,
       kind: entry.kind,
       fixture: { id: fixture.id, sha256: fixture.sha256, rows: fixture.rows, columns: fixture.columns },
-      kernel: { name: "openwrangler-study-python", displayName: "Open Wrangler CPython 3.12" },
+      kernel: { name: "dataframe-comparison-study-python", displayName: "Comparison CPython 3.12" },
       pythonImplementation: "CPython",
       pythonVersion: "3.12.10"
     },
@@ -665,8 +667,8 @@ async function executeFixtureReceipt(input, { preNotebookFailure = false } = {})
       requestPath: "/private/request.json",
       acknowledgementPath: "/private/ack.json",
       selectedKernel: {
-        name: "openwrangler-study-fragment-test",
-        displayName: "Open Wrangler fragment test CPython 3.12"
+        name: "dataframe-comparison-study-fragment-test",
+        displayName: "Dataframe comparison fragment test CPython 3.12"
       },
       editorPhaseOptions: {},
       supervisorOptions: {},
@@ -677,7 +679,11 @@ async function executeFixtureReceipt(input, { preNotebookFailure = false } = {})
     {
       createSupervisorAdapter: () => adapter,
       runEditorPhase: async (_options, { prepareWarmSourceCacheBeforeLaunch, spawnProcess }) => {
-        if (prepareWarmSourceCacheBeforeLaunch) await prepareWarmSourceCacheBeforeLaunch();
+        if (input.scheduleEntry.kind === "warm") {
+          await prepareWarmSourceCacheBeforeLaunch();
+        } else {
+          assert.equal(prepareWarmSourceCacheBeforeLaunch, undefined);
+        }
         spawnProcess("code", [], {});
         if (preNotebookFailure) {
           await stopEditor.promise;
@@ -765,8 +771,8 @@ async function executeSetupFailureReceipt(input, boundary) {
       requestPath: "/private/request.json",
       acknowledgementPath: "/private/ack.json",
       selectedKernel: {
-        name: "openwrangler-study-setup-failure-test",
-        displayName: "Open Wrangler setup failure test CPython 3.12"
+        name: "dataframe-comparison-study-setup-failure-test",
+        displayName: "Dataframe comparison setup failure test CPython 3.12"
       },
       editorPhaseOptions: {},
       supervisorOptions: {},
@@ -777,7 +783,11 @@ async function executeSetupFailureReceipt(input, boundary) {
     {
       createSupervisorAdapter: () => adapter,
       runEditorPhase: async (_options, { prepareWarmSourceCacheBeforeLaunch, spawnProcess }) => {
-        if (prepareWarmSourceCacheBeforeLaunch) await prepareWarmSourceCacheBeforeLaunch();
+        if (input.scheduleEntry.kind === "warm") {
+          await prepareWarmSourceCacheBeforeLaunch();
+        } else {
+          assert.equal(prepareWarmSourceCacheBeforeLaunch, undefined);
+        }
         spawnProcess("code", [], {});
         await stopEditor.promise;
         throw new Error("private editor shutdown detail");
@@ -831,8 +841,8 @@ async function executePreActionProcessProofFailureReceipt(input) {
       requestPath: "/private/request.json",
       acknowledgementPath: "/private/ack.json",
       selectedKernel: {
-        name: "openwrangler-study-pre-action-proof-test",
-        displayName: "Open Wrangler pre-action proof test CPython 3.12"
+        name: "dataframe-comparison-study-pre-action-proof-test",
+        displayName: "Dataframe comparison pre-action proof test CPython 3.12"
       },
       editorPhaseOptions: {},
       supervisorOptions: {},
@@ -843,7 +853,11 @@ async function executePreActionProcessProofFailureReceipt(input) {
     {
       createSupervisorAdapter: () => adapter,
       runEditorPhase: async (_options, { prepareWarmSourceCacheBeforeLaunch, spawnProcess }) => {
-        if (prepareWarmSourceCacheBeforeLaunch) await prepareWarmSourceCacheBeforeLaunch();
+        if (input.scheduleEntry.kind === "warm") {
+          await prepareWarmSourceCacheBeforeLaunch();
+        } else {
+          assert.equal(prepareWarmSourceCacheBeforeLaunch, undefined);
+        }
         spawnProcess("code", [], {});
         return { protocol: "test-notebook-phase-v1", status: "failed" };
       },
@@ -931,7 +945,7 @@ test("composes honest process and sampler setup failures without a resource samp
     });
   }
 
-  await t.test("cold cache preparation was not claimed", async () => {
+  await t.test("cold cache preparation is not claimed before controller acknowledgement", async () => {
     const input = preNotebookFailureInput({ kind: "cold" });
     input.executorReceipt = await executeSetupFailureReceipt(input, "process-evidence");
     const fragment = normalizeDataWranglerComparisonPostLaunchSetupFailureFragment(input);

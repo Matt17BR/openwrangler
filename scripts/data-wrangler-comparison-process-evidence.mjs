@@ -1,4 +1,4 @@
-import { closeSync, constants, lstatSync, openSync, readSync, readlinkSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readlinkSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, isAbsolute, resolve } from "node:path";
 import { TextDecoder } from "node:util";
@@ -30,7 +30,7 @@ const LAUNCH_RECEIPT_KEYS = Object.freeze([
 const SHA256 = /^[0-9a-f]{64}$/u;
 const POSITIVE_INTEGER_TEXT = /^[1-9]\d*$/u;
 const NON_NEGATIVE_INTEGER_TEXT = /^(?:0|[1-9]\d*)$/u;
-const KERNEL_NAME = /^openwrangler-study-[a-z0-9][a-z0-9._-]{0,95}$/u;
+const KERNEL_NAME = /^dataframe-comparison-study-[a-z0-9][a-z0-9._-]{0,95}$/u;
 const CONNECTION_FILE_TOKEN = /^kernel-([A-Za-z0-9][A-Za-z0-9._-]{0,127})\.json$/u;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const EXTENSION_HOST_ENTRYPOINT = Buffer.from(
@@ -38,6 +38,7 @@ const EXTENSION_HOST_ENTRYPOINT = Buffer.from(
   "utf8"
 );
 const MAXIMUM_PYTHON_BYTES = 32 * 1024 * 1024;
+const MAXIMUM_EDITOR_EXECUTABLE_BYTES = 512 * 1024 * 1024;
 const MAXIMUM_STAT_BYTES = 4 * 1024;
 const MAXIMUM_CMDLINE_BYTES = 64 * 1024;
 const MAXIMUM_ENVIRON_BYTES = 256 * 1024;
@@ -153,6 +154,20 @@ function filesystemIdentity(metadata) {
   };
 }
 
+function sameFileMetadata(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.uid === right.uid &&
+    left.gid === right.gid &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
 function sameFilesystemIdentity(left, right) {
   return (
     left.device === right.device &&
@@ -204,6 +219,57 @@ function pinPythonExecutable(path, expectedSha256, receipt, dependencies) {
     fail("The study Python executable does not match the supervisor launch receipt.");
   }
   return canonical;
+}
+
+function pinRunningEditorExecutable(procExecutablePath, expectedPath, expectedSha256, dependencies) {
+  if (
+    typeof expectedPath !== "string" ||
+    !isAbsolute(expectedPath) ||
+    resolve(expectedPath) !== expectedPath ||
+    !SHA256.test(expectedSha256)
+  ) {
+    fail("The study editor executable input is malformed.");
+  }
+  const expectedCanonical = dependencies.realpath(expectedPath);
+  if (expectedCanonical !== expectedPath) fail("The study editor executable path is not canonical.");
+  const linkBefore = readBoundedProcLink(procExecutablePath, dependencies.readProcLink);
+  let descriptor;
+  try {
+    descriptor = openSync(procExecutablePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.size <= 0n ||
+      opened.size > BigInt(MAXIMUM_EDITOR_EXECUTABLE_BYTES) ||
+      (opened.mode & 0o111n) === 0n
+    ) {
+      fail("The running study editor executable is not one bounded executable file.");
+    }
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Number(opened.size)));
+    let position = 0;
+    while (position < Number(opened.size)) {
+      const count = readSync(descriptor, buffer, 0, Math.min(buffer.length, Number(opened.size) - position), position);
+      if (!Number.isSafeInteger(count) || count <= 0) fail("The running study editor executable ended early.");
+      hash.update(buffer.subarray(0, count));
+      position += count;
+    }
+    if (readSync(descriptor, buffer, 0, 1, position) !== 0) {
+      fail("The running study editor executable exceeded its pinned size.");
+    }
+    const completed = fstatSync(descriptor, { bigint: true });
+    const linkAfter = readBoundedProcLink(procExecutablePath, dependencies.readProcLink);
+    if (
+      !sameFileMetadata(opened, completed) ||
+      linkBefore !== linkAfter ||
+      linkAfter !== expectedCanonical ||
+      hash.digest("hex") !== expectedSha256
+    ) {
+      fail("The running study editor does not match the spawn-bound executable receipt.");
+    }
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }
 
 function validateKernelBinding(kernel) {
@@ -466,6 +532,8 @@ function frozenProofs(editorRoot, configuredKernel, runtime, product, executable
 
 export function createDataWranglerComparisonProcessEvidence({
   launchReceipt,
+  editorExecutablePath,
+  editorExecutableSha256,
   pythonExecutablePath,
   pythonExecutableSha256,
   product,
@@ -504,6 +572,9 @@ export function createDataWranglerComparisonProcessEvidence({
       ? undefined
       : createHash("sha256").update(expectedConnectionFileToken, "utf8").digest("hex");
   const kernelBinding = validateKernelBinding(expectedKernel);
+  if ((editorExecutablePath === undefined) !== (editorExecutableSha256 === undefined)) {
+    fail("Study editor executable evidence requires both its path and SHA-256.");
+  }
   const pinnedPython = pinPythonExecutable(pythonExecutablePath, pythonExecutableSha256, launchReceipt, {
     realpath,
     lstat,
@@ -565,6 +636,15 @@ export function createDataWranglerComparisonProcessEvidence({
         before.sessionId !== launchReceipt.editorRoot.sessionId
       ) {
         fail("The editor root no longer matches the supervisor launch receipt.");
+      }
+      // Hash the executable once, during the mandatory launch classification.
+      // Rehashing it on every PSS sample would change the benchmark we are
+      // trying to observe.
+      if (editorExecutablePath !== undefined && !rootObserved) {
+        pinRunningEditorExecutable(`${processRoot}/exe`, editorExecutablePath, editorExecutableSha256, {
+          readProcLink,
+          realpath
+        });
       }
       classification = Object.freeze({ category: "editor-main", kernel: null });
       rootObserved = true;

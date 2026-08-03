@@ -151,8 +151,8 @@ function input(overrides = {}) {
       requestPath: "/private/trial/bridge/request.json",
       acknowledgementPath: "/private/trial/bridge/ack.json",
       selectedKernel: {
-        name: "openwrangler-study-test",
-        displayName: "Open Wrangler study CPython 3.12"
+        name: "dataframe-comparison-study-test",
+        displayName: "Dataframe comparison study CPython 3.12"
       },
       publicSurfaceAvailability: "available",
       editorPhaseOptions: {
@@ -434,7 +434,7 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
         { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
         {
           spawnProcess: supervisorOwnedSpawn,
-          async prepareSourceCacheBeforeLaunch() {
+          async prepareWarmSourceCacheBeforeLaunch() {
             cache = await executorDependencies.prepareSourceCache({ cacheState: "warm" });
             return cache;
           }
@@ -719,7 +719,7 @@ test("terminal driver receipts survive a rejected measured editor phase", async 
           { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
           {
             spawnProcess: () => undefined,
-            prepareSourceCacheBeforeLaunch: () => executorDependencies.prepareSourceCache({ cacheState: "warm" })
+            prepareWarmSourceCacheBeforeLaunch: () => executorDependencies.prepareSourceCache({ cacheState: "warm" })
           }
         ),
         /measured editor failed/u
@@ -1160,7 +1160,7 @@ test("an ambiguous supervisor launch never removes the private source copy", asy
             spawnProcess() {
               throw new Error("injected ambiguous supervisor launch");
             },
-            async prepareSourceCacheBeforeLaunch() {
+            async prepareWarmSourceCacheBeforeLaunch() {
               return await executorDependencies.prepareSourceCache({ cacheState: "warm" });
             }
           }

@@ -5,13 +5,15 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
 import {
+  DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS,
   DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL,
   capturePreparedProductWarmups
 } from "./data-wrangler-comparison-warmup.mjs";
+import { createDataWranglerStudyBridgeController } from "./data-wrangler-study-control-bridge.mjs";
 
 const digest = "a".repeat(64);
 
-function receipt(product, editor, fixture, kernel, sourceReceipt) {
+function receipt(product, editor, fixture, kernel, sourceReceipt, exchanges) {
   return {
     protocol: DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL,
     product,
@@ -38,18 +40,43 @@ function receipt(product, editor, fixture, kernel, sourceReceipt) {
       profilesCompleteMs: 7
     },
     profiles: { expectedColumnCount: fixture.columns, completedColumnCount: fixture.columns, canonicalOrder: true },
+    controlBridge: {
+      clock: "process-hrtime-bigint",
+      authoritativeForStudy: true,
+      requestProtocol: "openwrangler-data-wrangler-study-bridge-request-v1",
+      acknowledgementProtocol: "openwrangler-data-wrangler-study-bridge-ack-v1",
+      exchanges
+    },
     cleanup: { closeStatus: "succeeded", afterVerification: "matched" }
   };
 }
 
-test("prepared warm-up runs the complete untimed notebook journey for both measured products", async () => {
+async function runRealWarmupController(options) {
+  const controller = createDataWranglerStudyBridgeController(
+    {
+      requestPath: options.comparisonStudyEnvironment.requestPath,
+      acknowledgementPath: options.comparisonStudyEnvironment.acknowledgementPath,
+      runId: options.runId,
+      phase: options.phase
+    },
+    { timeoutMs: 2_000, pollIntervalMs: 1 }
+  );
+  const exchanges = [];
+  for (const kind of DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS) {
+    exchanges.push(await controller.exchange(kind));
+  }
+  controller.close();
+  return exchanges;
+}
+
+test("prepared warm-up drives the real request/acknowledgement controller for both measured products", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-"));
   try {
     const editor = { version: "1.109.2" };
     const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
     const kernel = {
-      name: "openwrangler-study-private",
-      displayName: "Open Wrangler study CPython 3.12.10 (private trial)",
+      name: "dataframe-comparison-study-private",
+      displayName: "Dataframe comparison study CPython 3.12.10 (private trial)",
       jupyterEnvironment: { dataDir: "/j/data", runtimeDir: "/j/runtime", configDir: "/j/config", path: "/j/path" }
     };
     const configured = ["open-wrangler", "data-wrangler"].map((product) => ({
@@ -108,10 +135,18 @@ test("prepared warm-up runs the complete untimed notebook journey for both measu
         runPhase: async (options) => {
           phases.push(options);
           const product = options.phase.includes("open-wrangler") ? "open-wrangler" : "data-wrangler";
-          return receipt(product, editor, fixture, kernel, {
-            sha256: digest,
-            filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
-          });
+          const exchanges = await runRealWarmupController(options);
+          return receipt(
+            product,
+            editor,
+            fixture,
+            kernel,
+            {
+              sha256: digest,
+              filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+            },
+            exchanges
+          );
         },
         readInventory: async ({ userData }) => {
           const product = userData.includes("open-wrangler") ? "open-wrangler" : "data-wrangler";
@@ -134,6 +169,11 @@ test("prepared warm-up runs the complete untimed notebook journey for both measu
     assert.equal(phases.length, 2);
     assert.ok(phases.every((phase) => phase.developmentPaths[0] === "/driver"));
     assert.ok(phases.every((phase) => phase.requiresWorkbenchCdp === true));
+    assert.ok(
+      result.provenance.every(
+        (entry) => entry.receipt.controlBridge.exchanges.length === DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS.length
+      )
+    );
     assert.equal(recovered.length, 3);
     assert.ok(result.provenance.every((entry) => entry.receipt.untimed === true));
   } finally {
@@ -147,8 +187,8 @@ test("prepared warm-up rejects a journey that did not profile every column", asy
     const editor = { version: "1.109.2" };
     const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
     const kernel = {
-      name: "openwrangler-study-private",
-      displayName: "Open Wrangler study CPython 3.12.10 (private trial)",
+      name: "dataframe-comparison-study-private",
+      displayName: "Dataframe comparison study CPython 3.12.10 (private trial)",
       jupyterEnvironment: { dataDir: "/j/data", runtimeDir: "/j/runtime", configDir: "/j/config", path: "/j/path" }
     };
     const configured = ["open-wrangler", "data-wrangler"].map((product) => ({
@@ -200,11 +240,19 @@ test("prepared warm-up rejects a journey that did not profile every column", asy
             }
           }),
           writeNotebook: () => undefined,
-          runPhase: async () => {
-            const value = receipt("open-wrangler", editor, fixture, kernel, {
-              sha256: digest,
-              filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
-            });
+          runPhase: async (options) => {
+            const exchanges = await runRealWarmupController(options);
+            const value = receipt(
+              "open-wrangler",
+              editor,
+              fixture,
+              kernel,
+              {
+                sha256: digest,
+                filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+              },
+              exchanges
+            );
             value.profiles.completedColumnCount = 49;
             return value;
           },

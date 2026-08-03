@@ -337,6 +337,16 @@ test("the versioned manifest binds the approved method, candidate, editor, Pytho
   staleTemplate.provenance.templates[1].targetStateAbsent = false;
   assert.throws(() => validateDataWranglerStudyManifest(staleTemplate), /absence of retained target state/u);
 
+  const splitWarmupRun = structuredClone(manifest);
+  const changedWarmup = splitWarmupRun.provenance.templates[0].warmupReceipt;
+  changedWarmup.controlBridge.exchanges[1].request.runId = "77777777-7777-4777-8777-777777777777";
+  changedWarmup.controlBridge.exchanges[1].acknowledgement.runId = "77777777-7777-4777-8777-777777777777";
+  splitWarmupRun.provenance.templates[0].warmupReceiptSha256 = digestStudyValue(changedWarmup);
+  assert.throws(
+    () => validateDataWranglerStudyManifest(splitWarmupRun),
+    /warm-up control exchange is stale, mismatched, or out of order/u
+  );
+
   const desktopDisplay = structuredClone(manifest);
   desktopDisplay.provenance.display.mode = "current";
   assert.throws(() => validateDataWranglerStudyManifest(desktopDisplay), /headless Ozone/u);
@@ -2188,6 +2198,37 @@ function studyComparisonDriverReceipt() {
 }
 
 function studyWarmupReceipt(product, editor, fixture) {
+  const runId =
+    product === "open-wrangler" ? "55555555-5555-4555-8555-555555555555" : "66666666-6666-4666-8666-666666666666";
+  const phase = `comparison-study-${product}-warmup`;
+  const bridgeKinds = [
+    "source-verified",
+    "measurement-ready",
+    "sampling-origin",
+    "inline-baseline",
+    "workbench-baseline",
+    "profile-baseline",
+    "sampling-stop",
+    "cleanup-census"
+  ];
+  const exchanges = bridgeKinds.map((kind, sequence) => ({
+    request: {
+      protocol: "openwrangler-data-wrangler-study-bridge-request-v1",
+      runId,
+      phase,
+      sequence,
+      kind,
+      monotonicNanoseconds: String(sequence * 2 + 1)
+    },
+    acknowledgement: {
+      protocol: "openwrangler-data-wrangler-study-bridge-ack-v1",
+      runId,
+      phase,
+      sequence,
+      kind,
+      monotonicNanoseconds: String(sequence * 2 + 2)
+    }
+  }));
   return {
     protocol: "openwrangler-data-wrangler-public-warmup-phase-v1",
     product,
@@ -2214,6 +2255,13 @@ function studyWarmupReceipt(product, editor, fixture) {
       profilesCompleteMs: 6
     },
     profiles: { expectedColumnCount: fixture.columns, completedColumnCount: fixture.columns, canonicalOrder: true },
+    controlBridge: {
+      clock: "process-hrtime-bigint",
+      authoritativeForStudy: true,
+      requestProtocol: "openwrangler-data-wrangler-study-bridge-request-v1",
+      acknowledgementProtocol: "openwrangler-data-wrangler-study-bridge-ack-v1",
+      exchanges
+    },
     cleanup: { closeStatus: "succeeded", afterVerification: "matched" }
   };
 }

@@ -1,13 +1,27 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
+  captureDataWranglerPreparationFile,
   executeIdentityPinnedPreparationInterpreter,
-  readBoundedDataWranglerPreparationJson
+  readBoundedDataWranglerPreparationJson,
+  revalidateDataWranglerPreparationFileIdentity
 } from "./data-wrangler-comparison-preparation.mjs";
+import { writeDataWranglerComparisonKernelSpec } from "./run-data-wrangler-comparison-preparation.mjs";
 
 function withRoot(t, prefix) {
   const root = mkdtempSync(resolve(tmpdir(), prefix));
@@ -95,4 +109,42 @@ test("the preparation interpreter executes its open descriptor and rejects named
     { mode: 0o700 }
   );
   assert.throws(() => executeIdentityPinnedPreparationInterpreter(replacing, []), /changed while it executed/u);
+});
+
+test("spawn-bound revalidation detects a same-inode same-size rewrite with restored mtime", (t) => {
+  const root = withRoot(t, "ow-preparation-content-rewrite-");
+  const file = resolve(root, "authority.bin");
+  const timestampSeconds = 1_700_000_000;
+  writeFileSync(file, "original-bytes", { mode: 0o600 });
+  utimesSync(file, timestampSeconds, timestampSeconds);
+  const receipt = captureDataWranglerPreparationFile(file, "Prepared authority", { maximumBytes: 64 });
+
+  writeFileSync(file, "tampered-bytes", { mode: 0o600 });
+  utimesSync(file, timestampSeconds, timestampSeconds);
+  const rewritten = captureDataWranglerPreparationFile(file, "Prepared authority", { maximumBytes: 64 });
+  assert.deepEqual(rewritten.filesystemIdentity, receipt.filesystemIdentity);
+  assert.notEqual(rewritten.sha256, receipt.sha256);
+  assert.throws(
+    () => revalidateDataWranglerPreparationFileIdentity(receipt, "Prepared authority", { maximumBytes: 64 }),
+    /changed before the measured spawn/u
+  );
+});
+
+test("the private study kernelspec is product-neutral and names its exact CPython 3.12 runtime", (t) => {
+  const root = withRoot(t, "ow-preparation-kernelspec-");
+  const kernel = writeDataWranglerComparisonKernelSpec(root, "/private/cpython-3.12.11", "3.12.11");
+  assert.match(kernel.name, /^dataframe-comparison-study-[a-f0-9]{32}$/u);
+  assert.equal(kernel.displayName, "Dataframe comparison study CPython 3.12.11 (private trial)");
+  assert.doesNotMatch(`${kernel.name} ${kernel.displayName}`, /open[ -]?wrangler|data[ -]?wrangler/iu);
+  const value = JSON.parse(readFileSync(kernel.path, "utf8"));
+  assert.deepEqual(value.argv, [
+    "/private/cpython-3.12.11",
+    "-I",
+    "-Xfrozen_modules=off",
+    "-m",
+    "ipykernel_launcher",
+    "-f",
+    "{connection_file}"
+  ]);
+  assert.equal(value.display_name, kernel.displayName);
 });

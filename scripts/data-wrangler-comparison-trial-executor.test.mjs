@@ -9,8 +9,8 @@ import {
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 const PHASE = "comparison-study-open-wrangler-trial";
 const KERNEL = Object.freeze({
-  name: "openwrangler-study-executor",
-  displayName: "Open Wrangler study CPython 3.12"
+  name: "dataframe-comparison-study-executor",
+  displayName: "Dataframe comparison study CPython 3.12"
 });
 const SCHEDULE_ENTRY = Object.freeze({
   id: "warm-pandas-csv-r00-ow",
@@ -139,11 +139,19 @@ function createHarness({
         events.push("create-supervisor");
         return adapter;
       },
-      async runEditorPhase(options, { spawnProcess, prepareSourceCacheBeforeLaunch }) {
+      async runEditorPhase(
+        options,
+        { spawnProcess, prepareSourceCacheBeforeLaunch, prepareWarmSourceCacheBeforeLaunch }
+      ) {
         assert.equal(options.runId, RUN_ID);
         assert.equal(options.phase, PHASE);
-        assert.equal(typeof prepareSourceCacheBeforeLaunch, "function");
-        await prepareSourceCacheBeforeLaunch();
+        if (prepareWarmSourceCacheBeforeLaunch !== undefined) {
+          assert.equal(typeof prepareWarmSourceCacheBeforeLaunch, "function");
+          assert.equal(prepareSourceCacheBeforeLaunch, prepareWarmSourceCacheBeforeLaunch);
+          await prepareWarmSourceCacheBeforeLaunch();
+        } else {
+          assert.equal(prepareSourceCacheBeforeLaunch, undefined);
+        }
         spawnProcess("code", [], {});
         events.push("editor-started");
         return runEditorPhase
@@ -203,6 +211,9 @@ function createHarness({
         events.push(`cache:${cacheState}${request ? `:${request.kind}` : ""}`);
         return Object.freeze({ protocol: "test-cache-v1", requestedState: cacheState });
       },
+      revalidatePreparedInputsAtSpawn() {
+        events.push("spawn-inputs-revalidated");
+      },
       async signalSupervisor(receivedAdapter, reason) {
         assert.equal(receivedAdapter, adapter);
         events.push(`signal:${reason}`);
@@ -258,6 +269,8 @@ test("one warm trial keeps launch, action, process, notebook, control, and clean
   assert.equal(result.terminalEvidence, null);
   assert.equal(result.outerEditorFailure, null);
   assert.ok(harness.events.indexOf("cache:warm") < harness.events.indexOf("spawn"));
+  assert.ok(harness.events.indexOf("cache:warm") < harness.events.indexOf("spawn-inputs-revalidated"));
+  assert.ok(harness.events.indexOf("spawn-inputs-revalidated") < harness.events.indexOf("spawn"));
   assert.ok(harness.events.indexOf("process-proof") < harness.events.indexOf("durable-authorization"));
   assert.ok(harness.events.indexOf("durable-authorization") < harness.events.indexOf("control-complete"));
   assert.equal(harness.events.filter((event) => event === "durable-authorization").length, 1);
@@ -270,9 +283,20 @@ test("one warm trial keeps launch, action, process, notebook, control, and clean
   );
 });
 
-test("cold cache preparation is retained before spawn and re-used behind the source-verification fence", async () => {
+test("spawn-bound input revalidation is synchronous and prevents the supervisor launch", async () => {
+  const harness = createHarness();
+  harness.dependencies.revalidatePreparedInputsAtSpawn = () => Promise.resolve();
+  await assert.rejects(
+    executeDataWranglerComparisonTrial(input(), harness.dependencies),
+    /spawn-bound input revalidation must be synchronous/u
+  );
+  assert.equal(harness.events.includes("spawn"), false);
+});
+
+test("cold cache eviction runs exactly once after source verification and never before spawn", async () => {
   const harness = createHarness({
     runEditorPhase: async ({ events }) => {
+      events.push("notebook-setup-source-read-complete");
       events.push("child-timeout-finished");
       return Object.freeze({ protocol: "test-notebook-phase-v1", status: "failed" });
     }
@@ -280,6 +304,10 @@ test("cold cache preparation is retained before spawn and re-used behind the sou
   harness.dependencies.controlTrial = async (options, dependencies) => {
     harness.events.push("source-verified");
     const cacheProof = await dependencies.evictColdCache({ request: { kind: "cold-cache-evicted" } });
+    await assert.rejects(
+      dependencies.evictColdCache({ request: { kind: "cold-cache-evicted" } }),
+      /source-cache preparation may run only once/u
+    );
     return Object.freeze({
       protocol: "test-control-v1",
       status: "failed",
@@ -294,10 +322,11 @@ test("cold cache preparation is retained before spawn and re-used behind the sou
   assert.equal(result.cacheProof.requestedState, "cold");
   assert.deepEqual(
     harness.events.filter((event) => event.startsWith("cache:")),
-    ["cache:cold"]
+    ["cache:cold:cold-cache-evicted"]
   );
-  assert.ok(harness.events.indexOf("cache:cold") < harness.events.indexOf("spawn"));
   assert.ok(harness.events.indexOf("spawn") < harness.events.indexOf("source-verified"));
+  assert.ok(harness.events.indexOf("notebook-setup-source-read-complete") < harness.events.indexOf("source-verified"));
+  assert.ok(harness.events.indexOf("source-verified") < harness.events.indexOf("cache:cold:cold-cache-evicted"));
   assert.equal(
     harness.events.some((event) => event.startsWith("signal:")),
     false
@@ -784,8 +813,8 @@ test("warm cache failure happens after adapter setup but before any process laun
 
 test("a warm editor runner cannot bypass the fresh cache-proof hook", async () => {
   const harness = createHarness();
-  harness.dependencies.runEditorPhase = async (_options, { spawnProcess, prepareSourceCacheBeforeLaunch }) => {
-    assert.equal(typeof prepareSourceCacheBeforeLaunch, "function");
+  harness.dependencies.runEditorPhase = async (_options, { spawnProcess, prepareWarmSourceCacheBeforeLaunch }) => {
+    assert.equal(typeof prepareWarmSourceCacheBeforeLaunch, "function");
     spawnProcess("code", [], {});
   };
 

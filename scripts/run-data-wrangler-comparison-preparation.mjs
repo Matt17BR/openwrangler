@@ -104,7 +104,7 @@ export function writeDataWranglerComparisonKernelSpec(studyRoot, pythonPath, pyt
   if (typeof pythonVersion !== "string" || !/^3\.12(?:\.\d+)?$/u.test(pythonVersion)) {
     fail("Comparison preparation kernel requires the probed CPython 3.12 version.");
   }
-  const name = `openwrangler-study-${randomUUID().replaceAll("-", "")}`;
+  const name = `dataframe-comparison-study-${randomUUID().replaceAll("-", "")}`;
   const jupyterRoot = resolve(studyRoot, "jupyter");
   const environment = {
     dataDir: resolve(jupyterRoot, "data"),
@@ -117,7 +117,7 @@ export function writeDataWranglerComparisonKernelSpec(studyRoot, pythonPath, pyt
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     chmodSync(directory, 0o700);
   }
-  const displayName = `Open Wrangler study CPython ${pythonVersion} (private trial)`;
+  const displayName = `Dataframe comparison study CPython ${pythonVersion} (private trial)`;
   const path = resolve(kernelDirectory, "kernel.json");
   const value = {
     argv: [pythonPath, "-I", "-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
@@ -269,12 +269,9 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
       kernelspecSha256: kernel.sha256
     }
   };
-  const csv = dependencies.captureFile(options.csv, "Comparison preparation CSV fixture");
-  const parquet = dependencies.captureFile(options.parquet, "Comparison preparation Parquet fixture");
-  updateFixture(specification, "csv", csv);
-  updateFixture(specification, "parquet", parquet);
-  specification.provenance.fixtureToolchain = dependencies.validateFixtures({
+  const fixtureValidation = dependencies.validateFixtures({
     pythonPath: options.python,
+    privateRoot: studyRoot,
     fixtures: specification.fixtures.map((fixture) => ({
       id: fixture.id,
       format: fixture.format,
@@ -283,6 +280,8 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
       path: fixture.format === "csv" ? options.csv : options.parquet
     }))
   });
+  specification.provenance.fixtureToolchain = fixtureValidation.toolchain;
+  for (const fixture of fixtureValidation.fixtures) updateFixture(specification, fixture.format, fixture);
   const configuredTemplates = smokeTemplates.filter((entry) => entry.kind === "configured-only");
   const warmups = await dependencies.captureWarmups(
     {

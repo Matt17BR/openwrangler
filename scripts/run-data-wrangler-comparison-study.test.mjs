@@ -29,6 +29,7 @@ import {
   loadDataWranglerStudyFragments,
   readDataWranglerStudyManifestPublication,
   readDataWranglerStudySpecificationPublication,
+  summarizeDataWranglerStudyTrialResource,
   validateDataWranglerStudyFragment,
   writeDataWranglerStudySpecificationExclusive
 } from "./data-wrangler-comparison-study.mjs";
@@ -475,27 +476,24 @@ test("durable specification and preparation publications feed the production dia
           assert.equal(privatePreparation.manifestPath, options.manifestPath);
           assert.equal(privatePreparation.manifestSha256, digestStudyValue(privateManifest));
           observedPrivatePublications = true;
+          const output = actionStartedFragmentFixture.successFragment(
+            privateManifest,
+            privateManifest.schedule[0],
+            0,
+            10,
+            0
+          );
+          const malformed = structuredClone(output);
+          delete malformed.resourceObservation.samples[0].processes;
+          assert.throws(
+            () => summarizeDataWranglerStudyTrialResource(malformed),
+            /PSS sample.*missing or unknown fields/u
+          );
           return {
             status: "recorded",
             receipt: null,
             cleanup: { status: "retired", treeEmpty: true },
-            output: {
-              outcome: { status: "success", actionStarted: true },
-              resourceObservation: {
-                valid: true,
-                intervalMs: 200,
-                missedSamples: 0,
-                samples: [1, 2, 3, 4, 5].map((totalPssBytes) => ({ totalPssBytes }))
-              },
-              engineEvidence: {
-                sourceEngine: manifest.schedule[0].engine,
-                workbenchEngine: manifest.schedule[0].engine,
-                workbenchVerification: "public-ui-label"
-              },
-              cleanupProof: { status: "complete", treeEmpty: true },
-              sourceCopy: { cleanup: { removed: true } },
-              trialProvenance: { revalidatedAfterCleanup: true }
-            }
+            output
           };
         }
       }
@@ -1078,6 +1076,37 @@ function studyComparisonDriverReceipt() {
 }
 
 function studyWarmupReceipt(product, editor, fixture) {
+  const runId =
+    product === "open-wrangler" ? "55555555-5555-4555-8555-555555555555" : "66666666-6666-4666-8666-666666666666";
+  const phase = `comparison-study-${product}-warmup`;
+  const bridgeKinds = [
+    "source-verified",
+    "measurement-ready",
+    "sampling-origin",
+    "inline-baseline",
+    "workbench-baseline",
+    "profile-baseline",
+    "sampling-stop",
+    "cleanup-census"
+  ];
+  const exchanges = bridgeKinds.map((kind, sequence) => ({
+    request: {
+      protocol: "openwrangler-data-wrangler-study-bridge-request-v1",
+      runId,
+      phase,
+      sequence,
+      kind,
+      monotonicNanoseconds: String(sequence * 2 + 1)
+    },
+    acknowledgement: {
+      protocol: "openwrangler-data-wrangler-study-bridge-ack-v1",
+      runId,
+      phase,
+      sequence,
+      kind,
+      monotonicNanoseconds: String(sequence * 2 + 2)
+    }
+  }));
   return {
     protocol: "openwrangler-data-wrangler-public-warmup-phase-v1",
     product,
@@ -1104,6 +1133,13 @@ function studyWarmupReceipt(product, editor, fixture) {
       profilesCompleteMs: 6
     },
     profiles: { expectedColumnCount: fixture.columns, completedColumnCount: fixture.columns, canonicalOrder: true },
+    controlBridge: {
+      clock: "process-hrtime-bigint",
+      authoritativeForStudy: true,
+      requestProtocol: "openwrangler-data-wrangler-study-bridge-request-v1",
+      acknowledgementProtocol: "openwrangler-data-wrangler-study-bridge-ack-v1",
+      exchanges
+    },
     cleanup: { closeStatus: "succeeded", afterVerification: "matched" }
   };
 }

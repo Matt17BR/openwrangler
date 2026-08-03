@@ -87,7 +87,7 @@ function validateKernel(value) {
   exactKeys(value, ["name", "displayName"], "Prepared trial kernel");
   if (
     typeof value.name !== "string" ||
-    !/^openwrangler-study-[a-z0-9][a-z0-9._-]{0,95}$/u.test(value.name) ||
+    !/^dataframe-comparison-study-[a-z0-9][a-z0-9._-]{0,95}$/u.test(value.name) ||
     typeof value.displayName !== "string" ||
     value.displayName.length === 0 ||
     value.displayName.length > 128 ||
@@ -1093,12 +1093,21 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
                               capturedDriverBefore = structuredClone(
                                 requireRecord(dependencies.driverBefore, "Neutral driver before measured launch")
                               );
-                              const prepareSourceCacheBeforeLaunch =
-                                editorRunnerDependencies.prepareSourceCacheBeforeLaunch;
-                              if (typeof prepareSourceCacheBeforeLaunch !== "function") {
-                                fail("Measured trial omitted its executor-owned pre-launch cache preparation hook.");
+                              if (context.scheduleEntry.kind === "warm") {
+                                const prepareWarmSourceCacheBeforeLaunch =
+                                  editorRunnerDependencies.prepareWarmSourceCacheBeforeLaunch;
+                                if (typeof prepareWarmSourceCacheBeforeLaunch !== "function") {
+                                  fail(
+                                    "Measured warm trial omitted its executor-owned pre-launch cache preparation hook."
+                                  );
+                                }
+                                await prepareWarmSourceCacheBeforeLaunch();
+                              } else if (
+                                editorRunnerDependencies.prepareSourceCacheBeforeLaunch !== undefined ||
+                                editorRunnerDependencies.prepareWarmSourceCacheBeforeLaunch !== undefined
+                              ) {
+                                fail("Measured cold trial received a pre-launch cache preparation hook.");
                               }
-                              await prepareSourceCacheBeforeLaunch();
                               provenanceBefore = structuredClone(
                                 requireRecord(
                                   await captureTrialProvenanceBefore({

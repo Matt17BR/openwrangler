@@ -47,7 +47,25 @@ const MAX_TREE_DEPTH = 24;
 const READ_BUFFER_BYTES = 1024 * 1024;
 const MAX_PREPARATION_JSON_BYTES = 32 * 1024 * 1024;
 const MAX_KERNELSPEC_BYTES = 64 * 1024;
+const MAX_CANDIDATE_BYTES = 512 * 1024 * 1024;
+const MAX_EDITOR_EXECUTABLE_BYTES = 512 * 1024 * 1024;
+const MAX_EDITOR_CLI_BYTES = 4 * 1024 * 1024;
+const MAX_PYTHON_EXECUTABLE_BYTES = 128 * 1024 * 1024;
+const MAX_CACHE_CONTROLLER_BYTES = 4 * 1024 * 1024;
+const MAX_FIXTURE_BYTES = 4 * 1024 * 1024 * 1024;
+const MAX_GENERIC_PREPARATION_FILE_BYTES = 512 * 1024 * 1024;
 const REQUIRED_PACKAGES = Object.freeze(["pandas", "polars", "pyarrow", "jupyter_core", "ipykernel"]);
+
+export const DATA_WRANGLER_PREPARATION_FILE_LIMITS = Object.freeze({
+  cacheController: MAX_CACHE_CONTROLLER_BYTES,
+  candidate: MAX_CANDIDATE_BYTES,
+  driverVsix: 64 * 1024 * 1024,
+  editorCli: MAX_EDITOR_CLI_BYTES,
+  editorExecutable: MAX_EDITOR_EXECUTABLE_BYTES,
+  fixture: MAX_FIXTURE_BYTES,
+  kernelspec: MAX_KERNELSPEC_BYTES,
+  pythonExecutable: MAX_PYTHON_EXECUTABLE_BYTES
+});
 
 function fail(message) {
   throw new TypeError(message);
@@ -105,17 +123,23 @@ function fileIdentity(metadata) {
   });
 }
 
-export function revalidateDataWranglerPreparationFileIdentity(receipt, label) {
-  if (!isRecord(receipt) || typeof receipt.path !== "string" || !isRecord(receipt.filesystemIdentity)) {
+export function revalidateDataWranglerPreparationFileIdentity(
+  receipt,
+  label,
+  { executable = false, maximumBytes = MAX_GENERIC_PREPARATION_FILE_BYTES } = {}
+) {
+  if (
+    !isRecord(receipt) ||
+    typeof receipt.path !== "string" ||
+    !SHA256.test(receipt.sha256 ?? "") ||
+    !isRecord(receipt.filesystemIdentity)
+  ) {
     fail(`${label} receipt is invalid.`);
   }
-  const metadata = lstatSync(receipt.path, { bigint: true });
+  const current = captureDataWranglerPreparationFile(receipt.path, label, { executable, maximumBytes });
   if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    !ownerMatches(metadata) ||
-    canonicalStudyJson(fileIdentity(metadata)) !== canonicalStudyJson(receipt.filesystemIdentity)
+    current.sha256 !== receipt.sha256 ||
+    canonicalStudyJson(current.filesystemIdentity) !== canonicalStudyJson(receipt.filesystemIdentity)
   ) {
     fail(`${label} changed before the measured spawn.`);
   }
@@ -206,8 +230,15 @@ export function readBoundedDataWranglerPreparationJson(
   }
 }
 
-export function captureDataWranglerPreparationFile(path, label, { executable = false } = {}) {
+export function captureDataWranglerPreparationFile(
+  path,
+  label,
+  { executable = false, maximumBytes = MAX_GENERIC_PREPARATION_FILE_BYTES } = {}
+) {
   canonicalAbsolutePath(path, label);
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > MAX_FIXTURE_BYTES) {
+    fail(`${label} byte bound is invalid.`);
+  }
   let descriptor;
   try {
     const before = lstatSync(path, { bigint: true });
@@ -216,13 +247,13 @@ export function captureDataWranglerPreparationFile(path, label, { executable = f
       before.isSymbolicLink() ||
       before.nlink !== 1n ||
       before.size <= 0n ||
-      before.size > BigInt(Number.MAX_SAFE_INTEGER) ||
+      before.size > BigInt(maximumBytes) ||
       !ownerMatches(before) ||
       (executable && (before.mode & 0o111n) === 0n)
     ) {
       fail(`${label} must be one owned, singly linked${executable ? ", executable" : ""} regular file.`);
     }
-    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const opened = fstatSync(descriptor, { bigint: true });
     if (!sameMetadata(before, opened)) fail(`${label} changed while it opened.`);
     const hash = createHash("sha256");
@@ -258,6 +289,10 @@ function privateDirectory(path, label) {
     fail(`${label} must be one canonical, owned mode-0700 directory.`);
   }
   return metadata;
+}
+
+export function assertDataWranglerPreparationPrivateDirectory(path, label) {
+  return privateDirectory(path, label);
 }
 
 function treeRelativePath(root, path) {
@@ -440,8 +475,8 @@ function verifyKernelSpec(path, pythonPath, manifest) {
     !Array.isArray(value.argv) ||
     value.argv[0] !== pythonPath ||
     !value.argv.includes("ipykernel_launcher") ||
-    typeof value.display_name !== "string" ||
-    value.display_name.length === 0 ||
+    value.display_name !== `Dataframe comparison study CPython ${manifest.python.version} (private trial)` ||
+    !/^dataframe-comparison-study-[a-z0-9][a-z0-9._-]{0,95}$/u.test(basename(dirname(path))) ||
     basename(dirname(path)) !== manifest.python.kernel.kernelspecName ||
     file.sha256 !== manifest.python.kernel.kernelspecSha256
   ) {
@@ -601,7 +636,9 @@ export async function createDataWranglerComparisonPreparationReceipt(
 ) {
   const manifest = readDataWranglerStudyManifestPublication(manifestPath);
   privateDirectory(studyRoot, "Comparison preparation study root");
-  const candidate = captureDataWranglerPreparationFile(candidatePath, "Comparison preparation candidate");
+  const candidate = captureDataWranglerPreparationFile(candidatePath, "Comparison preparation candidate", {
+    maximumBytes: MAX_CANDIDATE_BYTES
+  });
   if (
     candidate.sha256 !== manifest.candidate.sha256 ||
     canonicalStudyJson(candidate.filesystemIdentity) !== canonicalStudyJson(manifest.candidate.filesystemIdentity)
@@ -611,10 +648,11 @@ export async function createDataWranglerComparisonPreparationReceipt(
   const editorExecutable = captureDataWranglerPreparationFile(
     editor.executable,
     "Comparison preparation editor executable",
-    { executable: true }
+    { executable: true, maximumBytes: MAX_EDITOR_EXECUTABLE_BYTES }
   );
   const editorCli = captureDataWranglerPreparationFile(editor.cli, "Comparison preparation editor CLI", {
-    executable: true
+    executable: true,
+    maximumBytes: MAX_EDITOR_CLI_BYTES
   });
   const editorInstallation = captureDataWranglerProfileTree(
     editor.installationRoot,
@@ -622,7 +660,8 @@ export async function createDataWranglerComparisonPreparationReceipt(
   );
   const cacheController = captureDataWranglerPreparationFile(
     cacheControllerPath,
-    "Comparison preparation cache controller"
+    "Comparison preparation cache controller",
+    { maximumBytes: MAX_CACHE_CONTROLLER_BYTES }
   );
   if (cacheController.sha256 !== manifest.provenance.cacheToolchain.controller.sha256) {
     fail("Comparison preparation cache controller does not match the manifest.");
@@ -634,7 +673,9 @@ export async function createDataWranglerComparisonPreparationReceipt(
   });
   const fixtureReceipts = manifest.fixtures.map((fixture) => {
     const path = fixturePaths[fixture.format];
-    const receipt = captureDataWranglerPreparationFile(path, `Comparison preparation ${fixture.format} fixture`);
+    const receipt = captureDataWranglerPreparationFile(path, `Comparison preparation ${fixture.format} fixture`, {
+      maximumBytes: MAX_FIXTURE_BYTES
+    });
     if (
       receipt.sha256 !== fixture.sha256 ||
       canonicalStudyJson(receipt.filesystemIdentity) !== canonicalStudyJson(fixture.filesystemIdentity)
@@ -905,7 +946,8 @@ export function probeDataWranglerComparisonPython(pythonPath) {
 
 export function captureDataWranglerComparisonPythonEnvironment({ pythonPath, kernelspecPath, jupyterEnvironment }) {
   const interpreter = captureDataWranglerPreparationFile(pythonPath, "Comparison preparation Python", {
-    executable: true
+    executable: true,
+    maximumBytes: MAX_PYTHON_EXECUTABLE_BYTES
   });
   const probe = probeDataWranglerComparisonPython(pythonPath);
   const kernelspec = readBoundedDataWranglerPreparationJson(

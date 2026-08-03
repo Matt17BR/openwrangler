@@ -24,8 +24,8 @@ const FORMATS = Object.freeze({
   })
 });
 const KERNEL = Object.freeze({
-  name: "openwrangler-study-cpython-312-trial",
-  displayName: "Open Wrangler study CPython 3.12 (private trial)"
+  name: "dataframe-comparison-study-cpython-312-trial",
+  displayName: "Dataframe comparison study CPython 3.12 (private trial)"
 });
 const SOURCE_RECEIPT = Object.freeze({
   sha256: "a".repeat(64),

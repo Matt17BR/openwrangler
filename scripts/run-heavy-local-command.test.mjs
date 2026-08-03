@@ -83,7 +83,10 @@ test("public heavy scripts hold the shared lease across their complete transacti
     "benchmark:runtime",
     "benchmark:installed",
     "comparison:diagnostic",
+    "comparison:feasibility:smoke",
     "comparison:prepare",
+    "comparison:spec",
+    "comparison:study",
     "package"
   ];
   for (const name of guarded) {
@@ -103,7 +106,16 @@ test("public heavy scripts hold the shared lease across their complete transacti
     scripts["test:packaged-editors"],
     "node scripts/run-heavy-local-command.mjs test:packaged-editors -- npm run test:packaged-editors:prepare --"
   );
-  assert.equal(scripts["comparison:study"], "node scripts/run-data-wrangler-comparison-study-entry.mjs");
+  const publicComparisonScripts = Object.keys(scripts)
+    .filter((name) => name.startsWith("comparison:"))
+    .sort();
+  assert.deepEqual(publicComparisonScripts, [
+    "comparison:diagnostic",
+    "comparison:feasibility:smoke",
+    "comparison:prepare",
+    "comparison:spec",
+    "comparison:study"
+  ]);
 });
 
 test("public comparison workflows reject contention and accept one inherited lease", { timeout: 15_000 }, async () => {
@@ -122,6 +134,12 @@ test("public comparison workflows reject contention and accept one inherited lea
   );
   const commands = [
     {
+      name: "feasibility smoke",
+      script: guard,
+      arguments: ["comparison:feasibility:smoke", "--", "node", "scripts/run-data-wrangler-comparison.mjs"],
+      nestedError: /Comparison runner requires --candidate/u
+    },
+    {
       name: "prepare",
       script: guard,
       arguments: ["comparison:prepare", "--", "node", "scripts/run-data-wrangler-comparison-preparation.mjs"],
@@ -134,9 +152,19 @@ test("public comparison workflows reject contention and accept one inherited lea
       nestedError: /Usage: node scripts\/run-data-wrangler-comparison-diagnostic/u
     },
     {
+      name: "spec generator",
+      script: guard,
+      arguments: ["comparison:spec", "--", "node", "scripts/generate-data-wrangler-comparison-spec.mjs"],
+      nestedError: /Usage: node scripts\/generate-data-wrangler-comparison-spec/u
+    },
+    {
       name: "study run-next",
-      script: "scripts/run-data-wrangler-comparison-study-entry.mjs",
+      script: guard,
       arguments: [
+        "comparison:study",
+        "--",
+        "node",
+        "scripts/run-data-wrangler-comparison-study-entry.mjs",
         "run-next",
         "--manifest",
         "missing-manifest.json",

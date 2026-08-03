@@ -40,8 +40,8 @@ const editor = Object.freeze({
   uiLocale: "en"
 });
 const kernel = Object.freeze({
-  name: "openwrangler-study-private",
-  displayName: "Open Wrangler study CPython 3.12.11 (private trial)"
+  name: "dataframe-comparison-study-private",
+  displayName: "Dataframe comparison study CPython 3.12.11 (private trial)"
 });
 const python = Object.freeze({ implementation: "CPython", version: "3.12.11" });
 const sourceReceipt = Object.freeze({

@@ -502,7 +502,8 @@ npm run comparison:feasibility:smoke -- \
 
 `--python` must name a current-user-owned, executable, non-empty, single-link regular file rather than the usual
 virtual-environment symlink. It must be CPython 3.10 through 3.14 with Pandas, Polars, PyArrow, Jupyter Core, and
-ipykernel installed. Polars generates and validates the deterministic fixture manifest; the matched editor comparison
+ipykernel installed. Polars generates the deterministic fixture manifest and validates every fixture cell against the
+checked-in row-plus-column rule; the matched editor comparison
 still uses Pandas for both products. `--out` must be absent: the runner reserves the final path with one exclusive no-follow create, then
 writes, flushes, and validates only through that bound descriptor. It never replaces an existing file and never
 unlinks an output pathname after creation, so an ancestor or pathname rebind cannot turn failed-publication cleanup
@@ -521,8 +522,9 @@ watching so unrelated first-run notifications cannot alter the readiness boundar
 zero-area accessibility-tree remnants and non-modal VS Code notification toasts, while still requiring the target
 editor and renderer to be pointer-usable. It waits for transient visible workbench surfaces to clear; a persistent
 Quick Input, modal dialog, or pointer obstruction consumes the bounded deadline and fails. Before Data Wrangler's
-ordinary warm-up, a separate untimed editor phase exposes one private, uniquely named Jupyter kernelspec whose
-`argv[0]` is the exact pinned comparison interpreter. The harness launches the public Explorer action and discovers candidates only through
+ordinary warm-up, a separate untimed editor phase exposes one private, uniquely named, product-neutral Jupyter
+kernelspec. Its picker label names the exact CPython 3.12 patch release, and `argv[0]` is the exact pinned comparison
+interpreter. The harness launches the public Explorer action and discovers candidates only through
 public roles plus their computed accessible names. It first accepts exactly one matching kernelspec option exposed
 directly by the product. Otherwise it requires exactly one runtime selector on the post-click Data Wrangler editor
 surface, activates the exact public **Connect using local Python interpreter** route that this action opens (including
@@ -581,8 +583,13 @@ land together.
 Prepare the study once. This command inspects the candidate VSIX, selects and hashes the supplied CPython executable,
 checks its Pandas, Polars, PyArrow, Jupyter Core, and ipykernel versions, creates the study kernelspec, acquires the
 pinned official VS Code build, and runs the public first-use and warm-up journeys. It then seals separate
-configured-only and warmed profiles for both products. The CSV and Parquet fixtures, cache controller, and neutral
-driver are identified from their actual files, not copied receipts.
+configured-only and warmed profiles for both products. Before it records the supplied CSV and Parquet paths, it runs
+the checked-in fixture generator in a fresh mode-`0700` directory, enforces file-size bounds, and compares both files
+byte for byte with the regenerated output. It then runs the full Polars value contract and records those same file
+receipts. The cache controller and neutral driver are likewise identified from their actual files, not copied receipts.
+
+Every public `comparison:*` npm command holds the repository's shared heavy-command lease for its complete process
+tree. The script contract test enumerates that public command set, so adding an unguarded comparison entry fails CI.
 
 The final specification format is checked in as
 [`performance-comparison.spec.schema.json`](performance-comparison.spec.schema.json). To seal a complete reviewed
@@ -623,6 +630,10 @@ monotonic observation trace, and source context. A missing, ambiguous, timed-out
 preparation. These three captures are outside the 96 measured trials. Their receipt bindings identify the exact editor
 distribution, configured-profile tree, fixture, and capture result in `preparation.json`.
 
+Each product warm-up uses the measured notebook driver's real durable request/acknowledgement bridge. Preparation
+responds to the complete warm sequence and checks that the editor receipt contains the same ordered exchanges before it
+accepts the warmed profile.
+
 Use the preparation receipt for the dry run and every recorded trial. Both commands choose the next schedule entry,
 clone the matching sealed profile, install the neutral driver into that clone, build all private paths, and run the
 same measured notebook journey. Callers do not hand-author a per-trial preparation file.
@@ -654,8 +665,10 @@ This diagnostic uses a private scratch ledger. It never writes to the real study
 only after the public action, 200 ms PSS sampling, source-copy removal, process-tree cleanup, and provenance recheck all
 succeed. A failed run leaves that private journal in the disposable profile for inspection. The JSON summary labels
 memory as maximum observed sampled PSS: short spikes can fall between samples, and per-process `smaps_rollup` reads are
-sequential rather than simultaneous. For Data Wrangler, the summary reports the source and workbench engine evidence;
-an engine the public UI does not identify stays `unverified`.
+sequential rather than simultaneous. Before a successful run removes its journal, the summary retains the validated
+sampling status and reason, missed-sample count, process-count range, and inline, workbench, profile, and complete-trial
+baseline, maximum, delta, and per-category PSS results. For Data Wrangler, it also reports the source and workbench
+engine evidence; an engine the public UI does not identify stays `unverified`.
 
 After a successful trial, `run-next` verifies that the editor and kernel process trees are empty and removes only the
 clone it created. If measurement or ownership is uncertain, it deliberately leaves that clone under the preparation
@@ -665,7 +678,12 @@ retained clone, and call `run-next` again only when the ledger says the entry is
 
 `plan` opens and identifies the supplied controller and CPython executable itself. It writes those observed receipts
 into the manifest and rejects a specification that claims a different toolchain. Later cache preparation executes
-those retained files through inherited descriptors and binds the result to the private fixture copy.
+those retained files through inherited descriptors and binds the result to the private fixture copy. Other retained
+files have fixed per-kind size limits and are hashed again in the synchronous supervisor-spawn callback. Launch
+evidence then hashes the executable behind the editor process's `/proc` descriptor, so a pathname swap cannot stand in
+for the editor bytes recorded during preparation. The spawn-bound fixture hash reads the immutable preparation file,
+not the separate-inode private copy used by the measured process, so it cannot refill the copy's evicted page-cache
+entries before a cold trial.
 
 The ledger has five versioned formats: manifest, fragment, finalization intent, result, and Linux PSS observation.
 Their protocol IDs begin with `openwrangler-data-wrangler-study-` or `openwrangler-linux-pss-observation-`. Each

@@ -47,8 +47,8 @@ const STUDY: NotebookTrialDefinition = {
     columns: 50
   },
   kernel: {
-    name: "openwrangler-study-cpython-312-trial",
-    displayName: "Open Wrangler study CPython 3.12 (private trial)"
+    name: "dataframe-comparison-study-cpython-312-trial",
+    displayName: "Dataframe comparison study CPython 3.12 (private trial)"
   },
   sourceReceipt: {
     sha256: "a".repeat(64),
@@ -817,7 +817,7 @@ describe("one-trial notebook comparison flow", () => {
     expect(() =>
       validateDataWranglerNotebookTrialPhaseReceipt(
         mutate((value) => {
-          value.study.kernel.displayName = "Open Wrangler study CPython 3.12 /tmp/private-kernel";
+          value.study.kernel.displayName = "Dataframe comparison study CPython 3.12 /tmp/private-kernel";
         })
       )
     ).toThrow(/path-free/u);

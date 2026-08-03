@@ -8,8 +8,8 @@ import { createDataWranglerComparisonProcessEvidence } from "./data-wrangler-com
 import { LINUX_PSS_OWNERSHIP_PROTOCOL } from "./linux-pss-sampler.mjs";
 
 const KERNEL = Object.freeze({
-  name: "openwrangler-study-evidence",
-  displayName: "Open Wrangler study CPython 3.12"
+  name: "dataframe-comparison-study-evidence",
+  displayName: "Dataframe comparison study CPython 3.12"
 });
 
 test("owned processes receive exact study categories without retaining command or environment secrets", () => {
@@ -284,6 +284,31 @@ test("launch proof remains available before a kernel exists", () => {
   });
 });
 
+test("launch evidence pins the bytes of the editor process that actually started", () => {
+  withFixture((fixture) => {
+    writeProcess(fixture, 100, { command: [fixture.editor], executable: fixture.editor, start: "1000" });
+    const evidence = createEvidence(fixture, {
+      editorExecutablePath: fixture.editor,
+      editorExecutableSha256: fixture.editorSha256
+    });
+    assert.deepEqual(evidence.snapshotLaunchProcessProofs().editorRoot, {
+      pid: 100,
+      startTimeTicks: "1000",
+      capturedAtLaunch: true
+    });
+
+    writeFileSync(fixture.editor, "#!/bin/sh\nprintf tampered\n", { mode: 0o700 });
+    assert.throws(
+      () =>
+        createEvidence(fixture, {
+          editorExecutablePath: fixture.editor,
+          editorExecutableSha256: fixture.editorSha256
+        }),
+      /does not match the spawn-bound executable receipt/u
+    );
+  });
+});
+
 function createEvidence(fixture, overrides = {}) {
   return createDataWranglerComparisonProcessEvidence({
     launchReceipt: fixture.launchReceipt,
@@ -310,8 +335,12 @@ function withFixture(callback) {
     writeFileSync(python, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     chmodSync(python, 0o700);
     const pythonSha256 = sha256(Buffer.from("#!/bin/sh\nexit 0\n"));
+    const editor = resolve(root, "editor-study");
+    writeFileSync(editor, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    chmodSync(editor, 0o700);
+    const editorSha256 = sha256(Buffer.from("#!/bin/sh\nexit 0\n"));
     const launchReceipt = makeLaunchReceipt(python, pythonSha256);
-    callback({ root, procRoot, python, pythonSha256, launchReceipt });
+    callback({ root, procRoot, python, pythonSha256, editor, editorSha256, launchReceipt });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

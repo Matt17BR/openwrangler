@@ -96,8 +96,8 @@ function validateSourceReceipt(sourceReceipt) {
 
 function validateKernel(kernel) {
   exactKeys(kernel, ["name", "displayName"], "Comparison notebook kernel");
-  if (typeof kernel.name !== "string" || !/^openwrangler-study-[a-z0-9][a-z0-9._-]{0,95}$/u.test(kernel.name)) {
-    fail("Comparison notebook kernel name must identify one trial-private openwrangler-study kernelspec.");
+  if (typeof kernel.name !== "string" || !/^dataframe-comparison-study-[a-z0-9][a-z0-9._-]{0,95}$/u.test(kernel.name)) {
+    fail("Comparison notebook kernel name must identify one product-neutral, trial-private kernelspec.");
   }
   if (
     typeof kernel.displayName !== "string" ||

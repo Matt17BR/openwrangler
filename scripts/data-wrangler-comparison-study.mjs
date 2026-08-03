@@ -29,6 +29,12 @@ import {
 } from "./data-wrangler-comparison-cache-controller.mjs";
 import { DATA_WRANGLER_COMPARISON_SOURCE_COPY_PROTOCOL } from "./data-wrangler-comparison-source-copy.mjs";
 import {
+  DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL,
+  DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL,
+  validateDataWranglerStudyBridgeAcknowledgement,
+  validateDataWranglerStudyBridgeRequest
+} from "./data-wrangler-study-control-bridge.mjs";
+import {
   digestDurableJsonValue,
   publishDurableStudyJsonExclusive,
   recoverDurableStudyJsonPublication
@@ -51,6 +57,16 @@ export const DATA_WRANGLER_STUDY_METHOD_PATH = fileURLToPath(
 );
 
 export const DATA_WRANGLER_STUDY_PRODUCTS = Object.freeze(["open-wrangler", "data-wrangler"]);
+const DATA_WRANGLER_STUDY_WARMUP_BRIDGE_KINDS = Object.freeze([
+  "source-verified",
+  "measurement-ready",
+  "sampling-origin",
+  "inline-baseline",
+  "workbench-baseline",
+  "profile-baseline",
+  "sampling-stop",
+  "cleanup-census"
+]);
 export const DATA_WRANGLER_STUDY_DEADLINES_MS = Object.freeze({
   "inline-preview": 45_000,
   "workbench-open": 60_000,
@@ -891,7 +907,18 @@ function validateStudyTemplates(templates, manifestContext) {
     const warmup = template.warmupReceipt;
     exactKeys(
       warmup,
-      ["protocol", "product", "untimed", "locale", "editorVersion", "study", "milestones", "profiles", "cleanup"],
+      [
+        "protocol",
+        "product",
+        "untimed",
+        "locale",
+        "editorVersion",
+        "study",
+        "milestones",
+        "profiles",
+        "controlBridge",
+        "cleanup"
+      ],
       "Study public warm-up receipt"
     );
     if (
@@ -962,6 +989,46 @@ function validateStudyTemplates(templates, manifestContext) {
       ["expectedColumnCount", "completedColumnCount", "canonicalOrder"],
       "Study public warm-up profiles"
     );
+    exactKeys(
+      warmup.controlBridge,
+      ["clock", "authoritativeForStudy", "requestProtocol", "acknowledgementProtocol", "exchanges"],
+      "Study public warm-up control bridge"
+    );
+    if (
+      warmup.controlBridge.clock !== "process-hrtime-bigint" ||
+      warmup.controlBridge.authoritativeForStudy !== true ||
+      warmup.controlBridge.requestProtocol !== DATA_WRANGLER_STUDY_BRIDGE_REQUEST_PROTOCOL ||
+      warmup.controlBridge.acknowledgementProtocol !== DATA_WRANGLER_STUDY_BRIDGE_ACK_PROTOCOL ||
+      !Array.isArray(warmup.controlBridge.exchanges) ||
+      warmup.controlBridge.exchanges.length !== DATA_WRANGLER_STUDY_WARMUP_BRIDGE_KINDS.length
+    ) {
+      fail("Study public warm-up control bridge is incomplete.");
+    }
+    let previousAcknowledgement = 0n;
+    let bridgeRunId;
+    for (let exchangeIndex = 0; exchangeIndex < warmup.controlBridge.exchanges.length; exchangeIndex += 1) {
+      const exchange = warmup.controlBridge.exchanges[exchangeIndex];
+      exactKeys(exchange, ["request", "acknowledgement"], "Study public warm-up control exchange");
+      const request = validateDataWranglerStudyBridgeRequest(exchange.request);
+      const acknowledgement = validateDataWranglerStudyBridgeAcknowledgement(exchange.acknowledgement);
+      const expectedKind = DATA_WRANGLER_STUDY_WARMUP_BRIDGE_KINDS[exchangeIndex];
+      bridgeRunId ??= request.runId;
+      if (
+        request.runId !== bridgeRunId ||
+        request.runId !== acknowledgement.runId ||
+        request.phase !== `comparison-study-${template.product}-warmup` ||
+        request.phase !== acknowledgement.phase ||
+        request.sequence !== exchangeIndex ||
+        request.sequence !== acknowledgement.sequence ||
+        request.kind !== expectedKind ||
+        request.kind !== acknowledgement.kind ||
+        BigInt(request.monotonicNanoseconds) < previousAcknowledgement ||
+        BigInt(acknowledgement.monotonicNanoseconds) < BigInt(request.monotonicNanoseconds)
+      ) {
+        fail("Study public warm-up control exchange is stale, mismatched, or out of order.");
+      }
+      previousAcknowledgement = BigInt(acknowledgement.monotonicNanoseconds);
+    }
     exactKeys(warmup.cleanup, ["closeStatus", "afterVerification"], "Study public warm-up cleanup");
     if (
       warmup.profiles.expectedColumnCount !== csvFixture?.columns ||
@@ -4910,7 +4977,10 @@ function completedPairAttempts(manifest, fragments) {
   return result;
 }
 
-function summarizeTrialResource(fragment) {
+export function summarizeDataWranglerStudyTrialResource(fragment) {
+  if (!isRecord(fragment) || !isRecord(fragment.outcome)) {
+    fail("Study resource summary requires one fragment with an outcome.");
+  }
   const observation = fragment.resourceObservation;
   const samplingDisclosure = {
     memoryMetric: "maximum-observed-sampled-pss",
@@ -4931,6 +5001,10 @@ function summarizeTrialResource(fragment) {
       segments: null
     };
   }
+  if (!isRecord(observation)) {
+    fail("Study resource summary requires a resource observation object or null.");
+  }
+  validateDataWranglerStudyResourceObservation(observation);
   const processCounts = observation.samples.map((sample) => sample.processes.length);
   return {
     ...samplingDisclosure,
@@ -5088,7 +5162,7 @@ function summarizeCell(cell, attempts) {
         inlineSurfaceOwner:
           fragment.uiEvidence?.inline.status === "ready" ? fragment.uiEvidence.inline.surfaceOwner : "unverified",
         semanticEquivalence: summarizeProfileSemanticEquivalence(fragment),
-        ...summarizeTrialResource(fragment)
+        ...summarizeDataWranglerStudyTrialResource(fragment)
       };
     })
   );
@@ -5173,7 +5247,7 @@ function summarizeColdTrials(manifest, attempts) {
                   operator: fragment.outcome.timeout.rightCensored.operator,
                   valueMs: fragment.outcome.timeout.rightCensored.valueMs
                 },
-          resource: summarizeTrialResource(fragment),
+          resource: summarizeDataWranglerStudyTrialResource(fragment),
           measurements: {
             loadAndPreviewMs: measurements.inlinePreviewMs,
             workbenchOpenMs: measurements.workbenchOpenMs,

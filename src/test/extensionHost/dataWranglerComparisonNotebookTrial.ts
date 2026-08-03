@@ -64,7 +64,7 @@ const PHASE_PRODUCTS = Object.freeze({
   "comparison-study-data-wrangler-trial": "data-wrangler"
 } as const);
 const SHA256 = /^[0-9a-f]{64}$/u;
-const KERNEL_NAME = /^openwrangler-study-[a-z0-9][a-z0-9._-]{0,95}$/u;
+const KERNEL_NAME = /^dataframe-comparison-study-[a-z0-9][a-z0-9._-]{0,95}$/u;
 const PYTHON_312 = /^3\.12(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$/u;
 const EXECUTE_CELL_ACCESSIBLE_NAME = /^Execute Cell(?: \([^\r\n()]{1,64}\))?$/u;
 const MAX_RECEIPT_BYTES = 32 * 1024;
@@ -351,6 +351,7 @@ export interface DataWranglerPublicWarmupPhaseReceipt {
     readonly completedColumnCount: number;
     readonly canonicalOrder: true;
   };
+  readonly controlBridge: DataWranglerNotebookTrialPhaseReceipt["controlBridge"];
   readonly cleanup: { readonly closeStatus: "succeeded"; readonly afterVerification: "matched" };
 }
 
@@ -2782,6 +2783,7 @@ async function captureDataWranglerPublicWarmup(product: ProductKey): Promise<Dat
       completedColumnCount: result.profiles.completedColumnCount,
       canonicalOrder: true
     },
+    controlBridge: result.controlBridge,
     cleanup: { closeStatus: "succeeded", afterVerification: "matched" }
   };
   assertPathFreeJson(receipt);
