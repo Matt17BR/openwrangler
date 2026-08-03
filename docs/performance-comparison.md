@@ -245,10 +245,13 @@ lockfile, npm launch recipes, and tool hashes. The JavaScript cache harness and 
 hashes and are checked separately before packaging or editor work. Before packaging or starting any setup editor, it
 also proves that Linux can acquire 256 fresh inotify directory watches. The same 256-watch check runs immediately
 before every warm-up, public capability capture, and measured-trial quiet window. An `ENOSPC` result stops the run
-before an editor or product action starts; other probe or cleanup errors fail the command. The probe uses empty
-directories inside the run's private root. Every watcher must report the event generated in its own directory within
-one second, after which the probe allows one more event-loop turn for queued errors. It closes every watch, removes the
-probe tree, and records no paths.
+before an editor or product action starts; other probe or cleanup errors fail the command. The initial pre-packaging
+check gets a separate disposable `x-*` root under the ignored comparison cache. It is removed through its exact
+private-root receipt after either outcome. If its identity or cleanup cannot be proved, preparation fails and leaves
+the root untouched. Later checks stay inside the private profile that already owns the editor phase. Each probe uses
+empty directories, requires every watcher to report the event generated in its own directory within one second, and
+then allows one more event-loop turn for queued errors. It closes every watch, removes the probe tree, and records no
+paths.
 
 The retained editor client and profiles live under
 `node_modules/.cache/openwrangler-comparison/tmp/ow/x-*`. VS Code excludes dependency trees from normal workspace

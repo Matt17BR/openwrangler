@@ -34,6 +34,7 @@ import {
   parseDataWranglerComparisonPreparationArguments,
   prepareDataWranglerComparisonStudy,
   publishDataWranglerComparisonPreparationTransaction,
+  runDataWranglerComparisonPreparationWatchGate,
   validateDataWranglerComparisonConfiguredProfilesBootstrap
 } from "./run-data-wrangler-comparison-preparation.mjs";
 import {
@@ -65,6 +66,40 @@ function capturePreparedDataWranglerPublicUi(input, environment, overrides = {})
 function privateDirectory(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   return path;
+}
+
+function preparationWatchGate(root, events = []) {
+  const privateParent = resolve(root, "node_modules", ".cache", "openwrangler-comparison", "tmp", "ow");
+  const privateRoot = resolve(privateParent, "x-Ab12Cd");
+  const receipt = Object.freeze({ path: privateRoot });
+  return {
+    privateRoot,
+    overrides: {
+      createWatchGatePrivateRoot() {
+        events.push("create-watch-root");
+        return {
+          privateParent,
+          privateRoot,
+          revalidate() {
+            events.push("revalidate-watch-root");
+          },
+          close() {
+            events.push("close-watch-root");
+          }
+        };
+      },
+      createPrivateRootReceipt(path, { containedBy }) {
+        assert.equal(path, privateRoot);
+        assert.equal(containedBy, privateParent);
+        events.push("capture-watch-root");
+        return receipt;
+      },
+      removePrivateRoot(value) {
+        assert.equal(value, receipt);
+        events.push("remove-watch-root");
+      }
+    }
+  };
 }
 
 function isPathInside(root, path) {
@@ -1335,7 +1370,27 @@ test("preparation publication resumes from its exact journal after every boundar
   }
 });
 
-test("preparation stops on inotify headroom before packaging or editor bootstrap", async () => {
+test("a passing preparation watch gate cleans its ignored disposable root", async () => {
+  const events = [];
+  const gate = preparationWatchGate("/repository", events);
+  await runDataWranglerComparisonPreparationWatchGate({
+    ...gate.overrides,
+    requireWatchHeadroom: async ({ runRoot }) => {
+      assert.equal(runRoot, gate.privateRoot);
+      events.push("watch-headroom");
+    }
+  });
+  assert.deepEqual(events, [
+    "create-watch-root",
+    "capture-watch-root",
+    "revalidate-watch-root",
+    "close-watch-root",
+    "watch-headroom",
+    "remove-watch-root"
+  ]);
+});
+
+test("preparation cleans a failed ignored-root watch gate before packaging or editor bootstrap", async () => {
   await withDirectory(async (root) => {
     const output = privateDirectory(resolve(root, "output"));
     const method = {
@@ -1359,8 +1414,11 @@ test("preparation stops on inotify headroom before packaging or editor bootstrap
         cachePythonControllerSha256: "a".repeat(64)
       }
     };
+    const events = [];
+    const gate = preparationWatchGate(root, events);
     let packageCalls = 0;
     let bootstrapCalls = 0;
+    let studyCalls = 0;
     await assert.rejects(
       prepareDataWranglerComparisonStudy(
         {
@@ -1383,8 +1441,10 @@ test("preparation stops on inotify headroom before packaging or editor bootstrap
           captureCacheToolchain: () => ({ controller: { sha256: "a".repeat(64) } }),
           pathExists: () => false,
           captureMethodology: () => method,
+          ...gate.overrides,
           requireWatchHeadroom: async ({ runRoot }) => {
-            assert.equal(runRoot, output);
+            assert.equal(runRoot, gate.privateRoot);
+            events.push("watch-headroom");
             const error = new Error("no watch headroom");
             error.code = "inotify-watch-headroom";
             throw error;
@@ -1394,13 +1454,25 @@ test("preparation stops on inotify headroom before packaging or editor bootstrap
           },
           async bootstrapConfiguredProfiles() {
             bootstrapCalls += 1;
+          },
+          plan() {
+            studyCalls += 1;
           }
         }
       ),
       /no watch headroom/u
     );
+    assert.deepEqual(events, [
+      "create-watch-root",
+      "capture-watch-root",
+      "revalidate-watch-root",
+      "close-watch-root",
+      "watch-headroom",
+      "remove-watch-root"
+    ]);
     assert.equal(packageCalls, 0);
     assert.equal(bootstrapCalls, 0);
+    assert.equal(studyCalls, 0);
   });
 });
 
@@ -1577,7 +1649,9 @@ test("preparation derives one complete specification from the reviewed preregist
     };
     let publishedSpecification;
     const capturedEnvironmentFixtures = [];
+    const gate = preparationWatchGate(root);
     const result = await prepareDataWranglerComparisonStudy(options, process.env, {
+      ...gate.overrides,
       requireWatchHeadroom: async () => ({ passed: true }),
       readPreregistration: () => preregistration,
       assertCurrentPreregistration: () => preregistration,

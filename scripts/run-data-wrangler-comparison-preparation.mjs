@@ -44,9 +44,14 @@ import { configureEditorAcceptanceTempRoot, createEditorAcceptanceEnvironment } 
 import { PINNED_REMOTE_WORKSPACE_TARGETS } from "./remote-workspace-acquisition.mjs";
 import {
   bootstrapDataWranglerComparisonConfiguredProfiles,
-  COMPARISON_CONFIGURED_PROFILES_PROTOCOL
+  COMPARISON_CONFIGURED_PROFILES_PROTOCOL,
+  createDataWranglerComparisonPrivateRoot
 } from "./run-data-wrangler-comparison.mjs";
 import { runDataWranglerComparisonStudy } from "./run-data-wrangler-comparison-study.mjs";
+import {
+  createEditorAcceptancePrivateRootReceipt,
+  removeEditorAcceptancePrivateRoot
+} from "./packaged-editor-orchestration.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 import {
   digestLinuxStudySupervisorValue,
@@ -104,6 +109,46 @@ function parseArguments(argv, cwd = process.cwd()) {
 
 function fileIdentity(receipt) {
   return structuredClone(receipt.filesystemIdentity);
+}
+
+export async function runDataWranglerComparisonPreparationWatchGate(dependencies) {
+  let lease;
+  let receipt;
+  let runRoot;
+  const errors = [];
+  try {
+    lease = dependencies.createWatchGatePrivateRoot();
+    runRoot = lease.privateRoot;
+    receipt = dependencies.createPrivateRootReceipt(runRoot, {
+      containedBy: lease.privateParent
+    });
+    lease.revalidate();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    lease?.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 0) {
+    try {
+      await dependencies.requireWatchHeadroom({ runRoot });
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (receipt !== undefined) {
+    try {
+      dependencies.removePrivateRoot(receipt);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "The comparison preparation watch gate failed or did not clean up.");
+  }
 }
 
 async function candidateIdentity(path) {
@@ -456,6 +501,9 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
     proveJourneyGraph: proveDataWranglerComparisonJourneyGraph,
     createArtifactRoot: (parent) => mkdtempSync(resolve(parent, ".comparison-driver-")),
     captureEnvironment: captureDataWranglerComparisonEnvironment,
+    createWatchGatePrivateRoot: createDataWranglerComparisonPrivateRoot,
+    createPrivateRootReceipt: createEditorAcceptancePrivateRootReceipt,
+    removePrivateRoot: removeEditorAcceptancePrivateRoot,
     requireWatchHeadroom: requireLinuxInotifyWatchHeadroom,
     buildManifest: buildDataWranglerStudyManifest,
     pathExists,
@@ -508,7 +556,7 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
     );
   }
   const outputParent = assertPrivateOutputParent(options.specification);
-  await dependencies.requireWatchHeadroom({ runRoot: outputParent.path });
+  await runDataWranglerComparisonPreparationWatchGate(dependencies);
   const specification = specificationFromPreregistration(preregistration);
   specification.provenance.cacheToolchain = structuredClone(cacheToolchain);
   const observedMethod = dependencies.captureMethodology();

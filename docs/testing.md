@@ -690,12 +690,14 @@ mode `0700`. A group-writable `node_modules` is accepted only below a pinned mod
 `npm ci`, remove `node_modules`, reinstall dependencies, or retire this checkout after preparation and before the final
 result is published. If that private tree disappears, abandon the study and prepare a new one.
 
-The preregistration fixes a minimum of 256 free Linux inotify watches. Preparation checks that headroom before it
-packages anything and again immediately before every editor phase. A measured trial repeats the check before its
-ten-second quiet-system window. If the command reports `inotify-watch-headroom`, free some existing file watches or
-raise the host's inotify watch limit, then rerun the unchanged command. The probe cleans up its own empty directories
-and watchers and does not write host paths into its receipt. A watch counts only after it reports the harmless event
-created in its own sentinel directory before the one-second readiness deadline.
+The preregistration fixes a minimum of 256 free Linux inotify watches. Before packaging, preparation checks that
+headroom in a disposable `x-*` root under the ignored comparison cache and requires exact-receipt cleanup after either
+outcome. An identity or cleanup failure stops preparation and may retain the root rather than guessing. Checks
+immediately before editor phases continue to use their already-owned private profiles. A measured trial repeats the
+check before its ten-second quiet-system window. If the command reports `inotify-watch-headroom`, free some existing
+file watches or raise the host's inotify watch limit, then rerun the unchanged command. The probe cleans up its own
+empty directories and watchers and does not write host paths into its receipt. A watch counts only after it reports the
+harmless event created in its own sentinel directory before the one-second readiness deadline.
 
 Only after all checks pass does preparation durably publish its journal first. The journal embeds the complete
 specification and authorizes one manifest digest; preparation then publishes that exact specification and derives the
