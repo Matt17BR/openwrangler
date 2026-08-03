@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -13,8 +13,9 @@ import {
   readdirSync,
   readSync,
   realpathSync,
-  rmSync,
-  statSync
+  renameSync,
+  rmdirSync,
+  rmSync
 } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { recoverDataWranglerComparisonDriver } from "./data-wrangler-comparison-driver.mjs";
@@ -41,7 +42,7 @@ import {
   runBoundedEditorCliCommand
 } from "./editor-acceptance.mjs";
 
-export const DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL = "openwrangler-data-wrangler-comparison-preparation-v4";
+export const DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL = "openwrangler-data-wrangler-comparison-preparation-v5";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u;
@@ -52,6 +53,7 @@ const MAX_TREE_DEPTH = 24;
 const READ_BUFFER_BYTES = 1024 * 1024;
 const MAX_PREPARATION_JSON_BYTES = 32 * 1024 * 1024;
 const MAX_KERNELSPEC_BYTES = 64 * 1024;
+const MAX_RETAINED_SETTINGS_BYTES = 256 * 1024;
 const MAX_CANDIDATE_BYTES = 512 * 1024 * 1024;
 const MAX_EDITOR_EXECUTABLE_BYTES = 512 * 1024 * 1024;
 const MAX_EDITOR_CLI_BYTES = 4 * 1024 * 1024;
@@ -65,6 +67,23 @@ const MAX_PREPARATION_INTERPRETER_TOTAL_ARGUMENT_BYTES = 128 * 1024;
 const REQUIRED_PACKAGES = Object.freeze(["pandas", "polars", "pyarrow", "jupyter_core", "ipykernel"]);
 const DATA_WRANGLER_EXTENSION_ID = "ms-toolsai.datawrangler";
 const OPAQUE_DATA_WRANGLER_DIRECTORY = /^ms-toolsai\.datawrangler(?:-|$)/iu;
+const RETAINED_PROFILE_ROOTS = new Set(["user", "extensions"]);
+const RETAINED_USER_DATA_DIRECTORIES = new Set(["user", "user/User"]);
+const RETAINED_USER_DATA_FILES = new Set(["user/User/settings.json"]);
+const EXTENSION_PLATFORM_SUFFIXES = new Set([
+  "alpine-arm64",
+  "alpine-x64",
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-armhf",
+  "linux-x64",
+  "universal",
+  "web",
+  "win32-arm64",
+  "win32-x64"
+]);
+const QUARANTINE_NAME = /^\.ow-retired-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 export const DATA_WRANGLER_PREPARATION_FILE_LIMITS = Object.freeze({
   cacheController: MAX_CACHE_CONTROLLER_BYTES,
@@ -348,21 +367,145 @@ function revalidateOwnedDirectoryReceipt(receipt, label) {
   return receipt;
 }
 
-function removeOwnedDirectoryReceipt(receipt, label, removeTree = rmSync) {
+function openOwnedDirectoryCleanupLease(receipt, label) {
   revalidateOwnedDirectoryReceipt(receipt, label);
-  removeTree(receipt.root, { recursive: true, force: false });
-  const parentMetadata = privateDirectory(receipt.parent, `${label} parent`);
-  if (
-    !sameDirectoryIdentity(directoryIdentity(parentMetadata), receipt.parentIdentity) ||
-    lstatSync(receipt.root, { bigint: true, throwIfNoEntry: false }) !== undefined
-  ) {
-    fail(`${label} cleanup did not remove only its captured directory.`);
+  let parentDescriptor;
+  let rootDescriptor;
+  try {
+    const directoryFlags = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0);
+    parentDescriptor = openSync(receipt.parent, directoryFlags);
+    rootDescriptor = openSync(receipt.root, directoryFlags);
+    const parentIdentity = directoryIdentity(fstatSync(parentDescriptor, { bigint: true }));
+    const rootIdentity = directoryIdentity(fstatSync(rootDescriptor, { bigint: true }));
+    if (
+      !sameDirectoryIdentity(parentIdentity, receipt.parentIdentity) ||
+      !sameDirectoryIdentity(rootIdentity, receipt.rootIdentity)
+    ) {
+      fail(`${label} changed while its cleanup lease opened.`);
+    }
+    return { ...receipt, parentDescriptor, rootDescriptor };
+  } catch (error) {
+    if (rootDescriptor !== undefined) closeSync(rootDescriptor);
+    if (parentDescriptor !== undefined) closeSync(parentDescriptor);
+    throw error;
   }
-  return Object.freeze({
-    status: "retired",
-    treeEmpty: true,
-    rootNameSha256: createHash("sha256").update(basename(receipt.root)).digest("hex")
-  });
+}
+
+function revalidateOwnedDirectoryCleanupLease(lease, label, quarantinePayload) {
+  const parentIdentity = directoryIdentity(fstatSync(lease.parentDescriptor, { bigint: true }));
+  const rootIdentity = directoryIdentity(fstatSync(lease.rootDescriptor, { bigint: true }));
+  const namedParent = privateDirectory(lease.parent, `${label} parent`);
+  if (
+    !sameDirectoryIdentity(parentIdentity, lease.parentIdentity) ||
+    !sameDirectoryIdentity(directoryIdentity(namedParent), lease.parentIdentity) ||
+    !sameDirectoryIdentity(rootIdentity, lease.rootIdentity)
+  ) {
+    fail(`${label} cleanup lease changed identity.`);
+  }
+  if (quarantinePayload !== undefined) {
+    if (lstatSync(lease.root, { bigint: true, throwIfNoEntry: false }) !== undefined) {
+      fail(`${label} public path was rebound during cleanup.`);
+    }
+    const quarantineMetadata = privateDirectory(quarantinePayload, `${label} quarantine payload`);
+    if (!sameDirectoryIdentity(directoryIdentity(quarantineMetadata), lease.rootIdentity)) {
+      fail(`${label} quarantine does not contain the leased directory.`);
+    }
+  }
+  return lease;
+}
+
+function removeOwnedDirectoryReceipt(
+  receipt,
+  label,
+  { createId = randomUUID, beforeQuarantineRename, beforeQuarantineRemoval } = {}
+) {
+  const lease = openOwnedDirectoryCleanupLease(receipt, label);
+  let quarantineRoot;
+  let quarantineReceipt;
+  let quarantinePayload;
+  let result;
+  let operationError;
+  try {
+    beforeQuarantineRename?.({ publicPath: receipt.root });
+    revalidateOwnedDirectoryReceipt(receipt, label);
+    revalidateOwnedDirectoryCleanupLease(lease, label);
+    const quarantineName = `.ow-retired-${createId()}`;
+    if (!QUARANTINE_NAME.test(quarantineName)) fail(`${label} cleanup produced an invalid quarantine name.`);
+    quarantineRoot = resolve(receipt.parent, quarantineName);
+    if (
+      dirname(quarantineRoot) !== receipt.parent ||
+      lstatSync(quarantineRoot, { bigint: true, throwIfNoEntry: false }) !== undefined
+    ) {
+      fail(`${label} cleanup quarantine is not one absent random sibling.`);
+    }
+    mkdirSync(quarantineRoot, { recursive: false, mode: 0o700 });
+    chmodSync(quarantineRoot, 0o700);
+    quarantineReceipt = captureOwnedDirectoryReceipt(quarantineRoot, `${label} quarantine`);
+    quarantinePayload = resolve(quarantineRoot, "payload");
+    if (lstatSync(quarantinePayload, { bigint: true, throwIfNoEntry: false }) !== undefined) {
+      fail(`${label} cleanup quarantine payload already exists.`);
+    }
+    revalidateOwnedDirectoryReceipt(receipt, label);
+    revalidateOwnedDirectoryCleanupLease(lease, label);
+    revalidateOwnedDirectoryReceipt(quarantineReceipt, `${label} quarantine`);
+    renameSync(receipt.root, quarantinePayload);
+    const moved = lstatSync(quarantinePayload, { bigint: true, throwIfNoEntry: false });
+    if (
+      moved === undefined ||
+      !sameDirectoryIdentity(directoryIdentity(moved), receipt.rootIdentity) ||
+      lstatSync(receipt.root, { bigint: true, throwIfNoEntry: false }) !== undefined
+    ) {
+      fail(`${label} changed at its quarantine boundary; retained the quarantine without deletion.`);
+    }
+    revalidateOwnedDirectoryReceipt(quarantineReceipt, `${label} quarantine`);
+    revalidateOwnedDirectoryCleanupLease(lease, label, quarantinePayload);
+    beforeQuarantineRemoval?.({ publicPath: receipt.root, quarantineRoot, quarantinePayload });
+    revalidateOwnedDirectoryReceipt(quarantineReceipt, `${label} quarantine`);
+    revalidateOwnedDirectoryCleanupLease(lease, label, quarantinePayload);
+    rmSync(quarantinePayload, { recursive: true, force: false });
+    const namedParent = privateDirectory(receipt.parent, `${label} parent`);
+    if (
+      !sameDirectoryIdentity(directoryIdentity(namedParent), receipt.parentIdentity) ||
+      !sameDirectoryIdentity(
+        directoryIdentity(fstatSync(lease.parentDescriptor, { bigint: true })),
+        receipt.parentIdentity
+      ) ||
+      !sameDirectoryIdentity(
+        directoryIdentity(fstatSync(lease.rootDescriptor, { bigint: true })),
+        receipt.rootIdentity
+      ) ||
+      lstatSync(receipt.root, { bigint: true, throwIfNoEntry: false }) !== undefined ||
+      lstatSync(quarantinePayload, { bigint: true, throwIfNoEntry: false }) !== undefined
+    ) {
+      fail(`${label} cleanup did not remove only its quarantined leased directory.`);
+    }
+    revalidateOwnedDirectoryReceipt(quarantineReceipt, `${label} quarantine`);
+    rmdirSync(quarantineRoot);
+    if (lstatSync(quarantineRoot, { bigint: true, throwIfNoEntry: false }) !== undefined) {
+      fail(`${label} cleanup did not retire its empty quarantine.`);
+    }
+    result = Object.freeze({
+      status: "retired",
+      treeEmpty: true,
+      rootNameSha256: createHash("sha256").update(basename(receipt.root)).digest("hex")
+    });
+  } catch (error) {
+    operationError = error;
+  }
+  const closeErrors = [];
+  for (const descriptor of [lease.rootDescriptor, lease.parentDescriptor]) {
+    try {
+      closeSync(descriptor);
+    } catch (error) {
+      closeErrors.push(error);
+    }
+  }
+  if (operationError !== undefined && closeErrors.length > 0) {
+    throw new AggregateError([operationError, ...closeErrors], `${label} cleanup and lease close both failed.`);
+  }
+  if (operationError !== undefined) throw operationError;
+  if (closeErrors.length > 0) throw new AggregateError(closeErrors, `${label} cleanup lease close failed.`);
+  return result;
 }
 
 function treeRelativePath(root, path) {
@@ -385,12 +528,45 @@ function isOpaqueDataWranglerProfilePath(relativePath) {
   return parts.length >= 2 && parts[0].toLowerCase() === "extensions" && OPAQUE_DATA_WRANGLER_DIRECTORY.test(parts[1]);
 }
 
-function copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label, rootPrefix = "") {
+function retainedExtensionRoots(inventory) {
+  if (!Array.isArray(inventory) || inventory.length > 64) fail("Retained profile extension inventory is invalid.");
+  const roots = new Set();
+  for (const entry of inventory) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.extensionId !== "string" ||
+      typeof entry.version !== "string" ||
+      !VERSION.test(entry.version)
+    ) {
+      fail("Retained profile extension inventory is malformed.");
+    }
+    const id = entry.extensionId.toLowerCase();
+    if (id === DATA_WRANGLER_EXTENSION_ID) continue;
+    const base = `${id}-${entry.version.toLowerCase()}`;
+    roots.add(base);
+    for (const suffix of EXTENSION_PLATFORM_SUFFIXES) roots.add(`${base}-${suffix}`);
+  }
+  return roots;
+}
+
+function isRetainedProfilePath(relativePath, extensionRoots) {
+  const parts = relativePath.split("/");
+  if (!RETAINED_PROFILE_ROOTS.has(parts[0])) return false;
+  if (parts[0] === "extensions") {
+    if (parts.length === 1) return true;
+    if (isOpaqueDataWranglerProfilePath(relativePath)) return false;
+    return extensionRoots.has(parts[1].toLowerCase());
+  }
+  return RETAINED_USER_DATA_DIRECTORIES.has(relativePath) || RETAINED_USER_DATA_FILES.has(relativePath);
+}
+
+function copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label, rootPrefix = "", extensionInventory = []) {
   canonicalAbsolutePath(sourceRoot, `${label} source`);
   canonicalAbsolutePath(targetRoot, `${label} target`);
   if (rootPrefix !== "" && !["user", "extensions"].includes(rootPrefix)) {
     fail(`${label} has an invalid profile-tree prefix.`);
   }
+  const extensionRoots = retainedExtensionRoots(extensionInventory);
   const sourceMetadata = privateDirectory(sourceRoot, `${label} source`);
   if (lstatSync(targetRoot, { bigint: true, throwIfNoEntry: false }) !== undefined) {
     fail(`${label} target already exists.`);
@@ -407,7 +583,7 @@ function copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label, rootPrefix = "
       );
       for (const entry of entries) {
         const relativePath = directory.relativePath === "" ? entry.name : `${directory.relativePath}/${entry.name}`;
-        if (isOpaqueDataWranglerProfilePath(relativePath)) continue;
+        if (!isRetainedProfilePath(relativePath, extensionRoots)) continue;
         const sourcePath = resolve(directory.source, entry.name);
         const targetPath = resolve(directory.target, entry.name);
         const metadata = lstatSync(sourcePath, { bigint: true });
@@ -478,7 +654,9 @@ function hashOwnedTreeFile(path, metadata) {
   }
 }
 
-export function captureDataWranglerProfileTree(root, label = "Comparison profile template") {
+function captureDataWranglerOwnedTree(root, label, { retainedProfile, extensionInventory = [] }) {
+  if (typeof retainedProfile !== "boolean") fail(`${label} tree policy is missing.`);
+  const extensionRoots = retainedProfile ? retainedExtensionRoots(extensionInventory) : new Set();
   const rootMetadata = privateDirectory(root, label);
   const directories = [];
   const files = [];
@@ -495,7 +673,7 @@ export function captureDataWranglerProfileTree(root, label = "Comparison profile
       }
       const path = resolve(directory, entry.name);
       const relativePath = treeRelativePath(root, path);
-      if (isOpaqueDataWranglerProfilePath(relativePath)) continue;
+      if (retainedProfile && !isRetainedProfilePath(relativePath, extensionRoots)) continue;
       const metadata = lstatSync(path, { bigint: true });
       if (!ownerMatches(metadata) || metadata.isSymbolicLink()) fail(`${label} contains an unowned or linked entry.`);
       if (metadata.isDirectory()) {
@@ -533,6 +711,14 @@ export function captureDataWranglerProfileTree(root, label = "Comparison profile
     totalBytes,
     treeSha256: digestStudyValue(inventory)
   });
+}
+
+export function captureDataWranglerProfileTree(root, label = "Comparison profile template", extensionInventory = []) {
+  return captureDataWranglerOwnedTree(root, label, { retainedProfile: true, extensionInventory });
+}
+
+function captureDataWranglerGenericTree(root, label) {
+  return captureDataWranglerOwnedTree(root, label, { retainedProfile: false });
 }
 
 function parseInventory(stdout) {
@@ -626,8 +812,7 @@ export async function queryDataWranglerTemplateInventory(
     createScratch = mkdtempSync,
     copyTree = copyOpaqueSafeProfileTree,
     installMarketplace = installOpaqueDataWranglerMarketplaceExtension,
-    runCli = runBoundedEditorCliCommand,
-    removeTree = rmSync
+    runCli = runBoundedEditorCliCommand
   } = {}
 ) {
   const scratch = createScratch(resolve(dirname(template.root), ".inventory-"));
@@ -636,7 +821,7 @@ export async function queryDataWranglerTemplateInventory(
   let result;
   let operationError;
   try {
-    copyTree(template.root, profileRoot, "Comparison inventory profile clone");
+    copyTree(template.root, profileRoot, "Comparison inventory profile clone", "", template.inventory ?? []);
     if (template.product === "data-wrangler") {
       await installMarketplace(
         {
@@ -675,7 +860,7 @@ export async function queryDataWranglerTemplateInventory(
   }
   let cleanupError;
   try {
-    removeOwnedDirectoryReceipt(scratchReceipt, "Comparison inventory scratch", removeTree);
+    removeOwnedDirectoryReceipt(scratchReceipt, "Comparison inventory scratch");
   } catch (error) {
     cleanupError = error;
   }
@@ -797,6 +982,7 @@ function validatePreparationReceipt(value) {
     value.fixtures.length !== 2 ||
     !Array.isArray(value.templates) ||
     value.templates.length !== 4 ||
+    value.templates.some((template) => !Array.isArray(template?.inventory)) ||
     !Array.isArray(value.publicUiCaptures) ||
     value.publicUiCaptures.length !== 3
   ) {
@@ -924,7 +1110,7 @@ export async function createDataWranglerComparisonPreparationReceipt(
     executable: true,
     maximumBytes: MAX_EDITOR_CLI_BYTES
   });
-  const editorInstallation = captureDataWranglerProfileTree(
+  const editorInstallation = captureDataWranglerGenericTree(
     editor.installationRoot,
     "Comparison preparation editor installation"
   );
@@ -985,7 +1171,11 @@ export async function createDataWranglerComparisonPreparationReceipt(
       }
       const inventory = await readInventory(template, editor, environment);
       assertTemplateInventory(inventory, expectedProductExtensions(manifest, product));
-      const tree = captureDataWranglerProfileTree(template.root, `Comparison preparation ${product} ${kind} template`);
+      const tree = captureDataWranglerProfileTree(
+        template.root,
+        `Comparison preparation ${product} ${kind} template`,
+        inventory
+      );
       const expectedTemplate = manifest.provenance.templates.find((entry) => entry.product === product);
       const expectedSha256 =
         kind === "warmed" ? expectedTemplate.warmedReceiptSha256 : expectedTemplate.configuredOnlyReceiptSha256;
@@ -1092,11 +1282,31 @@ export async function revalidateDataWranglerComparisonPreparationReceipt(receipt
   return receipt;
 }
 
-export function createDataWranglerConfiguredTemplateCapture(studyRoot) {
+export function createDataWranglerConfiguredTemplateCapture(studyRoot, overrides = {}) {
   privateDirectory(studyRoot, "Comparison preparation study root");
+  const dependencies = {
+    mkdirTarget: mkdirSync,
+    chmodTarget: chmodSync,
+    captureReceipt: captureOwnedDirectoryReceipt,
+    captureSettings: captureDataWranglerPreparationFile,
+    copyTree: copyOpaqueSafeProfileTree,
+    retire: removeOwnedDirectoryReceipt,
+    targetSetupCheckpoint() {},
+    ...overrides
+  };
   const captured = new Map();
   return Object.freeze({
-    async capture({ product, kind, privateRoot, userData, extensions, editor, sandboxArgs, installedExtensions }) {
+    async capture({
+      product,
+      kind,
+      privateRoot,
+      userData,
+      extensions,
+      editor,
+      sandboxArgs,
+      installedExtensions,
+      settingsSha256
+    }) {
       if (!["open-wrangler", "data-wrangler"].includes(product) || kind !== "configured-only") {
         fail("Comparison preparation accepts only exact configured-only product templates.");
       }
@@ -1113,21 +1323,54 @@ export function createDataWranglerConfiguredTemplateCapture(studyRoot) {
         privateRoot,
         `Comparison ${product} configured source profile`
       );
-      mkdirSync(root, { recursive: true, mode: 0o700 });
-      chmodSync(root, 0o700);
-      const targetReceipt = captureOwnedDirectoryReceipt(root, `Comparison ${product} configured template`);
+      let targetReceipt;
       let capturedTemplate;
       let operationError;
       try {
+        if (!SHA256.test(settingsSha256 ?? "")) {
+          fail(`Comparison ${product} configured settings receipt is invalid.`);
+        }
+        const sourceSettings = dependencies.captureSettings(
+          resolve(userData, "User", "settings.json"),
+          `Comparison ${product} configured source settings`,
+          { maximumBytes: MAX_RETAINED_SETTINGS_BYTES }
+        );
+        if (sourceSettings.sha256 !== settingsSha256) {
+          fail(`Comparison ${product} changed the harness-authored settings during first-use setup.`);
+        }
+        mkdirSync(dirname(root), { recursive: true, mode: 0o700 });
+        chmodSync(dirname(root), 0o700);
+        const inventory = normalizeTemplateInventory(installedExtensions);
+        dependencies.mkdirTarget(root, { recursive: false, mode: 0o700 });
+        targetReceipt = dependencies.captureReceipt(root, `Comparison ${product} configured template`);
+        dependencies.targetSetupCheckpoint("mkdir", { root });
+        dependencies.targetSetupCheckpoint("receipt", { root });
+        dependencies.chmodTarget(root, 0o700);
+        dependencies.targetSetupCheckpoint("chmod", { root });
         const targetUser = resolve(root, "user");
         const targetExtensions = resolve(root, "extensions");
-        copyOpaqueSafeProfileTree(userData, targetUser, `Comparison ${product} configured user-data capture`, "user");
-        copyOpaqueSafeProfileTree(
+        dependencies.copyTree(
+          userData,
+          targetUser,
+          `Comparison ${product} configured user-data capture`,
+          "user",
+          inventory
+        );
+        dependencies.copyTree(
           extensions,
           targetExtensions,
           `Comparison ${product} configured extension capture`,
-          "extensions"
+          "extensions",
+          inventory
         );
+        const targetSettings = dependencies.captureSettings(
+          resolve(targetUser, "User", "settings.json"),
+          `Comparison ${product} retained configured settings`,
+          { maximumBytes: MAX_RETAINED_SETTINGS_BYTES }
+        );
+        if (targetSettings.sha256 !== settingsSha256) {
+          fail(`Comparison ${product} retained settings differ from the harness-authored settings.`);
+        }
         chmodSync(targetUser, 0o700);
         chmodSync(targetExtensions, 0o700);
         capturedTemplate = Object.freeze({
@@ -1136,20 +1379,20 @@ export function createDataWranglerConfiguredTemplateCapture(studyRoot) {
           root,
           editor,
           sandboxArgs: Object.freeze([...sandboxArgs]),
-          inventory: normalizeTemplateInventory(installedExtensions)
+          inventory
         });
       } catch (error) {
         operationError = error;
       }
       const cleanupErrors = [];
       try {
-        removeOwnedDirectoryReceipt(sourceReceipt, `Comparison ${product} configured source profile`);
+        dependencies.retire(sourceReceipt, `Comparison ${product} configured source profile`);
       } catch (error) {
         cleanupErrors.push(error);
       }
-      if (operationError !== undefined || cleanupErrors.length > 0) {
+      if ((operationError !== undefined || cleanupErrors.length > 0) && targetReceipt !== undefined) {
         try {
-          removeOwnedDirectoryReceipt(targetReceipt, `Comparison ${product} configured template`);
+          dependencies.retire(targetReceipt, `Comparison ${product} configured template`);
         } catch (error) {
           cleanupErrors.push(error);
         }
@@ -1176,11 +1419,11 @@ export function createDataWranglerConfiguredTemplateCapture(studyRoot) {
   });
 }
 
-export function captureOpaqueSafeDataWranglerProfileTemplate(sourceRoot, targetRoot, label) {
-  const sourceBefore = captureDataWranglerProfileTree(sourceRoot, `${label} source`);
-  const ownedTarget = copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label);
-  const sourceAfter = captureDataWranglerProfileTree(sourceRoot, `${label} source`);
-  const target = captureDataWranglerProfileTree(targetRoot, label);
+export function captureOpaqueSafeDataWranglerProfileTemplate(sourceRoot, targetRoot, label, extensionInventory = []) {
+  const sourceBefore = captureDataWranglerProfileTree(sourceRoot, `${label} source`, extensionInventory);
+  const ownedTarget = copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label, "", extensionInventory);
+  const sourceAfter = captureDataWranglerProfileTree(sourceRoot, `${label} source`, extensionInventory);
+  const target = captureDataWranglerProfileTree(targetRoot, label, extensionInventory);
   if (
     sourceBefore.treeSha256 !== sourceAfter.treeSha256 ||
     sourceBefore.treeSha256 !== target.treeSha256 ||
@@ -1202,9 +1445,9 @@ export function cloneDataWranglerComparisonTemplate(receipt, { product, kind, cl
 export function cloneDataWranglerCapturedTemplate(template, { cloneRoot }) {
   exactKeys(
     template,
-    ["product", "kind", "root", "sandboxArgs", "treeSha256"],
+    ["product", "kind", "root", "sandboxArgs", "treeSha256", "inventory"],
     "Captured comparison profile template",
-    ["editor", "userData", "extensions", "rootIdentity", "entryCount", "totalBytes", "inventory"]
+    ["editor", "userData", "extensions", "rootIdentity", "entryCount", "totalBytes"]
   );
   if (
     !["open-wrangler", "data-wrangler"].includes(template.product) ||
@@ -1214,13 +1457,20 @@ export function cloneDataWranglerCapturedTemplate(template, { cloneRoot }) {
   ) {
     fail("Captured comparison profile template is invalid.");
   }
-  if (statSync(cloneRoot, { throwIfNoEntry: false }) !== undefined)
+  if (lstatSync(cloneRoot, { bigint: true, throwIfNoEntry: false }) !== undefined)
     fail("Comparison profile clone target already exists.");
-  const before = captureDataWranglerProfileTree(template.root);
+  const extensionInventory = template.inventory;
+  const before = captureDataWranglerProfileTree(template.root, "Comparison profile template", extensionInventory);
   if (before.treeSha256 !== template.treeSha256) fail("Comparison profile template changed before cloning.");
-  const ownedClone = copyOpaqueSafeProfileTree(template.root, cloneRoot, "Comparison profile clone");
-  const clone = captureDataWranglerProfileTree(cloneRoot, "Comparison profile clone");
-  const after = captureDataWranglerProfileTree(template.root);
+  const ownedClone = copyOpaqueSafeProfileTree(
+    template.root,
+    cloneRoot,
+    "Comparison profile clone",
+    "",
+    extensionInventory
+  );
+  const clone = captureDataWranglerProfileTree(cloneRoot, "Comparison profile clone", extensionInventory);
+  const after = captureDataWranglerProfileTree(template.root, "Comparison profile template", extensionInventory);
   if (
     clone.treeSha256 !== template.treeSha256 ||
     after.treeSha256 !== before.treeSha256 ||
@@ -1244,7 +1494,7 @@ export function cloneDataWranglerCapturedTemplate(template, { cloneRoot }) {
   });
 }
 
-export function retireDataWranglerComparisonTemplateClone(clone) {
+export function retireDataWranglerComparisonTemplateClone(clone, cleanupDependencies = {}) {
   exactKeys(
     clone,
     [
@@ -1269,7 +1519,8 @@ export function retireDataWranglerComparisonTemplateClone(clone) {
       rootIdentity: clone.rootIdentity,
       parentIdentity: clone.parentIdentity
     },
-    "Comparison profile clone"
+    "Comparison profile clone",
+    cleanupDependencies
   );
 }
 
@@ -1330,7 +1581,10 @@ export function captureDataWranglerComparisonPythonEnvironment({ pythonPath, ker
       if (!["configDir", "dataDir", "path", "runtimeDir"].includes(name)) {
         fail("Comparison preparation Jupyter environment has an unknown directory.");
       }
-      return Object.freeze({ name, ...captureDataWranglerProfileTree(root, `Comparison Jupyter ${name}`) });
+      return Object.freeze({
+        name,
+        ...captureDataWranglerGenericTree(root, `Comparison Jupyter ${name}`)
+      });
     });
   if (jupyter.length !== 4) fail("Comparison preparation Jupyter environment is incomplete.");
   const stateSha256 = digestDataWranglerComparisonPythonEnvironment({

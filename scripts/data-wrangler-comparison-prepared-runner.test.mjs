@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import test from "node:test";
@@ -65,6 +74,13 @@ function capturePreparedDataWranglerPublicUi(input, environment, overrides = {})
 
 function privateDirectory(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
+  return path;
+}
+
+function writeProfileSettings(root, contents) {
+  const directory = privateDirectory(resolve(root, "user", "User"));
+  const path = resolve(directory, "settings.json");
+  writeFileSync(path, contents, { mode: 0o600 });
   return path;
 }
 
@@ -148,7 +164,7 @@ function minimalPreparation(root, templates) {
         path: path("jupyter/path")
       }
     },
-    templates,
+    templates: templates.map((template) => ({ inventory: [], ...template })),
     publicUiCaptures: [
       {
         kind: "capability",
@@ -189,7 +205,7 @@ function minimalPreparation(root, templates) {
 }
 
 test("preparation receipt protocol accounts for its updated embedded study records", () => {
-  assert.equal(DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL, "openwrangler-data-wrangler-comparison-preparation-v4");
+  assert.equal(DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL, "openwrangler-data-wrangler-comparison-preparation-v5");
 });
 
 test("profile-tree receipts clone exactly and retire only their owned clone", async () => {
@@ -200,7 +216,7 @@ test("profile-tree receipts clone exactly and retire only their owned clone", as
         const templateRoot = privateDirectory(resolve(root, "templates", product, kind));
         privateDirectory(resolve(templateRoot, "user"));
         privateDirectory(resolve(templateRoot, "extensions"));
-        writeFileSync(resolve(templateRoot, "user", "settings.json"), `${product}:${kind}\n`, { mode: 0o600 });
+        writeProfileSettings(templateRoot, `${product}:${kind}\n`);
         const tree = captureDataWranglerProfileTree(templateRoot);
         templates.push({ product, kind, root: templateRoot, sandboxArgs: ["--no-sandbox"], ...tree });
       }
@@ -224,12 +240,15 @@ test("profile-tree receipts reject links and detect a changed template before cl
     const templateRoot = privateDirectory(resolve(root, "template"));
     privateDirectory(resolve(templateRoot, "user"));
     privateDirectory(resolve(templateRoot, "extensions"));
-    writeFileSync(resolve(templateRoot, "user", "settings.json"), "one\n", { mode: 0o600 });
+    const settingsPath = writeProfileSettings(templateRoot, "one\n");
     const original = captureDataWranglerProfileTree(templateRoot);
-    symlinkSync(resolve(templateRoot, "user", "settings.json"), resolve(templateRoot, "user", "linked.json"));
+    const realSettingsPath = resolve(settingsPath, "..", "settings-real.json");
+    renameSync(settingsPath, realSettingsPath);
+    symlinkSync(realSettingsPath, settingsPath);
     assert.throws(() => captureDataWranglerProfileTree(templateRoot), /linked entry/u);
-    rmSync(resolve(templateRoot, "user", "linked.json"));
-    writeFileSync(resolve(templateRoot, "user", "settings.json"), "two\n");
+    rmSync(settingsPath);
+    renameSync(realSettingsPath, settingsPath);
+    writeFileSync(settingsPath, "two\n");
     const templates = [
       ...["open-wrangler", "data-wrangler"].flatMap((product) =>
         ["configured-only", "warmed"].map((kind) => ({
@@ -258,10 +277,10 @@ test("profile receipts never inspect or copy the opaque Data Wrangler package su
     const templateRoot = privateDirectory(resolve(root, "template"));
     privateDirectory(resolve(templateRoot, "user"));
     const extensions = privateDirectory(resolve(templateRoot, "extensions"));
-    writeFileSync(resolve(templateRoot, "user", "settings.json"), "{}\n", { mode: 0o600 });
+    writeProfileSettings(templateRoot, "{}\n");
     symlinkSync(resolve(root, "unreadable-package-trap"), resolve(extensions, "ms-toolsai.datawrangler-1.24.2"));
     const tree = captureDataWranglerProfileTree(templateRoot);
-    assert.equal(tree.entryCount, 3);
+    assert.equal(tree.entryCount, 4);
     const templates = [
       ...["open-wrangler", "data-wrangler"].flatMap((product) =>
         ["configured-only", "warmed"].map((kind) => ({
@@ -284,12 +303,69 @@ test("profile receipts never inspect or copy the opaque Data Wrangler package su
   });
 });
 
+test("retained profiles ignore extension state, logs, caches, and Marketplace payloads before inspection", async () => {
+  await withDirectory((root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    const userData = privateDirectory(resolve(templateRoot, "user"));
+    const userSettings = privateDirectory(resolve(userData, "User"));
+    const extensions = privateDirectory(resolve(templateRoot, "extensions"));
+    const inventory = [{ extensionId: "ms-python.python", version: "2026.1.0" }];
+    const allowedExtension = privateDirectory(resolve(extensions, "ms-python.python-2026.1.0-linux-x64"));
+    writeFileSync(resolve(allowedExtension, "package.json"), "{}\n", { mode: 0o600 });
+    symlinkSync(resolve(root, "unreadable-extension-metadata"), resolve(extensions, ".obsolete"));
+    symlinkSync(resolve(root, "unreadable-unknown-package"), resolve(extensions, "unknown.private-1.0.0"));
+    writeFileSync(resolve(userSettings, "settings.json"), "{}\n", { mode: 0o600 });
+    const globalStorage = privateDirectory(resolve(userSettings, "globalStorage"));
+    const extensionState = privateDirectory(resolve(globalStorage, "ms-toolsai.datawrangler"));
+    writeFileSync(resolve(extensionState, "state.bin"), "proprietary-package-state", { mode: 0o600 });
+    const workspaceStorage = privateDirectory(resolve(userSettings, "workspaceStorage"));
+    writeFileSync(resolve(workspaceStorage, "state.vscdb"), "private-workspace-state", { mode: 0o600 });
+    const marketplaceCache = privateDirectory(resolve(userData, "CachedExtensionVSIXs"));
+    writeFileSync(resolve(marketplaceCache, "ms-toolsai.datawrangler-1.24.2"), "marketplace-package", {
+      mode: 0o600
+    });
+    symlinkSync(resolve(root, "unreadable-log-trap"), resolve(userData, "logs"));
+    symlinkSync(resolve(root, "unreadable-cache-trap"), resolve(userSettings, "History"));
+    symlinkSync(resolve(root, "unreadable-root-state"), resolve(templateRoot, "extension-owned-state"));
+
+    const tree = captureDataWranglerProfileTree(templateRoot, "Retained profile allowlist test", inventory);
+    const template = {
+      product: "data-wrangler",
+      kind: "warmed",
+      root: templateRoot,
+      sandboxArgs: [],
+      inventory,
+      ...tree
+    };
+    const cloneRoot = resolve(root, "clone");
+    const clone = cloneDataWranglerComparisonTemplate(
+      minimalPreparation(root, [template, template, template, template]),
+      { product: "data-wrangler", kind: "warmed", cloneRoot }
+    );
+    assert.equal(existsSync(resolve(clone.userData, "User", "settings.json")), true);
+    assert.equal(existsSync(resolve(clone.extensions, "ms-python.python-2026.1.0-linux-x64", "package.json")), true);
+    for (const excluded of [
+      resolve(clone.userData, "User", "globalStorage"),
+      resolve(clone.userData, "User", "workspaceStorage"),
+      resolve(clone.userData, "User", "History"),
+      resolve(clone.userData, "CachedExtensionVSIXs"),
+      resolve(clone.userData, "logs"),
+      resolve(clone.root, "extension-owned-state"),
+      resolve(clone.extensions, ".obsolete"),
+      resolve(clone.extensions, "unknown.private-1.0.0")
+    ]) {
+      assert.equal(existsSync(excluded), false);
+    }
+    assert.equal(retireDataWranglerComparisonTemplateClone(clone).status, "retired");
+  });
+});
+
 test("clone retirement refuses root and parent path replacement", async () => {
   await withDirectory((root) => {
     const templateRoot = privateDirectory(resolve(root, "template"));
     privateDirectory(resolve(templateRoot, "user"));
     privateDirectory(resolve(templateRoot, "extensions"));
-    writeFileSync(resolve(templateRoot, "user", "settings.json"), "{}\n", { mode: 0o600 });
+    writeProfileSettings(templateRoot, "{}\n");
     const tree = captureDataWranglerProfileTree(templateRoot);
     const template = {
       product: "open-wrangler",
@@ -314,7 +390,79 @@ test("clone retirement refuses root and parent path replacement", async () => {
     privateDirectory(resolve(cloneParent, "clone"));
     assert.throws(() => retireDataWranglerComparisonTemplateClone(clone), /changed before cleanup/u);
     assert.equal(existsSync(resolve(cloneParent, "clone")), true);
-    assert.equal(existsSync(resolve(parkedParent, "clone", "user", "settings.json")), true);
+    assert.equal(existsSync(resolve(parkedParent, "clone", "user", "User", "settings.json")), true);
+  });
+});
+
+test("clone retirement leaves a replacement untouched at the validation-to-quarantine boundary", async () => {
+  await withDirectory((root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    writeProfileSettings(templateRoot, "{}\n");
+    const tree = captureDataWranglerProfileTree(templateRoot);
+    const template = {
+      product: "open-wrangler",
+      kind: "configured-only",
+      root: templateRoot,
+      sandboxArgs: [],
+      ...tree
+    };
+    const clone = cloneDataWranglerComparisonTemplate(
+      minimalPreparation(root, [template, template, template, template]),
+      { product: "open-wrangler", kind: "configured-only", cloneRoot: resolve(root, "clone") }
+    );
+    const parked = resolve(root, "parked-original-clone");
+    assert.throws(
+      () =>
+        retireDataWranglerComparisonTemplateClone(clone, {
+          beforeQuarantineRename({ publicPath }) {
+            renameSync(publicPath, parked);
+            privateDirectory(publicPath);
+            writeFileSync(resolve(publicPath, "replacement.txt"), "leave me alone\n", { mode: 0o600 });
+          }
+        }),
+      /changed before cleanup/u
+    );
+    assert.equal(readFileSync(resolve(clone.root, "replacement.txt"), "utf8"), "leave me alone\n");
+    assert.equal(existsSync(resolve(parked, "user", "User", "settings.json")), true);
+  });
+});
+
+test("clone retirement never deletes a replacement planted at the quarantine-to-delete boundary", async () => {
+  await withDirectory((root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    writeProfileSettings(templateRoot, "{}\n");
+    const tree = captureDataWranglerProfileTree(templateRoot);
+    const template = {
+      product: "open-wrangler",
+      kind: "configured-only",
+      root: templateRoot,
+      sandboxArgs: [],
+      ...tree
+    };
+    const clone = cloneDataWranglerComparisonTemplate(
+      minimalPreparation(root, [template, template, template, template]),
+      { product: "open-wrangler", kind: "configured-only", cloneRoot: resolve(root, "clone") }
+    );
+    const parked = resolve(root, "parked-quarantine-payload");
+    let replacementPayload;
+    assert.throws(
+      () =>
+        retireDataWranglerComparisonTemplateClone(clone, {
+          beforeQuarantineRemoval({ quarantinePayload }) {
+            replacementPayload = quarantinePayload;
+            renameSync(quarantinePayload, parked);
+            privateDirectory(quarantinePayload);
+            writeFileSync(resolve(quarantinePayload, "replacement.txt"), "do not delete\n", { mode: 0o600 });
+          }
+        }),
+      /quarantine does not contain the leased directory/u
+    );
+    assert.equal(readFileSync(resolve(replacementPayload, "replacement.txt"), "utf8"), "do not delete\n");
+    assert.equal(existsSync(resolve(parked, "user", "User", "settings.json")), true);
   });
 });
 
@@ -323,7 +471,7 @@ test("template inventory queries run against a disposable clone and always remov
     const templateRoot = privateDirectory(resolve(root, "template"));
     privateDirectory(resolve(templateRoot, "user"));
     privateDirectory(resolve(templateRoot, "extensions"));
-    writeFileSync(resolve(templateRoot, "user", "settings.json"), "{}\n", { mode: 0o600 });
+    writeProfileSettings(templateRoot, "{}\n");
     const template = {
       product: "open-wrangler",
       kind: "configured-only",
@@ -342,14 +490,14 @@ test("template inventory queries run against a disposable clone and always remov
           scratchRoot = resolve(args[userIndex + 1], "..");
           assert.notEqual(scratchRoot, templateRoot);
           assert.equal(resolve(args[extensionsIndex + 1], ".."), scratchRoot);
-          assert.equal(existsSync(resolve(scratchRoot, "user", "settings.json")), true);
+          assert.equal(existsSync(resolve(scratchRoot, "user", "User", "settings.json")), true);
           return { stdout: "Matt17BR.openwrangler@1.2.1\n" };
         }
       }
     );
     assert.deepEqual(result, [{ extensionId: "Matt17BR.openwrangler", version: "1.2.1" }]);
     assert.equal(existsSync(scratchRoot), false);
-    assert.equal(existsSync(resolve(templateRoot, "user", "settings.json")), true);
+    assert.equal(existsSync(resolve(templateRoot, "user", "User", "settings.json")), true);
 
     let failedScratchRoot;
     await assert.rejects(
@@ -829,7 +977,10 @@ test("public run-next derives the pending entry, clone, profile, paths, and reti
         environmentSha256: "f".repeat(64),
         kernel: { kernelspecSha256: "a".repeat(64) }
       },
-      fixtures: [{ id: "parquet", format: "parquet" }],
+      fixtures: [
+        { id: "csv", format: "csv", rows: 100_000, columns: 50, sha256: "1".repeat(64) },
+        { id: "parquet", format: "parquet" }
+      ],
       provenance: {
         commonExtensions: DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
         templates: [
@@ -911,6 +1062,12 @@ test("public run-next derives the pending entry, clone, profile, paths, and reti
         captureDriver: () => manifest.provenance.comparisonDriver,
         capturePythonEnvironment: () => ({ stateSha256: manifest.python.environmentSha256 }),
         captureGateProvenance: () => ({ authentic: "gate" }),
+        async warmProfile(input) {
+          events.push(["warm", input.product, input.fixture.id]);
+          assert.equal(input.profile.authentic, "profile");
+          assert.ok(input.runRoot.endsWith("/public-warmup"));
+          assert.deepEqual(input.developmentPaths, []);
+        },
         readInventory: async () =>
           createDataWranglerComparisonMeasuredInventory({
             extensionId: manifest.candidate.extensionId,
@@ -950,9 +1107,93 @@ test("public run-next derives the pending entry, clone, profile, paths, and reti
     assert.deepEqual(events, [
       ["clone", "open-wrangler", "warmed"],
       ["profile", "warmed", "d".repeat(64)],
+      ["warm", "open-wrangler", "csv"],
       ["record", entry.id],
       ["retire", "warmed"]
     ]);
+  });
+});
+
+test("public run-next retires its clone when any pre-trial profile setup step fails", async () => {
+  await withDirectory(async (root) => {
+    for (const stage of ["environment", "temp-root", "profile"]) {
+      const caseRoot = privateDirectory(resolve(root, stage));
+      const manifest = {
+        candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+        baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+        editor: { version: "1.106.0" },
+        fixtures: [{ id: "csv", format: "csv" }],
+        provenance: {
+          templates: [
+            {
+              product: "open-wrangler",
+              configuredOnlyReceiptSha256: "c".repeat(64),
+              warmedReceiptSha256: "d".repeat(64)
+            }
+          ]
+        }
+      };
+      const entry = {
+        id: `warm-pandas-csv-r01-ow-${stage}`,
+        product: "open-wrangler",
+        kind: "warm",
+        engine: "pandas",
+        format: "csv"
+      };
+      const preparation = minimalPreparation(caseRoot, []);
+      preparation.manifestSha256 = digestStudyValue(manifest);
+      let cloneRoot;
+      let retired = false;
+      await assert.rejects(
+        runPreparedDataWranglerComparisonEntry(
+          {
+            manifestPath: preparation.manifestPath,
+            fragmentsDirectory: resolve(caseRoot, "fragments"),
+            intentsDirectory: resolve(caseRoot, "intents"),
+            preparationPath: resolve(caseRoot, "preparation.json")
+          },
+          {},
+          {
+            readManifest: () => manifest,
+            loadFragments: () => [],
+            pendingTrials: () => [entry],
+            loadPreparation: () => preparation,
+            revalidatePreparation: async () => preparation,
+            cloneTemplate(_receipt, input) {
+              cloneRoot = privateDirectory(input.cloneRoot);
+              return {
+                product: input.product,
+                kind: input.kind,
+                root: cloneRoot,
+                userData: privateDirectory(resolve(cloneRoot, "user")),
+                extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+                sandboxArgs: []
+              };
+            },
+            createEnvironment() {
+              if (stage === "environment") throw new Error("environment setup failed");
+              return {};
+            },
+            configureTempRoot() {
+              if (stage === "temp-root") throw new Error("temp-root setup failed");
+            },
+            createProfile() {
+              throw new Error("profile setup failed");
+            },
+            retireClone(clone) {
+              retired = true;
+              rmSync(clone.root, { recursive: true, force: false });
+              return { status: "retired", treeEmpty: true };
+            },
+            mkdir: mkdirSync,
+            id: () => "33333333-3333-4333-8333-333333333333"
+          }
+        ),
+        new RegExp(`${stage} setup failed`, "u")
+      );
+      assert.equal(retired, true);
+      assert.equal(existsSync(cloneRoot), false);
+    }
   });
 });
 
@@ -1344,6 +1585,7 @@ test("preparation rejects malformed configured-profile bootstrap trust bindings"
         editor,
         sandboxArgs: ["--no-sandbox"],
         installedExtensions: [],
+        settingsSha256: "a".repeat(64),
         configuredPythonProcessObservedDuringSetup: true
       };
     });
@@ -1773,7 +2015,7 @@ test("preparation derives one complete specification from the reviewed preregist
       const source = privateDirectory(resolve(studyRoot, `profile-${product}`));
       const userData = privateDirectory(resolve(source, "user"));
       const extensions = privateDirectory(resolve(source, "extensions"));
-      writeFileSync(resolve(userData, "settings.json"), "{}\n", { mode: 0o600 });
+      writeProfileSettings(source, "{}\n");
       templateSources.set(product, { privateRoot: source, userData, extensions });
     }
     const options = {
@@ -1844,6 +2086,7 @@ test("preparation derives one complete specification from the reviewed preregist
                   ? { extensionId: "Matt17BR.openwrangler", version: "1.2.1" }
                   : { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }
               ).map((entry) => `${entry.extensionId}@${entry.version}`),
+              settingsSha256: createHash("sha256").update("{}\n", "utf8").digest("hex"),
               configuredPythonProcessObservedDuringSetup: true
             };
           })

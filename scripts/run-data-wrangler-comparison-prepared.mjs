@@ -35,9 +35,11 @@ import {
 import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
+  editorProcessTreeMayBeLive,
   runBoundedEditorCliCommand
 } from "./editor-acceptance.mjs";
 import { captureLinuxDataWranglerStudyProvenance } from "./linux-data-wrangler-study-gate.mjs";
+import { runPreparedProductWarmupJourney } from "./data-wrangler-comparison-warmup.mjs";
 
 export const DATA_WRANGLER_COMPARISON_PREPARED_RUN_PROTOCOL = "openwrangler-data-wrangler-comparison-prepared-run-v1";
 
@@ -285,6 +287,7 @@ export async function runPreparedDataWranglerComparisonEntry(
     capturePythonEnvironment: captureDataWranglerComparisonPythonEnvironment,
     recordTrial: recordOnePreparedDataWranglerComparisonStudyTrial,
     materializeKernel: materializeDataWranglerComparisonRunKernel,
+    warmProfile: runPreparedProductWarmupJourney,
     mkdir: mkdirSync,
     id: randomUUID,
     ...overrides
@@ -316,36 +319,38 @@ export async function runPreparedDataWranglerComparisonEntry(
     kind: expectedTemplate.kind,
     cloneRoot: resolve(clonesParent, cloneName)
   });
-  const profileEnvironment = dependencies.createEnvironment(environment, {
-    OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
-    OPEN_WRANGLER_EDITOR_TEMP_ROOT: clone.root
-  });
-  dependencies.configureTempRoot(clone.root, profileEnvironment);
-  const editor = {
-    name: "VS Code",
-    key: "vscode",
-    executable: preparation.editor.executablePath,
-    cli: preparation.editor.cliPath,
-    sharedDataDir: true,
-    version: manifest.editor.version
-  };
-  const profile = dependencies.createProfile({
-    product: entry.product,
-    privateRoot: clone.root,
-    templateKind: expectedTemplate.kind,
-    templateReceiptSha256: expectedTemplate.receiptSha256,
-    editor,
-    userData: clone.userData,
-    extensions: clone.extensions,
-    sandboxArgs: clone.sandboxArgs,
-    environment: profileEnvironment,
-    installLabel: `Official VS Code ${entry.product} neutral comparison driver installation`,
-    inventoryLabel: `Official VS Code ${entry.product} measured-trial extension inventory`
-  });
   let result;
   let retired;
   let completed = false;
+  let trialStarted = false;
+  let operationError;
   try {
+    const profileEnvironment = dependencies.createEnvironment(environment, {
+      OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
+      OPEN_WRANGLER_EDITOR_TEMP_ROOT: clone.root
+    });
+    dependencies.configureTempRoot(clone.root, profileEnvironment);
+    const editor = {
+      name: "VS Code",
+      key: "vscode",
+      executable: preparation.editor.executablePath,
+      cli: preparation.editor.cliPath,
+      sharedDataDir: true,
+      version: manifest.editor.version
+    };
+    const profile = dependencies.createProfile({
+      product: entry.product,
+      privateRoot: clone.root,
+      templateKind: expectedTemplate.kind,
+      templateReceiptSha256: expectedTemplate.receiptSha256,
+      editor,
+      userData: clone.userData,
+      extensions: clone.extensions,
+      sandboxArgs: clone.sandboxArgs,
+      environment: profileEnvironment,
+      installLabel: `Official VS Code ${entry.product} neutral comparison driver installation`,
+      inventoryLabel: `Official VS Code ${entry.product} measured-trial extension inventory`
+    });
     await dependencies.installOpaqueExtension({
       product: entry.product,
       editor,
@@ -365,6 +370,37 @@ export async function runPreparedDataWranglerComparisonEntry(
     const prevalidatedDriver = dependencies.captureDriver(driverReceipt);
     if (!sameValue(prevalidatedDriver, manifest.provenance.comparisonDriver)) {
       fail("Prepared comparison installed another neutral driver than the manifest records.");
+    }
+    if (entry.kind === "warm") {
+      const warmFixture = preparation.fixtures.find((candidate) => candidate.format === "csv");
+      const warmManifestFixture = manifest.fixtures.find((candidate) => candidate.format === "csv");
+      if (warmFixture === undefined || warmManifestFixture === undefined || warmFixture.id !== warmManifestFixture.id) {
+        fail("Prepared comparison warm trial has no canonical CSV warm-up fixture.");
+      }
+      await dependencies.warmProfile(
+        {
+          product: entry.product,
+          runId: dependencies.id(),
+          runRoot: resolve(clone.root, "public-warmup"),
+          profile,
+          editor,
+          pythonPath: preparation.python.path,
+          kernel: {
+            path: preparation.selectedKernel.path,
+            name: preparation.selectedKernel.name,
+            displayName: preparation.selectedKernel.displayName,
+            sha256: manifest.python.kernel.kernelspecSha256
+          },
+          fixture: warmManifestFixture,
+          fixturePath: warmFixture.path,
+          driverDirectory: preparation.driver.directory,
+          driverVsixPath: preparation.driver.vsixPath,
+          expectedDriver: manifest.provenance.comparisonDriver,
+          expectedInventory: expectedProductExtensions(manifest, entry.product),
+          developmentPaths: []
+        },
+        profileEnvironment
+      );
     }
     const prevalidatedExtensions = assertDataWranglerComparisonArmInventory(await dependencies.readInventory(profile), {
       product: entry.product,
@@ -454,6 +490,7 @@ export async function runPreparedDataWranglerComparisonEntry(
         sha256: manifest.python.kernel.kernelspecSha256
       }
     });
+    trialStarted = true;
     result = await dependencies.recordTrial(
       {
         manifestPath,
@@ -520,9 +557,28 @@ export async function runPreparedDataWranglerComparisonEntry(
         result.output?.cleanupProof?.treeEmpty === true &&
         result.output?.sourceCopy?.cleanup?.removed === true &&
         result.output?.trialProvenance?.revalidatedAfterCleanup === true);
-  } finally {
-    if (completed || entry.product === "data-wrangler") retired = dependencies.retireClone(clone);
+  } catch (error) {
+    operationError = error;
   }
+  let cleanupError;
+  if (
+    !editorProcessTreeMayBeLive(operationError) &&
+    (!trialStarted || completed || entry.product === "data-wrangler")
+  ) {
+    try {
+      retired = dependencies.retireClone(clone);
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  if (operationError !== undefined && cleanupError !== undefined) {
+    throw new AggregateError(
+      [operationError, cleanupError],
+      "Prepared comparison trial and clone cleanup both failed."
+    );
+  }
+  if (operationError !== undefined) throw operationError;
+  if (cleanupError !== undefined) throw cleanupError;
   if (completed && (retired?.status !== "retired" || retired.treeEmpty !== true)) {
     fail("Prepared comparison profile clone was not retired after its measured trial.");
   }

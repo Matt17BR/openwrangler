@@ -171,14 +171,17 @@ inventing a private completion signal.
 ## Sampling design
 
 - Cover four cells: Pandas x CSV, Polars x CSV, Pandas x Parquet, and Polars x Parquet.
-- Build one configured-only template per product after public first-use/runtime selection on tiny synthetic data. Derive
-  one warmed template from it by completing a tiny-data preview -> workbench -> profile journey. Neither template
-  contains a target variable, target-source cache, measured tab, or retained workbench session.
+- Build one configured-only template per product after public first-use/runtime selection on tiny synthetic data. A
+  separate tiny-data preview -> workbench -> profile journey proves that each product can be warmed through public UI.
+  Retained templates are sanitized seeds; neither contains product storage, a target variable, source cache, measured
+  tab, or workbench session.
 - Collect ten planned paired warm blocks per cell. One natural chained trial records inline preview, workbench open,
   first profile, and all-column completion, yielding ten observations for every required journey without resetting
   state between dependent milestones.
-- Each measured warm trial starts a fresh official VS Code process, clone of the exact warmed template, and fresh
-  kernel. There is no per-trial warm-up. No target variable or measured workbench survives from another trial.
+- Each measured warm trial clones the exact sanitized warm seed, installs the measured product and neutral driver,
+  completes the untimed public warm-up in one official VS Code process, and closes it. The measured journey then starts
+  in a fresh VS Code process and fresh kernel on that same disposable clone. No target variable, measured source, or
+  measured workbench survives from another trial.
 - Use a fixed published seed to counterbalance product order so each product runs first exactly five times per cell.
   Interleave cells by repetition so thermal and time drift cannot consistently favor one engine or dataset.
 - Prove the private copy's pages resident immediately before notebook setup for the primary warm study, then load the
@@ -271,7 +274,7 @@ controller, process supervisor, and four sealed editor-profile trees. A setup-on
 extensions, selects the exact runtime, reaches the first usable grid on the tiny setup file, checks the extension
 inventory, and seals one configured-only profile per product. It has no timings and is not comparison evidence. The
 older four-phase CSV/Parquet feasibility smoke remains a separate diagnostic command and is not part of preparation.
-A separate untimed inline-to-workbench-to-profile warm-up creates the two warmed profiles. Those warm-ups use the same
+A separate untimed inline-to-workbench-to-profile warm-up validates the warm path for both products. Those warm-ups use the same
 durable, ordered request/acknowledgement bridge as measured trials; preparation must independently observe every
 exchange and match it to the editor receipt. Extension inventory checks
 run against disposable copies, so asking the VS Code CLI for an inventory cannot alter a sealed template. Preparation
@@ -291,7 +294,8 @@ digest and no placeholders. There is no supported path for hand-writing dynamic 
 or driver receipts.
 
 `comparison:study -- run-next` reads the durable ledger and chooses its first pending entry. It clones the correct
-configured-only or warmed profile, installs the verified neutral driver into that clone, and derives the notebook,
+configured-only or sanitized warm seed and installs the verified neutral driver into that clone. Warm entries then run
+the untimed public warm-up to completion in a separate editor process before the measured process starts. The command derives the notebook,
 source-copy, request, acknowledgement, Jupyter, and editor paths itself. Each warm-up, capability check, and measured
 trial gets a private copy of the validated kernelspec inside that run's editor root; the retained study-level Jupyter
 directories are never passed to an editor phase. A successful run publishes one fragment,
@@ -408,11 +412,17 @@ private logs, or work data; or infer an internal engine from process behavior. A
 must prove that the same public controls and rendered states exist. Timed zero-window results are reproducible relative
 evidence on the pinned reference machine, not a promise of identical desktop latency.
 
-Data Wrangler's installed directory is opaque. Profile receipts and copies skip that directory before any stat, open,
-hash, or traversal. Retained configured and warmed templates contain only the surrounding editor state and the public
-CLI inventory. Each disposable Data Wrangler run reinstalls `ms-toolsai.datawrangler@1.24.2` from the public Marketplace,
-checks the reported ID and version, and removes the run profile afterward. Cleanup is tied to the captured identities of
-both the profile and its parent; a renamed or replaced path is left alone and fails the run.
+Data Wrangler's installed directory is opaque. Profile receipts and copies skip it before any stat, open, hash, or
+traversal. Retained templates use a versioned allowlist: the harness-written `User/settings.json` and exact non-Data
+Wrangler package roots from the public CLI inventory. Logs, caches, `globalStorage`, `workspaceStorage`, Marketplace
+caches, extension-owned state, unknown extension-directory entries, and every other user-data path are skipped before
+inspection. The settings bytes are hashed before first use; any product mutation is rejected before capture, and the
+retained copy must match the same hash. Each disposable Data Wrangler run reinstalls `ms-toolsai.datawrangler@1.24.2` from the public Marketplace
+and checks the reported ID and version.
+
+Cleanup opens leases on the captured profile and parent, creates an exclusive random sibling quarantine, and atomically
+moves the profile to its `payload`. It revalidates the public path, payload, quarantine, profile, and parent before
+recursive removal. A replacement or other ambiguity fails closed without deleting an unexpected tree.
 
 ## Publication
 

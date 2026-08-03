@@ -646,11 +646,12 @@ neutral driver inside its own retained private directory; callers do not provide
 inspects the candidate, CPython environment, deterministic fixtures, CPU and power state, and proves that both fixture
 paths resolve to the same exact study volume,
 storage, official editor, and disposable profiles. It creates the study kernelspec, runs each product's public
-first-use setup, and seals the resulting configured-only profiles. Separate notebook warm-ups then produce the warmed
-profiles used by the study. Preparation does not run the older CSV/Parquet feasibility diagnostic. The supplied
+first-use setup, and seals the resulting configured-only profiles. Separate notebook warm-ups validate the public warm
+path; the retained warm seeds are sanitized before the study. Preparation does not run the older CSV/Parquet
+feasibility diagnostic. The supplied
 fixtures must match a fresh generator run byte for byte and pass the full Polars value contract.
 
-The downloaded editor, configured profiles, and warmed profiles are retained under the ignored
+The downloaded editor and sanitized configured/warmed profile templates are retained under the ignored
 `node_modules/.cache/openwrangler-comparison/tmp/ow/x-*` tree. This keeps the large extracted trees out of the live
 workspace watch set while preserving the existing `tmp/ow/x-*` ownership and cleanup contract. The runner rejects a
 linked, redirected, foreign-owned, or world-writable ancestor and creates every Open Wrangler-owned cache directory at
@@ -675,8 +676,12 @@ digest, and contains no pending fields. Do not hand-author dynamic receipts. If 
 those three publications, rerun the same preparation command: it recovers the journal, reconstructs the missing exact
 outputs, and does not regenerate retained roots or timestamps. The planner independently requires the exact
 preregistration, journal, specification path, and manifest path before it writes anything. The private driver and
-opaque-safe profile templates remain available for inspection; the templates never contain Data Wrangler package
-files.
+opaque-safe profile templates remain available for inspection. The versioned retention policy admits only the
+harness-written `user/User/settings.json` and package directories derived from the exact public CLI inventory, with
+the Data Wrangler package root removed. It skips logs, caches, `globalStorage`, `workspaceStorage`, Marketplace caches,
+extension-owned state, unknown extension-directory entries, and all other user-data paths before stat, open, hash, or
+copy. The settings file must still match the harness-authored pre-launch SHA-256 before and after capture. The
+preparation receipt protocol and each template's exact inventory bind that policy to later clones.
 
 Preparation captures the untimed Polars capabilities itself. For each release fixture it reinstalls the pinned public
 Data Wrangler version into a disposable clone of the sealed, package-free profile, opens a warm Polars `study_frame`,
@@ -690,7 +695,9 @@ Their receipt bindings identify the exact editor distribution, configured-profil
 
 Each product warm-up uses the measured notebook driver's real durable request/acknowledgement bridge. Preparation
 responds to the complete warm sequence and checks that the editor receipt contains the same ordered exchanges before it
-accepts the warmed profile. The driver leaves the Jupyter picker search empty until it reaches the local kernelspec
+accepts the sanitized warm seed. Every scheduled warm trial repeats that untimed public journey on its disposable
+clone, closes the warm-up editor, and starts the measured journey in a fresh editor process on the same clone. The
+driver leaves the Jupyter picker search empty until it reaches the local kernelspec
 list, so a late discovery update cannot hide the route to the pinned kernel.
 
 Use the preparation receipt for the dry run and every recorded trial. Both commands choose the next schedule entry,
@@ -731,10 +738,13 @@ baseline, maximum, delta, and per-category PSS results. For Data Wrangler, it al
 engine evidence; an engine the public UI does not identify stays `unverified`.
 
 After a successful trial, `run-next` verifies that the editor and kernel process trees are empty and removes only the
-clone it created. An uncertain Open Wrangler trial may retain its clone for review. A Data Wrangler clone is never
+clone it created. A clone that fails during environment, temporary-root, or profile setup is also retired before the
+error returns. An uncertain Open Wrangler trial may retain its clone for review. A Data Wrangler clone is never
 deliberately retained: cleanup runs even after an uncertain trial so proprietary package files do not become study
-state. Every recursive removal checks the captured profile and parent identities immediately before deletion;
-replacement or containment ambiguity stops cleanup without touching the new path. The durable authorization journal
+state. Cleanup holds identity leases on the profile and parent, creates an exclusive random sibling quarantine, and
+atomically renames the profile to its `payload`. It revalidates the absent public path plus the quarantine, payload,
+profile, and parent identities immediately before recursive removal. Replacement or containment ambiguity fails closed
+without deleting the unexpected trees. The durable authorization journal
 prevents an action interrupted after dispatch from being repeated silently. A laptop shutdown therefore loses at most
 the in-flight, pre-authorization setup: rerun `status` and call `run-next` again only when the ledger says the entry is
 safe to run.

@@ -1174,6 +1174,7 @@ test("configured-profile bootstrap runs only first-use setup and retains its iso
           editor,
           sandboxArgs: Object.freeze(["--no-sandbox"]),
           installedExtensions: Object.freeze(installedInventory(input.productKey)),
+          settingsSha256: digest("b"),
           configuredPythonProcessObservedDuringSetup: true
         })
       });

@@ -18,6 +18,7 @@ function capturePreparedProductWarmups(input, environment, overrides = {}) {
   return capturePreparedProductWarmupsImplementation(input, environment, {
     requireWatchHeadroom: async () => ({ passed: true }),
     installOpaqueExtension: async () => ({ status: "test-install" }),
+    cleanupSourceCopy: () => undefined,
     captureTemplate(_sourceRoot, targetRoot) {
       privateDirectory(targetRoot);
       return {
@@ -326,7 +327,7 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
         (entry) => entry.receipt.controlBridge.exchanges.length === DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS.length
       )
     );
-    assert.equal(recovered.length, 3);
+    assert.equal(recovered.length, 5);
     assert.ok(result.provenance.every((entry) => entry.receipt.untimed === true));
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -489,6 +490,93 @@ test("prepared warm-up reports the phase failure instead of its derived controll
     }
     assert.equal(caught, phaseError);
     assert.equal(caught instanceof AggregateError, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an ownership-uncertain warm-up does not inspect its source copy or retire its clone", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-uncertain-"));
+  try {
+    chmodSync(root, 0o700);
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    const phaseError = new Error("editor ownership is uncertain");
+    phaseError.details = { treeVerifiedStopped: false };
+    let sourceCleanupCalls = 0;
+    let cloneRetirementCalls = 0;
+    await assert.rejects(
+      capturePreparedProductWarmups(
+        {
+          specification: {
+            candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            fixtures: [fixture],
+            provenance: { comparisonDriver: {} }
+          },
+          templates: [
+            { product: "open-wrangler", kind: "configured-only", root: resolve(root, "configured"), sandboxArgs: [] }
+          ],
+          templateTrees: new Map([["open-wrangler:configured-only", digest]]),
+          studyRoot: root,
+          editor: { version: "1.109.2" },
+          pythonPath: "/python",
+          kernel,
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix"
+        },
+        {},
+        {
+          id: () => "00000000-0000-4000-8000-000000000000",
+          recoverDriver: () => undefined,
+          cloneTemplate: (_template, { cloneRoot }) => ({
+            root: privateDirectory(cloneRoot),
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: []
+          }),
+          retireClone: () => {
+            cloneRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          createEnvironment: () => ({}),
+          configureTempRoot: () => undefined,
+          createSourceCopy: () => ({
+            copyPath: "/private/source.csv",
+            copyReceipt: {
+              sha256: digest,
+              filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+            }
+          }),
+          cleanupSourceCopy: () => {
+            sourceCleanupCalls += 1;
+          },
+          writeNotebook: () => undefined,
+          readInventory: async () =>
+            createDataWranglerComparisonTemplateInventory({
+              extensionId: "Matt17BR.openwrangler",
+              version: "1.2.1"
+            }),
+          runPhase: async () => {
+            throw phaseError;
+          },
+          controlWarmup: ({ signal }) =>
+            new Promise((_resolvePromise, reject) => {
+              const rejectAbort = () => {
+                const error = new Error("controller aborted after uncertain phase failure");
+                error.code = "aborted";
+                reject(error);
+              };
+              signal.addEventListener("abort", rejectAbort, { once: true });
+              if (signal.aborted) rejectAbort();
+            })
+        }
+      ),
+      (error) => error === phaseError
+    );
+    assert.equal(sourceCleanupCalls, 0);
+    assert.equal(cloneRetirementCalls, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
