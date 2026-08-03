@@ -234,6 +234,40 @@ function explicitLegacyCandidate(fixture, parentName, slug, options = {}) {
   return Object.freeze({ parent, checkout });
 }
 
+function writeLegacyBatchManifest(fixture, name, candidates, dependencyRoots) {
+  const manifest = join(fixture.root, `${name}.json`);
+  writeFileSync(
+    manifest,
+    `${JSON.stringify(
+      {
+        protocol: "openwrangler-legacy-checkout-batch-v1",
+        dependencyRoots,
+        candidates: candidates.map(
+          ({
+            slug,
+            checkout,
+            parent,
+            ownerTask = `/root/${slug}`,
+            generatedRoots = ["node_modules"],
+            generatedFiles = ["fixture.ignored"]
+          }) => ({
+            slug,
+            path: checkout,
+            root: parent,
+            ownerTask,
+            generatedRoots,
+            generatedFiles
+          })
+        )
+      },
+      null,
+      2
+    )}\n`,
+    { mode: 0o600 }
+  );
+  return manifest;
+}
+
 function adoptedLegacyCandidate(fixture, slug, options = {}) {
   bootstrapCheckoutManager({
     repositoryPath: fixture.repository,
@@ -520,6 +554,27 @@ test("discovery reports nested repositories instead of stopping at the outer che
   });
 });
 
+test("discovery identifies a same-common-directory worktree owned by another lifecycle registry", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "9".repeat(32) });
+    const parent = join(fixture.root, "orphan-managed-discovery");
+    mkdirSync(parent, { mode: 0o700 });
+    const checkout = join(parent, "orphan-managed");
+    git(fixture.repository, "worktree", "add", "-q", "-b", "orphan-managed", checkout);
+
+    const result = defaultManager(fixture).discover({ roots: [parent], maxDepth: 1 });
+
+    assert.equal(result.discovered.length, 1);
+    assert.equal(result.discovered[0].path, checkout);
+    assert.equal(result.discovered[0].kind, "linked-worktree");
+    assert.equal(result.discovered[0].sameCommonGitDirectory, true);
+    assert.equal(result.discovered[0].adoptable, false);
+    assert.equal(result.discovered[0].reason, "same-common-dir-worktree-requires-owning-registry");
+    assert.equal(result.discovered[0].owningCommonGitDirectory, join(fixture.repository, ".git"));
+    assert.equal(existsSync(checkout), true);
+  });
+});
+
 test("discovery rejects invalid and colliding checkout names before adoption", () => {
   withRepository((fixture) => {
     bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "a".repeat(32) });
@@ -568,6 +623,416 @@ test("discovery rejects a checkout name already registered by the manager", () =
     assert.equal(result.discovered[0].proposedSlug, "occupied-name");
     assert.equal(result.discovered[0].adoptable, false);
     assert.equal(result.discovered[0].reason, "checkout-name-in-use");
+  });
+});
+
+test("legacy batch review scans the dependency universe once and adoption consumes the exact review", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "b".repeat(32) });
+    const first = explicitLegacyCandidate(fixture, "batch-root-a", "batch-first");
+    const second = explicitLegacyCandidate(fixture, "batch-root-b", "batch-second");
+    const generated = join(first.checkout, "node_modules", "large-generated-tree");
+    mkdirSync(generated, { recursive: true });
+    for (let index = 0; index < 1_000; index += 1) {
+      writeFileSync(join(generated, `${String(index).padStart(4, "0")}.js`), `export default ${index};\n`);
+    }
+    symlinkSync("0000.js", join(generated, "current.js"));
+    const manifest = writeLegacyBatchManifest(
+      fixture,
+      "batch-clean",
+      [
+        { slug: "batch-first", checkout: first.checkout, parent: first.parent },
+        { slug: "batch-second", checkout: second.checkout, parent: second.parent }
+      ],
+      [first.parent, second.parent]
+    );
+    let dependencyScans = 0;
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "c".repeat(32),
+      hooks: {
+        afterLegacyBatchDependencyScan() {
+          dependencyScans += 1;
+        }
+      }
+    });
+    const before = readdirSync(join(fixture.repository, "tmp", "agent-checkouts", "manager", "attempts"));
+
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+
+    assert.equal(dependencyScans, 1);
+    assert.equal(reviewed.eligibleCount, 2);
+    assert.equal(reviewed.blockedCount, 0);
+    assert.ok(reviewed.dependencyScan.visitedEntries < 32);
+    assert.equal(reviewed.authorizesAdoption, false);
+    assert.equal(reviewed.authorizesCleanup, false);
+    assert.deepEqual(
+      reviewed.candidates.map(({ slug, status }) => ({ slug, status })),
+      [
+        { slug: "batch-first", status: "eligible" },
+        { slug: "batch-second", status: "eligible" }
+      ]
+    );
+    assert.equal(existsSync(join(managed.paths.root, "legacy-adoptions")), false);
+    assert.deepEqual(readdirSync(join(fixture.repository, "tmp", "agent-checkouts", "manager", "attempts")), before);
+
+    const adopted = managed.legacyBatchAdopt({
+      manifestPath: manifest,
+      expectedReviewSha256: reviewed.reviewSha256
+    });
+
+    assert.equal(dependencyScans, 2);
+    assert.equal(adopted.status, "batch-adopted-review-required");
+    assert.equal(adopted.nextStep, "archive-each-before-retirement-enrollment");
+    assert.equal(adopted.authorizesCleanup, false);
+    assert.deepEqual(
+      adopted.adopted.map((item) => item.slug),
+      ["batch-first", "batch-second"]
+    );
+    assert.deepEqual(
+      managed.legacyStatus().map((item) => item.slug),
+      ["batch-first", "batch-second"]
+    );
+    assert.equal(existsSync(first.checkout), true);
+    assert.equal(existsSync(second.checkout), true);
+  });
+});
+
+test("legacy batch review blocks dirty, linked, and provider-dependent candidates without lifecycle writes", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "d".repeat(32) });
+    const dirty = explicitLegacyCandidate(fixture, "batch-blocked-a", "batch-dirty");
+    writeFileSync(join(dirty.checkout, "untracked.txt"), "must be preserved\n");
+
+    const ownerRoot = join(fixture.root, "batch-blocked-b");
+    mkdirSync(ownerRoot, { mode: 0o700 });
+    const owner = join(ownerRoot, "linked-owner");
+    const linked = join(ownerRoot, "batch-linked");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, owner);
+    git(owner, "worktree", "add", "-q", "-b", "batch-linked", linked);
+
+    const provider = explicitLegacyCandidate(fixture, "batch-blocked-c", "batch-provider");
+    const dependent = join(provider.parent, "dependent");
+    git(provider.parent, "clone", "-q", "--shared", provider.checkout, dependent);
+    const undeclared = explicitLegacyCandidate(fixture, "batch-blocked-d", "batch-undeclared-generated");
+    const manifest = writeLegacyBatchManifest(
+      fixture,
+      "batch-blocked",
+      [
+        { slug: "batch-dirty", checkout: dirty.checkout, parent: dirty.parent },
+        { slug: "batch-linked", checkout: linked, parent: ownerRoot },
+        { slug: "batch-provider", checkout: provider.checkout, parent: provider.parent },
+        {
+          slug: "batch-undeclared-generated",
+          checkout: undeclared.checkout,
+          parent: undeclared.parent,
+          generatedRoots: [],
+          generatedFiles: []
+        }
+      ],
+      [dirty.parent, ownerRoot, provider.parent, undeclared.parent]
+    );
+    const managed = defaultManager(fixture, { tokenFactory: () => "e".repeat(32) });
+
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+
+    assert.equal(reviewed.eligibleCount, 0);
+    assert.equal(reviewed.blockedCount, 4);
+    assert.deepEqual(Object.fromEntries(reviewed.candidates.map((item) => [item.slug, item.code])), {
+      "batch-dirty": "legacy-audit-not-eligible",
+      "batch-linked": "legacy-linked-worktree-not-adoptable",
+      "batch-provider": "legacy-provider-in-use",
+      "batch-undeclared-generated": "legacy-audit-not-eligible"
+    });
+    const undeclaredResult = reviewed.candidates.find((item) => item.slug === "batch-undeclared-generated");
+    assert.match(undeclaredResult.message, /generatedRoots=\["node_modules"\]/u);
+    assert.match(undeclaredResult.message, /generatedFiles=\["fixture\.ignored"\]/u);
+    lifecycleError(
+      () =>
+        managed.legacyBatchAdopt({
+          manifestPath: manifest,
+          expectedReviewSha256: reviewed.reviewSha256
+        }),
+      "legacy-batch-not-eligible"
+    );
+    assert.equal(existsSync(join(managed.paths.root, "legacy-adoptions")), false);
+    assert.equal(readFileSync(join(dirty.checkout, "untracked.txt"), "utf8"), "must be preserved\n");
+    assert.equal(existsSync(linked), true);
+    assert.equal(existsSync(provider.checkout), true);
+  });
+});
+
+test("legacy batch adoption rejects stale review hashes and changed manifests", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "f".repeat(32) });
+    const candidate = explicitLegacyCandidate(fixture, "batch-review-root", "batch-review");
+    const manifest = writeLegacyBatchManifest(
+      fixture,
+      "batch-review",
+      [{ slug: "batch-review", checkout: candidate.checkout, parent: candidate.parent }],
+      [candidate.parent]
+    );
+    const managed = defaultManager(fixture);
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+
+    lifecycleError(
+      () =>
+        managed.legacyBatchAdopt({
+          manifestPath: manifest,
+          expectedReviewSha256: "0".repeat(64)
+        }),
+      "legacy-batch-review-changed"
+    );
+    writeFileSync(join(candidate.checkout, "late.txt"), "late work\n");
+    lifecycleError(
+      () =>
+        managed.legacyBatchAdopt({
+          manifestPath: manifest,
+          expectedReviewSha256: reviewed.reviewSha256
+        }),
+      "legacy-batch-review-changed"
+    );
+    assert.equal(existsSync(join(managed.paths.root, "legacy-adoptions")), false);
+  });
+});
+
+test("legacy batch adoption resumes an exact reviewed manifest after a crash between candidates", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "1".repeat(32) });
+    const first = explicitLegacyCandidate(fixture, "batch-resume-a", "resume-first");
+    const second = explicitLegacyCandidate(fixture, "batch-resume-b", "resume-second");
+    const manifest = writeLegacyBatchManifest(
+      fixture,
+      "batch-resume",
+      [
+        { slug: "resume-first", checkout: first.checkout, parent: first.parent },
+        { slug: "resume-second", checkout: second.checkout, parent: second.parent }
+      ],
+      [first.parent, second.parent]
+    );
+    let stopped = false;
+    const interrupted = defaultManager(fixture, {
+      tokenFactory: () => "2".repeat(32),
+      hooks: {
+        afterLegacyBatchCandidateAdopt() {
+          if (stopped) return;
+          stopped = true;
+          throw new Error("simulated process stop after first batch candidate");
+        }
+      }
+    });
+    const reviewed = interrupted.legacyBatchAudit({ manifestPath: manifest });
+
+    assert.throws(
+      () =>
+        interrupted.legacyBatchAdopt({
+          manifestPath: manifest,
+          expectedReviewSha256: reviewed.reviewSha256
+        }),
+      /simulated process stop after first batch candidate/u
+    );
+    assert.deepEqual(
+      interrupted.legacyStatus().map((item) => item.slug),
+      ["resume-first"]
+    );
+
+    const resumed = defaultManager(fixture, { tokenFactory: () => "3".repeat(32) }).legacyBatchAdopt({
+      manifestPath: manifest,
+      expectedReviewSha256: reviewed.reviewSha256
+    });
+
+    assert.deepEqual(
+      resumed.adopted.map(({ slug, status }) => ({ slug, status })),
+      [
+        { slug: "resume-first", status: "already-adopted" },
+        { slug: "resume-second", status: "adopted-review-required" }
+      ]
+    );
+    assert.deepEqual(
+      defaultManager(fixture)
+        .legacyStatus()
+        .map((item) => item.slug),
+      ["resume-first", "resume-second"]
+    );
+  });
+});
+
+for (const interruption of [
+  { name: "request publication", hook: "afterLegacyAdoptionRequest", attemptState: "requested-review-required" },
+  {
+    name: "completion before publication",
+    hook: "beforeLegacyAdoptionPublish",
+    attemptState: "completed-unpublished-review-required"
+  }
+]) {
+  test(`legacy batch adoption resumes the exact interrupted ${interruption.name}`, () => {
+    withRepository((fixture) => {
+      bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "4".repeat(32) });
+      const candidate = explicitLegacyCandidate(fixture, `batch-interrupted-${interruption.hook}`, "batch-interrupted");
+      const manifest = writeLegacyBatchManifest(
+        fixture,
+        `batch-interrupted-${interruption.hook}`,
+        [{ slug: "batch-interrupted", checkout: candidate.checkout, parent: candidate.parent }],
+        [candidate.parent]
+      );
+      let interrupt = true;
+      const interrupted = defaultManager(fixture, {
+        tokenFactory: () => "5".repeat(32),
+        hooks: {
+          [interruption.hook]() {
+            if (!interrupt) return;
+            interrupt = false;
+            throw new Error(`stop after ${interruption.name}`);
+          }
+        }
+      });
+      const reviewed = interrupted.legacyBatchAudit({ manifestPath: manifest });
+
+      assert.throws(
+        () =>
+          interrupted.legacyBatchAdopt({
+            manifestPath: manifest,
+            expectedReviewSha256: reviewed.reviewSha256
+          }),
+        new RegExp(`stop after ${interruption.name}`, "u")
+      );
+      assert.equal(interrupted.legacyStatus("batch-interrupted")[0].attempts[0].state, interruption.attemptState);
+
+      const resumedManager = defaultManager(fixture, { tokenFactory: () => "6".repeat(32) });
+      const resumedReview = resumedManager.legacyBatchAudit({ manifestPath: manifest });
+      assert.equal(resumedReview.reviewSha256, reviewed.reviewSha256);
+      const resumed = resumedManager.legacyBatchAdopt({
+        manifestPath: manifest,
+        expectedReviewSha256: reviewed.reviewSha256
+      });
+
+      assert.equal(resumed.adopted[0].status, "resumed-adoption-review-required");
+      const [status] = resumedManager.legacyStatus("batch-interrupted");
+      assert.equal(status.state, "adopted-review-required");
+      assert.equal(status.attempts.length, 1);
+      assert.equal(status.attempts[0].state, "published-review-required");
+    });
+  });
+}
+
+test("legacy batch adoption blocks a conflicting interrupted request", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "7".repeat(32) });
+    const candidate = explicitLegacyCandidate(fixture, "batch-conflicting-request-root", "batch-conflicting-request");
+    const manifest = writeLegacyBatchManifest(
+      fixture,
+      "batch-conflicting-request",
+      [{ slug: "batch-conflicting-request", checkout: candidate.checkout, parent: candidate.parent }],
+      [candidate.parent]
+    );
+    const interrupted = defaultManager(fixture, {
+      tokenFactory: () => "8".repeat(32),
+      hooks: {
+        afterLegacyAdoptionRequest() {
+          throw new Error("stop conflicting request");
+        }
+      }
+    });
+    assert.throws(
+      () =>
+        interrupted.legacyAdopt({
+          slug: "batch-conflicting-request",
+          ownerTask: "/root/a-different-owner",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"],
+          checkoutPath: candidate.checkout,
+          approvedRoot: candidate.parent,
+          dependencyRoots: [candidate.parent]
+        }),
+      /stop conflicting request/u
+    );
+
+    const reviewed = defaultManager(fixture).legacyBatchAudit({ manifestPath: manifest });
+    assert.equal(reviewed.blockedCount, 1);
+    assert.equal(reviewed.candidates[0].code, "checkout-slug-reserved");
+    assert.match(reviewed.candidates[0].message, /conflicting adoption request/u);
+  });
+});
+
+test("public legacy adoption ignores private batch bypass fields and always takes the lifecycle lock", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "9".repeat(32) });
+    const candidate = explicitLegacyCandidate(fixture, "public-adoption-lock-root", "public-adoption-lock");
+    let lockCount = 0;
+    let forgedCatalogCalls = 0;
+    const managed = defaultManager(fixture, {
+      tokenFactory: () => "a".repeat(32),
+      hooks: {
+        afterOperationLockAcquired() {
+          lockCount += 1;
+        }
+      }
+    });
+
+    const adopted = managed.legacyAdopt({
+      slug: "public-adoption-lock",
+      ownerTask: "/root/public-adoption-lock",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"],
+      checkoutPath: candidate.checkout,
+      approvedRoot: candidate.parent,
+      dependencyRoots: [candidate.parent],
+      dependencyCatalog: {
+        proofFor() {
+          forgedCatalogCalls += 1;
+          throw new Error("forged dependency proof used");
+        }
+      },
+      operationLockHeld: true
+    });
+
+    assert.equal(adopted.status, "adopted-review-required");
+    assert.equal(lockCount, 1);
+    assert.equal(forgedCatalogCalls, 0);
+  });
+});
+
+test("legacy batch retirement archives every object and enrolls resumably without moving on the current boot", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "4".repeat(32) });
+    const candidate = explicitLegacyCandidate(fixture, "batch-retire-root", "batch-retire");
+    const unreachable = addUnreachableObjectGraph(candidate.checkout);
+    const manifest = writeLegacyBatchManifest(
+      fixture,
+      "batch-retire",
+      [{ slug: "batch-retire", checkout: candidate.checkout, parent: candidate.parent }],
+      [candidate.parent]
+    );
+    const managed = defaultManager(fixture, {
+      readBootId: () => BOOT_A,
+      tokenFactory: () => "5".repeat(32)
+    });
+    const reviewed = managed.legacyBatchAudit({ manifestPath: manifest });
+
+    const retired = managed.legacyBatchRetire({
+      manifestPath: manifest,
+      expectedReviewSha256: reviewed.reviewSha256
+    });
+
+    assert.equal(retired.status, "batch-retirement-enrolled");
+    assert.equal(retired.movement, "deferred-until-a-later-boot");
+    assert.equal(retired.authorizesImmediateMove, false);
+    assert.equal(existsSync(candidate.checkout), true);
+    const [status] = managed.legacyStatus("batch-retire");
+    assert.equal(status.archive.state, "archived-review-required");
+    assert.equal(status.retirement.state, "eligible");
+    const recovery = retired.candidates[0].archive.recoveryPath;
+    for (const objectId of Object.values(unreachable)) {
+      assert.equal(git(recovery, "cat-file", "-e", objectId), "");
+    }
+
+    const resumed = managed.legacyBatchRetire({
+      manifestPath: manifest,
+      expectedReviewSha256: reviewed.reviewSha256
+    });
+    assert.equal(resumed.candidates[0].adoption.status, "already-adopted");
+    assert.equal(resumed.candidates[0].archive.status, "already-archived");
+    assert.equal(resumed.candidates[0].enrollment.status, "already-enrolled");
+    assert.equal(existsSync(candidate.checkout), true);
   });
 });
 
@@ -6190,6 +6655,51 @@ test("legacy retirement requires explicit archived enrollment and a later boot",
   });
 });
 
+for (const [version, historical] of [
+  ["v2", false],
+  ["v1", true]
+]) {
+  for (const stage of ["quarantined", "terminal"]) {
+    test(`existing ${version} legacy enrollment verifies from the retained authority when ${stage}`, () => {
+      withRepository((fixture) => {
+        let bootId = BOOT_A;
+        const slug = `verify-${version}-${stage}`;
+        const legacy = enrolledLegacyRetirement(fixture, slug, {
+          readBootId: () => bootId,
+          token: historical ? "a" : "b",
+          ...(stage === "quarantined"
+            ? {
+                hooks: {
+                  afterRetirementQuarantineRecorded() {
+                    throw new Error(`stop ${slug} in quarantine`);
+                  }
+                }
+              }
+            : {})
+        });
+        bootId = BOOT_B;
+        if (stage === "quarantined") {
+          assert.throws(() => legacy.managed.sweep(), new RegExp(`stop ${slug} in quarantine`, "u"));
+        } else {
+          assert.equal(legacy.managed.sweep().results[0].state, "retired");
+        }
+        if (historical) materializeHistoricalV1Retirement(legacy.managed, slug);
+
+        const result = defaultManager(fixture, { readBootId: () => bootId }).verifyRetirementEnrollment({
+          kind: "legacy",
+          slug
+        });
+
+        assert.equal(result.status, "already-enrolled");
+        assert.equal(result.layout, stage === "quarantined" ? "quarantine" : "absent");
+        assert.equal(result.journal, stage === "quarantined" ? "quarantine-result" : "retired");
+        assert.equal(result.moved, true);
+        assert.equal(result.removed, stage === "terminal");
+      });
+    });
+  }
+}
+
 test("legacy purge resumes after a mid-tree interruption and records detached-HEAD state", () => {
   withRepository((fixture) => {
     let bootId = BOOT_A;
@@ -6542,6 +7052,28 @@ test("the public retire command finishes, archives, and enrolls without moving i
       }).results[0].state,
       "retired"
     );
+  });
+});
+
+test("task-end is the durable public retirement wrapper", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun(), readBootId: () => BOOT_A });
+    const checkout = create(fixture, "task-end-retire", { manager: managed });
+
+    const result = runCheckoutLifecycleCli(
+      ["task-end", "task-end-retire", "--owner", "/root/task-end-retire", "--revision", "1"],
+      {
+        repositoryPath: fixture.repository,
+        managerRoot: fixture.managerRoot,
+        readBootId: () => BOOT_A,
+        tokenFactory: () => "8".repeat(32),
+        stdout: { write() {} }
+      }
+    );
+
+    assert.equal(result.status, "retirement-enrolled");
+    assert.equal(existsSync(checkout.checkoutPath), true);
+    assert.equal(managed.status("task-end-retire")[0].retirement.state, "eligible");
   });
 });
 

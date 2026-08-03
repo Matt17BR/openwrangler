@@ -36,7 +36,27 @@ Agent checkout lifecycle has a separate, small contract test:
   path identity revalidation, depth validation, and zero lifecycle-journal writes; fixed entry and candidate limits
   are enforced in the scanner. `checkout:task-begin` runs the retirement sweep first and
   then returns active, pending, and discovered state.
-  The public create, status, and retire commands also sweep before their main operation.
+  A linked worktree sharing either the manager repository or bootstrap source common Git directory is called out as
+  belonging to another lifecycle registry; discovery never migrates or removes it. The public create, status, retire,
+  and `task-end` commands also sweep before their main operation.
+- `npm run checkout:legacy-batch-audit -- --manifest <canonical-json>` accepts an explicit bounded list instead of
+  rediscovering a large historical tree for every clone. It scans no more than 2,000,000 directory entries across the
+  manifest's non-overlapping dependency roots once, records every repository and object-alternate relationship, then
+  runs the complete legacy audit for each listed standalone clone. The dry run writes no lifecycle journal and returns
+  one review SHA-256. `checkout:legacy-batch-adopt` requires that exact hash, repeats the scan and audits, and refuses the
+  whole batch if any row is blocked. Tests prove one scan per command rather than one per candidate, exact-review
+  invalidation, no candidate deletion or movement, bounded generated-path suggestions, and fail-closed handling of
+  dirty, linked, and inbound alternate-dependent candidates. `checkout:legacy-batch-retire` resumes partial adoption,
+  creates and verifies each all-object archive (including unreachable objects), and enrolls retirement without moving
+  anything in the current boot. Crash tests stop between candidates and resume against the same review. Recognized
+  worktree repositories are terminal dependency-scan nodes, so large declared generated trees are inventoried by the
+  deep audit but never recursively searched for nested repositories. This phase covers only self-contained standalone
+  clones. Alternate-backed chains and old-registry linked worktrees stay blocked and need separate reviewed migration
+  protocols; a successful phase-1 batch must never be reported as cleanup of the whole historical inventory. Request
+  and completion interruption tests prove that one exact batch attempt resumes without allocating another generation,
+  while ambiguous or conflicting attempts remain blocked. The public single-adoption API cannot accept the batch's
+  dependency catalog or lock-held capability. Existing-enrollment checks cover quarantined and terminal v1/v2 legacy
+  layouts without requiring the original source path to remain present.
 - `npm run checkout:legacy-audit -- <slug>` uses the fixed `tmp/codex-checkpoints/<slug>` path derived from the bootstrap
   receipt by default. Every audit and adoption also requires one or more `--dependency-root` values copied from the
   bounded discovery that found the candidate. Passing both an absolute `--path` and its immediate absolute parent
