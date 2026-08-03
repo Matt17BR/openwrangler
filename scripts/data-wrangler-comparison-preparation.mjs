@@ -59,6 +59,9 @@ const MAX_PYTHON_EXECUTABLE_BYTES = 128 * 1024 * 1024;
 const MAX_CACHE_CONTROLLER_BYTES = 4 * 1024 * 1024;
 const MAX_FIXTURE_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_GENERIC_PREPARATION_FILE_BYTES = 512 * 1024 * 1024;
+const MAX_PREPARATION_INTERPRETER_ARGUMENTS = 64;
+const MAX_PREPARATION_INTERPRETER_ARGUMENT_BYTES = 64 * 1024;
+const MAX_PREPARATION_INTERPRETER_TOTAL_ARGUMENT_BYTES = 128 * 1024;
 const REQUIRED_PACKAGES = Object.freeze(["pandas", "polars", "pyarrow", "jupyter_core", "ipykernel"]);
 
 export const DATA_WRANGLER_PREPARATION_FILE_LIMITS = Object.freeze({
@@ -1056,7 +1059,32 @@ export function digestDataWranglerComparisonPythonEnvironment({
 
 export function executeIdentityPinnedPreparationInterpreter(path, args) {
   canonicalAbsolutePath(path, "Comparison preparation interpreter");
-  if (!Array.isArray(args) || args.some((entry) => typeof entry !== "string" || /[\0\r\n]/u.test(entry))) {
+  let argumentBytes = 0;
+  let argumentsInvalid = !Array.isArray(args) || args.length > MAX_PREPARATION_INTERPRETER_ARGUMENTS;
+  if (!argumentsInvalid) {
+    for (let index = 0; index < args.length; index += 1) {
+      const entry = args[index];
+      if (
+        typeof entry !== "string" ||
+        entry.length > MAX_PREPARATION_INTERPRETER_ARGUMENT_BYTES ||
+        /[\0\r]/u.test(entry) ||
+        (entry.includes("\n") && args[index - 1] !== "-c")
+      ) {
+        argumentsInvalid = true;
+        break;
+      }
+      const bytes = Buffer.byteLength(entry, "utf8");
+      argumentBytes += bytes + 1;
+      if (
+        bytes > MAX_PREPARATION_INTERPRETER_ARGUMENT_BYTES ||
+        argumentBytes > MAX_PREPARATION_INTERPRETER_TOTAL_ARGUMENT_BYTES
+      ) {
+        argumentsInvalid = true;
+        break;
+      }
+    }
+  }
+  if (argumentsInvalid) {
     fail("Comparison preparation interpreter arguments are invalid.");
   }
   let descriptor;

@@ -111,6 +111,60 @@ test("the preparation interpreter executes its open descriptor and rejects named
   assert.throws(() => executeIdentityPinnedPreparationInterpreter(replacing, []), /changed while it executed/u);
 });
 
+test("the preparation interpreter accepts only bounded multiline -c source", (t) => {
+  const root = withRoot(t, "ow-preparation-interpreter-arguments-");
+  const interpreter = resolve(root, "interpreter.sh");
+  writeFileSync(interpreter, "#!/bin/sh\nprintf 'accepted\\n'\n", { mode: 0o700 });
+  chmodSync(interpreter, 0o700);
+
+  assert.equal(
+    executeIdentityPinnedPreparationInterpreter(interpreter, ["-I", "-c", "print('first')\nprint('second')"]),
+    "accepted\n"
+  );
+  for (const args of [
+    ["line one\nline two"],
+    ["-c", "print('ok')", "trailing\nargument"],
+    ["-c\n", "print('not source')"],
+    ["option\r"],
+    ["option\0"],
+    ["-c", "print('carriage')\r"],
+    ["-c", "print('nul')\0"]
+  ]) {
+    assert.throws(
+      () => executeIdentityPinnedPreparationInterpreter(interpreter, args),
+      /interpreter arguments are invalid/u
+    );
+  }
+
+  const sparse = [];
+  sparse.length = 1;
+  assert.throws(
+    () => executeIdentityPinnedPreparationInterpreter(interpreter, sparse),
+    /interpreter arguments are invalid/u
+  );
+  assert.throws(
+    () =>
+      executeIdentityPinnedPreparationInterpreter(
+        interpreter,
+        Array.from({ length: 65 }, () => "argument")
+      ),
+    /interpreter arguments are invalid/u
+  );
+  assert.throws(
+    () => executeIdentityPinnedPreparationInterpreter(interpreter, ["x".repeat(64 * 1024 + 1)]),
+    /interpreter arguments are invalid/u
+  );
+  assert.throws(
+    () =>
+      executeIdentityPinnedPreparationInterpreter(interpreter, [
+        "x".repeat(48 * 1024),
+        "y".repeat(48 * 1024),
+        "z".repeat(48 * 1024)
+      ]),
+    /interpreter arguments are invalid/u
+  );
+});
+
 test("spawn-bound revalidation detects a same-inode same-size rewrite with restored mtime", (t) => {
   const root = withRoot(t, "ow-preparation-content-rewrite-");
   const file = resolve(root, "authority.bin");
