@@ -300,6 +300,9 @@ export async function capturePreparedProductWarmups(
     const runRoot = resolve(studyRoot, "warmup-runs", `${product}-${id}`);
     mkdirSync(runRoot, { recursive: true, mode: 0o700 });
     chmodSync(runRoot, 0o700);
+    const bridgeRoot = resolve(runRoot, "bridge");
+    mkdirSync(bridgeRoot, { mode: 0o700 });
+    chmodSync(bridgeRoot, 0o700);
     const runEnvironment = dependencies.createEnvironment(environment, {
       OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
       OPEN_WRANGLER_EDITOR_TEMP_ROOT: runRoot
@@ -326,8 +329,8 @@ export async function capturePreparedProductWarmups(
       name: "warmup.csv"
     });
     const notebookPath = resolve(runRoot, "warmup.ipynb");
-    const requestPath = resolve(runRoot, "request.json");
-    const acknowledgementPath = resolve(runRoot, "acknowledgement.json");
+    const requestPath = resolve(bridgeRoot, "request.json");
+    const acknowledgementPath = resolve(bridgeRoot, "acknowledgement.json");
     const resultPath = resolve(runRoot, "result.json");
     dependencies.writeNotebook(notebookPath, {
       engine: "polars",

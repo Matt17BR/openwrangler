@@ -170,6 +170,13 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
     assert.ok(phases.every((phase) => phase.developmentPaths[0] === "/driver"));
     assert.ok(phases.every((phase) => phase.requiresWorkbenchCdp === true));
     assert.ok(
+      phases.every(
+        (phase) =>
+          phase.comparisonStudyEnvironment.requestPath.endsWith("/bridge/request.json") &&
+          phase.comparisonStudyEnvironment.acknowledgementPath.endsWith("/bridge/acknowledgement.json")
+      )
+    );
+    assert.ok(
       result.provenance.every(
         (entry) => entry.receipt.controlBridge.exchanges.length === DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS.length
       )
