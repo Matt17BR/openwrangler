@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  createDataWranglerComparisonCleanupUnsettledError,
+  dataWranglerComparisonCleanupMayBeUnsettled
+} from "./data-wrangler-comparison-cleanup-safety.mjs";
+import {
   createDataWranglerComparisonDriverProfile,
   installDataWranglerComparisonDriver,
   recoverDataWranglerComparisonDriver,
@@ -36,6 +40,7 @@ import { digestStudyValue } from "./data-wrangler-comparison-study.mjs";
 import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
+  editorProcessTreeMayBeLive,
   editorAcceptanceProgressPath,
   runBoundedEditorCliCommand,
   runEditorAcceptancePhase
@@ -174,23 +179,23 @@ async function runCapturePhase({
   });
   const notebookPath = resolve(trialRoot, "study.ipynb");
   const resultPath = resolve(trialRoot, "result.json");
-  dependencies.writeNotebook(notebookPath, {
-    engine: "polars",
-    format: fixture.format,
-    kind: "warm",
-    fixture: {
-      id: fixture.id,
-      format: fixture.format,
-      rows: fixture.rows,
-      columns: fixture.columns,
-      sha256: fixture.sha256
-    },
-    kernel: { name: kernel.name, displayName: kernel.displayName },
-    sourceReceipt: structuredClone(sourceCopy.copyReceipt)
-  });
   let phase;
   let operationError;
   try {
+    dependencies.writeNotebook(notebookPath, {
+      engine: "polars",
+      format: fixture.format,
+      kind: "warm",
+      fixture: {
+        id: fixture.id,
+        format: fixture.format,
+        rows: fixture.rows,
+        columns: fixture.columns,
+        sha256: fixture.sha256
+      },
+      kernel: { name: kernel.name, displayName: kernel.displayName },
+      sourceReceipt: structuredClone(sourceCopy.copyReceipt)
+    });
     await dependencies.requireWatchHeadroom({ runRoot: trialRoot });
     const editorPhaseOptions = {
       workspace: notebookPath,
@@ -270,6 +275,7 @@ async function runCapturePhase({
   } catch (error) {
     operationError = error;
   }
+  if (operationError !== undefined && editorProcessTreeMayBeLive(operationError)) throw operationError;
   let cleanupError;
   try {
     dependencies.cleanupSourceCopy(sourceCopy);
@@ -277,10 +283,18 @@ async function runCapturePhase({
     cleanupError = error;
   }
   if (operationError !== undefined && cleanupError !== undefined) {
-    throw new AggregateError([operationError, cleanupError], "Public-UI capture and source-copy cleanup both failed.");
+    throw createDataWranglerComparisonCleanupUnsettledError(
+      [operationError, cleanupError],
+      "Public-UI capture and source-copy cleanup both failed."
+    );
   }
   if (operationError !== undefined) throw operationError;
-  if (cleanupError !== undefined) throw cleanupError;
+  if (cleanupError !== undefined) {
+    throw createDataWranglerComparisonCleanupUnsettledError(
+      cleanupError,
+      "Public-UI source-copy cleanup could not be confirmed."
+    );
+  }
   return phase;
 }
 
@@ -369,6 +383,7 @@ export async function capturePreparedDataWranglerPublicUi(
       cloneRoot: resolve(clonesParent, `${plan.kind}-${plan.fixture.format}-${captureId}`)
     });
     let raw;
+    let captureError;
     try {
       const profileEnvironment = dependencies.createEnvironment(environment, {
         OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
@@ -454,9 +469,25 @@ export async function capturePreparedDataWranglerPublicUi(
         phaseReceiptSha256: digestStudyValue(raw),
         phaseReceipt: structuredClone(raw)
       });
-    } finally {
-      dependencies.retireClone(clone);
+    } catch (error) {
+      captureError = error;
     }
+    let cleanupError;
+    if (
+      captureError === undefined ||
+      (!editorProcessTreeMayBeLive(captureError) && !dataWranglerComparisonCleanupMayBeUnsettled(captureError))
+    ) {
+      try {
+        dependencies.retireClone(clone);
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+    if (captureError !== undefined && cleanupError !== undefined) {
+      throw new AggregateError([captureError, cleanupError], "Public-UI capture and clone cleanup both failed.");
+    }
+    if (captureError !== undefined) throw captureError;
+    if (cleanupError !== undefined) throw cleanupError;
   }
   if (capabilities.length !== specification.fixtures.length || controlProfile === undefined) {
     fail("Public-UI preparation did not capture every capability and control receipt.");

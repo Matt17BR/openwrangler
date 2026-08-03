@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 import test from "node:test";
+import { dataWranglerComparisonCleanupMayBeUnsettled } from "./data-wrangler-comparison-cleanup-safety.mjs";
 import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
-import { captureDataWranglerPreparationFile } from "./data-wrangler-comparison-preparation.mjs";
+import { createDataWranglerComparisonSourceCopy } from "./data-wrangler-comparison-source-copy.mjs";
+import {
+  captureDataWranglerPreparationFile,
+  retireDataWranglerComparisonOwnedDirectory
+} from "./data-wrangler-comparison-preparation.mjs";
 import {
   DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS,
   DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL,
-  capturePreparedProductWarmups as capturePreparedProductWarmupsImplementation
+  capturePreparedProductWarmups as capturePreparedProductWarmupsImplementation,
+  runPreparedProductWarmupJourney
 } from "./data-wrangler-comparison-warmup.mjs";
 import { createDataWranglerStudyBridgeController } from "./data-wrangler-study-control-bridge.mjs";
 
@@ -194,6 +200,10 @@ test("watch headroom failure prevents the warm-up controller and editor phase", 
             events.push("watch-headroom");
             throw new Error("warm-up watch headroom unavailable");
           },
+          retireRunRoot(value, label) {
+            events.push("retire-run-root");
+            return retireDataWranglerComparisonOwnedDirectory(value, label);
+          },
           controlWarmup: async () => {
             events.push("controller");
           },
@@ -204,7 +214,7 @@ test("watch headroom failure prevents the warm-up controller and editor phase", 
       ),
       /warm-up watch headroom unavailable/u
     );
-    assert.deepEqual(events, ["watch-headroom"]);
+    assert.deepEqual(events, ["watch-headroom", "retire-run-root"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -226,6 +236,7 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
     const phases = [];
     const localKernelLayouts = [];
     const recovered = [];
+    const retiredRunRoots = [];
     let nextId = 0;
     const result = await capturePreparedProductWarmups(
       {
@@ -261,6 +272,10 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
         },
         createEnvironment: (_environment, values) => values,
         configureTempRoot: () => undefined,
+        retireRunRoot(value, label) {
+          retiredRunRoots.push(value.root);
+          return retireDataWranglerComparisonOwnedDirectory(value, label);
+        },
         createSourceCopy: () => ({
           copyPath: "/private/source.csv",
           copyReceipt: {
@@ -300,6 +315,9 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
               : { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }
           );
         },
+        remove() {
+          assert.fail("A warm-up run root must be retired only with its identity-owned clone.");
+        },
         captureTree: () => ({ treeSha256: digest, fileCount: 1, totalBytes: 1 })
       }
     );
@@ -328,7 +346,459 @@ test("prepared warm-up drives the real request/acknowledgement controller for bo
       )
     );
     assert.equal(recovered.length, 5);
+    assert.equal(retiredRunRoots.length, 2);
+    assert.ok(retiredRunRoots.every((path) => !existsSync(path)));
     assert.ok(result.provenance.every((entry) => entry.receipt.untimed === true));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a successful warm-up attempts source-copy cleanup only once when cleanup throws", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-cleanup-once-"));
+  try {
+    chmodSync(root, 0o700);
+    const editor = { version: "1.109.2" };
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    const sourceReceipt = {
+      sha256: digest,
+      filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+    };
+    const cleanupError = new Error("source cleanup failed once");
+    let cleanupCalls = 0;
+    await assert.rejects(
+      runPreparedProductWarmupJourney(
+        {
+          product: "open-wrangler",
+          runId: "10000000-0000-4000-8000-000000000000",
+          runRoot: resolve(root, "clone", "public-warmup"),
+          profile: { userData: "/user", extensions: "/extensions", sandboxArgs: [] },
+          editor,
+          pythonPath: "/python",
+          kernel,
+          fixture,
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix",
+          expectedDriver: {},
+          expectedInventory: [],
+          developmentPaths: []
+        },
+        {},
+        {
+          createEnvironment: (_environment, values) => values,
+          configureTempRoot() {},
+          materializeKernel({ runRoot }) {
+            const jupyterRoot = privateDirectory(resolve(runRoot, "jupyter"));
+            return {
+              jupyterEnvironment: {
+                dataDir: privateDirectory(resolve(jupyterRoot, "data")),
+                runtimeDir: privateDirectory(resolve(jupyterRoot, "runtime")),
+                configDir: privateDirectory(resolve(jupyterRoot, "config")),
+                path: privateDirectory(resolve(jupyterRoot, "path"))
+              }
+            };
+          },
+          recoverDriver() {},
+          readInventory: async () => [],
+          requireWatchHeadroom: async () => ({ passed: true }),
+          createSourceCopy: () => ({ copyPath: "/private/source.csv", copyReceipt: sourceReceipt }),
+          cleanupSourceCopy() {
+            cleanupCalls += 1;
+            throw cleanupError;
+          },
+          writeNotebook() {},
+          runPhase: async (options) => {
+            const exchanges = await runRealWarmupController(options);
+            return receipt("open-wrangler", editor, fixture, kernel, sourceReceipt, exchanges);
+          }
+        }
+      ),
+      (error) =>
+        error instanceof AggregateError &&
+        dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+        error.errors.length === 1 &&
+        error.errors[0] === cleanupError
+    );
+    assert.equal(cleanupCalls, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a safe warm-up failure attempts run-root retirement only once when retirement throws", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-root-retire-once-"));
+  try {
+    chmodSync(root, 0o700);
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    const journeyError = new Error("warm-up headroom failed safely");
+    const retirementError = new Error("run-root retirement failed once");
+    let retirementCalls = 0;
+    await assert.rejects(
+      runPreparedProductWarmupJourney(
+        {
+          product: "open-wrangler",
+          runId: "15000000-0000-4000-8000-000000000000",
+          runRoot: resolve(root, "clone", "public-warmup"),
+          profile: { userData: "/user", extensions: "/extensions", sandboxArgs: [] },
+          editor: { version: "1.109.2" },
+          pythonPath: "/python",
+          kernel,
+          fixture,
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix",
+          expectedDriver: {},
+          expectedInventory: [],
+          developmentPaths: []
+        },
+        {},
+        {
+          createEnvironment: () => ({}),
+          configureTempRoot() {},
+          materializeKernel: () => ({ jupyterEnvironment: kernel.jupyterEnvironment }),
+          recoverDriver() {},
+          readInventory: async () => [],
+          requireWatchHeadroom: async () => {
+            throw journeyError;
+          },
+          retireRunRoot() {
+            retirementCalls += 1;
+            throw retirementError;
+          }
+        }
+      ),
+      (error) =>
+        error instanceof AggregateError &&
+        dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+        error.errors.length === 2 &&
+        error.errors[0] === journeyError &&
+        error.errors[1] === retirementError
+    );
+    assert.equal(retirementCalls, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("source-copy cleanup uncertainty prevents the containing warm-up clone from being retired", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-source-ancestor-"));
+  try {
+    chmodSync(root, 0o700);
+    const editor = { version: "1.109.2" };
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    const sourceReceipt = {
+      sha256: digest,
+      filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+    };
+    const cleanupError = new Error("source-copy identity could not be confirmed");
+    let cloneRetirementCalls = 0;
+    let runRootRetirementCalls = 0;
+    await assert.rejects(
+      capturePreparedProductWarmups(
+        {
+          specification: {
+            candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            fixtures: [fixture],
+            provenance: { comparisonDriver: {} }
+          },
+          templates: [
+            { product: "open-wrangler", kind: "configured-only", root: resolve(root, "configured"), sandboxArgs: [] }
+          ],
+          templateTrees: new Map([["open-wrangler:configured-only", digest]]),
+          studyRoot: root,
+          editor,
+          pythonPath: "/python",
+          kernel,
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix"
+        },
+        {},
+        {
+          id: () => "16000000-0000-4000-8000-000000000000",
+          recoverDriver() {},
+          cloneTemplate: (_template, { cloneRoot }) => ({
+            root: privateDirectory(cloneRoot),
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: []
+          }),
+          retireClone() {
+            cloneRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          retireRunRoot() {
+            runRootRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          createEnvironment: (_environment, values) => values,
+          configureTempRoot() {},
+          materializeKernel({ runRoot }) {
+            const jupyterRoot = privateDirectory(resolve(runRoot, "jupyter"));
+            return {
+              jupyterEnvironment: {
+                dataDir: privateDirectory(resolve(jupyterRoot, "data")),
+                runtimeDir: privateDirectory(resolve(jupyterRoot, "runtime")),
+                configDir: privateDirectory(resolve(jupyterRoot, "config")),
+                path: privateDirectory(resolve(jupyterRoot, "path"))
+              }
+            };
+          },
+          readInventory: async () =>
+            createDataWranglerComparisonTemplateInventory({
+              extensionId: "Matt17BR.openwrangler",
+              version: "1.2.1"
+            }),
+          createSourceCopy: () => ({ copyPath: "/private/source.csv", copyReceipt: sourceReceipt }),
+          cleanupSourceCopy() {
+            throw cleanupError;
+          },
+          writeNotebook() {},
+          runPhase: async (options) => {
+            const exchanges = await runRealWarmupController(options);
+            return receipt("open-wrangler", editor, fixture, kernel, sourceReceipt, exchanges);
+          }
+        }
+      ),
+      (error) =>
+        error instanceof AggregateError &&
+        dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+        error.errors[0] === cleanupError
+    );
+    assert.equal(runRootRetirementCalls, 0);
+    assert.equal(cloneRetirementCalls, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("source-copy creation rollback uncertainty preserves the warm-up run root and clone", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-create-ancestor-"));
+  try {
+    chmodSync(root, 0o700);
+    const fixturePath = resolve(root, "fixture.csv");
+    writeFileSync(fixturePath, "c00\n1\n", { flag: "wx", mode: 0o600 });
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    let cloneRetirementCalls = 0;
+    let runRootRetirementCalls = 0;
+    let replacementPath;
+    await assert.rejects(
+      capturePreparedProductWarmups(
+        {
+          specification: {
+            candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            fixtures: [fixture],
+            provenance: { comparisonDriver: {} }
+          },
+          templates: [
+            { product: "open-wrangler", kind: "configured-only", root: resolve(root, "configured"), sandboxArgs: [] }
+          ],
+          templateTrees: new Map([["open-wrangler:configured-only", digest]]),
+          studyRoot: root,
+          editor: { version: "1.109.2" },
+          pythonPath: "/python",
+          kernel,
+          fixturePath,
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix"
+        },
+        {},
+        {
+          id: () => "16500000-0000-4000-8000-000000000000",
+          recoverDriver() {},
+          cloneTemplate: (_template, { cloneRoot }) => ({
+            root: privateDirectory(cloneRoot),
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: []
+          }),
+          retireClone() {
+            cloneRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          retireRunRoot() {
+            runRootRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          createEnvironment: () => ({}),
+          configureTempRoot() {},
+          materializeKernel: () => ({ jupyterEnvironment: kernel.jupyterEnvironment }),
+          readInventory: async () =>
+            createDataWranglerComparisonTemplateInventory({
+              extensionId: "Matt17BR.openwrangler",
+              version: "1.2.1"
+            }),
+          createSourceCopy(options) {
+            return createDataWranglerComparisonSourceCopy(options, {
+              faultInjector(checkpoint) {
+                if (checkpoint === "after-copy-created") throw new Error("injected source-copy creation failure");
+                assert.equal(checkpoint, "before-rollback-unlink");
+                replacementPath = resolve(options.privateRoot, options.name);
+                unlinkSync(replacementPath);
+                writeFileSync(replacementPath, "foreign replacement\n", { flag: "wx", mode: 0o600 });
+                throw new Error("injected source-copy rollback failure");
+              }
+            });
+          }
+        }
+      ),
+      (error) => dataWranglerComparisonCleanupMayBeUnsettled(error)
+    );
+    assert.equal(runRootRetirementCalls, 0);
+    assert.equal(cloneRetirementCalls, 0);
+    assert.equal(existsSync(replacementPath), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("run-root cleanup uncertainty prevents the containing warm-up clone from being retired", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-root-ancestor-"));
+  try {
+    chmodSync(root, 0o700);
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    const journeyError = new Error("warm-up setup failed safely");
+    const retirementError = new Error("run-root identity could not be confirmed");
+    let cloneRetirementCalls = 0;
+    let runRootRetirementCalls = 0;
+    await assert.rejects(
+      capturePreparedProductWarmups(
+        {
+          specification: {
+            candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            fixtures: [fixture],
+            provenance: { comparisonDriver: {} }
+          },
+          templates: [
+            { product: "open-wrangler", kind: "configured-only", root: resolve(root, "configured"), sandboxArgs: [] }
+          ],
+          templateTrees: new Map([["open-wrangler:configured-only", digest]]),
+          studyRoot: root,
+          editor: { version: "1.109.2" },
+          pythonPath: "/python",
+          kernel,
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix"
+        },
+        {},
+        {
+          id: () => "17000000-0000-4000-8000-000000000000",
+          recoverDriver() {},
+          cloneTemplate: (_template, { cloneRoot }) => ({
+            root: privateDirectory(cloneRoot),
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: []
+          }),
+          retireClone() {
+            cloneRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          retireRunRoot() {
+            runRootRetirementCalls += 1;
+            throw retirementError;
+          },
+          createEnvironment: () => ({}),
+          configureTempRoot() {},
+          materializeKernel: () => ({ jupyterEnvironment: kernel.jupyterEnvironment }),
+          readInventory: async () =>
+            createDataWranglerComparisonTemplateInventory({
+              extensionId: "Matt17BR.openwrangler",
+              version: "1.2.1"
+            }),
+          requireWatchHeadroom: async () => {
+            throw journeyError;
+          }
+        }
+      ),
+      (error) =>
+        error instanceof AggregateError &&
+        dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+        error.errors.length === 2 &&
+        error.errors[0] === journeyError &&
+        error.errors[1] === retirementError
+    );
+    assert.equal(runRootRetirementCalls, 1);
+    assert.equal(cloneRetirementCalls, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed warm-up attempts clone retirement only once when retirement throws", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-retire-once-"));
+  try {
+    chmodSync(root, 0o700);
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    const journeyError = new Error("warm-up setup failed");
+    const retirementError = new Error("clone retirement failed once");
+    let retirementCalls = 0;
+    await assert.rejects(
+      capturePreparedProductWarmups(
+        {
+          specification: {
+            candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            fixtures: [fixture],
+            provenance: { comparisonDriver: {} }
+          },
+          templates: [
+            { product: "open-wrangler", kind: "configured-only", root: resolve(root, "configured"), sandboxArgs: [] }
+          ],
+          templateTrees: new Map([["open-wrangler:configured-only", digest]]),
+          studyRoot: root,
+          editor: { version: "1.109.2" },
+          pythonPath: "/python",
+          kernel,
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix"
+        },
+        {},
+        {
+          id: () => "20000000-0000-4000-8000-000000000000",
+          recoverDriver() {},
+          cloneTemplate: (_template, { cloneRoot }) => ({
+            root: privateDirectory(cloneRoot),
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: []
+          }),
+          createEnvironment: () => ({}),
+          configureTempRoot() {},
+          materializeKernel: () => ({ jupyterEnvironment: kernel.jupyterEnvironment }),
+          readInventory: async () =>
+            createDataWranglerComparisonTemplateInventory({
+              extensionId: "Matt17BR.openwrangler",
+              version: "1.2.1"
+            }),
+          requireWatchHeadroom: async () => {
+            throw journeyError;
+          },
+          retireClone() {
+            retirementCalls += 1;
+            throw retirementError;
+          }
+        }
+      ),
+      (error) =>
+        error instanceof AggregateError &&
+        error.errors.length === 2 &&
+        error.errors[0] === journeyError &&
+        error.errors[1] === retirementError
+    );
+    assert.equal(retirementCalls, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -504,6 +974,7 @@ test("an ownership-uncertain warm-up does not inspect its source copy or retire 
     const phaseError = new Error("editor ownership is uncertain");
     phaseError.details = { treeVerifiedStopped: false };
     let sourceCleanupCalls = 0;
+    let runRootRetirementCalls = 0;
     let cloneRetirementCalls = 0;
     await assert.rejects(
       capturePreparedProductWarmups(
@@ -552,6 +1023,10 @@ test("an ownership-uncertain warm-up does not inspect its source copy or retire 
           cleanupSourceCopy: () => {
             sourceCleanupCalls += 1;
           },
+          retireRunRoot: () => {
+            runRootRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
           writeNotebook: () => undefined,
           readInventory: async () =>
             createDataWranglerComparisonTemplateInventory({
@@ -576,6 +1051,7 @@ test("an ownership-uncertain warm-up does not inspect its source copy or retire 
       (error) => error === phaseError
     );
     assert.equal(sourceCleanupCalls, 0);
+    assert.equal(runRootRetirementCalls, 0);
     assert.equal(cloneRetirementCalls, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });

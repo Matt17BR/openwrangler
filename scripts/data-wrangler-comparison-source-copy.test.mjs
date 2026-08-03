@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { dataWranglerComparisonCleanupMayBeUnsettled } from "./data-wrangler-comparison-cleanup-safety.mjs";
 import {
   DATA_WRANGLER_COMPARISON_SOURCE_COPY_PROTOCOL,
   assertDataWranglerComparisonSourceCopy,
@@ -146,6 +147,43 @@ linuxTest("exclusive no-follow creation preserves existing files and symlink ref
     );
     assert.equal(readFileSync(referent, "utf8"), "referent\n");
     assert.equal(lstatSync(current.copy).isSymbolicLink(), true);
+  } finally {
+    removeFixture(current.root);
+  }
+});
+
+linuxTest("an unsettled creation rollback is marked and leaves a replacement untouched", () => {
+  const current = fixture();
+  try {
+    const operationError = new Error("injected source-copy creation failure");
+    const rollbackError = new Error("injected source-copy rollback boundary failure");
+    const replacement = Buffer.from("foreign replacement\n", "utf8");
+    assert.throws(
+      () =>
+        createDataWranglerComparisonSourceCopy(
+          {
+            canonicalPath: current.source,
+            privateRoot: current.privateRoot,
+            name: "source.csv"
+          },
+          {
+            faultInjector(checkpoint) {
+              if (checkpoint === "after-copy-created") throw operationError;
+              assert.equal(checkpoint, "before-rollback-unlink");
+              unlinkSync(current.copy);
+              writeFileSync(current.copy, replacement, { flag: "wx", mode: 0o600 });
+              throw rollbackError;
+            }
+          }
+        ),
+      (error) =>
+        error instanceof AggregateError &&
+        dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+        error.errors.includes(operationError) &&
+        error.errors.includes(rollbackError)
+    );
+    assert.deepEqual(readFileSync(current.copy), replacement);
+    assert.deepEqual(readFileSync(current.source), current.sourceBytes);
   } finally {
     removeFixture(current.root);
   }

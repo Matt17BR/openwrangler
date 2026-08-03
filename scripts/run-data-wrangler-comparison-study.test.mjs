@@ -597,7 +597,7 @@ test("durable specification and preparation publications feed the production dia
           path: path("jupyter/path")
         }
       },
-      templates: [{}, {}, {}, {}],
+      templates: [{ inventory: [] }, { inventory: [] }, { inventory: [] }, { inventory: [] }],
       publicUiCaptures: [{}, {}, {}],
       createdAtUtc: "2026-08-02T10:00:00.000Z"
     };

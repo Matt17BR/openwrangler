@@ -13,6 +13,7 @@ import {
   writeSync
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { createDataWranglerComparisonCleanupUnsettledError } from "./data-wrangler-comparison-cleanup-safety.mjs";
 
 export const DATA_WRANGLER_COMPARISON_SOURCE_COPY_PROTOCOL = "openwrangler-data-wrangler-comparison-source-copy-v1";
 
@@ -306,12 +307,13 @@ function pathIsInside(parent, candidate) {
  * The returned object is an opaque in-process cleanup lease. Durable study
  * evidence should retain only its canonicalReceipt and copyReceipt fields.
  */
-export function createDataWranglerComparisonSourceCopy({
-  canonicalPath,
-  privateRoot,
-  name,
-  maximumBytes = MAXIMUM_SOURCE_BYTES
-}) {
+export function createDataWranglerComparisonSourceCopy(
+  { canonicalPath, privateRoot, name, maximumBytes = MAXIMUM_SOURCE_BYTES },
+  { faultInjector } = {}
+) {
+  if (faultInjector !== undefined && typeof faultInjector !== "function") {
+    fail("The comparison source-copy fault injector must be a function.");
+  }
   const sourcePath = absolutePath(canonicalPath, "The canonical comparison source");
   const rootPath = absolutePath(privateRoot, "The comparison source-copy root");
   const targetName = copyName(name);
@@ -455,6 +457,7 @@ export function createDataWranglerComparisonSourceCopy({
     ) {
       fail("The comparison source-copy root changed while the copy was created.");
     }
+    faultInjector?.("after-copy-created");
   } catch (error) {
     operationError = error;
   } finally {
@@ -499,6 +502,7 @@ export function createDataWranglerComparisonSourceCopy({
         ) {
           fail("An incomplete comparison source copy could not be identified safely for cleanup.");
         }
+        faultInjector?.("before-rollback-unlink");
         unlinkSync(anchoredCopyPath(rootDescriptor, targetName));
       } catch (error) {
         cleanupErrors.push(error);
@@ -511,10 +515,14 @@ export function createDataWranglerComparisonSourceCopy({
         cleanupErrors.push(error);
       }
     }
-    throw new AggregateError(
-      operationError === undefined ? cleanupErrors : [operationError, ...cleanupErrors],
-      "Could not create the private comparison source copy."
-    );
+    const failures = operationError === undefined ? cleanupErrors : [operationError, ...cleanupErrors];
+    if (cleanupErrors.length > 0) {
+      throw createDataWranglerComparisonCleanupUnsettledError(
+        failures,
+        "Could not create the private comparison source copy or confirm its rollback."
+      );
+    }
+    throw new AggregateError(failures, "Could not create the private comparison source copy.");
   }
 
   const handle = Object.freeze({

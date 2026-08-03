@@ -39,6 +39,7 @@ import {
 import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
+  editorProcessTreeMayBeLive,
   runBoundedEditorCliCommand
 } from "./editor-acceptance.mjs";
 
@@ -351,6 +352,10 @@ function captureOwnedDirectoryReceipt(root, label) {
   });
 }
 
+export function captureDataWranglerComparisonOwnedDirectory(root, label) {
+  return captureOwnedDirectoryReceipt(root, label);
+}
+
 function revalidateOwnedDirectoryReceipt(receipt, label) {
   exactKeys(receipt, ["root", "parent", "rootIdentity", "parentIdentity"], `${label} identity receipt`);
   canonicalAbsolutePath(receipt.root, label);
@@ -506,6 +511,10 @@ function removeOwnedDirectoryReceipt(
   if (operationError !== undefined) throw operationError;
   if (closeErrors.length > 0) throw new AggregateError(closeErrors, `${label} cleanup lease close failed.`);
   return result;
+}
+
+export function retireDataWranglerComparisonOwnedDirectory(receipt, label, overrides = {}) {
+  return removeOwnedDirectoryReceipt(receipt, label, overrides);
 }
 
 function treeRelativePath(root, path) {
@@ -812,7 +821,8 @@ export async function queryDataWranglerTemplateInventory(
     createScratch = mkdtempSync,
     copyTree = copyOpaqueSafeProfileTree,
     installMarketplace = installOpaqueDataWranglerMarketplaceExtension,
-    runCli = runBoundedEditorCliCommand
+    runCli = runBoundedEditorCliCommand,
+    retireScratch = removeOwnedDirectoryReceipt
   } = {}
 ) {
   const scratch = createScratch(resolve(dirname(template.root), ".inventory-"));
@@ -858,9 +868,10 @@ export async function queryDataWranglerTemplateInventory(
   } catch (error) {
     operationError = error;
   }
+  if (operationError !== undefined && editorProcessTreeMayBeLive(operationError)) throw operationError;
   let cleanupError;
   try {
-    removeOwnedDirectoryReceipt(scratchReceipt, "Comparison inventory scratch");
+    retireScratch(scratchReceipt, "Comparison inventory scratch");
   } catch (error) {
     cleanupError = error;
   }
@@ -1419,20 +1430,40 @@ export function createDataWranglerConfiguredTemplateCapture(studyRoot, overrides
   });
 }
 
-export function captureOpaqueSafeDataWranglerProfileTemplate(sourceRoot, targetRoot, label, extensionInventory = []) {
-  const sourceBefore = captureDataWranglerProfileTree(sourceRoot, `${label} source`, extensionInventory);
-  const ownedTarget = copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label, "", extensionInventory);
-  const sourceAfter = captureDataWranglerProfileTree(sourceRoot, `${label} source`, extensionInventory);
-  const target = captureDataWranglerProfileTree(targetRoot, label, extensionInventory);
-  if (
-    sourceBefore.treeSha256 !== sourceAfter.treeSha256 ||
-    sourceBefore.treeSha256 !== target.treeSha256 ||
-    !sameDirectoryIdentity(ownedTarget.rootIdentity, target.rootIdentity)
-  ) {
-    removeOwnedDirectoryReceipt(ownedTarget, label);
-    fail(`${label} did not preserve the opaque-safe profile state.`);
+export function captureOpaqueSafeDataWranglerProfileTemplate(
+  sourceRoot,
+  targetRoot,
+  label,
+  extensionInventory = [],
+  overrides = {}
+) {
+  const dependencies = {
+    captureTree: captureDataWranglerProfileTree,
+    copyTree: copyOpaqueSafeProfileTree,
+    retire: removeOwnedDirectoryReceipt,
+    ...overrides
+  };
+  const sourceBefore = dependencies.captureTree(sourceRoot, `${label} source`, extensionInventory);
+  const ownedTarget = dependencies.copyTree(sourceRoot, targetRoot, label, "", extensionInventory);
+  try {
+    const sourceAfter = dependencies.captureTree(sourceRoot, `${label} source`, extensionInventory);
+    const target = dependencies.captureTree(targetRoot, label, extensionInventory);
+    if (
+      sourceBefore.treeSha256 !== sourceAfter.treeSha256 ||
+      sourceBefore.treeSha256 !== target.treeSha256 ||
+      !sameDirectoryIdentity(ownedTarget.rootIdentity, target.rootIdentity)
+    ) {
+      fail(`${label} did not preserve the opaque-safe profile state.`);
+    }
+    return target;
+  } catch (operationError) {
+    try {
+      dependencies.retire(ownedTarget, label);
+    } catch (cleanupError) {
+      throw new AggregateError([operationError, cleanupError], `${label} validation and cleanup both failed.`);
+    }
+    throw operationError;
   }
-  return target;
 }
 
 export function cloneDataWranglerComparisonTemplate(receipt, { product, kind, cloneRoot }) {
@@ -1442,7 +1473,13 @@ export function cloneDataWranglerComparisonTemplate(receipt, { product, kind, cl
   return cloneDataWranglerCapturedTemplate(template, { cloneRoot });
 }
 
-export function cloneDataWranglerCapturedTemplate(template, { cloneRoot }) {
+export function cloneDataWranglerCapturedTemplate(template, { cloneRoot }, overrides = {}) {
+  const dependencies = {
+    captureTree: captureDataWranglerProfileTree,
+    copyTree: copyOpaqueSafeProfileTree,
+    retire: removeOwnedDirectoryReceipt,
+    ...overrides
+  };
   exactKeys(
     template,
     ["product", "kind", "root", "sandboxArgs", "treeSha256", "inventory"],
@@ -1460,38 +1497,49 @@ export function cloneDataWranglerCapturedTemplate(template, { cloneRoot }) {
   if (lstatSync(cloneRoot, { bigint: true, throwIfNoEntry: false }) !== undefined)
     fail("Comparison profile clone target already exists.");
   const extensionInventory = template.inventory;
-  const before = captureDataWranglerProfileTree(template.root, "Comparison profile template", extensionInventory);
+  const before = dependencies.captureTree(template.root, "Comparison profile template", extensionInventory);
   if (before.treeSha256 !== template.treeSha256) fail("Comparison profile template changed before cloning.");
-  const ownedClone = copyOpaqueSafeProfileTree(
+  const ownedClone = dependencies.copyTree(
     template.root,
     cloneRoot,
     "Comparison profile clone",
     "",
     extensionInventory
   );
-  const clone = captureDataWranglerProfileTree(cloneRoot, "Comparison profile clone", extensionInventory);
-  const after = captureDataWranglerProfileTree(template.root, "Comparison profile template", extensionInventory);
-  if (
-    clone.treeSha256 !== template.treeSha256 ||
-    after.treeSha256 !== before.treeSha256 ||
-    !sameDirectoryIdentity(after.rootIdentity, before.rootIdentity)
-  ) {
-    removeOwnedDirectoryReceipt(ownedClone, "Comparison profile clone");
-    fail("Comparison profile clone does not match its template.");
+  try {
+    const clone = dependencies.captureTree(cloneRoot, "Comparison profile clone", extensionInventory);
+    const after = dependencies.captureTree(template.root, "Comparison profile template", extensionInventory);
+    if (
+      clone.treeSha256 !== template.treeSha256 ||
+      after.treeSha256 !== before.treeSha256 ||
+      !sameDirectoryIdentity(after.rootIdentity, before.rootIdentity)
+    ) {
+      fail("Comparison profile clone does not match its template.");
+    }
+    return Object.freeze({
+      product: template.product,
+      kind: template.kind,
+      root: cloneRoot,
+      userData: resolve(cloneRoot, "user"),
+      extensions: resolve(cloneRoot, "extensions"),
+      sandboxArgs: template.sandboxArgs,
+      templateTreeSha256: template.treeSha256,
+      cloneTreeSha256: clone.treeSha256,
+      rootIdentity: ownedClone.rootIdentity,
+      parent: ownedClone.parent,
+      parentIdentity: ownedClone.parentIdentity
+    });
+  } catch (operationError) {
+    try {
+      dependencies.retire(ownedClone, "Comparison profile clone");
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [operationError, cleanupError],
+        "Comparison profile clone validation and cleanup both failed."
+      );
+    }
+    throw operationError;
   }
-  return Object.freeze({
-    product: template.product,
-    kind: template.kind,
-    root: cloneRoot,
-    userData: resolve(cloneRoot, "user"),
-    extensions: resolve(cloneRoot, "extensions"),
-    sandboxArgs: template.sandboxArgs,
-    templateTreeSha256: template.treeSha256,
-    cloneTreeSha256: clone.treeSha256,
-    rootIdentity: ownedClone.rootIdentity,
-    parent: ownedClone.parent,
-    parentIdentity: ownedClone.parentIdentity
-  });
 }
 
 export function retireDataWranglerComparisonTemplateClone(clone, cleanupDependencies = {}) {

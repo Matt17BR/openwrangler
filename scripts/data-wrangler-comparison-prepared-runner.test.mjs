@@ -8,6 +8,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,10 +16,18 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import {
+  createDataWranglerComparisonCleanupUnsettledError,
+  dataWranglerComparisonCleanupMayBeUnsettled
+} from "./data-wrangler-comparison-cleanup-safety.mjs";
+import { createDataWranglerComparisonSourceCopy } from "./data-wrangler-comparison-source-copy.mjs";
+import {
   DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL,
+  captureOpaqueSafeDataWranglerProfileTemplate,
   captureDataWranglerProfileTree,
+  cloneDataWranglerCapturedTemplate,
   cloneDataWranglerComparisonTemplate,
   queryDataWranglerTemplateInventory,
+  retireDataWranglerComparisonOwnedDirectory,
   retireDataWranglerComparisonTemplateClone
 } from "./data-wrangler-comparison-preparation.mjs";
 import { capturePreparedDataWranglerPublicUi as capturePreparedDataWranglerPublicUiImplementation } from "./data-wrangler-comparison-public-capture.mjs";
@@ -75,6 +84,105 @@ function capturePreparedDataWranglerPublicUi(input, environment, overrides = {})
 function privateDirectory(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   return path;
+}
+
+function publicCaptureFailureHarness(root) {
+  const editor = { version: "1.130.0" };
+  const fixtures = [
+    {
+      id: "csv-100k-50",
+      format: "csv",
+      rows: 100_000,
+      columns: 50,
+      sha256: "b".repeat(64),
+      schema: [{ name: "c00", dtype: "int64" }],
+      sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+    },
+    {
+      id: "parquet-1m-20",
+      format: "parquet",
+      rows: 1_000_000,
+      columns: 20,
+      sha256: "c".repeat(64),
+      schema: [{ name: "c00", dtype: "int64" }],
+      sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+    }
+  ];
+  const templateRoot = privateDirectory(resolve(root, "template"));
+  privateDirectory(resolve(templateRoot, "user"));
+  privateDirectory(resolve(templateRoot, "extensions"));
+  const input = {
+    specification: {
+      baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+      editor: {
+        id: "Microsoft.VisualStudioCode",
+        version: editor.version,
+        sha256: "a".repeat(64),
+        uiLocale: "en"
+      },
+      fixtures,
+      provenance: {
+        commonExtensions: PUBLIC_UI_BASE_EXTENSION_INVENTORY,
+        comparisonDriver: {}
+      }
+    },
+    templates: [
+      {
+        product: "data-wrangler",
+        kind: "configured-only",
+        root: templateRoot,
+        editor,
+        sandboxArgs: []
+      }
+    ],
+    templateTrees: new Map([["data-wrangler:configured-only", "d".repeat(64)]]),
+    studyRoot: root,
+    editor,
+    pythonPath: resolve(root, "python"),
+    kernel: {
+      name: "dataframe-comparison-study-test",
+      displayName: "Study kernel",
+      jupyterEnvironment: {}
+    },
+    fixturePaths: { csv: resolve(root, "fixture.csv"), parquet: resolve(root, "fixture.parquet") },
+    driverDirectory: resolve(root, "driver"),
+    driverVsixPath: resolve(root, "driver.vsix")
+  };
+  const state = { cloneRetirementCalls: 0, sourceCleanupCalls: 0 };
+  const dependencies = {
+    id: () => "13111111-1111-4111-8111-111111111111",
+    recoverDriver: () => ({}),
+    cloneTemplate(_template, { cloneRoot }) {
+      return {
+        root: privateDirectory(cloneRoot),
+        userData: privateDirectory(resolve(cloneRoot, "user")),
+        extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+        sandboxArgs: []
+      };
+    },
+    async installOpaqueExtension() {},
+    retireClone: () => {
+      state.cloneRetirementCalls += 1;
+      return { status: "retired", treeEmpty: true };
+    },
+    createEnvironment: () => ({}),
+    configureTempRoot: () => undefined,
+    createProfile: (value) => value,
+    materializeKernel: () => ({ jupyterEnvironment: {} }),
+    createSourceCopy: () => ({
+      copyPath: resolve(root, "source-copy"),
+      copyReceipt: {
+        sha256: fixtures[0].sha256,
+        filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+      }
+    }),
+    cleanupSourceCopy: () => {
+      state.sourceCleanupCalls += 1;
+    },
+    writeNotebook: () => undefined,
+    runNeutralPhase: async () => assert.fail("failure harness reached the public editor action")
+  };
+  return { dependencies, fixtures, input, state };
 }
 
 function writeProfileSettings(root, contents) {
@@ -269,6 +377,71 @@ test("profile-tree receipts reject links and detect a changed template before cl
         }),
       /changed before cloning/u
     );
+  });
+});
+
+test("template capture retires its owned target when post-copy validation fails", async () => {
+  await withDirectory((root) => {
+    const sourceRoot = privateDirectory(resolve(root, "source"));
+    privateDirectory(resolve(sourceRoot, "user"));
+    privateDirectory(resolve(sourceRoot, "extensions"));
+    writeProfileSettings(sourceRoot, "{}\n");
+    const targetRoot = resolve(root, "captured");
+    const validationError = new Error("post-copy source validation failed");
+    let captureCalls = 0;
+    assert.throws(
+      () =>
+        captureOpaqueSafeDataWranglerProfileTemplate(sourceRoot, targetRoot, "Injected template capture", [], {
+          captureTree(...args) {
+            captureCalls += 1;
+            if (captureCalls === 2) throw validationError;
+            return captureDataWranglerProfileTree(...args);
+          }
+        }),
+      (error) => error === validationError
+    );
+    assert.equal(captureCalls, 2);
+    assert.equal(existsSync(targetRoot), false);
+    assert.equal(existsSync(resolve(sourceRoot, "user", "User", "settings.json")), true);
+  });
+});
+
+test("template cloning retires its owned clone when post-copy validation fails", async () => {
+  await withDirectory((root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    writeProfileSettings(templateRoot, "{}\n");
+    const tree = captureDataWranglerProfileTree(templateRoot);
+    const template = {
+      product: "open-wrangler",
+      kind: "configured-only",
+      root: templateRoot,
+      sandboxArgs: [],
+      inventory: [],
+      ...tree
+    };
+    const cloneRoot = resolve(root, "clone");
+    const validationError = new Error("post-copy clone validation failed");
+    let captureCalls = 0;
+    assert.throws(
+      () =>
+        cloneDataWranglerCapturedTemplate(
+          template,
+          { cloneRoot },
+          {
+            captureTree(...args) {
+              captureCalls += 1;
+              if (captureCalls === 2) throw validationError;
+              return captureDataWranglerProfileTree(...args);
+            }
+          }
+        ),
+      (error) => error === validationError
+    );
+    assert.equal(captureCalls, 2);
+    assert.equal(existsSync(cloneRoot), false);
+    assert.equal(existsSync(resolve(templateRoot, "user", "User", "settings.json")), true);
   });
 });
 
@@ -554,6 +727,46 @@ test("inventory scratch cleanup refuses a replaced path and preserves both trees
   });
 });
 
+test("an ownership-uncertain inventory query leaves its scratch profile untouched", async () => {
+  await withDirectory(async (root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    writeProfileSettings(templateRoot, "{}\n");
+    const phaseError = new Error("inventory editor ownership is uncertain");
+    phaseError.details = { treeVerifiedStopped: false };
+    const nestedError = new AggregateError([phaseError], "inventory command failed");
+    let scratchRoot;
+    let retirementCalls = 0;
+    await assert.rejects(
+      queryDataWranglerTemplateInventory(
+        {
+          product: "open-wrangler",
+          kind: "configured-only",
+          root: templateRoot,
+          sandboxArgs: [],
+          inventory: []
+        },
+        { cli: "/editor/code" },
+        {},
+        {
+          async runCli({ args }) {
+            const profileRoot = resolve(args[args.indexOf("--user-data-dir") + 1], "..");
+            scratchRoot = resolve(profileRoot, "..");
+            throw nestedError;
+          },
+          retireScratch() {
+            retirementCalls += 1;
+          }
+        }
+      ),
+      (error) => error === nestedError
+    );
+    assert.equal(retirementCalls, 0);
+    assert.equal(existsSync(resolve(scratchRoot, "profile", "user", "User", "settings.json")), true);
+  });
+});
+
 test("Data Wrangler inventory is rebuilt from its pinned public Marketplace reference", async () => {
   await withDirectory(async (root) => {
     const templateRoot = privateDirectory(resolve(root, "template"));
@@ -611,6 +824,9 @@ test("watch headroom failure prevents public capture actions and editor phases",
     privateDirectory(resolve(templateRoot, "user"));
     privateDirectory(resolve(templateRoot, "extensions"));
     const events = [];
+    const captureError = new Error("public capture watch headroom unavailable");
+    const retirementError = new Error("public capture clone retirement failed");
+    let retirementCalls = 0;
     await assert.rejects(
       capturePreparedDataWranglerPublicUi(
         {
@@ -663,9 +879,9 @@ test("watch headroom failure prevents public capture actions and editor phases",
             };
           },
           async installOpaqueExtension() {},
-          retireClone(clone) {
-            rmSync(clone.root, { recursive: true, force: false });
-            return { status: "retired", treeEmpty: true };
+          retireClone() {
+            retirementCalls += 1;
+            throw retirementError;
           },
           createEnvironment: () => ({}),
           configureTempRoot: () => undefined,
@@ -682,7 +898,7 @@ test("watch headroom failure prevents public capture actions and editor phases",
           writeNotebook: () => undefined,
           requireWatchHeadroom: async () => {
             events.push("watch-headroom");
-            throw new Error("public capture watch headroom unavailable");
+            throw captureError;
           },
           runNeutralPhase: async () => {
             events.push("public-action");
@@ -692,9 +908,282 @@ test("watch headroom failure prevents public capture actions and editor phases",
           }
         }
       ),
-      /public capture watch headroom unavailable/u
+      (error) =>
+        error instanceof AggregateError &&
+        error.errors.length === 2 &&
+        error.errors[0] === captureError &&
+        error.errors[1] === retirementError
     );
     assert.deepEqual(events, ["watch-headroom"]);
+    assert.equal(retirementCalls, 1);
+  });
+});
+
+test("an ownership-uncertain public capture does not clean its source copy or retire its clone", async () => {
+  await withDirectory(async (root) => {
+    const editor = { version: "1.130.0" };
+    const fixtures = [
+      {
+        id: "csv-100k-50",
+        format: "csv",
+        rows: 100_000,
+        columns: 50,
+        sha256: "b".repeat(64),
+        schema: [{ name: "c00", dtype: "int64" }],
+        sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+      },
+      {
+        id: "parquet-1m-20",
+        format: "parquet",
+        rows: 1_000_000,
+        columns: 20,
+        sha256: "c".repeat(64),
+        schema: [{ name: "c00", dtype: "int64" }],
+        sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+      }
+    ];
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    const phaseError = new Error("public capture editor ownership is uncertain");
+    phaseError.details = { treeVerifiedStopped: false };
+    let sourceCleanupCalls = 0;
+    let cloneRetirementCalls = 0;
+    await assert.rejects(
+      capturePreparedDataWranglerPublicUi(
+        {
+          specification: {
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            editor: {
+              id: "Microsoft.VisualStudioCode",
+              version: editor.version,
+              sha256: "a".repeat(64),
+              uiLocale: "en"
+            },
+            fixtures,
+            provenance: {
+              commonExtensions: PUBLIC_UI_BASE_EXTENSION_INVENTORY,
+              comparisonDriver: {}
+            }
+          },
+          templates: [
+            {
+              product: "data-wrangler",
+              kind: "configured-only",
+              root: templateRoot,
+              editor,
+              sandboxArgs: []
+            }
+          ],
+          templateTrees: new Map([["data-wrangler:configured-only", "d".repeat(64)]]),
+          studyRoot: root,
+          editor,
+          pythonPath: resolve(root, "python"),
+          kernel: {
+            name: "dataframe-comparison-study-test",
+            displayName: "Study kernel",
+            jupyterEnvironment: {}
+          },
+          fixturePaths: { csv: resolve(root, "fixture.csv"), parquet: resolve(root, "fixture.parquet") },
+          driverDirectory: resolve(root, "driver"),
+          driverVsixPath: resolve(root, "driver.vsix")
+        },
+        {},
+        {
+          id: () => "11111111-1111-4111-8111-111111111111",
+          recoverDriver: () => ({}),
+          cloneTemplate(_template, { cloneRoot }) {
+            return {
+              root: privateDirectory(cloneRoot),
+              userData: privateDirectory(resolve(cloneRoot, "user")),
+              extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+              sandboxArgs: []
+            };
+          },
+          async installOpaqueExtension() {},
+          retireClone: () => {
+            cloneRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          createEnvironment: () => ({}),
+          configureTempRoot: () => undefined,
+          createProfile: (value) => value,
+          materializeKernel: () => ({ jupyterEnvironment: {} }),
+          createSourceCopy: () => ({
+            copyPath: resolve(root, "source-copy"),
+            copyReceipt: {
+              sha256: fixtures[0].sha256,
+              filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+            }
+          }),
+          cleanupSourceCopy: () => {
+            sourceCleanupCalls += 1;
+          },
+          writeNotebook: () => undefined,
+          runNeutralPhase: async () => {
+            throw phaseError;
+          }
+        }
+      ),
+      (error) => error === phaseError
+    );
+    assert.equal(sourceCleanupCalls, 0);
+    assert.equal(cloneRetirementCalls, 0);
+  });
+});
+
+test("source-copy cleanup uncertainty prevents the containing public-capture clone from being retired", async () => {
+  await withDirectory(async (root) => {
+    const editor = { version: "1.130.0" };
+    const fixture = {
+      id: "csv-100k-50",
+      format: "csv",
+      rows: 100_000,
+      columns: 50,
+      sha256: "b".repeat(64),
+      schema: [{ name: "c00", dtype: "int64" }],
+      sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+    };
+    const parquetFixture = {
+      id: "parquet-1m-20",
+      format: "parquet",
+      rows: 1_000_000,
+      columns: 20,
+      sha256: "c".repeat(64),
+      schema: [{ name: "c00", dtype: "int64" }],
+      sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+    };
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    const phaseError = new Error("public capture failed safely");
+    const cleanupError = new Error("source-copy identity could not be confirmed");
+    let cloneRetirementCalls = 0;
+    await assert.rejects(
+      capturePreparedDataWranglerPublicUi(
+        {
+          specification: {
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            editor: {
+              id: "Microsoft.VisualStudioCode",
+              version: editor.version,
+              sha256: "a".repeat(64),
+              uiLocale: "en"
+            },
+            fixtures: [fixture, parquetFixture],
+            provenance: {
+              commonExtensions: PUBLIC_UI_BASE_EXTENSION_INVENTORY,
+              comparisonDriver: {}
+            }
+          },
+          templates: [
+            {
+              product: "data-wrangler",
+              kind: "configured-only",
+              root: templateRoot,
+              editor,
+              sandboxArgs: []
+            }
+          ],
+          templateTrees: new Map([["data-wrangler:configured-only", "d".repeat(64)]]),
+          studyRoot: root,
+          editor,
+          pythonPath: resolve(root, "python"),
+          kernel: {
+            name: "dataframe-comparison-study-test",
+            displayName: "Study kernel",
+            jupyterEnvironment: {}
+          },
+          fixturePaths: { csv: resolve(root, "fixture.csv"), parquet: resolve(root, "fixture.parquet") },
+          driverDirectory: resolve(root, "driver"),
+          driverVsixPath: resolve(root, "driver.vsix")
+        },
+        {},
+        {
+          id: () => "12111111-1111-4111-8111-111111111111",
+          recoverDriver: () => ({}),
+          cloneTemplate(_template, { cloneRoot }) {
+            return {
+              root: privateDirectory(cloneRoot),
+              userData: privateDirectory(resolve(cloneRoot, "user")),
+              extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+              sandboxArgs: []
+            };
+          },
+          async installOpaqueExtension() {},
+          retireClone: () => {
+            cloneRetirementCalls += 1;
+            return { status: "retired", treeEmpty: true };
+          },
+          createEnvironment: () => ({}),
+          configureTempRoot: () => undefined,
+          createProfile: (value) => value,
+          materializeKernel: () => ({ jupyterEnvironment: {} }),
+          createSourceCopy: () => ({
+            copyPath: resolve(root, "source-copy"),
+            copyReceipt: {
+              sha256: fixture.sha256,
+              filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+            }
+          }),
+          cleanupSourceCopy: () => {
+            throw cleanupError;
+          },
+          writeNotebook: () => undefined,
+          runNeutralPhase: async () => {
+            throw phaseError;
+          }
+        }
+      ),
+      (error) =>
+        error instanceof AggregateError &&
+        dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+        error.errors.length === 2 &&
+        error.errors[0] === phaseError &&
+        error.errors[1] === cleanupError
+    );
+    assert.equal(cloneRetirementCalls, 0);
+  });
+});
+
+test("public notebook setup failure cleans its source copy before retiring the clone", async () => {
+  await withDirectory(async (root) => {
+    const harness = publicCaptureFailureHarness(root);
+    const writerError = new Error("public notebook publication failed");
+    harness.dependencies.writeNotebook = () => {
+      throw writerError;
+    };
+    await assert.rejects(
+      capturePreparedDataWranglerPublicUi(harness.input, {}, harness.dependencies),
+      (error) => error === writerError
+    );
+    assert.equal(harness.state.sourceCleanupCalls, 1);
+    assert.equal(harness.state.cloneRetirementCalls, 1);
+  });
+});
+
+test("source-copy creation rollback uncertainty prevents public-capture clone retirement", async () => {
+  await withDirectory(async (root) => {
+    const harness = publicCaptureFailureHarness(root);
+    writeFileSync(harness.input.fixturePaths.csv, "c00\n1\n", { flag: "wx", mode: 0o600 });
+    let replacementPath;
+    harness.dependencies.createSourceCopy = (options) =>
+      createDataWranglerComparisonSourceCopy(options, {
+        faultInjector(checkpoint) {
+          if (checkpoint === "after-copy-created") throw new Error("injected source-copy creation failure");
+          assert.equal(checkpoint, "before-rollback-unlink");
+          replacementPath = resolve(options.privateRoot, options.name);
+          unlinkSync(replacementPath);
+          writeFileSync(replacementPath, "foreign replacement\n", { flag: "wx", mode: 0o600 });
+          throw new Error("injected source-copy rollback failure");
+        }
+      });
+    await assert.rejects(capturePreparedDataWranglerPublicUi(harness.input, {}, harness.dependencies), (error) =>
+      dataWranglerComparisonCleanupMayBeUnsettled(error)
+    );
+    assert.equal(harness.state.sourceCleanupCalls, 0);
+    assert.equal(harness.state.cloneRetirementCalls, 0);
+    assert.equal(readFileSync(replacementPath, "utf8"), "foreign replacement\n");
   });
 });
 
@@ -1197,114 +1686,168 @@ test("public run-next retires its clone when any pre-trial profile setup step fa
   });
 });
 
-test("public run-next removes an uncertain Data Wrangler clone so proprietary bytes are not retained", async () => {
-  await withDirectory(async (root) => {
-    const manifest = {
-      candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
-      baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
-      editor: { version: "1.106.0" },
-      python: {
-        executableSha256: "b".repeat(64),
-        environmentSha256: "f".repeat(64),
-        kernel: { kernelspecSha256: "a".repeat(64) }
-      },
-      fixtures: [{ id: "csv", format: "csv" }],
-      provenance: {
-        commonExtensions: DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
-        templates: [
-          {
-            product: "data-wrangler",
-            configuredOnlyReceiptSha256: "c".repeat(64),
-            warmedReceiptSha256: "d".repeat(64)
-          }
-        ],
-        comparisonDriver: { exact: "driver" },
-        cpu: { affinity: [2] },
-        display: { mode: "headless-ozone", widthPx: 1920, heightPx: 1080, deviceScaleFactor: 1 },
-        zoom: { level: 0, theme: "Default Dark Modern" },
-        capabilities: []
-      }
-    };
-    const entry = {
-      id: "cold-pandas-csv-r01-dw",
-      product: "data-wrangler",
-      kind: "cold",
-      engine: "pandas",
-      format: "csv"
-    };
-    const preparation = minimalPreparation(root, []);
-    preparation.manifestSha256 = digestStudyValue(manifest);
-    let cloneRoot;
-    let retired = false;
-    await assert.rejects(
-      runPreparedDataWranglerComparisonEntry(
+async function runPreparedOpenWranglerFailure(root, trialError) {
+  const manifest = {
+    candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+    baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+    editor: { version: "1.106.0" },
+    python: {
+      executableSha256: "b".repeat(64),
+      environmentSha256: "f".repeat(64),
+      kernel: { kernelspecSha256: "a".repeat(64) }
+    },
+    fixtures: [{ id: "csv", format: "csv" }],
+    provenance: {
+      commonExtensions: DATA_WRANGLER_COMPARISON_BASE_EXTENSIONS,
+      templates: [
         {
-          manifestPath: preparation.manifestPath,
-          fragmentsDirectory: resolve(root, "fragments"),
-          intentsDirectory: resolve(root, "intents"),
-          preparationPath: resolve(root, "preparation.json")
-        },
-        {},
-        {
-          readManifest: () => manifest,
-          loadFragments: () => [],
-          pendingTrials: () => [entry],
-          loadPreparation: () => preparation,
-          revalidatePreparation: async () => preparation,
-          cloneTemplate(_receipt, input) {
-            cloneRoot = privateDirectory(input.cloneRoot);
-            return {
-              product: input.product,
-              kind: input.kind,
-              root: cloneRoot,
-              userData: privateDirectory(resolve(cloneRoot, "user")),
-              extensions: privateDirectory(resolve(cloneRoot, "extensions")),
-              sandboxArgs: [],
-              templateTreeSha256: "c".repeat(64),
-              cloneTreeSha256: "c".repeat(64)
-            };
-          },
-          createEnvironment: () => ({}),
-          configureTempRoot() {},
-          createProfile: () => ({ authentic: "profile" }),
-          async installOpaqueExtension() {},
-          materializeKernel({ runRoot }) {
-            const jupyterRoot = privateDirectory(resolve(runRoot, "jupyter"));
-            return {
-              jupyterEnvironment: {
-                dataDir: privateDirectory(resolve(jupyterRoot, "data")),
-                runtimeDir: privateDirectory(resolve(jupyterRoot, "runtime")),
-                configDir: privateDirectory(resolve(jupyterRoot, "config")),
-                path: privateDirectory(resolve(jupyterRoot, "path"))
-              }
-            };
-          },
-          recoverDriver: () => ({ authentic: "driver" }),
-          async installDriver() {},
-          captureDriver: () => manifest.provenance.comparisonDriver,
-          capturePythonEnvironment: () => ({ stateSha256: manifest.python.environmentSha256 }),
-          captureGateProvenance: () => ({ authentic: "gate" }),
-          readInventory: async () =>
-            createDataWranglerComparisonMeasuredInventory({
-              extensionId: manifest.baseline.extensionId,
-              version: manifest.baseline.version
-            }),
-          async recordTrial() {
-            throw new Error("measured boundary uncertain");
-          },
-          retireClone() {
-            retired = true;
-            rmSync(cloneRoot, { recursive: true, force: false });
-            return { status: "retired", treeEmpty: true };
-          },
-          mkdir: mkdirSync,
-          id: () => "22222222-2222-4222-8222-222222222222"
+          product: "open-wrangler",
+          configuredOnlyReceiptSha256: "c".repeat(64),
+          warmedReceiptSha256: "d".repeat(64)
         }
-      ),
-      /measured boundary uncertain/u
+      ],
+      comparisonDriver: { exact: "driver" },
+      cpu: { affinity: [2] },
+      display: { mode: "headless-ozone", widthPx: 1920, heightPx: 1080, deviceScaleFactor: 1 },
+      zoom: { level: 0, theme: "Default Dark Modern" },
+      capabilities: []
+    }
+  };
+  const entry = {
+    id: "cold-pandas-csv-r01-ow",
+    product: "open-wrangler",
+    kind: "cold",
+    engine: "pandas",
+    format: "csv"
+  };
+  const preparation = minimalPreparation(root, []);
+  preparation.manifestSha256 = digestStudyValue(manifest);
+  let cloneRoot;
+  let retirementCalls = 0;
+  let thrown;
+  try {
+    await runPreparedDataWranglerComparisonEntry(
+      {
+        manifestPath: preparation.manifestPath,
+        fragmentsDirectory: resolve(root, "fragments"),
+        intentsDirectory: resolve(root, "intents"),
+        preparationPath: resolve(root, "preparation.json")
+      },
+      {},
+      {
+        readManifest: () => manifest,
+        loadFragments: () => [],
+        pendingTrials: () => [entry],
+        loadPreparation: () => preparation,
+        revalidatePreparation: async () => preparation,
+        cloneTemplate(_receipt, input) {
+          cloneRoot = privateDirectory(input.cloneRoot);
+          return {
+            product: input.product,
+            kind: input.kind,
+            root: cloneRoot,
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: [],
+            templateTreeSha256: "c".repeat(64),
+            cloneTreeSha256: "c".repeat(64)
+          };
+        },
+        createEnvironment: () => ({}),
+        configureTempRoot() {},
+        createProfile: () => ({ authentic: "profile" }),
+        async installOpaqueExtension() {},
+        materializeKernel({ runRoot }) {
+          const jupyterRoot = privateDirectory(resolve(runRoot, "jupyter"));
+          return {
+            jupyterEnvironment: {
+              dataDir: privateDirectory(resolve(jupyterRoot, "data")),
+              runtimeDir: privateDirectory(resolve(jupyterRoot, "runtime")),
+              configDir: privateDirectory(resolve(jupyterRoot, "config")),
+              path: privateDirectory(resolve(jupyterRoot, "path"))
+            }
+          };
+        },
+        recoverDriver: () => ({ authentic: "driver" }),
+        async installDriver() {},
+        captureDriver: () => manifest.provenance.comparisonDriver,
+        capturePythonEnvironment: () => ({ stateSha256: manifest.python.environmentSha256 }),
+        captureGateProvenance: () => ({ authentic: "gate" }),
+        readInventory: async () =>
+          createDataWranglerComparisonMeasuredInventory({
+            extensionId: manifest.candidate.extensionId,
+            version: manifest.candidate.version
+          }),
+        async recordTrial() {
+          throw trialError;
+        },
+        retireClone() {
+          retirementCalls += 1;
+          rmSync(cloneRoot, { recursive: true, force: false });
+          return { status: "retired", treeEmpty: true };
+        },
+        mkdir: mkdirSync,
+        id: () => "22222222-2222-4222-8222-222222222222"
+      }
     );
-    assert.equal(retired, true);
-    assert.equal(existsSync(cloneRoot), false);
+  } catch (error) {
+    thrown = error;
+  }
+  return { cloneRoot, retirementCalls, thrown };
+}
+
+test("public run-next retires its Open Wrangler clone after an ordinary measured-trial error", async () => {
+  await withDirectory(async (root) => {
+    const trialError = new Error("measured trial failed safely");
+    const result = await runPreparedOpenWranglerFailure(root, trialError);
+    assert.equal(result.thrown, trialError);
+    assert.equal(result.retirementCalls, 1);
+    assert.equal(existsSync(result.cloneRoot), false);
+  });
+});
+
+test("public run-next leaves an ownership-uncertain measured-trial clone untouched", async () => {
+  await withDirectory(async (root) => {
+    const trialError = new Error("measured trial process ownership is uncertain");
+    trialError.details = { treeVerifiedStopped: false };
+    const result = await runPreparedOpenWranglerFailure(root, trialError);
+    assert.equal(result.thrown, trialError);
+    assert.equal(result.retirementCalls, 0);
+    assert.equal(existsSync(result.cloneRoot), true);
+  });
+});
+
+test("public run-next leaves its clone untouched when failed-gate source cleanup is unsettled", async () => {
+  await withDirectory(async (root) => {
+    const cleanupError = new Error("failed-gate source-copy identity could not be confirmed");
+    const trialError = createDataWranglerComparisonCleanupUnsettledError(
+      cleanupError,
+      "Private comparison source-copy cleanup could not be confirmed."
+    );
+    const result = await runPreparedOpenWranglerFailure(root, trialError);
+    assert.equal(result.thrown, trialError);
+    assert.equal(result.retirementCalls, 0);
+    assert.equal(existsSync(result.cloneRoot), true);
+  });
+});
+
+test("public run-next leaves its clone untouched for pre-cleanup post-launch failures", async () => {
+  await withDirectory(async (root) => {
+    for (const [name, message] of [
+      ["cleanup-proof", "terminal process-tree proof could not be completed"],
+      ["source-assertion", "terminal source-copy identity could not be confirmed"]
+    ]) {
+      const caseRoot = privateDirectory(resolve(root, name));
+      const cause = new Error(message);
+      const trialError = createDataWranglerComparisonCleanupUnsettledError(
+        cause,
+        "The comparison trial failed after launch before private source-copy cleanup could start."
+      );
+      const result = await runPreparedOpenWranglerFailure(caseRoot, trialError);
+      assert.equal(result.thrown, trialError);
+      assert.equal(result.retirementCalls, 0);
+      assert.equal(existsSync(result.cloneRoot), true);
+    }
   });
 });
 
@@ -1388,6 +1931,64 @@ test("the prepared diagnostic removes its private journal only after complete su
       workbenchVerification: "public-ui-label"
     });
     assert.equal(result.retainedFailureJournal, false);
+  });
+});
+
+test("diagnostic scratch retirement preserves a replacement planted at its quarantine boundary", async () => {
+  await withDirectory(async (root) => {
+    const entry = { id: "warm-polars-csv-r01-ow", product: "open-wrangler", engine: "polars", format: "csv" };
+    const manifest = { schedule: [entry] };
+    let scratchRoot;
+    let parked;
+    await assert.rejects(
+      runUnrecordedPreparedDataWranglerComparisonDiagnostic(
+        { manifestPath: resolve(root, "manifest.json"), preparationPath: resolve(root, "preparation.json") },
+        {},
+        {
+          readManifest: () => manifest,
+          loadPreparation: () => ({ studyRoot: root }),
+          revalidatePreparation: async () => {},
+          writeManifest(path) {
+            writeFileSync(path, "manifest\n", { mode: 0o600 });
+          },
+          writePreparation(path) {
+            writeFileSync(path, "preparation\n", { mode: 0o600 });
+          },
+          summarizeResource: () => ({}),
+          async runEntry(options) {
+            scratchRoot = resolve(options.manifestPath, "..");
+            return {
+              cleanup: { treeEmpty: true },
+              output: {
+                outcome: { status: "success", actionStarted: true },
+                resourceObservation: {
+                  valid: true,
+                  intervalMs: 200,
+                  missedSamples: 0,
+                  samples: [1, 2, 3, 4, 5].map((totalPssBytes) => ({ totalPssBytes }))
+                },
+                cleanupProof: { status: "complete", treeEmpty: true },
+                sourceCopy: { cleanup: { removed: true } },
+                trialProvenance: { revalidatedAfterCleanup: true }
+              }
+            };
+          },
+          retireScratch(receipt, label) {
+            return retireDataWranglerComparisonOwnedDirectory(receipt, label, {
+              beforeQuarantineRename({ publicPath }) {
+                parked = `${publicPath}-parked`;
+                renameSync(publicPath, parked);
+                privateDirectory(publicPath);
+                writeFileSync(resolve(publicPath, "replacement.txt"), "leave this tree alone\n", { mode: 0o600 });
+              }
+            });
+          }
+        }
+      ),
+      /changed before cleanup/u
+    );
+    assert.equal(readFileSync(resolve(scratchRoot, "replacement.txt"), "utf8"), "leave this tree alone\n");
+    assert.equal(readFileSync(resolve(parked, "manifest.json"), "utf8"), "manifest\n");
   });
 });
 

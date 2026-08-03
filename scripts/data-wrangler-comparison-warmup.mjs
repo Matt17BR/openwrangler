@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import {
+  createDataWranglerComparisonCleanupUnsettledError,
+  dataWranglerComparisonCleanupMayBeUnsettled
+} from "./data-wrangler-comparison-cleanup-safety.mjs";
 import { recoverDataWranglerComparisonDriver } from "./data-wrangler-comparison-driver.mjs";
 import { writeDataWranglerComparisonNotebook } from "./data-wrangler-comparison-notebook.mjs";
 import {
+  captureDataWranglerComparisonOwnedDirectory,
   captureOpaqueSafeDataWranglerProfileTemplate,
   captureDataWranglerProfileTree,
   cloneDataWranglerCapturedTemplate,
   installOpaqueDataWranglerMarketplaceExtension,
+  retireDataWranglerComparisonOwnedDirectory,
   retireDataWranglerComparisonTemplateClone
 } from "./data-wrangler-comparison-preparation.mjs";
 import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
@@ -298,7 +304,8 @@ export async function runPreparedProductWarmupJourney(
     controlWarmup: controlDataWranglerPublicWarmup,
     recoverDriver: recoverDataWranglerComparisonDriver,
     materializeKernel: materializeDataWranglerComparisonRunKernel,
-    remove: rmSync,
+    captureRunRoot: captureDataWranglerComparisonOwnedDirectory,
+    retireRunRoot: retireDataWranglerComparisonOwnedDirectory,
     ...overrides
   };
   if (lstatSync(runRoot, { bigint: true, throwIfNoEntry: false }) !== undefined) {
@@ -308,36 +315,40 @@ export async function runPreparedProductWarmupJourney(
   chmodSync(dirname(runRoot), 0o700);
   mkdirSync(runRoot, { mode: 0o700 });
   chmodSync(runRoot, 0o700);
-  const bridgeRoot = resolve(runRoot, "bridge");
-  mkdirSync(bridgeRoot, { mode: 0o700 });
-  chmodSync(bridgeRoot, 0o700);
-  const runEnvironment = dependencies.createEnvironment(environment, {
-    OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
-    OPEN_WRANGLER_EDITOR_TEMP_ROOT: runRoot
-  });
-  dependencies.configureTempRoot(runRoot, runEnvironment);
-  const runKernel = dependencies.materializeKernel({ runRoot, kernel });
-  dependencies.recoverDriver({ directory: driverDirectory, vsixPath: driverVsixPath, expectedDriver });
-  assertInventory(
-    await dependencies.readInventory({
-      editor,
-      userData: profile.userData,
-      extensions: profile.extensions,
-      sandboxArgs: profile.sandboxArgs,
-      environment: runEnvironment
-    }),
-    expectedInventory
-  );
-  await dependencies.requireWatchHeadroom({ runRoot });
-  const sourceCopy = dependencies.createSourceCopy({
-    canonicalPath: fixturePath,
-    privateRoot: runRoot,
-    name: "warmup.csv"
-  });
-  let sourceSettled = false;
+  const runRootReceipt = dependencies.captureRunRoot(runRoot, "Public warm-up run root");
+  let sourceCopy;
+  let sourceCleanupAttempted = false;
+  let sourceCleanupError;
+  let runRootRetirementAttempted = false;
   let operationError;
   let receipt;
   try {
+    const bridgeRoot = resolve(runRoot, "bridge");
+    mkdirSync(bridgeRoot, { mode: 0o700 });
+    chmodSync(bridgeRoot, 0o700);
+    const runEnvironment = dependencies.createEnvironment(environment, {
+      OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
+      OPEN_WRANGLER_EDITOR_TEMP_ROOT: runRoot
+    });
+    dependencies.configureTempRoot(runRoot, runEnvironment);
+    const runKernel = dependencies.materializeKernel({ runRoot, kernel });
+    dependencies.recoverDriver({ directory: driverDirectory, vsixPath: driverVsixPath, expectedDriver });
+    assertInventory(
+      await dependencies.readInventory({
+        editor,
+        userData: profile.userData,
+        extensions: profile.extensions,
+        sandboxArgs: profile.sandboxArgs,
+        environment: runEnvironment
+      }),
+      expectedInventory
+    );
+    await dependencies.requireWatchHeadroom({ runRoot });
+    sourceCopy = dependencies.createSourceCopy({
+      canonicalPath: fixturePath,
+      privateRoot: runRoot,
+      name: "warmup.csv"
+    });
     const notebookPath = resolve(runRoot, "warmup.ipynb");
     const requestPath = resolve(bridgeRoot, "request.json");
     const acknowledgementPath = resolve(bridgeRoot, "acknowledgement.json");
@@ -422,8 +433,13 @@ export async function runPreparedProductWarmupJourney(
       sourceReceipt: sourceCopy.copyReceipt,
       controlReceipt
     });
-    dependencies.cleanupSourceCopy(sourceCopy);
-    sourceSettled = true;
+    sourceCleanupAttempted = true;
+    try {
+      dependencies.cleanupSourceCopy(sourceCopy);
+    } catch (error) {
+      sourceCleanupError = error;
+      throw error;
+    }
     dependencies.recoverDriver({ directory: driverDirectory, vsixPath: driverVsixPath, expectedDriver });
     assertInventory(
       await dependencies.readInventory({
@@ -435,23 +451,46 @@ export async function runPreparedProductWarmupJourney(
       }),
       expectedInventory
     );
-    dependencies.remove(runRoot, { recursive: true, force: false });
   } catch (error) {
     operationError = error;
   }
-  let cleanupError;
-  if (!sourceSettled && !editorProcessTreeMayBeLive(operationError)) {
+  const processTreeUncertain = editorProcessTreeMayBeLive(operationError);
+  const cleanupErrors = [];
+  if (sourceCopy !== undefined && !sourceCleanupAttempted && !processTreeUncertain) {
+    sourceCleanupAttempted = true;
     try {
       dependencies.cleanupSourceCopy(sourceCopy);
     } catch (error) {
-      cleanupError = error;
+      sourceCleanupError = error;
+      cleanupErrors.push(error);
     }
   }
-  if (operationError !== undefined && cleanupError !== undefined) {
-    throw new AggregateError([operationError, cleanupError], "Public warm-up and source cleanup both failed.");
+  if (
+    !runRootRetirementAttempted &&
+    !processTreeUncertain &&
+    !dataWranglerComparisonCleanupMayBeUnsettled(operationError) &&
+    sourceCleanupError === undefined
+  ) {
+    runRootRetirementAttempted = true;
+    try {
+      const retirement = dependencies.retireRunRoot(runRootReceipt, "Public warm-up run root");
+      if (retirement.status !== "retired" || retirement.treeEmpty !== true) {
+        fail("Public warm-up run root was not retired.");
+      }
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (sourceCleanupError !== undefined || cleanupErrors.length > 0) {
+    const failures = operationError === undefined ? [...cleanupErrors] : [operationError, ...cleanupErrors];
+    throw createDataWranglerComparisonCleanupUnsettledError(
+      failures,
+      failures.length > 1
+        ? "Public warm-up and owned-path cleanup both failed."
+        : "Public warm-up owned-path cleanup could not be confirmed."
+    );
   }
   if (operationError !== undefined) throw operationError;
-  if (cleanupError !== undefined) throw cleanupError;
   return receipt;
 }
 
@@ -489,7 +528,6 @@ export async function capturePreparedProductWarmups(
     controlWarmup: controlDataWranglerPublicWarmup,
     recoverDriver: recoverDataWranglerComparisonDriver,
     materializeKernel: materializeDataWranglerComparisonRunKernel,
-    remove: rmSync,
     ...overrides
   };
   const fixture = specification.fixtures.find((entry) => entry.format === "csv");
@@ -514,7 +552,10 @@ export async function capturePreparedProductWarmups(
     );
     let completed = false;
     let cloneRetired = false;
+    let cloneRetirementAttempted = false;
     let processTreeUncertain = false;
+    let cleanupUnsettled = false;
+    let operationError;
     try {
       const runRoot = resolve(clone.root, "public-warmup");
       const runEnvironment = dependencies.createEnvironment(environment, {
@@ -562,6 +603,7 @@ export async function capturePreparedProductWarmups(
         `Public ${product} warmed template`,
         expectedInventory
       );
+      cloneRetirementAttempted = true;
       const retirement = dependencies.retireClone(clone);
       if (retirement.status !== "retired" || retirement.treeEmpty !== true) {
         fail(`Public ${product} warm-up clone was not retired.`);
@@ -587,12 +629,29 @@ export async function capturePreparedProductWarmups(
       completed = true;
     } catch (error) {
       processTreeUncertain = editorProcessTreeMayBeLive(error);
-      throw error;
-    } finally {
-      if (!completed && !cloneRetired && !processTreeUncertain) {
-        dependencies.retireClone(clone);
+      cleanupUnsettled = dataWranglerComparisonCleanupMayBeUnsettled(error);
+      operationError = error;
+    }
+    let cleanupError;
+    if (!completed && !cloneRetired && !cloneRetirementAttempted && !processTreeUncertain && !cleanupUnsettled) {
+      cloneRetirementAttempted = true;
+      try {
+        const retirement = dependencies.retireClone(clone);
+        if (retirement.status !== "retired" || retirement.treeEmpty !== true) {
+          fail(`Public ${product} warm-up clone was not retired after failure.`);
+        }
+      } catch (error) {
+        cleanupError = error;
       }
     }
+    if (operationError !== undefined && cleanupError !== undefined) {
+      throw new AggregateError(
+        [operationError, cleanupError],
+        `Public ${product} warm-up and clone cleanup both failed.`
+      );
+    }
+    if (operationError !== undefined) throw operationError;
+    if (cleanupError !== undefined) throw cleanupError;
   }
   return Object.freeze({ templates: Object.freeze(retainedTemplates), provenance: Object.freeze(provenance) });
 }
