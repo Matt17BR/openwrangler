@@ -91,36 +91,6 @@ Every release adds `docs/release-notes/<version>.md` in the release change. Publ
 tagged commit and must not substitute GitHub-generated notes. Automation proves which text will be published; it does
 not prove that a person reviewed the prose. Give public copy an editorial read before approving the release change.
 
-## Managed agent checkouts
-
-The coordinating agent creates task isolation with
-`npm run checkout:create -- <slug> --owner <canonical-task-name>`. Add `--generated-root node_modules`, or another
-exact top-level directory, only when Git ignores that directory and it is absent from the new checkout. The manager
-creates a registered worktree below `tmp/agent-checkouts`; do not create another full clone or unmanaged worktree.
-
-Put the slug, owner, revision, branch, and path in the task handoff. Transfer ownership with
-`npm run checkout:handoff -- <slug> --owner <old-task> --to <new-task> --revision <n>`. A restart does not abandon a
-checkout: `npm run checkout:status` shows the durable owner and revision so the task can resume or be handed off.
-Each lifecycle command also takes a short-lived cross-process mutex. Its PID detects only an interrupted command; it
-never determines task ownership or abandonment. Registry changes and mutex claims/releases are append-only numbered
-files created with exclusive paths. Never rewrite either journal while the manager root remains in use.
-
-After the task reports its final result, run
-`npm run checkout:finish -- <slug> --owner <task> --revision <n>`. Finish records a durable `cleanup-pending` state; it
-does not delete or move the checkout. Inspect `npm run checkout:audit -- <slug>` before a reviewed manual cleanup. The
-audit reports receipt, Git-admin backlink, index-flag, tracked-worktree, staged, and untracked/ignored checks, but is not
-itself authorization to delete anything.
-
-`checkout:audit` does not acquire the lifecycle mutex, append registry state, or adopt an interrupted create.
-`checkout:status` is the explicit recovery command that may adopt a fully registered interrupted create.
-
-Automatic purge is not implemented. JavaScript's path-based recursive removal cannot safely survive a child-directory
-rebind, and Git/network child ownership needs a platform helper before cleanup can be automated. Keep pending entries
-until that reviewed helper exists or a maintainer completes an explicit audit and manual cleanup. `checkout:abandon`
-records cleanup pending for an adopted checkout and `abandoned-review-required` for a pre-adoption entry; it never
-discards work, even when `--expect-head absent` was observed. Never override retention with `--force`, `rm -rf`, manual
-registry edits, branch deletion, or `git worktree prune`.
-
 ## Required checks
 
 Run the narrowest relevant tests while iterating. Open or update a pull request only for a coherent, locally green
