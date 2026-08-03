@@ -4,114 +4,36 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [1.2.1] - Unreleased
 
+### Fixed
+
+- Generated columns now scroll into view after a preview, including when Cursor finishes laying out Code Preview without
+  sending a resize event. Scrolling or clicking the grid cancels the automatic movement.
+- Packaged VS Code and Cursor journeys now follow the current renderer after recovery instead of waiting on an obsolete
+  acknowledgement.
+
 ### Changed
 
-- GitHub releases now use the versioned notes stored in the tagged commit instead of generated pull-request summaries.
-  Missing, malformed, invalid UTF-8, oversized, or conflicting notes stop publication before the release is changed.
-- Generated columns now scroll into view even when Cursor finishes laying out Code Preview without sending a resize
-  event. The retry stops after a fixed number of frames and cancels immediately when you scroll or click the grid.
-- Added bounded draft-pull-request feedback without weakening ready-PR evidence. Draft updates run the existing static
-  source lane plus bounded carriers for directly protected matrix names, while the protected `validate` context
-  deliberately remains failed until `ready_for_review` reruns the required tier at the same commit. Missing,
-  malformed, or contradictory path/draft classification fails closed; protected-branch pushes remain complete.
-- Added an exact package-only pull-request tier for non-empty changes limited to `README.md`, `CHANGELOG.md`, `LICENSE`,
-  and `THIRD_PARTY_NOTICES.md`. Ready changes build and inspect the canonical VSIX, require all four shipped documents
-  to match their source bytes, pin the project manifest and reviewed license text to MIT, and run the focused
-  lossless-media contracts without repeating unrelated engine/editor matrices. Drafts still take precedence, mixed or
-  unknown paths fail into full CI, and public/accepted evidence under `docs/images/**`, `docs/media-gallery.md`, or
-  `docs/media-spec-*` remains full-matrix so PNG quality cannot bypass its visual checks.
-  Directly protected CodeQL and cross-platform check names remain present through classification-only carrier cells.
-- Replaced PySpark's full-frame open job with bounded progressive paging. The first grid no longer runs
-  `zipWithIndex`, a global row count, or a complete Spark cache fill. Row-byte lengths and guarded values now share
-  one bounded terminal action instead of a separate validation action. Until a terminal block confirms the exact
-  total, the protocol and UI say that the total is not counted. Paging remains contiguous after that promotion,
-  retains only a bounded boundary history, and rejects an observed boundary change with reopen guidance. Recovery
-  rebuilds a saved viewport through at most 16 contiguous page requests and otherwise resets only that viewport to
-  row zero, retaining its confirmed filter, sort, widths, and selection. A terminal page now publishes its exact
-  shape even when no filter, revision, or plan changed. User copy simply explains that the first page loads without
-  counting every row and that the total appears after the last page. This does not claim that Spark gives an unordered
-  dataframe a deterministic global order; PySpark remains experimental and viewing-only.
-- Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
-  kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
-  serialization, nested lease inheritance, and automatic crash release.
-- Made packaged Cursor/VS Code interaction barriers follow an authoritative renderer generation when recovery
-  supersedes the test's acknowledgement marker. Exact-session hydration remains deadline-bound; the harness neither
-  sleeps nor retries a failed editor phase.
-- Upgraded public README and gallery screenshots to a dedicated lossless 2× capture path while leaving ordinary
-  visual baselines at 1×. Logical layouts and crops are converted exactly once, every product image declares its
-  intrinsic logical dimensions, bounded per-file/total budgets reject accidental bloat or downscaling, and a
-  post-publication check detects browser upscaling across GitHub, Visual Studio Marketplace, and Open VSX. The
-  versioned `1.2.1+` promotion contract pre-stats a bounded inventory, validates PNG CRC/order/decode, verifies all 46
-  declared sRGB assets and all 18 rendered README images, and retries only typed stale/unavailable registry
-  observations in fresh bounded browser contexts. Historical recovery below `1.2.1` is unchanged. Main protects
-  preview promotion; stable coverage requires the same reviewed backport on `release/1.x`. Because rendering is
-  observed after publication, failure blocks workflow success but cannot retract already-public bytes.
-- Made obsolete pull-request heads actually cancellable by replacing cancellation-resistant `always()` job and
-  evidence-upload guards with `!cancelled()` across CI, CodeQL, and cross-platform acceptance. Failed current heads
-  still aggregate and retain safe diagnostics, while superseded native editor runs stop before blocking their replacement.
-- Bound packaged-editor failure-evidence workflow tests to the actual safety contract across pull-request, preview,
-  and stable publication: producer identity, immediate pinned uploader, exact emitted path and readiness gate, and
-  seven-day retention. Human-facing step labels are no longer treated as release-critical behavior.
-- Kept the stable and preview GitHub publishers on one descriptor-pinned canonical artifact triple from semantic
-  verification through remote publication. The exact VSIX, checksum, and provenance paths are revalidated before
-  every draft mutation, so sidecar replacement, symlink, hard-link, identity, metadata, or in-memory byte drift
-  fails before that mutation. The publisher now accepts the canonical 128 MiB VSIX ceiling while retaining separate
-  4 KiB provenance and 512 byte checksum bounds.
-- Rebuilt preview delivery as a manual candidate-first flow from protected `main`. One package job authors the exact
-  VSIX/checksum/provenance triple, Linux owns the complete source/full suite once, and parallel native,
-  installed-performance, released/remote Jupyter, and Remote SSH lanes consume only that immutable artifact ID.
-  `publish: false` reaches no protected environment, secret, write permission, tag, or registry mutation.
-- Unified stable and preview GitHub publication with an explicit reusable Open VSX promotion. Every public mutation
-  owner shares one non-cancelling `queue: max` group so pending releases are not displaced, and preview Open VSX
-  publication derives `--pre-release` only from verified public metadata. The branch-neutral exact-tag transaction is
-  now separate from stable and preview source-branch policy wrappers.
-- Reserved the protected `release/1.x` line for stable v1 maintenance while `main` owns `1.99.x` v2 previews and
-  later v2 releases. CI, CodeQL, cross-platform acceptance, stable tag publication, and Marketplace recovery now
-  enforce that version-derived boundary; fixes merge into v1 first and move to `main` through reviewed forward-port
-  pull requests. Marketplace intake also proves every selected tag commit is contained in its version-owned public
-  branch and is the exact public lightweight tag target instead of trusting matching package metadata or a peeled
-  annotated tag.
-- Completed immutable GitHub publication for both stable and future preview channels. The publisher now
-  creates or resumes one exact draft, uploads and downloads all three canonical assets for byte verification, and
-  only then publishes. The future-only repository setting is enabled and both workflows now require
-  `immutable: true` before registry promotion; partial public releases, duplicate/conflicting drafts, tag or asset
-  drift, missing/false immutable state, and post-publication changes fail closed.
-- Bounded failure-evidence credential matching to 8 KiB logical lines, with conservative fail-closed handling for
-  longer credential-shaped diagnostics. Maximum-size hostile inputs now run in a dedicated 64 MiB child heap with
-  a hard deadline, preventing malformed editor output from exhausting the developer desktop during local tests.
-- Serialized public memory-intensive local commands through one crash-released repository lease shared across clones
-  and worktrees. Overlapping tests, packaging, editor runs, media capture, and benchmarks now fail before allocating
-  substantial memory; packaging retains that lease across clean, build, checks, tests, and the final VSIX writer. The
-  local Linux wrapper also applies a conservative process-tree memory watchdog. It arms a parent-leased child
-  subreaper and a secondary cleanup lease before launch, so killing the wrapper makes the helper terminate and reap its
-  exact tree while preventing a replacement command from overlapping cleanup. Cleanup-token accept failures remain
-  latched behind that lease until the tree is empty. Every per-PID signal revalidates the captured process-start
-  identity first. macOS, Windows, and explicitly disabled modes make no descendant-containment claim; numeric limits
-  fail closed on those unsupported platforms. The editor-heavy feasibility comparison now acquires the same lease and
-  guard.
-- Added a fail-closed pull-request fast path for non-packaged documentation. Exact `docs/**`, contributor/security
-  guides, and contribution-template changes still run formatting, lint, strict types, generated-document freshness,
-  licenses, and workflow contracts, while checksum packaging and main-CI product/editor job IDs report explicit
-  skips to the protected aggregate. A hosted probe found that job-level skipped matrices lose their expanded check
-  names, so directly protected cross-platform and CodeQL matrices now expand lightweight context-carrier cells
-  without checkout, toolchain setup, analysis, or tests. Empty, mixed, unknown, shipped README/license/changelog,
-  substantive, and non-PR changes keep the complete matrix; malformed classification fails every protected context.
-- Reserved the exact numeric `1.99.x` band for Open Wrangler 2 Marketplace pre-releases while retaining legacy
-  `0.<odd-minor>.x` previews and every historical stable `1.x` classification outside that band. Release metadata
-  must still opt into the matching channel explicitly; this classifier change does not publish or trigger a release.
-- Reduced CI repetition without relaxing product acceptance: obsolete pull-request heads now cancel their own
-  superseded runs, the coverage lane exclusively owns the complete TypeScript/Python and exact PySpark suites, and
-  stable Linux validation runs script contracts once before instrumented coverage instead of executing both full
-  suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
-- Made affected pull-request released-Jupyter acceptance consume and revalidate the same checksum-bound canonical
-  VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
-  for ready product changes and to be skipped for documentation-only or package-only changes, draft feedback, or
-  protected-branch pushes. Draft `validate` remains deliberately failed; the separate weekly/manual workflow remains non-cancelling
-  ecosystem-drift evidence.
-- Unblocked the optional clean-room Data Wrangler comparison on current ipykernel launch syntax: the exact-runtime
-  guard now accepts both separate and equals-style connection-file arguments, while bounded path-free command-shape
-  diagnostics explain future mismatches without exposing interpreter or connection paths. The documented fixture
-  environment now includes Polars, and the complete feasibility sequence is verified with pinned Python 3.12.
+- Experimental PySpark sessions load their first page without counting, indexing, or caching the complete dataframe.
+  Pages remain sequential, the exact total appears on the final page, and confirmed filters, sorts, widths, and
+  selection survive recovery.
+- README and gallery screenshots are captured losslessly at 2× resolution. Release checks verify their displayed and
+  intrinsic sizes on GitHub, Visual Studio Marketplace, and Open VSX.
+- The Data Wrangler comparison uses a pinned Python 3.12 environment with Pandas and Polars and recognizes current
+  ipykernel and VS Code notebook controls.
+
+### Development and release
+
+- Stable v1 maintenance lives on `release/1.x`. The protected `main` branch is reserved for Open Wrangler 2 previews
+  and later v2 releases.
+- Stable and preview workflows package once, test that exact VSIX, and verify the same bytes on GitHub, Open VSX, and
+  Visual Studio Marketplace. GitHub release text comes from the reviewed notes in the tagged commit.
+- Draft, documentation-only, and package-only pull requests run smaller relevant test sets. Ready product changes still
+  run the complete editor, notebook, accessibility, packaging, and cross-platform gates, while obsolete runs cancel
+  promptly and repeated coverage work has been removed.
+- Memory-intensive local commands share a crash-safe lease so packaging, editor tests, screenshots, and benchmarks
+  cannot overlap accidentally. Linux also watches the owned process tree and stops it before it can exhaust the
+  developer machine.
+- Failure evidence remains bounded and redacted, including when malformed editor output contains very long lines.
 
 ## [1.2.0] - 2026-08-01
 
