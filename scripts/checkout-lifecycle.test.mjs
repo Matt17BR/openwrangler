@@ -1930,6 +1930,16 @@ function archiveForQuarantine(fixture, slug, options = {}) {
   };
 }
 
+function addFetchHeadOnlyObject(fixture, archived, message) {
+  const tree = git(fixture.repository, "rev-parse", `${archived.checkout.branch}^{tree}`);
+  const objectId = git(fixture.repository, "commit-tree", tree, "-m", message);
+  writeFileSync(
+    join(archived.cleanup.checkout.gitAdmin.path, "FETCH_HEAD"),
+    `${objectId}\t\tbranch 'unarchived' of local\n`
+  );
+  return objectId;
+}
+
 function createQuarantineJournal(fixture, archived, operationId = "1".repeat(32)) {
   mkdirSync(archived.managed.paths.quarantines, { mode: 0o700 });
   const journalPath = join(
@@ -2608,6 +2618,121 @@ test("retirement archive preserves a unique linked-worktree ORIG_HEAD as a bundl
       git(fixture.root, `--git-dir=${receipt.archive.verification.repository.path}`, "cat-file", "-t", dangling),
       "commit"
     );
+  });
+});
+
+test("retirement archive proves every target FETCH_HEAD object survives recovery", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "archive-fetch-head", { manager: managed });
+    managed.finish({ slug: "archive-fetch-head", ownerTask: "/root/archive-fetch-head", expectedRevision: 1 });
+    const cleanup = entry(fixture, "archive-fetch-head");
+    managed.planRetirement({
+      slug: "archive-fetch-head",
+      ownerTask: "/root/archive-fetch-head",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const current = git(checkout.checkoutPath, "rev-parse", "HEAD");
+    const tree = git(checkout.checkoutPath, "rev-parse", "HEAD^{tree}");
+    const fetched = git(checkout.checkoutPath, "commit-tree", tree, "-p", current, "-m", "Fetched commit");
+    git(fixture.repository, "update-ref", "refs/remotes/origin/fetched", fetched);
+    writeFileSync(
+      join(cleanup.checkout.gitAdmin.path, "FETCH_HEAD"),
+      Buffer.concat([
+        Buffer.from(`${current}\t\tbranch 'main' of local\tpath\n`, "utf8"),
+        Buffer.from(`${fetched}\tnot-for-merge\tbranch 'fetched' of local-`, "utf8"),
+        Buffer.from([0xff]),
+        Buffer.from(`\n${current}\t\t\n`, "utf8")
+      ])
+    );
+
+    const result = managed.archiveRetirement({
+      slug: "archive-fetch-head",
+      ownerTask: "/root/archive-fetch-head",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+
+    const receipt = JSON.parse(readFileSync(join(dirname(result.archivePath), "receipt.json"), "utf8"));
+    const recovered = receipt.archive.verification.repository.path;
+    assert.equal(git(fixture.root, `--git-dir=${recovered}`, "cat-file", "-t", current), "commit");
+    assert.equal(git(fixture.root, `--git-dir=${recovered}`, "cat-file", "-t", fetched), "commit");
+    assert.ok(receipt.verification.recovery.resolvedObjects.count >= 2);
+    assert.deepEqual(receipt.verification.recovery.requiredObjects, receipt.git.safety.targetFetchHead.objectIds);
+  });
+});
+
+test("retirement archive rejects malformed and unresolvable target FETCH_HEAD entries", () => {
+  for (const [suffix, content] of [
+    ["malformed", "not-a-fetch-head-entry\n"],
+    ["missing", `${"f".repeat(40)}\tnot-for-merge\tbranch 'missing' of local\n`]
+  ]) {
+    withRepository((fixture) => {
+      const slug = `archive-fetch-head-${suffix}`;
+      const managed = manager(fixture, { run: fixtureRun() });
+      create(fixture, slug, { manager: managed });
+      managed.finish({ slug, ownerTask: `/root/${slug}`, expectedRevision: 1 });
+      const cleanup = entry(fixture, slug);
+      managed.planRetirement({
+        slug,
+        ownerTask: `/root/${slug}`,
+        expectedRevision: 1,
+        expectedGeneration: cleanup.generation
+      });
+      writeFileSync(join(cleanup.checkout.gitAdmin.path, "FETCH_HEAD"), content);
+
+      lifecycleError(
+        () =>
+          managed.archiveRetirement({
+            slug,
+            ownerTask: `/root/${slug}`,
+            expectedRevision: 1,
+            expectedGeneration: cleanup.generation
+          }),
+        "archive-not-eligible"
+      );
+      assert.equal(existsSync(managed.paths.archives), false);
+    });
+  }
+});
+
+test("retirement archive rejects an object reachable only from target FETCH_HEAD", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun() });
+    const checkout = create(fixture, "archive-fetch-head-only", { manager: managed });
+    managed.finish({
+      slug: "archive-fetch-head-only",
+      ownerTask: "/root/archive-fetch-head-only",
+      expectedRevision: 1
+    });
+    const cleanup = entry(fixture, "archive-fetch-head-only");
+    managed.planRetirement({
+      slug: "archive-fetch-head-only",
+      ownerTask: "/root/archive-fetch-head-only",
+      expectedRevision: 1,
+      expectedGeneration: cleanup.generation
+    });
+    const tree = git(checkout.checkoutPath, "rev-parse", "HEAD^{tree}");
+    const unreachable = git(checkout.checkoutPath, "commit-tree", tree, "-m", "FETCH_HEAD-only commit");
+    writeFileSync(
+      join(cleanup.checkout.gitAdmin.path, "FETCH_HEAD"),
+      `${unreachable}\t\tbranch 'unreachable' of local\n`
+    );
+
+    lifecycleError(
+      () =>
+        managed.archiveRetirement({
+          slug: "archive-fetch-head-only",
+          ownerTask: "/root/archive-fetch-head-only",
+          expectedRevision: 1,
+          expectedGeneration: cleanup.generation
+        }),
+      "archive-not-eligible"
+    );
+    const attempt = join(managed.paths.archives, `archive-fetch-head-only.${cleanup.generation}.1`);
+    assert.equal(existsSync(join(attempt, "complete.json")), false);
+    assert.equal(existsSync(join(attempt, "receipt.json")), false);
   });
 });
 
@@ -4128,6 +4253,132 @@ test("managed retirement waits for a later boot, preserves the branch, and tombs
         }),
       "checkout-slug-retired"
     );
+  });
+});
+
+test("managed retirement refuses FETCH_HEAD added after archive completion", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun(), readBootId: () => BOOT_A });
+    const archived = archiveForQuarantine(fixture, "fetch-after-archive", { manager: managed });
+    addFetchHeadOnlyObject(fixture, archived, "Added after archive completion");
+
+    lifecycleError(
+      () => managed.enrollRetirement({ kind: "managed", slug: "fetch-after-archive" }),
+      "retirement-source-changed"
+    );
+    assert.equal(existsSync(archived.checkout.checkoutPath), true);
+  });
+});
+
+test("managed retirement accepts a version 1 archive that predated FETCH_HEAD support", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun(), readBootId: () => BOOT_A });
+    const archived = archiveForQuarantine(fixture, "fetch-v1-archive", { manager: managed });
+    const receiptPath = join(archived.attemptPath, "receipt.json");
+    const completionPath = join(archived.attemptPath, "complete.json");
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    receipt.protocol = "openwrangler-checkout-archive-v1";
+    delete receipt.git.safety.targetFetchHead;
+    delete receipt.verification.recovery.requiredObjects;
+    writeFileSync(receiptPath, `${JSON.stringify(receipt)}\n`);
+
+    const completion = JSON.parse(readFileSync(completionPath, "utf8"));
+    completion.receipt = fileReceipt(receiptPath);
+    writeFileSync(completionPath, `${JSON.stringify(completion)}\n`);
+
+    const enrollment = managed.enrollRetirement({ kind: "managed", slug: "fetch-v1-archive" });
+    assert.equal(enrollment.status, "enrolled-next-boot");
+    assert.equal(existsSync(archived.checkout.checkoutPath), true);
+  });
+});
+
+test("managed retirement rejects a tampered FETCH_HEAD receipt with entries but no object IDs", () => {
+  withRepository((fixture) => {
+    const managed = manager(fixture, { run: fixtureRun(), readBootId: () => BOOT_A });
+    const archived = archiveForQuarantine(fixture, "fetch-tampered-receipt", { manager: managed });
+    const receiptPath = join(archived.attemptPath, "receipt.json");
+    const completionPath = join(archived.attemptPath, "complete.json");
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    receipt.git.safety.targetFetchHead = {
+      present: true,
+      byteLength: 1,
+      sha256: "a".repeat(64),
+      entryCount: 1,
+      objectIds: { count: 0, sha256: createHash("sha256").update("").digest("hex") }
+    };
+    writeFileSync(receiptPath, `${JSON.stringify(receipt)}\n`);
+
+    const completion = JSON.parse(readFileSync(completionPath, "utf8"));
+    completion.receipt = fileReceipt(receiptPath);
+    writeFileSync(completionPath, `${JSON.stringify(completion)}\n`);
+
+    lifecycleError(
+      () => managed.enrollRetirement({ kind: "managed", slug: "fetch-tampered-receipt" }),
+      "invalid-archive"
+    );
+    assert.equal(existsSync(archived.checkout.checkoutPath), true);
+  });
+});
+
+test("managed retirement holds before moving when FETCH_HEAD changes after enrollment", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "a".repeat(32)
+    });
+    const archived = archiveForQuarantine(fixture, "fetch-after-enrollment", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "fetch-after-enrollment" });
+    addFetchHeadOnlyObject(fixture, archived, "Added after enrollment");
+
+    bootId = BOOT_B;
+    assert.deepEqual(managed.sweep().results, [
+      {
+        kind: "managed",
+        slug: "fetch-after-enrollment",
+        state: "held",
+        code: "retirement-source-changed",
+        layout: "original",
+        journal: "eligible",
+        moved: false,
+        removed: false
+      }
+    ]);
+    assert.equal(existsSync(archived.checkout.checkoutPath), true);
+  });
+});
+
+test("managed retirement holds before purge when FETCH_HEAD changes after quarantine", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    let interrupt = true;
+    const options = {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "b".repeat(32)
+    };
+    const managed = manager(fixture, {
+      ...options,
+      hooks: {
+        afterRetirementQuarantineRecorded() {
+          if (interrupt) throw new Error("stop after quarantine");
+        }
+      }
+    });
+    const archived = archiveForQuarantine(fixture, "fetch-after-quarantine", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "fetch-after-quarantine" });
+    bootId = BOOT_B;
+    assert.throws(() => managed.sweep(), /stop after quarantine/u);
+    addFetchHeadOnlyObject(fixture, archived, "Added after quarantine");
+
+    interrupt = false;
+    const result = manager(fixture, options).sweep().results[0];
+    assert.equal(result.state, "held-after-move");
+    assert.equal(result.code, "retirement-source-changed");
+    assert.equal(result.layout, "quarantine");
+    assert.equal(result.moved, true);
+    assert.equal(result.removed, false);
   });
 });
 

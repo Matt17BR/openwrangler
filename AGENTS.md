@@ -159,6 +159,11 @@ Re-running the command validates and reuses an exact enrollment; if the source c
 without writing another plan or archive. Do not replace this command with a remembered sequence of lower-level
 commands.
 
+A managed worktree may retain `FETCH_HEAD` when it finishes. The archive checks its bounded Git line structure while
+treating each human-readable description as opaque bytes. It binds the exact file, resolves every listed object, and
+proves every unique OID exists in the recovered repository. Enrollment, move, and purge recheck that binding. An
+object reachable only through `FETCH_HEAD` blocks retirement; never create a source ref merely to make it archivable.
+
 Older `cleanup-pending` worktrees can be prepared with `checkout:plan-retirement` and
 `checkout:archive-retirement`, then explicitly enrolled with
 `npm run checkout:enroll-retirement -- <slug> --kind managed`. A stale plan is never overwritten: the next reviewed

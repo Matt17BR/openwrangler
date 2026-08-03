@@ -39,7 +39,8 @@ const RECEIPT_PROTOCOL = "openwrangler-checkout-receipt-v2";
 const CLEANUP_REQUEST_PROTOCOL = "openwrangler-cleanup-request-v2";
 const RETIREMENT_PLAN_PROTOCOL = "openwrangler-retirement-plan-v1";
 const RETIREMENT_CHECKS_PROTOCOL = "openwrangler-retirement-deferred-checks-v1";
-const ARCHIVE_RECEIPT_PROTOCOL = "openwrangler-checkout-archive-v1";
+const ARCHIVE_RECEIPT_PROTOCOL_V1 = "openwrangler-checkout-archive-v1";
+const ARCHIVE_RECEIPT_PROTOCOL = "openwrangler-checkout-archive-v2";
 const ARCHIVE_COMPLETION_PROTOCOL = "openwrangler-checkout-archive-completion-v1";
 const QUARANTINE_EVENT_PROTOCOL = "openwrangler-checkout-quarantine-event-v1";
 const MANAGER_BOOTSTRAP_PROTOCOL = "openwrangler-checkout-manager-bootstrap-v1";
@@ -98,6 +99,8 @@ const MAXIMUM_MANAGER_REPOSITORY_DEPTH = 16;
 const MAXIMUM_ARCHIVE_DIRECTORIES = MAXIMUM_ENTRIES * MAXIMUM_ARCHIVE_ATTEMPTS;
 const MAXIMUM_ARCHIVE_REFS = 32_768;
 const MAXIMUM_ARCHIVE_PACK_FILES = 16_384;
+const MAXIMUM_ARCHIVE_FETCH_HEAD_BYTES = 4 * 1024 * 1024;
+const MAXIMUM_ARCHIVE_FETCH_HEAD_ENTRIES = 32_768;
 const MAXIMUM_ARCHIVE_REFLOG_BYTES = 16 * 1024 * 1024;
 const MAXIMUM_ARCHIVE_REFLOG_ENTRIES = 262_144;
 const MAXIMUM_VERIFICATION_FILES = 4096;
@@ -317,7 +320,7 @@ function ensurePrivateDirectory(path) {
   return assertPrivateDirectory(path, path);
 }
 
-function readBoundedFile(path, maximumBytes, label, privateMode = undefined, expectedLinks = 1n) {
+function readBoundedBytes(path, maximumBytes, label, privateMode = undefined, expectedLinks = 1n) {
   let descriptor;
   try {
     descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -342,15 +345,24 @@ function readBoundedFile(path, maximumBytes, label, privateMode = undefined, exp
     if (!sameIdentity(identityOf(before), identityOf(after)) || before.size !== after.size) {
       fail("registry-changed", `${label} changed while it was read.`);
     }
-    return Object.freeze({
-      text: new TextDecoder("utf-8", { fatal: true }).decode(buffer),
-      identity: identityOf(before)
-    });
+    return Object.freeze({ bytes: buffer, identity: identityOf(before) });
   } catch (error) {
     if (error instanceof CheckoutLifecycleError) throw error;
     fail("unsafe-registry", `${label} could not be read safely: ${error.message}`);
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function readBoundedFile(path, maximumBytes, label, privateMode = undefined, expectedLinks = 1n) {
+  const file = readBoundedBytes(path, maximumBytes, label, privateMode, expectedLinks);
+  try {
+    return Object.freeze({
+      text: new TextDecoder("utf-8", { fatal: true }).decode(file.bytes),
+      identity: file.identity
+    });
+  } catch (error) {
+    fail("unsafe-registry", `${label} could not be read safely: ${error.message}`);
   }
 }
 
@@ -6356,15 +6368,78 @@ export function createCheckoutManager(options = {}) {
     });
   }
 
+  function captureFetchHead(gitDirectory, objectIdLength, label) {
+    const path = join(gitDirectory, "FETCH_HEAD");
+    if (!entryExistsNoFollow(path, `${label} FETCH_HEAD`)) {
+      return Object.freeze({ objectIds: Object.freeze([]), state: null });
+    }
+    const file = readBoundedBytes(path, MAXIMUM_ARCHIVE_FETCH_HEAD_BYTES, `${label} FETCH_HEAD`);
+    if (file.bytes.length !== 0 && file.bytes.at(-1) !== 0x0a) {
+      fail("archive-not-eligible", `${label} FETCH_HEAD is malformed.`);
+    }
+    const objectIds = [];
+    let entryCount = 0;
+    let lineStart = 0;
+    for (let offset = 0; offset < file.bytes.length; offset += 1) {
+      if (file.bytes[offset] !== 0x0a) continue;
+      entryCount += 1;
+      if (entryCount > MAXIMUM_ARCHIVE_FETCH_HEAD_ENTRIES) {
+        fail("archive-not-eligible", `${label} FETCH_HEAD contains too many entries.`);
+      }
+      const line = file.bytes.subarray(lineStart, offset);
+      lineStart = offset + 1;
+      const firstTab = line.indexOf(0x09);
+      const secondTab = firstTab === -1 ? -1 : line.indexOf(0x09, firstTab + 1);
+      const oidBytes = firstTab === -1 ? Buffer.alloc(0) : line.subarray(0, firstTab);
+      const marker = secondTab === -1 ? Buffer.alloc(0) : line.subarray(firstTab + 1, secondTab);
+      const description = secondTab === -1 ? Buffer.alloc(0) : line.subarray(secondTab + 1);
+      if (
+        oidBytes.length !== objectIdLength ||
+        [...oidBytes].some((byte) => !(byte >= 0x30 && byte <= 0x39) && !(byte >= 0x61 && byte <= 0x66)) ||
+        !(marker.length === 0 || (marker.length === 13 && marker.equals(Buffer.from("not-for-merge", "ascii")))) ||
+        description.includes(0x00)
+      ) {
+        fail("archive-not-eligible", `${label} FETCH_HEAD is malformed.`);
+      }
+      objectIds.push(oidBytes.toString("ascii"));
+    }
+    return Object.freeze({
+      objectIds: Object.freeze([...new Set(objectIds)].sort()),
+      state: Object.freeze({
+        path,
+        identity: file.identity,
+        byteLength: file.bytes.length,
+        sha256: sha256(file.bytes),
+        entryCount
+      })
+    });
+  }
+
+  function objectIdsReceipt(objectIds) {
+    const canonical = objectIds.length === 0 ? "" : `${objectIds.join("\n")}\n`;
+    return Object.freeze({ count: objectIds.length, sha256: sha256(canonical) });
+  }
+
+  function fetchHeadReceipt(fetchHead) {
+    return Object.freeze({
+      present: fetchHead.state !== null,
+      byteLength: fetchHead.state?.byteLength ?? 0,
+      sha256: fetchHead.state?.sha256 ?? sha256(""),
+      entryCount: fetchHead.state?.entryCount ?? 0,
+      objectIds: objectIdsReceipt(fetchHead.objectIds)
+    });
+  }
+
   function captureTargetAdminState(entry, objectIdLength) {
     const adminPath = entry.checkout.gitAdmin.path;
     revalidatePathIdentity(adminPath, entry.checkout.gitAdmin.identity, "Target Git admin", "directory");
-    const allowedFiles = new Set(["COMMIT_EDITMSG", "HEAD", "ORIG_HEAD", "commondir", "gitdir", "index"]);
+    const allowedFiles = new Set(["COMMIT_EDITMSG", "FETCH_HEAD", "HEAD", "ORIG_HEAD", "commondir", "gitdir", "index"]);
     const allowedDirectories = new Set(["logs", "refs"]);
     const records = [];
     const entries = readDirectoryBounded(adminPath, 32, "The target Git admin directory").sort((left, right) =>
       Buffer.compare(Buffer.from(left.name), Buffer.from(right.name))
     );
+    let fetchHead = Object.freeze({ objectIds: Object.freeze([]), state: null });
     for (const item of entries) {
       const path = join(adminPath, item.name);
       const metadata = lstatSync(path, { bigint: true });
@@ -6376,9 +6451,19 @@ export function createCheckoutManager(options = {}) {
           fail("archive-not-eligible", "The target Git admin directory contains an unsafe file.");
         }
         const identity = identityOf(metadata);
-        records.push(
-          `f\0${item.name}\0${identity.device}\0${identity.inode}\0${metadata.size}\0${metadata.mtimeNs}\0${metadata.ctimeNs}\n`
-        );
+        if (item.name === "FETCH_HEAD") {
+          fetchHead = captureFetchHead(adminPath, objectIdLength, "Target worktree");
+          if (fetchHead.state === null || !sameIdentity(fetchHead.state.identity, identity)) {
+            fail("registry-changed", "Target worktree FETCH_HEAD changed while it was inspected.");
+          }
+          records.push(
+            `f\0${item.name}\0${identity.device}\0${identity.inode}\0${metadata.size}\0${metadata.mtimeNs}\0${metadata.ctimeNs}\0${fetchHead.state.byteLength}\0${fetchHead.state.sha256}\0${fetchHead.state.entryCount}\n`
+          );
+        } else {
+          records.push(
+            `f\0${item.name}\0${identity.device}\0${identity.inode}\0${metadata.size}\0${metadata.mtimeNs}\0${metadata.ctimeNs}\n`
+          );
+        }
         continue;
       }
       if (item.isDirectory() && allowedDirectories.has(item.name)) {
@@ -6439,9 +6524,33 @@ export function createCheckoutManager(options = {}) {
     revalidatePathIdentity(adminPath, entry.checkout.gitAdmin.identity, "Target Git admin", "directory");
     return Object.freeze({
       sha256: sha256(records.join("")),
+      fetchHead: fetchHeadReceipt(fetchHead),
+      fetchHeadObjectIds: fetchHead.objectIds,
       reflogEntryCount,
       reflogObjectIds: Object.freeze([...new Set(reflogObjectIds)].sort())
     });
+  }
+
+  function assertCommonArchiveObjectsResolve(objectIds, objectFormat, label) {
+    if (objectIds.length === 0) return;
+    const expectedLength = objectFormat === "sha1" ? 40 : 64;
+    const output = requireCommonArchiveCommand(
+      ["--no-pager", "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+      label,
+      { input: `${objectIds.join("\n")}\n` }
+    ).stdout;
+    const lines = output.split("\n");
+    if (lines.at(-1) !== "") fail("archive-not-eligible", `${label} returned malformed output.`);
+    lines.pop();
+    if (
+      lines.length !== objectIds.length ||
+      lines.some((line, index) => {
+        const match = /^([0-9a-f]+) (blob|commit|tag|tree) (0|[1-9][0-9]*)$/u.exec(line);
+        return match === null || match[1].length !== expectedLength || match[1] !== objectIds[index];
+      })
+    ) {
+      fail("archive-not-eligible", `${label} contains an object that cannot be resolved.`);
+    }
   }
 
   function resolveArchiveCommitIds(objectIds, objectFormat, label, requireEveryObject) {
@@ -6680,6 +6789,11 @@ export function createCheckoutManager(options = {}) {
     linkedHeads.sort((left, right) => Buffer.compare(Buffer.from(left.ref), Buffer.from(right.ref)));
     pseudorefs.sort((left, right) => Buffer.compare(Buffer.from(left.ref), Buffer.from(right.ref)));
     const targetAdminState = captureTargetAdminState(entry, expectedLength);
+    assertCommonArchiveObjectsResolve(
+      targetAdminState.fetchHeadObjectIds,
+      objectFormat,
+      "Target FETCH_HEAD object inspection"
+    );
     const bundleHeads = Object.freeze(
       [
         ...refs,
@@ -6690,6 +6804,12 @@ export function createCheckoutManager(options = {}) {
     );
     if (new Set(bundleHeads.map(({ ref }) => ref)).size !== bundleHeads.length) {
       fail("archive-not-eligible", "Recovery roots contain duplicate names.");
+    }
+    if (
+      new Set([...bundleHeads.map(({ oid }) => oid), ...targetAdminState.fetchHeadObjectIds]).size >
+      MAXIMUM_ARCHIVE_REFS
+    ) {
+      fail("archive-not-eligible", "The recovery archive would need too many retained objects.");
     }
     assertTargetReflogReachable(targetAdminState.reflogObjectIds, bundleHeads, objectFormat);
     const objectDiskBytes = decimalBigInt(
@@ -6709,6 +6829,8 @@ export function createCheckoutManager(options = {}) {
       linkedHeads: Object.freeze(linkedHeads),
       pseudorefs: Object.freeze(pseudorefs),
       pseudorefsReceipt: refsReceipt(pseudorefs),
+      fetchHead: targetAdminState.fetchHead,
+      fetchHeadObjectIds: targetAdminState.fetchHeadObjectIds,
       bundleHeads,
       bundleHeadsReceipt: refsReceipt(bundleHeads),
       safety: Object.freeze({
@@ -6881,7 +7003,7 @@ export function createCheckoutManager(options = {}) {
     return Object.freeze({ path, identity });
   }
 
-  function proveBundleRecovery(attempt, bundle, expectedHeads, objectFormat) {
+  function proveBundleRecovery(attempt, bundle, expectedHeads, objectFormat, requiredObjectIds = []) {
     const template = createPrivateAttemptDirectory(attempt, "verification-template", "Verification template");
     const verification = createPrivateAttemptDirectory(attempt, "verification.git", "Verification repository");
     requireStandaloneArchiveGitCommand(
@@ -6927,7 +7049,10 @@ export function createCheckoutManager(options = {}) {
     if (!isDeepStrictEqual(unbundledHeads, expectedHeads)) {
       fail("archive-ref-mismatch", "The recovery repository did not receive every advertised bundle head.");
     }
-    const uniqueObjectIds = [...new Set(expectedHeads.map((head) => head.oid))].sort((left, right) =>
+    const advertisedObjectIds = [...new Set(expectedHeads.map((head) => head.oid))].sort((left, right) =>
+      Buffer.compare(Buffer.from(left), Buffer.from(right))
+    );
+    const uniqueObjectIds = [...new Set([...advertisedObjectIds, ...requiredObjectIds])].sort((left, right) =>
       Buffer.compare(Buffer.from(left), Buffer.from(right))
     );
     const resolved = requireArchiveGitCommand(
@@ -6938,13 +7063,19 @@ export function createCheckoutManager(options = {}) {
     ).stdout;
     const resolvedLines = resolved.split("\n").filter(Boolean);
     const expectedObjectIdLength = objectFormat === "sha1" ? 40 : 64;
-    if (
-      resolvedLines.length !== uniqueObjectIds.length ||
-      resolvedLines.some((line, index) => {
-        const match = /^([0-9a-f]+) (blob|commit|tag|tree) (0|[1-9][0-9]*)$/u.exec(line);
-        return match === null || match[1].length !== expectedObjectIdLength || match[1] !== uniqueObjectIds[index];
-      })
-    ) {
+    const requiredObjectIdSet = new Set(requiredObjectIds);
+    let unresolvedRequiredObject = false;
+    let unresolvedAdvertisedObject = resolvedLines.length > uniqueObjectIds.length;
+    for (const [index, objectId] of uniqueObjectIds.entries()) {
+      const match = /^([0-9a-f]+) (blob|commit|tag|tree) (0|[1-9][0-9]*)$/u.exec(resolvedLines[index] ?? "");
+      const invalid = match === null || match[1].length !== expectedObjectIdLength || match[1] !== objectId;
+      if (invalid && requiredObjectIdSet.has(objectId)) unresolvedRequiredObject = true;
+      if (invalid && !requiredObjectIdSet.has(objectId)) unresolvedAdvertisedObject = true;
+    }
+    if (unresolvedRequiredObject || unresolvedAdvertisedObject) {
+      if (unresolvedRequiredObject) {
+        fail("archive-not-eligible", "A target FETCH_HEAD object is not reachable from the recovery archive roots.");
+      }
       fail("invalid-archive", "An advertised recovery head cannot be resolved in the verification repository.");
     }
     const rootRefs = Object.freeze(
@@ -7021,6 +7152,7 @@ export function createCheckoutManager(options = {}) {
       objectFormat,
       advertisedHeads: refsReceipt(unbundledHeads),
       resolvedObjects: Object.freeze({ count: uniqueObjectIds.length, sha256: sha256(resolved) }),
+      requiredObjects: objectIdsReceipt(requiredObjectIds),
       rootRefs: refsReceipt(rootRefs),
       unbundle: Object.freeze({ stdoutSha256: sha256(unbundle.stdout), stderrSha256: sha256(unbundle.stderr) }),
       fsck: Object.freeze({ stdoutSha256: sha256(fsck.stdout), stderrSha256: sha256(fsck.stderr) })
@@ -7038,6 +7170,63 @@ export function createCheckoutManager(options = {}) {
     ) {
       fail("invalid-archive", `${label} is malformed.`);
     }
+  }
+
+  function validateObjectIdsReceipt(value, label) {
+    exactKeys(value, ["count", "sha256"], label);
+    if (
+      !Number.isSafeInteger(value.count) ||
+      value.count < 0 ||
+      value.count > MAXIMUM_ARCHIVE_FETCH_HEAD_ENTRIES ||
+      !/^[0-9a-f]{64}$/u.test(value.sha256)
+    ) {
+      fail("invalid-archive", `${label} is malformed.`);
+    }
+  }
+
+  function validateFetchHeadReceipt(value, label) {
+    exactKeys(value, ["present", "byteLength", "sha256", "entryCount", "objectIds"], label);
+    validateObjectIdsReceipt(value.objectIds, `${label} object IDs`);
+    if (
+      typeof value.present !== "boolean" ||
+      !Number.isSafeInteger(value.byteLength) ||
+      value.byteLength < 0 ||
+      value.byteLength > MAXIMUM_ARCHIVE_FETCH_HEAD_BYTES ||
+      !/^[0-9a-f]{64}$/u.test(value.sha256) ||
+      !Number.isSafeInteger(value.entryCount) ||
+      value.entryCount < 0 ||
+      value.entryCount > MAXIMUM_ARCHIVE_FETCH_HEAD_ENTRIES ||
+      (!value.present &&
+        (value.byteLength !== 0 ||
+          value.sha256 !== sha256("") ||
+          value.entryCount !== 0 ||
+          value.objectIds.count !== 0 ||
+          value.objectIds.sha256 !== sha256(""))) ||
+      (value.present &&
+        ((value.byteLength === 0) !== (value.entryCount === 0) ||
+          (value.entryCount === 0) !== (value.objectIds.count === 0) ||
+          (value.byteLength === 0 && value.sha256 !== sha256("")) ||
+          value.entryCount < value.objectIds.count ||
+          (value.objectIds.count === 0 && value.objectIds.sha256 !== sha256(""))))
+    ) {
+      fail("invalid-archive", `${label} is malformed.`);
+    }
+  }
+
+  function absentFetchHeadReceipt() {
+    return Object.freeze({
+      present: false,
+      byteLength: 0,
+      sha256: sha256(""),
+      entryCount: 0,
+      objectIds: Object.freeze({ count: 0, sha256: sha256("") })
+    });
+  }
+
+  function archiveFetchHeadReceipt(archiveReceipt) {
+    return archiveReceipt.protocol === ARCHIVE_RECEIPT_PROTOCOL
+      ? archiveReceipt.git.safety.targetFetchHead
+      : absentFetchHeadReceipt();
   }
 
   function validateArchiveReceipt(value, entry, attempt, plan) {
@@ -7059,7 +7248,7 @@ export function createCheckoutManager(options = {}) {
       "Archive receipt"
     );
     if (
-      value.protocol !== ARCHIVE_RECEIPT_PROTOCOL ||
+      ![ARCHIVE_RECEIPT_PROTOCOL_V1, ARCHIVE_RECEIPT_PROTOCOL].includes(value.protocol) ||
       value.slug !== entry.slug ||
       value.generation !== entry.generation ||
       value.attempt !== attempt.attempt ||
@@ -7170,11 +7359,15 @@ export function createCheckoutManager(options = {}) {
         "packStateSha256",
         "privateRefCount",
         "targetAdminStateSha256",
+        ...(value.protocol === ARCHIVE_RECEIPT_PROTOCOL ? ["targetFetchHead"] : []),
         "targetReflogEntryCount",
         "unreachableTargetReflogCommitCount"
       ],
       "Archive repository safety receipt"
     );
+    if (value.protocol === ARCHIVE_RECEIPT_PROTOCOL) {
+      validateFetchHeadReceipt(value.git.safety.targetFetchHead, "Archive target FETCH_HEAD receipt");
+    }
     const objectIdLength = value.git.objectFormat === "sha256" ? 64 : 40;
     if (
       value.git.repository.path !== repository.commonGitDirectory ||
@@ -7237,11 +7430,22 @@ export function createCheckoutManager(options = {}) {
     exactKeys(value.verification.listHeads, ["count", "sha256"], "Bundle list-heads receipt");
     exactKeys(
       value.verification.recovery,
-      ["objectFormat", "advertisedHeads", "resolvedObjects", "rootRefs", "unbundle", "fsck"],
+      [
+        "objectFormat",
+        "advertisedHeads",
+        "resolvedObjects",
+        ...(value.protocol === ARCHIVE_RECEIPT_PROTOCOL ? ["requiredObjects"] : []),
+        "rootRefs",
+        "unbundle",
+        "fsck"
+      ],
       "Bundle recovery proof"
     );
     exactKeys(value.verification.recovery.advertisedHeads, ["count", "sha256"], "Recovered bundle heads");
     exactKeys(value.verification.recovery.resolvedObjects, ["count", "sha256"], "Resolved recovery objects");
+    if (value.protocol === ARCHIVE_RECEIPT_PROTOCOL) {
+      validateObjectIdsReceipt(value.verification.recovery.requiredObjects, "Required recovery objects");
+    }
     exactKeys(value.verification.recovery.rootRefs, ["count", "sha256"], "Published recovery roots");
     exactKeys(value.verification.recovery.unbundle, ["stdoutSha256", "stderrSha256"], "Unbundle proof");
     exactKeys(value.verification.recovery.fsck, ["stdoutSha256", "stderrSha256"], "Recovery fsck proof");
@@ -7256,9 +7460,14 @@ export function createCheckoutManager(options = {}) {
       !isDeepStrictEqual(value.verification.listHeads, value.git.bundleHeads) ||
       value.verification.recovery.objectFormat !== value.git.objectFormat ||
       !isDeepStrictEqual(value.verification.recovery.advertisedHeads, value.git.bundleHeads) ||
+      (value.protocol === ARCHIVE_RECEIPT_PROTOCOL &&
+        !isDeepStrictEqual(value.verification.recovery.requiredObjects, value.git.safety.targetFetchHead.objectIds)) ||
       !Number.isSafeInteger(value.verification.recovery.resolvedObjects.count) ||
       value.verification.recovery.resolvedObjects.count < 1 ||
-      value.verification.recovery.resolvedObjects.count > value.git.bundleHeads.count ||
+      (value.protocol === ARCHIVE_RECEIPT_PROTOCOL_V1
+        ? value.verification.recovery.resolvedObjects.count > value.git.bundleHeads.count
+        : value.verification.recovery.resolvedObjects.count > MAXIMUM_ARCHIVE_REFS ||
+          value.verification.recovery.requiredObjects.count > value.verification.recovery.resolvedObjects.count) ||
       !/^[0-9a-f]{64}$/u.test(value.verification.recovery.resolvedObjects.sha256) ||
       !Number.isSafeInteger(value.verification.recovery.rootRefs.count) ||
       value.verification.recovery.rootRefs.count !== value.verification.recovery.resolvedObjects.count ||
@@ -7493,6 +7702,32 @@ export function createCheckoutManager(options = {}) {
     revalidatePathIdentity(attempt.path, attempt.identity, "Archive attempt directory", "directory");
     revalidatePathIdentity(paths.archives, rootIdentity, "The archive journal", "directory");
     return anchor;
+  }
+
+  function completedArchiveFetchHead(archive) {
+    const receipt = readJsonReceipt(archive.receipt.path, MAXIMUM_ENTRY_BYTES, "Managed archive receipt");
+    if (
+      !sameIdentity(receipt.identity, archive.receipt.identity) ||
+      receipt.byteLength !== archive.receipt.byteLength ||
+      receipt.sha256 !== archive.receipt.sha256
+    ) {
+      fail("archive-changed", "The managed recovery archive receipt changed.");
+    }
+    const fetchHead = archiveFetchHeadReceipt(receipt.value);
+    validateFetchHeadReceipt(fetchHead, "Completed archive target FETCH_HEAD receipt");
+    return Object.freeze({ objectFormat: receipt.value.git.objectFormat, fetchHead });
+  }
+
+  function assertTargetFetchHeadMatchesArchive(entry, archive) {
+    const expected = completedArchiveFetchHead(archive);
+    const objectIdLength = expected.objectFormat === "sha256" ? 64 : 40;
+    revalidatePathIdentity(entry.checkout.gitAdmin.path, entry.checkout.gitAdmin.identity, "Git admin", "directory");
+    const current = fetchHeadReceipt(captureFetchHead(entry.checkout.gitAdmin.path, objectIdLength, "Target worktree"));
+    revalidatePathIdentity(entry.checkout.gitAdmin.path, entry.checkout.gitAdmin.identity, "Git admin", "directory");
+    if (!isDeepStrictEqual(current, expected.fetchHead)) {
+      fail("retirement-source-changed", "Target worktree FETCH_HEAD changed after recovery was archived.");
+    }
+    return current;
   }
 
   function validateQuarantineDeferredChecks(value) {
@@ -8028,10 +8263,12 @@ export function createCheckoutManager(options = {}) {
       fail("retirement-evidence-stale", "The current retirement evidence is stale; record a superseding plan first.");
     }
     const archive = readCompletedArchiveAnchor(entry);
+    assertTargetFetchHeadMatchesArchive(entry, archive);
     const second = captureRetirementEvidence(entry);
     if (!sameRetirementTargetEvidence(second, plan.value)) {
       fail("retirement-evidence-stale", "The checkout changed while retirement enrollment was checked.");
     }
+    assertTargetFetchHeadMatchesArchive(entry, archive);
     const entryLoaded = readJsonReceipt(
       entryPath(entry.slug, entry.generation),
       MAXIMUM_ENTRY_BYTES,
@@ -8280,6 +8517,7 @@ export function createCheckoutManager(options = {}) {
     if (!isDeepStrictEqual(archive.completion, eligible.source.archiveCompletion)) {
       fail("retirement-source-changed", "The managed recovery archive changed after enrollment.");
     }
+    assertTargetFetchHeadMatchesArchive(entry, archive);
     revalidatePathIdentity(quarantinePath, eligible.originalIdentity, "Quarantined managed checkout", "directory");
     const registry = worktreeRegistry(true);
     const records = registry.records.filter((record) => record.path === quarantinePath);
@@ -8364,6 +8602,7 @@ export function createCheckoutManager(options = {}) {
     if (!isDeepStrictEqual(confirmedArchive.completion, eligible.source.archiveCompletion)) {
       fail("retirement-source-changed", "The managed recovery archive changed during purge checks.");
     }
+    assertTargetFetchHeadMatchesArchive(entry, confirmedArchive);
     return Object.freeze({ entry, branchRef: `refs/heads/${entry.branch}`, head });
   }
 
@@ -8879,6 +9118,7 @@ export function createCheckoutManager(options = {}) {
         }
         hooks?.beforeRetirementMove?.(candidate, layout);
         if (candidate.kind === "managed") {
+          revalidateManagedEnrollment(expected);
           const result = commonGit(
             run,
             paths,
@@ -8940,6 +9180,7 @@ export function createCheckoutManager(options = {}) {
         }
         hooks?.beforeRetirementPurge?.(candidate, layout);
         if (candidate.kind === "managed") {
+          revalidateManagedQuarantine(expected, layout.quarantinePath);
           const result = commonGit(run, paths, repository, ["worktree", "remove", layout.quarantinePath], {
             allowFailure: true,
             env: auditGitEnvironment()
@@ -9688,7 +9929,13 @@ export function createCheckoutManager(options = {}) {
           fail("archive-ref-mismatch", "The verified Git bundle does not contain the exact repository refs.");
         }
         hooks?.beforeArchiveRecoveryProof?.(entry, attempt, bundle);
-        const recovery = proveBundleRecovery(attempt, bundle, firstGit.bundleHeads, firstGit.objectFormat);
+        const recovery = proveBundleRecovery(
+          attempt,
+          bundle,
+          firstGit.bundleHeads,
+          firstGit.objectFormat,
+          firstGit.fetchHeadObjectIds
+        );
         const secondEligibility = captureRetirementEvidence(entry);
         const secondGit = captureRepositoryArchiveState(entry, plan.value.git);
         if (!isDeepStrictEqual(secondEligibility, firstEligibility) || !isDeepStrictEqual(secondGit, firstGit)) {
@@ -9736,7 +9983,10 @@ export function createCheckoutManager(options = {}) {
             linkedHeads: refsReceipt(firstGit.linkedHeads),
             pseudorefs: firstGit.pseudorefsReceipt,
             bundleHeads: firstGit.bundleHeadsReceipt,
-            safety: firstGit.safety
+            safety: {
+              ...firstGit.safety,
+              targetFetchHead: firstGit.fetchHead
+            }
           },
           verification: {
             header: {
@@ -9755,6 +10005,7 @@ export function createCheckoutManager(options = {}) {
               objectFormat: recovery.objectFormat,
               advertisedHeads: recovery.advertisedHeads,
               resolvedObjects: recovery.resolvedObjects,
+              requiredObjects: recovery.requiredObjects,
               rootRefs: recovery.rootRefs,
               unbundle: recovery.unbundle,
               fsck: recovery.fsck
