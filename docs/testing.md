@@ -674,17 +674,19 @@ manifest from it. The specification format is checked in as
 digest, and contains no pending fields. Do not hand-author dynamic receipts. If the process stops after any one of
 those three publications, rerun the same preparation command: it recovers the journal, reconstructs the missing exact
 outputs, and does not regenerate retained roots or timestamps. The planner independently requires the exact
-preregistration, journal, specification path, and manifest path before it writes anything. Private driver and profile
-roots remain available for inspection.
+preregistration, journal, specification path, and manifest path before it writes anything. The private driver and
+opaque-safe profile templates remain available for inspection; the templates never contain Data Wrangler package
+files.
 
-Preparation captures the untimed Polars capabilities itself. For each release fixture it opens a warm Polars
-`study_frame` in a disposable clone of the sealed Data Wrangler profile and watches the actual Jupyter output through
-the neutral Playwright driver. The action must appear twice in a row with usable pointer geometry. A separate clone
-removes Data Wrangler and proves for thirty seconds that neither product action appears on the same ready Jupyter
-output. Each capture records the actual editor version, complete extension inventory, fixture verification, fixed
-monotonic observation trace, and source context. A missing, ambiguous, timed-out, obstructed, or changed result stops
-preparation. These three captures are outside the 96 measured trials. Their receipt bindings identify the exact editor
-distribution, configured-profile tree, fixture, and capture result in `preparation.json`.
+Preparation captures the untimed Polars capabilities itself. For each release fixture it reinstalls the pinned public
+Data Wrangler version into a disposable clone of the sealed, package-free profile, opens a warm Polars `study_frame`,
+and watches the actual Jupyter output through the neutral Playwright driver. The action must appear twice in a row with
+usable pointer geometry. A separate clone removes Data Wrangler and proves for thirty seconds that neither product
+action appears on the same ready Jupyter output. Each capture records the actual editor version, complete extension
+inventory, fixture verification, fixed monotonic observation trace, and source context. A missing, ambiguous,
+timed-out, obstructed, or changed result stops preparation. These three captures are outside the 96 measured trials.
+Their receipt bindings identify the exact editor distribution, configured-profile tree, fixture, and capture result in
+`preparation.json`.
 
 Each product warm-up uses the measured notebook driver's real durable request/acknowledgement bridge. Preparation
 responds to the complete warm sequence and checks that the editor receipt contains the same ordered exchanges before it
@@ -692,8 +694,9 @@ accepts the warmed profile. The driver leaves the Jupyter picker search empty un
 list, so a late discovery update cannot hide the route to the pinned kernel.
 
 Use the preparation receipt for the dry run and every recorded trial. Both commands choose the next schedule entry,
-clone the matching sealed profile, install the neutral driver into that clone, build all private paths, and run the
-same measured notebook journey. Callers do not hand-author a per-trial preparation file.
+clone the matching sealed profile, reinstall the pinned public Data Wrangler version when needed, install the neutral
+driver, build all private paths, and run the same measured notebook journey. Callers do not hand-author a per-trial
+preparation file.
 
 ```bash
 taskset --cpu-list <manifest-cpu-list> npm run comparison:diagnostic -- \
@@ -728,10 +731,13 @@ baseline, maximum, delta, and per-category PSS results. For Data Wrangler, it al
 engine evidence; an engine the public UI does not identify stays `unverified`.
 
 After a successful trial, `run-next` verifies that the editor and kernel process trees are empty and removes only the
-clone it created. If measurement or ownership is uncertain, it deliberately leaves that clone under the preparation
-root for review. The durable authorization journal prevents an action interrupted after dispatch from being repeated
-silently. A laptop shutdown therefore loses at most the in-flight, pre-authorization setup: rerun `status`, inspect any
-retained clone, and call `run-next` again only when the ledger says the entry is safe to run.
+clone it created. An uncertain Open Wrangler trial may retain its clone for review. A Data Wrangler clone is never
+deliberately retained: cleanup runs even after an uncertain trial so proprietary package files do not become study
+state. Every recursive removal checks the captured profile and parent identities immediately before deletion;
+replacement or containment ambiguity stops cleanup without touching the new path. The durable authorization journal
+prevents an action interrupted after dispatch from being repeated silently. A laptop shutdown therefore loses at most
+the in-flight, pre-authorization setup: rerun `status` and call `run-next` again only when the ledger says the entry is
+safe to run.
 
 `plan` opens and identifies the supplied controller and CPython executable itself. It writes those observed receipts
 into the manifest and rejects a specification that claims a different toolchain. Later cache preparation executes

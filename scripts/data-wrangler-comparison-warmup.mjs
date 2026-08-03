@@ -4,8 +4,11 @@ import { resolve } from "node:path";
 import { recoverDataWranglerComparisonDriver } from "./data-wrangler-comparison-driver.mjs";
 import { writeDataWranglerComparisonNotebook } from "./data-wrangler-comparison-notebook.mjs";
 import {
+  captureOpaqueSafeDataWranglerProfileTemplate,
   captureDataWranglerProfileTree,
-  cloneDataWranglerCapturedTemplate
+  cloneDataWranglerCapturedTemplate,
+  installOpaqueDataWranglerMarketplaceExtension,
+  retireDataWranglerComparisonTemplateClone
 } from "./data-wrangler-comparison-preparation.mjs";
 import { createDataWranglerComparisonTemplateInventory } from "./data-wrangler-comparison-inventory.mjs";
 import { materializeDataWranglerComparisonRunKernel } from "./data-wrangler-comparison-run-kernel.mjs";
@@ -269,6 +272,9 @@ export async function capturePreparedProductWarmups(
   const dependencies = {
     id: randomUUID,
     cloneTemplate: cloneDataWranglerCapturedTemplate,
+    captureTemplate: captureOpaqueSafeDataWranglerProfileTemplate,
+    installOpaqueExtension: installOpaqueDataWranglerMarketplaceExtension,
+    retireClone: retireDataWranglerComparisonTemplateClone,
     createEnvironment: createEditorAcceptanceEnvironment,
     configureTempRoot: configureEditorAcceptanceTempRoot,
     createSourceCopy: createDataWranglerComparisonSourceCopy,
@@ -297,62 +303,76 @@ export async function capturePreparedProductWarmups(
       fail(`Public warm-up has no sealed configured-only ${product} template.`);
     }
     const id = dependencies.id();
+    const cloneParent = resolve(studyRoot, "warmup-clones");
+    mkdirSync(cloneParent, { recursive: true, mode: 0o700 });
+    chmodSync(cloneParent, 0o700);
     const clone = dependencies.cloneTemplate(
       { ...configured, treeSha256: configuredTree },
-      { cloneRoot: resolve(studyRoot, "templates", product, `warmed-${id}`) }
+      { cloneRoot: resolve(studyRoot, "warmup-clones", `${product}-${id}`) }
     );
-    const runRoot = resolve(studyRoot, "warmup-runs", `${product}-${id}`);
-    mkdirSync(runRoot, { recursive: true, mode: 0o700 });
-    chmodSync(runRoot, 0o700);
-    const bridgeRoot = resolve(runRoot, "bridge");
-    mkdirSync(bridgeRoot, { mode: 0o700 });
-    chmodSync(bridgeRoot, 0o700);
-    const runEnvironment = dependencies.createEnvironment(environment, {
-      OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
-      OPEN_WRANGLER_EDITOR_TEMP_ROOT: runRoot
-    });
-    dependencies.configureTempRoot(runRoot, runEnvironment);
-    const runKernel = dependencies.materializeKernel({ runRoot, kernel });
-    const productExtension =
-      product === "open-wrangler"
-        ? { extensionId: specification.candidate.extensionId, version: specification.candidate.version }
-        : { extensionId: specification.baseline.extensionId, version: specification.baseline.version };
-    const expectedInventory = createDataWranglerComparisonTemplateInventory(productExtension);
-    assertInventory(
-      await dependencies.readInventory({
+    let completed = false;
+    let cloneRetired = false;
+    try {
+      const runRoot = resolve(studyRoot, "warmup-runs", `${product}-${id}`);
+      mkdirSync(runRoot, { recursive: true, mode: 0o700 });
+      chmodSync(runRoot, 0o700);
+      const bridgeRoot = resolve(runRoot, "bridge");
+      mkdirSync(bridgeRoot, { mode: 0o700 });
+      chmodSync(bridgeRoot, 0o700);
+      const runEnvironment = dependencies.createEnvironment(environment, {
+        OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
+        OPEN_WRANGLER_EDITOR_TEMP_ROOT: runRoot
+      });
+      dependencies.configureTempRoot(runRoot, runEnvironment);
+      const runKernel = dependencies.materializeKernel({ runRoot, kernel });
+      const productExtension =
+        product === "open-wrangler"
+          ? { extensionId: specification.candidate.extensionId, version: specification.candidate.version }
+          : { extensionId: specification.baseline.extensionId, version: specification.baseline.version };
+      const expectedInventory = createDataWranglerComparisonTemplateInventory(productExtension);
+      await dependencies.installOpaqueExtension({
+        product,
         editor,
         userData: clone.userData,
         extensions: clone.extensions,
         sandboxArgs: clone.sandboxArgs,
-        environment: runEnvironment
-      }),
-      expectedInventory
-    );
-    const sourceCopy = dependencies.createSourceCopy({
-      canonicalPath: fixturePath,
-      privateRoot: runRoot,
-      name: "warmup.csv"
-    });
-    const notebookPath = resolve(runRoot, "warmup.ipynb");
-    const requestPath = resolve(bridgeRoot, "request.json");
-    const acknowledgementPath = resolve(bridgeRoot, "acknowledgement.json");
-    const resultPath = resolve(runRoot, "result.json");
-    dependencies.writeNotebook(notebookPath, {
-      engine: "polars",
-      format: "csv",
-      kind: "warm",
-      fixture: {
-        id: fixture.id,
-        format: fixture.format,
-        rows: fixture.rows,
-        columns: fixture.columns,
-        sha256: fixture.sha256
-      },
-      kernel: { name: kernel.name, displayName: kernel.displayName },
-      sourceReceipt: sourceCopy.copyReceipt
-    });
-    let completed = false;
-    try {
+        environment: runEnvironment,
+        extension: productExtension,
+        label: "Official VS Code Data Wrangler warm-up Marketplace installation"
+      });
+      assertInventory(
+        await dependencies.readInventory({
+          editor,
+          userData: clone.userData,
+          extensions: clone.extensions,
+          sandboxArgs: clone.sandboxArgs,
+          environment: runEnvironment
+        }),
+        expectedInventory
+      );
+      const sourceCopy = dependencies.createSourceCopy({
+        canonicalPath: fixturePath,
+        privateRoot: runRoot,
+        name: "warmup.csv"
+      });
+      const notebookPath = resolve(runRoot, "warmup.ipynb");
+      const requestPath = resolve(bridgeRoot, "request.json");
+      const acknowledgementPath = resolve(bridgeRoot, "acknowledgement.json");
+      const resultPath = resolve(runRoot, "result.json");
+      dependencies.writeNotebook(notebookPath, {
+        engine: "polars",
+        format: "csv",
+        kind: "warm",
+        fixture: {
+          id: fixture.id,
+          format: fixture.format,
+          rows: fixture.rows,
+          columns: fixture.columns,
+          sha256: fixture.sha256
+        },
+        kernel: { name: kernel.name, displayName: kernel.displayName },
+        sourceReceipt: sourceCopy.copyReceipt
+      });
       const controlAbort = new AbortController();
       await dependencies.requireWatchHeadroom({ runRoot });
       const controlPromise = Promise.resolve().then(() =>
@@ -433,13 +453,20 @@ export async function capturePreparedProductWarmups(
         expectedInventory
       );
       dependencies.remove(runRoot, { recursive: true, force: false });
-      const tree = dependencies.captureTree(clone.root, `Public ${product} warmed template`);
+      const retainedRoot = resolve(studyRoot, "templates", product, `warmed-${id}`);
+      const tree = dependencies.captureTemplate(clone.root, retainedRoot, `Public ${product} warmed template`);
+      const retirement = dependencies.retireClone(clone);
+      if (retirement.status !== "retired" || retirement.treeEmpty !== true) {
+        fail(`Public ${product} warm-up clone was not retired.`);
+      }
+      cloneRetired = true;
       retainedTemplates.push(
         Object.freeze({
           product,
           kind: "warmed",
-          root: clone.root,
+          root: retainedRoot,
           sandboxArgs: clone.sandboxArgs,
+          inventory: expectedInventory,
           ...tree
         })
       );
@@ -452,8 +479,8 @@ export async function capturePreparedProductWarmups(
       );
       completed = true;
     } finally {
-      if (!completed) {
-        // Retain the exact profile and run journal for review; no uncertain state is reused.
+      if (!completed && !cloneRetired) {
+        dependencies.retireClone(clone);
       }
     }
   }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import test from "node:test";
@@ -189,7 +189,7 @@ function minimalPreparation(root, templates) {
 }
 
 test("preparation receipt protocol accounts for its updated embedded study records", () => {
-  assert.equal(DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL, "openwrangler-data-wrangler-comparison-preparation-v3");
+  assert.equal(DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL, "openwrangler-data-wrangler-comparison-preparation-v4");
 });
 
 test("profile-tree receipts clone exactly and retire only their owned clone", async () => {
@@ -253,6 +253,71 @@ test("profile-tree receipts reject links and detect a changed template before cl
   });
 });
 
+test("profile receipts never inspect or copy the opaque Data Wrangler package subtree", async () => {
+  await withDirectory((root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    const extensions = privateDirectory(resolve(templateRoot, "extensions"));
+    writeFileSync(resolve(templateRoot, "user", "settings.json"), "{}\n", { mode: 0o600 });
+    symlinkSync(resolve(root, "unreadable-package-trap"), resolve(extensions, "ms-toolsai.datawrangler-1.24.2"));
+    const tree = captureDataWranglerProfileTree(templateRoot);
+    assert.equal(tree.entryCount, 3);
+    const templates = [
+      ...["open-wrangler", "data-wrangler"].flatMap((product) =>
+        ["configured-only", "warmed"].map((kind) => ({
+          product,
+          kind,
+          root: templateRoot,
+          sandboxArgs: [],
+          ...tree
+        }))
+      )
+    ];
+    const cloneRoot = resolve(root, "clone");
+    const clone = cloneDataWranglerComparisonTemplate(minimalPreparation(root, templates), {
+      product: "data-wrangler",
+      kind: "configured-only",
+      cloneRoot
+    });
+    assert.equal(existsSync(resolve(clone.extensions, "ms-toolsai.datawrangler-1.24.2")), false);
+    assert.equal(retireDataWranglerComparisonTemplateClone(clone).status, "retired");
+  });
+});
+
+test("clone retirement refuses root and parent path replacement", async () => {
+  await withDirectory((root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    writeFileSync(resolve(templateRoot, "user", "settings.json"), "{}\n", { mode: 0o600 });
+    const tree = captureDataWranglerProfileTree(templateRoot);
+    const template = {
+      product: "open-wrangler",
+      kind: "configured-only",
+      root: templateRoot,
+      sandboxArgs: [],
+      ...tree
+    };
+
+    const cloneParent = privateDirectory(resolve(root, "clones"));
+    const clone = cloneDataWranglerComparisonTemplate(
+      minimalPreparation(root, [template, template, template, template]),
+      {
+        product: "open-wrangler",
+        kind: "configured-only",
+        cloneRoot: resolve(cloneParent, "clone")
+      }
+    );
+    const parkedParent = resolve(root, "parked-clones");
+    renameSync(cloneParent, parkedParent);
+    privateDirectory(cloneParent);
+    privateDirectory(resolve(cloneParent, "clone"));
+    assert.throws(() => retireDataWranglerComparisonTemplateClone(clone), /changed before cleanup/u);
+    assert.equal(existsSync(resolve(cloneParent, "clone")), true);
+    assert.equal(existsSync(resolve(parkedParent, "clone", "user", "settings.json")), true);
+  });
+});
+
 test("template inventory queries run against a disposable clone and always remove it", async () => {
   await withDirectory(async (root) => {
     const templateRoot = privateDirectory(resolve(root, "template"));
@@ -305,6 +370,72 @@ test("template inventory queries run against a disposable clone and always remov
   });
 });
 
+test("inventory scratch cleanup refuses a replaced path and preserves both trees", async () => {
+  await withDirectory(async (root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    const template = {
+      product: "open-wrangler",
+      kind: "configured-only",
+      root: templateRoot,
+      sandboxArgs: []
+    };
+    let scratch;
+    let parked;
+    await assert.rejects(
+      queryDataWranglerTemplateInventory(
+        template,
+        { cli: "/editor/code" },
+        {},
+        {
+          async runCli({ args }) {
+            const profileRoot = resolve(args[args.indexOf("--user-data-dir") + 1], "..");
+            scratch = resolve(profileRoot, "..");
+            parked = `${scratch}-parked`;
+            renameSync(scratch, parked);
+            privateDirectory(scratch);
+            return { stdout: "Matt17BR.openwrangler@1.2.1\n" };
+          }
+        }
+      ),
+      /changed before cleanup/u
+    );
+    assert.equal(existsSync(scratch), true);
+    assert.equal(existsSync(resolve(parked, "profile", "user")), true);
+  });
+});
+
+test("Data Wrangler inventory is rebuilt from its pinned public Marketplace reference", async () => {
+  await withDirectory(async (root) => {
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    const calls = [];
+    const inventory = await queryDataWranglerTemplateInventory(
+      {
+        product: "data-wrangler",
+        kind: "configured-only",
+        root: templateRoot,
+        sandboxArgs: ["--no-sandbox"],
+        inventory: [{ extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }]
+      },
+      { cli: "/editor/code" },
+      {},
+      {
+        async runCli(input) {
+          calls.push(input.args);
+          return { stdout: "ms-toolsai.datawrangler@1.24.2\n" };
+        }
+      }
+    );
+    assert.deepEqual(inventory, [{ extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }]);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0][calls[0].indexOf("--install-extension") + 1], "ms-toolsai.datawrangler@1.24.2");
+    assert.equal(calls[1].includes("--list-extensions"), true);
+  });
+});
+
 test("watch headroom failure prevents public capture actions and editor phases", async () => {
   await withDirectory(async (root) => {
     const editor = { version: "1.130.0" };
@@ -336,6 +467,7 @@ test("watch headroom failure prevents public capture actions and editor phases",
       capturePreparedDataWranglerPublicUi(
         {
           specification: {
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
             editor: {
               id: "Microsoft.VisualStudioCode",
               version: editor.version,
@@ -381,6 +513,11 @@ test("watch headroom failure prevents public capture actions and editor phases",
               extensions: privateDirectory(resolve(cloneRoot, "extensions")),
               sandboxArgs: []
             };
+          },
+          async installOpaqueExtension() {},
+          retireClone(clone) {
+            rmSync(clone.root, { recursive: true, force: false });
+            return { status: "retired", treeEmpty: true };
           },
           createEnvironment: () => ({}),
           configureTempRoot: () => undefined,
@@ -456,6 +593,7 @@ test("preparation captures real capability and control receipts from isolated di
       }
     ];
     const specification = {
+      baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
       editor: publicEditor,
       fixtures,
       provenance: {
@@ -594,6 +732,7 @@ test("preparation captures real capability and control receipts from isolated di
       {
         id: () => captureIds[captureIndex++],
         recoverDriver: () => ({ authentic: "driver" }),
+        async installOpaqueExtension() {},
         cloneTemplate(_template, { cloneRoot }) {
           const clone = {
             product: "data-wrangler",
@@ -817,7 +956,7 @@ test("public run-next derives the pending entry, clone, profile, paths, and reti
   });
 });
 
-test("public run-next retains its exact clone when measured execution is uncertain", async () => {
+test("public run-next removes an uncertain Data Wrangler clone so proprietary bytes are not retained", async () => {
   await withDirectory(async (root) => {
     const manifest = {
       candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
@@ -887,6 +1026,7 @@ test("public run-next retains its exact clone when measured execution is uncerta
           createEnvironment: () => ({}),
           configureTempRoot() {},
           createProfile: () => ({ authentic: "profile" }),
+          async installOpaqueExtension() {},
           materializeKernel({ runRoot }) {
             const jupyterRoot = privateDirectory(resolve(runRoot, "jupyter"));
             return {
@@ -913,7 +1053,8 @@ test("public run-next retains its exact clone when measured execution is uncerta
           },
           retireClone() {
             retired = true;
-            throw new Error("must not retire uncertain evidence");
+            rmSync(cloneRoot, { recursive: true, force: false });
+            return { status: "retired", treeEmpty: true };
           },
           mkdir: mkdirSync,
           id: () => "22222222-2222-4222-8222-222222222222"
@@ -921,8 +1062,8 @@ test("public run-next retains its exact clone when measured execution is uncerta
       ),
       /measured boundary uncertain/u
     );
-    assert.equal(retired, false);
-    assert.equal(existsSync(cloneRoot), true);
+    assert.equal(retired, true);
+    assert.equal(existsSync(cloneRoot), false);
   });
 });
 
@@ -1698,7 +1839,11 @@ test("preparation derives one complete specification from the reviewed preregist
               extensions: source.extensions,
               editor,
               sandboxArgs: [],
-              installedExtensions: [],
+              installedExtensions: createDataWranglerComparisonTemplateInventory(
+                product === "open-wrangler"
+                  ? { extensionId: "Matt17BR.openwrangler", version: "1.2.1" }
+                  : { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" }
+              ).map((entry) => `${entry.extensionId}@${entry.version}`),
               configuredPythonProcessObservedDuringSetup: true
             };
           })

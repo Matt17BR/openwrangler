@@ -12,6 +12,7 @@ import { writeDataWranglerComparisonNotebook } from "./data-wrangler-comparison-
 import { materializeDataWranglerComparisonRunKernel } from "./data-wrangler-comparison-run-kernel.mjs";
 import {
   cloneDataWranglerCapturedTemplate,
+  installOpaqueDataWranglerMarketplaceExtension,
   retireDataWranglerComparisonTemplateClone
 } from "./data-wrangler-comparison-preparation.mjs";
 import {
@@ -301,6 +302,7 @@ export async function capturePreparedDataWranglerPublicUi(
 ) {
   const dependencies = {
     cloneTemplate: cloneDataWranglerCapturedTemplate,
+    installOpaqueExtension: installOpaqueDataWranglerMarketplaceExtension,
     retireClone: retireDataWranglerComparisonTemplateClone,
     createEnvironment: createEditorAcceptanceEnvironment,
     configureTempRoot: configureEditorAcceptanceTempRoot,
@@ -366,34 +368,43 @@ export async function capturePreparedDataWranglerPublicUi(
     const clone = dependencies.cloneTemplate(template, {
       cloneRoot: resolve(clonesParent, `${plan.kind}-${plan.fixture.format}-${captureId}`)
     });
-    const profileEnvironment = dependencies.createEnvironment(environment, {
-      OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
-      OPEN_WRANGLER_EDITOR_TEMP_ROOT: clone.root
-    });
-    dependencies.configureTempRoot(clone.root, profileEnvironment);
-    const profile = dependencies.createProfile({
-      product: "data-wrangler",
-      privateRoot: clone.root,
-      templateKind: "configured-only",
-      templateReceiptSha256: templateTreeSha256,
-      editor,
-      userData: clone.userData,
-      extensions: clone.extensions,
-      sandboxArgs: clone.sandboxArgs,
-      environment: profileEnvironment,
-      installLabel: `Official VS Code ${plan.kind} public-UI driver installation`,
-      inventoryLabel: `Official VS Code ${plan.kind} public-UI extension inventory`
-    });
-    const context = sourceContext(captureId, publicEditor, plan.fixture);
-    const expectedExtensions = createDataWranglerComparisonMeasuredInventory(PUBLIC_UI_DATA_WRANGLER_EXTENSION);
-    assertExactInventory(
-      expectedExtensions,
-      createExpectedPublicUiExtensionInventory(DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND).entries,
-      "Reviewed Data Wrangler capability inventory"
-    );
-    let completed = false;
     let raw;
     try {
+      const profileEnvironment = dependencies.createEnvironment(environment, {
+        OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
+        OPEN_WRANGLER_EDITOR_TEMP_ROOT: clone.root
+      });
+      dependencies.configureTempRoot(clone.root, profileEnvironment);
+      await dependencies.installOpaqueExtension({
+        product: "data-wrangler",
+        editor,
+        userData: clone.userData,
+        extensions: clone.extensions,
+        sandboxArgs: clone.sandboxArgs,
+        environment: profileEnvironment,
+        extension: specification.baseline,
+        label: `Official VS Code ${plan.kind} Data Wrangler Marketplace installation`
+      });
+      const profile = dependencies.createProfile({
+        product: "data-wrangler",
+        privateRoot: clone.root,
+        templateKind: "configured-only",
+        templateReceiptSha256: templateTreeSha256,
+        editor,
+        userData: clone.userData,
+        extensions: clone.extensions,
+        sandboxArgs: clone.sandboxArgs,
+        environment: profileEnvironment,
+        installLabel: `Official VS Code ${plan.kind} public-UI driver installation`,
+        inventoryLabel: `Official VS Code ${plan.kind} public-UI extension inventory`
+      });
+      const context = sourceContext(captureId, publicEditor, plan.fixture);
+      const expectedExtensions = createDataWranglerComparisonMeasuredInventory(PUBLIC_UI_DATA_WRANGLER_EXTENSION);
+      assertExactInventory(
+        expectedExtensions,
+        createExpectedPublicUiExtensionInventory(DATA_WRANGLER_POLARS_CAPABILITY_RECEIPT_KIND).entries,
+        "Reviewed Data Wrangler capability inventory"
+      );
       raw = await runCapturePhase({
         kind: plan.kind,
         captureId,
@@ -443,9 +454,8 @@ export async function capturePreparedDataWranglerPublicUi(
         phaseReceiptSha256: digestStudyValue(raw),
         phaseReceipt: structuredClone(raw)
       });
-      completed = true;
     } finally {
-      if (completed) dependencies.retireClone(clone);
+      dependencies.retireClone(clone);
     }
   }
   if (capabilities.length !== specification.fixtures.length || controlProfile === undefined) {

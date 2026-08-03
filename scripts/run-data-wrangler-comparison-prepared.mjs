@@ -25,6 +25,7 @@ import {
   captureDataWranglerPreparationFile,
   captureDataWranglerComparisonPythonEnvironment,
   cloneDataWranglerComparisonTemplate,
+  installOpaqueDataWranglerMarketplaceExtension,
   loadDataWranglerComparisonPreparationReceipt,
   revalidateDataWranglerComparisonPreparationReceipt,
   revalidateDataWranglerPreparationFileIdentity,
@@ -271,6 +272,7 @@ export async function runPreparedDataWranglerComparisonEntry(
     loadPreparation: loadDataWranglerComparisonPreparationReceipt,
     revalidatePreparation: revalidateDataWranglerComparisonPreparationReceipt,
     cloneTemplate: cloneDataWranglerComparisonTemplate,
+    installOpaqueExtension: installOpaqueDataWranglerMarketplaceExtension,
     retireClone: retireDataWranglerComparisonTemplateClone,
     createEnvironment: createEditorAcceptanceEnvironment,
     configureTempRoot: configureEditorAcceptanceTempRoot,
@@ -340,108 +342,118 @@ export async function runPreparedDataWranglerComparisonEntry(
     installLabel: `Official VS Code ${entry.product} neutral comparison driver installation`,
     inventoryLabel: `Official VS Code ${entry.product} measured-trial extension inventory`
   });
-  const driverReceipt = dependencies.recoverDriver({
-    directory: preparation.driver.directory,
-    vsixPath: preparation.driver.vsixPath,
-    expectedDriver: manifest.provenance.comparisonDriver
-  });
-  await dependencies.installDriver({ receipt: driverReceipt, profile });
-  const prevalidatedDriver = dependencies.captureDriver(driverReceipt);
-  if (!sameValue(prevalidatedDriver, manifest.provenance.comparisonDriver)) {
-    fail("Prepared comparison installed another neutral driver than the manifest records.");
-  }
-  const prevalidatedExtensions = assertDataWranglerComparisonArmInventory(await dependencies.readInventory(profile), {
-    product: entry.product,
-    expectedExtensions: expectedProductExtensions(manifest, entry.product)
-  });
-  const pythonBefore = dependencies.capturePythonEnvironment({
-    pythonPath: preparation.python.path,
-    kernelspecPath: preparation.selectedKernel.path,
-    jupyterEnvironment: preparation.selectedKernel.jupyterEnvironment
-  });
-  if (pythonBefore.stateSha256 !== manifest.python.environmentSha256) {
-    fail("Prepared comparison Python packages or Jupyter state changed before the trial.");
-  }
-  const minimalRevalidate = () => {
-    revalidateDataWranglerPreparationFileIdentity(preparation.candidate, "Prepared comparison candidate", {
-      maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.candidate
-    });
-    revalidateDataWranglerPreparationFileIdentity(preparation.python, "Prepared comparison Python", {
-      executable: true,
-      maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.pythonExecutable
-    });
-    revalidateDataWranglerPreparationFileIdentity(preparation.cacheController, "Prepared cache controller", {
-      maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.cacheController
-    });
-    // This is the immutable preparation fixture, not the separate-inode
-    // private copy whose cache state the measured trial controls.
-    const fixtureReceipt = fixtureForEntry(manifest, entry, preparation);
-    revalidateDataWranglerPreparationFileIdentity(fixtureReceipt, "Prepared comparison fixture", {
-      maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.fixture
-    });
-    revalidateDataWranglerPreparationFileIdentity(
-      {
-        path: preparation.editor.executablePath,
-        sha256: preparation.editor.executableSha256,
-        filesystemIdentity: preparation.editor.executableFilesystemIdentity
-      },
-      "Prepared comparison editor executable",
-      {
-        executable: true,
-        maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.editorExecutable
-      }
-    );
-    revalidateDataWranglerPreparationFileIdentity(
-      {
-        path: preparation.driver.vsixPath,
-        sha256: manifest.provenance.comparisonDriver.vsix.sha256,
-        filesystemIdentity: manifest.provenance.comparisonDriver.vsix.filesystemIdentity
-      },
-      "Prepared neutral-driver VSIX",
-      { maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.driverVsix }
-    );
-    const kernelspec = captureDataWranglerPreparationFile(
-      preparation.selectedKernel.path,
-      "Prepared comparison kernelspec",
-      { maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.kernelspec }
-    );
-    if (kernelspec.sha256 !== manifest.python.kernel.kernelspecSha256) {
-      fail("Prepared comparison kernelspec changed before the measured spawn.");
-    }
-  };
-  const fixture = fixtureForEntry(manifest, entry, preparation);
-  const provenance = createPreparedProvenance({
-    manifest,
-    entry,
-    preparation,
-    profile,
-    readProfileInventory: dependencies.readInventory,
-    revalidatePreparation: dependencies.revalidatePreparation,
-    prevalidatedDriver,
-    prevalidatedExtensions,
-    pythonBefore,
-    capturePythonEnvironment: dependencies.capturePythonEnvironment,
-    minimalRevalidate
-  });
-  const expectedProvenance = dependencies.captureGateProvenance(
-    { cpuIds: manifest.provenance.cpu.affinity, display: displayForGate(manifest) },
-    { environment: profileEnvironment }
-  );
-  const trialRoot = resolve(clone.root, "trial");
-  dependencies.mkdir(trialRoot, { mode: 0o700 });
-  const runKernel = dependencies.materializeKernel({
-    runRoot: trialRoot,
-    kernel: {
-      path: preparation.selectedKernel.path,
-      name: preparation.selectedKernel.name,
-      displayName: preparation.selectedKernel.displayName,
-      sha256: manifest.python.kernel.kernelspecSha256
-    }
-  });
   let result;
   let retired;
   let completed = false;
   try {
+    await dependencies.installOpaqueExtension({
+      product: entry.product,
+      editor,
+      userData: clone.userData,
+      extensions: clone.extensions,
+      sandboxArgs: clone.sandboxArgs,
+      environment: profileEnvironment,
+      extension: manifest.baseline,
+      label: "Official VS Code Data Wrangler measured-trial Marketplace installation"
+    });
+    const driverReceipt = dependencies.recoverDriver({
+      directory: preparation.driver.directory,
+      vsixPath: preparation.driver.vsixPath,
+      expectedDriver: manifest.provenance.comparisonDriver
+    });
+    await dependencies.installDriver({ receipt: driverReceipt, profile });
+    const prevalidatedDriver = dependencies.captureDriver(driverReceipt);
+    if (!sameValue(prevalidatedDriver, manifest.provenance.comparisonDriver)) {
+      fail("Prepared comparison installed another neutral driver than the manifest records.");
+    }
+    const prevalidatedExtensions = assertDataWranglerComparisonArmInventory(await dependencies.readInventory(profile), {
+      product: entry.product,
+      expectedExtensions: expectedProductExtensions(manifest, entry.product)
+    });
+    const pythonBefore = dependencies.capturePythonEnvironment({
+      pythonPath: preparation.python.path,
+      kernelspecPath: preparation.selectedKernel.path,
+      jupyterEnvironment: preparation.selectedKernel.jupyterEnvironment
+    });
+    if (pythonBefore.stateSha256 !== manifest.python.environmentSha256) {
+      fail("Prepared comparison Python packages or Jupyter state changed before the trial.");
+    }
+    const minimalRevalidate = () => {
+      revalidateDataWranglerPreparationFileIdentity(preparation.candidate, "Prepared comparison candidate", {
+        maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.candidate
+      });
+      revalidateDataWranglerPreparationFileIdentity(preparation.python, "Prepared comparison Python", {
+        executable: true,
+        maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.pythonExecutable
+      });
+      revalidateDataWranglerPreparationFileIdentity(preparation.cacheController, "Prepared cache controller", {
+        maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.cacheController
+      });
+      // This is the immutable preparation fixture, not the separate-inode
+      // private copy whose cache state the measured trial controls.
+      const fixtureReceipt = fixtureForEntry(manifest, entry, preparation);
+      revalidateDataWranglerPreparationFileIdentity(fixtureReceipt, "Prepared comparison fixture", {
+        maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.fixture
+      });
+      revalidateDataWranglerPreparationFileIdentity(
+        {
+          path: preparation.editor.executablePath,
+          sha256: preparation.editor.executableSha256,
+          filesystemIdentity: preparation.editor.executableFilesystemIdentity
+        },
+        "Prepared comparison editor executable",
+        {
+          executable: true,
+          maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.editorExecutable
+        }
+      );
+      revalidateDataWranglerPreparationFileIdentity(
+        {
+          path: preparation.driver.vsixPath,
+          sha256: manifest.provenance.comparisonDriver.vsix.sha256,
+          filesystemIdentity: manifest.provenance.comparisonDriver.vsix.filesystemIdentity
+        },
+        "Prepared neutral-driver VSIX",
+        { maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.driverVsix }
+      );
+      const kernelspec = captureDataWranglerPreparationFile(
+        preparation.selectedKernel.path,
+        "Prepared comparison kernelspec",
+        { maximumBytes: DATA_WRANGLER_PREPARATION_FILE_LIMITS.kernelspec }
+      );
+      if (kernelspec.sha256 !== manifest.python.kernel.kernelspecSha256) {
+        fail("Prepared comparison kernelspec changed before the measured spawn.");
+      }
+    };
+    const fixture = fixtureForEntry(manifest, entry, preparation);
+    const provenance = createPreparedProvenance({
+      manifest,
+      entry,
+      preparation,
+      profile,
+      readProfileInventory: dependencies.readInventory,
+      revalidatePreparation: dependencies.revalidatePreparation,
+      prevalidatedDriver,
+      prevalidatedExtensions,
+      pythonBefore,
+      capturePythonEnvironment: dependencies.capturePythonEnvironment,
+      minimalRevalidate
+    });
+    const expectedProvenance = dependencies.captureGateProvenance(
+      { cpuIds: manifest.provenance.cpu.affinity, display: displayForGate(manifest) },
+      { environment: profileEnvironment }
+    );
+    const trialRoot = resolve(clone.root, "trial");
+    dependencies.mkdir(trialRoot, { mode: 0o700 });
+    const runKernel = dependencies.materializeKernel({
+      runRoot: trialRoot,
+      kernel: {
+        path: preparation.selectedKernel.path,
+        name: preparation.selectedKernel.name,
+        displayName: preparation.selectedKernel.displayName,
+        sha256: manifest.python.kernel.kernelspecSha256
+      }
+    });
     result = await dependencies.recordTrial(
       {
         manifestPath,
@@ -509,7 +521,7 @@ export async function runPreparedDataWranglerComparisonEntry(
         result.output?.sourceCopy?.cleanup?.removed === true &&
         result.output?.trialProvenance?.revalidatedAfterCleanup === true);
   } finally {
-    if (completed) retired = dependencies.retireClone(clone);
+    if (completed || entry.product === "data-wrangler") retired = dependencies.retireClone(clone);
   }
   if (completed && (retired?.status !== "retired" || retired.treeEmpty !== true)) {
     fail("Prepared comparison profile clone was not retired after its measured trial.");

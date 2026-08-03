@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -218,11 +219,36 @@ test("configured template capture accepts exactly one profile for each product",
     mkdirSync(userData, { recursive: true, mode: 0o700 });
     mkdirSync(extensions, { mode: 0o700 });
     writeFileSync(resolve(userData, "settings.json"), "{}\n", { mode: 0o600 });
-    profiles.set(product, { product, kind: "configured-only", userData, extensions, editor: {}, sandboxArgs: [] });
+    if (product === "data-wrangler") {
+      symlinkSync(resolve(root, "opaque-package-trap"), resolve(extensions, "ms-toolsai.datawrangler-1.24.2"));
+    }
+    profiles.set(product, {
+      product,
+      kind: "configured-only",
+      privateRoot: profile,
+      userData,
+      extensions,
+      editor: {},
+      sandboxArgs: [],
+      installedExtensions: [
+        product === "data-wrangler" ? "ms-toolsai.datawrangler@1.24.2" : "matt17br.openwrangler@1.2.1"
+      ]
+    });
   }
 
   const incomplete = createDataWranglerConfiguredTemplateCapture(incompleteStudyRoot);
-  await incomplete.capture(profiles.get("open-wrangler"));
+  const incompleteProfile = resolve(root, "incomplete-open-wrangler");
+  const incompleteUserData = resolve(incompleteProfile, "user");
+  const incompleteExtensions = resolve(incompleteProfile, "extensions");
+  mkdirSync(incompleteUserData, { recursive: true, mode: 0o700 });
+  mkdirSync(incompleteExtensions, { mode: 0o700 });
+  writeFileSync(resolve(incompleteUserData, "settings.json"), "{}\n", { mode: 0o600 });
+  await incomplete.capture({
+    ...profiles.get("open-wrangler"),
+    privateRoot: incompleteProfile,
+    userData: incompleteUserData,
+    extensions: incompleteExtensions
+  });
   assert.throws(() => incomplete.values(), /both configured-only product templates/u);
 
   const capture = createDataWranglerConfiguredTemplateCapture(studyRoot);
@@ -237,4 +263,36 @@ test("configured template capture accepts exactly one profile for each product",
     capture.values().map((entry) => `${entry.product}:${entry.kind}`),
     ["open-wrangler:configured-only", "data-wrangler:configured-only"]
   );
+  const dataWranglerTemplate = capture.values().find((entry) => entry.product === "data-wrangler");
+  assert.equal(existsSync(resolve(dataWranglerTemplate.root, "extensions", "ms-toolsai.datawrangler-1.24.2")), false);
+});
+
+test("a failed configured capture retires its source profile and partial retained template", async (t) => {
+  const root = withRoot(t, "ow-preparation-failed-configured-capture-");
+  const studyRoot = resolve(root, "study");
+  const privateRoot = resolve(root, "bootstrap-profile");
+  const userData = resolve(privateRoot, "user");
+  const extensions = resolve(privateRoot, "extensions");
+  mkdirSync(studyRoot, { mode: 0o700 });
+  mkdirSync(userData, { recursive: true, mode: 0o700 });
+  mkdirSync(extensions, { mode: 0o700 });
+  symlinkSync(resolve(root, "unsafe-setting"), resolve(userData, "settings.json"));
+  symlinkSync(resolve(root, "opaque-package-trap"), resolve(extensions, "ms-toolsai.datawrangler-1.24.2"));
+
+  const capture = createDataWranglerConfiguredTemplateCapture(studyRoot);
+  await assert.rejects(
+    capture.capture({
+      product: "data-wrangler",
+      kind: "configured-only",
+      privateRoot,
+      userData,
+      extensions,
+      editor: {},
+      sandboxArgs: [],
+      installedExtensions: ["ms-toolsai.datawrangler@1.24.2"]
+    }),
+    /linked entry/u
+  );
+  assert.equal(existsSync(privateRoot), false);
+  assert.equal(existsSync(resolve(studyRoot, "templates", "data-wrangler", "configured-only")), false);
 });

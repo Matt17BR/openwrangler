@@ -408,6 +408,12 @@ private logs, or work data; or infer an internal engine from process behavior. A
 must prove that the same public controls and rendered states exist. Timed zero-window results are reproducible relative
 evidence on the pinned reference machine, not a promise of identical desktop latency.
 
+Data Wrangler's installed directory is opaque. Profile receipts and copies skip that directory before any stat, open,
+hash, or traversal. Retained configured and warmed templates contain only the surrounding editor state and the public
+CLI inventory. Each disposable Data Wrangler run reinstalls `ms-toolsai.datawrangler@1.24.2` from the public Marketplace,
+checks the reported ID and version, and removes the run profile afterward. Cleanup is tied to the captured identities of
+both the profile and its parent; a renamed or replaced path is left alone and fails the run.
+
 ## Publication
 
 The final checked-in evidence includes:

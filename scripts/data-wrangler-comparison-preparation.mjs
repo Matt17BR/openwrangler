@@ -4,7 +4,7 @@ import {
   chmodSync,
   closeSync,
   constants,
-  cpSync,
+  copyFileSync,
   fstatSync,
   lstatSync,
   mkdirSync,
@@ -41,7 +41,7 @@ import {
   runBoundedEditorCliCommand
 } from "./editor-acceptance.mjs";
 
-export const DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL = "openwrangler-data-wrangler-comparison-preparation-v3";
+export const DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL = "openwrangler-data-wrangler-comparison-preparation-v4";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u;
@@ -63,6 +63,8 @@ const MAX_PREPARATION_INTERPRETER_ARGUMENTS = 64;
 const MAX_PREPARATION_INTERPRETER_ARGUMENT_BYTES = 64 * 1024;
 const MAX_PREPARATION_INTERPRETER_TOTAL_ARGUMENT_BYTES = 128 * 1024;
 const REQUIRED_PACKAGES = Object.freeze(["pandas", "polars", "pyarrow", "jupyter_core", "ipykernel"]);
+const DATA_WRANGLER_EXTENSION_ID = "ms-toolsai.datawrangler";
+const OPAQUE_DATA_WRANGLER_DIRECTORY = /^ms-toolsai\.datawrangler(?:-|$)/iu;
 
 export const DATA_WRANGLER_PREPARATION_FILE_LIMITS = Object.freeze({
   cacheController: MAX_CACHE_CONTROLLER_BYTES,
@@ -129,6 +131,20 @@ function fileIdentity(metadata) {
     sizeBytes: Number(metadata.size),
     mtimeNs: metadata.mtimeNs.toString()
   });
+}
+
+function directoryIdentity(metadata) {
+  return Object.freeze({
+    device: metadata.dev.toString(),
+    inode: metadata.ino.toString(),
+    mode: Number(metadata.mode & 0o777n),
+    owner: metadata.uid.toString(),
+    group: metadata.gid.toString()
+  });
+}
+
+function sameDirectoryIdentity(left, right) {
+  return canonicalStudyJson(left) === canonicalStudyJson(right);
 }
 
 export function revalidateDataWranglerPreparationFileIdentity(
@@ -303,6 +319,52 @@ export function assertDataWranglerPreparationPrivateDirectory(path, label) {
   return privateDirectory(path, label);
 }
 
+function captureOwnedDirectoryReceipt(root, label) {
+  canonicalAbsolutePath(root, label);
+  const parent = dirname(root);
+  const parentMetadata = privateDirectory(parent, `${label} parent`);
+  const rootMetadata = privateDirectory(root, label);
+  return Object.freeze({
+    root,
+    parent,
+    rootIdentity: directoryIdentity(rootMetadata),
+    parentIdentity: directoryIdentity(parentMetadata)
+  });
+}
+
+function revalidateOwnedDirectoryReceipt(receipt, label) {
+  exactKeys(receipt, ["root", "parent", "rootIdentity", "parentIdentity"], `${label} identity receipt`);
+  canonicalAbsolutePath(receipt.root, label);
+  canonicalAbsolutePath(receipt.parent, `${label} parent`);
+  if (dirname(receipt.root) !== receipt.parent) fail(`${label} is no longer below its captured parent.`);
+  const parentMetadata = privateDirectory(receipt.parent, `${label} parent`);
+  const rootMetadata = privateDirectory(receipt.root, label);
+  if (
+    !sameDirectoryIdentity(directoryIdentity(parentMetadata), receipt.parentIdentity) ||
+    !sameDirectoryIdentity(directoryIdentity(rootMetadata), receipt.rootIdentity)
+  ) {
+    fail(`${label} or its parent changed before cleanup.`);
+  }
+  return receipt;
+}
+
+function removeOwnedDirectoryReceipt(receipt, label, removeTree = rmSync) {
+  revalidateOwnedDirectoryReceipt(receipt, label);
+  removeTree(receipt.root, { recursive: true, force: false });
+  const parentMetadata = privateDirectory(receipt.parent, `${label} parent`);
+  if (
+    !sameDirectoryIdentity(directoryIdentity(parentMetadata), receipt.parentIdentity) ||
+    lstatSync(receipt.root, { bigint: true, throwIfNoEntry: false }) !== undefined
+  ) {
+    fail(`${label} cleanup did not remove only its captured directory.`);
+  }
+  return Object.freeze({
+    status: "retired",
+    treeEmpty: true,
+    rootNameSha256: createHash("sha256").update(basename(receipt.root)).digest("hex")
+  });
+}
+
 function treeRelativePath(root, path) {
   const value = relative(root, path).split(sep).join("/");
   if (
@@ -316,6 +378,79 @@ function treeRelativePath(root, path) {
     fail("Comparison template contains an unsafe relative path.");
   }
   return value;
+}
+
+function isOpaqueDataWranglerProfilePath(relativePath) {
+  const parts = relativePath.split("/");
+  return parts.length >= 2 && parts[0].toLowerCase() === "extensions" && OPAQUE_DATA_WRANGLER_DIRECTORY.test(parts[1]);
+}
+
+function copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label, rootPrefix = "") {
+  canonicalAbsolutePath(sourceRoot, `${label} source`);
+  canonicalAbsolutePath(targetRoot, `${label} target`);
+  if (rootPrefix !== "" && !["user", "extensions"].includes(rootPrefix)) {
+    fail(`${label} has an invalid profile-tree prefix.`);
+  }
+  const sourceMetadata = privateDirectory(sourceRoot, `${label} source`);
+  if (lstatSync(targetRoot, { bigint: true, throwIfNoEntry: false }) !== undefined) {
+    fail(`${label} target already exists.`);
+  }
+  privateDirectory(dirname(targetRoot), `${label} target parent`);
+  mkdirSync(targetRoot, { mode: Number(sourceMetadata.mode & 0o777n) });
+  const ownedTarget = captureOwnedDirectoryReceipt(targetRoot, `${label} target`);
+  try {
+    const queue = [{ source: sourceRoot, target: targetRoot, relativePath: rootPrefix }];
+    while (queue.length > 0) {
+      const directory = queue.shift();
+      const entries = readdirSync(directory.source, { withFileTypes: true }).sort((left, right) =>
+        left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+      );
+      for (const entry of entries) {
+        const relativePath = directory.relativePath === "" ? entry.name : `${directory.relativePath}/${entry.name}`;
+        if (isOpaqueDataWranglerProfilePath(relativePath)) continue;
+        const sourcePath = resolve(directory.source, entry.name);
+        const targetPath = resolve(directory.target, entry.name);
+        const metadata = lstatSync(sourcePath, { bigint: true });
+        if (!ownerMatches(metadata) || metadata.isSymbolicLink()) {
+          fail(`${label} contains an unowned or linked entry.`);
+        }
+        if (metadata.isDirectory()) {
+          mkdirSync(targetPath, { mode: Number(metadata.mode & 0o777n) });
+          queue.push({ source: sourcePath, target: targetPath, relativePath });
+          continue;
+        }
+        if (!metadata.isFile() || metadata.nlink !== 1n || metadata.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+          fail(`${label} contains a non-regular, linked, or oversized entry.`);
+        }
+        copyFileSync(sourcePath, targetPath, constants.COPYFILE_EXCL);
+        chmodSync(targetPath, Number(metadata.mode & 0o777n));
+        const sourceAfter = lstatSync(sourcePath, { bigint: true });
+        const targetMetadata = lstatSync(targetPath, { bigint: true });
+        if (
+          !sameMetadata(metadata, sourceAfter) ||
+          !targetMetadata.isFile() ||
+          targetMetadata.isSymbolicLink() ||
+          targetMetadata.nlink !== 1n ||
+          targetMetadata.size !== metadata.size ||
+          !ownerMatches(targetMetadata)
+        ) {
+          fail(`${label} changed while it was copied.`);
+        }
+      }
+    }
+    const sourceAfter = lstatSync(sourceRoot, { bigint: true });
+    if (sourceAfter.dev !== sourceMetadata.dev || sourceAfter.ino !== sourceMetadata.ino) {
+      fail(`${label} source root changed while it was copied.`);
+    }
+    return revalidateOwnedDirectoryReceipt(ownedTarget, `${label} target`);
+  } catch (operationError) {
+    try {
+      removeOwnedDirectoryReceipt(ownedTarget, `${label} target`);
+    } catch (cleanupError) {
+      throw new AggregateError([operationError, cleanupError], `${label} copy and cleanup both failed.`);
+    }
+    throw operationError;
+  }
 }
 
 function hashOwnedTreeFile(path, metadata) {
@@ -360,6 +495,7 @@ export function captureDataWranglerProfileTree(root, label = "Comparison profile
       }
       const path = resolve(directory, entry.name);
       const relativePath = treeRelativePath(root, path);
+      if (isOpaqueDataWranglerProfilePath(relativePath)) continue;
       const metadata = lstatSync(path, { bigint: true });
       if (!ownerMatches(metadata) || metadata.isSymbolicLink()) fail(`${label} contains an unowned or linked entry.`);
       if (metadata.isDirectory()) {
@@ -392,7 +528,7 @@ export function captureDataWranglerProfileTree(root, label = "Comparison profile
   const inventory = Object.freeze({ directories: Object.freeze(directories), files: Object.freeze(files) });
   return Object.freeze({
     root,
-    rootIdentity: Object.freeze({ device: rootMetadata.dev.toString(), inode: rootMetadata.ino.toString() }),
+    rootIdentity: directoryIdentity(rootMetadata),
     entryCount: directories.length + files.length,
     totalBytes,
     treeSha256: digestStudyValue(inventory)
@@ -417,28 +553,113 @@ function parseInventory(stdout) {
   return entries;
 }
 
+function normalizeTemplateInventory(value) {
+  const entries = Array.isArray(value)
+    ? value.map((entry) => {
+        if (typeof entry === "string") return parseInventory(`${entry}\n`)[0];
+        if (
+          !isRecord(entry) ||
+          typeof entry.extensionId !== "string" ||
+          typeof entry.version !== "string" ||
+          !VERSION.test(entry.version)
+        ) {
+          fail("Comparison template extension inventory is malformed.");
+        }
+        return { extensionId: entry.extensionId, version: entry.version };
+      })
+    : [];
+  if (entries.length === 0 || entries.length > 64) fail("Comparison template extension inventory is invalid.");
+  return Object.freeze(entries.map((entry) => Object.freeze(entry)));
+}
+
+function opaqueDataWranglerMarketplaceExtension(inventory) {
+  const entries = normalizeTemplateInventory(inventory).filter(
+    (entry) => entry.extensionId.toLowerCase() === DATA_WRANGLER_EXTENSION_ID
+  );
+  if (entries.length !== 1) fail("Data Wrangler template inventory must name one exact Marketplace version.");
+  return entries[0];
+}
+
+export async function installOpaqueDataWranglerMarketplaceExtension(
+  { product, editor, userData, extensions, sandboxArgs, environment, extension, label },
+  { runCli = runBoundedEditorCliCommand } = {}
+) {
+  if (product !== "data-wrangler") return Object.freeze({ status: "not-required" });
+  if (
+    !isRecord(extension) ||
+    extension.extensionId?.toLowerCase() !== DATA_WRANGLER_EXTENSION_ID ||
+    typeof extension.version !== "string" ||
+    !VERSION.test(extension.version)
+  ) {
+    fail("Data Wrangler clone installation requires one exact public Marketplace ID and version.");
+  }
+  await runCli(
+    {
+      editor,
+      args: [
+        "--user-data-dir",
+        userData,
+        "--extensions-dir",
+        extensions,
+        "--install-extension",
+        `${DATA_WRANGLER_EXTENSION_ID}@${extension.version}`,
+        "--force",
+        ...sandboxArgs
+      ],
+      environment,
+      label
+    },
+    { timeoutMs: 180_000 }
+  );
+  return Object.freeze({
+    status: "installed-from-marketplace",
+    extensionId: DATA_WRANGLER_EXTENSION_ID,
+    version: extension.version
+  });
+}
+
 export async function queryDataWranglerTemplateInventory(
   template,
   editor,
   environment,
-  { createScratch = mkdtempSync, copyTree = cpSync, runCli = runBoundedEditorCliCommand, removeTree = rmSync } = {}
+  {
+    createScratch = mkdtempSync,
+    copyTree = copyOpaqueSafeProfileTree,
+    installMarketplace = installOpaqueDataWranglerMarketplaceExtension,
+    runCli = runBoundedEditorCliCommand,
+    removeTree = rmSync
+  } = {}
 ) {
   const scratch = createScratch(resolve(dirname(template.root), ".inventory-"));
+  const scratchReceipt = captureOwnedDirectoryReceipt(scratch, "Comparison inventory scratch");
+  const profileRoot = resolve(scratch, "profile");
+  let result;
+  let operationError;
   try {
-    copyTree(template.root, scratch, {
-      recursive: true,
-      errorOnExist: false,
-      force: false,
-      verbatimSymlinks: true
-    });
+    copyTree(template.root, profileRoot, "Comparison inventory profile clone");
+    if (template.product === "data-wrangler") {
+      await installMarketplace(
+        {
+          product: template.product,
+          editor,
+          userData: resolve(profileRoot, "user"),
+          extensions: resolve(profileRoot, "extensions"),
+          sandboxArgs: template.sandboxArgs,
+          environment,
+          extension: opaqueDataWranglerMarketplaceExtension(template.inventory),
+          label: `Official VS Code ${template.kind} Data Wrangler Marketplace installation`
+        },
+        { runCli }
+      );
+    }
     const { stdout } = await runCli(
       {
         editor,
         args: [
           "--user-data-dir",
-          resolve(scratch, "user"),
+          resolve(profileRoot, "user"),
           "--extensions-dir",
-          resolve(scratch, "extensions"),
+          resolve(profileRoot, "extensions"),
           "--list-extensions",
           "--show-versions",
           ...template.sandboxArgs
@@ -448,10 +669,22 @@ export async function queryDataWranglerTemplateInventory(
       },
       { timeoutMs: 60_000 }
     );
-    return parseInventory(stdout);
-  } finally {
-    removeTree(scratch, { recursive: true, force: true });
+    result = parseInventory(stdout);
+  } catch (error) {
+    operationError = error;
   }
+  let cleanupError;
+  try {
+    removeOwnedDirectoryReceipt(scratchReceipt, "Comparison inventory scratch", removeTree);
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (operationError !== undefined && cleanupError !== undefined) {
+    throw new AggregateError([operationError, cleanupError], "Inventory query and scratch cleanup both failed.");
+  }
+  if (operationError !== undefined) throw operationError;
+  if (cleanupError !== undefined) throw cleanupError;
+  return result;
 }
 
 function expectedProductExtensions(manifest, product) {
@@ -847,7 +1080,8 @@ export async function revalidateDataWranglerComparisonPreparationReceipt(receipt
         product: entry.product,
         kind: entry.kind,
         root: entry.root,
-        sandboxArgs: entry.sandboxArgs
+        sandboxArgs: entry.sandboxArgs,
+        inventory: entry.inventory
       })),
       publicUiCaptures: receipt.publicUiCaptures,
       createdAtUtc: receipt.createdAtUtc
@@ -862,27 +1096,75 @@ export function createDataWranglerConfiguredTemplateCapture(studyRoot) {
   privateDirectory(studyRoot, "Comparison preparation study root");
   const captured = new Map();
   return Object.freeze({
-    async capture({ product, kind, userData, extensions, editor, sandboxArgs }) {
+    async capture({ product, kind, privateRoot, userData, extensions, editor, sandboxArgs, installedExtensions }) {
       if (!["open-wrangler", "data-wrangler"].includes(product) || kind !== "configured-only") {
         fail("Comparison preparation accepts only exact configured-only product templates.");
       }
       const key = `${product}:${kind}`;
       if (captured.has(key)) fail(`Comparison preparation captured ${key} more than once.`);
+      if (dirname(userData) !== privateRoot || dirname(extensions) !== privateRoot) {
+        fail(`Comparison preparation ${product} source profile is not self-contained.`);
+      }
       const root = resolve(studyRoot, "templates", product, kind);
+      if (lstatSync(root, { bigint: true, throwIfNoEntry: false }) !== undefined) {
+        fail(`Comparison ${product} configured template target already exists.`);
+      }
+      const sourceReceipt = captureOwnedDirectoryReceipt(
+        privateRoot,
+        `Comparison ${product} configured source profile`
+      );
       mkdirSync(root, { recursive: true, mode: 0o700 });
-      const targetUser = resolve(root, "user");
-      const targetExtensions = resolve(root, "extensions");
-      cpSync(userData, targetUser, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
-      cpSync(extensions, targetExtensions, {
-        recursive: true,
-        errorOnExist: true,
-        force: false,
-        verbatimSymlinks: true
-      });
       chmodSync(root, 0o700);
-      chmodSync(targetUser, 0o700);
-      chmodSync(targetExtensions, 0o700);
-      captured.set(key, Object.freeze({ product, kind, root, editor, sandboxArgs: Object.freeze([...sandboxArgs]) }));
+      const targetReceipt = captureOwnedDirectoryReceipt(root, `Comparison ${product} configured template`);
+      let capturedTemplate;
+      let operationError;
+      try {
+        const targetUser = resolve(root, "user");
+        const targetExtensions = resolve(root, "extensions");
+        copyOpaqueSafeProfileTree(userData, targetUser, `Comparison ${product} configured user-data capture`, "user");
+        copyOpaqueSafeProfileTree(
+          extensions,
+          targetExtensions,
+          `Comparison ${product} configured extension capture`,
+          "extensions"
+        );
+        chmodSync(targetUser, 0o700);
+        chmodSync(targetExtensions, 0o700);
+        capturedTemplate = Object.freeze({
+          product,
+          kind,
+          root,
+          editor,
+          sandboxArgs: Object.freeze([...sandboxArgs]),
+          inventory: normalizeTemplateInventory(installedExtensions)
+        });
+      } catch (error) {
+        operationError = error;
+      }
+      const cleanupErrors = [];
+      try {
+        removeOwnedDirectoryReceipt(sourceReceipt, `Comparison ${product} configured source profile`);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      if (operationError !== undefined || cleanupErrors.length > 0) {
+        try {
+          removeOwnedDirectoryReceipt(targetReceipt, `Comparison ${product} configured template`);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (operationError !== undefined && cleanupErrors.length > 0) {
+        throw new AggregateError(
+          [operationError, ...cleanupErrors],
+          `Comparison ${product} configured capture and cleanup failed.`
+        );
+      }
+      if (operationError !== undefined) throw operationError;
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(cleanupErrors, `Comparison ${product} configured capture cleanup failed.`);
+      }
+      captured.set(key, capturedTemplate);
     },
     values() {
       const expected = ["open-wrangler:configured-only", "data-wrangler:configured-only"];
@@ -892,6 +1174,22 @@ export function createDataWranglerConfiguredTemplateCapture(studyRoot) {
       return Object.freeze(expected.map((key) => captured.get(key)));
     }
   });
+}
+
+export function captureOpaqueSafeDataWranglerProfileTemplate(sourceRoot, targetRoot, label) {
+  const sourceBefore = captureDataWranglerProfileTree(sourceRoot, `${label} source`);
+  const ownedTarget = copyOpaqueSafeProfileTree(sourceRoot, targetRoot, label);
+  const sourceAfter = captureDataWranglerProfileTree(sourceRoot, `${label} source`);
+  const target = captureDataWranglerProfileTree(targetRoot, label);
+  if (
+    sourceBefore.treeSha256 !== sourceAfter.treeSha256 ||
+    sourceBefore.treeSha256 !== target.treeSha256 ||
+    !sameDirectoryIdentity(ownedTarget.rootIdentity, target.rootIdentity)
+  ) {
+    removeOwnedDirectoryReceipt(ownedTarget, label);
+    fail(`${label} did not preserve the opaque-safe profile state.`);
+  }
+  return target;
 }
 
 export function cloneDataWranglerComparisonTemplate(receipt, { product, kind, cloneRoot }) {
@@ -920,21 +1218,15 @@ export function cloneDataWranglerCapturedTemplate(template, { cloneRoot }) {
     fail("Comparison profile clone target already exists.");
   const before = captureDataWranglerProfileTree(template.root);
   if (before.treeSha256 !== template.treeSha256) fail("Comparison profile template changed before cloning.");
-  mkdirSync(cloneRoot, { recursive: false, mode: 0o700 });
-  cpSync(template.root, cloneRoot, { recursive: true, errorOnExist: false, force: false, verbatimSymlinks: true });
-  const modeQueue = [[template.root, cloneRoot]];
-  while (modeQueue.length > 0) {
-    const [sourceDirectory, targetDirectory] = modeQueue.shift();
-    chmodSync(targetDirectory, Number(lstatSync(sourceDirectory, { bigint: true }).mode & 0o777n));
-    for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        modeQueue.push([resolve(sourceDirectory, entry.name), resolve(targetDirectory, entry.name)]);
-      }
-    }
-  }
+  const ownedClone = copyOpaqueSafeProfileTree(template.root, cloneRoot, "Comparison profile clone");
   const clone = captureDataWranglerProfileTree(cloneRoot, "Comparison profile clone");
-  if (clone.treeSha256 !== template.treeSha256) {
-    rmSync(cloneRoot, { recursive: true, force: true });
+  const after = captureDataWranglerProfileTree(template.root);
+  if (
+    clone.treeSha256 !== template.treeSha256 ||
+    after.treeSha256 !== before.treeSha256 ||
+    !sameDirectoryIdentity(after.rootIdentity, before.rootIdentity)
+  ) {
+    removeOwnedDirectoryReceipt(ownedClone, "Comparison profile clone");
     fail("Comparison profile clone does not match its template.");
   }
   return Object.freeze({
@@ -945,27 +1237,40 @@ export function cloneDataWranglerCapturedTemplate(template, { cloneRoot }) {
     extensions: resolve(cloneRoot, "extensions"),
     sandboxArgs: template.sandboxArgs,
     templateTreeSha256: template.treeSha256,
-    cloneTreeSha256: clone.treeSha256
+    cloneTreeSha256: clone.treeSha256,
+    rootIdentity: ownedClone.rootIdentity,
+    parent: ownedClone.parent,
+    parentIdentity: ownedClone.parentIdentity
   });
 }
 
 export function retireDataWranglerComparisonTemplateClone(clone) {
   exactKeys(
     clone,
-    ["product", "kind", "root", "userData", "extensions", "sandboxArgs", "templateTreeSha256", "cloneTreeSha256"],
+    [
+      "product",
+      "kind",
+      "root",
+      "userData",
+      "extensions",
+      "sandboxArgs",
+      "templateTreeSha256",
+      "cloneTreeSha256",
+      "rootIdentity",
+      "parent",
+      "parentIdentity"
+    ],
     "Comparison profile clone"
   );
-  privateDirectory(clone.root, "Comparison profile clone");
-  const root = clone.root;
-  rmSync(root, { recursive: true, force: false });
-  if (lstatSync(dirname(root)).isDirectory() && statSync(root, { throwIfNoEntry: false }) !== undefined) {
-    fail("Comparison profile clone remained after retirement.");
-  }
-  return Object.freeze({
-    status: "retired",
-    treeEmpty: true,
-    rootNameSha256: createHash("sha256").update(basename(root)).digest("hex")
-  });
+  return removeOwnedDirectoryReceipt(
+    {
+      root: clone.root,
+      parent: clone.parent,
+      rootIdentity: clone.rootIdentity,
+      parentIdentity: clone.parentIdentity
+    },
+    "Comparison profile clone"
+  );
 }
 
 export function writeDataWranglerComparisonPreparationReceipt(path, receipt) {
