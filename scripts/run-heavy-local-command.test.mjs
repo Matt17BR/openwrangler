@@ -14,6 +14,7 @@ import {
 import {
   collectOwnedProcessRows,
   parseLinuxProcessStat,
+  readLinuxProcessMemoryBytes,
   resolveHeavyMemoryPolicy,
   signalIdentityCheckedProcessRows
 } from "./heavy-process-memory.mjs";
@@ -201,6 +202,89 @@ test("process signaling revalidates identities immediately and skips reused PIDs
     ["signal", 101, "SIGTERM"],
     ["identity", 102]
   ]);
+});
+
+test("memory accounting accepts only the same live process identity", () => {
+  const row = linuxRow(101, 100, 100, "1001");
+  const metric = { kind: "pss", label: "proportional set size (PSS)" };
+  const failure = (code) => Object.assign(new Error(code), { code });
+
+  assert.throws(
+    () =>
+      readLinuxProcessMemoryBytes(row, metric, {
+        readFile: () => {
+          throw failure("ENOENT");
+        },
+        readProcessRow: () => row
+      }),
+    /Memory accounting failed for live Open Wrangler child PID 101/u
+  );
+  assert.equal(
+    readLinuxProcessMemoryBytes(row, metric, {
+      readFile: () => {
+        throw failure("ENOENT");
+      },
+      readProcessRow: () => {
+        throw failure("ESRCH");
+      }
+    }),
+    0
+  );
+  assert.equal(
+    readLinuxProcessMemoryBytes(row, metric, {
+      readFile: () => "Pss is unavailable while the process exits",
+      readProcessRow: () => ({ ...row, state: "Z" })
+    }),
+    0
+  );
+  assert.throws(
+    () =>
+      readLinuxProcessMemoryBytes(row, metric, {
+        readFile: () => {
+          throw failure("EACCES");
+        },
+        readProcessRow: () => row
+      }),
+    /Memory accounting failed for live Open Wrangler child PID 101/u
+  );
+  assert.equal(
+    readLinuxProcessMemoryBytes(row, metric, {
+      readFile: () => "Pss: 4 kB",
+      readProcessRow: () => linuxRow(row.pid, row.ppid, row.pgid, "9999")
+    }),
+    0
+  );
+  assert.equal(
+    readLinuxProcessMemoryBytes(row, metric, {
+      readFile: () => "Pss is malformed",
+      readProcessRow: () => linuxRow(row.pid, row.ppid, row.pgid, "9999")
+    }),
+    0
+  );
+  assert.equal(
+    readLinuxProcessMemoryBytes(row, metric, {
+      readFile: () => "Pss: 4 kB",
+      readProcessRow: () => ({ ...row, state: "X" })
+    }),
+    0
+  );
+  assert.equal(
+    readLinuxProcessMemoryBytes(row, metric, {
+      readFile: () => "Pss: 4 kB",
+      readProcessRow: () => row
+    }),
+    4 * 1024
+  );
+  assert.throws(
+    () =>
+      readLinuxProcessMemoryBytes(row, metric, {
+        readFile: () => "Pss: 4 kB",
+        readProcessRow: () => {
+          throw failure("EACCES");
+        }
+      }),
+    /Memory identity verification failed for Open Wrangler child PID 101/u
+  );
 });
 
 function linuxRow(pid, ppid, pgid, start) {

@@ -168,20 +168,42 @@ function createLinuxSampler(rootPid) {
     capturedIdentities,
     metric,
     ownedRows,
-    (row) => {
-      if (row.state === "Z" || row.state === "X") return 0;
-      const path = metric.kind === "pss" ? `/proc/${row.pid}/smaps_rollup` : `/proc/${row.pid}/status`;
-      try {
-        return parseLinuxMemoryBytes(readFileSync(path, "utf8"), metric.kind);
-      } catch (error) {
-        if (linuxProcessIdentityStillMatches(row)) {
-          throw new Error(`Memory accounting failed for live Open Wrangler child PID ${row.pid}.`, { cause: error });
-        }
-        return 0;
-      }
-    },
+    (row) => readLinuxProcessMemoryBytes(row, metric),
     linuxProcessIdentityStillMatches
   );
+}
+
+export function readLinuxProcessMemoryBytes(
+  row,
+  metric,
+  { readFile = readFileSync, readProcessRow = readLinuxProcessRow } = {}
+) {
+  if (row.state === "Z" || row.state === "X") return 0;
+  const path = metric.kind === "pss" ? `/proc/${row.pid}/smaps_rollup` : `/proc/${row.pid}/status`;
+  let bytes;
+  let accountingError;
+  try {
+    bytes = parseLinuxMemoryBytes(readFile(path, "utf8"), metric.kind);
+  } catch (error) {
+    accountingError = error;
+  }
+
+  let current;
+  try {
+    current = readProcessRow(row.pid);
+  } catch (identityError) {
+    if (identityError?.code === "ENOENT" || identityError?.code === "ESRCH") return 0;
+    throw new Error(`Memory identity verification failed for Open Wrangler child PID ${row.pid}.`, {
+      cause: identityError
+    });
+  }
+  if (current.identity !== row.identity || current.state === "Z" || current.state === "X") return 0;
+  if (accountingError) {
+    throw new Error(`Memory accounting failed for live Open Wrangler child PID ${row.pid}.`, {
+      cause: accountingError
+    });
+  }
+  return bytes;
 }
 
 function detectLinuxMemoryMetric() {
