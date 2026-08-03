@@ -1499,7 +1499,7 @@ test("comparison execution rejects non-official platforms before creating an edi
       dependencies.createPrivateRoot = () => {
         created = true;
         return {
-          privateParent: directory,
+          privateParent: dirname(privateRoot),
           privateRoot,
           revalidate() {},
           close() {}
