@@ -15,6 +15,10 @@ The study is a clean-room, black-box comparison. It may use public product docum
 APIs for neutral setup, and observable process state. It must never inspect, retain, or report Microsoft Data Wrangler
 package contents or implementation details.
 
+The [pre-measurement review record](performance/data-wrangler-1.2.1/review.md) identifies the exact method and source
+that were reviewed, the blockers fixed before collection, and the separate final review still required after results
+exist.
+
 ## Questions
 
 For Pandas and Polars notebook dataframes backed by the same deterministic CSV and Parquet sources, compare:
