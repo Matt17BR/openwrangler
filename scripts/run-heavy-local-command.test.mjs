@@ -285,10 +285,99 @@ test("memory accounting accepts only the same live process identity", () => {
       }),
     /Memory identity verification failed for Open Wrangler child PID 101/u
   );
+
+  for (const primaryFailure of [
+    () => {
+      throw failure("ENOENT");
+    },
+    () => {
+      throw failure("ESRCH");
+    },
+    () => {
+      throw failure("EACCES");
+    },
+    () => "Pss is malformed"
+  ]) {
+    const paths = [];
+    let identityReads = 0;
+    assert.equal(
+      readLinuxProcessMemoryBytes(row, metric, {
+        readFile: (path) => {
+          paths.push(path);
+          return path.endsWith("/smaps_rollup") ? primaryFailure() : "VmRSS: 8 kB";
+        },
+        readProcessRow: () => {
+          identityReads += 1;
+          return row;
+        }
+      }),
+      8 * 1024
+    );
+    assert.deepEqual(paths, [`/proc/${row.pid}/smaps_rollup`, `/proc/${row.pid}/status`]);
+    assert.equal(identityReads, 2);
+  }
+
+  let identityReads = 0;
+  const exiting = linuxRow(row.pid, row.ppid, row.pgid, "1001", { flags: 4 });
+  assert.equal(
+    readLinuxProcessMemoryBytes(row, metric, {
+      readFile: () => "memory is unavailable",
+      readProcessRow: () => {
+        identityReads += 1;
+        return identityReads === 1 ? row : exiting;
+      }
+    }),
+    0
+  );
+  assert.equal(identityReads, 2);
+
+  assert.equal(
+    readLinuxProcessMemoryBytes(row, metric, {
+      readFile: (path) => (path.endsWith("/status") ? "VmRSS: 8 kB" : "Pss is unavailable"),
+      readProcessRow: (() => {
+        let calls = 0;
+        return () => (calls++ === 0 ? row : linuxRow(row.pid, row.ppid, row.pgid, "9999"));
+      })()
+    }),
+    0
+  );
+
+  assert.throws(
+    () =>
+      readLinuxProcessMemoryBytes(row, metric, {
+        readFile: () => "memory is unavailable",
+        readProcessRow: () => row
+      }),
+    (error) => {
+      assert.match(error.message, /Memory accounting failed for live Open Wrangler child PID 101/u);
+      assert.equal(error.cause instanceof AggregateError, true);
+      assert.equal(error.cause.errors.length, 2);
+      return true;
+    }
+  );
+
+  let rssReads = 0;
+  assert.throws(
+    () =>
+      readLinuxProcessMemoryBytes(
+        row,
+        { kind: "rss", label: "RSS" },
+        {
+          readFile: () => {
+            rssReads += 1;
+            throw failure("EACCES");
+          },
+          readProcessRow: () => row
+        }
+      ),
+    /Memory accounting failed for live Open Wrangler child PID 101/u
+  );
+  assert.equal(rssReads, 1);
+  assert.throws(() => linuxRow(row.pid, row.ppid, row.pgid, "1001", { flags: "bad" }), /stat is malformed/u);
 });
 
-function linuxRow(pid, ppid, pgid, start) {
-  const fields = ["S", ppid, pgid, pgid, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, start];
+function linuxRow(pid, ppid, pgid, start, { state = "S", flags = 0 } = {}) {
+  const fields = [state, ppid, pgid, pgid, 0, 0, flags, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, start];
   return parseLinuxProcessStat(`${pid} (node worker ${pid}) ${fields.join(" ")}`);
 }
 
@@ -600,7 +689,10 @@ test(
       assert.equal(signal, null, guarded.output().stderr);
       assert.equal(code, 1, guarded.output().stderr);
       assert.equal(Number.isSafeInteger(descendantPid), true, guarded.output().stdout);
-      assert.match(guarded.output().stderr, /memory guard: 32 MiB proportional set size \(PSS\) cap/u);
+      assert.match(
+        guarded.output().stderr,
+        /memory guard: 32 MiB proportional set size \(PSS; transient live-process fallback uses VmRSS\) cap/u
+      );
       assert.match(guarded.output().stderr, /stopped "memory-test"/u);
       assert.match(guarded.output().stderr, /above the 32 MiB local cap/u);
       assert.match(guarded.output().stderr, /Peak observed:/u);
@@ -634,7 +726,10 @@ test(
     const [code, signal] = await once(guarded.child, "close");
     assert.equal(signal, null, guarded.output().stderr);
     assert.equal(code, 0, guarded.output().stderr);
-    assert.match(guarded.output().stderr, /memory guard: 64 MiB proportional set size \(PSS\) cap/u);
+    assert.match(
+      guarded.output().stderr,
+      /memory guard: 64 MiB proportional set size \(PSS; transient live-process fallback uses VmRSS\) cap/u
+    );
     assert.match(guarded.output().stderr, /"memory-success" peak .* \(cap 64 MiB\)/u);
   }
 );

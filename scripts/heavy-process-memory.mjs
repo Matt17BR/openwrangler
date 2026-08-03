@@ -5,6 +5,7 @@ const DEFAULT_FRACTION = 0.25;
 const DEFAULT_MINIMUM_MIB = 256;
 const DEFAULT_MAXIMUM_MIB = 8192;
 const MAXIMUM_EXPLICIT_MIB = 131_072;
+const LINUX_PROCESS_FLAG_EXITING = 4n;
 export const HEAVY_MEMORY_LIMIT = "OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB";
 
 export function resolveHeavyMemoryPolicy({
@@ -77,6 +78,7 @@ export function parseLinuxProcessStat(contents) {
   const state = fields[0];
   const ppid = Number(fields[1]);
   const pgid = Number(fields[2]);
+  const flagsText = fields[6];
   const start = fields[19];
   if (
     !/^[A-Za-z]$/u.test(state) ||
@@ -84,11 +86,12 @@ export function parseLinuxProcessStat(contents) {
     pid <= 0 ||
     ppid < 0 ||
     pgid < 0 ||
+    !/^\d+$/u.test(flagsText) ||
     !/^\d+$/u.test(start)
   ) {
     throw new Error("Linux process stat is malformed.");
   }
-  return Object.freeze({ pid, ppid, pgid, state, identity: `${pid}:${start}` });
+  return Object.freeze({ pid, ppid, pgid, state, flags: BigInt(flagsText), identity: `${pid}:${start}` });
 }
 
 export function collectOwnedProcessRows(
@@ -198,18 +201,46 @@ export function readLinuxProcessMemoryBytes(
     });
   }
   if (current.identity !== row.identity || current.state === "Z" || current.state === "X") return 0;
-  if (accountingError) {
+  if (!accountingError) return bytes;
+  if (metric.kind !== "pss") {
     throw new Error(`Memory accounting failed for live Open Wrangler child PID ${row.pid}.`, {
       cause: accountingError
     });
   }
-  return bytes;
+
+  let fallbackBytes;
+  let fallbackError;
+  try {
+    fallbackBytes = parseLinuxMemoryBytes(readFile(`/proc/${row.pid}/status`, "utf8"), "rss");
+  } catch (error) {
+    fallbackError = error;
+  }
+  try {
+    current = readProcessRow(row.pid);
+  } catch (identityError) {
+    if (identityError?.code === "ENOENT" || identityError?.code === "ESRCH") return 0;
+    throw new Error(`Memory identity verification failed for Open Wrangler child PID ${row.pid}.`, {
+      cause: identityError
+    });
+  }
+  if (current.identity !== row.identity || current.state === "Z" || current.state === "X") return 0;
+  if (!fallbackError) return fallbackBytes;
+  if ((current.flags & LINUX_PROCESS_FLAG_EXITING) !== 0n) return 0;
+  throw new Error(`Memory accounting failed for live Open Wrangler child PID ${row.pid}.`, {
+    cause: new AggregateError(
+      [accountingError, fallbackError],
+      "Linux PSS and its conservative VmRSS fallback were both unavailable."
+    )
+  });
 }
 
 function detectLinuxMemoryMetric() {
   try {
     parseLinuxMemoryBytes(readFileSync("/proc/self/smaps_rollup", "utf8"), "pss");
-    return Object.freeze({ kind: "pss", label: "proportional set size (PSS)" });
+    return Object.freeze({
+      kind: "pss",
+      label: "proportional set size (PSS; transient live-process fallback uses VmRSS)"
+    });
   } catch (error) {
     try {
       parseLinuxMemoryBytes(readFileSync("/proc/self/status", "utf8"), "rss");

@@ -20,9 +20,12 @@ wrapper is killed, control-descriptor EOF makes the helper terminate and reap it
 the cleanup lease, so a replacement wrapper cannot overlap that cleanup. A surviving descendant makes the command fail
 and is stopped. The target never launches if the subreaper, parent lease, cleanup lease, or process accounting cannot
 be armed. Before signaling any selected PID, Linux rereads its procfs start identity; a process that exited or reused
-the PID is skipped. Linux sums proportional set size (PSS), so shared Electron mappings are counted once; it labels and
-uses RSS only when the kernel does not expose `smaps_rollup`. The wrapper prints the active limit, metric, and observed
-peak. Set `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` to a positive whole number to choose a different limit. `off` explicitly
+the PID is skipped. Linux normally sums proportional set size (PSS), so shared Electron mappings are counted once. If
+one still-live process's PSS cannot be read, the sampler reads that process's approximate VmRSS once and checks its
+identity again. A process that sets Linux's `PF_EXITING` flag and exposes neither value counts as finished. The sampler
+also uses RSS when the kernel does not expose `smaps_rollup`. The wrapper prints the active
+limit, metric, and observed peak. Set `OPEN_WRANGLER_HEAVY_MEMORY_LIMIT_MB` to a positive whole number to choose a
+different limit. `off` explicitly
 disables the watcher, including Linux subreaper ownership. A nested guarded npm command inherits the outer lease and
 never starts a second watcher. This is a watchdog rather than a kernel reservation, so a very abrupt allocation can
 overshoot between samples. The focused process test injects an `accept()` resource failure into the cleanup-token
