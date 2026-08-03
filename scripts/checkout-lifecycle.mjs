@@ -13687,32 +13687,142 @@ export function createCheckoutManager(options = {}) {
     return Object.freeze({ identity: identityOf(metadata), device: metadata.dev });
   }
 
+  function normalizedManagedArtifactStem(value) {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/gu, "-")
+      .replace(/^-+|-+$/gu, "");
+  }
+
+  function managedArtifactJournalSlug(checkoutSlug, generatedRoot) {
+    const normalizedRoot = normalizedManagedArtifactStem(generatedRoot) || "generated";
+    const stem = `${checkoutSlug}-${normalizedRoot}`;
+    const digest = sha256(Buffer.from(`${checkoutSlug}\0${generatedRoot}`, "utf8")).slice(0, 24);
+    const prefix = stem.slice(0, 39).replace(/-+$/gu, "") || "managed-artifact";
+    const journalSlug = `${prefix}-${digest}`;
+    assertSlug(journalSlug);
+    return journalSlug;
+  }
+
+  function validateManagedArtifactAuthority({ slug, artifactPath, approvedRoot, ownerTask, ownerRevision }) {
+    if (dirname(approvedRoot) !== paths.checkouts) return undefined;
+    const checkoutSlug = basename(approvedRoot);
+    if (!SLUG_PATTERN.test(checkoutSlug) || checkoutPathFor(checkoutSlug) !== approvedRoot) {
+      fail("invalid-artifact-target", "The reviewed manager path is not an exact managed checkout.");
+    }
+    const generatedRoot = basename(artifactPath);
+    const entry = readEntry(checkoutSlug);
+    assertOwnerRevision(entry, ownerTask, ownerRevision);
+    if (
+      entry.state !== "cleanup-pending" ||
+      entry.cleanupRequest.reason !== "finish" ||
+      !entry.generatedRoots.includes(generatedRoot)
+    ) {
+      fail(
+        "artifact-not-eligible",
+        "Only a registered generated root in a finished managed checkout can use artifact retirement."
+      );
+    }
+    const journalSlug = managedArtifactJournalSlug(checkoutSlug, generatedRoot);
+    if (slug !== generatedRoot && slug !== journalSlug) {
+      fail(
+        "invalid-artifact-target",
+        `Use ${generatedRoot} (or its checkout-scoped journal ID ${journalSlug}) for this generated root.`
+      );
+    }
+    const audit = auditEntry(entry);
+    if (!audit.candidateForReviewedCleanup) {
+      fail(
+        "artifact-not-eligible",
+        "The managed checkout contains work other than its registered generated roots or no longer matches its receipt."
+      );
+    }
+    const tracked = auditCheckoutGit(run, paths, approvedRoot, entry.checkout.gitAdmin.path, [
+      "ls-files",
+      "-z",
+      "--",
+      generatedRoot
+    ]);
+    if (tracked.status !== 0 || tracked.stdout !== "") {
+      fail("artifact-not-eligible", "A registered generated root contains tracked repository files.");
+    }
+    const status = auditCheckoutGit(run, paths, approvedRoot, entry.checkout.gitAdmin.path, [
+      "status",
+      "--porcelain=v2",
+      "-z",
+      "--untracked-files=all",
+      "--ignored=matching",
+      "--ignore-submodules=all",
+      "--",
+      generatedRoot
+    ]);
+    const records = status.status === 0 ? parseStatus(status.stdout) : [];
+    if (
+      records.length === 0 ||
+      records.some((record) => record.kind !== "ignored" || !belongsToGeneratedRoot(record.path, [generatedRoot]))
+    ) {
+      fail("artifact-not-eligible", "The registered generated root is not proven to be ignored generated content.");
+    }
+    return Object.freeze({ checkoutSlug, generatedRoot, journalSlug });
+  }
+
+  function revalidateManagedArtifactAuthority(args) {
+    try {
+      return validateManagedArtifactAuthority(args);
+    } catch (error) {
+      if (
+        error instanceof CheckoutLifecycleError &&
+        ["artifact-not-eligible", "checkout-not-found", "invalid-artifact-target", "ownership-changed"].includes(
+          error.code
+        )
+      ) {
+        fail("artifact-source-changed", "The managed checkout no longer grants this artifact retirement authority.");
+      }
+      throw error;
+    }
+  }
+
   function normalizeArtifactTarget({ slug, artifactPath, approvedRoot, ownerTask, ownerRevision }) {
-    assertSlug(slug);
     assertOwner(ownerTask);
     assertRevision(ownerRevision);
     if (
+      typeof slug !== "string" ||
       typeof artifactPath !== "string" ||
       typeof approvedRoot !== "string" ||
       !isAbsolute(artifactPath) ||
       !isAbsolute(approvedRoot) ||
       resolve(artifactPath) !== artifactPath ||
       resolve(approvedRoot) !== approvedRoot ||
-      dirname(artifactPath) !== approvedRoot ||
-      basename(artifactPath) !== slug
+      dirname(artifactPath) !== approvedRoot
     ) {
       fail(
         "invalid-artifact-target",
-        "Generated-artifact retirement requires one canonical direct child whose basename matches its slug."
+        "Generated-artifact retirement requires one canonical direct child of its reviewed root."
       );
     }
-    if (
-      isSameOrContained(paths.root, approvedRoot) ||
-      isSameOrContained(approvedRoot, paths.root) ||
-      isSameOrContained(paths.root, artifactPath) ||
-      isSameOrContained(artifactPath, paths.root)
-    ) {
-      fail("invalid-artifact-target", "Generated artifacts and their reviewed root must stay outside manager state.");
+    const managed = validateManagedArtifactAuthority({
+      slug,
+      artifactPath,
+      approvedRoot,
+      ownerTask,
+      ownerRevision
+    });
+    if (managed === undefined) {
+      assertSlug(slug);
+      if (basename(artifactPath) !== slug) {
+        fail("invalid-artifact-target", "A standalone generated artifact must have the same basename as its slug.");
+      }
+      if (
+        isSameOrContained(paths.root, approvedRoot) ||
+        isSameOrContained(approvedRoot, paths.root) ||
+        isSameOrContained(paths.root, artifactPath) ||
+        isSameOrContained(artifactPath, paths.root)
+      ) {
+        fail(
+          "invalid-artifact-target",
+          "Manager state may contain only an exact registered generated root from a finished managed checkout."
+        );
+      }
     }
     const root = validateArtifactRoot(approvedRoot, "Reviewed artifact root");
     const artifact = validateArtifactRoot(artifactPath, "Generated artifact");
@@ -13721,7 +13831,7 @@ export function createCheckoutManager(options = {}) {
     }
     assertNoMountAtOrBelow(artifactPath);
     return Object.freeze({
-      slug,
+      slug: managed?.journalSlug ?? slug,
       artifactPath,
       approvedRoot,
       ownerTask,
@@ -15853,6 +15963,13 @@ export function createCheckoutManager(options = {}) {
     let layout = artifactLayout(eligible);
     if (layout.state === "blocked") fail("artifact-layout-blocked", "The artifact retirement layout is ambiguous.");
     if (records.length <= 2 && layout.state === "original") {
+      revalidateManagedArtifactAuthority({
+        slug: eligible.slug,
+        artifactPath: eligible.originalPath,
+        approvedRoot: eligible.approvedRoot,
+        ownerTask: eligible.ownerTask,
+        ownerRevision: eligible.ownerRevision
+      });
       const current = scanArtifactTree(eligible.originalPath, eligible.originalIdentity);
       validateArtifactRoot(eligible.approvedRoot, "Reviewed artifact root", eligible.rootIdentity);
       if (!isDeepStrictEqual(artifactSnapshotCore(current), artifactSnapshotCore(authority.review.snapshot))) {
@@ -15873,6 +15990,13 @@ export function createCheckoutManager(options = {}) {
       if (!isDeepStrictEqual(artifactSnapshotCore(confirmed), artifactSnapshotCore(authority.review.snapshot))) {
         fail("artifact-source-changed", "The generated artifact changed immediately before quarantine.");
       }
+      revalidateManagedArtifactAuthority({
+        slug: eligible.slug,
+        artifactPath: eligible.originalPath,
+        approvedRoot: eligible.approvedRoot,
+        ownerTask: eligible.ownerTask,
+        ownerRevision: eligible.ownerRevision
+      });
       moveArtifactToQuarantine(eligible, layout.quarantinePath);
       hooks?.afterArtifactMove?.(eligible);
       layout = artifactLayout(eligible);
@@ -16015,7 +16139,7 @@ export function createCheckoutManager(options = {}) {
         const enrollment = enrollArtifactRetirement(Object.freeze({ entry, review }));
         return Object.freeze({
           status: "artifact-retirement-enrolled",
-          slug,
+          slug: review.slug,
           ownerTask,
           ownerRevision,
           reviewSha256: expectedReviewSha256,

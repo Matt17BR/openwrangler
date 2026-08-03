@@ -56,8 +56,13 @@ Agent checkout lifecycle has a separate, small contract test:
   and managed and legacy retirement tombstones. Every retained current or historical journal keeps the authority
   family reservation even when the checkout itself no longer exists.
 - Use `checkout:artifact-audit` for the read-only review of a generated directory that is not a Git checkout. Pass its
-  slug, owner task, revision, canonical path, and canonical parent root explicitly. The target must be a direct child
-  of the reviewed root and its basename must equal the slug. The audit reads the complete tree
+  name, owner task, revision, canonical path, and canonical parent root explicitly. A standalone target stays outside
+  manager state, has a strict lowercase slug, and uses that slug as its basename. An exact registered generated root
+  may instead be a direct child of its managed checkout after `checkout:task-end` has recorded `finish` and reported
+  that the ignored root blocks retirement. Pass the registered basename, including names such as `node_modules`; the
+  manager maps it to a unique checkout-scoped journal slug. It rechecks the exact checkout receipt, owner and revision,
+  clean tracked state, registration, ignored status, and absence of tracked files below that root. No other manager
+  path can enter the artifact lane. The audit reads the complete tree
   twice through pinned Linux directory descriptors without following links and returns one review SHA-256. It fails
   closed when that Linux descriptor interface is unavailable or a filename is not strict, round-trippable UTF-8. It
   rejects `.git` files or directories, hard-linked

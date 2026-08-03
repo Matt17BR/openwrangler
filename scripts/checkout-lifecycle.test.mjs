@@ -465,6 +465,171 @@ test("generated artifacts archive raw symlinks and wait for a later boot before 
   });
 });
 
+test("registered dependency artifacts retire before their managed checkout", () => {
+  withRepository((fixture) => {
+    const bootA = "11111111-1111-4111-8111-111111111111";
+    const bootB = "22222222-2222-4222-8222-222222222222";
+    const bootC = "33333333-3333-4333-8333-333333333333";
+    const slug = "managed-dependency-root";
+    const ownerTask = `/root/${slug}`;
+    const seeded = manager(fixture, { readBootId: () => bootA, tokenFactory: () => "a".repeat(32) });
+    const checkout = create(fixture, slug, { manager: seeded, generatedRoots: ["node_modules"] });
+    lifecycleError(() => create(fixture, "node_modules", { manager: seeded }), "invalid-slug");
+    const artifactPath = join(checkout.checkoutPath, "node_modules");
+    mkdirSync(join(artifactPath, "example"), { recursive: true });
+    writeFileSync(join(artifactPath, "example", "index.js"), "generated dependency\n");
+    const args = {
+      slug: "node_modules",
+      artifactPath,
+      approvedRoot: checkout.checkoutPath,
+      ownerTask,
+      ownerRevision: 1
+    };
+    lifecycleError(() => seeded.artifactAudit(args), "artifact-not-eligible");
+    lifecycleError(
+      () =>
+        runCheckoutLifecycleCli(["task-end", slug, "--owner", ownerTask, "--revision", "1"], {
+          repositoryPath: fixture.repository,
+          managerRoot: fixture.managerRoot,
+          readBootId: () => bootA,
+          tokenFactory: () => "a".repeat(32),
+          stdout: { write() {} }
+        }),
+      "retirement-not-eligible"
+    );
+
+    const artifactCommand = [
+      "node_modules",
+      "--owner",
+      ownerTask,
+      "--revision",
+      "1",
+      "--path",
+      artifactPath,
+      "--root",
+      checkout.checkoutPath
+    ];
+    const artifactOptions = {
+      repositoryPath: fixture.repository,
+      managerRoot: fixture.managerRoot,
+      readBootId: () => bootA,
+      tokenFactory: () => "a".repeat(32),
+      stdout: { write() {} }
+    };
+    const audit = runCheckoutLifecycleCli(["artifact-audit", ...artifactCommand], artifactOptions);
+    assert.match(audit.slug, new RegExp(`^${slug}-node-modules-[0-9a-f]{24}$`, "u"));
+    const enrolled = runCheckoutLifecycleCli(
+      ["artifact-retire", ...artifactCommand, "--review", audit.reviewSha256],
+      artifactOptions
+    );
+
+    assert.equal(enrolled.status, "artifact-retirement-enrolled");
+    assert.equal(enrolled.slug, audit.slug);
+    assert.equal(seeded.sweep().results.find((item) => item.slug === audit.slug)?.state, "waiting-for-next-boot");
+    assert.equal(existsSync(artifactPath), true);
+
+    const checkoutEnrollment = runCheckoutLifecycleCli(["task-end", slug, "--owner", ownerTask, "--revision", "1"], {
+      repositoryPath: fixture.repository,
+      managerRoot: fixture.managerRoot,
+      readBootId: () => bootB,
+      tokenFactory: () => "b".repeat(32),
+      stdout: { write() {} }
+    });
+    assert.equal(checkoutEnrollment.status, "retirement-enrolled");
+    assert.equal(existsSync(artifactPath), false);
+    assert.equal(existsSync(checkout.checkoutPath), true);
+    assert.equal(existsSync(enrolled.archive.recoveryPath), true);
+
+    const later = manager(fixture, { readBootId: () => bootC, tokenFactory: () => "c".repeat(32) });
+    const retired = later.sweep().results.find((item) => item.slug === slug);
+    assert.equal(retired?.state, "retired");
+    assert.equal(existsSync(checkout.checkoutPath), false);
+    assert.match(git(fixture.repository, "branch", "--list", `agent/${slug}`), new RegExp(`agent/${slug}$`, "u"));
+  });
+});
+
+test("managed artifact retirement rejects unregistered and tracked checkout content", () => {
+  withRepository((fixture) => {
+    const boot = "11111111-1111-4111-8111-111111111111";
+    const seeded = manager(fixture, { readBootId: () => boot, tokenFactory: () => "a".repeat(32) });
+    const unregistered = create(fixture, "unregistered-dependency-root", { manager: seeded });
+    const unregisteredPath = join(unregistered.checkoutPath, "node_modules");
+    mkdirSync(unregisteredPath, { recursive: true });
+    writeFileSync(join(unregisteredPath, "index.js"), "ignored but unregistered\n");
+    seeded.finish({
+      slug: "unregistered-dependency-root",
+      ownerTask: "/root/unregistered-dependency-root",
+      expectedRevision: 1
+    });
+    lifecycleError(
+      () =>
+        seeded.artifactAudit({
+          slug: "node_modules",
+          artifactPath: unregisteredPath,
+          approvedRoot: unregistered.checkoutPath,
+          ownerTask: "/root/unregistered-dependency-root",
+          ownerRevision: 1
+        }),
+      "artifact-not-eligible"
+    );
+
+    const tracked = create(fixture, "tracked-dependency-root", {
+      manager: seeded,
+      generatedRoots: ["node_modules"]
+    });
+    const trackedPath = join(tracked.checkoutPath, "node_modules");
+    mkdirSync(trackedPath, { recursive: true });
+    writeFileSync(join(trackedPath, "tracked.js"), "repository content\n");
+    git(tracked.checkoutPath, "add", "-f", "node_modules/tracked.js");
+    git(tracked.checkoutPath, "commit", "-q", "-m", "Track dependency fixture");
+    seeded.finish({ slug: "tracked-dependency-root", ownerTask: "/root/tracked-dependency-root", expectedRevision: 1 });
+    lifecycleError(
+      () =>
+        seeded.artifactAudit({
+          slug: "node_modules",
+          artifactPath: trackedPath,
+          approvedRoot: tracked.checkoutPath,
+          ownerTask: "/root/tracked-dependency-root",
+          ownerRevision: 1
+        }),
+      "artifact-not-eligible"
+    );
+    assert.equal(readFileSync(join(trackedPath, "tracked.js"), "utf8"), "repository content\n");
+  });
+});
+
+test("managed artifact journal IDs cannot collide at checkout and root boundaries", () => {
+  withRepository((fixture) => {
+    writeFileSync(join(fixture.repository, ".gitignore"), "node_modules/\ngamma/\nbeta-gamma/\n*.ignored\ntmp/\n");
+    git(fixture.repository, "add", ".gitignore");
+    git(fixture.repository, "commit", "-q", "-m", "Ignore generated roots");
+    const managed = manager(fixture, {
+      readBootId: () => "11111111-1111-4111-8111-111111111111",
+      tokenFactory: () => "a".repeat(32)
+    });
+    const review = (slug, generatedRoot) => {
+      const checkout = create(fixture, slug, { manager: managed, generatedRoots: [generatedRoot] });
+      const artifactPath = join(checkout.checkoutPath, generatedRoot);
+      mkdirSync(artifactPath, { recursive: true });
+      writeFileSync(join(artifactPath, "generated.txt"), "generated\n");
+      managed.finish({ slug, ownerTask: `/root/${slug}`, expectedRevision: 1 });
+      return managed.artifactAudit({
+        slug: generatedRoot,
+        artifactPath,
+        approvedRoot: checkout.checkoutPath,
+        ownerTask: `/root/${slug}`,
+        ownerRevision: 1
+      });
+    };
+
+    const left = review("alpha-beta", "gamma");
+    const right = review("alpha", "beta-gamma");
+    assert.match(left.slug, /^alpha-beta-gamma-[0-9a-f]{24}$/u);
+    assert.match(right.slug, /^alpha-beta-gamma-[0-9a-f]{24}$/u);
+    assert.notEqual(left.slug, right.slug);
+  });
+});
+
 test("generated-artifact audit rejects hard links, Git markers, and special files", () => {
   withRepository((fixture) => {
     const managed = manager(fixture, { readBootId: () => "11111111-1111-4111-8111-111111111111" });
