@@ -77,7 +77,8 @@ assert_true(jsonlite::validate(openwrangler_r_frame_contract$encode_page(base_ca
 
 ambient_frame <- data.frame(
   amount = 1234.5,
-  instant = structure(0.25, class = c("POSIXct", "POSIXt"))
+  instant = structure(0.25, class = c("POSIXct", "POSIXt")),
+  empty_timezone_instant = structure(0.25, class = c("POSIXct", "POSIXt"), tzone = "")
 )
 ambient_capture <- openwrangler_r_frame_contract$capture_frame(ambient_frame)
 original_out_dec <- getOption("OutDec")
@@ -87,14 +88,14 @@ Sys.setenv(TZ = "America/New_York")
 ambient_page_new_york <- openwrangler_r_frame_contract$materialize_page(
   ambient_capture,
   row_limit = 1L,
-  column_limit = 2L
+  column_limit = 3L
 )
 options(OutDec = ".")
 Sys.setenv(TZ = "Asia/Tokyo")
 ambient_page_tokyo <- openwrangler_r_frame_contract$materialize_page(
   ambient_capture,
   row_limit = 1L,
-  column_limit = 2L
+  column_limit = 3L
 )
 options(OutDec = original_out_dec)
 if (is.na(original_tz)) {
@@ -116,6 +117,16 @@ assert_identical(
   ambient_page_new_york$page$rows[[1L]]$values[[2L]]$display,
   "1970-01-01T00:00:00.250000",
   "a timezone-less POSIXct value was not displayed in UTC"
+)
+assert_identical(
+  ambient_page_new_york$schema[[3L]]$semantics$timezone,
+  "",
+  "an explicit empty POSIXct timezone was not retained in metadata"
+)
+assert_identical(
+  ambient_page_new_york$page$rows[[1L]]$values[[3L]]$display,
+  "1970-01-01T00:00:00.250000",
+  "an empty-string POSIXct timezone was not displayed in UTC"
 )
 
 base_snapshot <- get("snapshot", envir = base_capture, inherits = FALSE)

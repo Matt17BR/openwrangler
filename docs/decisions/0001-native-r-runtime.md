@@ -38,9 +38,9 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
 - R-specific factor, ordered-factor, Date, POSIXct, difftime, and integer64 metadata crosses the boundary explicitly.
 - Plain-double `NA`, `NaN`, positive infinity, and negative infinity remain distinct typed values. Non-finite
   classed temporal values and fractional Dates are rejected instead of being relabeled or rounded.
-- Display text does not inherit `options(OutDec)` or the process time zone. Timezone-less POSIXct values display in
-  UTC while retaining a null timezone in their metadata, and reserved integer missing-value sentinels are never
-  accepted as ordinary values.
+- Display text does not inherit `options(OutDec)` or the process time zone. POSIXct values with a null or empty
+  timezone display in UTC while retaining that original metadata, and reserved integer missing-value sentinels are
+  never accepted as ordinary values.
 - Read-only sort rules use the captured positional column ID and name. They are stable, keep source row IDs, and can
   choose direction and missing-value placement independently for each key.
 - Row, column, cell, factor-level, text, and encoded-payload limits are checked by the R producer and again by the

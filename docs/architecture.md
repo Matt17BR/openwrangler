@@ -28,10 +28,10 @@ duplicate and non-syntactic names while using positional IDs for identity. Its c
 ordered factors, dates, POSIXct time zones, difftime units, and `bit64::integer64`; cells distinguish `NA`, `NaN`, and
 signed infinity for plain doubles. Non-finite classed temporal values and fractional Dates fail rather than being
 silently relabeled or rounded. Numeric display always uses a dot, regardless of `options(OutDec)`. A POSIXct column
-without a `tzone` attribute keeps that fact in its metadata and uses UTC for display instead of the process's current
-time zone. R's reserved integer and `bit64::integer64` missing-value sentinels can appear only as typed nulls. Explicit
-row names, grouped or rowwise tibbles, list/matrix/raw/complex columns, subclasses, and unrecognized attributes fail
-instead of losing R semantics.
+with no `tzone` attribute or an empty `tzone` uses UTC for display instead of the process's current time zone. The
+original null or empty-string value remains in metadata. R's reserved integer and `bit64::integer64` missing-value
+sentinels can appear only as typed nulls. Explicit row names, grouped or rowwise tibbles, list/matrix/raw/complex
+columns, subclasses, and unrecognized attributes fail instead of losing R semantics.
 
 The same module can apply an ordered list of viewing sorts before it builds a page. A rule names a column by both its
 positional ID and captured name, which keeps duplicate names unambiguous and rejects stale references. Rules are

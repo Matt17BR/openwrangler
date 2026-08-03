@@ -380,8 +380,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (kind == "datetime") {
       exact <- exact_double(unclass(value))
-      timezone <- semantics$timezone %||% "UTC"
-      display <- format(value, tz = timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE)
+      display_timezone <- semantics$timezone
+      if (is.null(display_timezone) || identical(display_timezone, "")) display_timezone <- "UTC"
+      display <- format(value, tz = display_timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE)
       display <- bounded_utf8(display, label)
       spend_json_string(budget, exact, label)
       spend_json_string(budget, display, label)
