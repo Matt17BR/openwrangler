@@ -7,6 +7,7 @@ import {
   chooseStudyKernelPickerDecision,
   dataWranglerNotebookCaptureWindowMs,
   describeIncompletePublicWarmup,
+  describeStudyNotebookRunCellDiscovery,
   executeDataWranglerNotebookTrialFlow,
   observeNotebookTrialGridScrollState,
   observeNotebookTrialEngineLabel,
@@ -17,6 +18,8 @@ import {
   readStudyIpynbCellTags,
   studyKernelPickerLabelMatches,
   studyNotebookCellRowMatches,
+  studyNotebookCellRowSelector,
+  studyNotebookRunCellActionGeometryMatches,
   validateDataWranglerComparisonSentinelRows,
   validateDataWranglerObservedSentinels,
   validateDataWranglerNotebookTrialPhaseReceipt,
@@ -217,11 +220,97 @@ describe("public warm-up diagnostics", () => {
 });
 
 describe("public notebook cell targeting", () => {
-  it("accepts the measured code-cell position regardless of label case", () => {
-    expect(studyNotebookCellRowMatches("Code cell, 4 lines", "7", "false", 7)).toBe(true);
-    expect(studyNotebookCellRowMatches("code cell, 4 lines", null, "true", 7)).toBe(true);
-    expect(studyNotebookCellRowMatches("Code cell, 4 lines", "6", "true", 7)).toBe(false);
-    expect(studyNotebookCellRowMatches("Markdown cell, 4 lines", "7", "true", 7)).toBe(false);
+  it("scopes candidates to the exact zero-based cell index or accessible position", () => {
+    expect(studyNotebookCellRowSelector(6)).toBe(
+      '.notebook-editor:visible .monaco-list-row[data-index="6"], ' +
+        '.notebook-editor:visible [role="listitem"][data-index="6"], ' +
+        '.notebook-editor:visible [role="option"][data-index="6"], ' +
+        '.notebook-editor:visible [role="treeitem"][data-index="6"], ' +
+        '.notebook-editor:visible [role="listitem"][aria-posinset="7"], ' +
+        '.notebook-editor:visible [role="option"][aria-posinset="7"], ' +
+        '.notebook-editor:visible [role="treeitem"][aria-posinset="7"]'
+    );
+    expect(() => studyNotebookCellRowSelector(-1)).toThrow(/cell index must be safe/u);
+  });
+
+  it("matches exact notebook rows without depending on a Code Cell label", () => {
+    expect(
+      studyNotebookCellRowMatches({ hasMonacoListRowClass: true, role: null, dataIndex: "6", ariaPosition: null }, 6)
+    ).toBe(true);
+    expect(
+      studyNotebookCellRowMatches(
+        { hasMonacoListRowClass: false, role: "listitem", dataIndex: null, ariaPosition: "7" },
+        6
+      )
+    ).toBe(true);
+    expect(
+      studyNotebookCellRowMatches(
+        { hasMonacoListRowClass: true, role: "listitem", dataIndex: "6", ariaPosition: "7" },
+        6
+      )
+    ).toBe(true);
+    expect(
+      studyNotebookCellRowMatches(
+        { hasMonacoListRowClass: true, role: "listitem", dataIndex: "5", ariaPosition: "7" },
+        6
+      )
+    ).toBe(false);
+    expect(
+      studyNotebookCellRowMatches(
+        { hasMonacoListRowClass: true, role: "listitem", dataIndex: "6", ariaPosition: "8" },
+        6
+      )
+    ).toBe(true);
+    expect(
+      studyNotebookCellRowMatches(
+        { hasMonacoListRowClass: false, role: "group", dataIndex: null, ariaPosition: "7" },
+        6
+      )
+    ).toBe(false);
+  });
+
+  it("associates detached Run Cell actions with the exact row by geometry", () => {
+    const editor = { x: 100, y: 50, width: 800, height: 700 };
+    const row = { x: 120, y: 250, width: 760, height: 120 };
+    expect(studyNotebookRunCellActionGeometryMatches(row, editor, { x: 130, y: 260, width: 28, height: 28 })).toBe(
+      true
+    );
+    expect(studyNotebookRunCellActionGeometryMatches(row, editor, { x: 130, y: 390, width: 28, height: 28 })).toBe(
+      false
+    );
+    expect(studyNotebookRunCellActionGeometryMatches(row, editor, { x: 890, y: 260, width: 28, height: 28 })).toBe(
+      false
+    );
+    expect(
+      studyNotebookRunCellActionGeometryMatches(row, editor, {
+        x: 130,
+        y: 260,
+        width: Number.NaN,
+        height: 28
+      })
+    ).toBe(false);
+  });
+
+  it("reports only bounded categorical Run Cell discovery diagnostics", () => {
+    const diagnostic = describeStudyNotebookRunCellDiscovery({
+      visibleNotebookEditorCount: 2,
+      candidateRowCount: 1_000_000,
+      exactRowCount: Number.POSITIVE_INFINITY,
+      visibleExactRowCount: -2,
+      executeButtonCount: 4,
+      usableActionCount: 0,
+      rowRoles: { listitem: true, option: false, treeitem: false, missing: true, other: true },
+      exactDataIndexObserved: true,
+      exactAriaPositionObserved: false,
+      conflictingPositionObserved: false
+    });
+    expect(diagnostic).toBe(
+      "visibleNotebookEditors=2, candidateRows=999, exactRows=0, visibleExactRows=0, " +
+        "executeButtons=4, usableActions=0, rowRoles=listitem|missing|other, exactDataIndex=true, " +
+        "exactAriaPosition=false, conflictingPosition=false"
+    );
+    expect(diagnostic.length).toBeLessThan(256);
+    expect(diagnostic).not.toMatch(/[\\/]/u);
   });
 });
 

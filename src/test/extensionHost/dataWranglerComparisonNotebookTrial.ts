@@ -3514,14 +3514,117 @@ function selectedStudyNotebookTab(notebook: vscode.NotebookDocument): vscode.Tab
   return active;
 }
 
+export interface StudyNotebookCellRowObservation {
+  readonly hasMonacoListRowClass: boolean;
+  readonly role: string | null;
+  readonly dataIndex: string | null;
+  readonly ariaPosition: string | null;
+}
+
+export interface StudyNotebookRunCellDiscoveryDiagnostic {
+  visibleNotebookEditorCount: number;
+  candidateRowCount: number;
+  exactRowCount: number;
+  visibleExactRowCount: number;
+  executeButtonCount: number;
+  usableActionCount: number;
+  rowRoles: {
+    listitem: boolean;
+    option: boolean;
+    treeitem: boolean;
+    missing: boolean;
+    other: boolean;
+  };
+  exactDataIndexObserved: boolean;
+  exactAriaPositionObserved: boolean;
+  conflictingPositionObserved: boolean;
+}
+
+export interface StudyNotebookElementBox {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export function studyNotebookCellRowSelector(expectedIndex: number): string {
+  assert.ok(
+    Number.isSafeInteger(expectedIndex) && expectedIndex >= 0,
+    "The expected notebook cell index must be safe."
+  );
+  const dataIndex = String(expectedIndex);
+  const ariaPosition = String(expectedIndex + 1);
+  return (
+    `.notebook-editor:visible .monaco-list-row[data-index="${dataIndex}"], ` +
+    `.notebook-editor:visible [role="listitem"][data-index="${dataIndex}"], ` +
+    `.notebook-editor:visible [role="option"][data-index="${dataIndex}"], ` +
+    `.notebook-editor:visible [role="treeitem"][data-index="${dataIndex}"], ` +
+    `.notebook-editor:visible [role="listitem"][aria-posinset="${ariaPosition}"], ` +
+    `.notebook-editor:visible [role="option"][aria-posinset="${ariaPosition}"], ` +
+    `.notebook-editor:visible [role="treeitem"][aria-posinset="${ariaPosition}"]`
+  );
+}
+
 export function studyNotebookCellRowMatches(
-  label: string,
-  ariaPosition: string | null,
-  ariaSelected: string | null,
-  expectedPosition: number
+  observation: StudyNotebookCellRowObservation,
+  expectedIndex: number
 ): boolean {
-  if (!/^code cell(?:,|$)/iu.test(label)) return false;
-  return ariaPosition === String(expectedPosition) || (ariaPosition === null && ariaSelected === "true");
+  if (!Number.isSafeInteger(expectedIndex) || expectedIndex < 0) return false;
+  const expectedDataIndex = String(expectedIndex);
+  const expectedAriaPosition = String(expectedIndex + 1);
+  const exactDataIndex = observation.dataIndex === expectedDataIndex;
+  const exactAriaPosition = observation.ariaPosition === expectedAriaPosition;
+  const accessibleRowRole =
+    observation.role === "listitem" || observation.role === "option" || observation.role === "treeitem";
+  if (observation.dataIndex !== null) {
+    return exactDataIndex && (observation.hasMonacoListRowClass || accessibleRowRole);
+  }
+  return accessibleRowRole && exactAriaPosition;
+}
+
+export function studyNotebookRunCellActionGeometryMatches(
+  row: StudyNotebookElementBox,
+  editor: StudyNotebookElementBox,
+  action: StudyNotebookElementBox
+): boolean {
+  const boxes = [row, editor, action];
+  if (
+    boxes.some(({ x, y, width, height }) => ![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0)
+  ) {
+    return false;
+  }
+  const actionRight = action.x + action.width;
+  const actionBottom = action.y + action.height;
+  const editorRight = editor.x + editor.width;
+  const editorBottom = editor.y + editor.height;
+  const actionCenterY = action.y + action.height / 2;
+  return (
+    action.x >= editor.x &&
+    action.y >= editor.y &&
+    actionRight <= editorRight &&
+    actionBottom <= editorBottom &&
+    actionCenterY >= row.y &&
+    actionCenterY <= row.y + row.height
+  );
+}
+
+export function describeStudyNotebookRunCellDiscovery(observation: StudyNotebookRunCellDiscoveryDiagnostic): string {
+  const count = (value: number): number => (Number.isFinite(value) ? Math.min(999, Math.max(0, Math.trunc(value))) : 0);
+  const roles = (["listitem", "option", "treeitem", "missing", "other"] as const).filter(
+    (role) => observation.rowRoles[role] === true
+  );
+  return (
+    `visibleNotebookEditors=${count(observation.visibleNotebookEditorCount)}, ` +
+    `candidateRows=${count(observation.candidateRowCount)}, ` +
+    `exactRows=${count(observation.exactRowCount)}, ` +
+    `visibleExactRows=${count(observation.visibleExactRowCount)}, ` +
+    `executeButtons=${count(observation.executeButtonCount)}, ` +
+    `usableActions=${count(observation.usableActionCount)}, ` +
+    `rowRoles=${roles.length > 0 ? roles.join("|") : "none"}, ` +
+    `exactDataIndex=${observation.exactDataIndexObserved === true}, ` +
+    `exactAriaPosition=${observation.exactAriaPositionObserved === true}, ` +
+    `conflictingPosition=${observation.conflictingPositionObserved === true}`
+  );
 }
 
 async function preparePublicStudyRunCellAction(
@@ -3549,45 +3652,132 @@ async function preparePublicStudyRunCellAction(
   };
 
   const deadline = Date.now() + POINTER_ACTION_TIMEOUT_MS;
+  const expectedIndex = cell.index;
   const expectedPosition = cell.index + 1;
+  const candidateRowSelector = studyNotebookCellRowSelector(expectedIndex);
+  const observed: StudyNotebookRunCellDiscoveryDiagnostic = {
+    visibleNotebookEditorCount: 0,
+    candidateRowCount: 0,
+    exactRowCount: 0,
+    visibleExactRowCount: 0,
+    executeButtonCount: 0,
+    usableActionCount: 0,
+    rowRoles: { listitem: false, option: false, treeitem: false, missing: false, other: false },
+    exactDataIndexObserved: false,
+    exactAriaPositionObserved: false,
+    conflictingPositionObserved: false
+  };
   do {
     assertSelection();
     const matches: NotebookTrialActionTarget[] = [];
+    const iteration: StudyNotebookRunCellDiscoveryDiagnostic = {
+      visibleNotebookEditorCount: 0,
+      candidateRowCount: 0,
+      exactRowCount: 0,
+      visibleExactRowCount: 0,
+      executeButtonCount: 0,
+      usableActionCount: 0,
+      rowRoles: { listitem: false, option: false, treeitem: false, missing: false, other: false },
+      exactDataIndexObserved: false,
+      exactAriaPositionObserved: false,
+      conflictingPositionObserved: false
+    };
     for (const frame of comparisonFrames(page).slice(0, 64)) {
-      const candidateRows = frame.locator(
-        `[role="listitem"][aria-posinset="${expectedPosition}"], ` +
-          `[role="option"][aria-posinset="${expectedPosition}"], ` +
-          `[role="treeitem"][aria-posinset="${expectedPosition}"], ` +
-          '[role="listitem"][aria-selected="true"], ' +
-          '[role="option"][aria-selected="true"], ' +
-          '[role="treeitem"][aria-selected="true"]'
-      );
+      const notebookEditors = frame.locator(".notebook-editor:visible");
+      iteration.visibleNotebookEditorCount += Math.min(await notebookEditors.count().catch(() => 0), 8);
+      const candidateRows = frame.locator(candidateRowSelector);
       const rowCount = Math.min(await candidateRows.count().catch(() => 0), 16);
+      iteration.candidateRowCount += rowCount;
       for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
         const row = candidateRows.nth(rowIndex);
-        const label = (await row.getAttribute("aria-label").catch(() => null))?.trim() ?? "";
-        const ariaPosition = await row.getAttribute("aria-posinset").catch(() => null);
-        const ariaSelected = await row.getAttribute("aria-selected").catch(() => null);
-        if (
-          !studyNotebookCellRowMatches(label, ariaPosition, ariaSelected, expectedPosition) ||
-          !(await row.isVisible().catch(() => false))
-        ) {
-          continue;
+        const rowObservation = await row
+          .evaluate((element): StudyNotebookCellRowObservation => {
+            const role = element.getAttribute("role");
+            return {
+              hasMonacoListRowClass: element.classList.contains("monaco-list-row"),
+              role,
+              dataIndex: element.getAttribute("data-index"),
+              ariaPosition: element.getAttribute("aria-posinset")
+            };
+          })
+          .catch(() => null);
+        if (!rowObservation) continue;
+        const role = rowObservation.role;
+        if (role === "listitem" || role === "option" || role === "treeitem") {
+          iteration.rowRoles[role] = true;
+        } else if (role === null) {
+          iteration.rowRoles.missing = true;
+        } else {
+          iteration.rowRoles.other = true;
         }
+        const exactDataIndex = rowObservation.dataIndex === String(expectedIndex);
+        const exactAriaPosition = rowObservation.ariaPosition === String(expectedPosition);
+        iteration.exactDataIndexObserved ||= exactDataIndex;
+        iteration.exactAriaPositionObserved ||= exactAriaPosition;
+        iteration.conflictingPositionObserved ||=
+          (rowObservation.dataIndex !== null && !exactDataIndex) ||
+          (rowObservation.ariaPosition !== null && !exactAriaPosition);
+        if (!studyNotebookCellRowMatches(rowObservation, expectedIndex)) continue;
+        iteration.exactRowCount += 1;
+        if (!(await row.isVisible().catch(() => false))) continue;
+        iteration.visibleExactRowCount += 1;
         const rowBox = await row.boundingBox().catch(() => null);
-        if (rowBox && rowBox.width > 0 && rowBox.height > 0) {
-          await frame.page().mouse.move(rowBox.x + Math.min(20, rowBox.width / 2), rowBox.y + rowBox.height / 2);
+        if (!rowBox || rowBox.width <= 0 || rowBox.height <= 0) continue;
+        await frame.page().mouse.move(rowBox.x + Math.min(20, rowBox.width / 2), rowBox.y + rowBox.height / 2);
+
+        let usableDescendantActions = 0;
+        const descendantActions = row.getByRole("button", { name: EXECUTE_CELL_ACCESSIBLE_NAME });
+        const descendantActionCount = Math.min(await descendantActions.count().catch(() => 0), 8);
+        iteration.executeButtonCount += descendantActionCount;
+        for (let actionIndex = 0; actionIndex < descendantActionCount; actionIndex += 1) {
+          const target = await pointerActionTargetFromLocator(
+            descendantActions.nth(actionIndex),
+            frame,
+            "button"
+          ).catch(() => undefined);
+          if (target) {
+            usableDescendantActions += 1;
+            iteration.usableActionCount += 1;
+            matches.push(target);
+          }
         }
-        const actions = row.getByRole("button", { name: EXECUTE_CELL_ACCESSIBLE_NAME });
-        const actionCount = Math.min(await actions.count().catch(() => 0), 4);
-        for (let actionIndex = 0; actionIndex < actionCount; actionIndex += 1) {
-          const target = await pointerActionTargetFromLocator(actions.nth(actionIndex), frame, "button").catch(
-            () => undefined
-          );
-          if (target) matches.push(target);
+        if (usableDescendantActions > 0) continue;
+
+        const notebookEditor = row.locator(
+          "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' notebook-editor ')][last()]"
+        );
+        const editorBox = await notebookEditor.boundingBox().catch(() => null);
+        if (!editorBox) continue;
+        const detachedActions = notebookEditor.getByRole("button", { name: EXECUTE_CELL_ACCESSIBLE_NAME });
+        const detachedActionCount = Math.min(await detachedActions.count().catch(() => 0), 16);
+        iteration.executeButtonCount += detachedActionCount;
+        for (let actionIndex = 0; actionIndex < detachedActionCount; actionIndex += 1) {
+          const action = detachedActions.nth(actionIndex);
+          const actionBox = await action.boundingBox().catch(() => null);
+          if (!actionBox || !studyNotebookRunCellActionGeometryMatches(rowBox, editorBox, actionBox)) continue;
+          const target = await pointerActionTargetFromLocator(action, frame, "button").catch(() => undefined);
+          if (target) {
+            iteration.usableActionCount += 1;
+            matches.push(target);
+          }
         }
       }
     }
+    observed.visibleNotebookEditorCount = Math.max(
+      observed.visibleNotebookEditorCount,
+      iteration.visibleNotebookEditorCount
+    );
+    observed.candidateRowCount = Math.max(observed.candidateRowCount, iteration.candidateRowCount);
+    observed.exactRowCount = Math.max(observed.exactRowCount, iteration.exactRowCount);
+    observed.visibleExactRowCount = Math.max(observed.visibleExactRowCount, iteration.visibleExactRowCount);
+    observed.executeButtonCount = Math.max(observed.executeButtonCount, iteration.executeButtonCount);
+    observed.usableActionCount = Math.max(observed.usableActionCount, iteration.usableActionCount);
+    for (const role of ["listitem", "option", "treeitem", "missing", "other"] as const) {
+      observed.rowRoles[role] ||= iteration.rowRoles[role];
+    }
+    observed.exactDataIndexObserved ||= iteration.exactDataIndexObserved;
+    observed.exactAriaPositionObserved ||= iteration.exactAriaPositionObserved;
+    observed.conflictingPositionObserved ||= iteration.conflictingPositionObserved;
     if (matches.length === 1) {
       assertSelection();
       return matches[0]!;
@@ -3595,7 +3785,9 @@ async function preparePublicStudyRunCellAction(
     assert.ok(matches.length <= 1, "The selected measured cell exposed multiple public Execute Cell actions.");
     await page.waitForTimeout(25);
   } while (Date.now() < deadline);
-  throw new Error("The selected measured cell did not expose its exact public Execute Cell action.");
+  throw new Error(
+    `The selected measured cell did not expose its exact public Execute Cell action (${describeStudyNotebookRunCellDiscovery(observed)}).`
+  );
 }
 
 async function selectStudyNotebookKernel(page: Page, captured: CapturedStudyNotebook): Promise<void> {
