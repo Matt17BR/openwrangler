@@ -20,6 +20,35 @@ The notebook launch command uses the same **Open in Open Wrangler** primary and 
 
 ## Runtime and engines
 
+The first native R boundary is deliberately smaller than a session transport. The bundled
+`r/openwrangler_runtime/frame_contract.R` module snapshots a base `data.frame`, tibble, or `data.table` without
+calling Python and returns one bounded projected page. Base frames and tibbles use an R serialization copy;
+`data.table` uses `data.table::copy()` so later by-reference work cannot mutate the notebook object. The page keeps
+duplicate and non-syntactic names while using positional IDs for identity. Its column metadata records factors,
+ordered factors, dates, POSIXct time zones, difftime units, and `bit64::integer64`; cells distinguish `NA`, `NaN`, and
+signed infinity for plain doubles. Non-finite classed temporal values and fractional Dates fail rather than being
+silently relabeled or rounded. Numeric display always uses a dot, regardless of `options(OutDec)`. A POSIXct column
+with no `tzone` attribute or an empty `tzone` uses UTC for display instead of the process's current time zone. The
+original null or empty-string value remains in metadata. R's reserved integer and `bit64::integer64` missing-value
+sentinels can appear only as typed nulls. Explicit row names, grouped or rowwise tibbles, list/matrix/raw/complex
+columns, subclasses, and unrecognized attributes fail instead of losing R semantics.
+
+The same module can apply an ordered list of viewing sorts before it builds a page. A rule names a column by both its
+positional ID and captured name, which keeps duplicate names unambiguous and rejects stale references. Rules are
+applied in priority order, with independent direction and missing-value placement; ties keep their previous order.
+R's `NA` and `NaN` values share the requested missing-value placement while their cell encodings remain distinct.
+Exact `bit64::integer64` values are compared without converting them to doubles. Sorting works on row positions and
+does not reorder or otherwise change the captured frame. A sorted page keeps each source row ID even though those IDs
+no longer follow the page offset.
+
+`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 1, exact fields, canonical
+class/type combinations, contiguous positional column IDs, unique in-range source row IDs, matching row and column
+windows, and values valid for their R column. The current limits are 2,048 source columns, 64 sort rules, 100,000
+factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per text value, and 16 MiB per encoded
+page. A running metadata-and-cell budget stops an oversized page before the complete object or JSON string is built.
+This boundary is not part of Python protocol v2 and is not wired to commands, sessions, or webviews yet. The IRkernel
+transport will consume it in a later Open Wrangler 2 slice.
+
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark indexing, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained indexed frame.
 
 Every standalone interpreter lookup is one coordinator-owned resolution attempt with a non-configurable 30-second monotonic deadline. That single budget includes optional Python-extension activation, active-environment resolution, system discovery, every interpreter probe, and a reported-`sys.executable` re-probe; an individual subprocess is capped at 10 seconds or the smaller remaining aggregate budget. An explicit `openWrangler.pythonPath` is authoritative and never falls through. Windows fallback reads only the non-mutating launcher inventory, ranks supported 3.10 to 3.14 candidates by minor version descending, normal ABI before free-threaded ABI, then case-insensitive normalized path, and caps the ranked list at 16 before filesystem checks. Linux and macOS retain the fixed `python3`, then `python` order.

@@ -7,3 +7,4 @@ scratch.txt
 package-lock.json
 fixtures/*.ipynb
 docs/images/
+r/**

@@ -1,6 +1,6 @@
 # Open Wrangler agent guide
 
-This repository builds the open-source Open Wrangler extension and its bundled Python runtime. Read this file before changing code. The product is a clean-room implementation: use public documentation and black-box behavior as references, but never copy Microsoft Data Wrangler code or assets.
+This repository builds the open-source Open Wrangler extension, its bundled Python runtime, and the native R groundwork for Open Wrangler 2. Read this file before changing code. The product is a clean-room implementation: use public documentation and black-box behavior as references, but never copy Microsoft Data Wrangler code or assets.
 
 ## Architecture map
 
@@ -8,6 +8,7 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 - `src/shared/` owns the versioned messages and behavior shared by extension and webviews.
 - `src/webviews/` owns the React UI. It must remain themeable, keyboard accessible, and independent of Node APIs.
 - `python/openwrangler_runtime/` owns dataframe engines, queries, transformations, profiling, code generation, and exports.
+- `r/openwrangler_runtime/` owns the native R frame boundary. It must not route R frames through Python.
 - `docs/architecture.md` records boundaries and invariants.
 - `docs/decisions/0001-native-r-runtime.md` records the runtime and release boundary for R work in v2.
 - `docs/feature-parity.md` is the release gate for user-visible parity.
@@ -78,6 +79,8 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 54. A non-repository generated directory may bypass the legacy Git-provider scan only through `checkout:artifact-audit` and `checkout:artifact-retire`. The target is one canonical direct child of an explicit reviewed root and stays bound to its owner, revision, path identities, and dry-review SHA-256. Manager state is excluded except for an exact registered generated root in a finished cleanup-pending checkout; that exception also proves the checkout receipt and registration, clean tracked state, ignored status, and absence of tracked files below the target, then uses a unique checkout-scoped journal slug. The Linux-only audit, archive, move, and purge paths anchor traversal to already-open directory descriptors and never follow symlinks; reject Git markers, hard-linked files, special files, mounts, ownership or filesystem crossings, containment escapes, identity races, non-round-trippable filenames, and fixed-bound overflow. The private recovery tree preserves every regular-file byte and raw symlink target, fsyncs each file and containing directory before publication, and records source identities and hashes in an append-only manifest. An independent restore scan must match before same-boot enrollment. Only a later Linux boot may move the exact directory identity into private quarantine with atomic no-replace semantics; purge compares every remaining entry to that retained archive and uses descriptor-anchored `lstat`, `unlink`, and `rmdir` without following links, so an interrupted purge can resume. Never run this lane against a real artifact before its path, owner, revision, and dry audit have been reviewed.
 
 55. A v2 legacy cleanup manifest replaces broad recursive repository discovery only with a complete reviewed dependency catalog. Every immediate root entry and every relevant repository is explicit, with no more than 16 repositories per catalog. A declared ordinary directory is not opaque: its owned, mount-free tree is recursively attested under fixed depth and entry limits, every nested Git marker is rejected, and its topology, identities, metadata, and raw non-followed symlink targets are repeated from the persisted adoption receipt. Root, repository, Git-directory, common-directory, object-store, worktree-registry, and alternate evidence is pinned as well. Filesystem traversal stays anchored to bounded, no-follow descriptors; mount IDs are checked during each capture but never persisted across boots. Linked-worktree and alternate pointers are resolved in a second pass: an exact cataloged registry or object store must already be held before its target can be opened or inspected. Every worktree registered under one common Git directory is cataloged and held as one dependency group, and every alternate resolves exactly to a cataloged object store. An omitted or reclassified entry, nested repository, missing worktree, outside alternate, inbound dependency, path replacement, root-listing change, or ordinary-tree change blocks adoption or retirement. Dry review proves that the complete request and completion fit their fixed journal limits before reporting a candidate eligible; adoption repeats that proof before it creates any journal directory or attempt. Sequential retirement may omit an earlier cleanup candidate only after that exact path has a retained terminal retirement record whose provider-independent cohort digest matches the same candidates, roots, entry receipts, and repository groups. This lane does not make linked groups eligible and never moves a checkout during audit or adoption.
+
+56. The native R frame boundary accepts only canonical base `data.frame`, tibble, and data.table classes and preserves their exact R column semantics without a Python compatibility layer. The producer isolates the source, assigns stable positional column IDs, emits bounded strict JSON pages, and rejects unsupported classes, attributes, and cell types before publication. The TypeScript decoder must validate every field, range, ID, projection, and typed cell before a future session layer may use the page. This internal contract is not public R support: no README claim, command, coordinator path, or release version may imply R/Quarto availability until the later notebook and editor acceptance gates are green.
 
 ## Public writing
 
@@ -330,11 +333,14 @@ npm run verify:vsix -- openwrangler.vsix
 npm run test:packaged-editors -- openwrangler.vsix
 ```
 
+Changes to `r/openwrangler_runtime/`, its decoder, or its packaging rules must also run `npm run test:r-contract`. The hosted full matrix repeats that contract on R 4.4 and 4.5.
+
 For editor-facing changes, also complete the relevant scenarios in `docs/testing.md` in both VS Code and Cursor using isolated profiles.
 
 ## Documentation update matrix
 
 - Protocol, session, runtime, or engine boundary changes: update `docs/architecture.md` and protocol tests.
+- Native R producer, decoder, or supported-frame changes: update `docs/decisions/0001-native-r-runtime.md`, `docs/architecture.md`, `docs/feature-parity.md`, and `docs/testing.md`.
 - New or changed operation, filter, export, or entry point: update `docs/feature-parity.md` and its acceptance evidence.
 - New or changed command, setting, operation, MIME type, or protocol message: run `npm run generate:reference` and commit `docs/reference.md`.
 - Test commands, fixtures, or release gates: update `docs/testing.md`.

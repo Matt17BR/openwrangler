@@ -68,6 +68,7 @@ function releaseEntries(readme = "# Open Wrangler\n", manifest = packageJson, pr
     ["extension/media/activity-icon.svg", "<svg></svg>"],
     ["extension/media/icon.png", galleryIcon],
     ["extension/media/icon-128.png", png(128, 128, 33)],
+    ["extension/r/openwrangler_runtime/frame_contract.R", "openwrangler_frame_contract <- function(frame) frame\n"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
     ["extension/python/openwrangler_runtime/version.py", `__version__ = "${version}"\n`]

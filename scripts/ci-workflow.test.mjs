@@ -50,6 +50,7 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
   "linux-packaged-editor",
   "coverage",
   "python-matrix",
+  "native-r-contract",
   "extension-host",
   "native-script-portability",
   "native-extension-host",
@@ -59,6 +60,7 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
 const CANONICAL_CI_IF =
   "${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}";
@@ -1851,6 +1853,35 @@ test("required Linux Python 3.10 owns real discovery while cross-platform keeps 
     { os: "macos-latest", python: "3.12" },
     { os: "windows-latest", python: "3.14" }
   ]);
+});
+
+test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+  const job = workflow?.jobs?.["native-r-contract"];
+
+  assert.equal(job?.name, "Native R contract (R ${{ matrix.r }})");
+  assert.equal(job?.needs, "classify");
+  assert.equal(job?.if, FULL_CI_IF);
+  assert.equal(job?.["runs-on"], "ubuntu-latest");
+  assert.equal(job?.["timeout-minutes"], 15);
+  assert.deepEqual(job?.strategy, { "fail-fast": false, matrix: { r: ["4.4", "4.5"] } });
+
+  const setup = job?.steps?.find((step) => step?.uses === SETUP_R_ACTION);
+  assert.deepEqual(setup?.with, { "r-version": "${{ matrix.r }}", "use-public-rspm": true });
+  assert.equal(
+    job?.steps?.filter((step) => step?.run === "npm run test:r-contract").length,
+    1,
+    "The focused R matrix must own the cross-language contract exactly once."
+  );
+  for (const [jobId, candidate] of Object.entries(workflow?.jobs ?? {})) {
+    if (jobId === "native-r-contract") continue;
+    assert.equal(
+      candidate?.steps?.some((step) => step?.uses === SETUP_R_ACTION || step?.run === "npm run test:r-contract"),
+      false,
+      `${jobId} must not install or execute R contract tooling.`
+    );
+  }
 });
 
 test("coverage provisions the exact PySpark runtime before enforcing the unchanged floor", () => {

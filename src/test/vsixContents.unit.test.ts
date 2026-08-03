@@ -223,6 +223,21 @@ describe("VSIX production entry allowlist", () => {
 
     expect(inspectVsixEntries(entries).missing).toEqual(["extension/python/openwrangler_runtime/dependency_guard.py"]);
   });
+
+  it("packages only the production R frame contract", () => {
+    const vscodeIgnore = readFileSync(join(process.cwd(), ".vscodeignore"), "utf8")
+      .split(/\r?\n/u)
+      .filter((entry) => entry.length > 0 && !entry.startsWith("#"));
+    const entries = requiredVsixEntries.filter(
+      (entry) => entry !== "extension/r/openwrangler_runtime/frame_contract.R"
+    );
+
+    expect(vscodeIgnore).toContain("r/tests/**");
+    expect(inspectVsixEntries(entries).missing).toEqual(["extension/r/openwrangler_runtime/frame_contract.R"]);
+    expect(inspectVsixEntries([...requiredVsixEntries, "extension/r/tests/frame_contract.R"]).forbidden).toEqual([
+      "extension/r/tests/frame_contract.R"
+    ]);
+  });
 });
 
 describe("VSIX prerelease metadata validation", () => {

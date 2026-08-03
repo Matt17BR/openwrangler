@@ -51,6 +51,21 @@ The released v1.1.1 notebook UX prepares automatic Pandas/Polars MIME formatters
 
 Inline MIME v2 output shows every captured column and pages the captured rows at 10, 20, 50, or 100 rows per page. When the output retains one canonical live-variable link, its single **Open in Open Wrangler** action opens the complete current dataframe through the exact originating notebook and kernel; it never substitutes the saved capture. An unlinked output stays readable inline and tells the user to run the cell again instead of exposing a misleading open action. The notebook-toolbar and Jupyter Variables workflows remain additional live entry points. Focused unit, renderer, provenance, provider-conflict, restart, and packaged-editor acceptance defined in `docs/testing.md` must be green before this candidate is released.
 
+## Native R groundwork for Open Wrangler 2
+
+R support is not available in the extension yet. The first implementation is an internal, native-R frame contract for
+base `data.frame`, tibble, and `data.table`. It produces bounded typed pages and has a strict TypeScript decoder. It
+does not use Python or change the current Python support matrix.
+
+| Surface                                      | Availability | Status  | Recorded evidence                           | Remaining acceptance gate                          |
+| -------------------------------------------- | ------------ | ------- | ------------------------------------------- | -------------------------------------------------- |
+| Native R frame snapshot and typed page       | Internal     | Partial | Focused producer and decoder contract suite | Hosted R 4.4/4.5 and IRkernel lifecycle gates      |
+| Native R ordered viewing sorts               | Internal     | Partial | Stable pure-R sorts and decoder fixtures    | Live-session filtering, sorting, and UI acceptance |
+| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Real cross-language fixtures for all three  | Real notebook discovery, paging, and profiling     |
+| Notebook workbench                           | No           | Planned | No command or coordinator wiring            | Packaged VS Code/Cursor IRkernel acceptance        |
+| R cleaning operations and generated code     | No           | Planned | Frame semantics only                        | Native R IR, adapters, code generation, and tests  |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR       | Stable broker or Open Wrangler-owned helper        |
+
 ## DuckDB file-backed preview matrix
 
 DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither converts through Pandas, Polars, or Arrow nor installs/loads DuckDB extensions automatically. **Partial** below means the native runtime path has automated evidence but the complete installed-editor and release matrix is still pending; **Planned** means the surface is intentionally unavailable in this preview.
