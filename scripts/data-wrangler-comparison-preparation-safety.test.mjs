@@ -28,9 +28,31 @@ import {
   readBoundedDataWranglerPreparationJson,
   revalidateDataWranglerPreparationFileIdentity
 } from "./data-wrangler-comparison-preparation.mjs";
-import { writeDataWranglerComparisonKernelSpec } from "./run-data-wrangler-comparison-preparation.mjs";
+import {
+  describeDataWranglerComparisonPreparationFailure,
+  writeDataWranglerComparisonKernelSpec
+} from "./run-data-wrangler-comparison-preparation.mjs";
 
 const EMPTY_SETTINGS_SHA256 = createHash("sha256").update("{}\n", "utf8").digest("hex");
+
+test("preparation failures retain bounded aggregate children without host paths", () => {
+  const privatePath = resolve(process.cwd(), "tmp", "ow-private-preparation", "result.json");
+  const diagnostic = describeDataWranglerComparisonPreparationFailure(
+    new AggregateError(
+      [
+        new Error(`Editor phase failed at ${privatePath}.`),
+        Object.assign(new Error("Control bridge aborted."), { code: "aborted" })
+      ],
+      "Preparation phase and controller failed."
+    )
+  );
+  assert.match(diagnostic, /Preparation phase and controller failed/u);
+  assert.match(diagnostic, /Editor phase failed/u);
+  assert.match(diagnostic, /Control bridge aborted/u);
+  assert.match(diagnostic, /<repository>\/tmp\/ow-private-preparation\/result\.json/u);
+  assert.doesNotMatch(diagnostic, /data_wrangler_clone|mmazzarelli/u);
+  assert.ok(Buffer.byteLength(diagnostic, "utf8") <= 16 * 1024);
+});
 
 function withRoot(t, prefix) {
   const root = mkdtempSync(resolve(tmpdir(), prefix));

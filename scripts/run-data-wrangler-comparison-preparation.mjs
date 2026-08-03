@@ -40,7 +40,11 @@ import {
   readDataWranglerComparisonPreregistration
 } from "./data-wrangler-comparison-preregistration.mjs";
 import { captureDataWranglerComparisonStudyV2Toolchain } from "./data-wrangler-comparison-cache-controller.mjs";
-import { configureEditorAcceptanceTempRoot, createEditorAcceptanceEnvironment } from "./editor-acceptance.mjs";
+import {
+  configureEditorAcceptanceTempRoot,
+  createEditorAcceptanceEnvironment,
+  sanitizeEditorAcceptanceDiagnostic
+} from "./editor-acceptance.mjs";
 import { PINNED_REMOTE_WORKSPACE_TARGETS } from "./remote-workspace-acquisition.mjs";
 import {
   bootstrapDataWranglerComparisonConfiguredProfiles,
@@ -809,9 +813,13 @@ async function main() {
   );
 }
 
+export function describeDataWranglerComparisonPreparationFailure(error) {
+  return sanitizeEditorAcceptanceDiagnostic(error);
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`${describeDataWranglerComparisonPreparationFailure(error)}\n`);
     process.exitCode = 1;
   });
 }
