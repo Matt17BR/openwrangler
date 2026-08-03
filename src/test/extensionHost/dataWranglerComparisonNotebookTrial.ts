@@ -12,7 +12,6 @@ import {
   recordProgress,
   waitFor,
   waitForGenericGridReadiness,
-  waitForWorkbenchReady,
   type ComparisonWorkbenchReadinessEvidence
 } from "./dataWranglerComparison";
 import {
@@ -2685,7 +2684,6 @@ export async function run(): Promise<
   try {
     recordProgress("comparison-study:workbench-connect");
     const { page } = await connectToEditorWorkbench();
-    await waitForWorkbenchReady(page);
     recordProgress("comparison-study:notebook-capture");
     const captured = await captureStudyNotebook();
     dependencies = createRealNotebookTrialDependencies(
@@ -2743,7 +2741,6 @@ async function captureDataWranglerPublicWarmup(product: ProductKey): Promise<Dat
   try {
     recordProgress("comparison-study:public-warmup-connect");
     const { page } = await connectToEditorWorkbench();
-    await waitForWorkbenchReady(page);
     const captured = await captureStudyNotebook();
     dependencies = createRealNotebookTrialDependencies(product, page, captured, "available", controlBridge);
     result = await executeDataWranglerNotebookTrialFlow(dependencies);
@@ -2816,7 +2813,6 @@ async function captureDataWranglerPublicUi(
   const captureId = requiredEnvironment("OPEN_WRANGLER_TEST_RUN_ID");
   recordProgress("comparison-study:public-ui-workbench-connect");
   const { page } = await connectToEditorWorkbench();
-  await waitForWorkbenchReady(page);
   recordProgress("comparison-study:public-ui-notebook-capture");
   const captured = await captureStudyNotebook();
   await selectStudyNotebookKernel(page, captured);
