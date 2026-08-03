@@ -4512,8 +4512,8 @@ test("legacy purge resumes after a mid-tree interruption and records detached-HE
     const managed = defaultManager(fixture, {
       ...options,
       hooks: {
-        afterLegacyRetirementEntryRemoved(_root, _child, count) {
-          if (interrupt && count === 1) throw new Error("simulated loss during legacy purge");
+        afterLegacyRetirementEntryRemoved() {
+          if (interrupt) throw new Error("simulated loss during legacy purge");
         }
       }
     });
@@ -4549,8 +4549,8 @@ test("legacy purge continuation holds before deleting more when the recovery pac
     const managed = defaultManager(fixture, {
       ...options,
       hooks: {
-        afterLegacyRetirementEntryRemoved(_root, _child, count) {
-          if (interrupt && count === 1) throw new Error("simulated partial legacy purge");
+        afterLegacyRetirementEntryRemoved() {
+          if (interrupt) throw new Error("simulated partial legacy purge");
         }
       }
     });
