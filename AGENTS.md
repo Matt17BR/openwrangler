@@ -96,6 +96,11 @@ not prove that a person reviewed the prose. Give public copy an editorial read b
 
 ## Required checks
 
+Use ordinary Git branches and worktrees for parallel development. Do not add a checkout, worktree, or agent-task
+manager to this repository. Keep temporary worktrees under the ignored repository `tmp/` directory or the system
+temporary directory, remove them when their branch is merged or abandoned, and list any intentionally retained
+worktrees at handoff.
+
 Run the narrowest relevant tests while iterating. Open or update a pull request only for a coherent, locally green
 slice, then use its exact-head hosted matrix as the authoritative broad gate. Do not repeat the complete local test,
 package, media, and editor stack merely because a pull request is about to open; that duplicates hosted evidence,
