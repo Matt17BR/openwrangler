@@ -216,7 +216,9 @@ Wrangler using the same files, editor, Python environment, and actions.
   [#86](https://github.com/Matt17BR/openwrangler/issues/86), and complete the Data Wrangler comparison in
   [#91](https://github.com/Matt17BR/openwrangler/issues/91). Support for other desktop forks is currently
   experimental.
-- **v2:** add native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows
+- **v2:** add native R data frames, tibbles, and `data.table`, then add Quarto and R Markdown workflows. The
+  [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
+  records the IRkernel-first plan and release boundary. Progress is tracked in
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 
 ## Contributing and support

@@ -9,6 +9,7 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 - `src/webviews/` owns the React UI. It must remain themeable, keyboard accessible, and independent of Node APIs.
 - `python/openwrangler_runtime/` owns dataframe engines, queries, transformations, profiling, code generation, and exports.
 - `docs/architecture.md` records boundaries and invariants.
+- `docs/decisions/0001-native-r-runtime.md` records the runtime and release boundary for R work in v2.
 - `docs/feature-parity.md` is the release gate for user-visible parity.
 - `docs/reference.md` is generated from public interface registries; never edit it by hand.
 - `docs/testing.md` defines required checks and manual editor scenarios.
