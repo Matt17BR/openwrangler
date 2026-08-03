@@ -38,7 +38,22 @@ Agent checkout lifecycle has a separate, small contract test:
   `checkout:legacy-adopt` preflights every persisted JSON record, records two byte-identical full audits, reruns the same
   audit immediately before a no-replace hard-link publication, and revalidates candidate identities afterward. An
   interruption retains its numbered attempt for `checkout:legacy-status`; every result explicitly denies move and
-  cleanup authority. These commands never register, archive, move, or remove a legacy clone.
+  cleanup authority. Adoption never registers, archives, moves, or removes a legacy clone.
+- `npm run checkout:legacy-archive -- <slug> --owner <task>` runs only after one exact published adoption. It streams
+  the source's complete all-object manifest and OID list through private file descriptors and creates a one-thread raw
+  pack. A new private bare repository builds its own index from that pack over standard input. The recovery proof
+  restores refs, detached or symbolic `HEAD`, optional `ORIG_HEAD`, and exact reflog bytes; then it compares the full
+  object/type/size manifest and runs strict full `git fsck`. `checkout:legacy-status` repeats that proof and also reports
+  interrupted journal state. It checks the complete recovery repository layout before and after Git and manifest
+  verification, and rejects an archive whose exact published adoption record is missing or has been replaced. Unknown
+  root files, ref or reflog entries, and object-store state are retained and fail closed. Unreachable blobs, trees,
+  commits, and annotated tags are part of the proof. Tests cover a detached `HEAD` with no refs, source drift, corrupt
+  and shadowed objects, invalid refs or reflog layout, a reflog replacement during its descriptor-bound copy, low disk
+  space, interrupted attempts, planted recovery output, late unknown root, reflog, and object-store files, pack/index replacement,
+  recovery-manifest mismatch, status revalidation, detached archive state, same-generation re-adoption, and the real CLI.
+  The command has no network path and never changes, moves, or removes the source. A completed archive still reports
+  `authorizesMove: false` and `authorizesCleanup: false`. Any later quarantine command must repeat the exact current
+  source-versus-archive checks immediately around its move; it cannot treat this completion record as permission.
 - `npm run checkout:bootstrap` is explicit and runs only from the ordinary source checkout. It makes a standalone bare
   clone from the local source, records a normal `origin` fetch refspec, and runs strict `fsck` without contacting
   `origin`. Source-side create commands synchronize only the exact locally resolved base commit, then repeat the
