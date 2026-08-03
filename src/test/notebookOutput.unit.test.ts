@@ -45,12 +45,26 @@ describe("notebook output", () => {
     expect(normalized?.mimeVersion).toBe(2);
   });
 
-  it("keeps private runtime identity outside the saved MIME payload", () => {
+  it("strips additive top-level fields while keeping private identity out of canonical MIME", () => {
     const runtimeIdentity = runtimeIdentityForDataBackend("polars");
 
-    expect(
-      normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page, summaries: [], runtimeIdentity })
-    ).toBeUndefined();
+    const normalized = normalizeNotebookOutputPayload({
+      mimeVersion: 2,
+      metadata,
+      page,
+      summaries: [],
+      runtimeIdentity,
+      futureAdditiveField: "ignored"
+    });
+
+    expect(normalized).toEqual({ mimeVersion: 2, metadata, page, summaries: [] });
+    expect(normalized).not.toHaveProperty("runtimeIdentity");
+    expect(normalized).not.toHaveProperty("futureAdditiveField");
+  });
+
+  it("rejects private runtime identity inside strict saved metadata", () => {
+    const runtimeIdentity = runtimeIdentityForDataBackend("polars");
+
     expect(
       normalizeNotebookOutputPayload({
         mimeVersion: 2,

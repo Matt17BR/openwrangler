@@ -5,6 +5,7 @@ import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { isCodePreviewHostMessage } from "../shared/codePreviewMessages";
+import { codeDialectLanguageLabel, type CodeDialect, type RuntimeIdentity } from "../shared/runtimeIdentity";
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -15,9 +16,11 @@ declare function acquireVsCodeApi(): VsCodeApi;
 const vscode = acquireVsCodeApi();
 const host = document.querySelector<HTMLElement>("#root");
 if (!host) throw new Error("Code Preview root was not found.");
+publishRuntimeIdentity(host, null);
 
 let applyingHostUpdate = false;
 const editability = new Compartment();
+const generatedCodeLanguage = new Compartment();
 const pythonHighlightStyle = HighlightStyle.define([
   { tag: [tags.keyword, tags.modifier], color: "var(--vscode-symbolIcon-keywordForeground, #c586c0)" },
   { tag: [tags.string, tags.special(tags.string)], color: "var(--vscode-symbolIcon-stringForeground, #ce9178)" },
@@ -37,12 +40,12 @@ const editor = new EditorView({
       history(),
       drawSelection(),
       highlightActiveLine(),
-      python(),
       syntaxHighlighting(pythonHighlightStyle),
       keymap.of([...defaultKeymap, ...historyKeymap]),
       EditorState.tabSize.of(4),
       EditorView.lineWrapping,
-      editability.of(codePreviewEditability(false)),
+      generatedCodeLanguage.of(codePreviewLanguage(null)),
+      editability.of(codePreviewEditability(false, undefined)),
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !applyingHostUpdate) {
           vscode.postMessage({ kind: "codeChanged", code: update.state.doc.toString() });
@@ -92,22 +95,49 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
       ? undefined
       : { from: 0, to: editor.state.doc.length, insert: message.code };
   applyingHostUpdate = true;
-  editor.dispatch({
-    ...(changes ? { changes } : {}),
-    effects: editability.reconfigure(codePreviewEditability(message.editable))
-  });
-  applyingHostUpdate = false;
+  const codeDialect = message.runtimeIdentity?.codeDialect ?? null;
+  const languageLabel = codeDialectLanguageLabel(codeDialect);
+  try {
+    editor.dispatch({
+      ...(changes ? { changes } : {}),
+      effects: [
+        generatedCodeLanguage.reconfigure(codePreviewLanguage(codeDialect)),
+        editability.reconfigure(codePreviewEditability(message.editable, languageLabel))
+      ]
+    });
+    publishRuntimeIdentity(host, message.runtimeIdentity);
+  } finally {
+    applyingHostUpdate = false;
+  }
 });
 
 vscode.postMessage({ kind: "ready" });
 
-function codePreviewEditability(editable: boolean): Extension {
+function codePreviewLanguage(codeDialect: CodeDialect | null): Extension {
+  switch (codeDialect) {
+    case "python.pandas":
+    case "python.polars":
+    case "python.duckdb":
+      return python();
+    case null:
+      return [];
+  }
+}
+
+function codePreviewEditability(editable: boolean, languageLabel: "Python" | undefined): Extension {
+  const subject = languageLabel ? `generated ${languageLabel} code preview` : "Open Wrangler code preview";
   return [
     EditorState.readOnly.of(!editable),
     EditorView.editable.of(editable),
     EditorView.contentAttributes.of({
-      "aria-label": editable ? "Editable generated Python code preview" : "Read-only Open Wrangler code preview",
+      "aria-label": `${editable ? "Editable" : "Read-only"} ${subject}`,
       spellcheck: "false"
     })
   ];
+}
+
+function publishRuntimeIdentity(root: HTMLElement, identity: RuntimeIdentity | null): void {
+  root.dataset.runtimeLanguage = identity?.runtimeLanguage ?? "";
+  root.dataset.dataframeFlavor = identity?.dataframeFlavor ?? "";
+  root.dataset.codeDialect = identity?.codeDialect ?? "";
 }

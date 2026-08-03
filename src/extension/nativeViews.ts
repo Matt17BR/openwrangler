@@ -6,7 +6,7 @@ import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind
 import { dataBackendLabel } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { isCodePreviewWebviewMessage, type CodePreviewHostMessage } from "../shared/codePreviewMessages";
-import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
+import { codeDialectLanguageLabel, runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
@@ -256,12 +256,14 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private render(): void {
     if (!this.view) return;
+    const runtimeIdentity = this.snapshot ? runtimeIdentityForDataBackend(this.snapshot.metadata.backend) : null;
     const message: CodePreviewHostMessage = {
       kind: "codePreview",
       code: this.displayedCode,
-      editable: Boolean(this.snapshot && this.generatedCode),
-      runtimeIdentity: this.snapshot ? runtimeIdentityForDataBackend(this.snapshot.metadata.backend) : null
+      editable: Boolean(this.snapshot && this.generatedCode && runtimeIdentity?.codeDialect),
+      runtimeIdentity
     };
+    this.view.description = codeDialectLanguageLabel(message.runtimeIdentity?.codeDialect ?? null);
     void this.view.webview.postMessage(message);
   }
 

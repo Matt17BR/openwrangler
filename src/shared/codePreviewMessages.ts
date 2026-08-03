@@ -16,7 +16,7 @@ export function isCodePreviewHostMessage(value: unknown): value is CodePreviewHo
     return false;
   }
   if (value.runtimeIdentity !== null && !isRuntimeIdentity(value.runtimeIdentity)) return false;
-  return !value.editable || value.runtimeIdentity?.codeDialect === "python";
+  return !value.editable || (value.runtimeIdentity !== null && value.runtimeIdentity.codeDialect !== null);
 }
 
 export function isCodePreviewWebviewMessage(value: unknown): value is CodePreviewWebviewMessage {

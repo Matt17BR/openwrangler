@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { DataBackend } from "../shared/protocol";
 import { isCodePreviewHostMessage, isCodePreviewWebviewMessage } from "../shared/codePreviewMessages";
-import { isRuntimeIdentity, runtimeIdentityForDataBackend, type RuntimeIdentity } from "../shared/runtimeIdentity";
+import {
+  codeDialectLanguageLabel,
+  isRuntimeIdentity,
+  runtimeIdentityForDataBackend,
+  type RuntimeIdentity
+} from "../shared/runtimeIdentity";
 
 const identities: Readonly<Record<DataBackend, RuntimeIdentity>> = {
-  polars: { runtimeLanguage: "python", dataframeFlavor: "polars", codeDialect: "python" },
-  duckdb: { runtimeLanguage: "python", dataframeFlavor: "duckdb", codeDialect: "python" },
-  pandas: { runtimeLanguage: "python", dataframeFlavor: "pandas", codeDialect: "python" },
+  polars: { runtimeLanguage: "python", dataframeFlavor: "polars", codeDialect: "python.polars" },
+  duckdb: { runtimeLanguage: "python", dataframeFlavor: "duckdb", codeDialect: "python.duckdb" },
+  pandas: { runtimeLanguage: "python", dataframeFlavor: "pandas", codeDialect: "python.pandas" },
   pyspark: { runtimeLanguage: "python", dataframeFlavor: "pyspark", codeDialect: null }
 };
 
@@ -28,13 +33,21 @@ describe("host runtime identity", () => {
     );
   });
 
+  it("derives one user-facing language label from each generated-code dialect", () => {
+    expect(codeDialectLanguageLabel("python.pandas")).toBe("Python");
+    expect(codeDialectLanguageLabel("python.polars")).toBe("Python");
+    expect(codeDialectLanguageLabel("python.duckdb")).toBe("Python");
+    expect(codeDialectLanguageLabel(null)).toBeUndefined();
+  });
+
   it.each([
     null,
     {},
-    { runtimeLanguage: "python", dataframeFlavor: "polars", codeDialect: "python", extra: true },
-    { runtimeLanguage: "python", dataframeFlavor: "pyspark", codeDialect: "python" },
+    { runtimeLanguage: "python", dataframeFlavor: "polars", codeDialect: "python.polars", extra: true },
+    { runtimeLanguage: "python", dataframeFlavor: "polars", codeDialect: "python.pandas" },
+    { runtimeLanguage: "python", dataframeFlavor: "pyspark", codeDialect: "python.polars" },
     { runtimeLanguage: "python", dataframeFlavor: "pandas", codeDialect: null },
-    { runtimeLanguage: "python", dataframeFlavor: "auto", codeDialect: "python" }
+    { runtimeLanguage: "python", dataframeFlavor: "auto", codeDialect: "python.pandas" }
   ])("rejects a malformed or inconsistent identity: %j", (candidate) => {
     expect(isRuntimeIdentity(candidate)).toBe(false);
   });

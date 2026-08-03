@@ -1067,7 +1067,7 @@ function writeCodePreviewHarness(fileName, code, outputName) {
               runtimeIdentity: {
                 runtimeLanguage: "python",
                 dataframeFlavor: "polars",
-                codeDialect: "python"
+                codeDialect: "python.polars"
               }
             },
             origin: window.location.origin

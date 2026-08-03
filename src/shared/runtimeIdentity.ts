@@ -2,7 +2,7 @@ import type { DataBackend } from "./protocol.generated";
 
 export type RuntimeLanguage = "python";
 export type DataframeFlavor = "pandas" | "polars" | "duckdb" | "pyspark";
-export type CodeDialect = "python";
+export type CodeDialect = "python.pandas" | "python.polars" | "python.duckdb";
 
 export interface RuntimeIdentity {
   readonly runtimeLanguage: RuntimeLanguage;
@@ -14,17 +14,17 @@ const RUNTIME_IDENTITIES = Object.freeze({
   polars: Object.freeze({
     runtimeLanguage: "python",
     dataframeFlavor: "polars",
-    codeDialect: "python"
+    codeDialect: "python.polars"
   }),
   duckdb: Object.freeze({
     runtimeLanguage: "python",
     dataframeFlavor: "duckdb",
-    codeDialect: "python"
+    codeDialect: "python.duckdb"
   }),
   pandas: Object.freeze({
     runtimeLanguage: "python",
     dataframeFlavor: "pandas",
-    codeDialect: "python"
+    codeDialect: "python.pandas"
   }),
   pyspark: Object.freeze({
     runtimeLanguage: "python",
@@ -49,6 +49,17 @@ export function isRuntimeIdentity(value: unknown): value is RuntimeIdentity {
     value.dataframeFlavor === expected.dataframeFlavor &&
     value.codeDialect === expected.codeDialect
   );
+}
+
+export function codeDialectLanguageLabel(codeDialect: CodeDialect | null): "Python" | undefined {
+  switch (codeDialect) {
+    case "python.pandas":
+    case "python.polars":
+    case "python.duckdb":
+      return "Python";
+    case null:
+      return undefined;
+  }
 }
 
 function isDataBackend(value: unknown): value is DataBackend {
