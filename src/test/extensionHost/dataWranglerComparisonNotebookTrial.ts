@@ -3538,6 +3538,9 @@ export interface StudyNotebookRunCellDiscoveryDiagnostic {
   candidateRowCount: number;
   exactRowCount: number;
   visibleExactRowCount: number;
+  runButtonContainerCount: number;
+  actionLabelCount: number;
+  broadExecuteButtonCount: number;
   executeButtonCount: number;
   usableActionCount: number;
   rowRoles: {
@@ -3580,18 +3583,6 @@ export function studyNotebookCellRowMatches(
   return observation.hasMonacoListRowClass && observation.role === "listitem" && exactDataIndex && exactAriaPosition;
 }
 
-async function exactExecuteCellAnchors(scope: Locator, maximum: number): Promise<Locator[]> {
-  const candidates = scope.locator('.run-button-container a.action-label[role="button"]');
-  const candidateCount = Math.min(await candidates.count().catch(() => 0), maximum);
-  const matches: Locator[] = [];
-  for (let index = 0; index < candidateCount; index += 1) {
-    const candidate = candidates.nth(index);
-    const accessibleName = await candidate.getAttribute("aria-label").catch(() => null);
-    if (accessibleName !== null && EXECUTE_CELL_ACCESSIBLE_NAME.test(accessibleName)) matches.push(candidate);
-  }
-  return matches;
-}
-
 export function studyNotebookRunCellActionGeometryMatches(
   row: StudyNotebookElementBox,
   editor: StudyNotebookElementBox,
@@ -3628,6 +3619,9 @@ export function describeStudyNotebookRunCellDiscovery(observation: StudyNotebook
     `candidateRows=${count(observation.candidateRowCount)}, ` +
     `exactRows=${count(observation.exactRowCount)}, ` +
     `visibleExactRows=${count(observation.visibleExactRowCount)}, ` +
+    `runContainers=${count(observation.runButtonContainerCount)}, ` +
+    `actionLabels=${count(observation.actionLabelCount)}, ` +
+    `broadExecuteButtons=${count(observation.broadExecuteButtonCount)}, ` +
     `executeButtons=${count(observation.executeButtonCount)}, ` +
     `usableActions=${count(observation.usableActionCount)}, ` +
     `rowRoles=${roles.length > 0 ? roles.join("|") : "none"}, ` +
@@ -3670,6 +3664,9 @@ async function preparePublicStudyRunCellAction(
     candidateRowCount: 0,
     exactRowCount: 0,
     visibleExactRowCount: 0,
+    runButtonContainerCount: 0,
+    actionLabelCount: 0,
+    broadExecuteButtonCount: 0,
     executeButtonCount: 0,
     usableActionCount: 0,
     rowRoles: { listitem: false, option: false, treeitem: false, missing: false, other: false },
@@ -3686,6 +3683,9 @@ async function preparePublicStudyRunCellAction(
       candidateRowCount: 0,
       exactRowCount: 0,
       visibleExactRowCount: 0,
+      runButtonContainerCount: 0,
+      actionLabelCount: 0,
+      broadExecuteButtonCount: 0,
       executeButtonCount: 0,
       usableActionCount: 0,
       rowRoles: { listitem: false, option: false, treeitem: false, missing: false, other: false },
@@ -3739,16 +3739,30 @@ async function preparePublicStudyRunCellAction(
           () => false
         );
         if (!hovered) continue;
+        await page.waitForTimeout(25);
+
+        const runButtonContainers = row.locator(".run-button-container");
+        iteration.runButtonContainerCount += Math.min(await runButtonContainers.count().catch(() => 0), 8);
+        const descendantActions = row.locator(".run-button-container .action-label");
+        const descendantActionCount = Math.min(await descendantActions.count().catch(() => 0), 8);
+        iteration.actionLabelCount += descendantActionCount;
+        iteration.broadExecuteButtonCount += Math.min(
+          await row
+            .getByRole("button", { name: EXECUTE_CELL_ACCESSIBLE_NAME })
+            .count()
+            .catch(() => 0),
+          8
+        );
 
         let usableDescendantActions = 0;
-        const descendantActions = await exactExecuteCellAnchors(row, 8);
-        const descendantActionCount = descendantActions.length;
-        iteration.executeButtonCount += descendantActionCount;
         for (let actionIndex = 0; actionIndex < descendantActionCount; actionIndex += 1) {
-          const target = await pointerActionTargetFromLocator(descendantActions[actionIndex]!, frame, "button").catch(
-            () => undefined
-          );
-          if (target) {
+          const target = await pointerActionTargetFromLocator(
+            descendantActions.nth(actionIndex),
+            frame,
+            "button"
+          ).catch(() => undefined);
+          if (target && EXECUTE_CELL_ACCESSIBLE_NAME.test(target.accessibleName)) {
+            iteration.executeButtonCount += 1;
             usableDescendantActions += 1;
             iteration.usableActionCount += 1;
             matches.push(target);
@@ -3761,15 +3775,15 @@ async function preparePublicStudyRunCellAction(
         );
         const editorBox = await notebookEditor.boundingBox().catch(() => null);
         if (!editorBox) continue;
-        const detachedActions = await exactExecuteCellAnchors(notebookEditor, 16);
-        const detachedActionCount = detachedActions.length;
-        iteration.executeButtonCount += detachedActionCount;
+        const detachedActions = notebookEditor.locator(".run-button-container .action-label");
+        const detachedActionCount = Math.min(await detachedActions.count().catch(() => 0), 16);
         for (let actionIndex = 0; actionIndex < detachedActionCount; actionIndex += 1) {
-          const action = detachedActions[actionIndex]!;
+          const action = detachedActions.nth(actionIndex);
           const actionBox = await action.boundingBox().catch(() => null);
           if (!actionBox || !studyNotebookRunCellActionGeometryMatches(rowBox, editorBox, actionBox)) continue;
           const target = await pointerActionTargetFromLocator(action, frame, "button").catch(() => undefined);
-          if (target) {
+          if (target && EXECUTE_CELL_ACCESSIBLE_NAME.test(target.accessibleName)) {
+            iteration.executeButtonCount += 1;
             iteration.usableActionCount += 1;
             matches.push(target);
           }
@@ -3783,6 +3797,9 @@ async function preparePublicStudyRunCellAction(
     observed.candidateRowCount = Math.max(observed.candidateRowCount, iteration.candidateRowCount);
     observed.exactRowCount = Math.max(observed.exactRowCount, iteration.exactRowCount);
     observed.visibleExactRowCount = Math.max(observed.visibleExactRowCount, iteration.visibleExactRowCount);
+    observed.runButtonContainerCount = Math.max(observed.runButtonContainerCount, iteration.runButtonContainerCount);
+    observed.actionLabelCount = Math.max(observed.actionLabelCount, iteration.actionLabelCount);
+    observed.broadExecuteButtonCount = Math.max(observed.broadExecuteButtonCount, iteration.broadExecuteButtonCount);
     observed.executeButtonCount = Math.max(observed.executeButtonCount, iteration.executeButtonCount);
     observed.usableActionCount = Math.max(observed.usableActionCount, iteration.usableActionCount);
     for (const role of ["listitem", "option", "treeitem", "missing", "other"] as const) {

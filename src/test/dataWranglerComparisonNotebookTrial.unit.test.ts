@@ -291,6 +291,9 @@ describe("public notebook cell targeting", () => {
       candidateRowCount: 1_000_000,
       exactRowCount: Number.POSITIVE_INFINITY,
       visibleExactRowCount: -2,
+      runButtonContainerCount: 1,
+      actionLabelCount: 3,
+      broadExecuteButtonCount: 2,
       executeButtonCount: 4,
       usableActionCount: 0,
       rowRoles: { listitem: true, option: false, treeitem: false, missing: true, other: true },
@@ -299,11 +302,12 @@ describe("public notebook cell targeting", () => {
       conflictingPositionObserved: false
     });
     expect(diagnostic).toBe(
-      "visibleNotebookEditors=2, candidateRows=999, exactRows=0, visibleExactRows=0, " +
-        "executeButtons=4, usableActions=0, rowRoles=listitem|missing|other, exactDataIndex=true, " +
+      "visibleNotebookEditors=2, candidateRows=999, exactRows=0, visibleExactRows=0, runContainers=1, " +
+        "actionLabels=3, broadExecuteButtons=2, executeButtons=4, usableActions=0, " +
+        "rowRoles=listitem|missing|other, exactDataIndex=true, " +
         "exactAriaPosition=false, conflictingPosition=false"
     );
-    expect(diagnostic.length).toBeLessThan(256);
+    expect(diagnostic.length).toBeLessThan(384);
     expect(diagnostic).not.toMatch(/[\\/]/u);
     const progressEnvelope = `${JSON.stringify({
       protocol: 1,
