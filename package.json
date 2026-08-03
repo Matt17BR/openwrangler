@@ -1,7 +1,7 @@
 {
   "name": "openwrangler",
   "displayName": "Open Wrangler",
-  "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
+  "description": "Open files and notebook variables, then clean and export data in VS Code and Cursor. Pandas and Polars are native. DuckDB and PySpark are experimental; their notebook sessions are viewing-only.",
   "version": "1.2.1",
   "publisher": "Matt17BR",
   "license": "MIT",
@@ -486,12 +486,12 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Explore, clean, and export tabular data with Pandas, Polars, or DuckDB file sessions and native notebook sessions without modifying the source.",
+        "description": "Open files or notebook variables, inspect and filter them, preview cleaning steps, and export the result. Filters and cleaning steps do not overwrite the source. Pandas and Polars are native. DuckDB and PySpark are experimental; their notebook sessions are viewing-only.",
         "steps": [
           {
             "id": "openData",
             "title": "Open a data source",
-            "description": "Use [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel, or launch Open Wrangler from a notebook dataframe."
+            "description": "Use [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel, or open a Pandas, Polars, DuckDB, or PySpark dataframe from a notebook."
           },
           {
             "id": "explore",
