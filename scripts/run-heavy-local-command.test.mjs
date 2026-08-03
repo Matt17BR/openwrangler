@@ -479,7 +479,7 @@ test("public heavy scripts hold the shared lease across their complete transacti
     "node scripts/run-heavy-local-command.mjs test:packaged-editors -- npm run test:packaged-editors:prepare --"
   );
   const publicComparisonScripts = Object.keys(scripts)
-    .filter((name) => name.startsWith("comparison:"))
+    .filter((name) => name.startsWith("comparison:") && !name.endsWith(":run"))
     .sort();
   assert.deepEqual(publicComparisonScripts, [
     "comparison:diagnostic",
@@ -489,8 +489,20 @@ test("public heavy scripts hold the shared lease across their complete transacti
     "comparison:study"
   ]);
   assert.equal(
-    scripts["comparison:feasibility:smoke"],
-    "node scripts/run-heavy-local-command.mjs comparison:feasibility:smoke -- node scripts/run-data-wrangler-comparison.mjs"
+    scripts["comparison:prepare"],
+    "node scripts/run-heavy-local-command.mjs comparison:prepare -- npm run comparison:prepare:run"
+  );
+  assert.equal(
+    scripts["comparison:prepare:run"],
+    "npm run build:test-extension && node scripts/run-data-wrangler-comparison-preparation.mjs"
+  );
+  assert.equal(
+    scripts["comparison:preregister"],
+    "node scripts/run-heavy-local-command.mjs comparison:preregister -- npm run comparison:preregister:run"
+  );
+  assert.equal(
+    scripts["comparison:preregister:run"],
+    "npm run build:test-extension && node scripts/generate-data-wrangler-comparison-preregistration.mjs"
   );
 });
 
