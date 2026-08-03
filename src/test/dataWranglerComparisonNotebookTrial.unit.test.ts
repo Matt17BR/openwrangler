@@ -311,6 +311,13 @@ describe("public notebook cell targeting", () => {
     );
     expect(diagnostic.length).toBeLessThan(256);
     expect(diagnostic).not.toMatch(/[\\/]/u);
+    const progressEnvelope = `${JSON.stringify({
+      protocol: 1,
+      runId: "8be8c321-d21d-4de8-a890-13d18844a3c7",
+      phase: "comparison-study-open-wrangler-warmup",
+      checkpoint: `comparison-study:run-cell-discovery:${diagnostic}`
+    })}\n`;
+    expect(Buffer.byteLength(progressEnvelope, "utf8")).toBeLessThanOrEqual(1_024);
   });
 });
 

@@ -3785,9 +3785,9 @@ async function preparePublicStudyRunCellAction(
     assert.ok(matches.length <= 1, "The selected measured cell exposed multiple public Execute Cell actions.");
     await page.waitForTimeout(25);
   } while (Date.now() < deadline);
-  throw new Error(
-    `The selected measured cell did not expose its exact public Execute Cell action (${describeStudyNotebookRunCellDiscovery(observed)}).`
-  );
+  const diagnostic = describeStudyNotebookRunCellDiscovery(observed);
+  recordProgress(`comparison-study:run-cell-discovery:${diagnostic}`);
+  throw new Error(`The selected measured cell did not expose its exact public Execute Cell action (${diagnostic}).`);
 }
 
 async function selectStudyNotebookKernel(page: Page, captured: CapturedStudyNotebook): Promise<void> {
