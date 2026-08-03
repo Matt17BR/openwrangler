@@ -29,6 +29,7 @@ import {
   captureComparisonInputFile,
   comparisonEditorSettings,
   createComparisonProductEditorPhasePlan,
+  createComparisonProfileRoots,
   dataWranglerComparisonKernelLabel,
   comparisonPythonCommandMatches,
   comparisonPythonCommandShape,
@@ -60,6 +61,18 @@ test("comparison profiles author VS Code's canonical disabled auto-update value"
   const settings = comparisonEditorSettings("/private/python");
   assert.equal(settings["extensions.autoUpdate"], "off");
   assert.equal(settings["extensions.autoCheckUpdates"], false);
+});
+
+test("comparison profile roots are private before editor setup", () => {
+  const profile = mkdtempSync(join(tmpdir(), "ow-comparison-profile-"));
+  try {
+    const roots = createComparisonProfileRoots(profile);
+    assert.equal(Number(lstatSync(roots.userData, { bigint: true }).mode & 0o777n), 0o700);
+    assert.equal(Number(lstatSync(roots.extensions, { bigint: true }).mode & 0o777n), 0o700);
+    assert.throws(() => createComparisonProfileRoots(profile), /EEXIST/u);
+  } finally {
+    rmSync(profile, { recursive: true, force: true });
+  }
 });
 
 test("comparison retained roots use the ignored node_modules cache and keep the tmp/ow/x suffix", () => {

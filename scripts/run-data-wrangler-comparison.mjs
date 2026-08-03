@@ -1068,6 +1068,14 @@ export async function runComparisonProductConfiguredSetup(input) {
   return runComparisonProductInternal(input, { configuredOnly: true });
 }
 
+export function createComparisonProfileRoots(profile) {
+  const userData = resolve(profile, "user");
+  const extensions = resolve(profile, "extensions");
+  mkdirSync(userData, { mode: 0o700 });
+  mkdirSync(extensions, { mode: 0o700 });
+  return Object.freeze({ userData, extensions });
+}
+
 async function runComparisonProductInternal(
   {
     productKey,
@@ -1093,8 +1101,7 @@ async function runComparisonProductInternal(
   const python = pythonReceipt.path;
   const profile = mkdtempSync(join(privateRoot, productKey === "open-wrangler" ? "p-o-" : "p-d-"));
   const workspace = resolve(profile, "workspace");
-  const userData = resolve(profile, "user");
-  const extensions = resolve(profile, "extensions");
+  const { userData, extensions } = createComparisonProfileRoots(profile);
   if (configuredOnly) {
     if (fixtureRoot !== undefined) {
       throw new Error("Configured-profile setup must not receive smoke fixtures.");
