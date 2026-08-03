@@ -22,9 +22,36 @@ Agent checkout lifecycle has a separate, small contract test:
   `0700`; ordinary Git-created files below it may follow the caller's umask without making a valid worktree unreadable
   to the lifecycle manager. A source-advance case proves that create copies the newly committed local base into the
   bare repository and checks out that exact commit without contacting `origin`.
-- `npm run checkout:legacy-audit -- <slug>` inspects only the fixed
-  `tmp/codex-checkpoints/<slug>` path derived from the bootstrap receipt. Tests prove that the command does not create a
-  journal or refresh the candidate index, that every ignored leaf belongs to the exact generated root/file allowlist,
+- Managed `create` and legacy `adopt` reserve slugs under the same lifecycle lock. Tests cover both collision
+  directions through the direct API and CLI, interrupted managed and legacy writes, cleanup-pending state, archives,
+  and managed and legacy retirement tombstones. Every retained current or historical journal keeps the authority
+  family reservation even when the checkout itself no longer exists.
+- `npm run checkout:discover -- --root <canonical-root>` performs a bounded, read-only inventory under no more than 16
+  explicit, non-overlapping roots. The scanner skips entries observed as symbolic links, revalidates every root and
+  traversed path identity, and treats replacement ambiguity as unsafe. It keeps walking after an outer repository so
+  nested checkouts are reported. It reports only repositories with the same canonical origin and a root commit present
+  in the manager. A standalone clone is adoptable only when its directory name is a valid, unused slug and is unique
+  across the result. Linked worktrees report their owning common Git directory and are never adoptable. Tests cover
+  foreign repositories, directory symlinks, nested repositories, duplicate and invalid names, linked-worktree pointers,
+  path identity revalidation, depth validation, and zero lifecycle-journal writes; fixed entry and candidate limits
+  are enforced in the scanner. `checkout:task-begin` runs the retirement sweep first and
+  then returns active, pending, and discovered state.
+  The public create, status, and retire commands also sweep before their main operation.
+- `npm run checkout:legacy-audit -- <slug>` uses the fixed `tmp/codex-checkpoints/<slug>` path derived from the bootstrap
+  receipt by default. Every audit and adoption also requires one or more `--dependency-root` values copied from the
+  bounded discovery that found the candidate. Passing both an absolute `--path` and its immediate absolute parent
+  `--root` selects a clone elsewhere. The slug must equal the checkout directory name. The audit records path
+  identities, a canonical-origin hash, bounded root hashes, at least one root commit already present in the manager,
+  and a nested repository/alternates inventory across the recorded dependency roots; adoption adds the owner revision.
+  The dependency scan recognizes worktrees and exact bare Git roots. Bare records bind the root, `HEAD`, objects, refs,
+  alternates, and either the exact config identity and contents or its confirmed absence. A configless bare clone must
+  still prove its exact root through Git. Only the proved `objects` and `refs` trees are excluded from recursion; other
+  directories beside bare administration remain in the bounded nested-repository scan. Partial marker pairs such as
+  `config` plus `objects` remain ordinary directories, while a complete but malformed or ambiguous bare signature
+  fails closed. A linked worktree, different repository, omitted dependency universe, or inbound shared clone fails
+  closed.
+  Tests prove that a read-only audit does not create a journal or refresh the candidate index, that every ignored leaf
+  belongs to the exact generated root/file allowlist,
   and that undeclared ignored files, ordinary untracked work, tracked content below an allowed root, unsafe paths,
   includes, external attributes/excludes, content filters, split/sparse indexes, worktree config, operation/private-ref
   metadata, corrupt unreachable objects, partial/promisor state, and external Git state fail closed. Positive evidence
@@ -38,8 +65,12 @@ Agent checkout lifecycle has a separate, small contract test:
   `checkout:legacy-adopt` preflights every persisted JSON record, records two byte-identical full audits, reruns the same
   audit immediately before a no-replace hard-link publication, and revalidates candidate identities afterward. An
   interruption retains its numbered attempt for `checkout:legacy-status`; every result explicitly denies move and
-  cleanup authority. Adoption never registers, archives, moves, or removes a legacy clone.
-- `npm run checkout:legacy-archive -- <slug> --owner <task>` runs only after one exact published adoption. It streams
+  cleanup authority. Explicit-adoption tests carry those receipts through archive, enrollment, next-boot retirement,
+  and recovery verification. Adoption never registers, archives, moves, or removes a legacy clone.
+- `npm run checkout:legacy-archive -- <slug> --owner <task> --revision <revision>` runs only after one exact published
+  adoption owned at that revision. Archive records and every later legacy retirement record keep the same owner and
+  revision. Archive, enrollment, move, purge, and terminal reconciliation each re-scan the recorded dependency roots
+  and reject a changed inventory or an alternate that points into the provider. It streams
   the source's complete all-object manifest and OID list through private file descriptors and creates a one-thread raw
   pack. A new private bare repository builds its own index from that pack over standard input. The recovery proof
   restores refs, detached or symbolic `HEAD`, optional `ORIG_HEAD`, and exact reflog bytes; then it compares the full
@@ -62,8 +93,9 @@ Agent checkout lifecycle has a separate, small contract test:
   exist.
 - `npm run clean` removes build output and the known screenshot harness output directories. Run it after inspecting a
   local visual failure so those generated artifacts do not block checkout retirement.
-- `checkout:status` reports the current owner and revision without deciding that a dead process or old timestamp has
-  abandoned a task. It is also the explicit command that may adopt a fully registered interrupted create.
+- `checkout:status` sweeps exact enrolled retirements before reporting the current owner and revision, without deciding
+  that a dead process or old timestamp has abandoned a task. It is also the explicit command that may adopt a fully
+  registered interrupted create.
   `checkout:handoff` changes both owner and revision explicitly.
 - `checkout:finish` records `cleanup-pending` without moving or deleting data. `checkout:audit` is read-only and gives a
   later reviewed cleaner bounded evidence; it neither adopts an interrupted create nor authorizes deletion. Active
@@ -131,18 +163,23 @@ Agent checkout lifecycle has a separate, small contract test:
   command never moves a checkout during the boot that enrolled it. An exact rerun validates and reuses the enrollment;
   a source change after enrollment fails before creating another plan or archive.
 
-- `checkout:sweep` acts only on explicitly enrolled candidates and only after the boot ID changes. Managed checkouts use
+- `checkout:sweep` acts only on explicitly enrolled candidates and only after the boot ID changes. Legacy enrollment
+  requires the adopted `--owner` and `--revision`; those values remain in every append-only sweep record. Managed checkouts use
   ordinary, unforced `git worktree move` and `git worktree remove`; the branch is re-proved even when a previous process
-  stopped after removal. Legacy clones use one same-filesystem rename and a bounded no-follow traversal. Linux
+  stopped after removal. Legacy clones use one same-filesystem rename and a bounded traversal that never descends an
+  entry observed as a symbolic link and revalidates the quarantine root identity. Linux
   `mountinfo` is checked immediately before every legacy move and traversal, so bind mounts are held even when they use
   the same device. After a durable purge intent, a partial legacy traversal resumes from the exact root identity and
   immutable archive receipts instead of asking Git to read an already partial repository. Tests interrupt after the
   managed move, after managed removal, and during the legacy tree walk. Detached legacy HEADs record that no branch was
   preserved.
 
-  Provider checks inspect repositories below the managed legacy root and hold a candidate while a sibling object
-  alternate points into it. A real linked-worktree sibling remains valid, while a `git clone --shared` dependent blocks
-  its provider. This scan does not make claims about unrelated clones elsewhere on the machine. The local maintenance
+  Provider checks inspect every nested repository under the dependency roots recorded at adoption and hold a candidate
+  while any object alternate points into it. A real linked-worktree remains valid, while worktree and bare
+  `git clone --shared` dependents in another recorded root block their provider. Bare regressions create commits
+  available only from the provider and prove that ordinary, configless, and nested-beside-administration dependents
+  each refuse retirement while retaining access to those commits. The proof is deliberately limited to the explicit
+  roots and does not claim to inventory unrelated paths elsewhere on the machine. The local maintenance
   model also excludes hostile same-UID writes, replacements, and mount races after the boot barrier and durable purge
   intent.
 

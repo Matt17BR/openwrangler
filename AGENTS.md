@@ -101,11 +101,27 @@ by hand. Source commands and worktrees made by that bare repository must resolve
 worktrees keep using their own Git common directory when no bootstrap receipt exists. Before a source command creates a
 worktree, it copies the exact locally resolved base commit into the bare manager without contacting `origin`, then
 rechecks the self-contained object store. A command from an existing child uses that child's current commit as before.
+Managed creation and legacy adoption share the same lifecycle mutex and slug namespace. The first managed entry or
+legacy attempt reserves its slug permanently for that authority family. Retained attempts, cleanup state, archives,
+quarantine and retirement journals, and terminal tombstones all keep that reservation; do not reuse a name from either
+history.
 
-Old standalone task clones below the bootstrap source's `tmp/codex-checkpoints` directory are not managed worktrees.
-Inspect one by slug with `npm run checkout:legacy-audit -- <slug>` and declare only exact ignored generated content with
-`--generated-root <path>` or `--generated-file <path>`. The command derives the candidate path from the signed bootstrap
-receipt; it never accepts an arbitrary checkout path. It requires a clean, complete standalone repository, runs strict
+Old standalone task clones are not managed worktrees. The default
+`npm run checkout:legacy-audit -- <slug>` path remains the bootstrap source's `tmp/codex-checkpoints/<slug>`. Every
+audit also needs the complete bounded search roots from discovery, repeated as
+`--dependency-root <canonical-root>`. A clone elsewhere may be audited only with both its canonical absolute `--path`
+and its immediate canonical parent `--root`. The slug must equal that checkout directory's name. The audit proves the
+same canonical origin and at least one shared root commit. Adoption records the path and file identities, repository
+proof, dependency-root identities and repository inventory, owner, and revision. The inventory covers worktrees,
+standalone clones, and exact bare Git roots. Bare proof binds `HEAD`, objects, refs, object alternates, and either the
+exact config identity and contents or its confirmed absence; a configless bare clone still counts when Git proves the
+same exact root. Scanning skips only the proved `objects` and `refs` administration trees and keeps walking other
+directories beside them, so an outer bare repository cannot hide another dependent clone. Ordinary directories that
+merely contain names such as `config`, `objects`, or `HEAD` are not treated as bare repositories without the complete
+Git-root signature. It
+accepts a standalone clone only. A linked worktree must stay with the Git manager that owns its common directory and
+cannot use this adoption path. Declare exact ignored generated content with
+`--generated-root <path>` or `--generated-file <path>`. The audit requires a clean, complete repository, runs strict
 full `git fsck`, and accounts for every ignored leaf against the declared list. It also rejects includes, external
 attributes/excludes, filters, split or sparse indexes, worktree-local config, operation state, and private refs before
 it can trust the worktree. Before Git starts, the audit validates the candidate's administrative paths and copies its
@@ -120,8 +136,10 @@ move, archive, or delete the clone. `npm run checkout:legacy-status -- [slug]` r
 interrupted attempts. None of these commands authorizes movement or cleanup. Do not run adoption against a real
 candidate until its allowlist and inclusion in the cleanup batch have been reviewed.
 
-After adoption, `npm run checkout:legacy-archive -- <slug> --owner <task>` may record a recovery archive. It enumerates
-every Git object, including unreachable objects, streams them into a pack, records the exact object/type/size manifest,
+After adoption, `npm run checkout:legacy-archive -- <slug> --owner <task> --revision <revision>` may record a recovery
+archive. The owner and revision must match the adoption and remain bound through archive, enrollment, quarantine,
+purge, and the terminal record. The command enumerates every Git object, including unreachable objects, streams them
+into a pack, records the exact object/type/size manifest,
 and restores the pack, refs, `HEAD`, optional `ORIG_HEAD`, and reflogs into a new private bare repository. The restored
 repository must pass strict `git fsck` and match the source manifest before the append-only completion record is
 published. Every archive attempt stays bound to the exact published adoption record it started from; removing or
@@ -133,6 +151,18 @@ internal timeout: stopping only the direct Git child could leave `pack-objects` 
 leaves the numbered attempt in place for `checkout:legacy-status` and human review. A later quarantine step must compare
 the current source clone with the completed archive again immediately around any move. The archive record alone never
 authorizes quarantine, movement, or cleanup.
+
+At the start of a task, run
+`npm run checkout:task-begin -- --root /canonical/search/root` (repeat `--root` for non-overlapping roots). It performs
+the retirement sweep first, then reports active managed worktrees, pending cleanup, and same-repository clones or
+linked worktrees found by a bounded scan. It does not descend entries observed as symbolic links, revalidates path and
+root identities, and reports replacement ambiguity instead of authorizing adoption. It continues through an outer
+repository so nested repositories are not hidden. Discovery never adopts or removes anything. Standalone rows are
+adoptable only when their directory name is a valid unused slug and is unique across the result; linked rows include
+the owning common Git directory and remain non-adoptable. Use `npm run checkout:discover -- --root ...` when a read-only inventory is enough. Direct `git clone`
+and `git worktree add` cannot be intercepted reliably, so this task-start inventory is the durable way to expose such
+bypasses. `npm run checkout:resume -- --root ...` performs the same start-of-turn checks after an interruption. Do not
+infer that a discovered path is obsolete.
 
 The coordinating agent creates task isolation with
 `npm run checkout:create -- <slug> --owner <canonical-task-name>`. Add `--generated-root node_modules`, or another
@@ -150,9 +180,11 @@ Each lifecycle command also takes a short-lived cross-process mutex. Its PID det
 never determines task ownership or abandonment. Registry changes and mutex claims/releases are append-only numbered
 files created with exclusive paths. Never rewrite either journal while the manager root remains in use.
 
-Run `npm run checkout:sweep` at the start of every task. Sweep only processes explicitly enrolled checkouts. One held
-candidate is reported without preventing later exact candidates from retiring. It never uses PID death, elapsed time,
-or timestamps as abandonment evidence.
+`checkout:task-begin` is the normal task-start entry point. The public `checkout:create`, `checkout:status`, and
+`checkout:retire` commands also sweep before doing their own work, so an ordinary resumed workflow cannot silently
+skip due cleanup. `checkout:sweep` remains available as the narrow maintenance command. A sweep acts only on explicitly
+enrolled checkouts; one held candidate does not prevent later exact candidates from retiring. It never uses PID death,
+elapsed time, or timestamps as abandonment evidence.
 
 At successful task completion, run the single normal command
 `npm run checkout:retire -- <slug> --owner <task> --revision <n>`. It records explicit finish, writes fresh retirement
@@ -185,7 +217,7 @@ intent precedes its action. Linux mount information is checked immediately befor
 including a same-filesystem bind mount, holds that candidate. Once a purge intent is durable, an interrupted legacy
 traversal resumes only from the exact quarantined root and immutable archive anchors. A later sweep reconciles a crash
 before or after move/removal and blocks on any ambiguous layout. Before legacy enrollment, move, and purge, the manager
-also checks whether another repository below the managed `tmp/codex-checkpoints` root names the candidate as an object
+also checks whether another repository beside the candidate in its approved parent names it as an object
 alternate. This prevents retiring providers for known sibling checkouts; it cannot prove that unrelated clones elsewhere
 on the machine have no dependency. The local maintenance threat model assumes no hostile same-UID write, pathname
 replacement, or mount race after the boot barrier and durable purge intent. It does not claim protection against a
