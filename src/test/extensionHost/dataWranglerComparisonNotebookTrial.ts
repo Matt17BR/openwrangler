@@ -3299,7 +3299,11 @@ async function captureStudyNotebook(): Promise<CapturedStudyNotebook> {
 }
 
 function decodeStudyNotebookDefinition(notebook: vscode.NotebookDocument): NotebookTrialDefinition {
-  const metadata = requireRecord(notebook.metadata, "Study notebook metadata");
+  const documentMetadata = requireRecord(notebook.metadata, "Study notebook document metadata");
+  if (documentMetadata.nbformat !== 4 || documentMetadata.nbformat_minor !== 5) {
+    fail("Study notebook document metadata does not retain the required nbformat 4.5 identity.");
+  }
+  const metadata = requireRecord(documentMetadata.metadata, "Study notebook metadata");
   const study = requireRecord(metadata.openWranglerStudy, "Study notebook contract");
   exactKeys(
     study,
