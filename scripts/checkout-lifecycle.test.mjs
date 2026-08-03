@@ -158,18 +158,43 @@ function withRepository(callback) {
   git(repository, "remote", "add", "origin", remote);
   git(repository, "push", "-q", "-u", "origin", "main");
   try {
-    callback({ root, repository, managerRoot });
+    callback({ root, repository, remote, managerRoot });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
+function withLegacyDefaults(api, fixture) {
+  const target = (args) => {
+    const approvedRoot = args.approvedRoot ?? join(fixture.repository, "tmp", "codex-checkpoints");
+    return {
+      ...args,
+      approvedRoot,
+      checkoutPath: args.checkoutPath ?? join(approvedRoot, args.slug),
+      dependencyRoots: args.dependencyRoots ?? [approvedRoot]
+    };
+  };
+  return Object.freeze({
+    ...api,
+    legacyAudit: (args) => api.legacyAudit(target(args)),
+    legacyAdopt: (args) => api.legacyAdopt(target(args)),
+    legacyArchive: (args) => api.legacyArchive({ expectedRevision: 1, ...args }),
+    enrollRetirement: (args) =>
+      api.enrollRetirement(
+        args.kind === "legacy" ? { ownerTask: `/root/${args.slug}`, expectedRevision: 1, ...args } : args
+      )
+  });
+}
+
 function manager(fixture, options = {}) {
-  return createCheckoutManager({ repositoryPath: fixture.repository, managerRoot: fixture.managerRoot, ...options });
+  return withLegacyDefaults(
+    createCheckoutManager({ repositoryPath: fixture.repository, managerRoot: fixture.managerRoot, ...options }),
+    fixture
+  );
 }
 
 function defaultManager(fixture, options = {}) {
-  return createCheckoutManager({ repositoryPath: fixture.repository, ...options });
+  return withLegacyDefaults(createCheckoutManager({ repositoryPath: fixture.repository, ...options }), fixture);
 }
 
 function create(fixture, slug, options = {}) {
@@ -185,7 +210,7 @@ function legacyCandidate(fixture, slug, options = {}) {
   const parent = join(fixture.repository, "tmp", "codex-checkpoints");
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const checkout = join(parent, slug);
-  git(fixture.root, "clone", "-q", fixture.repository, checkout);
+  git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, checkout);
   git(checkout, "config", "user.name", "Checkout Test");
   git(checkout, "config", "user.email", "checkout@example.invalid");
   mkdirSync(join(checkout, "node_modules", "example"), { recursive: true });
@@ -193,6 +218,20 @@ function legacyCandidate(fixture, slug, options = {}) {
   writeFileSync(join(checkout, "fixture.ignored"), "generated artifact\n");
   options.configure?.(checkout);
   return checkout;
+}
+
+function explicitLegacyCandidate(fixture, parentName, slug, options = {}) {
+  const parent = join(fixture.root, parentName);
+  mkdirSync(parent, { mode: 0o700 });
+  const checkout = join(parent, slug);
+  git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, checkout);
+  git(checkout, "config", "user.name", "Checkout Test");
+  git(checkout, "config", "user.email", "checkout@example.invalid");
+  mkdirSync(join(checkout, "node_modules", "example"), { recursive: true });
+  writeFileSync(join(checkout, "node_modules", "example", "index.js"), "generated dependency\n");
+  writeFileSync(join(checkout, "fixture.ignored"), "generated artifact\n");
+  options.configure?.(checkout);
+  return Object.freeze({ parent, checkout });
 }
 
 function adoptedLegacyCandidate(fixture, slug, options = {}) {
@@ -386,6 +425,729 @@ test("legacy adoption records two identical audits in an append-only review jour
   });
 });
 
+test("explicit discovery reports same-repository clones and linked worktrees without writing lifecycle state", () => {
+  withRepository((fixture) => {
+    const published = bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "4".repeat(32)
+    });
+    const { parent, checkout } = explicitLegacyCandidate(fixture, "discovery-root", "standalone");
+    const owner = join(parent, "worktree-owner");
+    const linked = join(parent, "linked");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, owner);
+    git(owner, "worktree", "add", "-q", "-b", "discovery-linked", linked);
+    const foreign = join(parent, "foreign");
+    mkdirSync(foreign, { mode: 0o700 });
+    git(foreign, "init", "-q", "-b", "main");
+    symlinkSync(checkout, join(parent, "checkout-symlink"), "dir");
+    const beforeEntries = readdirSync(published.statePath).sort();
+    const readmeBefore = fileSnapshot(join(checkout, "README.md"));
+
+    const result = defaultManager(fixture).discover({ roots: [parent], maxDepth: 1 });
+
+    assert.deepEqual(
+      result.discovered.map(({ path, kind, adoptionProtocolSupported, reason }) => ({
+        path,
+        kind,
+        adoptionProtocolSupported,
+        reason
+      })),
+      [
+        {
+          path: linked,
+          kind: "linked-worktree",
+          adoptionProtocolSupported: false,
+          reason: "requires-original-worktree-manager"
+        },
+        { path: checkout, kind: "standalone-clone", adoptionProtocolSupported: true, reason: null },
+        { path: owner, kind: "standalone-clone", adoptionProtocolSupported: true, reason: null }
+      ]
+    );
+    const linkedResult = result.discovered.find((item) => item.path === linked);
+    assert.equal(linkedResult.owningCommonGitDirectory, join(owner, ".git"));
+    assert.equal(linkedResult.adoptable, false);
+    assert.equal(linkedResult.eligibility, "not-adoptable");
+    assert.equal(result.discovered.find((item) => item.path === checkout).adoptable, true);
+    assert.equal(result.authorizesAdoption, false);
+    assert.equal(result.authorizesCleanup, false);
+    assert.equal(result.traversalGuarantee, "observed-symlinks-skipped-path-identities-revalidated");
+    assert.deepEqual(readdirSync(published.statePath).sort(), beforeEntries);
+    assert.equal(existsSync(join(published.statePath, "legacy-adoptions")), false);
+    assert.deepEqual(fileSnapshot(join(checkout, "README.md")), readmeBefore);
+    lifecycleError(() => defaultManager(fixture).discover({ roots: [parent], maxDepth: 9 }), "invalid-discovery-depth");
+  });
+});
+
+test("discovery reports nested repositories instead of stopping at the outer checkout", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "9".repeat(32) });
+    const root = join(fixture.root, "nested-discovery");
+    mkdirSync(root, { mode: 0o700 });
+    const outer = join(root, "outer");
+    const nested = join(outer, "nested");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, outer);
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, nested);
+
+    const result = defaultManager(fixture).discover({ roots: [root], maxDepth: 2 });
+
+    assert.deepEqual(
+      result.discovered.map((candidate) => candidate.path),
+      [nested, outer].sort()
+    );
+  });
+});
+
+test("discovery rejects invalid and colliding checkout names before adoption", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "a".repeat(32) });
+    const firstRoot = join(fixture.root, "collision-a");
+    const secondRoot = join(fixture.root, "collision-b");
+    mkdirSync(firstRoot, { mode: 0o700 });
+    mkdirSync(secondRoot, { mode: 0o700 });
+    const first = join(firstRoot, "same-name");
+    const second = join(secondRoot, "same-name");
+    const invalid = join(firstRoot, "Invalid Name");
+    for (const checkout of [first, second, invalid]) {
+      git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, checkout);
+    }
+
+    const result = defaultManager(fixture).discover({ roots: [firstRoot, secondRoot], maxDepth: 1 });
+    const byPath = new Map(result.discovered.map((candidate) => [candidate.path, candidate]));
+
+    for (const checkout of [first, second]) {
+      assert.equal(byPath.get(checkout).adoptable, false);
+      assert.equal(byPath.get(checkout).reason, "duplicate-checkout-name");
+      assert.equal(byPath.get(checkout).proposedSlug, "same-name");
+    }
+    assert.equal(byPath.get(invalid).adoptable, false);
+    assert.equal(byPath.get(invalid).reason, "invalid-checkout-name");
+  });
+});
+
+test("discovery rejects a checkout name already registered by the manager", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "b".repeat(32) });
+    const managed = defaultManager(fixture);
+    managed.create({
+      slug: "occupied-name",
+      branch: "agent/occupied-name",
+      ownerTask: "/root/occupied-name"
+    });
+    const root = join(fixture.root, "occupied-discovery");
+    mkdirSync(root, { mode: 0o700 });
+    const checkout = join(root, "occupied-name");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, checkout);
+
+    const result = managed.discover({ roots: [root], maxDepth: 1 });
+
+    assert.equal(result.discovered.length, 1);
+    assert.equal(result.discovered[0].path, checkout);
+    assert.equal(result.discovered[0].proposedSlug, "occupied-name");
+    assert.equal(result.discovered[0].adoptable, false);
+    assert.equal(result.discovered[0].reason, "checkout-name-in-use");
+  });
+});
+
+test("managed and legacy mutations reject a slug owned by the other lifecycle", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "c".repeat(32) });
+    const managed = defaultManager(fixture, { tokenFactory: () => "d".repeat(32) });
+    managed.create({
+      slug: "managed-authority",
+      branch: "agent/managed-authority",
+      ownerTask: "/root/managed-authority"
+    });
+    const managedCollision = legacyCandidate(fixture, "managed-authority");
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "managed-authority",
+          ownerTask: "/root/legacy-collision",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"],
+          checkoutPath: managedCollision,
+          approvedRoot: dirname(managedCollision),
+          dependencyRoots: [dirname(managedCollision)]
+        }),
+      "checkout-slug-reserved"
+    );
+
+    legacyCandidate(fixture, "legacy-authority");
+    managed.legacyAdopt({
+      slug: "legacy-authority",
+      ownerTask: "/root/legacy-authority",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    lifecycleError(
+      () =>
+        managed.create({
+          slug: "legacy-authority",
+          branch: "agent/legacy-collision",
+          ownerTask: "/root/managed-collision"
+        }),
+      "checkout-slug-reserved"
+    );
+  });
+});
+
+test("interrupted managed and legacy writes still reserve their slug globally", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "e".repeat(32) });
+    const interruptedManaged = defaultManager(fixture, {
+      tokenFactory: () => "f".repeat(32),
+      hooks: {
+        afterRegistryBeforeGit() {
+          throw new Error("stop after managed reservation");
+        }
+      }
+    });
+    assert.throws(
+      () =>
+        interruptedManaged.create({
+          slug: "interrupted-managed-authority",
+          branch: "agent/interrupted-managed-authority",
+          ownerTask: "/root/interrupted-managed-authority"
+        }),
+      /stop after managed reservation/u
+    );
+    const managedCollision = legacyCandidate(fixture, "interrupted-managed-authority");
+    lifecycleError(
+      () =>
+        defaultManager(fixture).legacyAdopt({
+          slug: "interrupted-managed-authority",
+          ownerTask: "/root/interrupted-legacy-collision",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"],
+          checkoutPath: managedCollision,
+          approvedRoot: dirname(managedCollision),
+          dependencyRoots: [dirname(managedCollision)]
+        }),
+      "checkout-slug-reserved"
+    );
+
+    legacyCandidate(fixture, "interrupted-legacy-authority");
+    const interruptedLegacy = defaultManager(fixture, {
+      tokenFactory: () => "1".repeat(32),
+      hooks: {
+        afterLegacyAdoptionRequest() {
+          throw new Error("stop after legacy reservation");
+        }
+      }
+    });
+    assert.throws(
+      () =>
+        interruptedLegacy.legacyAdopt({
+          slug: "interrupted-legacy-authority",
+          ownerTask: "/root/interrupted-legacy-authority",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      /stop after legacy reservation/u
+    );
+    lifecycleError(
+      () =>
+        defaultManager(fixture).create({
+          slug: "interrupted-legacy-authority",
+          branch: "agent/interrupted-legacy-collision",
+          ownerTask: "/root/interrupted-managed-collision"
+        }),
+      "checkout-slug-reserved"
+    );
+  });
+});
+
+test("a cleanup-pending managed checkout keeps its slug unavailable to legacy adoption", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "2".repeat(32) });
+    const managed = defaultManager(fixture, { tokenFactory: () => "3".repeat(32) });
+    managed.create({
+      slug: "cleanup-pending-authority",
+      branch: "agent/cleanup-pending-authority",
+      ownerTask: "/root/cleanup-pending-authority"
+    });
+    managed.finish({
+      slug: "cleanup-pending-authority",
+      ownerTask: "/root/cleanup-pending-authority",
+      expectedRevision: 1
+    });
+    const collision = legacyCandidate(fixture, "cleanup-pending-authority");
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "cleanup-pending-authority",
+          ownerTask: "/root/cleanup-pending-collision",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"],
+          checkoutPath: collision,
+          approvedRoot: dirname(collision),
+          dependencyRoots: [dirname(collision)]
+        }),
+      "checkout-slug-reserved"
+    );
+  });
+});
+
+test("retained managed and legacy archives reserve slugs without their primary entries", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "4".repeat(32) });
+    const managed = defaultManager(fixture, {
+      readBootId: () => BOOT_A,
+      tokenFactory: () => "5".repeat(32)
+    });
+    archiveForQuarantine(fixture, "managed-archive-reservation", { manager: managed });
+    const retainedManagedEntries = join(fixture.root, "retained-managed-entries");
+    mkdirSync(retainedManagedEntries, { mode: 0o700 });
+    for (const path of entryPaths(fixture, "managed-archive-reservation", managed.paths.root)) {
+      renameSync(path, join(retainedManagedEntries, basename(path)));
+    }
+    const managedCollision = legacyCandidate(fixture, "managed-archive-reservation");
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "managed-archive-reservation",
+          ownerTask: "/root/managed-archive-collision",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"],
+          checkoutPath: managedCollision,
+          approvedRoot: dirname(managedCollision),
+          dependencyRoots: [dirname(managedCollision)]
+        }),
+      "checkout-slug-reserved"
+    );
+
+    legacyCandidate(fixture, "legacy-archive-reservation");
+    managed.legacyAdopt({
+      slug: "legacy-archive-reservation",
+      ownerTask: "/root/legacy-archive-reservation",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+    managed.legacyArchive({
+      slug: "legacy-archive-reservation",
+      ownerTask: "/root/legacy-archive-reservation",
+      expectedRevision: 1
+    });
+    renameSync(managed.paths.legacyAdoptions, join(fixture.root, "retained-legacy-adoptions"));
+    lifecycleError(
+      () =>
+        defaultManager(fixture).create({
+          slug: "legacy-archive-reservation",
+          branch: "agent/legacy-archive-collision",
+          ownerTask: "/root/legacy-archive-collision"
+        }),
+      "checkout-slug-reserved"
+    );
+  });
+});
+
+test("discovery fails when an approved root is replaced during inspection", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "d".repeat(32) });
+    const { parent } = explicitLegacyCandidate(fixture, "changing-discovery-root", "candidate");
+    const behavior = {};
+    const checking = defaultManager(fixture, { run: fixtureRun(behavior) });
+    let changed = false;
+    behavior.afterGit = ({ args }) => {
+      if (changed || !args.includes("--file") || !args.includes("remote.origin.url")) return;
+      changed = true;
+      renameSync(parent, `${parent}.retained`);
+      mkdirSync(parent, { mode: 0o700 });
+    };
+
+    lifecycleError(() => checking.discover({ roots: [parent], maxDepth: 1 }), "discovery-root-unsafe");
+  });
+});
+
+test("explicit standalone adoption archives and retires only after a later boot", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "5".repeat(32)
+    });
+    const { parent, checkout } = explicitLegacyCandidate(fixture, "explicit-root", "explicit-retirement");
+    const managed = defaultManager(fixture, {
+      readBootId: () => bootId,
+      tokenFactory: () => "6".repeat(32)
+    });
+    const adopted = managed.legacyAdopt({
+      slug: "explicit-retirement",
+      ownerTask: "/root/explicit-retirement",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"],
+      checkoutPath: checkout,
+      approvedRoot: parent
+    });
+
+    assert.equal(adopted.ownerRevision, 1);
+    assert.equal(adopted.evidence.protocol, "openwrangler-legacy-checkout-adoption-v2");
+    assert.match(adopted.evidence.git.repositoryProof.remoteSha256, /^[0-9a-f]{64}$/u);
+    const request = JSON.parse(
+      readFileSync(join(managed.paths.legacyAdoptionAttempts, "explicit-retirement.00000001", "request.json"), "utf8")
+    );
+    assert.equal(request.protocol, "openwrangler-legacy-checkout-adoption-request-v2");
+    assert.equal(request.ownerRevision, 1);
+    assert.equal(request.target.checkoutPath, checkout);
+    const archived = managed.legacyArchive({
+      slug: "explicit-retirement",
+      ownerTask: "/root/explicit-retirement"
+    });
+    const expectedHead = git(checkout, "rev-parse", "HEAD");
+    managed.enrollRetirement({ kind: "legacy", slug: "explicit-retirement" });
+    assert.equal(managed.sweep().results[0].state, "waiting-for-next-boot");
+    assert.equal(existsSync(checkout), true);
+
+    bootId = BOOT_B;
+    assert.equal(managed.sweep().results[0].state, "retired");
+    assert.equal(existsSync(checkout), false);
+    assert.equal(git(archived.recoveryPath, "rev-parse", "HEAD"), expectedHead);
+    lifecycleError(
+      () =>
+        managed.create({
+          slug: "explicit-retirement",
+          branch: "agent/reuse-legacy-tombstone",
+          ownerTask: "/root/reuse-legacy-tombstone"
+        }),
+      "checkout-slug-reserved"
+    );
+  });
+});
+
+test("an external shared clone blocks an adopted provider across recorded dependency roots", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "b".repeat(32) });
+    const { parent, checkout } = explicitLegacyCandidate(fixture, "provider-root", "external-provider");
+    const externalRoot = join(fixture.root, "external-dependents");
+    mkdirSync(externalRoot, { mode: 0o700 });
+    const managed = defaultManager(fixture, { tokenFactory: () => "c".repeat(32) });
+    managed.legacyAdopt({
+      slug: "external-provider",
+      ownerTask: "/root/external-provider",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"],
+      checkoutPath: checkout,
+      approvedRoot: parent,
+      dependencyRoots: [parent, externalRoot]
+    });
+    const dependent = join(externalRoot, "dependent");
+    git(fixture.root, "clone", "-q", "--shared", checkout, dependent);
+
+    lifecycleError(
+      () =>
+        managed.legacyArchive({
+          slug: "external-provider",
+          ownerTask: "/root/external-provider",
+          expectedRevision: 1
+        }),
+      "legacy-provider-in-use"
+    );
+    assert.equal(existsSync(checkout), true);
+    assert.equal(existsSync(dependent), true);
+  });
+});
+
+test("an external bare shared clone blocks retirement without losing its provider-only commit", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "1".repeat(32) });
+    const { parent, checkout } = explicitLegacyCandidate(fixture, "bare-provider-root", "bare-provider");
+    writeFileSync(join(checkout, "provider-only.txt"), "available only from the provider\n");
+    git(checkout, "add", "provider-only.txt");
+    git(checkout, "commit", "-q", "-m", "Create provider-only commit");
+    const providerOnlyCommit = git(checkout, "rev-parse", "HEAD");
+    const externalRoot = join(fixture.root, "bare-external-dependents");
+    mkdirSync(externalRoot, { mode: 0o700 });
+    const managed = defaultManager(fixture, {
+      readBootId: () => BOOT_A,
+      tokenFactory: () => "2".repeat(32)
+    });
+    managed.legacyAdopt({
+      slug: "bare-provider",
+      ownerTask: "/root/bare-provider",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"],
+      checkoutPath: checkout,
+      approvedRoot: parent,
+      dependencyRoots: [parent, externalRoot]
+    });
+    managed.legacyArchive({
+      slug: "bare-provider",
+      ownerTask: "/root/bare-provider",
+      expectedRevision: 1
+    });
+    const dependent = join(externalRoot, "dependent.git");
+    git(fixture.root, "clone", "-q", "--bare", "--shared", checkout, dependent);
+
+    lifecycleError(
+      () =>
+        managed.enrollRetirement({
+          kind: "legacy",
+          slug: "bare-provider",
+          ownerTask: "/root/bare-provider",
+          expectedRevision: 1
+        }),
+      "legacy-provider-in-use"
+    );
+    assert.equal(existsSync(checkout), true);
+    assert.equal(git(dependent, "cat-file", "-e", `${providerOnlyCommit}^{commit}`), "");
+  });
+});
+
+test("a configless bare shared clone remains a provider-dependent repository", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "5".repeat(32) });
+    const { parent, checkout } = explicitLegacyCandidate(
+      fixture,
+      "configless-bare-provider-root",
+      "configless-bare-provider"
+    );
+    writeFileSync(join(checkout, "provider-only.txt"), "available only from the configless provider\n");
+    git(checkout, "add", "provider-only.txt");
+    git(checkout, "commit", "-q", "-m", "Create configless provider-only commit");
+    const providerOnlyCommit = git(checkout, "rev-parse", "HEAD");
+    const externalRoot = join(fixture.root, "configless-bare-dependents");
+    mkdirSync(externalRoot, { mode: 0o700 });
+    const managed = defaultManager(fixture, {
+      readBootId: () => BOOT_A,
+      tokenFactory: () => "6".repeat(32)
+    });
+    managed.legacyAdopt({
+      slug: "configless-bare-provider",
+      ownerTask: "/root/configless-bare-provider",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"],
+      checkoutPath: checkout,
+      approvedRoot: parent,
+      dependencyRoots: [parent, externalRoot]
+    });
+    managed.legacyArchive({
+      slug: "configless-bare-provider",
+      ownerTask: "/root/configless-bare-provider",
+      expectedRevision: 1
+    });
+    const dependent = join(externalRoot, "dependent.git");
+    git(fixture.root, "clone", "-q", "--bare", "--shared", checkout, dependent);
+    rmSync(join(dependent, "config"));
+    assert.equal(git(dependent, "rev-parse", "--is-bare-repository"), "true");
+    assert.equal(git(dependent, "cat-file", "-e", `${providerOnlyCommit}^{commit}`), "");
+
+    lifecycleError(
+      () =>
+        managed.enrollRetirement({
+          kind: "legacy",
+          slug: "configless-bare-provider",
+          ownerTask: "/root/configless-bare-provider",
+          expectedRevision: 1
+        }),
+      "legacy-provider-in-use"
+    );
+    assert.equal(existsSync(checkout), true);
+    assert.equal(git(dependent, "cat-file", "-e", `${providerOnlyCommit}^{commit}`), "");
+  });
+});
+
+test("a repository nested beside bare administration remains visible to the dependency scan", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "7".repeat(32) });
+    const { parent, checkout } = explicitLegacyCandidate(fixture, "nested-bare-provider-root", "nested-bare-provider");
+    writeFileSync(join(checkout, "provider-only.txt"), "available only from the nested provider\n");
+    git(checkout, "add", "provider-only.txt");
+    git(checkout, "commit", "-q", "-m", "Create nested provider-only commit");
+    const providerOnlyCommit = git(checkout, "rev-parse", "HEAD");
+    const externalRoot = join(fixture.root, "nested-bare-dependents");
+    mkdirSync(externalRoot, { mode: 0o700 });
+    const managed = defaultManager(fixture, {
+      readBootId: () => BOOT_A,
+      tokenFactory: () => "8".repeat(32)
+    });
+    managed.legacyAdopt({
+      slug: "nested-bare-provider",
+      ownerTask: "/root/nested-bare-provider",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"],
+      checkoutPath: checkout,
+      approvedRoot: parent,
+      dependencyRoots: [parent, externalRoot]
+    });
+    managed.legacyArchive({
+      slug: "nested-bare-provider",
+      ownerTask: "/root/nested-bare-provider",
+      expectedRevision: 1
+    });
+    const outerBare = join(externalRoot, "outer.git");
+    git(fixture.root, "clone", "-q", "--bare", fixture.remote, outerBare);
+    const nestedRoot = join(outerBare, "nested-dependents");
+    mkdirSync(nestedRoot, { mode: 0o700 });
+    const dependent = join(nestedRoot, "provider-consumer");
+    git(fixture.root, "clone", "-q", "--shared", checkout, dependent);
+
+    lifecycleError(
+      () =>
+        managed.enrollRetirement({
+          kind: "legacy",
+          slug: "nested-bare-provider",
+          ownerTask: "/root/nested-bare-provider",
+          expectedRevision: 1
+        }),
+      "legacy-provider-in-use"
+    );
+    assert.equal(existsSync(checkout), true);
+    assert.equal(git(dependent, "cat-file", "-e", `${providerOnlyCommit}^{commit}`), "");
+  });
+});
+
+test("dependency scanning ignores ordinary marker pairs and rejects a malformed exact bare signature", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "3".repeat(32) });
+    const safe = explicitLegacyCandidate(fixture, "ordinary-marker-provider", "ordinary-marker-provider");
+    const dependencyRoot = join(fixture.root, "ordinary-marker-dependencies");
+    mkdirSync(dependencyRoot, { mode: 0o700 });
+    const configObjects = join(dependencyRoot, "config-objects");
+    mkdirSync(join(configObjects, "objects"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(configObjects, "config"), "ordinary application config\n");
+    const headConfig = join(dependencyRoot, "head-config");
+    mkdirSync(headConfig, { mode: 0o700 });
+    writeFileSync(join(headConfig, "HEAD"), "ordinary heading\n");
+    writeFileSync(join(headConfig, "config"), "ordinary application config\n");
+    const managed = defaultManager(fixture, { tokenFactory: () => "4".repeat(32) });
+    const adopted = managed.legacyAdopt({
+      slug: "ordinary-marker-provider",
+      ownerTask: "/root/ordinary-marker-provider",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"],
+      checkoutPath: safe.checkout,
+      approvedRoot: safe.parent,
+      dependencyRoots: [safe.parent, dependencyRoot]
+    });
+    assert.equal(adopted.evidence.git.dependencyUniverse.repositoryCount, 0);
+
+    const malformed = explicitLegacyCandidate(fixture, "malformed-bare-provider", "malformed-bare-provider");
+    const malformedRoot = join(fixture.root, "malformed-bare-dependencies");
+    const malformedBare = join(malformedRoot, "looks-bare.git");
+    mkdirSync(join(malformedBare, "objects"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(malformedBare, "refs"), { mode: 0o700 });
+    writeFileSync(join(malformedBare, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(malformedBare, "config"), "[core]\n\tbare = false\n");
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "malformed-bare-provider",
+          ownerTask: "/root/malformed-bare-provider",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"],
+          checkoutPath: malformed.checkout,
+          approvedRoot: malformed.parent,
+          dependencyRoots: [malformed.parent, malformedRoot]
+        }),
+      "legacy-provider-scan-unsafe"
+    );
+  });
+});
+
+test("legacy archive and retirement enrollment require the adopted owner revision", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "d".repeat(32) });
+    legacyCandidate(fixture, "legacy-owner-bound");
+    const managed = defaultManager(fixture, {
+      readBootId: () => BOOT_A,
+      tokenFactory: () => "e".repeat(32)
+    });
+    managed.legacyAdopt({
+      slug: "legacy-owner-bound",
+      ownerTask: "/root/legacy-owner-bound",
+      generatedRoots: ["node_modules"],
+      generatedFiles: ["fixture.ignored"]
+    });
+
+    for (const authority of [
+      { ownerTask: "/root/another-task", expectedRevision: 1 },
+      { ownerTask: "/root/legacy-owner-bound", expectedRevision: 2 }
+    ]) {
+      lifecycleError(() => managed.legacyArchive({ slug: "legacy-owner-bound", ...authority }), "owner-conflict");
+    }
+    assert.deepEqual(readdirSync(managed.paths.legacyArchiveAttempts), []);
+
+    managed.legacyArchive({
+      slug: "legacy-owner-bound",
+      ownerTask: "/root/legacy-owner-bound",
+      expectedRevision: 1
+    });
+    for (const authority of [
+      { ownerTask: "/root/another-task", expectedRevision: 1 },
+      { ownerTask: "/root/legacy-owner-bound", expectedRevision: 2 }
+    ]) {
+      lifecycleError(
+        () => managed.enrollRetirement({ kind: "legacy", slug: "legacy-owner-bound", ...authority }),
+        "owner-conflict"
+      );
+    }
+    const enrolled = managed.enrollRetirement({
+      kind: "legacy",
+      slug: "legacy-owner-bound",
+      ownerTask: "/root/legacy-owner-bound",
+      expectedRevision: 1
+    });
+    assert.equal(enrolled.status, "enrolled-next-boot");
+  });
+});
+
+test("explicit adoption rejects linked worktrees and different repositories", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "7".repeat(32) });
+    const parent = join(fixture.root, "rejected-root");
+    mkdirSync(parent, { mode: 0o700 });
+    const owner = join(parent, "owner");
+    const linked = join(parent, "linked");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, owner);
+    git(owner, "worktree", "add", "-q", "-b", "rejected-linked", linked);
+    const managed = defaultManager(fixture, { tokenFactory: () => "8".repeat(32) });
+    const rawManager = createCheckoutManager({ repositoryPath: fixture.repository });
+    lifecycleError(
+      () =>
+        rawManager.legacyAudit({
+          slug: "owner",
+          checkoutPath: owner,
+          approvedRoot: parent
+        }),
+      "legacy-dependency-universe-required"
+    );
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "linked",
+          ownerTask: "/root/linked",
+          checkoutPath: linked,
+          approvedRoot: parent
+        }),
+      "legacy-linked-worktree-not-adoptable"
+    );
+    lifecycleError(
+      () =>
+        managed.legacyAudit({
+          slug: "not-owner",
+          checkoutPath: owner,
+          approvedRoot: parent
+        }),
+      "legacy-checkout-unsafe"
+    );
+
+    const foreignRemote = join(fixture.root, "foreign.git");
+    git(fixture.root, "init", "-q", "--bare", foreignRemote);
+    const foreign = join(parent, "foreign");
+    git(fixture.root, "clone", "-q", "--branch", "main", fixture.remote, foreign);
+    git(foreign, "remote", "set-url", "origin", foreignRemote);
+    lifecycleError(
+      () =>
+        managed.legacyAudit({
+          slug: "foreign",
+          checkoutPath: foreign,
+          approvedRoot: parent
+        }),
+      "legacy-repository-mismatch"
+    );
+  });
+});
+
 test("legacy recovery archive preserves every reachable and unreachable Git object without changing the source", () => {
   withRepository((fixture) => {
     bootstrapCheckoutManager({
@@ -554,7 +1316,6 @@ test("legacy recovery archive restores a detached HEAD when the source has no re
     const checkout = legacyCandidate(fixture, "legacy-detached-no-refs");
     const head = git(checkout, "rev-parse", "HEAD");
     git(checkout, "checkout", "--quiet", "--detach", head);
-    git(checkout, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD");
     const refs = git(checkout, "for-each-ref", "--format=%(refname)").split("\n").filter(Boolean);
     for (const ref of refs) git(checkout, "update-ref", "-d", ref);
     assert.equal(git(checkout, "for-each-ref", "--format=%(refname)"), "");
@@ -679,7 +1440,7 @@ test("legacy status enumerates but fails closed on archives detached from their 
   });
 
   withRepository((fixture) => {
-    const { managed } = adoptedLegacyCandidate(fixture, "legacy-archive-re-adopted");
+    const { managed, checkout } = adoptedLegacyCandidate(fixture, "legacy-archive-re-adopted");
     managed.legacyArchive({
       slug: "legacy-archive-re-adopted",
       ownerTask: "/root/legacy-archive-re-adopted"
@@ -693,13 +1454,18 @@ test("legacy status enumerates but fails closed on archives detached from their 
       join(fixture.root, "retained-original-adoption-entry.json")
     );
     const replacement = defaultManager(fixture, { tokenFactory: () => "e".repeat(32) });
-    const adopted = replacement.legacyAdopt({
-      slug: "legacy-archive-re-adopted",
-      ownerTask: "/root/replacement-adoption",
-      generatedRoots: ["node_modules"],
-      generatedFiles: ["fixture.ignored"]
-    });
-    assert.equal(adopted.generation, 1);
+    const before = allObjectManifest(checkout);
+    lifecycleError(
+      () =>
+        replacement.legacyAdopt({
+          slug: "legacy-archive-re-adopted",
+          ownerTask: "/root/replacement-adoption",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"]
+        }),
+      "legacy-adoption-exists"
+    );
+    assert.equal(allObjectManifest(checkout), before);
     lifecycleError(() => replacement.legacyStatus("legacy-archive-re-adopted"), "legacy-adoption-changed");
   });
 });
@@ -1899,7 +2665,7 @@ function archiveForQuarantine(fixture, slug, options = {}) {
   const managed = options.manager ?? manager(fixture, { run: fixtureRun() });
   const checkout = create(fixture, slug, { manager: managed });
   managed.finish({ slug, ownerTask: `/root/${slug}`, expectedRevision: 1 });
-  const cleanup = entry(fixture, slug);
+  const cleanup = entry(fixture, slug, managed.paths.root);
   managed.planRetirement({
     slug,
     ownerTask: `/root/${slug}`,
@@ -4162,7 +4928,15 @@ test("the real CLI audits, adopts, and reports one legacy checkout without movin
       tokenFactory: () => "8".repeat(32)
     });
     const checkout = legacyCandidate(fixture, "legacy-cli");
-    const commonArgs = ["legacy-cli", "--generated-root", "node_modules", "--generated-file", "fixture.ignored"];
+    const commonArgs = [
+      "legacy-cli",
+      "--generated-root",
+      "node_modules",
+      "--generated-file",
+      "fixture.ignored",
+      "--dependency-root",
+      dirname(checkout)
+    ];
     const audit = spawnSync(process.execPath, [SCRIPT, "legacy-audit", ...commonArgs], {
       cwd: fixture.repository,
       encoding: "utf8"
@@ -4177,7 +4951,7 @@ test("the real CLI audits, adopts, and reports one legacy checkout without movin
     assert.equal(JSON.parse(adopt.stdout).status, "adopted-review-required");
     const archive = spawnSync(
       process.execPath,
-      [SCRIPT, "legacy-archive", "legacy-cli", "--owner", "/root/legacy-cli"],
+      [SCRIPT, "legacy-archive", "legacy-cli", "--owner", "/root/legacy-cli", "--revision", "1"],
       { cwd: fixture.repository, encoding: "utf8" }
     );
     assert.equal(archive.status, 0, archive.stderr);
@@ -4211,13 +4985,105 @@ test("the real CLI audits, adopts, and reports one legacy checkout without movin
   });
 });
 
+test("the real CLI enforces reciprocal managed and legacy slug reservations", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "9".repeat(32)
+    });
+    const managedCreate = spawnSync(
+      process.execPath,
+      [
+        SCRIPT,
+        "create",
+        "cli-managed-authority",
+        "--owner",
+        "/root/cli-managed-authority",
+        "--branch",
+        "agent/cli-managed-authority"
+      ],
+      { cwd: fixture.repository, encoding: "utf8" }
+    );
+    assert.equal(managedCreate.status, 0, managedCreate.stderr);
+    const managedCollision = legacyCandidate(fixture, "cli-managed-authority");
+    const legacyCollision = spawnSync(
+      process.execPath,
+      [
+        SCRIPT,
+        "legacy-adopt",
+        "cli-managed-authority",
+        "--owner",
+        "/root/cli-managed-collision",
+        "--generated-root",
+        "node_modules",
+        "--generated-file",
+        "fixture.ignored",
+        "--path",
+        managedCollision,
+        "--root",
+        dirname(managedCollision),
+        "--dependency-root",
+        dirname(managedCollision)
+      ],
+      { cwd: fixture.repository, encoding: "utf8" }
+    );
+    assert.equal(legacyCollision.status, 1);
+    assert.match(legacyCollision.stderr, /^checkout-slug-reserved:/u);
+    assert.equal(legacyCollision.stdout, "");
+
+    const legacy = legacyCandidate(fixture, "cli-legacy-authority");
+    const legacyAdopt = spawnSync(
+      process.execPath,
+      [
+        SCRIPT,
+        "legacy-adopt",
+        "cli-legacy-authority",
+        "--owner",
+        "/root/cli-legacy-authority",
+        "--generated-root",
+        "node_modules",
+        "--generated-file",
+        "fixture.ignored",
+        "--path",
+        legacy,
+        "--root",
+        dirname(legacy),
+        "--dependency-root",
+        dirname(legacy)
+      ],
+      { cwd: fixture.repository, encoding: "utf8" }
+    );
+    assert.equal(legacyAdopt.status, 0, legacyAdopt.stderr);
+    const managedCollisionCreate = spawnSync(
+      process.execPath,
+      [
+        SCRIPT,
+        "create",
+        "cli-legacy-authority",
+        "--owner",
+        "/root/cli-managed-collision",
+        "--branch",
+        "agent/cli-managed-collision"
+      ],
+      { cwd: fixture.repository, encoding: "utf8" }
+    );
+    assert.equal(managedCollisionCreate.status, 1);
+    assert.match(managedCollisionCreate.stderr, /^checkout-slug-reserved:/u);
+    assert.equal(managedCollisionCreate.stdout, "");
+  });
+});
+
 const BOOT_A = "11111111-1111-4111-8111-111111111111";
 const BOOT_B = "22222222-2222-4222-8222-222222222222";
 
 test("managed retirement waits for a later boot, preserves the branch, and tombstones the slug", () => {
   withRepository((fixture) => {
     let bootId = BOOT_A;
-    const managed = manager(fixture, {
+    const published = bootstrapCheckoutManager({
+      repositoryPath: fixture.repository,
+      tokenFactory: () => "b".repeat(32)
+    });
+    const managed = defaultManager(fixture, {
       run: fixtureRun(),
       readBootId: () => bootId,
       tokenFactory: () => "c".repeat(32)
@@ -4242,7 +5108,7 @@ test("managed retirement waits for a later boot, preserves the branch, and tombs
       }
     ]);
     assert.equal(existsSync(archived.checkout.checkoutPath), false);
-    assert.equal(git(fixture.repository, "rev-parse", `refs/heads/${branch}`), head);
+    assert.equal(git(published.repositoryPath, "rev-parse", `refs/heads/${branch}`), head);
     assert.equal(managed.status("later-boot-managed")[0].state, "retired");
     lifecycleError(
       () =>
@@ -4252,6 +5118,20 @@ test("managed retirement waits for a later boot, preserves the branch, and tombs
           ownerTask: "/root/reused-retired-slug"
         }),
       "checkout-slug-retired"
+    );
+    const collision = legacyCandidate(fixture, "later-boot-managed");
+    lifecycleError(
+      () =>
+        managed.legacyAdopt({
+          slug: "later-boot-managed",
+          ownerTask: "/root/reuse-managed-tombstone",
+          generatedRoots: ["node_modules"],
+          generatedFiles: ["fixture.ignored"],
+          checkoutPath: collision,
+          approvedRoot: dirname(collision),
+          dependencyRoots: [dirname(collision)]
+        }),
+      "checkout-slug-reserved"
     );
   });
 });
@@ -5101,6 +5981,66 @@ test("the public retire command finishes, archives, and enrolls without moving i
       }).results[0].state,
       "retired"
     );
+  });
+});
+
+test("public status sweeps enrolled retirements before reporting state", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const managed = manager(fixture, {
+      run: fixtureRun(),
+      readBootId: () => bootId,
+      tokenFactory: () => "a".repeat(32)
+    });
+    const archived = archiveForQuarantine(fixture, "status-startup-sweep", { manager: managed });
+    managed.enrollRetirement({ kind: "managed", slug: "status-startup-sweep" });
+    bootId = BOOT_B;
+
+    const result = runCheckoutLifecycleCli(["status", "status-startup-sweep"], {
+      repositoryPath: fixture.repository,
+      managerRoot: fixture.managerRoot,
+      readBootId: () => bootId,
+      stdout: { write() {} }
+    });
+
+    assert.equal(result[0].state, "retired");
+    assert.equal(result[0].retirement.terminal, true);
+    assert.equal(existsSync(archived.checkout.checkoutPath), false);
+  });
+});
+
+test("task-begin sweeps and reports active, pending, and explicitly discovered checkouts", () => {
+  withRepository((fixture) => {
+    bootstrapCheckoutManager({ repositoryPath: fixture.repository, tokenFactory: () => "b".repeat(32) });
+    const managed = defaultManager(fixture, {
+      readBootId: () => BOOT_A,
+      tokenFactory: () => "c".repeat(32)
+    });
+    managed.create({
+      slug: "task-begin-active",
+      branch: "agent/task-begin-active",
+      ownerTask: "/root/task-begin-active"
+    });
+    const { parent, checkout } = explicitLegacyCandidate(fixture, "task-begin-root", "task-begin-discovered");
+
+    const result = runCheckoutLifecycleCli(["task-begin", "--root", parent, "--max-depth", "1"], {
+      repositoryPath: fixture.repository,
+      readBootId: () => BOOT_A,
+      stdout: { write() {} }
+    });
+
+    assert.equal(result.status, "task-begin");
+    assert.equal(result.sweep.bootId, BOOT_A);
+    assert.deepEqual(
+      result.active.map((item) => item.slug),
+      ["task-begin-active"]
+    );
+    assert.deepEqual(result.pending, []);
+    assert.deepEqual(
+      result.discovery.discovered.map((item) => item.path),
+      [checkout]
+    );
+    assert.equal(result.discovery.discovered[0].eligibility, "requires-explicit-audit");
   });
 });
 
