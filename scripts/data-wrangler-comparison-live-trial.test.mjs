@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test, { after } from "node:test";
+import { dataWranglerComparisonCleanupMayBeUnsettled } from "./data-wrangler-comparison-cleanup-safety.mjs";
 import {
   collectDataWranglerComparisonCleanupProof,
   completeDataWranglerComparisonTrialEvidence,
@@ -391,6 +392,41 @@ function fakeHeavyLease(events) {
   };
 }
 
+function postLaunchTrialDependencies(events) {
+  return {
+    withHeavyLease: fakeHeavyLease(events),
+    validateExecutorReceipt: acceptSyntheticExecutorReceipt,
+    ...provenanceDependencies(events),
+    runNext: fakeRunNext(events),
+    runGate: async () => passedGate(),
+    writeNotebook: (path) => ({ path, bytes: 100, mode: "0600" }),
+    executorDependencies: {
+      async runEditorPhase(_options, dependencies) {
+        dependencies.spawnProcess();
+        return { protocol: "test-editor-phase-v1" };
+      }
+    },
+    neutralDriverDependencies: {
+      captureDriverReceipt: () => DRIVER_RECEIPT,
+      async installDriver() {},
+      async readInventory() {
+        return input().preparedTrial.neutralDriver.expectedExtensions;
+      }
+    },
+    prepareSourceCache: () => cacheProof()
+  };
+}
+
+async function launchSyntheticMeasuredPhase(executorDependencies) {
+  return await executorDependencies.runEditorPhase(
+    { runId: RUN_ID, phase: "comparison-study-open-wrangler-trial" },
+    {
+      spawnProcess: () => undefined,
+      prepareWarmSourceCacheBeforeLaunch: () => executorDependencies.prepareSourceCache({ cacheState: "warm" })
+    }
+  );
+}
+
 const acceptSyntheticExecutorReceipt = (value) => value;
 
 test("inotify headroom failure stops a measured trial before the quiet gate or scheduler", async () => {
@@ -578,6 +614,10 @@ test("one prepared entry gates, writes, executes, normalizes, then reaches the d
 test("a failed pre-action gate records only a validated launch-free fragment", async () => {
   const events = [];
   const gate = { protocol: "test-gate-v1", passed: false };
+  let gateFinished = false;
+  let sourceCopyCleanups = 0;
+  let sourceCopyRevalidations = 0;
+  let supervisorLaunches = 0;
   let validated;
   const result = await recordOnePreparedDataWranglerComparisonStudyTrial(input(), {
     withHeavyLease: fakeHeavyLease(events),
@@ -586,13 +626,31 @@ test("a failed pre-action gate records only a validated launch-free fragment", a
     runNext: fakeRunNext(events),
     runGate: async () => {
       events.push("gate-failed");
+      gateFinished = true;
       return gate;
+    },
+    assertSourceCopy(value) {
+      assert.equal(value, SOURCE_COPY_CORE);
+      if (gateFinished) {
+        sourceCopyRevalidations += 1;
+        events.push("copy-revalidated");
+      }
+      return value;
+    },
+    cleanupSourceCopy(value) {
+      assert.equal(value, SOURCE_COPY_CORE);
+      sourceCopyCleanups += 1;
+      events.push("copy-cleaned");
+      return SOURCE_COPY_EVIDENCE.cleanup;
     },
     writeNotebook: (path) => {
       events.push("notebook-written");
       return { path, bytes: 100, mode: "0600" };
     },
-    executeTrial: () => assert.fail("failed gate launched an editor"),
+    executeTrial: () => {
+      supervisorLaunches += 1;
+      return assert.fail("failed gate launched an editor");
+    },
     completeTerminalEvidence: () => assert.fail("failed gate requested terminal evidence"),
     validateFragment(fragment) {
       events.push("fragment-validated");
@@ -616,15 +674,64 @@ test("a failed pre-action gate records only a validated launch-free fragment", a
   assert.deepEqual(validated.environmentGate, gate);
   assert.equal(validated.cacheProof, null);
   assert.equal(validated.processProofs, null);
+  assert.equal(sourceCopyRevalidations, 1);
+  assert.equal(sourceCopyCleanups, 1);
+  assert.equal(supervisorLaunches, 0);
   assert.deepEqual(events, [
     "heavy-lease-acquired",
     "ledger-opened",
     "notebook-written",
     "gate-failed",
     "fragment-validated",
+    "copy-revalidated",
+    "copy-cleaned",
     "fragment-published",
     "heavy-lease-released"
   ]);
+});
+
+test("a failed gate marks source-copy cleanup uncertainty without launching an editor", async () => {
+  const gate = { protocol: "test-gate-v1", passed: false };
+  const cleanupError = new Error("failed-gate source-copy identity could not be confirmed");
+  let sourceCopyCleanups = 0;
+  let sourceCopyRevalidations = 0;
+  let supervisorLaunches = 0;
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(input(), {
+      withHeavyLease: fakeHeavyLease([]),
+      validateExecutorReceipt: acceptSyntheticExecutorReceipt,
+      ...provenanceDependencies(),
+      runNext: fakeRunNext([]),
+      runGate: async () => gate,
+      assertSourceCopy(value) {
+        assert.equal(value, SOURCE_COPY_CORE);
+        sourceCopyRevalidations += 1;
+        return value;
+      },
+      cleanupSourceCopy(value) {
+        assert.equal(value, SOURCE_COPY_CORE);
+        sourceCopyCleanups += 1;
+        throw cleanupError;
+      },
+      writeNotebook: (path) => ({ path, bytes: 100, mode: "0600" }),
+      executeTrial: () => {
+        supervisorLaunches += 1;
+        return assert.fail("failed gate launched an editor");
+      },
+      completeTerminalEvidence: () => assert.fail("failed gate requested terminal evidence"),
+      validateFragment: (fragment) => fragment,
+      fragmentIdFactory: () => FRAGMENT_ID,
+      now: () => new Date("2026-08-02T11:00:00.000Z")
+    }),
+    (error) =>
+      error instanceof AggregateError &&
+      dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+      error.errors.length === 1 &&
+      error.errors[0] === cleanupError
+  );
+  assert.equal(sourceCopyRevalidations, 2);
+  assert.equal(sourceCopyCleanups, 1);
+  assert.equal(supervisorLaunches, 0);
 });
 
 test("incomplete terminal evidence cannot reach fragment publication", async () => {
@@ -1156,6 +1263,138 @@ test("private source cleanup starts only after the measured process tree is prov
   assert.deepEqual(terminal.sourceCopy, SOURCE_COPY_EVIDENCE);
 });
 
+test("terminal source-copy cleanup uncertainty is marked for the owning runner", async () => {
+  let clock = 0;
+  const cleanupError = new Error("terminal source-copy identity could not be confirmed");
+  await assert.rejects(
+    completeDataWranglerComparisonTrialEvidence(
+      {
+        protocol: "openwrangler-data-wrangler-comparison-live-trial-v1",
+        manifest: { provenance: { comparisonDriver: DRIVER_RECEIPT } },
+        scheduleEntry: { id: "warm-000" },
+        preparedIntent: { runId: RUN_ID },
+        environmentGate: passedGate(),
+        provenanceBefore: { protocol: "test-before-v1" },
+        neutralDriverEvidence: { driverBefore: DRIVER_RECEIPT, driverAfter: DRIVER_RECEIPT },
+        sourceCopy: SOURCE_COPY_CORE,
+        rawEvidence: rawEvidence({ terminalEvidence: null })
+      },
+      {
+        cleanupDependencies: {
+          monotonicMilliseconds: () => clock,
+          async wait(milliseconds) {
+            clock += milliseconds;
+          },
+          readProcessIdentity: () => null
+        },
+        assertSourceCopy: (value) => value,
+        async revalidateTrialProvenanceAfter(value) {
+          return {
+            driverBefore: value.driverBefore,
+            driverAfter: value.driverAfter,
+            sourceCopyBefore: value.sourceCopy,
+            sourceCopyAfter: value.sourceCopy
+          };
+        },
+        cleanupSourceCopy() {
+          throw cleanupError;
+        }
+      }
+    ),
+    (error) =>
+      error instanceof AggregateError &&
+      dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+      error.errors.includes(cleanupError)
+  );
+});
+
+test("post-launch cleanup-proof failure is marked before source cleanup starts", async () => {
+  const events = [];
+  const cleanupProofError = new Error("terminal process-tree proof could not be completed");
+  let sourceCopyCleanups = 0;
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(input(), {
+      ...postLaunchTrialDependencies(events),
+      cleanupSourceCopy() {
+        sourceCopyCleanups += 1;
+        return SOURCE_COPY_EVIDENCE.cleanup;
+      },
+      async executeTrial(executorInput, executorDependencies) {
+        await launchSyntheticMeasuredPhase(executorDependencies);
+        const base = rawEvidence({ terminalEvidence: null });
+        await executorDependencies.completeTerminalEvidence({
+          input: executorInput,
+          launchReceipt: base.launchReceipt,
+          supervisorCompletion: base.supervisorCompletion,
+          processProofs: base.processProofs,
+          notebookPhaseReceipt: base.notebookPhaseReceipt,
+          controlReceipt: base.controlReceipt,
+          cacheProof: base.cacheProof
+        });
+        return assert.fail("cleanup-proof failure returned terminal evidence");
+      },
+      completeTerminalEvidence() {
+        throw cleanupProofError;
+      }
+    }),
+    (error) =>
+      error instanceof AggregateError &&
+      dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+      error.errors[0] === cleanupProofError
+  );
+  assert.equal(sourceCopyCleanups, 0);
+  assert.equal(events.includes("fragment-published"), false);
+});
+
+test("post-launch terminal source assertion failure is marked without removing the source", async () => {
+  const events = [];
+  const assertionError = new Error("terminal source-copy identity could not be confirmed");
+  let terminalStarted = false;
+  let sourceCopyCleanups = 0;
+  let clock = 0;
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(input(), {
+      ...postLaunchTrialDependencies(events),
+      assertSourceCopy(value) {
+        if (terminalStarted) throw assertionError;
+        return value;
+      },
+      cleanupSourceCopy() {
+        sourceCopyCleanups += 1;
+        return SOURCE_COPY_EVIDENCE.cleanup;
+      },
+      cleanupDependencies: {
+        monotonicMilliseconds: () => clock,
+        async wait(milliseconds) {
+          clock += milliseconds;
+        },
+        readProcessIdentity: () => null
+      },
+      async executeTrial(executorInput, executorDependencies) {
+        await launchSyntheticMeasuredPhase(executorDependencies);
+        terminalStarted = true;
+        const base = rawEvidence({ terminalEvidence: null });
+        await executorDependencies.completeTerminalEvidence({
+          input: executorInput,
+          launchReceipt: base.launchReceipt,
+          supervisorCompletion: base.supervisorCompletion,
+          processProofs: base.processProofs,
+          notebookPhaseReceipt: base.notebookPhaseReceipt,
+          controlReceipt: base.controlReceipt,
+          cacheProof: base.cacheProof
+        });
+        return assert.fail("terminal source assertion failure returned evidence");
+      }
+    }),
+    (error) =>
+      error instanceof AggregateError &&
+      dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+      error.errors[0] === assertionError
+  );
+  assert.equal(sourceCopyCleanups, 0);
+  assert.equal(events.includes("fragment-published"), false);
+});
+
 test("a failure before supervisor launch removes the still-verified private source copy", async () => {
   let copyInspections = 0;
   let copyCleanups = 0;
@@ -1237,7 +1476,10 @@ test("an ambiguous supervisor launch never removes the private source copy", asy
       },
       prepareSourceCache: () => cacheProof()
     }),
-    /injected ambiguous supervisor launch/u
+    (error) =>
+      error instanceof AggregateError &&
+      dataWranglerComparisonCleanupMayBeUnsettled(error) &&
+      error.errors.some((candidate) => candidate?.message === "injected ambiguous supervisor launch")
   );
   assert.equal(copyCleanups, 0);
 });

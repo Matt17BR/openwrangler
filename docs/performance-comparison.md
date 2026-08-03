@@ -298,10 +298,13 @@ configured-only or sanitized warm seed and installs the verified neutral driver 
 the untimed public warm-up to completion in a separate editor process before the measured process starts. The command derives the notebook,
 source-copy, request, acknowledgement, Jupyter, and editor paths itself. Each warm-up, capability check, and measured
 trial gets a private copy of the validated kernelspec inside that run's editor root; the retained study-level Jupyter
-directories are never passed to an editor phase. A successful run publishes one fragment,
-proves terminal cleanup, and deletes that clone. A thrown or ownership-uncertain run leaves the clone in place and
-publishes nothing. The unrecorded diagnostic calls this same path with a private scratch ledger; it cannot become a
-second, easier measurement implementation.
+directories are never passed to an editor phase. A successful run publishes one fragment, proves terminal cleanup,
+and deletes that clone. Ordinary failures also retire the clone before returning. If process ownership is uncertain,
+the harness leaves every related path untouched and publishes nothing. The unrecorded diagnostic calls this same path
+with a private scratch ledger; its explicit Open Wrangler failure-journal mode is the only safe-failure path that may
+retain a clone. It cannot become a second, easier measurement implementation.
+If a source-copy or run-root cleanup cannot prove its own result, the containing clone is kept as well. Parent cleanup
+never overrides an unsettled child cleanup.
 
 Median and p95 use Hyndman-Fan type-7 interpolation. For ten ordered values, p95 is
 `x9 + 0.55 * (x10 - x9)`. The raw JSON binds each observation to its block ID and includes the schedule seed, cache

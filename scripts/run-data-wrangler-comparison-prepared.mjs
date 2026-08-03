@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { dataWranglerComparisonCleanupMayBeUnsettled } from "./data-wrangler-comparison-cleanup-safety.mjs";
 import { createDataWranglerComparisonMeasuredInventory } from "./data-wrangler-comparison-inventory.mjs";
 import {
   assertDataWranglerComparisonArmInventory,
@@ -22,6 +23,7 @@ import {
 } from "./data-wrangler-comparison-study.mjs";
 import {
   DATA_WRANGLER_PREPARATION_FILE_LIMITS,
+  captureDataWranglerComparisonOwnedDirectory,
   captureDataWranglerPreparationFile,
   captureDataWranglerComparisonPythonEnvironment,
   cloneDataWranglerComparisonTemplate,
@@ -29,6 +31,7 @@ import {
   loadDataWranglerComparisonPreparationReceipt,
   revalidateDataWranglerComparisonPreparationReceipt,
   revalidateDataWranglerPreparationFileIdentity,
+  retireDataWranglerComparisonOwnedDirectory,
   retireDataWranglerComparisonTemplateClone,
   writeDataWranglerComparisonPreparationReceipt
 } from "./data-wrangler-comparison-preparation.mjs";
@@ -322,7 +325,6 @@ export async function runPreparedDataWranglerComparisonEntry(
   let result;
   let retired;
   let completed = false;
-  let trialStarted = false;
   let operationError;
   try {
     const profileEnvironment = dependencies.createEnvironment(environment, {
@@ -490,7 +492,6 @@ export async function runPreparedDataWranglerComparisonEntry(
         sha256: manifest.python.kernel.kernelspecSha256
       }
     });
-    trialStarted = true;
     result = await dependencies.recordTrial(
       {
         manifestPath,
@@ -560,10 +561,15 @@ export async function runPreparedDataWranglerComparisonEntry(
   } catch (error) {
     operationError = error;
   }
+  // A failed unrecorded diagnostic may keep its Open Wrangler clone with the
+  // private journal. Data Wrangler clones retire once process ownership is known.
+  const retainFailedDiagnostic =
+    retireOnlyAfterSuccessfulTrial === true && !completed && entry.product !== "data-wrangler";
   let cleanupError;
   if (
     !editorProcessTreeMayBeLive(operationError) &&
-    (!trialStarted || completed || entry.product === "data-wrangler")
+    !dataWranglerComparisonCleanupMayBeUnsettled(operationError) &&
+    !retainFailedDiagnostic
   ) {
     try {
       retired = dependencies.retireClone(clone);
@@ -607,7 +613,8 @@ export async function runUnrecordedPreparedDataWranglerComparisonDiagnostic(
     writePreparation: writeDataWranglerComparisonPreparationReceipt,
     runEntry: runPreparedDataWranglerComparisonEntry,
     summarizeResource: summarizeDataWranglerStudyTrialResource,
-    remove: rmSync,
+    captureScratch: captureDataWranglerComparisonOwnedDirectory,
+    retireScratch: retireDataWranglerComparisonOwnedDirectory,
     ...overrides
   };
   const manifest = dependencies.readManifest(manifestPath);
@@ -615,6 +622,7 @@ export async function runUnrecordedPreparedDataWranglerComparisonDiagnostic(
   await dependencies.revalidatePreparation(preparation);
   const scratchRoot = dependencies.makeTemporaryDirectory(resolve(preparation.studyRoot, ".diagnostic-"));
   dependencies.chmod(scratchRoot, 0o700);
+  const scratchReceipt = dependencies.captureScratch(scratchRoot, "Comparison diagnostic scratch");
   const fragmentsDirectory = resolve(scratchRoot, "fragments");
   const intentsDirectory = resolve(scratchRoot, "intents");
   dependencies.mkdir(fragmentsDirectory, { mode: 0o700 });
@@ -708,6 +716,6 @@ export async function runUnrecordedPreparedDataWranglerComparisonDiagnostic(
           }
     });
   } finally {
-    if (completed) dependencies.remove(scratchRoot, { recursive: true, force: false });
+    if (completed) dependencies.retireScratch(scratchReceipt, "Comparison diagnostic scratch");
   }
 }

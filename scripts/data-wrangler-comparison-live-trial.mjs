@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { runDataWranglerComparisonStudyV2CacheController } from "./data-wrangler-comparison-cache-controller.mjs";
+import {
+  createDataWranglerComparisonCleanupUnsettledError,
+  dataWranglerComparisonCleanupMayBeUnsettled
+} from "./data-wrangler-comparison-cleanup-safety.mjs";
 import { runDataWranglerComparisonNeutralDriverPhase } from "./data-wrangler-comparison-driver.mjs";
 import { writeDataWranglerComparisonNotebook } from "./data-wrangler-comparison-notebook.mjs";
 import {
@@ -762,11 +766,14 @@ export async function completeDataWranglerComparisonTrialEvidence(
   } catch (error) {
     cleanupError = error;
   }
-  if (provenanceError !== undefined || cleanupError !== undefined) {
-    throw new AggregateError(
+  if (cleanupError !== undefined) {
+    throw createDataWranglerComparisonCleanupUnsettledError(
       [provenanceError, cleanupError].filter((error) => error !== undefined),
       "Could not finish private comparison source-copy evidence."
     );
+  }
+  if (provenanceError !== undefined) {
+    throw new AggregateError([provenanceError], "Could not finish private comparison source-copy evidence.");
   }
   if (!sameValue(trialProvenance.driverBefore, driverBefore) || !sameValue(trialProvenance.driverAfter, driverAfter)) {
     fail("Measured trial provenance omitted or changed its neutral-driver receipts.");
@@ -792,25 +799,45 @@ async function withPrivateSourceCopyRecovery(
   operation,
   { assertSourceCopy, cleanupSourceCopy }
 ) {
+  const cleanupBeforeLaunch = () => {
+    lifecycle.cleanupAttempted = true;
+    try {
+      assertSourceCopy(sourceCopy);
+      return cleanupSourceCopy(sourceCopy);
+    } catch (error) {
+      throw createDataWranglerComparisonCleanupUnsettledError(
+        error,
+        "Private comparison source-copy cleanup could not be confirmed."
+      );
+    }
+  };
   try {
-    return await operation();
+    return await operation(cleanupBeforeLaunch);
   } catch (error) {
     if (!lifecycle.supervisorLaunchAttempted && !lifecycle.cleanupAttempted) {
       let cleanupError;
       try {
-        assertSourceCopy(sourceCopy);
-        lifecycle.cleanupAttempted = true;
-        cleanupSourceCopy(sourceCopy);
+        cleanupBeforeLaunch();
       } catch (candidate) {
         cleanupError = candidate;
       }
       if (cleanupError !== undefined) {
         const originalMessage = error instanceof Error ? error.message : String(error);
-        throw new AggregateError(
+        throw createDataWranglerComparisonCleanupUnsettledError(
           [error, cleanupError],
           `${originalMessage}; the comparison trial failed before launch and its private source copy could not be reconciled.`
         );
       }
+    }
+    if (
+      lifecycle.supervisorLaunchAttempted &&
+      !lifecycle.cleanupAttempted &&
+      !dataWranglerComparisonCleanupMayBeUnsettled(error)
+    ) {
+      throw createDataWranglerComparisonCleanupUnsettledError(
+        error,
+        "The comparison trial failed after launch before private source-copy cleanup could start."
+      );
     }
     throw error;
   }
@@ -956,7 +983,7 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
           return await withPrivateSourceCopyRecovery(
             sourceCopy,
             sourceCopyLifecycle,
-            async () => {
+            async (cleanupBeforeLaunch) => {
               assertSourceCopy(sourceCopy);
               const validateCurrentSourceCopy = () =>
                 validateSourceCopyBinding({
@@ -995,7 +1022,7 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
                 gateDependencies
               );
               if (environmentGate?.passed !== true) {
-                return validateFragment(
+                const fragment = validateFragment(
                   gateFailureFragment({
                     manifest: context.manifest,
                     scheduleEntry: context.scheduleEntry,
@@ -1006,6 +1033,8 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
                   }),
                   context.manifest
                 );
+                cleanupBeforeLaunch();
+                return fragment;
               }
 
               let provenanceBefore;

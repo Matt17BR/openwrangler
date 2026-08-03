@@ -770,16 +770,18 @@ baseline, maximum, delta, and per-category PSS results. For Data Wrangler, it al
 engine evidence; an engine the public UI does not identify stays `unverified`.
 
 After a successful trial, `run-next` verifies that the editor and kernel process trees are empty and removes only the
-clone it created. A clone that fails during environment, temporary-root, or profile setup is also retired before the
-error returns. An uncertain Open Wrangler trial may retain its clone for review. A Data Wrangler clone is never
-deliberately retained: cleanup runs even after an uncertain trial so proprietary package files do not become study
-state. Cleanup holds identity leases on the profile and parent, creates an exclusive random sibling quarantine, and
-atomically renames the profile to its `payload`. It revalidates the absent public path plus the quarantine, payload,
-profile, and parent identities immediately before recursive removal. Replacement or containment ambiguity fails closed
-without deleting the unexpected trees. The durable authorization journal
-prevents an action interrupted after dispatch from being repeated silently. A laptop shutdown therefore loses at most
-the in-flight, pre-authorization setup: rerun `status` and call `run-next` again only when the ledger says the entry is
-safe to run.
+clone it created. Safe setup and trial failures retire that clone too. The unrecorded diagnostic has one explicit
+exception: it may retain a failed Open Wrangler clone with its private failure journal. If editor or display process
+ownership is uncertain, the harness does not inspect, move, or delete any product clone, source copy, run root, or
+diagnostic scratch path. This rule is the same for Open Wrangler and Data Wrangler. If cleanup cannot prove that a
+source copy or run root was retired, it leaves the containing clone in place too; deleting the parent must not bypass
+the failed child check. Cleanup holds identity leases on the profile and parent, creates an exclusive random sibling
+quarantine, and atomically renames the profile to its `payload`. It revalidates the absent public path plus the
+quarantine, payload, profile, and parent identities immediately before recursive removal. Replacement or containment
+ambiguity fails closed without deleting the unexpected trees. The
+durable authorization journal prevents an action interrupted after dispatch from being repeated silently. A laptop
+shutdown therefore loses at most the in-flight, pre-authorization setup: rerun `status` and call `run-next` again only
+when the ledger says the entry is safe to run.
 
 `plan` opens and identifies the supplied controller and CPython executable itself. It writes those observed receipts
 into the manifest and rejects a specification that claims a different toolchain. Later cache preparation executes
