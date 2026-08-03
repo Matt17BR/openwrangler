@@ -28,6 +28,7 @@ import {
   runBoundedEditorCliCommand,
   runEditorAcceptancePhase
 } from "./editor-acceptance.mjs";
+import { requireLinuxInotifyWatchHeadroom } from "./linux-inotify-watch-headroom.mjs";
 
 export const DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL = "openwrangler-data-wrangler-public-warmup-phase-v1";
 export const DATA_WRANGLER_PUBLIC_WARMUP_CONTROL_PROTOCOL = "openwrangler-data-wrangler-public-warmup-control-v1";
@@ -274,6 +275,7 @@ export async function capturePreparedProductWarmups(
     cleanupSourceCopy: cleanupDataWranglerComparisonSourceCopy,
     writeNotebook: writeDataWranglerComparisonNotebook,
     runPhase: runEditorAcceptancePhase,
+    requireWatchHeadroom: requireLinuxInotifyWatchHeadroom,
     readInventory,
     captureTree: captureDataWranglerProfileTree,
     controlWarmup: controlDataWranglerPublicWarmup,
@@ -352,6 +354,7 @@ export async function capturePreparedProductWarmups(
     let completed = false;
     try {
       const controlAbort = new AbortController();
+      await dependencies.requireWatchHeadroom({ runRoot });
       const controlPromise = Promise.resolve().then(() =>
         dependencies.controlWarmup({
           requestPath,

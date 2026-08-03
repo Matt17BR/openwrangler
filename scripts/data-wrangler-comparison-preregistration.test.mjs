@@ -8,6 +8,8 @@ import ts from "typescript";
 import {
   assertCurrentDataWranglerComparisonPreregistration,
   DATA_WRANGLER_COMPARISON_CACHE_PYTHON_CONTROLLER_PATH,
+  DATA_WRANGLER_COMPARISON_PREREGISTRATION_PROTOCOL,
+  DATA_WRANGLER_COMPARISON_PREREGISTRATION_RECEIPT_PROTOCOL,
   captureDataWranglerComparisonPreregistration,
   captureDataWranglerComparisonPreregistrationFile,
   createDataWranglerComparisonPreregistrationReceipt,
@@ -20,7 +22,7 @@ import {
   generateDataWranglerComparisonPreregistration,
   parseDataWranglerComparisonPreregistrationArguments
 } from "./generate-data-wrangler-comparison-preregistration.mjs";
-import { digestStudyValue } from "./data-wrangler-comparison-study.mjs";
+import { DATA_WRANGLER_STUDY_METHOD_PROTOCOL, digestStudyValue } from "./data-wrangler-comparison-study.mjs";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 const CREATED = "2026-08-03T10:00:00.000Z";
@@ -85,8 +87,9 @@ function capture() {
     {
       captureFile: () => ({ sha256: SHA }),
       captureMethodology: () => ({
-        protocol: "openwrangler-data-wrangler-study-method-v1",
-        sha256: "d".repeat(64)
+        protocol: "openwrangler-data-wrangler-study-method-v2",
+        sha256: "d".repeat(64),
+        minimumInotifyWatchHeadroom: 256
       }),
       proveJourneyGraph: graph,
       proveExecutionGraph: executionGraph
@@ -96,17 +99,27 @@ function capture() {
 
 test("preregistration captures the complete immutable design without dynamic study evidence", () => {
   const value = capture();
+  assert.equal(value.protocol, DATA_WRANGLER_COMPARISON_PREREGISTRATION_PROTOCOL);
+  assert.equal(value.protocol, "openwrangler-data-wrangler-comparison-preregistration-v3");
   assert.equal(value.studyId, ID);
   assert.equal(value.design.sampling.schedule.length, 96);
   assert.equal(value.design.fixtures[0].schema.length, 50);
   assert.equal(value.design.fixtures[1].schema.length, 20);
+  assert.equal(value.design.environment.minimumInotifyWatchHeadroom, 256);
+  assert.equal(value.method.minimumInotifyWatchHeadroom, 256);
+  assert.equal(value.method.protocol, DATA_WRANGLER_STUDY_METHOD_PROTOCOL);
+  assert.equal(value.method.protocol, "openwrangler-data-wrangler-study-method-v2");
   assert.deepEqual(value.driverRecipe.journeyGraph, graph());
   assert.equal(value.toolRecipes.cacheHarnessSha256, SHA);
   assert.equal(value.toolRecipes.cachePythonControllerSha256, SHA);
   assert.deepEqual(value.toolRecipes.executionGraph, executionGraph());
   assert.equal(Object.hasOwn(value, "candidate"), false);
   assert.equal(Object.hasOwn(value, "provenance"), false);
-  assert.match(createDataWranglerComparisonPreregistrationReceipt(value).sha256, /^[0-9a-f]{64}$/u);
+  const receipt = createDataWranglerComparisonPreregistrationReceipt(value);
+  assert.equal(receipt.protocol, DATA_WRANGLER_COMPARISON_PREREGISTRATION_RECEIPT_PROTOCOL);
+  assert.equal(receipt.protocol, "openwrangler-data-wrangler-comparison-preregistration-receipt-v3");
+  assert.match(receipt.sha256, /^[0-9a-f]{64}$/u);
+  assert.equal(receipt.minimumInotifyWatchHeadroom, 256);
 });
 
 test("preregistration rejects schedule drift and checked-in recipe drift", () => {
@@ -121,6 +134,17 @@ test("preregistration rejects schedule drift and checked-in recipe drift", () =>
   const environmentDrift = structuredClone(capture());
   environmentDrift.design.environment.display.unreviewed = true;
   assert.throws(() => validateDataWranglerComparisonPreregistration(environmentDrift), /schedule or limits changed/u);
+
+  const headroomDrift = structuredClone(capture());
+  headroomDrift.method.minimumInotifyWatchHeadroom = 255;
+  assert.throws(() => validateDataWranglerComparisonPreregistration(headroomDrift), /methodology receipt is invalid/u);
+
+  const designHeadroomDrift = structuredClone(capture());
+  designHeadroomDrift.design.environment.minimumInotifyWatchHeadroom = 255;
+  assert.throws(
+    () => validateDataWranglerComparisonPreregistration(designHeadroomDrift),
+    /schedule or limits changed/u
+  );
 
   const graphDrift = structuredClone(capture());
   graphDrift.driverRecipe.journeyGraph.modules[0].sha256 = "f".repeat(64);
@@ -198,8 +222,9 @@ test("public preregistration CLI accepts only one output and publishes through i
         identity: { studyId: ID, createdAtUtc: CREATED },
         captureFile: () => ({ sha256: SHA }),
         captureMethodology: () => ({
-          protocol: "openwrangler-data-wrangler-study-method-v1",
-          sha256: "d".repeat(64)
+          protocol: "openwrangler-data-wrangler-study-method-v2",
+          sha256: "d".repeat(64),
+          minimumInotifyWatchHeadroom: 256
         }),
         proveJourneyGraph: graph,
         proveExecutionGraph: executionGraph
@@ -231,8 +256,9 @@ test("the real cache harness and Python controller are distinct, explicitly boun
         return { sha256: SHA };
       },
       captureMethodology: () => ({
-        protocol: "openwrangler-data-wrangler-study-method-v1",
-        sha256: "d".repeat(64)
+        protocol: "openwrangler-data-wrangler-study-method-v2",
+        sha256: "d".repeat(64),
+        minimumInotifyWatchHeadroom: 256
       }),
       proveJourneyGraph: graph,
       proveExecutionGraph: executionGraph
@@ -285,6 +311,7 @@ test("the bounded execution graph contains preparation, public capture, smoke, p
     "scripts/data-wrangler-comparison-warmup.mjs",
     "scripts/data-wrangler-comparison-fixtures.mjs",
     "scripts/editor-acceptance.mjs",
+    "scripts/linux-inotify-watch-headroom.mjs",
     "scripts/run-data-wrangler-comparison.mjs",
     "scripts/run-data-wrangler-comparison-study.mjs",
     "scripts/run-data-wrangler-comparison-study-entry.mjs",

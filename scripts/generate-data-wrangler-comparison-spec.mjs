@@ -16,7 +16,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAXIMUM_DRAFT_BYTES = 32 * 1024 * 1024;
 
 export const DATA_WRANGLER_STUDY_SPECIFICATION_GENERATOR_PROTOCOL =
-  "openwrangler-data-wrangler-study-specification-generator-v1";
+  "openwrangler-data-wrangler-study-specification-generator-v2";
 
 function usage() {
   return "Usage: node scripts/generate-data-wrangler-comparison-spec.mjs --draft <draft.json> --out <spec.json>";

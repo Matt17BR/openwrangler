@@ -63,6 +63,7 @@ test("specification generator replaces the draft methodology before validation a
 
     assert.deepEqual(calls, ["build", "publish", "read-back"]);
     assert.equal(result.protocol, DATA_WRANGLER_STUDY_SPECIFICATION_GENERATOR_PROTOCOL);
+    assert.equal(result.protocol, "openwrangler-data-wrangler-study-specification-generator-v2");
     assert.deepEqual(result.specification.method, expectedMethod);
     assert.equal("copied" in result.specification.method, false);
     assert.equal(result.manifest.protocol, "validated-manifest");
@@ -81,7 +82,8 @@ test("specification generator stops before publication when the production valid
           {
             captureMethodology: () => ({
               protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
-              sha256: "b".repeat(64)
+              sha256: "b".repeat(64),
+              minimumInotifyWatchHeadroom: 256
             }),
             writeSpecification() {
               published = true;
@@ -110,7 +112,8 @@ test("specification generator reads a bounded no-follow draft and verifies the d
           {
             captureMethodology: () => ({
               protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
-              sha256: "c".repeat(64)
+              sha256: "c".repeat(64),
+              minimumInotifyWatchHeadroom: 256
             })
           }
         ),
@@ -131,7 +134,8 @@ test("specification generator reads a bounded no-follow draft and verifies the d
           {
             captureMethodology: () => ({
               protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
-              sha256: "d".repeat(64)
+              sha256: "d".repeat(64),
+              minimumInotifyWatchHeadroom: 256
             }),
             buildManifest: (value) => value,
             writeSpecification: () => ({ status: "published" }),

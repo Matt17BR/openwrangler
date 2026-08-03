@@ -41,7 +41,7 @@ import {
   runBoundedEditorCliCommand
 } from "./editor-acceptance.mjs";
 
-export const DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL = "openwrangler-data-wrangler-comparison-preparation-v2";
+export const DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL = "openwrangler-data-wrangler-comparison-preparation-v3";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u;

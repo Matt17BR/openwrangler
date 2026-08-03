@@ -230,6 +230,63 @@ test("Data Wrangler setup and diagnostic share launch state while only the diagn
   assert.deepEqual(openEvents, ["first-use-setup", "diagnostic"]);
 });
 
+test("watch headroom is proven before every setup and diagnostic editor phase", async () => {
+  const phasePlan = createComparisonProductEditorPhasePlan({
+    productKey: "data-wrangler",
+    diagnosticPhase: COMPARISON_TEST_PHASES["data-wrangler"],
+    diagnosticResultPath: "/private/profile/comparison-data-wrangler-result.json",
+    firstUseSetupResultPath: "/private/profile/comparison-data-wrangler-setup-result.json",
+    userData: "/private/profile/user",
+    jupyterEnvironment: {
+      dataDir: "/private/profile/jupyter/data",
+      runtimeDir: "/private/profile/jupyter/runtime",
+      configDir: "/private/profile/jupyter/config",
+      path: "/private/profile/jupyter/path"
+    }
+  });
+
+  const setupFailureEvents = [];
+  await assert.rejects(
+    runComparisonProductEditorPhases({
+      phasePlan,
+      beforePhase: async (phase) => {
+        setupFailureEvents.push(`gate:${phase.kind}`);
+        throw new Error("setup watch headroom unavailable");
+      },
+      runPhase: async (phase) => {
+        setupFailureEvents.push(`run:${phase.kind}`);
+      }
+    }),
+    /setup watch headroom unavailable/u
+  );
+  assert.deepEqual(setupFailureEvents, ["gate:first-use-setup"]);
+
+  const diagnosticFailureEvents = [];
+  await assert.rejects(
+    runComparisonProductEditorPhases({
+      phasePlan,
+      beforePhase: async (phase) => {
+        diagnosticFailureEvents.push(`gate:${phase.kind}`);
+        if (phase.kind === "diagnostic") throw new Error("diagnostic watch headroom unavailable");
+      },
+      runPhase: async (phase) => {
+        diagnosticFailureEvents.push(`run:${phase.kind}`);
+        return phase.kind;
+      },
+      afterPhase: async (phase) => {
+        diagnosticFailureEvents.push(`after:${phase.kind}`);
+      }
+    }),
+    /diagnostic watch headroom unavailable/u
+  );
+  assert.deepEqual(diagnosticFailureEvents, [
+    "gate:first-use-setup",
+    "run:first-use-setup",
+    "after:first-use-setup",
+    "gate:diagnostic"
+  ]);
+});
+
 test("comparison output rejects lexical, canonical, symlink, and inode aliases of both protected inputs", async () => {
   await withRunnerFixture(async ({ options, directory }) => {
     for (const protectedPath of [options.candidate, options.python]) {

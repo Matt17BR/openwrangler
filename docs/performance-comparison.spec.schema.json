@@ -89,19 +89,21 @@
     "method": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocol", "sha256"],
+      "required": ["protocol", "sha256", "minimumInotifyWatchHeadroom"],
       "properties": {
-        "protocol": { "const": "openwrangler-data-wrangler-study-method-v1" },
-        "sha256": { "$ref": "#/$defs/sha256" }
+        "protocol": { "const": "openwrangler-data-wrangler-study-method-v2" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "minimumInotifyWatchHeadroom": { "const": 256 }
       }
     },
     "preregistrationReceipt": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocol", "sha256"],
+      "required": ["protocol", "sha256", "minimumInotifyWatchHeadroom"],
       "properties": {
-        "protocol": { "const": "openwrangler-data-wrangler-comparison-preregistration-receipt-v2" },
-        "sha256": { "$ref": "#/$defs/sha256" }
+        "protocol": { "const": "openwrangler-data-wrangler-comparison-preregistration-receipt-v3" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "minimumInotifyWatchHeadroom": { "const": 256 }
       }
     },
     "candidate": {

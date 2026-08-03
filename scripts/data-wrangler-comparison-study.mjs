@@ -39,9 +39,11 @@ import {
   publishDurableStudyJsonExclusive,
   recoverDurableStudyJsonPublication
 } from "./durable-study-json.mjs";
+import { MINIMUM_INOTIFY_WATCH_HEADROOM } from "./linux-inotify-watch-headroom.mjs";
 
-export const DATA_WRANGLER_STUDY_METHOD_PROTOCOL = "openwrangler-data-wrangler-study-method-v1";
-export const DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL = "openwrangler-data-wrangler-study-manifest-v4";
+export const DATA_WRANGLER_STUDY_METHOD_PROTOCOL = "openwrangler-data-wrangler-study-method-v2";
+export const DATA_WRANGLER_STUDY_MINIMUM_INOTIFY_WATCH_HEADROOM = MINIMUM_INOTIFY_WATCH_HEADROOM;
+export const DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL = "openwrangler-data-wrangler-study-manifest-v5";
 export const DATA_WRANGLER_STUDY_FRAGMENT_PROTOCOL = "openwrangler-data-wrangler-study-fragment-v2";
 export const DATA_WRANGLER_STUDY_RESULT_PROTOCOL = "openwrangler-data-wrangler-study-result-v2";
 export const DATA_WRANGLER_STUDY_RESOURCE_PROTOCOL = "openwrangler-linux-pss-observation-v1";
@@ -145,7 +147,7 @@ const PSS_MAXIMUM_TERMINAL_OVERSHOOT_MS = 250;
 const REQUIRED_PYTHON_PACKAGES = Object.freeze(["pandas", "polars", "pyarrow", "jupyter_core", "ipykernel"]);
 const ENVIRONMENT_GATE_PROTOCOL = "openwrangler-linux-data-wrangler-study-gate-v1";
 const ENVIRONMENT_PROVENANCE_PROTOCOL = "openwrangler-linux-data-wrangler-study-provenance-v1";
-const PREREGISTRATION_RECEIPT_PROTOCOL = "openwrangler-data-wrangler-comparison-preregistration-receipt-v2";
+const PREREGISTRATION_RECEIPT_PROTOCOL = "openwrangler-data-wrangler-comparison-preregistration-receipt-v3";
 const ENVIRONMENT_SELECTION_POLICY = "accept the first complete passing window and retain every attempted window";
 const ENVIRONMENT_FAILURE_CODES = Object.freeze([
   "sampling-unavailable",
@@ -337,16 +339,22 @@ export function createDataWranglerStudySchedule(seed = DATA_WRANGLER_STUDY_SEED)
 }
 
 function validateMethod(method) {
-  exactKeys(method, ["protocol", "sha256"], "Study methodology receipt");
-  if (method.protocol !== DATA_WRANGLER_STUDY_METHOD_PROTOCOL) {
+  exactKeys(method, ["protocol", "sha256", "minimumInotifyWatchHeadroom"], "Study methodology receipt");
+  if (
+    method.protocol !== DATA_WRANGLER_STUDY_METHOD_PROTOCOL ||
+    method.minimumInotifyWatchHeadroom !== DATA_WRANGLER_STUDY_MINIMUM_INOTIFY_WATCH_HEADROOM
+  ) {
     fail("Study methodology protocol is invalid.");
   }
   assertString(method.sha256, SHA256, "Study methodology SHA-256");
 }
 
 function validatePreregistrationReceipt(receipt) {
-  exactKeys(receipt, ["protocol", "sha256"], "Study preregistration receipt");
-  if (receipt.protocol !== PREREGISTRATION_RECEIPT_PROTOCOL) {
+  exactKeys(receipt, ["protocol", "sha256", "minimumInotifyWatchHeadroom"], "Study preregistration receipt");
+  if (
+    receipt.protocol !== PREREGISTRATION_RECEIPT_PROTOCOL ||
+    receipt.minimumInotifyWatchHeadroom !== DATA_WRANGLER_STUDY_MINIMUM_INOTIFY_WATCH_HEADROOM
+  ) {
     fail("Study preregistration receipt protocol is invalid.");
   }
   assertString(receipt.sha256, SHA256, "Study preregistration SHA-256");
@@ -388,7 +396,8 @@ export function captureDataWranglerStudyMethodReceipt(path = DATA_WRANGLER_STUDY
     }
     return Object.freeze({
       protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
-      sha256: createHash("sha256").update(bytes).digest("hex")
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      minimumInotifyWatchHeadroom: DATA_WRANGLER_STUDY_MINIMUM_INOTIFY_WATCH_HEADROOM
     });
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);

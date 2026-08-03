@@ -8,11 +8,18 @@ import { captureDataWranglerPreparationFile } from "./data-wrangler-comparison-p
 import {
   DATA_WRANGLER_PUBLIC_WARMUP_BRIDGE_KINDS,
   DATA_WRANGLER_PUBLIC_WARMUP_PHASE_PROTOCOL,
-  capturePreparedProductWarmups
+  capturePreparedProductWarmups as capturePreparedProductWarmupsImplementation
 } from "./data-wrangler-comparison-warmup.mjs";
 import { createDataWranglerStudyBridgeController } from "./data-wrangler-study-control-bridge.mjs";
 
 const digest = "a".repeat(64);
+
+function capturePreparedProductWarmups(input, environment, overrides = {}) {
+  return capturePreparedProductWarmupsImplementation(input, environment, {
+    requireWatchHeadroom: async () => ({ passed: true }),
+    ...overrides
+  });
+}
 
 function privateDirectory(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -112,6 +119,80 @@ async function runRealWarmupController(options) {
   controller.close();
   return exchanges;
 }
+
+test("watch headroom failure prevents the warm-up controller and editor phase", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-headroom-"));
+  try {
+    chmodSync(root, 0o700);
+    const fixture = { id: "csv-100k-50", format: "csv", sha256: digest, rows: 100_000, columns: 50 };
+    const kernel = testKernel(root);
+    const events = [];
+    await assert.rejects(
+      capturePreparedProductWarmups(
+        {
+          specification: {
+            candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+            baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+            fixtures: [fixture],
+            provenance: { comparisonDriver: {} }
+          },
+          templates: [
+            { product: "open-wrangler", kind: "configured-only", root: resolve(root, "configured"), sandboxArgs: [] }
+          ],
+          templateTrees: new Map([["open-wrangler:configured-only", digest]]),
+          studyRoot: root,
+          editor: { version: "1.109.2" },
+          pythonPath: "/python",
+          kernel,
+          fixturePath: "/fixture.csv",
+          driverDirectory: "/driver",
+          driverVsixPath: "/driver.vsix"
+        },
+        {},
+        {
+          id: () => "00000000-0000-4000-8000-000000000000",
+          recoverDriver: () => undefined,
+          cloneTemplate: (_template, { cloneRoot }) => ({
+            root: privateDirectory(cloneRoot),
+            userData: privateDirectory(resolve(cloneRoot, "user")),
+            extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+            sandboxArgs: []
+          }),
+          createEnvironment: () => ({}),
+          configureTempRoot: () => undefined,
+          materializeKernel: () => ({ jupyterEnvironment: kernel.jupyterEnvironment }),
+          readInventory: async () =>
+            createDataWranglerComparisonTemplateInventory({
+              extensionId: "Matt17BR.openwrangler",
+              version: "1.2.1"
+            }),
+          createSourceCopy: () => ({
+            copyPath: "/private/source.csv",
+            copyReceipt: {
+              sha256: digest,
+              filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+            }
+          }),
+          writeNotebook: () => undefined,
+          requireWatchHeadroom: async () => {
+            events.push("watch-headroom");
+            throw new Error("warm-up watch headroom unavailable");
+          },
+          controlWarmup: async () => {
+            events.push("controller");
+          },
+          runPhase: async () => {
+            events.push("editor-phase");
+          }
+        }
+      ),
+      /warm-up watch headroom unavailable/u
+    );
+    assert.deepEqual(events, ["watch-headroom"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("prepared warm-up drives the real request/acknowledgement controller for both measured products", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "ow-study-warmup-"));

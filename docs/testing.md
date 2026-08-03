@@ -682,6 +682,13 @@ first-use setup, and seals the resulting configured-only profiles. Separate note
 profiles used by the study. Preparation does not run the older CSV/Parquet feasibility diagnostic. The supplied
 fixtures must match a fresh generator run byte for byte and pass the full Polars value contract.
 
+The preregistration fixes a minimum of 256 free Linux inotify watches. Preparation checks that headroom before it
+packages anything and again immediately before every editor phase. A measured trial repeats the check before its
+ten-second quiet-system window. If the command reports `inotify-watch-headroom`, free some existing file watches or
+raise the host's inotify watch limit, then rerun the unchanged command. The probe cleans up its own empty directories
+and watchers and does not write host paths into its receipt. A watch counts only after it reports the harmless event
+created in its own sentinel directory before the one-second readiness deadline.
+
 Only after all checks pass does preparation durably publish its journal first. The journal embeds the complete
 specification and authorizes one manifest digest; preparation then publishes that exact specification and derives the
 manifest from it. The specification format is checked in as

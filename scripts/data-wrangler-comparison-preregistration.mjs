@@ -15,6 +15,7 @@ import {
   DATA_WRANGLER_STUDY_DESCRIPTIVE_METRICS,
   DATA_WRANGLER_STUDY_METRICS,
   DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
+  DATA_WRANGLER_STUDY_MINIMUM_INOTIFY_WATCH_HEADROOM,
   DATA_WRANGLER_STUDY_SCHEDULE_SHA256,
   DATA_WRANGLER_STUDY_SEED,
   DATA_WRANGLER_STUDY_WARM_PAIRS_PER_CELL,
@@ -32,9 +33,9 @@ import {
 } from "./linux-study-supervisor-client.mjs";
 
 export const DATA_WRANGLER_COMPARISON_PREREGISTRATION_PROTOCOL =
-  "openwrangler-data-wrangler-comparison-preregistration-v2";
+  "openwrangler-data-wrangler-comparison-preregistration-v3";
 export const DATA_WRANGLER_COMPARISON_PREREGISTRATION_RECEIPT_PROTOCOL =
-  "openwrangler-data-wrangler-comparison-preregistration-receipt-v2";
+  "openwrangler-data-wrangler-comparison-preregistration-receipt-v3";
 export const DATA_WRANGLER_COMPARISON_EXECUTION_GRAPH_PROTOCOL =
   "openwrangler-data-wrangler-comparison-execution-graph-v1";
 
@@ -438,6 +439,7 @@ function expectedStudyDesign() {
     environment: {
       platform: "linux",
       architecture: "x64",
+      minimumInotifyWatchHeadroom: DATA_WRANGLER_STUDY_MINIMUM_INOTIFY_WATCH_HEADROOM,
       powerSource: "ac",
       affinityPolicy: "explicit-online-cpu-set",
       storagePolicy: "exact-fixture-volume",
@@ -503,11 +505,16 @@ function readPackageLaunchRecipe(captureFile) {
 }
 
 function validatePreregistrationReceipt(receipt) {
-  exactKeys(receipt, ["protocol", "sha256"], "Performance-study preregistration receipt");
+  exactKeys(
+    receipt,
+    ["protocol", "sha256", "minimumInotifyWatchHeadroom"],
+    "Performance-study preregistration receipt"
+  );
   if (
     receipt.protocol !== DATA_WRANGLER_COMPARISON_PREREGISTRATION_RECEIPT_PROTOCOL ||
     typeof receipt.sha256 !== "string" ||
-    !SHA256.test(receipt.sha256)
+    !SHA256.test(receipt.sha256) ||
+    receipt.minimumInotifyWatchHeadroom !== DATA_WRANGLER_STUDY_MINIMUM_INOTIFY_WATCH_HEADROOM
   ) {
     fail("Performance-study preregistration receipt is invalid.");
   }
@@ -518,7 +525,8 @@ export function createDataWranglerComparisonPreregistrationReceipt(preregistrati
   validateDataWranglerComparisonPreregistration(preregistration);
   return Object.freeze({
     protocol: DATA_WRANGLER_COMPARISON_PREREGISTRATION_RECEIPT_PROTOCOL,
-    sha256: digestStudyValue(preregistration)
+    sha256: digestStudyValue(preregistration),
+    minimumInotifyWatchHeadroom: DATA_WRANGLER_STUDY_MINIMUM_INOTIFY_WATCH_HEADROOM
   });
 }
 
@@ -607,8 +615,16 @@ export function validateDataWranglerComparisonPreregistration(value) {
   ) {
     fail("Performance-study preregistration identity is invalid.");
   }
-  exactKeys(value.method, ["protocol", "sha256"], "Performance-study methodology receipt");
-  if (value.method.protocol !== DATA_WRANGLER_STUDY_METHOD_PROTOCOL || !SHA256.test(value.method.sha256 ?? "")) {
+  exactKeys(
+    value.method,
+    ["protocol", "sha256", "minimumInotifyWatchHeadroom"],
+    "Performance-study methodology receipt"
+  );
+  if (
+    value.method.protocol !== DATA_WRANGLER_STUDY_METHOD_PROTOCOL ||
+    !SHA256.test(value.method.sha256 ?? "") ||
+    value.method.minimumInotifyWatchHeadroom !== DATA_WRANGLER_STUDY_MINIMUM_INOTIFY_WATCH_HEADROOM
+  ) {
     fail("Performance-study methodology receipt is invalid.");
   }
   exactKeys(

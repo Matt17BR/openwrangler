@@ -53,6 +53,7 @@ import {
   revalidateInstalledPerformanceVsix,
   stageInstalledPerformanceVsix
 } from "./run-installed-performance.mjs";
+import { requireLinuxInotifyWatchHeadroom } from "./linux-inotify-watch-headroom.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const COMPARISON_FRAGMENT_MAX_BYTES = 16 * 1024;
@@ -735,16 +736,22 @@ export function createComparisonProductEditorPhasePlan(input) {
   return plan;
 }
 
-export async function runComparisonProductEditorPhases({ phasePlan, runPhase, afterPhase = () => undefined }) {
+export async function runComparisonProductEditorPhases({
+  phasePlan,
+  runPhase,
+  beforePhase = () => undefined,
+  afterPhase = () => undefined
+}) {
   if (!comparisonProductEditorPhasePlans.has(phasePlan) || typeof runPhase !== "function") {
     throw new TypeError("Comparison product execution requires one authentic phase plan and phase callback.");
   }
-  if (typeof afterPhase !== "function") {
-    throw new TypeError("Comparison product execution requires a callable post-phase observer.");
+  if (typeof beforePhase !== "function" || typeof afterPhase !== "function") {
+    throw new TypeError("Comparison product execution requires callable pre-phase and post-phase observers.");
   }
   let diagnosticResult;
   let diagnosticCompleted = false;
   for (const phase of phasePlan) {
+    await beforePhase(phase);
     const result = await runPhase(phase);
     await afterPhase(phase, result);
     if (phase.reportsFragment) {
@@ -772,7 +779,8 @@ export async function runComparisonProduct({
   fixtureRoot,
   testModule,
   environment,
-  captureTemplate = () => undefined
+  captureTemplate = () => undefined,
+  requireWatchHeadroom = requireLinuxInotifyWatchHeadroom
 }) {
   return runComparisonProductInternal(
     {
@@ -786,7 +794,8 @@ export async function runComparisonProduct({
       fixtureRoot,
       testModule,
       environment,
-      captureTemplate
+      captureTemplate,
+      requireWatchHeadroom
     },
     { configuredOnly: false }
   );
@@ -808,13 +817,14 @@ async function runComparisonProductInternal(
     fixtureRoot,
     testModule,
     environment,
-    captureTemplate = () => undefined
+    captureTemplate = () => undefined,
+    requireWatchHeadroom = requireLinuxInotifyWatchHeadroom
   },
   { configuredOnly }
 ) {
   requireProductKey(productKey);
-  if (typeof captureTemplate !== "function") {
-    throw new TypeError("Comparison product preparation requires a callable template capture.");
+  if (typeof captureTemplate !== "function" || typeof requireWatchHeadroom !== "function") {
+    throw new TypeError("Comparison product preparation requires callable template capture and watch-headroom gates.");
   }
   revalidateComparisonInputFile(pythonReceipt);
   const python = pythonReceipt.path;
@@ -932,7 +942,10 @@ async function runComparisonProductInternal(
     }
     const { installedExtensions, phaseResult: observed } = await runComparisonInventoryGuard({
       readInventory: () => readComparisonInstalledExtensions(inventoryInput),
-      runPhase: () => runObservedPhase(setupLaunch)
+      runPhase: async () => {
+        await requireWatchHeadroom({ runRoot: profile });
+        return runObservedPhase(setupLaunch);
+      }
     });
     installedComparisonProductVersion(installedExtensions, productKey);
     if (observed.configuredPythonProcessObservedDuringProductRun !== true) {
@@ -957,6 +970,7 @@ async function runComparisonProductInternal(
       runComparisonProductEditorPhases({
         phasePlan,
         runPhase: runObservedPhase,
+        beforePhase: () => requireWatchHeadroom({ runRoot: profile }),
         afterPhase: async (launch) => {
           if (launch.kind === "first-use-setup") {
             await captureTemplate({

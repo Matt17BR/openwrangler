@@ -134,6 +134,7 @@ function sourceCopyDependencies() {
 function recordOnePreparedDataWranglerComparisonStudyTrial(value, options = {}) {
   return recordOnePreparedDataWranglerComparisonStudyTrialImplementation(value, {
     ...sourceCopyDependencies(),
+    requireWatchHeadroom: async () => ({ passed: true }),
     ...options
   });
 }
@@ -391,6 +392,31 @@ function fakeHeavyLease(events) {
 }
 
 const acceptSyntheticExecutorReceipt = (value) => value;
+
+test("inotify headroom failure stops a measured trial before the quiet gate or scheduler", async () => {
+  const events = [];
+  await assert.rejects(
+    recordOnePreparedDataWranglerComparisonStudyTrial(input(), {
+      withHeavyLease: fakeHeavyLease(events),
+      ...provenanceDependencies(events),
+      requireWatchHeadroom: async ({ runRoot }) => {
+        assert.equal(runRoot, PROFILE_ROOT);
+        events.push("headroom-failed");
+        const error = new Error("watch headroom unavailable");
+        error.code = "inotify-watch-headroom";
+        throw error;
+      },
+      runNext: async () => {
+        events.push("ledger-opened");
+      },
+      runGate: async () => {
+        events.push("quiet-gate-started");
+      }
+    }),
+    /watch headroom unavailable/u
+  );
+  assert.deepEqual(events, ["heavy-lease-acquired", "headroom-failed", "heavy-lease-released"]);
+});
 
 test("one prepared entry gates, writes, executes, normalizes, then reaches the durable ledger", async () => {
   const events = [];

@@ -26,6 +26,7 @@ import {
 } from "./data-wrangler-comparison-trial-fragment.mjs";
 import { runEditorAcceptancePhase } from "./editor-acceptance.mjs";
 import { runLinuxDataWranglerStudyGate } from "./linux-data-wrangler-study-gate.mjs";
+import { requireLinuxInotifyWatchHeadroom } from "./linux-inotify-watch-headroom.mjs";
 import { readLinuxProcessIdentity } from "./linux-study-supervisor-client.mjs";
 import { runNextDataWranglerComparisonStudyTrial } from "./run-data-wrangler-comparison-study.mjs";
 import { withHeavyLocalCommandLease } from "./run-heavy-local-command.mjs";
@@ -849,6 +850,7 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
     withHeavyLease = withHeavyLocalCommandLease,
     runNext = runNextDataWranglerComparisonStudyTrial,
     runGate = runLinuxDataWranglerStudyGate,
+    requireWatchHeadroom = requireLinuxInotifyWatchHeadroom,
     writeNotebook = writeDataWranglerComparisonNotebook,
     executeTrial = executeDataWranglerComparisonTrial,
     validateExecutorReceipt = validateDataWranglerComparisonTrialExecutorReceipt,
@@ -883,6 +885,7 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
     [withHeavyLease, "heavy-command lease"],
     [runNext, "study scheduler"],
     [runGate, "environment gate"],
+    [requireWatchHeadroom, "inotify watch-headroom gate"],
     [writeNotebook, "notebook writer"],
     [executeTrial, "trial executor"],
     [validateExecutorReceipt, "trial executor receipt validator"],
@@ -907,8 +910,9 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
     if (typeof dependency !== "function") fail(`Live comparison ${label} must be a function.`);
   }
   const prepared = input.preparedTrial;
-  return await withHeavyLease("data-wrangler-comparison-study-trial", async () =>
-    runNext(
+  return await withHeavyLease("data-wrangler-comparison-study-trial", async () => {
+    await requireWatchHeadroom({ runRoot: prepared.sourceCopy.privateRoot });
+    return await runNext(
       {
         manifestPath: input.manifestPath,
         fragmentsDirectory: input.fragmentsDirectory,
@@ -1241,6 +1245,6 @@ export async function recordOnePreparedDataWranglerComparisonStudyTrial(
           );
         }
       }
-    )
-  );
+    );
+  });
 }

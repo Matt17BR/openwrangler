@@ -53,6 +53,7 @@ import {
   LINUX_STUDY_SUPERVISOR_INVOCATION_POLICY,
   LINUX_STUDY_SUPERVISOR_PROTOCOL
 } from "./linux-study-supervisor-client.mjs";
+import { requireLinuxInotifyWatchHeadroom } from "./linux-inotify-watch-headroom.mjs";
 
 const SUPERVISOR_PATH = resolve(import.meta.dirname, "linux-study-supervisor.py");
 const CACHE_HARNESS_PATH = resolve(import.meta.dirname, "data-wrangler-comparison-cache-controller.mjs");
@@ -455,6 +456,7 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
     proveJourneyGraph: proveDataWranglerComparisonJourneyGraph,
     createArtifactRoot: (parent) => mkdtempSync(resolve(parent, ".comparison-driver-")),
     captureEnvironment: captureDataWranglerComparisonEnvironment,
+    requireWatchHeadroom: requireLinuxInotifyWatchHeadroom,
     buildManifest: buildDataWranglerStudyManifest,
     pathExists,
     publicationBoundary: () => undefined,
@@ -505,6 +507,8 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
       }
     );
   }
+  const outputParent = assertPrivateOutputParent(options.specification);
+  await dependencies.requireWatchHeadroom({ runRoot: outputParent.path });
   const specification = specificationFromPreregistration(preregistration);
   specification.provenance.cacheToolchain = structuredClone(cacheToolchain);
   const observedMethod = dependencies.captureMethodology();
@@ -512,7 +516,6 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
     fail("Comparison preparation methodology changed after preregistration.");
   }
   specification.method = structuredClone(observedMethod);
-  const outputParent = assertPrivateOutputParent(options.specification);
   const artifacts = dependencies.createArtifactRoot(outputParent.path);
   const artifactRoot = assertPrivateArtifactRoot(outputParent, artifacts);
   const driverDirectory = resolve(artifactRoot, "driver");

@@ -172,7 +172,11 @@ const TEST_PREREGISTRATION = captureDataWranglerComparisonPreregistration(
   },
   {
     captureFile: () => ({ sha256: digest("a") }),
-    captureMethodology: () => ({ protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL, sha256: digest("1") }),
+    captureMethodology: () => ({
+      protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
+      sha256: digest("1"),
+      minimumInotifyWatchHeadroom: 256
+    }),
     proveJourneyGraph: testJourneyGraph,
     proveExecutionGraph: testExecutionGraph
   }
@@ -1326,7 +1330,11 @@ function studySpecification(dataWranglerPolarsAvailability = "available") {
     studyId: "11111111-1111-4111-8111-111111111111",
     createdAtUtc: "2026-08-02T10:00:00.000Z",
     preregistration: structuredClone(TEST_PREREGISTRATION_RECEIPT),
-    method: { protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL, sha256: digest("1") },
+    method: {
+      protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
+      sha256: digest("1"),
+      minimumInotifyWatchHeadroom: 256
+    },
     candidate: {
       extensionId: "Matt17BR.openwrangler",
       version: "1.2.1",

@@ -238,12 +238,13 @@ test("action authorization rejects a prepared intent that no longer matches the 
 test("the versioned manifest binds the approved method, candidate, editor, Python, fixtures, and seeded schedule", () => {
   const manifest = studyManifest();
   assert.equal(manifest.protocol, DATA_WRANGLER_STUDY_MANIFEST_PROTOCOL);
+  assert.equal(manifest.protocol, "openwrangler-data-wrangler-study-manifest-v5");
   assert.equal(validateDataWranglerStudyManifest(manifest), manifest);
   assert.throws(
     () =>
       validateDataWranglerStudyManifest({
         ...manifest,
-        protocol: "openwrangler-data-wrangler-study-manifest-v3"
+        protocol: "openwrangler-data-wrangler-study-manifest-v4"
       }),
     /manifest protocol/u
   );
@@ -2105,10 +2106,15 @@ function studyManifest(dataWranglerPolarsAvailability = "available", ownershipTr
     studyId: "11111111-1111-4111-8111-111111111111",
     createdAtUtc: "2026-08-02T10:00:00.000Z",
     preregistration: {
-      protocol: "openwrangler-data-wrangler-comparison-preregistration-receipt-v2",
-      sha256: digest("0")
+      protocol: "openwrangler-data-wrangler-comparison-preregistration-receipt-v3",
+      sha256: digest("0"),
+      minimumInotifyWatchHeadroom: 256
     },
-    method: { protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL, sha256: digest("1") },
+    method: {
+      protocol: DATA_WRANGLER_STUDY_METHOD_PROTOCOL,
+      sha256: digest("1"),
+      minimumInotifyWatchHeadroom: 256
+    },
     candidate: {
       extensionId: "Matt17BR.openwrangler",
       version: "1.2.1",

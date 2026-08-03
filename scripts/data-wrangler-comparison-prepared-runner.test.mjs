@@ -12,7 +12,7 @@ import {
   queryDataWranglerTemplateInventory,
   retireDataWranglerComparisonTemplateClone
 } from "./data-wrangler-comparison-preparation.mjs";
-import { capturePreparedDataWranglerPublicUi } from "./data-wrangler-comparison-public-capture.mjs";
+import { capturePreparedDataWranglerPublicUi as capturePreparedDataWranglerPublicUiImplementation } from "./data-wrangler-comparison-public-capture.mjs";
 import {
   NEITHER_PRODUCT_CONTROL_RECEIPT_KIND,
   PUBLIC_UI_BASE_EXTENSION_INVENTORY,
@@ -55,6 +55,13 @@ async function withDirectory(callback) {
   }
 }
 
+function capturePreparedDataWranglerPublicUi(input, environment, overrides = {}) {
+  return capturePreparedDataWranglerPublicUiImplementation(input, environment, {
+    requireWatchHeadroom: async () => ({ passed: true }),
+    ...overrides
+  });
+}
+
 function privateDirectory(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   return path;
@@ -69,8 +76,9 @@ function minimalPreparation(root, templates) {
   const path = (name) => resolve(root, name);
   const specification = {
     preregistration: {
-      protocol: "openwrangler-data-wrangler-comparison-preregistration-receipt-v2",
-      sha256: "9".repeat(64)
+      protocol: "openwrangler-data-wrangler-comparison-preregistration-receipt-v3",
+      sha256: "9".repeat(64),
+      minimumInotifyWatchHeadroom: 256
     }
   };
   return {
@@ -144,6 +152,10 @@ function minimalPreparation(root, templates) {
     createdAtUtc: "2026-08-03T12:00:00.000Z"
   };
 }
+
+test("preparation receipt protocol accounts for its updated embedded study records", () => {
+  assert.equal(DATA_WRANGLER_COMPARISON_PREPARATION_PROTOCOL, "openwrangler-data-wrangler-comparison-preparation-v3");
+});
 
 test("profile-tree receipts clone exactly and retire only their owned clone", async () => {
   await withDirectory((root) => {
@@ -255,6 +267,114 @@ test("template inventory queries run against a disposable clone and always remov
       /CLI failed/u
     );
     assert.equal(existsSync(failedScratchRoot), false);
+  });
+});
+
+test("watch headroom failure prevents public capture actions and editor phases", async () => {
+  await withDirectory(async (root) => {
+    const editor = { version: "1.130.0" };
+    const fixtures = [
+      {
+        id: "csv-100k-50",
+        format: "csv",
+        rows: 100_000,
+        columns: 50,
+        sha256: "b".repeat(64),
+        schema: [{ name: "c00", dtype: "int64" }],
+        sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+      },
+      {
+        id: "parquet-1m-20",
+        format: "parquet",
+        rows: 1_000_000,
+        columns: 20,
+        sha256: "c".repeat(64),
+        schema: [{ name: "c00", dtype: "int64" }],
+        sentinels: [{ rowIndex: 0, column: "c00", value: 0 }]
+      }
+    ];
+    const templateRoot = privateDirectory(resolve(root, "template"));
+    privateDirectory(resolve(templateRoot, "user"));
+    privateDirectory(resolve(templateRoot, "extensions"));
+    const events = [];
+    await assert.rejects(
+      capturePreparedDataWranglerPublicUi(
+        {
+          specification: {
+            editor: {
+              id: "Microsoft.VisualStudioCode",
+              version: editor.version,
+              sha256: "a".repeat(64),
+              uiLocale: "en"
+            },
+            fixtures,
+            provenance: {
+              commonExtensions: PUBLIC_UI_BASE_EXTENSION_INVENTORY,
+              comparisonDriver: {}
+            }
+          },
+          templates: [
+            {
+              product: "data-wrangler",
+              kind: "configured-only",
+              root: templateRoot,
+              editor,
+              sandboxArgs: []
+            }
+          ],
+          templateTrees: new Map([["data-wrangler:configured-only", "d".repeat(64)]]),
+          studyRoot: root,
+          editor,
+          pythonPath: resolve(root, "python"),
+          kernel: {
+            name: "dataframe-comparison-study-test",
+            displayName: "Study kernel",
+            jupyterEnvironment: {}
+          },
+          fixturePaths: { csv: resolve(root, "fixture.csv"), parquet: resolve(root, "fixture.parquet") },
+          driverDirectory: resolve(root, "driver"),
+          driverVsixPath: resolve(root, "driver.vsix")
+        },
+        {},
+        {
+          id: () => "11111111-1111-4111-8111-111111111111",
+          recoverDriver: () => ({}),
+          cloneTemplate(_template, { cloneRoot }) {
+            return {
+              root: privateDirectory(cloneRoot),
+              userData: privateDirectory(resolve(cloneRoot, "user")),
+              extensions: privateDirectory(resolve(cloneRoot, "extensions")),
+              sandboxArgs: []
+            };
+          },
+          createEnvironment: () => ({}),
+          configureTempRoot: () => undefined,
+          createProfile: (value) => value,
+          materializeKernel: () => ({ jupyterEnvironment: {} }),
+          createSourceCopy: () => ({
+            copyPath: resolve(root, "source-copy"),
+            copyReceipt: {
+              sha256: fixtures[0].sha256,
+              filesystemIdentity: { device: "1", inode: "2", sizeBytes: 1, mtimeNs: "3" }
+            }
+          }),
+          cleanupSourceCopy: () => undefined,
+          writeNotebook: () => undefined,
+          requireWatchHeadroom: async () => {
+            events.push("watch-headroom");
+            throw new Error("public capture watch headroom unavailable");
+          },
+          runNeutralPhase: async () => {
+            events.push("public-action");
+          },
+          runEditorPhase: async () => {
+            events.push("editor-phase");
+          }
+        }
+      ),
+      /public capture watch headroom unavailable/u
+    );
+    assert.deepEqual(events, ["watch-headroom"]);
   });
 });
 
@@ -1215,6 +1335,75 @@ test("preparation publication resumes from its exact journal after every boundar
   }
 });
 
+test("preparation stops on inotify headroom before packaging or editor bootstrap", async () => {
+  await withDirectory(async (root) => {
+    const output = privateDirectory(resolve(root, "output"));
+    const method = {
+      protocol: "openwrangler-data-wrangler-study-method-v2",
+      sha256: "c".repeat(64),
+      minimumInotifyWatchHeadroom: 256
+    };
+    const preregistration = {
+      studyId: "11111111-1111-4111-8111-111111111111",
+      createdAtUtc: "2026-08-03T12:00:00.000Z",
+      method,
+      design: {
+        candidate: { extensionId: "Matt17BR.openwrangler", version: "1.2.1" },
+        baseline: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+        editor: { id: "Microsoft.VisualStudioCode", uiLocale: "en" },
+        fixtures: [],
+        environment: { display: {}, zoom: {}, commonExtensions: [] }
+      },
+      toolRecipes: {
+        cacheHarnessSha256: "a".repeat(64),
+        cachePythonControllerSha256: "a".repeat(64)
+      }
+    };
+    let packageCalls = 0;
+    let bootstrapCalls = 0;
+    await assert.rejects(
+      prepareDataWranglerComparisonStudy(
+        {
+          preregistration: resolve(root, "preregistration.json"),
+          candidate: resolve(root, "candidate.vsix"),
+          python: resolve(root, "python"),
+          cacheController: resolve(root, "cache.py"),
+          csv: resolve(root, "fixture.csv"),
+          parquet: resolve(root, "fixture.parquet"),
+          specification: resolve(output, "specification.json"),
+          manifest: resolve(output, "manifest.json"),
+          preparation: resolve(output, "preparation.json"),
+          cpuList: "2-5"
+        },
+        {},
+        {
+          readPreregistration: () => preregistration,
+          assertCurrentPreregistration: () => preregistration,
+          captureFile: () => ({ sha256: "a".repeat(64) }),
+          captureCacheToolchain: () => ({ controller: { sha256: "a".repeat(64) } }),
+          pathExists: () => false,
+          captureMethodology: () => method,
+          requireWatchHeadroom: async ({ runRoot }) => {
+            assert.equal(runRoot, output);
+            const error = new Error("no watch headroom");
+            error.code = "inotify-watch-headroom";
+            throw error;
+          },
+          async packageDriver() {
+            packageCalls += 1;
+          },
+          async bootstrapConfiguredProfiles() {
+            bootstrapCalls += 1;
+          }
+        }
+      ),
+      /no watch headroom/u
+    );
+    assert.equal(packageCalls, 0);
+    assert.equal(bootstrapCalls, 0);
+  });
+});
+
 test("a retained preparation journal resumes without rebuilding private editor state", async () => {
   const preregistration = {
     studyId: "11111111-1111-4111-8111-111111111111",
@@ -1347,8 +1536,9 @@ test("preparation derives one complete specification from the reviewed preregist
       {
         captureFile: () => ({ sha256: sha }),
         captureMethodology: () => ({
-          protocol: "openwrangler-data-wrangler-study-method-v1",
-          sha256: "c".repeat(64)
+          protocol: "openwrangler-data-wrangler-study-method-v2",
+          sha256: "c".repeat(64),
+          minimumInotifyWatchHeadroom: 256
         }),
         proveJourneyGraph: () => journeyGraph,
         proveExecutionGraph: () => executionGraph
@@ -1388,6 +1578,7 @@ test("preparation derives one complete specification from the reviewed preregist
     let publishedSpecification;
     const capturedEnvironmentFixtures = [];
     const result = await prepareDataWranglerComparisonStudy(options, process.env, {
+      requireWatchHeadroom: async () => ({ passed: true }),
       readPreregistration: () => preregistration,
       assertCurrentPreregistration: () => preregistration,
       packageDriver: async ({ directory, vsixPath }) => ({ directory, vsixPath }),

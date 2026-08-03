@@ -39,6 +39,7 @@ import {
   runBoundedEditorCliCommand,
   runEditorAcceptancePhase
 } from "./editor-acceptance.mjs";
+import { requireLinuxInotifyWatchHeadroom } from "./linux-inotify-watch-headroom.mjs";
 
 export { DATA_WRANGLER_PUBLIC_UI_CAPTURE_PHASE_PROTOCOL };
 
@@ -189,6 +190,7 @@ async function runCapturePhase({
   let phase;
   let operationError;
   try {
+    await dependencies.requireWatchHeadroom({ runRoot: trialRoot });
     const editorPhaseOptions = {
       workspace: notebookPath,
       python: pythonPath,
@@ -310,6 +312,7 @@ export async function capturePreparedDataWranglerPublicUi(
     runNeutralPhase: runDataWranglerComparisonNeutralDriverPhase,
     installDriver: installDataWranglerComparisonDriver,
     runEditorPhase: runEditorAcceptancePhase,
+    requireWatchHeadroom: requireLinuxInotifyWatchHeadroom,
     readInventory,
     uninstallDataWrangler,
     materializeKernel: materializeDataWranglerComparisonRunKernel,
