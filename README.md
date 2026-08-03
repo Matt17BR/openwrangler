@@ -45,7 +45,7 @@ Opening data or running Python requires a trusted workspace. Open Wrangler stays
 
 <!-- open-wrangler-release-status:end -->
 
-## Why Open Wrangler
+## What you can do
 
 - Pandas and Polars run natively. DuckDB and PySpark also run natively, with experimental viewing-only support.
 - Each cleaning step previews changed values and generated code before you apply it.
@@ -62,9 +62,9 @@ by-example transformations, themes, Cursor, DuckDB types, and notebook engines.
 
 ## Open files
 
-Ordinary CSV and TSV files open with automatic delimiter, encoding, quote, and header detection. **Import
-options** is available when a source needs an explicit override. Excel adds sheet selection; Parquet and
-JSONL/NDJSON open directly.
+CSV and TSV files detect their delimiter, encoding, quote character, and header automatically. Use **Open Wrangler:
+Change Import Options** when detection needs an override. For Excel, choose a sheet; Parquet and JSONL/NDJSON need no
+import dialog.
 
 <table>
   <tr>
@@ -95,12 +95,12 @@ changing the source._
 
 ## Transformations
 
-Choose from 27 built-in operations, custom Pandas or Polars code, or transformations inferred from examples. A draft
-stays separate until you apply it, and applied steps can be inspected, edited, or undone.
+Open Wrangler includes 27 operations, custom Pandas or Polars code, and transformations learned from examples. Before
+you apply a step, the workbench shows a diff and generated code. You can inspect, edit, or undo applied steps.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/workflow.png" width="1440" height="870"></a>
 
-_This preview shows the changed values and generated Polars code. The two sorts affect only the current view._
+_A formula draft highlights changed values and shows generated Polars code. The two active sorts affect the view only._
 
 <table>
   <tr>
@@ -147,7 +147,7 @@ Choose Notebook Preview Provider**.
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
   </tr>
   <tr>
-    <td>DuckDB relations are view-only and do not require dataframe conversion.</td>
+    <td>DuckDB relations stay in DuckDB while you filter, sort, page, and profile them.</td>
     <td>Experimental PySpark 4.2.x support provides viewing, filtering, sorting, paging, and profiles.</td>
   </tr>
 </table>
@@ -173,12 +173,12 @@ authentication, or stop the Spark session.
 
 ## Engines and formats
 
-| Engine                      | Files                                  | Notebook data                | How it runs                                               |
-| --------------------------- | -------------------------------------- | ---------------------------- | --------------------------------------------------------- |
-| Polars                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; lazy scans where the format permits               |
-| Pandas                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series            | Native, including duplicate column labels                 |
-| DuckDB, experimental        | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only               |
-| PySpark 4.2.x, experimental | Not currently supported                | DataFrame                    | Native notebook viewing, filtering, sorting, and profiles |
+| Engine                      | Files                                  | Notebook data                | How it runs                                                 |
+| --------------------------- | -------------------------------------- | ---------------------------- | ----------------------------------------------------------- |
+| Polars                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; CSV, TSV, Parquet, JSONL, and NDJSON use lazy scans |
+| Pandas                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series            | Native, including duplicate column labels                   |
+| DuckDB, experimental        | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only                 |
+| PySpark 4.2.x, experimental | Not currently supported                | DataFrame                    | Native notebook viewing, filtering, sorting, and profiles   |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and
@@ -191,8 +191,8 @@ Wrangler correctly opens that resulting object with Pandas.
 Pickle files are not supported because opening one can run arbitrary code. Convert trusted pickles to Parquet, CSV,
 or JSONL first.
 
-See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md)
-for the complete surface.
+See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) for
+every command, setting, and operation.
 
 ## Performance and scale
 
@@ -213,11 +213,9 @@ Wrangler using the same files, editor, Python environment, and actions.
 
 ## Roadmap
 
-- **Next in v1:** finish the distributed Spark follow-ups in
-  [#36](https://github.com/Matt17BR/openwrangler/issues/36), test more VS Code-based desktop editors in
-  [#86](https://github.com/Matt17BR/openwrangler/issues/86), and complete the Data Wrangler comparison in
-  [#91](https://github.com/Matt17BR/openwrangler/issues/91). Support for other desktop forks is currently
-  experimental.
+- **Next in v1:** improve [PySpark workflows](https://github.com/Matt17BR/openwrangler/issues/36), test more
+  [VS Code-based desktop editors](https://github.com/Matt17BR/openwrangler/issues/86), and act on the
+  [Data Wrangler comparison](https://github.com/Matt17BR/openwrangler/issues/91).
 - **v2:** add native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 
