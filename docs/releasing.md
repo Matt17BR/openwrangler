@@ -2,11 +2,12 @@
 
 ## Release copy
 
-Review the changelog, pull request titles, generated GitHub notes, and registry text with
-[`docs/writing-style.md`](writing-style.md) before publication. GitHub builds release notes from merged pull requests,
-so a vague or promotional pull request title becomes vague or promotional release copy. Keep the detailed acceptance
-proof in this document and `docs/testing.md`; release notes should tell users what changed and mention only the limits
-they need to act on.
+Write `docs/release-notes/<version>.md` in the release pull request and review it with
+[`docs/writing-style.md`](writing-style.md). The GitHub publisher reads that file from the tagged commit and disables
+generated release notes. The automation guarantees the source of the text, not that a person reviewed it. Keep
+detailed acceptance proof in this document and `docs/testing.md`; release notes should
+tell users what changed and mention only the limits they need to act on. Pull request titles still need a plain,
+specific description because people read them in the repository history.
 
 ## Version policy
 

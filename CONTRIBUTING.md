@@ -31,6 +31,7 @@ editorial read; do not rely on an AI detector or a word list.
 - Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable generated-code coverage for every editing-capable engine.
 - Update the documentation listed in the `AGENTS.md` matrix.
 - Review user-facing text and pull request summaries against `docs/writing-style.md`.
+- Add and review `docs/release-notes/<version>.md` in every release pull request; the publisher does not generate it.
 - Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
 - Push independently green branch commits before opening a pull request when early review is not needed. Opening a draft pull request intentionally starts the complete PR evidence set; required jobs must never be conditionally skipped for drafts.
