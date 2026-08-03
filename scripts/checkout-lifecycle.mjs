@@ -50,8 +50,11 @@ const LEGACY_ADOPTION_REQUEST_PROTOCOL = "openwrangler-legacy-checkout-adoption-
 const LEGACY_ADOPTION_REQUEST_PROTOCOL_V2 = "openwrangler-legacy-checkout-adoption-request-v2";
 const LEGACY_ADOPTION_COMPLETION_PROTOCOL = "openwrangler-legacy-checkout-adoption-completion-v1";
 const LEGACY_ADOPTION_COMPLETION_PROTOCOL_V2 = "openwrangler-legacy-checkout-adoption-completion-v2";
+const LEGACY_ARCHIVE_REQUEST_PROTOCOL_V1 = "openwrangler-legacy-recovery-archive-request-v1";
 const LEGACY_ARCHIVE_REQUEST_PROTOCOL = "openwrangler-legacy-recovery-archive-request-v2";
+const LEGACY_ARCHIVE_RECEIPT_PROTOCOL_V1 = "openwrangler-legacy-recovery-archive-v1";
 const LEGACY_ARCHIVE_RECEIPT_PROTOCOL = "openwrangler-legacy-recovery-archive-v2";
+const LEGACY_ARCHIVE_COMPLETION_PROTOCOL_V1 = "openwrangler-legacy-recovery-archive-completion-v1";
 const LEGACY_ARCHIVE_COMPLETION_PROTOCOL = "openwrangler-legacy-recovery-archive-completion-v2";
 const RETIREMENT_SWEEP_PROTOCOL = "openwrangler-checkout-retirement-sweep-v1";
 const LEGACY_RETIREMENT_SWEEP_PROTOCOL = "openwrangler-checkout-retirement-sweep-v2";
@@ -3957,6 +3960,46 @@ export function createCheckoutManager(options = {}) {
     return Object.freeze({ ownerTask: adoption.entry.value.ownerTask, ownerRevision: 1 });
   }
 
+  function legacyRetirementAuthority(adoption, archiveRequest, archiveReceipt, archiveCompletion) {
+    const historical =
+      adoption.entry.value.protocol === LEGACY_ADOPTION_COMPLETION_PROTOCOL &&
+      adoption.request.value.protocol === LEGACY_ADOPTION_REQUEST_PROTOCOL &&
+      archiveRequest.value.protocol === LEGACY_ARCHIVE_REQUEST_PROTOCOL_V1 &&
+      archiveReceipt.value.protocol === LEGACY_ARCHIVE_RECEIPT_PROTOCOL_V1 &&
+      archiveCompletion.value.protocol === LEGACY_ARCHIVE_COMPLETION_PROTOCOL_V1;
+    const current =
+      adoption.entry.value.protocol === LEGACY_ADOPTION_COMPLETION_PROTOCOL_V2 &&
+      adoption.request.value.protocol === LEGACY_ADOPTION_REQUEST_PROTOCOL_V2 &&
+      archiveRequest.value.protocol === LEGACY_ARCHIVE_REQUEST_PROTOCOL &&
+      archiveReceipt.value.protocol === LEGACY_ARCHIVE_RECEIPT_PROTOCOL &&
+      archiveCompletion.value.protocol === LEGACY_ARCHIVE_COMPLETION_PROTOCOL;
+    if (!historical && !current) {
+      fail("retirement-source-changed", "The legacy retirement authority crosses incompatible journal generations.");
+    }
+    const ownerTask = adoption.entry.value.ownerTask;
+    if (
+      adoption.request.value.ownerTask !== ownerTask ||
+      archiveRequest.value.ownerTask !== ownerTask ||
+      archiveReceipt.value.ownerTask !== ownerTask ||
+      archiveCompletion.value.ownerTask !== ownerTask
+    ) {
+      fail("retirement-source-changed", "The legacy owner changed inside the archived retirement authority.");
+    }
+    if (current) {
+      const authority = legacyAdoptionAuthority(adoption);
+      if (
+        archiveRequest.value.ownerRevision !== authority.ownerRevision ||
+        archiveReceipt.value.ownerRevision !== authority.ownerRevision ||
+        archiveCompletion.value.ownerRevision !== authority.ownerRevision
+      ) {
+        fail("retirement-source-changed", "The legacy owner revision changed after retirement enrollment.");
+      }
+    }
+    // The historical v1 model had one immutable owner generation and no revision field. Revision 1 is inferred only
+    // after every linked adoption and archive record above has proved that complete, unmixed generation model.
+    return Object.freeze({ ownerTask, ownerRevision: 1, historical });
+  }
+
   function assertLegacyAdoptionAuthority(adoption, ownerTask, expectedRevision) {
     assertOwner(ownerTask);
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
@@ -4003,7 +4046,11 @@ export function createCheckoutManager(options = {}) {
       fail("legacy-adoption-changed", "The adoption anchored by the legacy archive is no longer published.");
     }
     const anchor = legacyArchiveAdoptionAnchor({ entry: current });
-    if (!isDeepStrictEqual(request.value.adoption, anchor)) {
+    const historical = request.value.protocol === LEGACY_ARCHIVE_REQUEST_PROTOCOL_V1;
+    if (
+      historical !== (current.value.protocol === LEGACY_ADOPTION_COMPLETION_PROTOCOL) ||
+      !isDeepStrictEqual(request.value.adoption, anchor)
+    ) {
       fail("legacy-adoption-changed", "The legacy archive no longer belongs to the current adoption record.");
     }
   }
@@ -4076,20 +4123,31 @@ export function createCheckoutManager(options = {}) {
   }
 
   function validateLegacyArchiveRequest(value, slug, adoptionGeneration, attempt) {
+    const historical = value?.protocol === LEGACY_ARCHIVE_REQUEST_PROTOCOL_V1;
+    const current = value?.protocol === LEGACY_ARCHIVE_REQUEST_PROTOCOL;
     exactKeys(
       value,
-      ["protocol", "slug", "adoptionGeneration", "attempt", "ownerTask", "ownerRevision", "token", "adoption"],
+      [
+        "protocol",
+        "slug",
+        "adoptionGeneration",
+        "attempt",
+        "ownerTask",
+        ...(current ? ["ownerRevision"] : []),
+        "token",
+        "adoption"
+      ],
       "Legacy recovery-archive request"
     );
     exactKeys(value.adoption, ["path", "identity", "byteLength", "sha256", "generation"], "Legacy adoption anchor");
     validateIdentity(value.adoption.identity, "Legacy adoption anchor identity");
     assertOwner(value.ownerTask);
     if (
-      value.protocol !== LEGACY_ARCHIVE_REQUEST_PROTOCOL ||
+      (!historical && !current) ||
       value.slug !== slug ||
       value.adoptionGeneration !== adoptionGeneration ||
       value.attempt !== attempt ||
-      value.ownerRevision !== 1 ||
+      (current && value.ownerRevision !== 1) ||
       value.adoption.generation !== adoptionGeneration ||
       !Number.isSafeInteger(value.adoption.byteLength) ||
       value.adoption.byteLength < 1 ||
@@ -5119,7 +5177,9 @@ export function createCheckoutManager(options = {}) {
     return value;
   }
 
-  function validateLegacyArchiveReceipt(value, attempt, request) {
+  function validateLegacyArchiveReceiptAuthority(value, attempt, request) {
+    const historical = value?.protocol === LEGACY_ARCHIVE_RECEIPT_PROTOCOL_V1;
+    const current = value?.protocol === LEGACY_ARCHIVE_RECEIPT_PROTOCOL;
     exactKeys(
       value,
       [
@@ -5128,7 +5188,7 @@ export function createCheckoutManager(options = {}) {
         "adoptionGeneration",
         "attempt",
         "ownerTask",
-        "ownerRevision",
+        ...(current ? ["ownerRevision"] : []),
         "request",
         "adoptionAuditSha256",
         "objects",
@@ -5143,12 +5203,14 @@ export function createCheckoutManager(options = {}) {
     );
     assertOwner(value.ownerTask);
     if (
-      value.protocol !== LEGACY_ARCHIVE_RECEIPT_PROTOCOL ||
+      (!historical && !current) ||
+      historical !== (request.value.protocol === LEGACY_ARCHIVE_REQUEST_PROTOCOL_V1) ||
+      current !== (request.value.protocol === LEGACY_ARCHIVE_REQUEST_PROTOCOL) ||
       value.slug !== attempt.slug ||
       value.adoptionGeneration !== attempt.adoptionGeneration ||
       value.attempt !== attempt.attempt ||
       value.ownerTask !== request.value.ownerTask ||
-      value.ownerRevision !== request.value.ownerRevision ||
+      (current && value.ownerRevision !== request.value.ownerRevision) ||
       value.state !== "verified-review-required" ||
       value.authorizesMove !== false ||
       value.authorizesCleanup !== false ||
@@ -5168,6 +5230,11 @@ export function createCheckoutManager(options = {}) {
     ) {
       fail("invalid-legacy-archive", "The legacy archive request receipt changed.");
     }
+    return value;
+  }
+
+  function validateLegacyArchiveReceipt(value, attempt, request) {
+    validateLegacyArchiveReceiptAuthority(value, attempt, request);
     exactKeys(
       value.objects,
       [
@@ -5289,6 +5356,8 @@ export function createCheckoutManager(options = {}) {
   }
 
   function validateLegacyArchiveCompletion(value, attempt, receipt) {
+    const historical = value?.protocol === LEGACY_ARCHIVE_COMPLETION_PROTOCOL_V1;
+    const current = value?.protocol === LEGACY_ARCHIVE_COMPLETION_PROTOCOL;
     exactKeys(
       value,
       [
@@ -5297,7 +5366,7 @@ export function createCheckoutManager(options = {}) {
         "adoptionGeneration",
         "attempt",
         "ownerTask",
-        "ownerRevision",
+        ...(current ? ["ownerRevision"] : []),
         "receipt",
         "state",
         "authorizesMove",
@@ -5308,12 +5377,14 @@ export function createCheckoutManager(options = {}) {
     assertOwner(value.ownerTask);
     validateLegacyArchiveFileReceipt(value.receipt, join(attempt.path, "receipt.json"), "Legacy archive receipt file");
     if (
-      value.protocol !== LEGACY_ARCHIVE_COMPLETION_PROTOCOL ||
+      (!historical && !current) ||
+      historical !== (receipt.value.protocol === LEGACY_ARCHIVE_RECEIPT_PROTOCOL_V1) ||
+      current !== (receipt.value.protocol === LEGACY_ARCHIVE_RECEIPT_PROTOCOL) ||
       value.slug !== attempt.slug ||
       value.adoptionGeneration !== attempt.adoptionGeneration ||
       value.attempt !== attempt.attempt ||
       value.ownerTask !== receipt.value.ownerTask ||
-      value.ownerRevision !== receipt.value.ownerRevision ||
+      (current && value.ownerRevision !== receipt.value.ownerRevision) ||
       !sameIdentity(value.receipt.identity, receipt.identity) ||
       value.receipt.byteLength !== receipt.byteLength ||
       value.receipt.sha256 !== receipt.sha256 ||
@@ -8608,6 +8679,10 @@ export function createCheckoutManager(options = {}) {
 
   function validateSweepRecord(record, previous, expected) {
     const value = record.loaded.value;
+    const legacyV1 = expected.kind === "legacy" && value.protocol === RETIREMENT_SWEEP_PROTOCOL;
+    const legacyV2 = expected.kind === "legacy" && value.protocol === LEGACY_RETIREMENT_SWEEP_PROTOCOL;
+    const validProtocol =
+      expected.kind === "legacy" ? legacyV1 || legacyV2 : value.protocol === RETIREMENT_SWEEP_PROTOCOL;
     const common = [
       "protocol",
       "kind",
@@ -8617,7 +8692,7 @@ export function createCheckoutManager(options = {}) {
       "sequence",
       "operationId",
       "previous",
-      ...(expected.kind === "legacy" ? ["ownerTask", "ownerRevision"] : [])
+      ...(legacyV2 ? ["ownerTask", "ownerRevision"] : [])
     ];
     const extra =
       record.kind === "eligible"
@@ -8631,7 +8706,7 @@ export function createCheckoutManager(options = {}) {
               : ["bootId", "quarantinePath", "branchPreserved"];
     exactKeys(value, [...common, ...extra], `Retirement ${record.kind} record`);
     if (
-      value.protocol !== (expected.kind === "legacy" ? LEGACY_RETIREMENT_SWEEP_PROTOCOL : RETIREMENT_SWEEP_PROTOCOL) ||
+      !validProtocol ||
       value.kind !== record.kind ||
       value.candidateKind !== expected.kind ||
       value.slug !== expected.slug ||
@@ -8642,14 +8717,22 @@ export function createCheckoutManager(options = {}) {
       fail("invalid-retirement-journal", `Retirement ${record.kind} record is malformed.`);
     }
     if (expected.kind === "legacy") {
-      assertOwner(value.ownerTask);
-      assertRevision(value.ownerRevision);
-      if (
-        previous !== undefined &&
-        (value.ownerTask !== previous.loaded.value.ownerTask ||
-          value.ownerRevision !== previous.loaded.value.ownerRevision)
-      ) {
-        fail("invalid-retirement-journal", "The legacy owner revision changed inside the retirement journal.");
+      if (previous?.loaded.value.protocol === LEGACY_RETIREMENT_SWEEP_PROTOCOL && legacyV1) {
+        fail("invalid-retirement-journal", "A legacy retirement journal cannot return to its v1 record format.");
+      }
+      if (legacyV2) {
+        assertOwner(value.ownerTask);
+        assertRevision(value.ownerRevision);
+        const authority = expected.legacyAuthority;
+        if (
+          (authority !== undefined &&
+            (value.ownerTask !== authority.ownerTask || value.ownerRevision !== authority.ownerRevision)) ||
+          (previous?.loaded.value.protocol === LEGACY_RETIREMENT_SWEEP_PROTOCOL &&
+            (value.ownerTask !== previous.loaded.value.ownerTask ||
+              value.ownerRevision !== previous.loaded.value.ownerRevision))
+        ) {
+          fail("invalid-retirement-journal", "The legacy owner revision changed inside the retirement journal.");
+        }
       }
     }
     if (previous === undefined) {
@@ -8709,15 +8792,35 @@ export function createCheckoutManager(options = {}) {
       const recordPath = join(path, named.name);
       const loaded = readJsonReceipt(recordPath, MAXIMUM_ENTRY_BYTES, `Retirement record ${named.sequence}`);
       const record = Object.freeze({ ...named, path: recordPath, loaded });
-      validateSweepRecord(record, records.at(-1), { kind, slug, generation, originalPath, quarantinePath });
       records.push(record);
     }
     const expectedKinds = ["eligible", "quarantine-intent", "quarantine-result", "purge-intent", "retired"];
     if (records.some((record, index) => record.kind !== expectedKinds[index])) {
       fail("invalid-retirement-journal", "The retirement journal has an invalid state transition.");
     }
+    let legacyAuthority;
+    if (kind === "legacy" && records.length !== 0) {
+      validateSweepRecord(records[0], undefined, { kind, slug, generation, originalPath, quarantinePath });
+      legacyAuthority = legacyRetirementSourceAnchors(records[0].loaded.value).authority;
+    }
+    const expected = { kind, slug, generation, originalPath, quarantinePath, legacyAuthority };
+    for (const [index, record] of records.entries()) {
+      validateSweepRecord(record, records[index - 1], expected);
+    }
     revalidatePathIdentity(path, identity, "Retirement sweep journal", "directory");
-    return Object.freeze(records);
+    if (legacyAuthority === undefined) return Object.freeze(records);
+    return Object.freeze(
+      records.map((record) => {
+        if (record.loaded.value.protocol !== RETIREMENT_SWEEP_PROTOCOL) return record;
+        return Object.freeze({
+          ...record,
+          loaded: Object.freeze({
+            ...record.loaded,
+            value: Object.freeze({ ...record.loaded.value, ...legacyAuthority })
+          })
+        });
+      })
+    );
   }
 
   function appendSweepRecord(kind, slug, generation, originalPath, value) {
@@ -8754,7 +8857,23 @@ export function createCheckoutManager(options = {}) {
       loaded
     });
     const quarantinePath = sweepQuarantinePath(kind, slug, generation, value.operationId);
-    validateSweepRecord(record, records.at(-1), { kind, slug, generation, originalPath, quarantinePath });
+    const legacyAuthority =
+      kind !== "legacy"
+        ? undefined
+        : records.length === 0
+          ? legacyRetirementSourceAnchors(value).authority
+          : Object.freeze({
+              ownerTask: records[0].loaded.value.ownerTask,
+              ownerRevision: records[0].loaded.value.ownerRevision
+            });
+    validateSweepRecord(record, records.at(-1), {
+      kind,
+      slug,
+      generation,
+      originalPath,
+      quarantinePath,
+      legacyAuthority
+    });
     return record;
   }
 
@@ -9368,6 +9487,34 @@ export function createCheckoutManager(options = {}) {
   }
 
   function revalidateLegacyEnrollment(eligible) {
+    const anchors = legacyRetirementSourceAnchors(eligible);
+    if (anchors.historical) {
+      revalidateLegacyArchiveReceipts(eligible);
+      legacyArchiveStatus(eligible.slug);
+      const first = captureAdoptedLegacyAudit(anchors.adoptionRecord);
+      assertAuditMatchesAdoption(first, anchors.adoptionRecord);
+      legacyArchiveStatus(eligible.slug);
+      const second = captureAdoptedLegacyAudit(anchors.adoptionRecord);
+      assertAuditMatchesAdoption(second, anchors.adoptionRecord);
+      revalidateLegacyArchiveReceipts(eligible);
+      if (
+        anchors.adoption.value.evidence.source.checkout !== eligible.originalPath ||
+        !sameIdentity(anchors.adoption.value.evidence.source.checkoutIdentity, eligible.originalIdentity)
+      ) {
+        fail("retirement-source-changed", "The historical legacy checkout no longer matches its enrollment.");
+      }
+      return Object.freeze({
+        kind: "legacy",
+        slug: eligible.slug,
+        generation: eligible.generation,
+        originalPath: eligible.originalPath,
+        originalIdentity: eligible.originalIdentity,
+        source: eligible.source,
+        ownerTask: anchors.authority.ownerTask,
+        ownerRevision: anchors.authority.ownerRevision,
+        adoption: anchors.adoptionRecord
+      });
+    }
     const current = captureLegacyEnrollment(eligible.slug, {
       ownerTask: eligible.ownerTask,
       expectedRevision: eligible.ownerRevision
@@ -9510,7 +9657,8 @@ export function createCheckoutManager(options = {}) {
     return result;
   }
 
-  function revalidateLegacyArchiveReceipts(eligible) {
+  function legacyRetirementSourceAnchors(eligible) {
+    validateSweepSource("legacy", eligible.source);
     const adoption = exactReceiptRead(eligible.source.adoption, "Legacy adoption entry", 2n);
     const archiveCompletion = exactReceiptRead(eligible.source.archiveCompletion, "Legacy archive completion", 2n);
     const archiveReceipt = exactReceiptRead(eligible.source.archiveReceipt, "Legacy archive receipt");
@@ -9534,7 +9682,6 @@ export function createCheckoutManager(options = {}) {
       entry: Object.freeze({ path: eligible.source.adoption.path, ...adoption }),
       request: Object.freeze({ path: adoption.value.request.path, ...adoptionRequest })
     });
-    const authority = legacyAdoptionAuthority(adoptionRecord);
     const archiveRequest = exactReceiptRead(archiveReceipt.value.request, "Legacy archive request");
     validateLegacyArchiveRequest(
       archiveRequest.value,
@@ -9542,8 +9689,34 @@ export function createCheckoutManager(options = {}) {
       eligible.generation,
       archiveCompletion.value.attempt
     );
+    if (!isDeepStrictEqual(archiveRequest.value.adoption, legacyArchiveAdoptionAnchor(adoptionRecord))) {
+      fail("retirement-source-changed", "The legacy archive no longer links to the enrolled adoption receipt.");
+    }
+    validateLegacyArchiveReceiptAuthority(archiveReceipt.value, attempt, archiveRequest);
+    validateLegacyArchiveCompletion(archiveCompletion.value, attempt, archiveReceipt);
+    const authority = legacyRetirementAuthority(adoptionRecord, archiveRequest, archiveReceipt, archiveCompletion);
+    return Object.freeze({
+      adoption,
+      archiveCompletion,
+      archiveReceipt,
+      archiveRequest,
+      attempt,
+      adoptionRecord,
+      authority: Object.freeze({ ownerTask: authority.ownerTask, ownerRevision: authority.ownerRevision }),
+      historical: authority.historical
+    });
+  }
+
+  function revalidateLegacyArchiveReceipts(eligible) {
+    const anchors = legacyRetirementSourceAnchors(eligible);
+    if (
+      anchors.authority.ownerTask !== eligible.ownerTask ||
+      anchors.authority.ownerRevision !== eligible.ownerRevision
+    ) {
+      fail("retirement-source-changed", "The legacy owner revision changed after retirement enrollment.");
+    }
     try {
-      validateLegacyArchiveReceipt(archiveReceipt.value, attempt, archiveRequest);
+      validateLegacyArchiveReceipt(anchors.archiveReceipt.value, anchors.attempt, anchors.archiveRequest);
     } catch (error) {
       if (
         error instanceof CheckoutLifecycleError &&
@@ -9553,23 +9726,13 @@ export function createCheckoutManager(options = {}) {
       }
       throw error;
     }
-    validateLegacyArchiveCompletion(archiveCompletion.value, attempt, archiveReceipt);
-    if (
-      authority.ownerTask !== eligible.ownerTask ||
-      authority.ownerRevision !== eligible.ownerRevision ||
-      archiveRequest.value.ownerTask !== eligible.ownerTask ||
-      archiveRequest.value.ownerRevision !== eligible.ownerRevision ||
-      archiveReceipt.value.ownerTask !== eligible.ownerTask ||
-      archiveReceipt.value.ownerRevision !== eligible.ownerRevision ||
-      archiveCompletion.value.ownerTask !== eligible.ownerTask ||
-      archiveCompletion.value.ownerRevision !== eligible.ownerRevision
-    ) {
-      fail("retirement-source-changed", "The legacy owner revision changed after retirement enrollment.");
-    }
-    revalidateLegacyDependencyUniverse(adoptionRecord);
+    if (anchors.historical) {
+      const providerPath = anchors.adoption.value.evidence.source.checkout;
+      captureLegacyDependencyUniverse(providerPath, eligible.slug, [dirname(providerPath)]);
+    } else revalidateLegacyDependencyUniverse(anchors.adoptionRecord);
     // The standard archive status path performs the expensive recovery proof while the source still exists.
     // After quarantine, the three immutable anchors above remain the authority for purge reconciliation.
-    return Object.freeze({ adoption, archiveCompletion, archiveReceipt, attempt, adoptionRecord });
+    return anchors;
   }
 
   function revalidateLegacyQuarantine(eligible, quarantinePath) {
