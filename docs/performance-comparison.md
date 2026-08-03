@@ -2,7 +2,8 @@
 
 ## Status
 
-This document defines the reviewed v1.2.1 comparison methodology. Before preparation, `comparison:preregister`
+This document defines the reviewed v1.2.1 comparison methodology. Before graph capture and again before preparation,
+the public commands rebuild the neutral test extension from the checked-in TypeScript. `comparison:preregister` then
 publishes an immutable record of this method, the full schedule, the fixed limits, the neutral driver recipe, and the
 checked-in tool hashes. It also records the two public entry commands and their complete static JavaScript module
 graph, including every local module hash, literal import edge, external package name, parser version, and public npm
