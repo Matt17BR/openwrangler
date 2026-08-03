@@ -174,6 +174,16 @@ Agent checkout lifecycle has a separate, small contract test:
   managed move, after managed removal, and during the legacy tree walk. Detached legacy HEADs record that no branch was
   preserved.
 
+  Existing legacy `openwrangler-checkout-retirement-sweep-v1` chains have no owner fields. A checked-in fixture builder
+  reproduces the exact authority-bearing adoption, archive, and sweep v1 schemas from commit `16ba39c6`, including the
+  original hard-linked identities and receipt hashes. Compatibility tests replay temporary eligible,
+  quarantine-intent, quarantine-result, purge-intent, post-purge, and terminal journals. The reader derives revision 1
+  only from one complete, unmixed adoption request/entry and archive request/receipt/completion chain, leaves v1 bytes
+  unchanged, and writes explicit v2 owner fields when reconciliation advances the sweep. Current v2 anchors behind a
+  retained sweep-v1 record remain readable. Public status and retire tests keep unrelated v1 journals byte-identical.
+  Owner injection, unknown protocols, v2-to-v1 downgrade, mixed authority generations, malformed paths or hashes,
+  broken receipt links, and replaced source receipts fail closed.
+
   Provider checks inspect every nested repository under the dependency roots recorded at adoption and hold a candidate
   while any object alternate points into it. A real linked-worktree remains valid, while worktree and bare
   `git clone --shared` dependents in another recorded root block their provider. Bare regressions create commits

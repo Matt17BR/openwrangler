@@ -223,6 +223,14 @@ on the machine have no dependency. The local maintenance threat model assumes no
 replacement, or mount race after the boot barrier and durable purge intent. It does not claim protection against a
 malicious process already running as the user.
 
+Legacy sweep journals published with `openwrangler-checkout-retirement-sweep-v1` remain readable without being
+rewritten. Their missing owner fields are recovered only by exact revalidation of the recorded adoption and recovery
+archive chain. Historical adoption and archive v1 records must form one complete, unmixed, identity- and hash-linked
+chain before their single owner generation can be treated as revision 1; current v2 anchors remain valid. A historical
+candidate reuses the bounded parent dependency scan before a move because its adoption predates recorded discovery
+roots. A sweep v1 prefix may be followed by newly appended v2 records carrying that exact authority, but a protocol
+downgrade, owner injection, owner mismatch, malformed link, or changed source receipt fails closed.
+
 Retirement ends in an append-only tombstone. Managed slugs are permanently reserved after retirement; choose a new
 slug instead of rebinding old recovery history. Never use `--force`, `rm -rf`, manual registry edits, branch deletion,
 or `git worktree prune`. `checkout:finish` remains a low-level retention-only command, `checkout:audit` remains

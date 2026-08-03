@@ -250,6 +250,29 @@ function adoptedLegacyCandidate(fixture, slug, options = {}) {
   return Object.freeze({ checkout, managed });
 }
 
+function enrolledLegacyRetirement(fixture, slug, options = {}) {
+  bootstrapCheckoutManager({
+    repositoryPath: fixture.repository,
+    tokenFactory: () => (options.bootstrapToken ?? "c").repeat(32)
+  });
+  const checkout = legacyCandidate(fixture, slug, options);
+  const managed = defaultManager(fixture, {
+    readBootId: options.readBootId,
+    hooks: options.hooks,
+    tokenFactory: () => (options.token ?? "d").repeat(32)
+  });
+  const ownerTask = options.ownerTask ?? `/root/${slug}`;
+  managed.legacyAdopt({
+    slug,
+    ownerTask,
+    generatedRoots: ["node_modules"],
+    generatedFiles: ["fixture.ignored"]
+  });
+  managed.legacyArchive({ slug, ownerTask });
+  managed.enrollRetirement({ kind: "legacy", slug, ownerTask, expectedRevision: 1 });
+  return Object.freeze({ checkout, managed, ownerTask });
+}
+
 function fileSnapshot(path) {
   const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
@@ -2659,6 +2682,216 @@ function fileReceipt(path) {
     byteLength: bytes.length,
     sha256: createHash("sha256").update(bytes).digest("hex")
   };
+}
+
+function retirementSweepPaths(managed, kind, slug, generation = 1) {
+  const root = kind === "legacy" ? managed.paths.legacyRetirementSweeps : managed.paths.managedRetirementSweeps;
+  const journal = join(root, `${slug}.${generation}`);
+  return readdirSync(journal)
+    .sort()
+    .map((name) => join(journal, name));
+}
+
+function rewriteRetirementSweep(managed, kind, slug, transform, generation = 1) {
+  let previous = null;
+  const rewritten = [];
+  for (const [index, path] of retirementSweepPaths(managed, kind, slug, generation).entries()) {
+    const original = JSON.parse(readFileSync(path, "utf8"));
+    const value = transform({ ...original }, index);
+    value.previous = previous;
+    writeFileSync(path, `${JSON.stringify(value)}\n`);
+    previous = fileReceipt(path);
+    rewritten.push(Object.freeze({ path, value: Object.freeze(value) }));
+  }
+  return Object.freeze(rewritten);
+}
+
+function downgradeLegacySweepToV1(managed, slug, generation = 1) {
+  return rewriteRetirementSweep(
+    managed,
+    "legacy",
+    slug,
+    (value) => {
+      value.protocol = "openwrangler-checkout-retirement-sweep-v1";
+      delete value.ownerTask;
+      delete value.ownerRevision;
+      return value;
+    },
+    generation
+  );
+}
+
+// Materialize the exact linked v1 schemas written by 16ba39c6. The archive payload files are manager-produced by the
+// current fixture first because their binary format did not change; every authority-bearing JSON record is then
+// rebuilt field-by-field in historical publication order, with all receipt identities and hashes relinked.
+function materializeHistoricalV1Retirement(managed, slug, generation = 1) {
+  const adoptionEntryPath = join(managed.paths.legacyAdoptionEntries, `${slug}.json`);
+  const currentAdoption = JSON.parse(readFileSync(adoptionEntryPath, "utf8"));
+  const adoptionRequestPath = currentAdoption.request.path;
+  const currentAdoptionRequest = JSON.parse(readFileSync(adoptionRequestPath, "utf8"));
+  const historicalAdoptionRequest = {
+    protocol: "openwrangler-legacy-checkout-adoption-request-v1",
+    slug: currentAdoptionRequest.slug,
+    generation: currentAdoptionRequest.generation,
+    ownerTask: currentAdoptionRequest.ownerTask,
+    token: currentAdoptionRequest.token,
+    generatedRoots: currentAdoptionRequest.generatedRoots,
+    generatedFiles: currentAdoptionRequest.generatedFiles
+  };
+  writeFileSync(adoptionRequestPath, `${JSON.stringify(historicalAdoptionRequest)}\n`);
+
+  const evidence = currentAdoption.evidence;
+  const historicalEvidence = {
+    protocol: "openwrangler-legacy-checkout-adoption-v1",
+    slug: evidence.slug,
+    state: evidence.state,
+    source: evidence.source,
+    git: {
+      head: evidence.git.head,
+      headTree: evidence.git.headTree,
+      branch: evidence.git.branch,
+      objectFormat: evidence.git.objectFormat,
+      refs: evidence.git.refs,
+      fsck: evidence.git.fsck,
+      worktreeRegistrySha256: evidence.git.worktreeRegistrySha256,
+      configNamesSha256: evidence.git.configNamesSha256,
+      configSha256: evidence.git.configSha256,
+      trackedClean: evidence.git.trackedClean,
+      stagedClean: evidence.git.stagedClean,
+      untrackedCount: evidence.git.untrackedCount,
+      ignoredCount: evidence.git.ignoredCount,
+      ignoredListingSha256: evidence.git.ignoredListingSha256
+    },
+    generated: evidence.generated,
+    deferredChecks: evidence.deferredChecks,
+    authorizesMove: evidence.authorizesMove,
+    authorizesCleanup: evidence.authorizesCleanup
+  };
+  const historicalAdoption = {
+    protocol: "openwrangler-legacy-checkout-adoption-completion-v1",
+    slug: currentAdoption.slug,
+    generation: currentAdoption.generation,
+    ownerTask: currentAdoption.ownerTask,
+    request: fileReceipt(adoptionRequestPath),
+    evidence: historicalEvidence
+  };
+  writeFileSync(adoptionEntryPath, `${JSON.stringify(historicalAdoption)}\n`);
+
+  const archiveCompletionPath = join(managed.paths.legacyArchiveEntries, `${slug}.json`);
+  const currentArchiveCompletion = JSON.parse(readFileSync(archiveCompletionPath, "utf8"));
+  const archiveReceiptPath = currentArchiveCompletion.receipt.path;
+  const currentArchiveReceipt = JSON.parse(readFileSync(archiveReceiptPath, "utf8"));
+  const archiveRequestPath = currentArchiveReceipt.request.path;
+  const currentArchiveRequest = JSON.parse(readFileSync(archiveRequestPath, "utf8"));
+  const historicalArchiveRequest = {
+    protocol: "openwrangler-legacy-recovery-archive-request-v1",
+    slug: currentArchiveRequest.slug,
+    adoptionGeneration: currentArchiveRequest.adoptionGeneration,
+    attempt: currentArchiveRequest.attempt,
+    ownerTask: currentArchiveRequest.ownerTask,
+    token: currentArchiveRequest.token,
+    adoption: { ...fileReceipt(adoptionEntryPath), generation }
+  };
+  writeFileSync(archiveRequestPath, `${JSON.stringify(historicalArchiveRequest)}\n`);
+
+  const historicalArchiveReceipt = {
+    protocol: "openwrangler-legacy-recovery-archive-v1",
+    slug: currentArchiveReceipt.slug,
+    adoptionGeneration: currentArchiveReceipt.adoptionGeneration,
+    attempt: currentArchiveReceipt.attempt,
+    ownerTask: currentArchiveReceipt.ownerTask,
+    request: fileReceipt(archiveRequestPath),
+    adoptionAuditSha256: createHash("sha256").update(JSON.stringify(historicalEvidence)).digest("hex"),
+    objects: currentArchiveReceipt.objects,
+    metadata: currentArchiveReceipt.metadata,
+    recovery: currentArchiveReceipt.recovery,
+    storage: currentArchiveReceipt.storage,
+    state: currentArchiveReceipt.state,
+    authorizesMove: currentArchiveReceipt.authorizesMove,
+    authorizesCleanup: currentArchiveReceipt.authorizesCleanup
+  };
+  writeFileSync(archiveReceiptPath, `${JSON.stringify(historicalArchiveReceipt)}\n`);
+
+  const historicalArchiveCompletion = {
+    protocol: "openwrangler-legacy-recovery-archive-completion-v1",
+    slug: currentArchiveCompletion.slug,
+    adoptionGeneration: currentArchiveCompletion.adoptionGeneration,
+    attempt: currentArchiveCompletion.attempt,
+    ownerTask: currentArchiveCompletion.ownerTask,
+    receipt: fileReceipt(archiveReceiptPath),
+    state: currentArchiveCompletion.state,
+    authorizesMove: currentArchiveCompletion.authorizesMove,
+    authorizesCleanup: currentArchiveCompletion.authorizesCleanup
+  };
+  writeFileSync(archiveCompletionPath, `${JSON.stringify(historicalArchiveCompletion)}\n`);
+
+  const source = {
+    adoption: fileReceipt(adoptionEntryPath),
+    archiveCompletion: fileReceipt(archiveCompletionPath),
+    archiveReceipt: fileReceipt(archiveReceiptPath)
+  };
+  const sweep = rewriteRetirementSweep(
+    managed,
+    "legacy",
+    slug,
+    (value, index) => {
+      const { ownerTask: _ownerTask, ownerRevision: _ownerRevision, ...historical } = value;
+      historical.protocol = "openwrangler-checkout-retirement-sweep-v1";
+      if (index === 0) historical.source = source;
+      return historical;
+    },
+    generation
+  );
+  return Object.freeze({
+    managed,
+    slug,
+    generation,
+    adoptionEntryPath,
+    adoptionRequestPath,
+    archiveCompletionPath,
+    archiveReceiptPath,
+    archiveRequestPath,
+    sweep,
+    source: Object.freeze(source)
+  });
+}
+
+function rewriteHistoricalV1Anchors(historical, transforms = {}) {
+  const rewrite = (path, transform, linked = undefined) => {
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    if (linked !== undefined) Object.assign(value, linked);
+    const next = transform === undefined ? value : transform(value);
+    writeFileSync(path, `${JSON.stringify(next)}\n`);
+    return next;
+  };
+  rewrite(historical.adoptionRequestPath, transforms.adoptionRequest);
+  rewrite(historical.adoptionEntryPath, transforms.adoption, {
+    request: fileReceipt(historical.adoptionRequestPath)
+  });
+  rewrite(historical.archiveRequestPath, transforms.archiveRequest, {
+    adoption: { ...fileReceipt(historical.adoptionEntryPath), generation: historical.generation }
+  });
+  rewrite(historical.archiveReceiptPath, transforms.archiveReceipt, {
+    request: fileReceipt(historical.archiveRequestPath)
+  });
+  rewrite(historical.archiveCompletionPath, transforms.archiveCompletion, {
+    receipt: fileReceipt(historical.archiveReceiptPath)
+  });
+  const source = {
+    adoption: fileReceipt(historical.adoptionEntryPath),
+    archiveCompletion: fileReceipt(historical.archiveCompletionPath),
+    archiveReceipt: fileReceipt(historical.archiveReceiptPath)
+  };
+  rewriteRetirementSweep(
+    historical.managed,
+    "legacy",
+    historical.slug,
+    (value, index) => {
+      if (index === 0) value.source = source;
+      return transforms.sweep === undefined ? value : transforms.sweep(value, index);
+    },
+    historical.generation
+  );
 }
 
 function archiveForQuarantine(fixture, slug, options = {}) {
@@ -5599,6 +5832,334 @@ test("retirement enrollment fails if the Linux boot changes before publication",
       "retirement-boot-changed"
     );
     assert.deepEqual(managed.sweep().results, []);
+  });
+});
+
+test("legacy status reads an exact historical v1 adoption, archive, and sweep chain without writes", () => {
+  withRepository((fixture) => {
+    const legacy = enrolledLegacyRetirement(fixture, "historical-v1-status", {
+      readBootId: () => BOOT_A,
+      token: "0"
+    });
+    const historical = materializeHistoricalV1Retirement(legacy.managed, "historical-v1-status");
+    const paths = [
+      historical.adoptionRequestPath,
+      historical.adoptionEntryPath,
+      historical.archiveRequestPath,
+      historical.archiveReceiptPath,
+      historical.archiveCompletionPath,
+      ...retirementSweepPaths(legacy.managed, "legacy", "historical-v1-status")
+    ];
+    const before = paths.map((path) => readFileSync(path));
+
+    const [row] = legacy.managed.legacyStatus("historical-v1-status");
+    assert.equal(row.ownerTask, "/root/historical-v1-status");
+    assert.equal(row.retirement.state, "eligible");
+    const output = [];
+    const [publicRow] = runCheckoutLifecycleCli(["legacy-status", "historical-v1-status"], {
+      repositoryPath: fixture.repository,
+      readBootId: () => BOOT_A,
+      stdout: {
+        write(value) {
+          output.push(value);
+        }
+      }
+    });
+    assert.equal(publicRow.ownerTask, "/root/historical-v1-status");
+    assert.equal(output.length, 1);
+    for (const [index, path] of paths.entries()) assert.deepEqual(readFileSync(path), before[index]);
+  });
+});
+
+test("public status and retire parse sweep v1 over current v2 anchors without changing that journal", () => {
+  withRepository((fixture) => {
+    const legacy = enrolledLegacyRetirement(fixture, "legacy-v1-public", {
+      readBootId: () => BOOT_A,
+      token: "1"
+    });
+    downgradeLegacySweepToV1(legacy.managed, "legacy-v1-public");
+    const before = Object.fromEntries(
+      retirementSweepPaths(legacy.managed, "legacy", "legacy-v1-public").map((path) => [path, readFileSync(path)])
+    );
+    legacy.managed.create({
+      slug: "managed-after-v1",
+      branch: "agent/managed-after-v1",
+      ownerTask: "/root/managed-after-v1"
+    });
+    const options = {
+      repositoryPath: fixture.repository,
+      readBootId: () => BOOT_A,
+      tokenFactory: () => "2".repeat(32),
+      stdout: { write() {} }
+    };
+
+    assert.equal(runCheckoutLifecycleCli(["status", "managed-after-v1"], options)[0].state, "active");
+    assert.equal(
+      runCheckoutLifecycleCli(
+        ["retire", "managed-after-v1", "--owner", "/root/managed-after-v1", "--revision", "1"],
+        options
+      ).status,
+      "retirement-enrolled"
+    );
+    for (const [path, bytes] of Object.entries(before)) assert.deepEqual(readFileSync(path), bytes);
+    assert.equal(existsSync(legacy.checkout), true);
+  });
+});
+
+for (const scenario of [
+  {
+    name: "quarantine intent before move",
+    slug: "legacy-v1-intent",
+    expectedRecords: 2,
+    hook: "beforeRetirementMove"
+  },
+  {
+    name: "recorded quarantine",
+    slug: "legacy-v1-quarantined",
+    expectedRecords: 3,
+    hook: "afterRetirementQuarantineRecorded"
+  },
+  {
+    name: "purge intent before removal",
+    slug: "legacy-v1-purge-before",
+    expectedRecords: 4,
+    hook: "beforeRetirementPurge"
+  },
+  {
+    name: "purge intent after removal",
+    slug: "legacy-v1-purge-after",
+    expectedRecords: 4,
+    hook: "afterRetirementPurgeCommand"
+  }
+]) {
+  test(`legacy v1 reconciliation resumes from ${scenario.name}`, () => {
+    withRepository((fixture) => {
+      let bootId = BOOT_A;
+      const hooks = {
+        [scenario.hook]() {
+          throw new Error(`stop at ${scenario.name}`);
+        }
+      };
+      const legacy = enrolledLegacyRetirement(fixture, scenario.slug, {
+        readBootId: () => bootId,
+        hooks,
+        token: String(scenario.expectedRecords)
+      });
+      bootId = BOOT_B;
+      assert.throws(() => legacy.managed.sweep(), new RegExp(`stop at ${scenario.name}`, "u"));
+      assert.equal(retirementSweepPaths(legacy.managed, "legacy", scenario.slug).length, scenario.expectedRecords);
+      materializeHistoricalV1Retirement(legacy.managed, scenario.slug);
+
+      const resumed = defaultManager(fixture, { readBootId: () => bootId, tokenFactory: () => "9".repeat(32) });
+      assert.equal(resumed.sweep().results[0].state, "retired");
+      const values = retirementSweepPaths(resumed, "legacy", scenario.slug).map((path) =>
+        JSON.parse(readFileSync(path, "utf8"))
+      );
+      assert.equal(values.length, 5);
+      assert.equal(
+        values.slice(0, scenario.expectedRecords).every((value) => value.protocol.endsWith("-v1")),
+        true
+      );
+      assert.equal(
+        values
+          .slice(scenario.expectedRecords)
+          .every(
+            (value) =>
+              value.protocol === "openwrangler-checkout-retirement-sweep-v2" &&
+              value.ownerTask === `/root/${scenario.slug}` &&
+              value.ownerRevision === 1
+          ),
+        true
+      );
+    });
+  });
+}
+
+test("a terminal legacy v1 retirement chain remains readable without journal writes", () => {
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const legacy = enrolledLegacyRetirement(fixture, "legacy-v1-terminal", {
+      readBootId: () => bootId,
+      token: "5"
+    });
+    bootId = BOOT_B;
+    assert.equal(legacy.managed.sweep().results[0].state, "retired");
+    materializeHistoricalV1Retirement(legacy.managed, "legacy-v1-terminal");
+    const before = retirementSweepPaths(legacy.managed, "legacy", "legacy-v1-terminal").map((path) =>
+      readFileSync(path)
+    );
+
+    assert.equal(defaultManager(fixture, { readBootId: () => bootId }).sweep().results[0].state, "retired");
+    for (const [index, path] of retirementSweepPaths(legacy.managed, "legacy", "legacy-v1-terminal").entries()) {
+      assert.deepEqual(readFileSync(path), before[index]);
+    }
+  });
+});
+
+test("legacy v1 compatibility rejects owner injection, malformed protocol transitions, and source replacement", () => {
+  withRepository((fixture) => {
+    const legacy = enrolledLegacyRetirement(fixture, "legacy-v1-owner-injection", {
+      readBootId: () => BOOT_A,
+      token: "6"
+    });
+    downgradeLegacySweepToV1(legacy.managed, "legacy-v1-owner-injection");
+    rewriteRetirementSweep(legacy.managed, "legacy", "legacy-v1-owner-injection", (value) => ({
+      ...value,
+      ownerTask: "/root/injected",
+      ownerRevision: 1
+    }));
+    lifecycleError(() => legacy.managed.sweep(), "invalid-registry");
+  });
+
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const legacy = enrolledLegacyRetirement(fixture, "legacy-v1-protocol-downgrade", {
+      readBootId: () => bootId,
+      hooks: {
+        beforeRetirementMove() {
+          throw new Error("stop after v2 intent");
+        }
+      },
+      token: "7"
+    });
+    bootId = BOOT_B;
+    assert.throws(() => legacy.managed.sweep(), /stop after v2 intent/u);
+    rewriteRetirementSweep(legacy.managed, "legacy", "legacy-v1-protocol-downgrade", (value, index) => {
+      if (index === 1) {
+        value.protocol = "openwrangler-checkout-retirement-sweep-v1";
+        delete value.ownerTask;
+        delete value.ownerRevision;
+      }
+      return value;
+    });
+    lifecycleError(() => defaultManager(fixture, { readBootId: () => bootId }).sweep(), "invalid-retirement-journal");
+  });
+
+  withRepository((fixture) => {
+    const legacy = enrolledLegacyRetirement(fixture, "legacy-v1-unknown-protocol", {
+      readBootId: () => BOOT_A,
+      token: "a"
+    });
+    rewriteRetirementSweep(legacy.managed, "legacy", "legacy-v1-unknown-protocol", (value) => {
+      value.protocol = "openwrangler-checkout-retirement-sweep-v9";
+      delete value.ownerTask;
+      delete value.ownerRevision;
+      return value;
+    });
+    lifecycleError(() => legacy.managed.sweep(), "invalid-retirement-journal");
+  });
+
+  withRepository((fixture) => {
+    let bootId = BOOT_A;
+    const legacy = enrolledLegacyRetirement(fixture, "legacy-v1-owner-mismatch", {
+      readBootId: () => bootId,
+      hooks: {
+        beforeRetirementMove() {
+          throw new Error("stop after v1 intent");
+        }
+      },
+      token: "8"
+    });
+    bootId = BOOT_B;
+    assert.throws(() => legacy.managed.sweep(), /stop after v1 intent/u);
+    downgradeLegacySweepToV1(legacy.managed, "legacy-v1-owner-mismatch");
+    rewriteRetirementSweep(legacy.managed, "legacy", "legacy-v1-owner-mismatch", (value, index) => {
+      if (index === 1) {
+        value.protocol = "openwrangler-checkout-retirement-sweep-v2";
+        value.ownerTask = "/root/not-the-adopter";
+        value.ownerRevision = 1;
+      }
+      return value;
+    });
+    lifecycleError(() => defaultManager(fixture, { readBootId: () => bootId }).sweep(), "invalid-retirement-journal");
+  });
+
+  withRepository((fixture) => {
+    const legacy = enrolledLegacyRetirement(fixture, "legacy-v1-source-replaced", {
+      readBootId: () => BOOT_A,
+      token: "9"
+    });
+    const historical = materializeHistoricalV1Retirement(legacy.managed, "legacy-v1-source-replaced");
+    const archiveReceiptPath = historical.archiveReceiptPath;
+    const bytes = readFileSync(archiveReceiptPath);
+    renameSync(archiveReceiptPath, `${archiveReceiptPath}.retained`);
+    writeFileSync(archiveReceiptPath, bytes, { mode: 0o600 });
+    lifecycleError(() => legacy.managed.sweep(), "retirement-source-changed");
+  });
+});
+
+test("historical v1 retirement rejects malformed anchors, links, owners, paths, hashes, and substitutions", () => {
+  withRepository((fixture) => {
+    const legacy = enrolledLegacyRetirement(fixture, "historical-v1-malformed", {
+      readBootId: () => BOOT_A,
+      token: "b"
+    });
+    const historical = materializeHistoricalV1Retirement(legacy.managed, "historical-v1-malformed");
+    const paths = [
+      historical.adoptionRequestPath,
+      historical.adoptionEntryPath,
+      historical.archiveRequestPath,
+      historical.archiveReceiptPath,
+      historical.archiveCompletionPath,
+      ...retirementSweepPaths(legacy.managed, "legacy", "historical-v1-malformed")
+    ];
+    const pristine = paths.map((path) => readFileSync(path));
+    const restore = () => {
+      for (const [index, path] of paths.entries()) writeFileSync(path, pristine[index]);
+    };
+    const rejected = (transforms, code) => {
+      rewriteHistoricalV1Anchors(historical, transforms);
+      lifecycleError(() => legacy.managed.sweep(), code);
+      restore();
+    };
+
+    rejected({ adoptionRequest: (value) => ({ ...value, unexpectedAuthority: "/root/injected" }) }, "invalid-registry");
+    rejected(
+      {
+        archiveRequest: (value) => ({
+          ...value,
+          adoption: { ...value.adoption, path: `${value.adoption.path}.wrong` }
+        })
+      },
+      "retirement-source-changed"
+    );
+    rejected(
+      {
+        archiveRequest: (value) => ({
+          ...value,
+          adoption: { ...value.adoption, sha256: "f".repeat(64) }
+        })
+      },
+      "retirement-source-changed"
+    );
+    rejected(
+      { archiveReceipt: (value) => ({ ...value, ownerTask: "/root/not-the-adopter" }) },
+      "invalid-legacy-archive"
+    );
+    rejected(
+      {
+        archiveReceipt: (value) => ({
+          ...value,
+          protocol: "openwrangler-legacy-recovery-archive-v2",
+          ownerRevision: 1
+        })
+      },
+      "invalid-legacy-archive"
+    );
+    rejected(
+      {
+        archiveReceipt: (value) => ({
+          ...value,
+          request: { ...value.request, sha256: "e".repeat(64) }
+        })
+      },
+      "retirement-source-changed"
+    );
+
+    const bytes = readFileSync(historical.adoptionEntryPath);
+    renameSync(historical.adoptionEntryPath, `${historical.adoptionEntryPath}.retained`);
+    writeFileSync(historical.adoptionEntryPath, bytes, { mode: 0o600 });
+    lifecycleError(() => legacy.managed.sweep(), "unsafe-registry");
   });
 });
 
