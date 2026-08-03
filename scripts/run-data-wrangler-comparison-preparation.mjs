@@ -407,6 +407,7 @@ export function validateDataWranglerComparisonConfiguredProfilesBootstrap(bootst
         !Array.isArray(profile.sandboxArgs) ||
         profile.sandboxArgs.some((argument) => typeof argument !== "string" || /[\0\r\n]/u.test(argument)) ||
         !Array.isArray(profile.installedExtensions) ||
+        !/^[0-9a-f]{64}$/u.test(profile.settingsSha256 ?? "") ||
         !profile.editor ||
         profile.editor.name !== editor.name ||
         profile.editor.key !== editor.key ||
@@ -608,7 +609,11 @@ export async function prepareDataWranglerComparisonStudy(options, environment = 
     const template = configuredTemplates.find((entry) => entry.product === product && entry.kind === "configured-only");
     const inventory = await dependencies.queryInventory(template, identifiedEditor, profileEnvironment);
     assertTemplateInventory(inventory, expectedExtensions(specification, candidate.version, product));
-    templateTrees.set(`${product}:configured-only`, dependencies.captureTree(template.root).treeSha256);
+    templateTrees.set(
+      `${product}:configured-only`,
+      dependencies.captureTree(template.root, `Comparison ${product} configured template`, template.inventory)
+        .treeSha256
+    );
   }
   const pythonFile = dependencies.captureFile(options.python, "Comparison preparation Python", { executable: true });
   const ipykernel = python.packages.find((entry) => entry.name === "ipykernel");

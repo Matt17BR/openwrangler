@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { chmodSync, lstatSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { recoverDataWranglerComparisonDriver } from "./data-wrangler-comparison-driver.mjs";
 import { writeDataWranglerComparisonNotebook } from "./data-wrangler-comparison-notebook.mjs";
 import {
@@ -28,6 +28,7 @@ import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
   editorAcceptanceProgressPath,
+  editorProcessTreeMayBeLive,
   runBoundedEditorCliCommand,
   runEditorAcceptancePhase
 } from "./editor-acceptance.mjs";
@@ -253,6 +254,207 @@ function validateWarmupReceipt(raw, { product, editor, fixture, kernel, sourceRe
   return raw;
 }
 
+export async function runPreparedProductWarmupJourney(
+  {
+    product,
+    runId,
+    runRoot,
+    profile,
+    editor,
+    pythonPath,
+    kernel,
+    fixture,
+    fixturePath,
+    driverDirectory,
+    driverVsixPath,
+    expectedDriver,
+    expectedInventory,
+    developmentPaths = [driverDirectory]
+  },
+  environment = process.env,
+  overrides = {}
+) {
+  if (!Object.hasOwn(PHASES, product) || typeof runId !== "string") {
+    fail("Public warm-up journey requires one measured product and run ID.");
+  }
+  if (
+    profile === null ||
+    typeof profile !== "object" ||
+    !Array.isArray(profile.sandboxArgs) ||
+    !Array.isArray(expectedInventory) ||
+    !Array.isArray(developmentPaths)
+  ) {
+    fail("Public warm-up journey requires one exact profile and extension inventory.");
+  }
+  const dependencies = {
+    createEnvironment: createEditorAcceptanceEnvironment,
+    configureTempRoot: configureEditorAcceptanceTempRoot,
+    createSourceCopy: createDataWranglerComparisonSourceCopy,
+    cleanupSourceCopy: cleanupDataWranglerComparisonSourceCopy,
+    writeNotebook: writeDataWranglerComparisonNotebook,
+    runPhase: runEditorAcceptancePhase,
+    requireWatchHeadroom: requireLinuxInotifyWatchHeadroom,
+    readInventory,
+    controlWarmup: controlDataWranglerPublicWarmup,
+    recoverDriver: recoverDataWranglerComparisonDriver,
+    materializeKernel: materializeDataWranglerComparisonRunKernel,
+    remove: rmSync,
+    ...overrides
+  };
+  if (lstatSync(runRoot, { bigint: true, throwIfNoEntry: false }) !== undefined) {
+    fail("Public warm-up run root must be absent before setup.");
+  }
+  mkdirSync(dirname(runRoot), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(runRoot), 0o700);
+  mkdirSync(runRoot, { mode: 0o700 });
+  chmodSync(runRoot, 0o700);
+  const bridgeRoot = resolve(runRoot, "bridge");
+  mkdirSync(bridgeRoot, { mode: 0o700 });
+  chmodSync(bridgeRoot, 0o700);
+  const runEnvironment = dependencies.createEnvironment(environment, {
+    OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
+    OPEN_WRANGLER_EDITOR_TEMP_ROOT: runRoot
+  });
+  dependencies.configureTempRoot(runRoot, runEnvironment);
+  const runKernel = dependencies.materializeKernel({ runRoot, kernel });
+  dependencies.recoverDriver({ directory: driverDirectory, vsixPath: driverVsixPath, expectedDriver });
+  assertInventory(
+    await dependencies.readInventory({
+      editor,
+      userData: profile.userData,
+      extensions: profile.extensions,
+      sandboxArgs: profile.sandboxArgs,
+      environment: runEnvironment
+    }),
+    expectedInventory
+  );
+  await dependencies.requireWatchHeadroom({ runRoot });
+  const sourceCopy = dependencies.createSourceCopy({
+    canonicalPath: fixturePath,
+    privateRoot: runRoot,
+    name: "warmup.csv"
+  });
+  let sourceSettled = false;
+  let operationError;
+  let receipt;
+  try {
+    const notebookPath = resolve(runRoot, "warmup.ipynb");
+    const requestPath = resolve(bridgeRoot, "request.json");
+    const acknowledgementPath = resolve(bridgeRoot, "acknowledgement.json");
+    const resultPath = resolve(runRoot, "result.json");
+    dependencies.writeNotebook(notebookPath, {
+      engine: "polars",
+      format: "csv",
+      kind: "warm",
+      fixture: {
+        id: fixture.id,
+        format: fixture.format,
+        rows: fixture.rows,
+        columns: fixture.columns,
+        sha256: fixture.sha256
+      },
+      kernel: { name: kernel.name, displayName: kernel.displayName },
+      sourceReceipt: sourceCopy.copyReceipt
+    });
+    const controlAbort = new AbortController();
+    const controlPromise = Promise.resolve().then(() =>
+      dependencies.controlWarmup({
+        requestPath,
+        acknowledgementPath,
+        runId,
+        phase: PHASES[product],
+        signal: controlAbort.signal
+      })
+    );
+    const phasePromise = Promise.resolve().then(() =>
+      dependencies.runPhase(
+        {
+          editor,
+          workspace: notebookPath,
+          userData: profile.userData,
+          extensions: profile.extensions,
+          developmentPaths,
+          python: pythonPath,
+          phase: PHASES[product],
+          resultPath,
+          editorProductVersion: editor.version,
+          runId,
+          progressPath: editorAcceptanceProgressPath(resultPath, runId, PHASES[product]),
+          requiresWorkbenchCdp: true,
+          jupyterEnvironment: structuredClone(runKernel.jupyterEnvironment),
+          comparisonStudyEnvironment: {
+            requestPath,
+            acknowledgementPath,
+            sourcePath: sourceCopy.copyPath,
+            publicSurfaceAvailability: "available"
+          }
+        },
+        { environment: runEnvironment }
+      )
+    );
+    void phasePromise.catch((error) => controlAbort.abort(error));
+    let outcomes;
+    try {
+      outcomes = await Promise.allSettled([phasePromise, controlPromise]);
+    } finally {
+      controlAbort.abort("public-warmup-settled");
+    }
+    const [phaseOutcome, controlOutcome] = outcomes;
+    const failures = outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason);
+    if (failures.length > 0) {
+      if (
+        phaseOutcome.status === "rejected" &&
+        controlOutcome.status === "rejected" &&
+        controlAbort.signal.reason === phaseOutcome.reason &&
+        controlOutcome.reason?.code === "aborted"
+      ) {
+        throw phaseOutcome.reason;
+      }
+      if (failures.length === 1) throw failures[0];
+      throw new AggregateError(failures, "Public notebook warm-up phase and its controller did not both settle.");
+    }
+    const [raw, controlReceipt] = outcomes.map((outcome) => outcome.value);
+    receipt = validateWarmupReceipt(raw, {
+      product,
+      editor,
+      fixture,
+      kernel,
+      sourceReceipt: sourceCopy.copyReceipt,
+      controlReceipt
+    });
+    dependencies.cleanupSourceCopy(sourceCopy);
+    sourceSettled = true;
+    dependencies.recoverDriver({ directory: driverDirectory, vsixPath: driverVsixPath, expectedDriver });
+    assertInventory(
+      await dependencies.readInventory({
+        editor,
+        userData: profile.userData,
+        extensions: profile.extensions,
+        sandboxArgs: profile.sandboxArgs,
+        environment: runEnvironment
+      }),
+      expectedInventory
+    );
+    dependencies.remove(runRoot, { recursive: true, force: false });
+  } catch (error) {
+    operationError = error;
+  }
+  let cleanupError;
+  if (!sourceSettled && !editorProcessTreeMayBeLive(operationError)) {
+    try {
+      dependencies.cleanupSourceCopy(sourceCopy);
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  if (operationError !== undefined && cleanupError !== undefined) {
+    throw new AggregateError([operationError, cleanupError], "Public warm-up and source cleanup both failed.");
+  }
+  if (operationError !== undefined) throw operationError;
+  if (cleanupError !== undefined) throw cleanupError;
+  return receipt;
+}
+
 export async function capturePreparedProductWarmups(
   {
     specification,
@@ -312,19 +514,13 @@ export async function capturePreparedProductWarmups(
     );
     let completed = false;
     let cloneRetired = false;
+    let processTreeUncertain = false;
     try {
-      const runRoot = resolve(studyRoot, "warmup-runs", `${product}-${id}`);
-      mkdirSync(runRoot, { recursive: true, mode: 0o700 });
-      chmodSync(runRoot, 0o700);
-      const bridgeRoot = resolve(runRoot, "bridge");
-      mkdirSync(bridgeRoot, { mode: 0o700 });
-      chmodSync(bridgeRoot, 0o700);
+      const runRoot = resolve(clone.root, "public-warmup");
       const runEnvironment = dependencies.createEnvironment(environment, {
         OPEN_WRANGLER_EDITOR_DISPLAY: "headless",
         OPEN_WRANGLER_EDITOR_TEMP_ROOT: runRoot
       });
-      dependencies.configureTempRoot(runRoot, runEnvironment);
-      const runKernel = dependencies.materializeKernel({ runRoot, kernel });
       const productExtension =
         product === "open-wrangler"
           ? { extensionId: specification.candidate.extensionId, version: specification.candidate.version }
@@ -340,121 +536,32 @@ export async function capturePreparedProductWarmups(
         extension: productExtension,
         label: "Official VS Code Data Wrangler warm-up Marketplace installation"
       });
-      assertInventory(
-        await dependencies.readInventory({
-          editor,
-          userData: clone.userData,
-          extensions: clone.extensions,
-          sandboxArgs: clone.sandboxArgs,
-          environment: runEnvironment
-        }),
-        expectedInventory
-      );
-      const sourceCopy = dependencies.createSourceCopy({
-        canonicalPath: fixturePath,
-        privateRoot: runRoot,
-        name: "warmup.csv"
-      });
-      const notebookPath = resolve(runRoot, "warmup.ipynb");
-      const requestPath = resolve(bridgeRoot, "request.json");
-      const acknowledgementPath = resolve(bridgeRoot, "acknowledgement.json");
-      const resultPath = resolve(runRoot, "result.json");
-      dependencies.writeNotebook(notebookPath, {
-        engine: "polars",
-        format: "csv",
-        kind: "warm",
-        fixture: {
-          id: fixture.id,
-          format: fixture.format,
-          rows: fixture.rows,
-          columns: fixture.columns,
-          sha256: fixture.sha256
-        },
-        kernel: { name: kernel.name, displayName: kernel.displayName },
-        sourceReceipt: sourceCopy.copyReceipt
-      });
-      const controlAbort = new AbortController();
-      await dependencies.requireWatchHeadroom({ runRoot });
-      const controlPromise = Promise.resolve().then(() =>
-        dependencies.controlWarmup({
-          requestPath,
-          acknowledgementPath,
+      const receipt = await runPreparedProductWarmupJourney(
+        {
+          product,
           runId: id,
-          phase: PHASES[product],
-          signal: controlAbort.signal
-        })
-      );
-      const phasePromise = Promise.resolve().then(() =>
-        dependencies.runPhase(
-          {
-            editor,
-            workspace: notebookPath,
-            userData: clone.userData,
-            extensions: clone.extensions,
-            developmentPaths: [driverDirectory],
-            python: pythonPath,
-            phase: PHASES[product],
-            resultPath,
-            editorProductVersion: editor.version,
-            runId: id,
-            progressPath: editorAcceptanceProgressPath(resultPath, id, PHASES[product]),
-            requiresWorkbenchCdp: true,
-            jupyterEnvironment: structuredClone(runKernel.jupyterEnvironment),
-            comparisonStudyEnvironment: {
-              requestPath,
-              acknowledgementPath,
-              sourcePath: sourceCopy.copyPath,
-              publicSurfaceAvailability: "available"
-            }
-          },
-          { environment: runEnvironment }
-        )
-      );
-      void phasePromise.catch((error) => controlAbort.abort(error));
-      let outcomes;
-      try {
-        outcomes = await Promise.allSettled([phasePromise, controlPromise]);
-      } finally {
-        controlAbort.abort("public-warmup-settled");
-      }
-      const [phaseOutcome, controlOutcome] = outcomes;
-      const failures = outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason);
-      if (failures.length > 0) {
-        if (
-          phaseOutcome.status === "rejected" &&
-          controlOutcome.status === "rejected" &&
-          controlAbort.signal.reason === phaseOutcome.reason &&
-          controlOutcome.reason?.code === "aborted"
-        ) {
-          throw phaseOutcome.reason;
-        }
-        if (failures.length === 1) throw failures[0];
-        throw new AggregateError(failures, "Public notebook warm-up phase and its controller did not both settle.");
-      }
-      const [raw, controlReceipt] = outcomes.map((outcome) => outcome.value);
-      const receipt = validateWarmupReceipt(raw, {
-        product,
-        editor,
-        fixture,
-        kernel,
-        sourceReceipt: sourceCopy.copyReceipt,
-        controlReceipt
-      });
-      dependencies.cleanupSourceCopy(sourceCopy);
-      dependencies.recoverDriver({ directory: driverDirectory, vsixPath: driverVsixPath, expectedDriver });
-      assertInventory(
-        await dependencies.readInventory({
+          runRoot,
+          profile: clone,
           editor,
-          userData: clone.userData,
-          extensions: clone.extensions,
-          sandboxArgs: clone.sandboxArgs,
-          environment: runEnvironment
-        }),
+          pythonPath,
+          kernel,
+          fixture,
+          fixturePath,
+          driverDirectory,
+          driverVsixPath,
+          expectedDriver,
+          expectedInventory
+        },
+        runEnvironment,
+        dependencies
+      );
+      const retainedRoot = resolve(studyRoot, "templates", product, `warmed-${id}`);
+      const tree = dependencies.captureTemplate(
+        clone.root,
+        retainedRoot,
+        `Public ${product} warmed template`,
         expectedInventory
       );
-      dependencies.remove(runRoot, { recursive: true, force: false });
-      const retainedRoot = resolve(studyRoot, "templates", product, `warmed-${id}`);
-      const tree = dependencies.captureTemplate(clone.root, retainedRoot, `Public ${product} warmed template`);
       const retirement = dependencies.retireClone(clone);
       if (retirement.status !== "retired" || retirement.treeEmpty !== true) {
         fail(`Public ${product} warm-up clone was not retired.`);
@@ -478,8 +585,11 @@ export async function capturePreparedProductWarmups(
         })
       );
       completed = true;
+    } catch (error) {
+      processTreeUncertain = editorProcessTreeMayBeLive(error);
+      throw error;
     } finally {
-      if (!completed && !cloneRetired) {
+      if (!completed && !cloneRetired && !processTreeUncertain) {
         dependencies.retireClone(clone);
       }
     }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -1103,7 +1103,11 @@ async function runComparisonProductInternal(
   } else {
     prepareComparisonDiagnosticWorkspace(workspace, fixtureRoot);
   }
-  writeEditorSettings(userData, comparisonEditorSettings(python));
+  const editorSettings = comparisonEditorSettings(python);
+  const settingsSha256 = createHash("sha256")
+    .update(`${JSON.stringify(editorSettings, null, 2)}\n`, "utf8")
+    .digest("hex");
+  writeEditorSettings(userData, editorSettings);
 
   const sandboxArgs = ["--no-sandbox", ...editorDisplayLaunchArgs("linux", environment)];
   const editorEnvironment = createEditorAcceptanceEnvironment(environment);
@@ -1223,6 +1227,7 @@ async function runComparisonProductInternal(
       editor: identifiedEditor,
       sandboxArgs: Object.freeze([...sandboxArgs]),
       installedExtensions: Object.freeze([...installedExtensions]),
+      settingsSha256,
       configuredPythonProcessObservedDuringSetup: true
     });
     return Object.freeze({ editorVersion, profile: profileDescriptor });
