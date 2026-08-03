@@ -11,6 +11,7 @@ import {
   observeNotebookTrialVisibleShape,
   readStudyIpynbCellTags,
   validateDataWranglerComparisonSentinelRows,
+  validateDataWranglerObservedSentinels,
   validateDataWranglerNotebookTrialPhaseReceipt,
   type DataWranglerNotebookTrialPhaseReceipt,
   type NotebookTrialActionEvidence,
@@ -82,6 +83,40 @@ describe("study ipynb cell metadata", () => {
     expect(() => readStudyIpynbCellTags({ metadata: { tags: ["ow-study-setup", "ow-study-setup"] } })).toThrow(
       /unique non-empty/u
     );
+  });
+});
+
+describe("study notebook sentinel evidence", () => {
+  it("accepts the sorted object-key order emitted by Python JSON", () => {
+    const sentinels = JSON.parse(
+      '[{"column":"c00","rowIndex":0,"value":0},{"column":"c01","rowIndex":1,"value":2},{"column":"c49","rowIndex":99999,"value":100048}]'
+    ) as unknown;
+    expect(() => validateDataWranglerObservedSentinels(sentinels, 100_000, 50)).not.toThrow();
+  });
+
+  it("rejects changed values and unknown sentinel fields", () => {
+    expect(() =>
+      validateDataWranglerObservedSentinels(
+        [
+          { column: "c00", rowIndex: 0, value: 0 },
+          { column: "c01", rowIndex: 1, value: 3 },
+          { column: "c49", rowIndex: 99_999, value: 100_048 }
+        ],
+        100_000,
+        50
+      )
+    ).toThrow(/engine-observed sentinel values/u);
+    expect(() =>
+      validateDataWranglerObservedSentinels(
+        [
+          { column: "c00", rowIndex: 0, value: 0, extra: true },
+          { column: "c01", rowIndex: 1, value: 2 },
+          { column: "c49", rowIndex: 99_999, value: 100_048 }
+        ],
+        100_000,
+        50
+      )
+    ).toThrow(/missing or unknown fields/u);
   });
 });
 

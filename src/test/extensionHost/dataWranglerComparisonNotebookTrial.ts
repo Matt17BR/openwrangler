@@ -1065,19 +1065,39 @@ function validateObservedSource(
       fail(`${label} schema does not match the engine-observed Int64 fixture.`);
     }
   });
-  const expectedSentinels = [
+  validateDataWranglerObservedSentinels(observed.sentinels, study.fixture.rows, study.fixture.columns, label);
+  return value as NotebookTrialVerificationEvidence["observedSource"];
+}
+
+export function validateDataWranglerObservedSentinels(
+  value: unknown,
+  rows: number,
+  columns: number,
+  label = "Study observed source"
+): void {
+  if (!Number.isSafeInteger(rows) || rows < 3 || !Number.isSafeInteger(columns) || columns < 2) {
+    fail("Study observed sentinel dimensions are invalid.");
+  }
+  const expected = [
     { rowIndex: 0, column: "c00", value: 0 },
     { rowIndex: 1, column: "c01", value: 2 },
     {
-      rowIndex: study.fixture.rows - 1,
-      column: comparisonColumnName(study.fixture.columns - 1),
-      value: study.fixture.rows + study.fixture.columns - 2
+      rowIndex: rows - 1,
+      column: comparisonColumnName(columns - 1),
+      value: rows + columns - 2
     }
   ];
-  if (JSON.stringify(observed.sentinels) !== JSON.stringify(expectedSentinels)) {
+  if (!Array.isArray(value) || value.length !== expected.length) {
     fail(`${label} does not contain the engine-observed sentinel values.`);
   }
-  return value as NotebookTrialVerificationEvidence["observedSource"];
+  value.forEach((item, index) => {
+    const sentinel = requireRecord(item, `${label} sentinel ${index}`);
+    exactKeys(sentinel, ["rowIndex", "column", "value"], `${label} sentinel ${index}`);
+    const wanted = expected[index]!;
+    if (sentinel.rowIndex !== wanted.rowIndex || sentinel.column !== wanted.column || sentinel.value !== wanted.value) {
+      fail(`${label} does not contain the engine-observed sentinel values.`);
+    }
+  });
 }
 
 export function validateDataWranglerComparisonSentinelRows(value: unknown, rows: number): void {
