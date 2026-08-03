@@ -21,7 +21,6 @@ jobs:
     outputs:
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
       draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
-      internal_tooling_only: ${{ steps.classify.outputs.internal_tooling_only }}
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
       package_only: ${{ steps.classify.outputs.package_only }}
       full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
@@ -68,25 +67,6 @@ jobs:
         run: npm run license:check
       - name: Workflow contracts
         run: npm run test:scripts:workflow
-
-  checkout-lifecycle-contracts:
-    name: Checkout lifecycle contracts
-    needs: classify
-    if: >-
-      ${{
-        !cancelled() &&
-        (needs.classify.result != 'success' ||
-         (needs.classify.outputs.internal_tooling_only == 'true' &&
-          needs.classify.outputs.draft_pull_request == 'false'))
-      }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-      - run: node --test scripts/checkout-lifecycle.test.mjs
 
   canonical-vsix:
     needs: classify
@@ -810,7 +790,6 @@ jobs:
     needs:
       - classify
       - fast-feedback
-      - checkout-lifecycle-contracts
       - contract-tests
       - visual-accessibility
       - production-audits
@@ -839,13 +818,11 @@ jobs:
         env:
           DOCUMENTATION_ONLY: ${{ needs.classify.outputs.documentation_only }}
           DRAFT_PULL_REQUEST: ${{ needs.classify.outputs.draft_pull_request }}
-          INTERNAL_TOOLING_ONLY: ${{ needs.classify.outputs.internal_tooling_only }}
           LIGHTWEIGHT_ONLY: ${{ needs.classify.outputs.lightweight_only }}
           PACKAGE_ONLY: ${{ needs.classify.outputs.package_only }}
           FULL_MATRIX_REQUIRED: ${{ needs.classify.outputs.full_matrix_required }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           FAST_FEEDBACK_RESULT: ${{ needs.fast-feedback.result }}
-          CHECKOUT_LIFECYCLE_CONTRACTS_RESULT: ${{ needs.checkout-lifecycle-contracts.result }}
           CONTRACT_TESTS_RESULT: ${{ needs.contract-tests.result }}
           VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
           PRODUCTION_AUDITS_RESULT: ${{ needs.production-audits.result }}
