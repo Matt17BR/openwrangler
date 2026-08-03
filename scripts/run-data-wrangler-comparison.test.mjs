@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -11,22 +12,26 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import nodeTest from "node:test";
 import { PINNED_PYTHON_EXTENSION_ID } from "./editor-acceptance.mjs";
 import { DATA_WRANGLER_COMPARISON_BOUNDARY } from "./data-wrangler-comparison-report.mjs";
 import {
   COMPARISON_PRODUCT_FRAGMENT_PROTOCOL,
+  COMPARISON_CONFIGURED_PROFILES_PROTOCOL,
   COMPARISON_COMMON_EXTENSION_LOCK,
   COMPARISON_TEST_PHASES,
+  DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS,
   DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
   DATA_WRANGLER_MARKETPLACE_EXTENSION,
   assertComparisonPathSeparation,
+  bootstrapDataWranglerComparisonConfiguredProfiles,
   captureComparisonInputFile,
   createComparisonProductEditorPhasePlan,
   dataWranglerComparisonKernelLabel,
   comparisonPythonCommandMatches,
   comparisonPythonCommandShape,
+  createDataWranglerComparisonPrivateRoot,
   createComparisonPythonProcessObserver,
   installComparisonExtension,
   installedComparisonProductVersion,
@@ -49,6 +54,78 @@ const OPEN_WRANGLER_RUN_ID = "11111111-1111-4111-8111-111111111111";
 const DATA_WRANGLER_RUN_ID = "22222222-2222-4222-8222-222222222222";
 // The runner is Linux x64-only, and these fixtures intentionally exercise Linux inode and symlink semantics.
 const test = (name, callback) => nodeTest(name, { skip: process.platform !== "linux" }, callback);
+
+test("comparison retained roots use the ignored node_modules cache and keep the tmp/ow/x suffix", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-comparison-private-root-"));
+  const nodeModules = resolve(directory, "node_modules");
+  mkdirSync(nodeModules, { mode: 0o775 });
+  const cache = resolve(nodeModules, ".cache");
+  mkdirSync(cache, { mode: 0o755 });
+  try {
+    const lease = createDataWranglerComparisonPrivateRoot(directory);
+    const expectedParent = resolve(directory, ...DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS);
+    assert.equal(lease.privateParent, expectedParent);
+    assert.equal(dirname(lease.privateRoot), expectedParent);
+    assert.match(basename(lease.privateRoot), /^x-[A-Za-z0-9]{6}$/u);
+    for (const component of ["openwrangler-comparison", "tmp", "ow"]) {
+      const index = DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS.indexOf(component);
+      const path = resolve(directory, ...DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS.slice(0, index + 1));
+      assert.equal(Number(lstatSync(path, { bigint: true }).mode & 0o777n), 0o700);
+    }
+    assert.equal(Number(lstatSync(lease.privateRoot, { bigint: true }).mode & 0o777n), 0o700);
+    lease.revalidate();
+    lease.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("comparison retained-root creation rejects linked or writable cache ancestors", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-comparison-private-root-unsafe-"));
+  const target = resolve(directory, "target");
+  mkdirSync(target, { mode: 0o700 });
+  try {
+    symlinkSync(target, resolve(directory, "node_modules"));
+    assert.throws(() => createDataWranglerComparisonPrivateRoot(directory), /node_modules root/u);
+    rmSync(resolve(directory, "node_modules"));
+
+    const nodeModules = resolve(directory, "node_modules");
+    mkdirSync(nodeModules, { mode: 0o755 });
+    symlinkSync(target, resolve(nodeModules, ".cache"));
+    assert.throws(() => createDataWranglerComparisonPrivateRoot(directory), /component \.cache/u);
+    rmSync(resolve(nodeModules, ".cache"));
+
+    chmodSync(nodeModules, 0o777);
+    assert.throws(() => createDataWranglerComparisonPrivateRoot(directory), /safe write permissions/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("comparison retained-root creation rejects group-writable node_modules below a public repository", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-comparison-private-root-public-"));
+  chmodSync(directory, 0o755);
+  mkdirSync(resolve(directory, "node_modules"), { mode: 0o775 });
+  try {
+    assert.throws(() => createDataWranglerComparisonPrivateRoot(directory), /safe write permissions/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("comparison retained-root leases detect an ancestor rebound before editor setup", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-comparison-private-root-rebound-"));
+  const nodeModules = resolve(directory, "node_modules");
+  mkdirSync(nodeModules, { mode: 0o755 });
+  const lease = createDataWranglerComparisonPrivateRoot(directory);
+  try {
+    renameSync(resolve(nodeModules, ".cache"), resolve(nodeModules, ".cache-moved"));
+    assert.throws(() => lease.revalidate(), /ENOENT|identity|containment/u);
+  } finally {
+    lease.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("comparison arguments expose only candidate, Python, and output paths", () => {
   const options = parseDataWranglerComparisonArguments(
@@ -210,11 +287,79 @@ test("Data Wrangler setup and diagnostic share launch state while only the diagn
     productKey: "open-wrangler",
     diagnosticPhase: COMPARISON_TEST_PHASES["open-wrangler"],
     diagnosticResultPath: "/private/profile/comparison-open-wrangler-result.json",
-    firstUseSetupResultPath: null,
+    firstUseSetupResultPath: "/private/profile/comparison-open-wrangler-setup.json",
     userData,
     jupyterEnvironment: null
   });
-  assert.equal(await runComparisonProductEditorPhases({ phasePlan: openPlan, runPhase: async () => "open" }), "open");
+  const openEvents = [];
+  assert.equal(
+    await runComparisonProductEditorPhases({
+      phasePlan: openPlan,
+      async runPhase(launch) {
+        openEvents.push(launch.kind);
+        return launch.kind === "diagnostic" ? "open" : "setup";
+      }
+    }),
+    "open"
+  );
+  assert.deepEqual(openEvents, ["first-use-setup", "diagnostic"]);
+});
+
+test("watch headroom is proven before every setup and diagnostic editor phase", async () => {
+  const phasePlan = createComparisonProductEditorPhasePlan({
+    productKey: "data-wrangler",
+    diagnosticPhase: COMPARISON_TEST_PHASES["data-wrangler"],
+    diagnosticResultPath: "/private/profile/comparison-data-wrangler-result.json",
+    firstUseSetupResultPath: "/private/profile/comparison-data-wrangler-setup-result.json",
+    userData: "/private/profile/user",
+    jupyterEnvironment: {
+      dataDir: "/private/profile/jupyter/data",
+      runtimeDir: "/private/profile/jupyter/runtime",
+      configDir: "/private/profile/jupyter/config",
+      path: "/private/profile/jupyter/path"
+    }
+  });
+
+  const setupFailureEvents = [];
+  await assert.rejects(
+    runComparisonProductEditorPhases({
+      phasePlan,
+      beforePhase: async (phase) => {
+        setupFailureEvents.push(`gate:${phase.kind}`);
+        throw new Error("setup watch headroom unavailable");
+      },
+      runPhase: async (phase) => {
+        setupFailureEvents.push(`run:${phase.kind}`);
+      }
+    }),
+    /setup watch headroom unavailable/u
+  );
+  assert.deepEqual(setupFailureEvents, ["gate:first-use-setup"]);
+
+  const diagnosticFailureEvents = [];
+  await assert.rejects(
+    runComparisonProductEditorPhases({
+      phasePlan,
+      beforePhase: async (phase) => {
+        diagnosticFailureEvents.push(`gate:${phase.kind}`);
+        if (phase.kind === "diagnostic") throw new Error("diagnostic watch headroom unavailable");
+      },
+      runPhase: async (phase) => {
+        diagnosticFailureEvents.push(`run:${phase.kind}`);
+        return phase.kind;
+      },
+      afterPhase: async (phase) => {
+        diagnosticFailureEvents.push(`after:${phase.kind}`);
+      }
+    }),
+    /diagnostic watch headroom unavailable/u
+  );
+  assert.deepEqual(diagnosticFailureEvents, [
+    "gate:first-use-setup",
+    "run:first-use-setup",
+    "after:first-use-setup",
+    "gate:diagnostic"
+  ]);
 });
 
 test("comparison output rejects lexical, canonical, symlink, and inode aliases of both protected inputs", async () => {
@@ -1003,6 +1148,87 @@ test("fixture execution requires a just-in-time Python input revalidation", asyn
   });
 });
 
+test("configured-profile bootstrap runs only first-use setup and retains its isolated profiles", async () => {
+  await withRunnerFixture(async ({ options, privateRoot }) => {
+    const events = [];
+    const dependencies = successfulDependencies({ privateRoot, events });
+    dependencies.generateFixtures = () => {
+      throw new Error("configured-profile bootstrap must not generate smoke fixtures");
+    };
+    dependencies.writeReport = () => {
+      throw new Error("configured-profile bootstrap must not publish a smoke report");
+    };
+    dependencies.runConfiguredProduct = async (input) => {
+      events.push(`setup:${input.productKey}`);
+      assert.equal(Object.hasOwn(input, "fixtureRoot"), false);
+      assert.equal(Object.hasOwn(input, "captureTemplate"), false);
+      const editor = Object.freeze({ ...input.editor, version: "1.130.0" });
+      return Object.freeze({
+        editorVersion: "1.130.0",
+        profile: Object.freeze({
+          product: input.productKey,
+          kind: "configured-only",
+          privateRoot: join(privateRoot, input.productKey),
+          userData: join(privateRoot, input.productKey, "user"),
+          extensions: join(privateRoot, input.productKey, "extensions"),
+          editor,
+          sandboxArgs: Object.freeze(["--no-sandbox"]),
+          installedExtensions: Object.freeze(installedInventory(input.productKey)),
+          configuredPythonProcessObservedDuringSetup: true
+        })
+      });
+    };
+
+    const result = await bootstrapDataWranglerComparisonConfiguredProfiles(
+      { candidate: options.candidate, python: options.python },
+      {},
+      dependencies
+    );
+    assert.equal(result.protocol, COMPARISON_CONFIGURED_PROFILES_PROTOCOL);
+    assert.equal(result.studyRoot, privateRoot);
+    assert.equal(result.candidateSha256, digest("a"));
+    assert.deepEqual(
+      result.profiles.map((profile) => `${profile.product}:${profile.kind}`),
+      ["open-wrangler:configured-only", "data-wrangler:configured-only"]
+    );
+    assert.deepEqual(events, [
+      "build",
+      "stage",
+      "harness",
+      "acquire-vscode",
+      "start-display",
+      "setup:open-wrangler",
+      "setup:data-wrangler",
+      "revalidate-candidate",
+      "stop-display:false"
+    ]);
+    assert.equal(events.includes("remove-root"), false);
+  });
+});
+
+test("configured-profile bootstrap removes its private root when first-use setup fails", async () => {
+  await withRunnerFixture(async ({ options, privateRoot }) => {
+    const events = [];
+    const dependencies = successfulDependencies({ privateRoot, events });
+    dependencies.runConfiguredProduct = async ({ productKey }) => {
+      events.push(`setup:${productKey}`);
+      throw new Error("first-use setup failed");
+    };
+    await assert.rejects(
+      bootstrapDataWranglerComparisonConfiguredProfiles(
+        { candidate: options.candidate, python: options.python },
+        {},
+        dependencies
+      ),
+      /first-use setup failed/u
+    );
+    assert.equal(events.filter((entry) => entry.startsWith("setup:")).length, 1);
+    assert.ok(events.includes("stop-display:false"));
+    assert.ok(events.includes("remove-root"));
+    assert.equal(events.includes("write"), false);
+  });
+});
+
 test("configured Python environment drift between fixed product runs prevents publication", async () => {
   await withRunnerFixture(async ({ options, privateRoot }) => {
     const events = [];
@@ -1270,9 +1496,14 @@ test("comparison execution rejects non-official platforms before creating an edi
       });
       dependencies.platform = platform;
       dependencies.architecture = architecture;
-      dependencies.mkdtemp = () => {
+      dependencies.createPrivateRoot = () => {
         created = true;
-        return privateRoot;
+        return {
+          privateParent: dirname(privateRoot),
+          privateRoot,
+          revalidate() {},
+          close() {}
+        };
       };
       await assert.rejects(runDataWranglerComparison(options, {}, dependencies), /only Linux x64/u);
       assert.equal(created, false);
@@ -1288,9 +1519,17 @@ function successfulDependencies({ privateRoot, events, writeReport }) {
     platform: "linux",
     architecture: "x64",
     exists: () => true,
-    mkdir: () => undefined,
-    mkdtemp: () => privateRoot,
-    createPrivateRootReceipt: () => ({ privateRoot }),
+    createPrivateRoot: () => ({
+      privateParent: dirname(privateRoot),
+      privateRoot,
+      revalidate() {},
+      close() {}
+    }),
+    createPrivateRootReceipt: (path, { containedBy }) => {
+      assert.equal(path, privateRoot);
+      assert.equal(containedBy, dirname(privateRoot));
+      return { privateRoot };
+    },
     configureTempRoot(_privateRoot, environment) {
       state.observedEnvironment = environment;
       environment.HOME = join(privateRoot, "home");

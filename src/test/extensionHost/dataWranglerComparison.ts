@@ -29,6 +29,7 @@ const PHASES = Object.freeze({
   "comparison-data-wrangler": "data-wrangler"
 } as const);
 const DATA_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-data-wrangler-setup" as const;
+const OPEN_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-open-wrangler-setup" as const;
 const ACTIONS = Object.freeze({
   "open-wrangler": "Open in Open Wrangler",
   "data-wrangler": "Open in Data Wrangler"
@@ -50,7 +51,8 @@ const COMPARISON_RUNTIME_DIAGNOSTIC_ACCESSIBLE_NAME =
   /(?:python|kernel|runtime|interpreter|environment|jupyter|conda|venv|open wrangler comparison)/iu;
 
 type DiagnosticComparisonPhase = keyof typeof PHASES;
-type ComparisonPhase = DiagnosticComparisonPhase | typeof DATA_WRANGLER_FIRST_USE_SETUP_PHASE;
+type ComparisonPhase =
+  DiagnosticComparisonPhase | typeof DATA_WRANGLER_FIRST_USE_SETUP_PHASE | typeof OPEN_WRANGLER_FIRST_USE_SETUP_PHASE;
 type ProductKey = (typeof PHASES)[DiagnosticComparisonPhase];
 type FixtureFormat = "csv" | "parquet";
 type ComparisonRuntimeRole = "button" | "combobox" | "menuitem" | "option" | "radio" | "treeitem";
@@ -135,9 +137,20 @@ interface ComparisonSample {
   };
 }
 
-interface Workbench {
+export interface Workbench {
   readonly page: Page;
 }
+
+interface ComparisonFirstUseSetupInput {
+  readonly productKey: ProductKey;
+  readonly workbench: Workbench;
+  readonly source: string;
+  readonly kernelLabel?: string;
+}
+
+type ComparisonHostPhasePreparation =
+  | { readonly kind: "setup-only" }
+  | { readonly kind: "diagnostic"; readonly manifest: InstalledPerformanceFixtureManifest };
 
 interface ComparisonActionResult {
   readonly diagnosticDurationMs: number;
@@ -154,22 +167,15 @@ export async function run(): Promise<InstalledPerformanceArtifactReceipt | undef
   const testPython = requiredEnvironment("OPEN_WRANGLER_TEST_PYTHON");
   const productKey = comparisonProduct(phase);
   const workspace = soleFileWorkspace();
-  const manifest = readFixtureManifest(path.join(workspace, "performance-fixtures.json"));
-  assert.equal(manifest.smoke, true, "The comparison host is restricted to smoke-sized fixtures.");
   assertTelemetryDisabled();
 
   recordProgress("comparison:workbench-connect");
   const workbench = await connectToEditorWorkbench();
   await waitForWorkbenchReady(workbench.page);
 
-  if (phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE) {
-    await runDataWranglerFirstUseSetup({
-      workbench,
-      source: path.join(workspace, "warmup.csv"),
-      kernelLabel: dataWranglerComparisonKernelLabel(runId)
-    });
-    return undefined;
-  }
+  const preparedPhase = await prepareComparisonHostPhase({ phase, productKey, runId, workspace, workbench });
+  if (preparedPhase.kind === "setup-only") return undefined;
+  const { manifest } = preparedPhase;
 
   recordProgress("comparison:configured-python-provenance");
   const configuredPythonEnvironment = await configuredPythonEnvironmentProvenance(testPython);
@@ -241,6 +247,43 @@ export async function run(): Promise<InstalledPerformanceArtifactReceipt | undef
   return receipt;
 }
 
+export async function prepareComparisonHostPhase(
+  {
+    phase,
+    productKey,
+    runId,
+    workspace,
+    workbench
+  }: {
+    readonly phase: ComparisonPhase;
+    readonly productKey: ProductKey;
+    readonly runId: string;
+    readonly workspace: string;
+    readonly workbench: Workbench;
+  },
+  {
+    runFirstUseSetup = runProductFirstUseSetup,
+    readManifest = readFixtureManifest
+  }: {
+    readonly runFirstUseSetup?: (input: ComparisonFirstUseSetupInput) => Promise<void>;
+    readonly readManifest?: (manifestPath: string) => InstalledPerformanceFixtureManifest;
+  } = {}
+): Promise<ComparisonHostPhasePreparation> {
+  if (phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE || phase === OPEN_WRANGLER_FIRST_USE_SETUP_PHASE) {
+    await runFirstUseSetup({
+      productKey,
+      workbench,
+      source: path.join(workspace, "warmup.csv"),
+      ...(productKey === "data-wrangler" ? { kernelLabel: dataWranglerComparisonKernelLabel(runId) } : {})
+    });
+    return Object.freeze({ kind: "setup-only" });
+  }
+
+  const manifest = readManifest(path.join(workspace, "performance-fixtures.json"));
+  assert.equal(manifest.smoke, true, "The comparison host is restricted to smoke-sized fixtures.");
+  return Object.freeze({ kind: "diagnostic", manifest });
+}
+
 async function runWarmup({
   productKey,
   workbench,
@@ -265,28 +308,30 @@ async function runWarmup({
   assert.deepEqual(readFileSync(source), expectedBytes, "The deterministic warm-up source changed during launch.");
 }
 
-async function runDataWranglerFirstUseSetup({
+async function runProductFirstUseSetup({
+  productKey,
   workbench,
   source,
   kernelLabel
 }: {
+  productKey: ProductKey;
   workbench: Workbench;
   source: string;
-  kernelLabel: string;
+  kernelLabel?: string;
 }): Promise<void> {
   let setupError: unknown;
   let closeError: unknown;
   try {
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     await waitForNoEditorTabs();
-    recordProgress("comparison:data-wrangler-setup:start");
+    recordProgress(`comparison:${productKey}-setup:start`);
     await runWarmup({
-      productKey: "data-wrangler",
+      productKey,
       workbench,
       source,
       firstUseKernelLabel: kernelLabel
     });
-    recordProgress("comparison:data-wrangler-setup:grid-ready");
+    recordProgress(`comparison:${productKey}-setup:grid-ready`);
   } catch (error) {
     setupError = error;
   } finally {
@@ -300,12 +345,12 @@ async function runDataWranglerFirstUseSetup({
   if (setupError !== undefined && closeError !== undefined) {
     throw new AggregateError(
       [setupError, closeError],
-      "Data Wrangler first-use setup failed and its editor tabs could not close."
+      `${productKey} first-use setup failed and its editor tabs could not close.`
     );
   }
   if (setupError !== undefined) throw setupError;
   if (closeError !== undefined) throw closeError;
-  recordProgress("comparison:data-wrangler-setup:closed");
+  recordProgress(`comparison:${productKey}-setup:closed`);
 }
 
 async function runFixtureDiagnostic({
@@ -707,7 +752,7 @@ function selectedComparisonSourceTab(sourceUri: vscode.Uri): vscode.Tab {
   return activeTab;
 }
 
-async function comparisonWorkbenchReadiness(
+export async function comparisonWorkbenchReadiness(
   page: Page,
   sourceTab: vscode.Tab,
   rendererFramePointerUsable: boolean
@@ -850,15 +895,21 @@ export function buildComparisonWorkbenchReadinessEvidence({
   });
 }
 
-async function waitForGenericGridReadiness(
+export async function waitForGenericGridReadiness(
   workbench: Page,
   baselineFrames: ReadonlySet<Frame>,
-  baselinePages: ReadonlySet<Page>
+  baselinePages: ReadonlySet<Page>,
+  timeoutMs = GRID_TIMEOUT_MS
 ): Promise<{
   readonly grid: ComparisonGridReadinessEvidence;
   readonly rendererFramePointerUsable: true;
+  readonly frame: Frame;
 }> {
-  const deadline = Date.now() + GRID_TIMEOUT_MS;
+  assert.ok(
+    Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= GRID_TIMEOUT_MS,
+    `Comparison grid discovery timeout must be between 1 and ${GRID_TIMEOUT_MS} ms.`
+  );
+  const deadline = Date.now() + timeoutMs;
   const stalledFrames = new Set<Frame>();
   const observedChildFrames = new Set<Frame>();
   const observedTopLevelPages = new Set<Page>();
@@ -924,7 +975,8 @@ async function waitForGenericGridReadiness(
         }
         return Object.freeze({
           grid: probe.value,
-          rendererFramePointerUsable: true
+          rendererFramePointerUsable: true,
+          frame
         });
       } else if (probe.status === "completed") {
         completedNullProbes += 1;
@@ -1034,7 +1086,7 @@ async function observeFrameReadiness(frame: Frame): Promise<ComparisonGridReadin
   return frame.evaluate(observeComparisonGridReadiness, DEFAULT_COMPARISON_GRID_READINESS_INPUT);
 }
 
-async function frameChainIsVisibleAndPointerUsable(frame: Frame): Promise<boolean> {
+export async function frameChainIsVisibleAndPointerUsable(frame: Frame): Promise<boolean> {
   let current = frame;
   while (current.parentFrame()) {
     const host = await current.frameElement();
@@ -1072,14 +1124,14 @@ async function frameChainIsVisibleAndPointerUsable(frame: Frame): Promise<boolea
   return true;
 }
 
-function comparisonFrames(workbench: Page): Frame[] {
+export function comparisonFrames(workbench: Page): Frame[] {
   const browser = workbench.context().browser();
   const discovered = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
   const pages = [workbench, ...discovered.filter((page) => page !== workbench && !page.isClosed())];
   return [...new Set(pages)].flatMap((page) => page.frames());
 }
 
-async function connectToEditorWorkbench(): Promise<Workbench> {
+export async function connectToEditorWorkbench(): Promise<Workbench> {
   const cdpPort = Number(requiredEnvironment("OPEN_WRANGLER_EDITOR_CDP_PORT"));
   assert.ok(Number.isInteger(cdpPort) && cdpPort > 0, "Comparison requires a private CDP port.");
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
@@ -1104,7 +1156,7 @@ async function connectToEditorWorkbench(): Promise<Workbench> {
   throw new Error("The private CDP endpoint did not expose the official VS Code workbench.");
 }
 
-async function waitForWorkbenchReady(page: Page): Promise<void> {
+export async function waitForWorkbenchReady(page: Page): Promise<void> {
   await waitFor(
     async () => {
       await page.bringToFront();
@@ -1288,7 +1340,7 @@ async function sha256(file: string): Promise<string> {
   return digest.digest("hex");
 }
 
-function allEditorTabs(): vscode.Tab[] {
+export function allEditorTabs(): vscode.Tab[] {
   return vscode.window.tabGroups.all.flatMap((group) => [...group.tabs]);
 }
 
@@ -1324,14 +1376,18 @@ function tabInputUri(input: unknown): vscode.Uri | undefined {
 
 function comparisonPhase(value: string): ComparisonPhase {
   assert.ok(
-    Object.hasOwn(PHASES, value) || value === DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
-    "The comparison phase must identify exactly one product or the Data Wrangler first-use setup."
+    Object.hasOwn(PHASES, value) ||
+      value === DATA_WRANGLER_FIRST_USE_SETUP_PHASE ||
+      value === OPEN_WRANGLER_FIRST_USE_SETUP_PHASE,
+    "The comparison phase must identify exactly one product or first-use setup."
   );
   return value as ComparisonPhase;
 }
 
 function comparisonProduct(phase: ComparisonPhase): ProductKey {
-  return phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE ? "data-wrangler" : PHASES[phase];
+  if (phase === DATA_WRANGLER_FIRST_USE_SETUP_PHASE) return "data-wrangler";
+  if (phase === OPEN_WRANGLER_FIRST_USE_SETUP_PHASE) return "open-wrangler";
+  return PHASES[phase];
 }
 
 function soleFileWorkspace(): string {
@@ -1348,7 +1404,7 @@ function requiredEnvironment(key: string): string {
   return value;
 }
 
-function recordProgress(checkpoint: string): void {
+export function recordProgress(checkpoint: string): void {
   writeAcceptanceProgressCheckpoint(requiredEnvironment("OPEN_WRANGLER_TEST_PROGRESS"), {
     protocol: ACCEPTANCE_PROGRESS_PROTOCOL,
     runId: requiredEnvironment("OPEN_WRANGLER_TEST_RUN_ID"),
@@ -1357,7 +1413,11 @@ function recordProgress(checkpoint: string): void {
   });
 }
 
-async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs: number, label: string): Promise<void> {
+export async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs: number,
+  label: string
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   do {
     if (await predicate()) return;

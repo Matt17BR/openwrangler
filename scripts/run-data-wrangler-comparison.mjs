@@ -5,6 +5,7 @@ import {
   constants,
   cpSync,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -53,6 +54,7 @@ import {
   revalidateInstalledPerformanceVsix,
   stageInstalledPerformanceVsix
 } from "./run-installed-performance.mjs";
+import { requireLinuxInotifyWatchHeadroom } from "./linux-inotify-watch-headroom.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const COMPARISON_FRAGMENT_MAX_BYTES = 16 * 1024;
@@ -73,12 +75,21 @@ const comparisonInputReceipts = new WeakSet();
 const comparisonProductEditorPhasePlans = new WeakSet();
 
 export const COMPARISON_PRODUCT_FRAGMENT_PROTOCOL = "openwrangler-comparison-product-fragment-v1";
+export const COMPARISON_CONFIGURED_PROFILES_PROTOCOL = "openwrangler-comparison-configured-profiles-v1";
+export const DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS = Object.freeze([
+  "node_modules",
+  ".cache",
+  "openwrangler-comparison",
+  "tmp",
+  "ow"
+]);
 export const DATA_WRANGLER_MARKETPLACE_EXTENSION = `ms-toolsai.datawrangler@${DATA_WRANGLER_BASELINE_VERSION}`;
 export const COMPARISON_TEST_PHASES = Object.freeze({
   "open-wrangler": "comparison-open-wrangler",
   "data-wrangler": "comparison-data-wrangler"
 });
 export const DATA_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-data-wrangler-setup";
+export const OPEN_WRANGLER_FIRST_USE_SETUP_PHASE = "comparison-open-wrangler-setup";
 export const COMPARISON_COMMON_EXTENSION_LOCK = Object.freeze([
   "ms-python.debugpy@2026.6.0",
   PINNED_PYTHON_EXTENSION_ID,
@@ -384,9 +395,339 @@ export function normalizeComparisonProductEvidence({
 export async function runDataWranglerComparison(options, environment = process.env, overrides = {}) {
   const dependencies = comparisonDependencies(overrides);
   validateComparisonOptions(options);
+  const session = await runComparisonEditorSession({
+    options,
+    environment,
+    dependencies,
+    purpose: "smoke"
+  });
+  const { candidateReceipt, fixtureManifest, productRuns } = session;
+  const [firstProductRun, secondProductRun] = productRuns;
+  if (
+    !fixtureManifest ||
+    !firstProductRun ||
+    !secondProductRun ||
+    JSON.stringify(firstProductRun.configuredPythonEnvironment) !==
+      JSON.stringify(secondProductRun.configuredPythonEnvironment)
+  ) {
+    throw new Error("The configured Python environment changed between comparison product runs.");
+  }
+  const phases = productRuns.flatMap((run) => run.phases);
+  if (!candidateReceipt || phases.length !== 4) {
+    throw new Error("Data Wrangler comparison smoke completed without four validated phases.");
+  }
+
+  const report = buildDataWranglerComparisonSmokeReport({
+    generatedAtUtc: dependencies.now().toISOString(),
+    configuredPythonEnvironment: firstProductRun.configuredPythonEnvironment,
+    fixtureManifest,
+    phases
+  });
+  assertComparisonPathSeparation(options);
+  dependencies.writeReport(options.output, report);
+  return report;
+}
+
+export async function bootstrapDataWranglerComparisonConfiguredProfiles(
+  options,
+  environment = process.env,
+  overrides = {}
+) {
+  const dependencies = comparisonDependencies(overrides);
+  validateComparisonBootstrapOptions(options);
+  const session = await runComparisonEditorSession({
+    options,
+    environment,
+    dependencies,
+    purpose: "configured-profiles"
+  });
+  const profiles = session.productRuns.map((run) => run.profile);
+  if (
+    !session.candidateReceipt ||
+    profiles.length !== 2 ||
+    profiles[0]?.product !== "open-wrangler" ||
+    profiles[1]?.product !== "data-wrangler" ||
+    profiles.some((profile) => profile.kind !== "configured-only")
+  ) {
+    throw new Error("Comparison configured-profile bootstrap did not produce both exact product profiles.");
+  }
+  const editor = profiles[0].editor;
+  if (
+    profiles.some(
+      (profile) =>
+        profile.editor.executable !== editor.executable ||
+        profile.editor.cli !== editor.cli ||
+        profile.editor.version !== editor.version
+    )
+  ) {
+    throw new Error("Official VS Code changed between configured-profile bootstrap products.");
+  }
+  return Object.freeze({
+    protocol: COMPARISON_CONFIGURED_PROFILES_PROTOCOL,
+    studyRoot: session.privateRoot,
+    candidateSha256: session.candidateReceipt.sha256,
+    editor,
+    profiles: Object.freeze(profiles)
+  });
+}
+
+function comparisonDirectoryIdentity(metadata) {
+  return Object.freeze({
+    device: metadata.dev,
+    inode: metadata.ino,
+    mode: metadata.mode & 0o777n,
+    owner: metadata.uid,
+    group: metadata.gid
+  });
+}
+
+function sameComparisonDirectoryIdentity(left, right) {
+  return (
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.mode === right.mode &&
+    left.owner === right.owner &&
+    left.group === right.group
+  );
+}
+
+function assertComparisonDirectoryMetadata(metadata, label, { privateMode, allowGroupWritable = false }) {
+  const mode = metadata.mode & 0o777n;
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    (typeof process.getuid === "function" && metadata.uid !== BigInt(process.getuid())) ||
+    (privateMode ? mode !== 0o700n : (mode & (allowGroupWritable ? 0o002n : 0o022n)) !== 0n)
+  ) {
+    throw new Error(
+      privateMode
+        ? `${label} must be one current-user-owned mode-0700 real directory.`
+        : `${label} must be one current-user-owned real directory with safe write permissions.`
+    );
+  }
+}
+
+function comparisonAnchoredChild(parent, name) {
+  if (
+    parent?.descriptor === undefined ||
+    typeof name !== "string" ||
+    name.length === 0 ||
+    name === "." ||
+    name === ".." ||
+    /[\0\r\n/\\]/u.test(name)
+  ) {
+    throw new Error("Comparison private-root component is invalid.");
+  }
+  return `/proc/self/fd/${parent.descriptor}/${name}`;
+}
+
+function revalidateComparisonDirectoryNode(node, label) {
+  const opened = fstatSync(node.descriptor, { bigint: true });
+  const named = lstatSync(node.path, { bigint: true });
+  assertComparisonDirectoryMetadata(opened, label, {
+    privateMode: node.privateMode,
+    allowGroupWritable: node.allowGroupWritable
+  });
+  assertComparisonDirectoryMetadata(named, label, {
+    privateMode: node.privateMode,
+    allowGroupWritable: node.allowGroupWritable
+  });
+  if (
+    !sameComparisonDirectoryIdentity(node.identity, comparisonDirectoryIdentity(opened)) ||
+    !sameComparisonDirectoryIdentity(comparisonDirectoryIdentity(opened), comparisonDirectoryIdentity(named)) ||
+    realpathSync(node.path) !== node.path
+  ) {
+    throw new Error(`${label} changed identity or canonical containment.`);
+  }
+  if (node.parent !== null) {
+    const anchored = lstatSync(comparisonAnchoredChild(node.parent, node.name), { bigint: true });
+    assertComparisonDirectoryMetadata(anchored, label, {
+      privateMode: node.privateMode,
+      allowGroupWritable: node.allowGroupWritable
+    });
+    if (!sameComparisonDirectoryIdentity(comparisonDirectoryIdentity(opened), comparisonDirectoryIdentity(anchored))) {
+      throw new Error(`${label} no longer belongs to its pinned parent.`);
+    }
+  }
+}
+
+function openComparisonDirectoryNode(
+  path,
+  { parent = null, name = null, privateMode, allowGroupWritable = false, label }
+) {
+  const target = resolve(path);
+  if (!isAbsolute(path) || target !== path || /[\0\r\n]/u.test(path)) {
+    throw new Error(`${label} must use one canonical absolute path.`);
+  }
+  const anchored = parent === null ? target : comparisonAnchoredChild(parent, name);
+  const before = lstatSync(anchored, { bigint: true });
+  assertComparisonDirectoryMetadata(before, label, { privateMode, allowGroupWritable });
+  const descriptor = openSync(
+    anchored,
+    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
+  );
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    assertComparisonDirectoryMetadata(opened, label, { privateMode, allowGroupWritable });
+    if (!sameComparisonDirectoryIdentity(comparisonDirectoryIdentity(before), comparisonDirectoryIdentity(opened))) {
+      throw new Error(`${label} changed while it opened.`);
+    }
+    const node = {
+      path: target,
+      parent,
+      name,
+      privateMode,
+      allowGroupWritable,
+      descriptor,
+      identity: comparisonDirectoryIdentity(opened)
+    };
+    revalidateComparisonDirectoryNode(node, label);
+    return node;
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+}
+
+function ensureComparisonDirectoryChild(parent, name, { privateMode, label }) {
+  revalidateComparisonDirectoryNode(parent, "Comparison private-root parent");
+  const path = resolve(parent.path, name);
+  if (dirname(path) !== parent.path) throw new Error(`${label} escaped its pinned parent.`);
+  const anchored = comparisonAnchoredChild(parent, name);
+  let created = false;
+  try {
+    lstatSync(anchored, { bigint: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    mkdirSync(anchored, { recursive: false, mode: 0o700 });
+    created = true;
+  }
+  const node = openComparisonDirectoryNode(path, { parent, name, privateMode, label });
+  try {
+    if (created) {
+      fchmodSync(node.descriptor, 0o700);
+      node.identity = comparisonDirectoryIdentity(fstatSync(node.descriptor, { bigint: true }));
+    }
+    revalidateComparisonDirectoryNode(parent, "Comparison private-root parent");
+    revalidateComparisonDirectoryNode(node, label);
+    return node;
+  } catch (error) {
+    closeSync(node.descriptor);
+    throw error;
+  }
+}
+
+function closeComparisonDirectoryNodes(nodes) {
+  const failures = [];
+  for (const node of [...nodes].reverse()) {
+    try {
+      closeSync(node.descriptor);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Could not close the comparison private-root directory leases.");
+  }
+}
+
+export function createDataWranglerComparisonPrivateRoot(repositoryRoot = root) {
+  if (process.platform !== "linux") {
+    throw new Error("The comparison private-root cache is supported only on Linux.");
+  }
+  const nodes = [];
+  let completed = false;
+  try {
+    const repository = openComparisonDirectoryNode(resolve(repositoryRoot), {
+      privateMode: false,
+      label: "Comparison repository root"
+    });
+    nodes.push(repository);
+    const nodeModulesPath = resolve(repository.path, DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS[0]);
+    const nodeModules = openComparisonDirectoryNode(nodeModulesPath, {
+      parent: repository,
+      name: DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS[0],
+      privateMode: false,
+      // npm commonly creates this directory as 0775. Group write access is harmless only when
+      // the pinned repository ancestor itself is private and cannot be traversed by that group.
+      allowGroupWritable: repository.identity.mode === 0o700n,
+      label: "Comparison node_modules root"
+    });
+    nodes.push(nodeModules);
+
+    let parent = nodeModules;
+    for (const [index, name] of DATA_WRANGLER_COMPARISON_PRIVATE_ROOT_COMPONENTS.entries()) {
+      if (index === 0) continue;
+      parent = ensureComparisonDirectoryChild(parent, name, {
+        privateMode: index >= 2,
+        label: `Comparison private-root component ${name}`
+      });
+      nodes.push(parent);
+    }
+    for (const node of nodes) revalidateComparisonDirectoryNode(node, "Comparison private-root chain");
+
+    const createdPath = mkdtempSync(`${comparisonAnchoredChild(parent, "x-")}`);
+    const name = basename(createdPath);
+    if (!/^x-[A-Za-z0-9]{6}$/u.test(name)) {
+      throw new Error("Comparison private-root creation returned an invalid random name.");
+    }
+    const privateRoot = openComparisonDirectoryNode(resolve(parent.path, name), {
+      parent,
+      name,
+      privateMode: true,
+      label: "Comparison retained private root"
+    });
+    nodes.push(privateRoot);
+    for (const node of nodes) revalidateComparisonDirectoryNode(node, "Comparison private-root chain");
+
+    let closed = false;
+    completed = true;
+    return Object.freeze({
+      privateParent: parent.path,
+      privateRoot: privateRoot.path,
+      revalidate() {
+        if (closed) throw new Error("Comparison private-root lease is already closed.");
+        for (const node of nodes) revalidateComparisonDirectoryNode(node, "Comparison private-root chain");
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        closeComparisonDirectoryNodes(nodes);
+      }
+    });
+  } finally {
+    if (!completed) closeComparisonDirectoryNodes(nodes);
+  }
+}
+
+function settleComparisonPrivateRootLease(lease, operation) {
+  let operationError;
+  let result;
+  try {
+    result = operation();
+    lease.revalidate();
+  } catch (error) {
+    operationError = error;
+  }
+  let closeError;
+  try {
+    lease.close();
+  } catch (error) {
+    closeError = error;
+  }
+  if (operationError !== undefined || closeError !== undefined) {
+    throw new AggregateError(
+      [operationError, closeError].filter((error) => error !== undefined),
+      "Could not establish the comparison retained private root."
+    );
+  }
+  return result;
+}
+
+async function runComparisonEditorSession({ options, environment, dependencies, purpose }) {
   dependencies.validatePrivatePathOverrides();
   if (dependencies.platform !== "linux" || dependencies.architecture !== "x64") {
-    throw new Error("The clean-room Data Wrangler comparison smoke supports only Linux x64.");
+    throw new Error("The clean-room Data Wrangler comparison supports only Linux x64.");
   }
   const inputReceipts = dependencies.captureInputs(options);
   exactKeys(inputReceipts, ["candidate", "python"], "comparison input receipts");
@@ -395,12 +736,14 @@ export async function runDataWranglerComparison(options, environment = process.e
   delete runEnvironment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS;
   runEnvironment.OPEN_WRANGLER_EDITOR_DISPLAY = "headless";
 
-  const privateParent = resolve(root, "tmp", "ow");
-  dependencies.mkdir(privateParent, { recursive: true, mode: 0o700 });
-  const privateRoot = dependencies.mkdtemp(join(privateParent, "x-"));
-  const rootReceipt = dependencies.createPrivateRootReceipt(privateRoot, {
-    containedBy: privateParent
-  });
+  const privateRootLease = dependencies.createPrivateRoot(root);
+  const privateParent = privateRootLease.privateParent;
+  const privateRoot = privateRootLease.privateRoot;
+  const rootReceipt = settleComparisonPrivateRootLease(privateRootLease, () =>
+    dependencies.createPrivateRootReceipt(privateRoot, {
+      containedBy: privateParent
+    })
+  );
   dependencies.configureTempRoot(privateRoot, runEnvironment);
   const privatePaths = [privateRoot, options.candidate, options.python];
 
@@ -411,8 +754,7 @@ export async function runDataWranglerComparison(options, environment = process.e
   let processTreeUncertain = false;
   let candidateReceipt;
   let fixtureManifest;
-  let configuredPythonEnvironment;
-  let phases;
+  let productRuns;
   try {
     dependencies.buildTestRuntime(runEnvironment);
     const testModule = resolve(root, "dist-test", "test", "extensionHost", "dataWranglerComparison.js");
@@ -421,13 +763,15 @@ export async function runDataWranglerComparison(options, environment = process.e
     }
 
     candidateReceipt = dependencies.stageCandidate(options.candidate, resolve(privateRoot, "openwrangler.vsix"));
-    const fixtureRoot = resolve(privateRoot, "fixtures-root");
-    dependencies.revalidateInput(inputReceipts.python);
-    fixtureManifest = dependencies.generateFixtures({
-      pythonReceipt: inputReceipts.python,
-      fixtureRoot,
-      environment: runEnvironment
-    });
+    const fixtureRoot = purpose === "smoke" ? resolve(privateRoot, "fixtures-root") : undefined;
+    if (purpose === "smoke") {
+      dependencies.revalidateInput(inputReceipts.python);
+      fixtureManifest = dependencies.generateFixtures({
+        pythonReceipt: inputReceipts.python,
+        fixtureRoot,
+        environment: runEnvironment
+      });
+    }
     const harnessDevelopmentPath = await dependencies.createHarness(privateRoot);
     const acquisition = await dependencies.acquireVscode(privateRoot);
     validateOfficialVSCodeAcquisition(acquisition);
@@ -436,13 +780,14 @@ export async function runDataWranglerComparison(options, environment = process.e
       environment: runEnvironment
     });
     if (display?.isolated !== true || display?.mode !== "headless" || typeof display.stop !== "function") {
-      throw new Error("Comparison smoke requires one zero-window, isolated headless Ozone environment.");
+      throw new Error("Comparison editor work requires one zero-window, isolated headless Ozone environment.");
     }
 
-    const productRuns = [];
+    productRuns = [];
     let editorVersion;
     for (const productKey of ["open-wrangler", "data-wrangler"]) {
-      const run = await dependencies.runProduct({
+      const runProduct = purpose === "smoke" ? dependencies.runProduct : dependencies.runConfiguredProduct;
+      const run = await runProduct({
         productKey,
         editor: acquisition.editor,
         editorVersion,
@@ -450,9 +795,10 @@ export async function runDataWranglerComparison(options, environment = process.e
         harnessDevelopmentPath,
         pythonReceipt: inputReceipts.python,
         privateRoot,
-        fixtureRoot,
+        ...(fixtureRoot === undefined ? {} : { fixtureRoot }),
         testModule,
-        environment: runEnvironment
+        environment: runEnvironment,
+        ...(purpose === "smoke" ? { captureTemplate: dependencies.captureTemplate } : {})
       });
       dependencies.revalidateInput(inputReceipts.python);
       editorVersion ??= run.editorVersion;
@@ -461,17 +807,38 @@ export async function runDataWranglerComparison(options, environment = process.e
       }
       productRuns.push(run);
     }
-    const [firstProductRun, secondProductRun] = productRuns;
-    if (
-      !firstProductRun ||
-      !secondProductRun ||
-      JSON.stringify(firstProductRun.configuredPythonEnvironment) !==
-        JSON.stringify(secondProductRun.configuredPythonEnvironment)
-    ) {
-      throw new Error("The configured Python environment changed between comparison product runs.");
+    if (purpose === "smoke") {
+      const [firstProductRun, secondProductRun] = productRuns;
+      if (
+        !firstProductRun ||
+        !secondProductRun ||
+        JSON.stringify(firstProductRun.configuredPythonEnvironment) !==
+          JSON.stringify(secondProductRun.configuredPythonEnvironment)
+      ) {
+        throw new Error("The configured Python environment changed between comparison product runs.");
+      }
+      if (!fixtureManifest || productRuns.flatMap((run) => run.phases).length !== 4) {
+        throw new Error("Data Wrangler comparison smoke completed without four validated phases.");
+      }
+    } else {
+      const profiles = productRuns.map((run) => run.profile);
+      const editor = profiles[0]?.editor;
+      if (
+        profiles.length !== 2 ||
+        profiles[0]?.product !== "open-wrangler" ||
+        profiles[1]?.product !== "data-wrangler" ||
+        profiles.some(
+          (profile) =>
+            profile.kind !== "configured-only" ||
+            profile.configuredPythonProcessObservedDuringSetup !== true ||
+            profile.editor.executable !== editor?.executable ||
+            profile.editor.cli !== editor?.cli ||
+            profile.editor.version !== editor?.version
+        )
+      ) {
+        throw new Error("Comparison configured-profile bootstrap did not retain both exact product profiles.");
+      }
     }
-    phases = productRuns.flatMap((run) => run.phases);
-    configuredPythonEnvironment = firstProductRun.configuredPythonEnvironment;
     dependencies.revalidateInput(inputReceipts.candidate);
     dependencies.revalidateInput(inputReceipts.python);
     dependencies.revalidateCandidate(candidateReceipt);
@@ -489,7 +856,12 @@ export async function runDataWranglerComparison(options, environment = process.e
     }
   }
 
-  if (!processTreeUncertain) {
+  if (
+    !processTreeUncertain &&
+    ((purpose !== "configured-profiles" && !dependencies.retainPrivateRoot) ||
+      primaryError !== undefined ||
+      displayError !== undefined)
+  ) {
     try {
       dependencies.removePrivateRoot(rootReceipt);
     } catch (error) {
@@ -501,28 +873,13 @@ export async function runDataWranglerComparison(options, environment = process.e
     const error =
       failures.length === 1
         ? failures[0]
-        : new AggregateError(failures, "Data Wrangler comparison smoke failed or could not clean up.");
+        : new AggregateError(failures, "Data Wrangler comparison editor work failed or could not clean up.");
     throw new Error(dependencies.sanitize(error, privatePaths));
   }
-  if (
-    !candidateReceipt ||
-    !fixtureManifest ||
-    !configuredPythonEnvironment ||
-    !Array.isArray(phases) ||
-    phases.length !== 4
-  ) {
-    throw new Error("Data Wrangler comparison smoke completed without four validated phases.");
+  if (!candidateReceipt || !Array.isArray(productRuns) || productRuns.length !== 2) {
+    throw new Error("Data Wrangler comparison editor work completed without both validated products.");
   }
-
-  const report = buildDataWranglerComparisonSmokeReport({
-    generatedAtUtc: dependencies.now().toISOString(),
-    configuredPythonEnvironment,
-    fixtureManifest,
-    phases
-  });
-  assertComparisonPathSeparation(options);
-  dependencies.writeReport(options.output, report);
-  return report;
+  return Object.freeze({ privateRoot, candidateReceipt, fixtureManifest, productRuns: Object.freeze(productRuns) });
 }
 
 export function dataWranglerComparisonKernelLabel(runId) {
@@ -605,16 +962,15 @@ export function createComparisonProductEditorPhasePlan(input) {
     jupyterEnvironment,
     reportsFragment: true
   });
-  let plan;
+  if (
+    typeof firstUseSetupResultPath !== "string" ||
+    !isAbsolute(firstUseSetupResultPath) ||
+    /[\0\r\n]/u.test(firstUseSetupResultPath) ||
+    firstUseSetupResultPath === diagnosticResultPath
+  ) {
+    throw new TypeError("Comparison phase plan requires one distinct absolute setup result path.");
+  }
   if (productKey === "data-wrangler") {
-    if (
-      typeof firstUseSetupResultPath !== "string" ||
-      !isAbsolute(firstUseSetupResultPath) ||
-      /[\0\r\n]/u.test(firstUseSetupResultPath) ||
-      firstUseSetupResultPath === diagnosticResultPath
-    ) {
-      throw new TypeError("Data Wrangler comparison phase plan requires one distinct absolute setup result path.");
-    }
     exactKeys(
       jupyterEnvironment,
       ["dataDir", "runtimeDir", "configDir", "path"],
@@ -625,35 +981,42 @@ export function createComparisonProductEditorPhasePlan(input) {
         throw new TypeError("Data Wrangler comparison phase plan requires absolute private Jupyter paths.");
       }
     }
-    plan = Object.freeze([
-      Object.freeze({
-        kind: "first-use-setup",
-        phase: DATA_WRANGLER_FIRST_USE_SETUP_PHASE,
-        resultPath: firstUseSetupResultPath,
-        userData,
-        jupyterEnvironment,
-        reportsFragment: false
-      }),
-      diagnostic
-    ]);
-  } else {
-    if (firstUseSetupResultPath !== null || jupyterEnvironment !== null) {
-      throw new TypeError("Open Wrangler comparison phase plan must not include Data Wrangler setup state.");
-    }
-    plan = Object.freeze([diagnostic]);
+  } else if (jupyterEnvironment !== null) {
+    throw new TypeError("Open Wrangler comparison setup must not include Data Wrangler Jupyter state.");
   }
+  const plan = Object.freeze([
+    Object.freeze({
+      kind: "first-use-setup",
+      phase: productKey === "data-wrangler" ? DATA_WRANGLER_FIRST_USE_SETUP_PHASE : OPEN_WRANGLER_FIRST_USE_SETUP_PHASE,
+      resultPath: firstUseSetupResultPath,
+      userData,
+      jupyterEnvironment,
+      reportsFragment: false
+    }),
+    diagnostic
+  ]);
   comparisonProductEditorPhasePlans.add(plan);
   return plan;
 }
 
-export async function runComparisonProductEditorPhases({ phasePlan, runPhase }) {
+export async function runComparisonProductEditorPhases({
+  phasePlan,
+  runPhase,
+  beforePhase = () => undefined,
+  afterPhase = () => undefined
+}) {
   if (!comparisonProductEditorPhasePlans.has(phasePlan) || typeof runPhase !== "function") {
     throw new TypeError("Comparison product execution requires one authentic phase plan and phase callback.");
+  }
+  if (typeof beforePhase !== "function" || typeof afterPhase !== "function") {
+    throw new TypeError("Comparison product execution requires callable pre-phase and post-phase observers.");
   }
   let diagnosticResult;
   let diagnosticCompleted = false;
   for (const phase of phasePlan) {
+    await beforePhase(phase);
     const result = await runPhase(phase);
+    await afterPhase(phase, result);
     if (phase.reportsFragment) {
       if (diagnosticCompleted) {
         throw new Error("Comparison product execution encountered more than one reporting diagnostic phase.");
@@ -668,7 +1031,7 @@ export async function runComparisonProductEditorPhases({ phasePlan, runPhase }) 
   return diagnosticResult;
 }
 
-async function runComparisonProduct({
+export async function runComparisonProduct({
   productKey,
   editor,
   editorVersion: knownEditorVersion,
@@ -678,16 +1041,68 @@ async function runComparisonProduct({
   privateRoot,
   fixtureRoot,
   testModule,
-  environment
+  environment,
+  captureTemplate = () => undefined,
+  requireWatchHeadroom = requireLinuxInotifyWatchHeadroom
 }) {
+  return runComparisonProductInternal(
+    {
+      productKey,
+      editor,
+      editorVersion: knownEditorVersion,
+      candidateReceipt,
+      harnessDevelopmentPath,
+      pythonReceipt,
+      privateRoot,
+      fixtureRoot,
+      testModule,
+      environment,
+      captureTemplate,
+      requireWatchHeadroom
+    },
+    { configuredOnly: false }
+  );
+}
+
+export async function runComparisonProductConfiguredSetup(input) {
+  return runComparisonProductInternal(input, { configuredOnly: true });
+}
+
+async function runComparisonProductInternal(
+  {
+    productKey,
+    editor,
+    editorVersion: knownEditorVersion,
+    candidateReceipt,
+    harnessDevelopmentPath,
+    pythonReceipt,
+    privateRoot,
+    fixtureRoot,
+    testModule,
+    environment,
+    captureTemplate = () => undefined,
+    requireWatchHeadroom = requireLinuxInotifyWatchHeadroom
+  },
+  { configuredOnly }
+) {
   requireProductKey(productKey);
+  if (typeof captureTemplate !== "function" || typeof requireWatchHeadroom !== "function") {
+    throw new TypeError("Comparison product preparation requires callable template capture and watch-headroom gates.");
+  }
   revalidateComparisonInputFile(pythonReceipt);
   const python = pythonReceipt.path;
   const profile = mkdtempSync(join(privateRoot, productKey === "open-wrangler" ? "p-o-" : "p-d-"));
   const workspace = resolve(profile, "workspace");
   const userData = resolve(profile, "user");
   const extensions = resolve(profile, "extensions");
-  prepareComparisonWorkspace(workspace, fixtureRoot);
+  if (configuredOnly) {
+    if (fixtureRoot !== undefined) {
+      throw new Error("Configured-profile setup must not receive smoke fixtures.");
+    }
+    prepareComparisonSetupWorkspace(workspace);
+  } else {
+    prepareComparisonDiagnosticWorkspace(workspace, fixtureRoot);
+  }
   writeEditorSettings(userData, comparisonEditorSettings(python));
 
   const sandboxArgs = ["--no-sandbox", ...editorDisplayLaunchArgs("linux", environment)];
@@ -701,7 +1116,7 @@ async function runComparisonProduct({
       sandboxArgs,
       environment: editorEnvironment
     }));
-  const identifiedEditor = { ...editor, version: editorVersion };
+  const identifiedEditor = Object.freeze({ ...editor, version: editorVersion });
   const allowedPrivateVsixPaths = [candidateReceipt.path];
   for (const install of PRODUCT_INSTALLS[productKey]) {
     if (install === "candidate") {
@@ -751,8 +1166,10 @@ async function runComparisonProduct({
     productKey,
     diagnosticPhase: phase,
     diagnosticResultPath: resultPath,
-    firstUseSetupResultPath:
-      productKey === "data-wrangler" ? resolve(profile, `${DATA_WRANGLER_FIRST_USE_SETUP_PHASE}-result.json`) : null,
+    firstUseSetupResultPath: resolve(
+      profile,
+      `${productKey === "data-wrangler" ? DATA_WRANGLER_FIRST_USE_SETUP_PHASE : OPEN_WRANGLER_FIRST_USE_SETUP_PHASE}-result.json`
+    ),
     userData,
     jupyterEnvironment: dataWranglerKernel?.jupyterEnvironment ?? null
   });
@@ -781,12 +1198,56 @@ async function runComparisonProduct({
           { environment, spawnProcess }
         )
     });
+  if (configuredOnly) {
+    const setupLaunch = phasePlan[0];
+    if (setupLaunch?.kind !== "first-use-setup") {
+      throw new Error("Configured-profile bootstrap did not derive its exact first-use phase.");
+    }
+    const { installedExtensions, phaseResult: observed } = await runComparisonInventoryGuard({
+      readInventory: () => readComparisonInstalledExtensions(inventoryInput),
+      runPhase: async () => {
+        await requireWatchHeadroom({ runRoot: profile });
+        return runObservedPhase(setupLaunch);
+      }
+    });
+    installedComparisonProductVersion(installedExtensions, productKey);
+    if (observed.configuredPythonProcessObservedDuringProductRun !== true) {
+      throw new Error(`${productKey} configured-profile setup did not prove its exact Python runtime.`);
+    }
+    const profileDescriptor = Object.freeze({
+      product: productKey,
+      kind: "configured-only",
+      privateRoot: profile,
+      userData,
+      extensions,
+      editor: identifiedEditor,
+      sandboxArgs: Object.freeze([...sandboxArgs]),
+      installedExtensions: Object.freeze([...installedExtensions]),
+      configuredPythonProcessObservedDuringSetup: true
+    });
+    return Object.freeze({ editorVersion, profile: profileDescriptor });
+  }
   const { installedExtensions, phaseResult: observed } = await runComparisonInventoryGuard({
     readInventory: () => readComparisonInstalledExtensions(inventoryInput),
     runPhase: () =>
       runComparisonProductEditorPhases({
         phasePlan,
-        runPhase: runObservedPhase
+        runPhase: runObservedPhase,
+        beforePhase: () => requireWatchHeadroom({ runRoot: profile }),
+        afterPhase: async (launch) => {
+          if (launch.kind === "first-use-setup") {
+            await captureTemplate({
+              product: productKey,
+              kind: "configured-only",
+              privateRoot: profile,
+              userData,
+              extensions,
+              editor: identifiedEditor,
+              sandboxArgs,
+              environment: editorEnvironment
+            });
+          }
+        }
       })
   });
   const fragment = readInstalledPerformanceFragment(
@@ -802,6 +1263,16 @@ async function runComparisonProduct({
     installedExtensions,
     candidateSha256: candidateReceipt.sha256,
     configuredPythonProcessObservedDuringProductRun: observed.configuredPythonProcessObservedDuringProductRun
+  });
+  await captureTemplate({
+    product: productKey,
+    kind: "warmed",
+    privateRoot: profile,
+    userData,
+    extensions,
+    editor: identifiedEditor,
+    sandboxArgs,
+    environment: editorEnvironment
   });
   return Object.freeze({ editorVersion, ...evidence });
 }
@@ -1140,8 +1611,7 @@ function comparisonDependencies(overrides) {
     platform: process.platform,
     architecture: process.arch,
     exists: existsSync,
-    mkdir: mkdirSync,
-    mkdtemp: mkdtempSync,
+    createPrivateRoot: createDataWranglerComparisonPrivateRoot,
     createPrivateRootReceipt: createEditorAcceptancePrivateRootReceipt,
     configureTempRoot: configureEditorAcceptanceTempRoot,
     validatePrivatePathOverrides: validateEditorAcceptancePrivatePathOverrides,
@@ -1163,6 +1633,9 @@ function comparisonDependencies(overrides) {
     acquireVscode: acquirePinnedVSCodeClient,
     startDisplay: startIsolatedEditorDisplay,
     runProduct: runComparisonProduct,
+    runConfiguredProduct: runComparisonProductConfiguredSetup,
+    captureTemplate: () => undefined,
+    retainPrivateRoot: false,
     processTreeMayBeLive: editorProcessTreeMayBeLive,
     removePrivateRoot: removeEditorAcceptancePrivateRoot,
     sanitize: sanitizeEditorAcceptanceDiagnostic,
@@ -1184,6 +1657,15 @@ function validateComparisonOptions(options) {
     }
   }
   assertComparisonPathSeparation(options);
+}
+
+function validateComparisonBootstrapOptions(options) {
+  exactKeys(options, ["candidate", "python"], "comparison configured-profile bootstrap options");
+  for (const [key, value] of Object.entries(options)) {
+    if (typeof value !== "string" || !isAbsolute(value) || value.length === 0 || /[\0\r\n]/u.test(value)) {
+      throw new Error(`Comparison configured-profile bootstrap option ${key} must be an absolute path.`);
+    }
+  }
 }
 
 export function assertComparisonPathSeparation({ candidate, python, output }) {
@@ -1457,8 +1939,17 @@ async function createComparisonHarness(privateRoot) {
   return directory;
 }
 
-function prepareComparisonWorkspace(workspace, fixtureRoot) {
+function prepareComparisonSetupWorkspace(workspace) {
   mkdirSync(workspace, { recursive: true, mode: 0o700 });
+  mkdirSync(resolve(workspace, "results"), {
+    recursive: true,
+    mode: 0o700
+  });
+  writeFileSync(resolve(workspace, "warmup.csv"), "c00,c01\n0,1\n1,2\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+}
+
+function prepareComparisonDiagnosticWorkspace(workspace, fixtureRoot) {
+  prepareComparisonSetupWorkspace(workspace);
   cpSync(resolve(fixtureRoot, "fixtures"), resolve(workspace, "fixtures"), {
     recursive: true,
     errorOnExist: true,
@@ -1477,11 +1968,6 @@ function prepareComparisonWorkspace(workspace, fixtureRoot) {
     resolve(workspace, "benchmarks", "source_cache_control.py"),
     { errorOnExist: true, force: false }
   );
-  mkdirSync(resolve(workspace, "results"), {
-    recursive: true,
-    mode: 0o700
-  });
-  writeFileSync(resolve(workspace, "warmup.csv"), "c00,c01\n0,1\n1,2\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
 }
 
 function comparisonEditorSettings(python) {
