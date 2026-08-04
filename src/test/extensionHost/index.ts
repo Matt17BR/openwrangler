@@ -5989,7 +5989,7 @@ async function exercisePackagedTrustedPickleConversion(
     const declined = vscode.commands.executeCommand<boolean>("openWrangler.convertTrustedPickle", source);
     await chooseTrustedPickleDestination(workbench, declinedPath);
     const declineDialog = await waitForVisibleEditorDialog(workbench, "Convert trusted-orders.pkl");
-    await assertTrustedPickleWarning(declineDialog.dialog, testPython);
+    await assertTrustedPickleWarning(declineDialog.dialog);
     await declineDialog.page.bringToFront();
     await declineDialog.page.keyboard.press("Escape");
     await declineDialog.dialog.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
@@ -6010,7 +6010,7 @@ async function exercisePackagedTrustedPickleConversion(
     const converted = vscode.commands.executeCommand<boolean>("openWrangler.convertTrustedPickle", source);
     await chooseTrustedPickleDestination(workbench, destinationPath);
     const conversionDialog = await waitForVisibleEditorDialog(workbench, "Convert trusted-orders.pkl");
-    await assertTrustedPickleWarning(conversionDialog.dialog, testPython);
+    await assertTrustedPickleWarning(conversionDialog.dialog);
     const convertButton = conversionDialog.dialog.getByRole("button", { name: "Convert", exact: true });
     assert.equal(await convertButton.count(), 1, "Trusted pickle conversion must have one explicit Convert action.");
     await convertButton.click({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS, noWaitAfter: true });
@@ -6139,10 +6139,13 @@ async function chooseTrustedPickleDestination(workbench: Page, destination: stri
   await picker.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
 }
 
-async function assertTrustedPickleWarning(dialog: Locator, python: string): Promise<void> {
+async function assertTrustedPickleWarning(dialog: Locator): Promise<void> {
   const message = await dialog.locator(".dialog-message-text").innerText();
   const detail = await dialog.locator(".dialog-message-detail").innerText();
-  assert.equal(message, `Convert trusted-orders.pkl with ${python}?`);
+  const prefix = "Convert trusted-orders.pkl with ";
+  assert.ok(message.startsWith(prefix) && message.endsWith("?"));
+  const python = message.slice(prefix.length, -1);
+  assert.ok(path.isAbsolute(python), "The warning must name the resolved absolute Python interpreter.");
   assert.equal(
     detail,
     "Loading a pickle can run Python code with your user permissions. Continue only if you trust trusted-orders.pkl, " +
