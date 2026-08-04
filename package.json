@@ -795,7 +795,7 @@
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.9.1",
     "axe-core": "^4.12.1",
-    "eslint": "^9.32.0",
+    "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.0.0",
     "globals": "^17.8.0",
     "jsdom": "^29.1.1",
