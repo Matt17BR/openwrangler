@@ -34,7 +34,7 @@ editorial read; do not rely on an AI detector or a word list.
 - Add and review `docs/release-notes/<version>.md` in every release pull request; the publisher does not generate it.
 - Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
-- Push independently green branch commits before opening a pull request when early review is not needed. Opening a draft pull request intentionally starts the complete PR evidence set; required jobs must never be conditionally skipped for drafts.
+- Push independently green branch commits before opening a pull request when early review is not needed. A draft pull request runs bounded feedback and remains non-mergeable until marking it ready reruns the required evidence at the same commit.
 - Do not commit generated VSIX files, local virtual environments, editor profiles, notebook execution caches, or user scratch files.
 - Do not commit agent or personal-machine housekeeping such as checkout/worktree managers, task state, or local cleanup scripts.
 
