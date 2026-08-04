@@ -559,7 +559,7 @@ export function marketplaceReleaseIntakeOutput(result) {
     }
     return Object.freeze([
       "##vso[task.setvariable variable=promote;isOutput=true]false",
-      "No release tag was selected; the default manual protected-branch run completed without Marketplace promotion."
+      "No release tag was selected; the default manual main-branch run completed without Marketplace promotion."
     ]);
   }
   if (

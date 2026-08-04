@@ -445,7 +445,7 @@ test("Marketplace intake makes only an empty default protected-branch run a succ
   });
   assert.deepEqual(marketplaceReleaseIntakeOutput(result), [
     "##vso[task.setvariable variable=promote;isOutput=true]false",
-    "No release tag was selected; the default manual protected-branch run completed without Marketplace promotion."
+    "No release tag was selected; the default manual main-branch run completed without Marketplace promotion."
   ]);
 
   for (const candidate of [
