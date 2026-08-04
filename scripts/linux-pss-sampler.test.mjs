@@ -107,3 +107,22 @@ test("surfaces sampling errors when the caller stops", () => {
   });
   assert.throws(() => sampler.stop(), /procfs unavailable/u);
 });
+
+test("retries a missing initial PSS sample before latching an error", () => {
+  let callback;
+  let reads = 0;
+  const sampler = startLinuxPssSampler(10, {
+    read: () => {
+      reads += 1;
+      if (reads === 1) throw new Error("No owned process supplied a PSS sample.");
+      return { monotonicNs: String(reads), rootPid: 10, processCount: 1, pssBytes: 100 };
+    },
+    setTimer: (value) => {
+      callback = value;
+      return 1;
+    },
+    clearTimer: () => undefined
+  });
+  callback();
+  assert.equal(sampler.stop({ captureFinal: false }).length, 1);
+});

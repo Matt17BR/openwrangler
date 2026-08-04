@@ -41,6 +41,19 @@ const RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v1";
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const SHA256 = /^[0-9a-f]{64}$/u;
 
+export function comparisonProductSettings(product) {
+  return product === "open-wrangler"
+    ? { "openWrangler.notebookPreviewProvider": "openWrangler" }
+    : {
+        "dataWrangler.outputRenderer.enabled": true,
+        "dataWrangler.outputRenderer.enabledTypes": {
+          "pandas.core.frame.DataFrame": true,
+          "pandas.DataFrame": true,
+          "polars.dataframe.frame.DataFrame": true
+        }
+      };
+}
+
 export async function runDataWranglerComparisonNeutralDriver({ requestPath, outputPath }) {
   const request = readJson(requestPath);
   validateRequest(request);
@@ -74,7 +87,7 @@ export async function runDataWranglerComparisonNeutralDriver({ requestPath, outp
   writeEditorSettings(userData, {
     "python.defaultInterpreterPath": request.python.path,
     "openWrangler.pythonPath": request.python.path,
-    "jupyter.experiments.enabled": true,
+    ...comparisonProductSettings(request.product),
     "telemetry.telemetryLevel": "off",
     "update.mode": "none",
     "extensions.autoUpdate": false,
@@ -405,8 +418,12 @@ function sameFileSnapshot(left, right) {
 function writeJsonAtomic(path, value) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  renameSync(temporary, path);
+  try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
 
 function parseArguments(arguments_) {

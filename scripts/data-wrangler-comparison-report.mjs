@@ -53,6 +53,12 @@ const STUDY_FAILURE_STAGES = new Set([
 ]);
 const STUDY_TRIAL_ID = /^[a-z0-9][a-z0-9.-]{0,127}$/u;
 const MAX_PSS_SAMPLES = 2_000;
+const STUDY_CELL_CONTRACT = Object.freeze({
+  "pandas-csv": Object.freeze({ engine: "pandas", format: "csv", rows: 100_000, columns: 50 }),
+  "polars-csv": Object.freeze({ engine: "polars", format: "csv", rows: 100_000, columns: 50 }),
+  "pandas-parquet": Object.freeze({ engine: "pandas", format: "parquet", rows: 1_000_000, columns: 20 }),
+  "polars-parquet": Object.freeze({ engine: "polars", format: "parquet", rows: 1_000_000, columns: 20 })
+});
 
 export function type7Quantile(values, probability) {
   if (
@@ -108,16 +114,20 @@ export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) 
     }
     return Object.freeze({ monotonicNs, pssBytes: sample.pssBytes, processCount: sample.processCount });
   });
-  const start = milestoneTimestamp(milestones, "run-cell-click") ?? BigInt(sanitized[0].monotonicNs);
-  const end = milestoneTimestamp(milestones, "profiles-complete") ?? BigInt(sanitized.at(-1).monotonicNs);
+  const start = milestoneTimestamp(milestones, "run-cell-click");
+  const end = milestoneTimestamp(milestones, "profiles-complete");
+  if (start === undefined || end === undefined || end <= start) {
+    throw new TypeError("Study PSS evidence requires a valid Run Cell-to-profiles measurement window.");
+  }
   const before = sanitized.filter(({ monotonicNs }) => BigInt(monotonicNs) < start).slice(-5);
-  const baselineSamples = before.length > 0 ? before : sanitized.slice(0, Math.min(5, sanitized.length));
+  if (before.length === 0) throw new TypeError("Study PSS evidence requires a pre-action baseline sample.");
   const measured = sanitized.filter(({ monotonicNs }) => {
     const at = BigInt(monotonicNs);
     return at >= start && at <= end;
   });
-  const baselinePssBytes = summarizeComparisonValues(baselineSamples.map(({ pssBytes }) => pssBytes)).median;
-  const peakPssBytes = Math.max(...(measured.length > 0 ? measured : sanitized).map(({ pssBytes }) => pssBytes));
+  if (measured.length === 0) throw new TypeError("Study PSS evidence requires a sample inside the measurement window.");
+  const baselinePssBytes = summarizeComparisonValues(before.map(({ pssBytes }) => pssBytes)).median;
+  const peakPssBytes = Math.max(...measured.map(({ pssBytes }) => pssBytes));
   return Object.freeze({
     baselinePssBytes,
     peakPssBytes,
@@ -304,6 +314,16 @@ function validateStudyManifest(manifest) {
     assertEqual(cell.id, `${cell.engine}-${cell.format}`, "study manifest cell identity");
     assertPositiveInteger(cell.rows, "study manifest rows");
     assertPositiveInteger(cell.columns, "study manifest columns");
+    const expected = STUDY_CELL_CONTRACT[cell.id];
+    if (
+      !expected ||
+      cell.engine !== expected.engine ||
+      cell.format !== expected.format ||
+      cell.rows !== expected.rows ||
+      cell.columns !== expected.columns
+    ) {
+      throw new TypeError("Study manifest cell does not match the fixed comparison workload.");
+    }
     if (cells.has(cell.id)) throw new TypeError("Study manifest cell IDs must be unique.");
     cells.set(cell.id, cell);
   }
@@ -347,9 +367,40 @@ function validateStudyManifest(manifest) {
       entries.length !== 2 ||
       entries[0].orderInPair !== 0 ||
       entries[1].orderInPair !== 1 ||
+      entries[1].order !== entries[0].order + 1 ||
+      new Set(entries.map(({ kind }) => kind)).size !== 1 ||
+      new Set(entries.map(({ repetition }) => repetition)).size !== 1 ||
+      new Set(entries.map(({ cellId }) => cellId)).size !== 1 ||
       new Set(entries.map(({ product }) => product)).size !== 2
     ) {
       throw new TypeError("Every study pair must contain each product once in pair order.");
+    }
+  }
+  if (pairs.size !== 48) throw new TypeError("Study schedule must contain exactly 48 product pairs.");
+  for (const cell of cells.values()) {
+    for (const [kind, repetitions] of [
+      ["warm", 10],
+      ["cold", 2]
+    ]) {
+      const entries = manifest.schedule.filter((entry) => entry.cellId === cell.id && entry.kind === kind);
+      const byRepetition = Map.groupBy(entries, ({ repetition }) => repetition);
+      if (entries.length !== repetitions * 2 || byRepetition.size !== repetitions) {
+        throw new TypeError(`Study schedule ${kind} coverage is incomplete for ${cell.id}.`);
+      }
+      for (let repetition = 1; repetition <= repetitions; repetition += 1) {
+        const pair = byRepetition.get(repetition);
+        if (!pair || pair.length !== 2 || new Set(pair.map(({ pairId }) => pairId)).size !== 1) {
+          throw new TypeError(`Study schedule ${kind} repetition coverage is invalid for ${cell.id}.`);
+        }
+      }
+      const firstProducts = entries.filter(({ orderInPair }) => orderInPair === 0).map(({ product }) => product);
+      const expectedFirstCount = repetitions / 2;
+      if (
+        firstProducts.filter((product) => product === "open-wrangler").length !== expectedFirstCount ||
+        firstProducts.filter((product) => product === "data-wrangler").length !== expectedFirstCount
+      ) {
+        throw new TypeError(`Study schedule ${kind} product order is not counterbalanced for ${cell.id}.`);
+      }
     }
   }
   const provenance = manifest.provenance;
@@ -568,7 +619,9 @@ function validateStudyProvenance(value, manifest) {
 function studyDuration(milestones, startName, endName) {
   const start = milestoneTimestamp(milestones, startName);
   const end = milestoneTimestamp(milestones, endName);
-  return start === undefined || end === undefined ? null : Number(end - start) / 1_000_000;
+  return start === undefined || end === undefined
+    ? null
+    : Math.round((Number(end - start) / 1_000_000) * 1_000) / 1_000;
 }
 
 function milestoneTimestamp(milestones, name) {

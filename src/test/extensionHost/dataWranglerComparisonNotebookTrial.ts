@@ -13,7 +13,12 @@ import {
   recordProgress,
   waitForGenericGridReadiness
 } from "./dataWranglerComparison";
-import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
+import {
+  findExactActiveNotebookPreviewButton,
+  findExactActiveNotebookRendererButton,
+  observeGridScrollability,
+  observeInlinePreviewReady
+} from "./notebookRendererFrame";
 
 export const COMPARISON_TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v1";
 export const COMPARISON_TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v1";
@@ -42,11 +47,16 @@ const VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u;
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESULT_BYTES = 64 * 1024;
-const SETUP_TIMEOUT_MS = 20_000;
-const KERNEL_ACCESS_SETTLE_MS = 750;
+const SETUP_TIMEOUT_MS = 45_000;
 const POLL_MS = 25;
 const COMPARISON_KERNEL_LABEL = "Python 3.12 (Comparison)";
+const COMPARISON_BOOTSTRAP_VARIABLE = "aaa_comparison_bootstrap";
+const DATA_WRANGLER_VIEW_DATA_ACTION = "View data";
 const KERNEL_ACCESS_DETAIL = "This allows the extension to execute code against Jupyter Kernels.";
+const PRODUCT_EXTENSION_IDS = {
+  "open-wrangler": "Matt17BR.openwrangler",
+  "data-wrangler": "ms-toolsai.datawrangler"
+} as const satisfies Record<Product, string>;
 const COMPARISON_KERNEL_PROVIDER_ROUTES = ["Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."];
 const COMPARISON_KERNEL_ROUTES = ["Select Another Kernel...", ...COMPARISON_KERNEL_PROVIDER_ROUTES];
 
@@ -62,6 +72,7 @@ type Format = "csv" | "parquet";
 type TrialKind = "warm" | "cold";
 type FailureStage = (typeof FAILURE_STAGES)[number];
 type MilestoneName = (typeof MILESTONE_NAMES)[number];
+type PromiseOutcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
 
 interface ArtifactIdentity {
   readonly path: string;
@@ -187,18 +198,13 @@ interface PointerTarget {
     readonly height: number;
   } | null>;
   pointerReady(): Promise<boolean>;
+  click(): Promise<void>;
   inlineReady(input: {
     readonly actionName: string;
     readonly firstColumn: "c00";
     readonly secondColumn: "c01";
   }): Promise<boolean>;
   dispose(): Promise<void>;
-}
-
-interface GridScrollability {
-  readonly verticalOverflow: number;
-  readonly horizontalOverflow: number;
-  readonly pointerUsable: true;
 }
 
 class JourneyTimeout extends Error {
@@ -571,24 +577,16 @@ export function validateComparisonNotebookLayout(input: {
 }): ComparisonNotebookLayout {
   const measuredTag = `ow-comparison-cell:${input.cellId}`;
   const setupTag = `ow-comparison-setup:${input.cellId}`;
-  const expectedCount = input.kind === "warm" ? 2 : 1;
+  const expectedCount = 2;
   if (input.cells.length !== expectedCount) {
-    fail(
-      `A ${input.kind} comparison notebook must contain exactly ${expectedCount} code cell${expectedCount === 1 ? "" : "s"}.`
-    );
+    fail(`A ${input.kind} comparison notebook must contain exactly ${expectedCount} code cells.`);
   }
   const tagged = (tag: string): number[] =>
     input.cells.flatMap((cell, index) => (cell.tags.includes(tag) ? [index] : []));
   const measured = tagged(measuredTag);
   const setup = tagged(setupTag);
   if (measured.length !== 1) fail(`The comparison notebook must contain exactly one ${measuredTag} cell.`);
-  if (setup.length !== (input.kind === "warm" ? 1 : 0)) {
-    fail(
-      input.kind === "warm"
-        ? `A warm comparison notebook must contain exactly one ${setupTag} cell.`
-        : `A cold comparison notebook must not contain a ${setupTag} cell.`
-    );
-  }
+  if (setup.length !== 1) fail(`The comparison notebook must contain exactly one ${setupTag} cell.`);
   if (
     input.cells.some(
       (cell) =>
@@ -607,14 +605,18 @@ export function validateComparisonNotebookLayout(input: {
   ) {
     fail("The measured comparison cell must end by displaying its exact variable.");
   }
-  const setupIndex = setup[0] ?? null;
-  if (setupIndex !== null) {
-    const setupSource = input.cells[setupIndex]!.source;
-    if (setupIndex !== 0 || measuredIndex !== 1 || !setupSource.includes(`${input.variableName} =`)) {
-      fail(
-        "The warm setup cell must be first, assign the measured variable, and immediately precede its display cell."
-      );
-    }
+  const setupIndex = setup[0]!;
+  const setupSource = input.cells[setupIndex]!.source;
+  const assignsMeasuredVariable = setupSource.includes(`${input.variableName} =`);
+  if (
+    setupIndex !== 0 ||
+    measuredIndex !== 1 ||
+    !setupSource.includes(`${COMPARISON_BOOTSTRAP_VARIABLE} =`) ||
+    assignsMeasuredVariable !== (input.kind === "warm")
+  ) {
+    fail(
+      "The untimed setup must be first, create the bootstrap variable, and assign the measured variable only for a warm trial."
+    );
   }
   return Object.freeze({ setupIndex, measuredIndex });
 }
@@ -836,14 +838,36 @@ async function selectComparisonKernel(page: Page, captured: CapturedNotebook): P
   }
 }
 
-async function allowComparisonKernelAccess(page: Page, product: Product): Promise<void> {
+async function activateComparisonProduct(product: Product): Promise<void> {
+  const extension = vscode.extensions.getExtension(PRODUCT_EXTENSION_IDS[product]);
+  assert.ok(extension, `The ${product} comparison extension is not installed.`);
+  await extension.activate();
+}
+
+function settlePromise<T>(promise: Promise<T>): Promise<PromiseOutcome<T>> {
+  return promise.then(
+    (value) => ({ ok: true, value }),
+    (error: unknown) => ({ ok: false, error })
+  );
+}
+
+function outcomeValue<T>(outcome: PromiseOutcome<T>): T {
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
+}
+
+async function allowComparisonKernelAccess(page: Page, product: Product, signal: AbortSignal): Promise<boolean> {
   const message =
     product === "open-wrangler"
       ? "Do you want to grant Kernel access to the extension Open Wrangler (Matt17BR.openwrangler)?"
       : "Do you want to grant Kernel access to the extension Data Wrangler (ms-toolsai.datawrangler)?";
-  const settleDeadline = Date.now() + KERNEL_ACCESS_SETTLE_MS;
+  const settleDeadline = Date.now() + SETUP_TIMEOUT_MS;
   let match: { readonly dialog: Locator; readonly frame: Frame } | undefined;
   do {
+    if (signal.aborted) {
+      recordProgress(`comparison:kernel-access-not-requested:${product}`);
+      return false;
+    }
     const matches: Array<{ readonly dialog: Locator; readonly frame: Frame }> = [];
     let visibleDialogCount = 0;
     for (const frame of comparisonFrames(page).slice(0, 64)) {
@@ -869,7 +893,11 @@ async function allowComparisonKernelAccess(page: Page, product: Product): Promis
   } while (Date.now() < settleDeadline);
   if (!match) {
     recordProgress(`comparison:kernel-access-not-requested:${product}`);
-    return;
+    return false;
+  }
+  if (signal.aborted) {
+    recordProgress(`comparison:kernel-access-not-requested:${product}`);
+    return false;
   }
   const text = (await match.dialog.innerText()).replace(/\s+/gu, " ").trim();
   assert.ok(text.includes(message), "The Jupyter kernel-access prompt did not name the expected product.");
@@ -882,16 +910,136 @@ async function allowComparisonKernelAccess(page: Page, product: Product): Promis
     );
   }
   const allow = match.dialog.getByRole("button", { name: "Allow", exact: true });
+  if (signal.aborted) {
+    recordProgress(`comparison:kernel-access-not-requested:${product}`);
+    return false;
+  }
   await clickTarget(locatorTarget(allow, match.frame, "Allow"), () => undefined);
   const deadline = Date.now() + SETUP_TIMEOUT_MS;
   do {
     if (!(await match.dialog.isVisible().catch(() => false))) {
       recordProgress(`comparison:kernel-access-allowed:${product}`);
-      return;
+      return true;
     }
     await page.waitForTimeout(POLL_MS);
   } while (Date.now() < deadline);
   throw new Error(`Jupyter did not close the ${product} kernel-access prompt after Allow.`);
+}
+
+async function findDataWranglerViewDataAction(page: Page, deadline: number): Promise<PointerTarget> {
+  const toolbarSelector =
+    ".notebook-editor:visible .notebook-toolbar-container:visible, " +
+    ".notebookOverlay:visible .notebook-toolbar-container:visible";
+  let overflowOpened = false;
+  do {
+    const matches: PointerTarget[] = [];
+    for (const frame of comparisonFrames(page).slice(0, 64)) {
+      const toolbars = frame.locator(toolbarSelector);
+      const toolbarCount = Math.min(await toolbars.count().catch(() => 0), 4);
+      for (let toolbarIndex = 0; toolbarIndex < toolbarCount; toolbarIndex += 1) {
+        const actions = toolbars
+          .nth(toolbarIndex)
+          .getByRole("button", { name: DATA_WRANGLER_VIEW_DATA_ACTION, exact: true });
+        const count = Math.min(await actions.count().catch(() => 0), 4);
+        for (let index = 0; index < count; index += 1) {
+          const action = actions.nth(index);
+          if (!(await action.isVisible().catch(() => false))) continue;
+          const candidate = locatorTarget(action, frame, DATA_WRANGLER_VIEW_DATA_ACTION);
+          if (await candidate.pointerReady().catch(() => false)) matches.push(candidate);
+        }
+      }
+    }
+    assert.ok(matches.length < 2, "The active notebook exposed duplicate View data toolbar actions.");
+    if (matches[0]) return matches[0];
+
+    if (!overflowOpened) {
+      const overflow: Array<{ readonly action: Locator; readonly frame: Frame }> = [];
+      for (const frame of comparisonFrames(page).slice(0, 64)) {
+        const actions = frame.locator(toolbarSelector).getByRole("button", { name: /^More Actions(?:\.\.\.)?$/u });
+        const count = Math.min(await actions.count().catch(() => 0), 4);
+        for (let index = 0; index < count; index += 1) {
+          const action = actions.nth(index);
+          if (await action.isVisible().catch(() => false)) overflow.push({ action, frame });
+        }
+      }
+      assert.ok(overflow.length < 2, "The active notebook exposed duplicate toolbar overflow actions.");
+      if (overflow[0]) {
+        await clickTarget(
+          locatorTarget(overflow[0].action, overflow[0].frame, await locatorName(overflow[0].action)),
+          () => undefined
+        );
+        overflowOpened = true;
+      }
+    }
+
+    if (overflowOpened) {
+      const menuMatches: PointerTarget[] = [];
+      for (const frame of comparisonFrames(page).slice(0, 64)) {
+        const items = frame
+          .locator(".context-view.monaco-menu-container:visible")
+          .getByRole("menuitem", { name: DATA_WRANGLER_VIEW_DATA_ACTION, exact: true });
+        const count = Math.min(await items.count().catch(() => 0), 4);
+        for (let index = 0; index < count; index += 1) {
+          const item = items.nth(index);
+          if (!(await item.isVisible().catch(() => false))) continue;
+          const candidate = locatorTarget(item, frame, DATA_WRANGLER_VIEW_DATA_ACTION);
+          if (await candidate.pointerReady().catch(() => false)) menuMatches.push(candidate);
+        }
+      }
+      assert.ok(menuMatches.length < 2, "The notebook overflow exposed duplicate View data menu actions.");
+      if (menuMatches[0]) return menuMatches[0];
+    }
+    await page.waitForTimeout(POLL_MS);
+  } while (Date.now() < deadline);
+  throw new Error("The notebook toolbar did not expose its public View data action.");
+}
+
+async function authorizeDataWranglerFromNotebookToolbar(
+  page: Page,
+  captured: CapturedNotebook,
+  access: Promise<PromiseOutcome<boolean>>
+): Promise<void> {
+  assert.equal(vscode.window.activeNotebookEditor, captured.editor, "The comparison notebook is not active.");
+  const target = await findDataWranglerViewDataAction(page, Date.now() + SETUP_TIMEOUT_MS);
+  const baselineTabs = Object.freeze([...allEditorTabs()]);
+  try {
+    await clickTarget(target, () => undefined);
+    assert.equal(outcomeValue(await access), true, "Data Wrangler did not receive first-use Jupyter kernel access.");
+    const pickerDeadline = Date.now() + SETUP_TIMEOUT_MS;
+    do {
+      const opened = comparisonTabsOpenedAfter(baselineTabs, allEditorTabs());
+      assert.equal(opened.length, 0, "View data opened a product editor before a variable was selected.");
+      const quickInput = await visibleQuickInput(page);
+      if (quickInput) {
+        const bootstrap = await exactQuickPickRow(quickInput, COMPARISON_BOOTSTRAP_VARIABLE);
+        if (bootstrap) {
+          const input = quickInput.locator(".quick-input-box input:visible");
+          assert.equal(await input.count(), 1, "View data must expose one variable-picker input.");
+          await input.press("Escape");
+          const dismissDeadline = Date.now() + SETUP_TIMEOUT_MS;
+          while ((await visibleQuickInput(page)) && Date.now() < dismissDeadline) {
+            await page.waitForTimeout(POLL_MS);
+          }
+          assert.equal(await visibleQuickInput(page), undefined, "The View data variable picker did not close.");
+          assert.equal(
+            vscode.window.activeNotebookEditor,
+            captured.editor,
+            "The View data permission setup replaced the comparison notebook editor."
+          );
+          selectNotebookCell(captured, captured.cell);
+          return;
+        }
+      }
+      await page.waitForTimeout(POLL_MS);
+    } while (Date.now() < pickerDeadline);
+    throw new Error(
+      `View data did not expose the bootstrap variable picker. Visible options: ${JSON.stringify(
+        await quickPickLabels(page)
+      )}`
+    );
+  } finally {
+    await target.dispose();
+  }
 }
 
 async function locatorName(locator: Locator): Promise<string> {
@@ -920,7 +1068,12 @@ function locatorTarget(locator: Locator, frame: Frame, accessibleName: string): 
     accessibleName,
     page: frame.page(),
     boundingBox: () => locator.boundingBox(),
-    pointerReady: () => locator.evaluate(observePointerReady, accessibleName),
+    pointerReady: async () => {
+      if ((await locatorName(locator)) !== accessibleName) return false;
+      await locator.click({ trial: true, timeout: 1_000 });
+      return true;
+    },
+    click: () => locator.click({ timeout: 1_000 }),
     inlineReady: (input) => locator.evaluate(observeInlinePreviewReady, input),
     dispose: async () => undefined
   };
@@ -932,6 +1085,11 @@ function elementTarget(element: ElementHandle<unknown>, frame: Frame, accessible
     page: frame.page(),
     boundingBox: () => element.boundingBox(),
     pointerReady: () => element.evaluate(observePointerReady, accessibleName),
+    click: async () => {
+      const box = await element.boundingBox();
+      assert.ok(box && box.width > 0 && box.height > 0, "Public renderer action lost its visible geometry.");
+      await frame.page().mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    },
     inlineReady: (input) => element.evaluate(observeInlinePreviewReady, input),
     dispose: () => element.dispose()
   };
@@ -944,7 +1102,9 @@ export function observePointerReady(elementValue: unknown, expectedName: string)
     readonly disabled?: boolean;
     readonly ownerDocument: {
       readonly defaultView: {
+        clearTimeout(handle: number): void;
         requestAnimationFrame(callback: () => void): number;
+        setTimeout(callback: () => void, milliseconds: number): number;
         getComputedStyle(value: unknown): {
           readonly display: string;
           readonly visibility: string;
@@ -970,6 +1130,7 @@ export function observePointerReady(elementValue: unknown, expectedName: string)
   if (!element?.isConnected || !window_ || element.disabled || element.getAttribute("aria-disabled") === "true") {
     return Promise.resolve(false);
   }
+  const ownerWindow = window_;
   const labelledBy = element.getAttribute("aria-labelledby");
   const labelled = labelledBy
     ? labelledBy
@@ -989,7 +1150,7 @@ export function observePointerReady(elementValue: unknown, expectedName: string)
   if (name !== expectedName) return Promise.resolve(false);
   let ancestor: Candidate | null = element;
   while (ancestor) {
-    const style = window_.getComputedStyle(ancestor);
+    const style = ownerWindow.getComputedStyle(ancestor);
     if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0)
       return Promise.resolve(false);
     ancestor = ancestor.parentElement;
@@ -999,16 +1160,24 @@ export function observePointerReady(elementValue: unknown, expectedName: string)
   const hit = element.ownerDocument.elementFromPoint(before.left + before.width / 2, before.top + before.height / 2);
   if (hit !== element && !element.contains(hit)) return Promise.resolve(false);
   return new Promise((resolvePromise) => {
-    window_.requestAnimationFrame(() => {
-      window_.requestAnimationFrame(() => {
-        const after = element.getBoundingClientRect();
-        resolvePromise(
-          element.isConnected &&
-            before.left === after.left &&
-            before.top === after.top &&
-            before.width === after.width &&
-            before.height === after.height
-        );
+    let settled = false;
+    const fallback = ownerWindow.setTimeout(finish, 100);
+    function finish(): void {
+      if (settled) return;
+      settled = true;
+      ownerWindow.clearTimeout(fallback);
+      const after = element.getBoundingClientRect();
+      resolvePromise(
+        element.isConnected &&
+          before.left === after.left &&
+          before.top === after.top &&
+          before.width === after.width &&
+          before.height === after.height
+      );
+    }
+    ownerWindow.requestAnimationFrame(() => {
+      ownerWindow.requestAnimationFrame(() => {
+        finish();
       });
     });
   });
@@ -1019,9 +1188,8 @@ async function clickTarget(target: PointerTarget, beforeClick: () => void): Prom
   assert.equal(ready, true, `Public action ${JSON.stringify(target.accessibleName)} was not pointer-ready.`);
   const box = await target.boundingBox();
   assert.ok(box && box.width > 0 && box.height > 0, "Public action lost its visible geometry.");
-  await target.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   beforeClick();
-  await target.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await target.click();
   return Object.freeze({ accessibleName: target.accessibleName, unique: true, pointer: true });
 }
 
@@ -1056,260 +1224,123 @@ async function findRunCellTarget(
   selectNotebookCell(captured, cell);
   const expectedPosition = cell.index + 1;
   const markerName = `Cell ${expectedPosition} of ${captured.notebook.cellCount}`;
+  const rowSelector =
+    `.notebookOverlay .cell-list-container .monaco-list-rows > ` +
+    `.monaco-list-row.code-cell-row[data-index="${cell.index}"]`;
   const executeCellName = /^Execute Cell(?: \([^\r\n]{1,64}\))?$/u;
   const deadline = Date.now() + SETUP_TIMEOUT_MS;
-  let pointerDiagnostic = "no matching Execute Cell action";
   do {
-    const markerMatches: Locator[] = [];
-    const actionMatches: Array<{ readonly action: Locator; readonly frame: Frame; readonly name: string }> = [];
+    const rowMatches: Array<{ readonly row: Locator; readonly frame: Frame }> = [];
     for (const frame of comparisonFrames(page).slice(0, 64)) {
-      const markers = frame.getByRole("button", { name: markerName, exact: true });
-      const markerCount = Math.min(await markers.count().catch(() => 0), 4);
-      for (let markerIndex = 0; markerIndex < markerCount; markerIndex += 1) {
-        const marker = markers.nth(markerIndex);
-        if (await marker.isVisible().catch(() => false)) markerMatches.push(marker);
+      const rows = frame.locator(rowSelector);
+      const count = Math.min(await rows.count().catch(() => 0), 4);
+      for (let rowIndex = 0; rowIndex < count; rowIndex += 1) {
+        const row = rows.nth(rowIndex);
+        if (!(await row.isVisible().catch(() => false))) continue;
+        rowMatches.push({ row, frame });
       }
-      const actions = frame.getByRole("button", { name: executeCellName });
-      const count = Math.min(await actions.count().catch(() => 0), 8);
-      for (let index = 0; index < count; index += 1) {
-        const action = actions.nth(index);
+    }
+    assert.ok(rowMatches.length < 2, `The workbench exposed duplicate rows for ${JSON.stringify(markerName)}.`);
+    const matches: PointerTarget[] = [];
+    const rowMatch = rowMatches[0];
+    if (rowMatch) {
+      await rowMatch.row.scrollIntoViewIfNeeded();
+      await rowMatch.row.hover({ force: true });
+      const actions = rowMatch.row.locator(
+        '.cell.code > .run-button-container button, .cell.code > .run-button-container [role="button"]'
+      );
+      const actionCount = Math.min(await actions.count().catch(() => 0), 4);
+      for (let actionIndex = 0; actionIndex < actionCount; actionIndex += 1) {
+        const action = actions.nth(actionIndex);
         if (!(await action.isVisible().catch(() => false))) continue;
         const name = await locatorName(action);
         if (!executeCellName.test(name)) continue;
-        await action.hover({ force: true, timeout: 1_000 }).catch(() => undefined);
-        if (await action.evaluate(observePointerReady, name).catch(() => false)) {
-          actionMatches.push({ action, frame, name });
-        } else {
-          pointerDiagnostic = await action
-            .evaluate((value, expectedName) => {
-              type Candidate = {
-                readonly isConnected: boolean;
-                readonly disabled?: boolean;
-                readonly ownerDocument: {
-                  readonly defaultView: {
-                    getComputedStyle(item: unknown): {
-                      readonly display: string;
-                      readonly visibility: string;
-                      readonly opacity: string;
-                    };
-                  } | null;
-                  elementFromPoint(x: number, y: number): Candidate | null;
-                  getElementById(id: string): { readonly textContent: string | null } | null;
-                };
-                readonly parentElement: Candidate | null;
-                readonly tagName: string;
-                readonly textContent: string | null;
-                contains(item: unknown): boolean;
-                getAttribute(name: string): string | null;
-                getBoundingClientRect(): {
-                  readonly left: number;
-                  readonly top: number;
-                  readonly width: number;
-                  readonly height: number;
-                };
-              };
-              const element = value as Candidate;
-              const window_ = element.ownerDocument.defaultView;
-              const labelledBy = element.getAttribute("aria-labelledby");
-              const name = (
-                element.getAttribute("aria-label") ||
-                (labelledBy
-                  ? labelledBy
-                      .split(/\s+/u)
-                      .map((id) => element.ownerDocument.getElementById(id)?.textContent ?? "")
-                      .join(" ")
-                  : "") ||
-                element.textContent ||
-                element.getAttribute("title") ||
-                ""
-              )
-                .replace(/\s+/gu, " ")
-                .trim();
-              if (!element.isConnected || !window_) return "detached";
-              if (element.disabled || element.getAttribute("aria-disabled") === "true") return "disabled";
-              if (name !== expectedName) return `name:${JSON.stringify(name)}`;
-              let current: Candidate | null = element;
-              while (current) {
-                const style = window_.getComputedStyle(current);
-                if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
-                  return `hidden:${current.tagName.toLowerCase()}:${(current.getAttribute("class") ?? "").slice(0, 80)}`;
-                }
-                current = current.parentElement;
-              }
-              const box = element.getBoundingClientRect();
-              const hit = element.ownerDocument.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-              return (
-                `box:${Math.round(box.left)},${Math.round(box.top)},${Math.round(box.width)},${Math.round(box.height)};` +
-                `hit:${hit?.tagName.toLowerCase() ?? "none"}:${hit?.getAttribute("role") ?? "none"}:` +
-                `${(hit?.getAttribute("class") ?? "").slice(0, 80)};contained:${String(hit === element || element.contains(hit))}`
-              );
-            }, name)
-            .catch(() => "pointer diagnostic failed");
-        }
+        matches.push(locatorTarget(action, rowMatch.frame, name));
       }
     }
-    assert.ok(markerMatches.length < 2, `The workbench exposed duplicate ${JSON.stringify(markerName)} markers.`);
-    const positioned = await Promise.all(
-      actionMatches.map(async (match) => ({ match, box: await match.action.boundingBox() }))
-    );
-    const physicalActions: typeof positioned = [];
-    let validActionCount = 0;
-    for (const item of positioned) {
-      if (
-        !item.box ||
-        ![item.box.x, item.box.y, item.box.width, item.box.height].every(Number.isFinite) ||
-        item.box.width <= 0 ||
-        item.box.height <= 0
-      ) {
-        continue;
-      }
-      validActionCount += 1;
-      const duplicate = physicalActions.some(
-        (existing) =>
-          existing.match.frame === item.match.frame &&
-          existing.match.name === item.match.name &&
-          existing.box!.x === item.box!.x &&
-          existing.box!.y === item.box!.y &&
-          existing.box!.width === item.box!.width &&
-          existing.box!.height === item.box!.height
-      );
-      if (!duplicate) physicalActions.push(item);
-    }
-    pointerDiagnostic = `pointer-ready boxes ${JSON.stringify(
-      positioned.map((item) =>
-        item.box ? [item.match.name, item.box.x, item.box.y, item.box.width, item.box.height] : null
-      )
-    )}`;
-    let selectedAction: (typeof actionMatches)[number] | undefined;
-    if (positioned.length > 0 && validActionCount === positioned.length && physicalActions.length === 1) {
-      selectedAction = physicalActions[0]!.match;
-    } else if (
-      validActionCount === positioned.length &&
-      physicalActions.length === captured.notebook.cellCount &&
-      physicalActions.every((item) => item.match.frame === physicalActions[0]!.match.frame)
-    ) {
-      physicalActions.sort((left, right) => left.box!.y - right.box!.y);
-      const distinctRows = physicalActions.every(
-        (item, index) =>
-          index === 0 ||
-          (physicalActions[index - 1]!.box!.y + physicalActions[index - 1]!.box!.height <= item.box!.y &&
-            physicalActions[index - 1]!.box!.y + physicalActions[index - 1]!.box!.height / 2 <
-              item.box!.y + item.box!.height / 2)
-      );
-      if (distinctRows) selectedAction = physicalActions[cell.index]?.match;
-    }
-    if (markerMatches.length === 1 && selectedAction) {
+    assert.ok(matches.length < 2, `The selected comparison cell exposed duplicate Execute Cell actions.`);
+    if (rowMatches.length === 1 && matches.length === 1) {
       assert.equal(vscode.window.activeNotebookEditor, captured.editor, "The comparison notebook lost focus.");
-      return locatorTarget(selectedAction.action, selectedAction.frame, selectedAction.name);
+      return matches[0]!;
     }
     await page.waitForTimeout(POLL_MS);
   } while (Date.now() < deadline);
-  const visibleActions: string[] = [];
-  const visibleMarkers: string[] = [];
-  const visibleDialogs: string[] = [];
+  let visibleRowCount = 0;
+  let visibleRunActionCount = 0;
+  let visibleDialogCount = 0;
   for (const frame of comparisonFrames(page).slice(0, 64)) {
-    const dialogs = frame.locator('[role="dialog"]:visible, .monaco-dialog-box:visible');
-    const dialogCount = Math.min(await dialogs.count().catch(() => 0), 4 - visibleDialogs.length);
-    for (let index = 0; index < dialogCount; index += 1) {
-      visibleDialogs.push(
-        (
-          await dialogs
-            .nth(index)
-            .innerText()
-            .catch(() => "")
-        )
-          .replace(/\s+/gu, " ")
-          .trim()
-          .slice(0, 300)
-      );
-    }
-    const buttons = frame.locator('button:visible, [role="button"]:visible');
-    const buttonCount = Math.min(await buttons.count().catch(() => 0), 128);
-    for (let index = 0; index < buttonCount && visibleActions.length < 32; index += 1) {
-      const name = await locatorName(buttons.nth(index)).catch(() => "");
-      if (/\b(?:cell|execute|run)\b/iu.test(name)) visibleActions.push(name.slice(0, 100));
-    }
-    const markers = frame.getByRole("button", { name: /^Cell \d+ of \d+$/u });
-    const markerCount = Math.min(await markers.count().catch(() => 0), 16 - visibleMarkers.length);
-    for (let index = 0; index < markerCount; index += 1) {
-      const marker = markers.nth(index);
-      visibleMarkers.push((await locatorName(marker).catch(() => "")).slice(0, 100));
+    visibleDialogCount += Math.min(
+      await frame
+        .locator('[role="dialog"]:visible, .monaco-dialog-box:visible')
+        .count()
+        .catch(() => 0),
+      4
+    );
+    visibleRowCount += Math.min(
+      await frame
+        .locator(`${rowSelector}:visible`)
+        .count()
+        .catch(() => 0),
+      4
+    );
+    const actions = frame.locator(
+      `${rowSelector} .cell.code > .run-button-container button:visible, ` +
+        `${rowSelector} .cell.code > .run-button-container [role="button"]:visible`
+    );
+    const actionCount = Math.min(await actions.count().catch(() => 0), 4);
+    for (let index = 0; index < actionCount; index += 1) {
+      if (executeCellName.test(await locatorName(actions.nth(index)).catch(() => ""))) visibleRunActionCount += 1;
     }
   }
   throw new Error(
     `The selected comparison cell did not expose one public Execute Cell action. ` +
-      `Expected: ${JSON.stringify(markerName)} Dialogs: ${JSON.stringify(visibleDialogs)} ` +
-      `Pointer: ${pointerDiagnostic} Actions: ${JSON.stringify(visibleActions)} ` +
-      `Markers: ${JSON.stringify(visibleMarkers)}`
+      `Expected ${JSON.stringify(markerName)} at row index ${cell.index}; observed ` +
+      `${visibleRowCount} matching rows, ${visibleRunActionCount} matching run actions, and ${visibleDialogCount} dialogs.`
   );
-}
-
-/** Verifies that the launch action and a deterministic dataframe preview share one visible document. */
-export function observeInlinePreviewReady(
-  elementValue: unknown,
-  input: { readonly actionName: string; readonly firstColumn: "c00"; readonly secondColumn: "c01" }
-): boolean {
-  type Candidate = {
-    readonly isConnected: boolean;
-    readonly ownerDocument: {
-      readonly defaultView: {
-        getComputedStyle(value: unknown): {
-          readonly display: string;
-          readonly visibility: string;
-          readonly opacity: string;
-        };
-      } | null;
-      querySelectorAll(selector: string): ArrayLike<Candidate>;
-    };
-    readonly parentElement: Candidate | null;
-    readonly textContent: string | null;
-    getAttribute(name: string): string | null;
-    getBoundingClientRect(): { readonly width: number; readonly height: number };
-    querySelectorAll(selector: string): ArrayLike<Candidate>;
-  };
-  const action = elementValue as Candidate;
-  const window_ = action?.ownerDocument?.defaultView;
-  if (!action?.isConnected || !window_) return false;
-  const normalize = (value: string | null): string => (value ?? "").replace(/\s+/gu, " ").trim();
-  const actionName = normalize(action.getAttribute("aria-label") || action.textContent || action.getAttribute("title"));
-  if (actionName !== input.actionName) return false;
-  const visible = (candidate: Candidate): boolean => {
-    if (!candidate.isConnected) return false;
-    const box = candidate.getBoundingClientRect();
-    if (box.width <= 0 || box.height <= 0) return false;
-    let current: Candidate | null = candidate;
-    while (current) {
-      const style = window_.getComputedStyle(current);
-      if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
-      current = current.parentElement;
-    }
-    return true;
-  };
-  const roots: Candidate[] = [];
-  let current: Candidate | null = action;
-  for (let depth = 0; current && depth < 12; depth += 1) {
-    roots.push(current);
-    current = current.parentElement;
-  }
-  roots.push(...Array.from(action.ownerDocument.querySelectorAll('[role="grid"], [role="table"], table')).slice(0, 64));
-  return roots.some((root) => {
-    const tables = [root, ...Array.from(root.querySelectorAll('[role="grid"], [role="table"], table')).slice(0, 64)];
-    return tables.some((table) => {
-      if (!visible(table)) return false;
-      const headers = Array.from(table.querySelectorAll('[role="columnheader"], th')).map((item) =>
-        normalize(item.textContent)
-      );
-      if (!headers.some((text) => text === input.firstColumn || text.startsWith(`${input.firstColumn} `))) return false;
-      if (!headers.some((text) => text === input.secondColumn || text.startsWith(`${input.secondColumn} `)))
-        return false;
-      const text = normalize(table.textContent);
-      return /(?:^|\s)0(?:\s|$)/u.test(text) && /(?:^|\s)1(?:\s|$)/u.test(text);
-    });
-  });
 }
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+export function integerProfileTextReady(input: {
+  readonly column: string;
+  readonly minimum: number;
+  readonly maximum: number;
+  readonly text: string;
+}): boolean {
+  if (!/^c\d{2}$/u.test(input.column) || !Number.isSafeInteger(input.minimum) || !Number.isSafeInteger(input.maximum)) {
+    return false;
+  }
+  const text = input.text
+    .replace(/\u2212/gu, "-")
+    .replace(/[,_]/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const displayedMetric = (label: "min" | "max", value: number): boolean => {
+    const match = new RegExp(
+      `\\b(?:${label}|${label === "min" ? "minimum" : "maximum"})\\s*[:=]?\\s*` +
+        `([-+]?(?:(?:\\d(?:[\\d ]*\\d)?)(?:\\.\\d+)?|\\.\\d+)(?:e[-+]?\\d+)?)([kmb]?)(?![\\d.\\p{L}])`,
+      "iu"
+    ).exec(text);
+    if (!match?.[1]) return false;
+    const token = match[1].replace(/\s/gu, "");
+    const suffix = (match[2] ?? "").toLowerCase();
+    const scale = suffix === "k" ? 1_000 : suffix === "m" ? 1_000_000 : suffix === "b" ? 1_000_000_000 : 1;
+    const displayed = Number(token) * scale;
+    if (!Number.isFinite(displayed)) return false;
+    if (suffix === "") return displayed === value;
+    const decimalPlaces = token.match(/\.(\d+)/u)?.[1]?.length ?? 0;
+    return Math.abs(displayed - value) <= (scale / 2) * 10 ** -decimalPlaces;
+  };
+  return (
+    new RegExp(`(?:^|\\b)${input.column}(?:\\b|[,;:()\\[\\]{}-])`, "u").test(text) &&
+    !/\b(?:loading|profiling|calculating|pending)\b/iu.test(text) &&
+    /\b(?:missing|null(?:s| values?)?)\s*[:=]?\s*0(?:\b|%)/iu.test(text) &&
+    /\b(?:distinct|unique)\b/iu.test(text) &&
+    displayedMetric("min", input.minimum) &&
+    displayedMetric("max", input.maximum)
+  );
 }
 
 async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest): Promise<PointerTarget | undefined> {
@@ -1347,14 +1378,71 @@ async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest)
       }
     }
   } else {
-    const actionPattern = new RegExp(`^Open ['"]${escapeRegex(request.cell.variableName)}['"] in Data Wrangler$`, "u");
+    const actionPattern = /^Open(?: in)? Data Wrangler$/u;
     for (const frame of comparisonFrames(page).slice(0, 64)) {
-      const buttons = frame.getByRole("button", { name: actionPattern });
-      const count = Math.min(await buttons.count().catch(() => 0), 8);
+      let handle;
+      try {
+        handle = await frame.evaluateHandle(findExactActiveNotebookPreviewButton, {
+          expectedButtonNames: ["Open Data Wrangler", "Open in Data Wrangler"],
+          requiredLabels: ["c00", "c01", "0", "1"]
+        });
+        const element = handle.asElement() as ElementHandle<unknown> | null;
+        if (!element) {
+          await handle.dispose();
+          continue;
+        }
+        const name = await element.evaluate((value) => {
+          const element = value as {
+            readonly ownerDocument: { getElementById(id: string): { readonly textContent: string | null } | null };
+            readonly textContent: string | null;
+            getAttribute(name: string): string | null;
+          };
+          const labelledBy = element.getAttribute("aria-labelledby");
+          const labelled = labelledBy
+            ? labelledBy
+                .split(/\s+/u)
+                .map((id) => element.ownerDocument.getElementById(id)?.textContent ?? "")
+                .join(" ")
+            : "";
+          return (
+            element.getAttribute("aria-label") ||
+            labelled ||
+            element.textContent ||
+            element.getAttribute("title") ||
+            ""
+          )
+            .replace(/\s+/gu, " ")
+            .trim();
+        });
+        const target = elementTarget(element, frame, name);
+        if (
+          actionPattern.test(name) &&
+          (await target.pointerReady().catch(() => false)) &&
+          (await target.inlineReady({ actionName: name, firstColumn: "c00", secondColumn: "c01" }).catch(() => false))
+        ) {
+          matches.push(target);
+          handle = undefined;
+        } else {
+          await target.dispose();
+          handle = undefined;
+        }
+      } finally {
+        await handle?.dispose().catch(() => undefined);
+      }
+    }
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      await Promise.allSettled(matches.map((target) => target.dispose()));
+      throw new Error("The measured output exposed more than one active renderer launch action.");
+    }
+    for (const frame of comparisonFrames(page).slice(0, 64)) {
+      const buttons = frame.locator('button:visible, [role="button"]:visible');
+      const count = Math.min(await buttons.count().catch(() => 0), 128);
       for (let index = 0; index < count; index += 1) {
         const button = buttons.nth(index);
         if (!(await button.isVisible().catch(() => false))) continue;
         const name = await locatorName(button);
+        if (!actionPattern.test(name)) continue;
         const target = locatorTarget(button, frame, name);
         if (
           (await target.pointerReady().catch(() => false)) &&
@@ -1396,8 +1484,10 @@ async function waitForInlineTarget(
   let exactRoleVisibleCount = 0;
   let exactRolePointerCount = 0;
   let exactRoleInlineCount = 0;
+  let exactCssPointerCount = 0;
+  let exactCssInlineCount = 0;
   const wranglerActionSignatures: Array<readonly [number, number]> = [];
-  const exactAction = new RegExp(`^Open ['"]${escapeRegex(request.cell.variableName)}['"] in Data Wrangler$`, "u");
+  const exactAction = /^Open(?: in)? Data Wrangler$/u;
   for (const frame of comparisonFrames(page).slice(0, 64)) {
     const buttons = frame.locator('button:visible, [role="button"]:visible');
     const count = Math.min(await buttons.count().catch(() => 0), 128);
@@ -1417,8 +1507,17 @@ async function waitForInlineTarget(
           wranglerActionSignatures.push([name.length, bitmask]);
         }
       }
-      if (exactAction.test(name)) exactActionCount += 1;
-      if (name === "Open in Data Wrangler") genericActionCount += 1;
+      if (exactAction.test(name)) {
+        exactActionCount += 1;
+        const target = locatorTarget(buttons.nth(index), frame, name);
+        if (await target.pointerReady().catch(() => false)) exactCssPointerCount += 1;
+        if (
+          await target.inlineReady({ actionName: name, firstColumn: "c00", secondColumn: "c01" }).catch(() => false)
+        ) {
+          exactCssInlineCount += 1;
+        }
+      }
+      if (exactAction.test(name)) genericActionCount += 1;
     }
     const exactRoleButtons = frame.getByRole("button", { name: exactAction });
     const exactRoleButtonCount = Math.min(await exactRoleButtons.count().catch(() => 0), 8);
@@ -1443,11 +1542,12 @@ async function waitForInlineTarget(
     "inline-preview",
     `Timed out waiting for the executed cell's public dataframe preview. ` +
       `Execution success ${String(cell.executionSummary?.success)} order ${String(cell.executionSummary?.executionOrder)}. ` +
-      `Outputs ${cell.outputs.length} MIME count ${mimeTypes.size} HTML ${String(mimeTypes.has("text/html"))} ` +
+      `Outputs ${cell.outputs.length} MIME types ${JSON.stringify([...mimeTypes].sort())} ` +
+      `HTML ${String(mimeTypes.has("text/html"))} ` +
       `plain text ${String(mimeTypes.has("text/plain"))}. Wrangler actions ${wranglerActionCount} ` +
       `exact ${exactActionCount} generic ${genericActionCount} role ${exactRoleCount} visible ${exactRoleVisibleCount} ` +
-      `pointer ${exactRolePointerCount} inline ${exactRoleInlineCount} signatures ` +
-      `${JSON.stringify(wranglerActionSignatures)} end.`
+      `pointer ${exactRolePointerCount} inline ${exactRoleInlineCount} cssPointer ${exactCssPointerCount} ` +
+      `cssInline ${exactCssInlineCount} signatures ${JSON.stringify(wranglerActionSignatures)}.`
   );
 }
 
@@ -1481,64 +1581,6 @@ export function observeVisibleFullShape(input: { readonly rows: number; readonly
     });
 }
 
-/** Product-neutral scrollability probe used only after the generic public grid is ready. */
-export function observeGridScrollability(): GridScrollability | null {
-  type Candidate = {
-    readonly isConnected: boolean;
-    readonly parentElement: Candidate | null;
-    readonly textContent: string | null;
-    readonly clientHeight: number;
-    readonly clientWidth: number;
-    readonly scrollHeight: number;
-    readonly scrollWidth: number;
-    contains(value: unknown): boolean;
-    getAttribute(name: string): string | null;
-    getBoundingClientRect(): {
-      readonly left: number;
-      readonly top: number;
-      readonly width: number;
-      readonly height: number;
-    };
-    querySelectorAll(selector: string): ArrayLike<Candidate>;
-  };
-  const runtime = globalThis as unknown as {
-    readonly document: {
-      querySelectorAll(selector: string): ArrayLike<Candidate>;
-      elementFromPoint(x: number, y: number): unknown;
-    };
-  };
-  const normalize = (value: string | null): string => (value ?? "").replace(/\s+/gu, " ").trim();
-  const roots = Array.from(runtime.document.querySelectorAll('[role="grid"], [role="table"], table')).slice(0, 64);
-  for (const root of roots) {
-    const headers = Array.from(root.querySelectorAll('[role="columnheader"], th')).map((item) =>
-      normalize(item.textContent)
-    );
-    if (!headers.some((name) => /^c00(?:\b|\s)/u.test(name)) || !headers.some((name) => /^c01(?:\b|\s)/u.test(name)))
-      continue;
-    const candidates: Candidate[] = [root];
-    let parent = root.parentElement;
-    for (let depth = 0; parent && depth < 12; depth += 1) {
-      candidates.push(parent);
-      parent = parent.parentElement;
-    }
-    candidates.push(...Array.from(root.querySelectorAll("*")).slice(0, 4_096));
-    const verticalOverflow = Math.max(...candidates.map((item) => Math.max(0, item.scrollHeight - item.clientHeight)));
-    const horizontalOverflow = Math.max(...candidates.map((item) => Math.max(0, item.scrollWidth - item.clientWidth)));
-    const box = root.getBoundingClientRect();
-    const hit = runtime.document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-    if (
-      box.width > 0 &&
-      box.height > 0 &&
-      (hit === root || root.contains(hit)) &&
-      verticalOverflow > 0 &&
-      horizontalOverflow > 0
-    ) {
-      return { verticalOverflow, horizontalOverflow, pointerUsable: true };
-    }
-  }
-  return null;
-}
-
 async function findExactButton(frame: Frame, name: string, timeoutMs = SETUP_TIMEOUT_MS): Promise<PointerTarget> {
   const deadline = Date.now() + timeoutMs;
   do {
@@ -1562,13 +1604,16 @@ async function findExactButton(frame: Frame, name: string, timeoutMs = SETUP_TIM
 }
 
 async function visibleColumnHeader(frame: Frame, column: string): Promise<Locator | undefined> {
-  const pattern = new RegExp(`^${escapeRegex(column)}(?:\\b|[,;:()\\[\\]{}\\u2013\\u2014-])`, "u");
+  const boundary = "[,;:()\\[\\]{}\\u2013\\u2014#|\\-]";
+  const pattern = new RegExp(`(?:^|\\s|${boundary})${escapeRegex(column)}(?:$|\\s|${boundary})`, "u");
   const headers = frame.getByRole("columnheader", { name: pattern });
   const matches: Locator[] = [];
   const count = Math.min(await headers.count().catch(() => 0), 16);
   for (let index = 0; index < count; index += 1) {
     const header = headers.nth(index);
-    if (await header.isVisible().catch(() => false)) matches.push(header);
+    if (!(await header.isVisible().catch(() => false))) continue;
+    const name = await locatorName(header);
+    if (await header.evaluate(observePointerReady, name).catch(() => false)) matches.push(header);
   }
   assert.ok(matches.length <= 1, `The grid exposed duplicate visible ${column} column headers.`);
   return matches[0];
@@ -1583,10 +1628,27 @@ async function gridRoot(frame: Frame): Promise<Locator> {
     if (!(await root.isVisible().catch(() => false))) continue;
     const hasCanonicalHeaders = await root
       .evaluate((element) => {
-        const names = Array.from(element.querySelectorAll('[role="columnheader"], th')).map((item) =>
-          ((item as { readonly textContent: string | null }).textContent ?? "").trim()
-        );
-        return names.some((name) => /^c00(?:\b|\s)/u.test(name)) && names.some((name) => /^c01(?:\b|\s)/u.test(name));
+        type Header = {
+          readonly textContent: string | null;
+          getAttribute(name: string): string | null;
+          querySelectorAll(selector: string): ArrayLike<Header>;
+        };
+        const normalize = (value: string | null): string => (value ?? "").replace(/\s+/gu, " ").trim();
+        const headers = Array.from(element.querySelectorAll('[role="columnheader"], th')) as Header[];
+        const matches = (header: Header): boolean => {
+          const boundary = "[,;:()\\[\\]{}\\u2013\\u2014#|+-]";
+          const pattern = new RegExp(`(?:^|\\s|${boundary})c\\d{2}(?:$|\\s|${boundary})`, "u");
+          if (
+            pattern.test(normalize(header.getAttribute("aria-label"))) ||
+            pattern.test(normalize(header.textContent))
+          ) {
+            return true;
+          }
+          return Array.from(header.querySelectorAll("*"))
+            .slice(0, 256)
+            .some((child) => /^c\d{2}$/u.test(normalize(child.textContent)));
+        };
+        return headers.some(matches);
       })
       .catch(() => false);
     if (hasCanonicalHeaders) matches.push(root);
@@ -1609,94 +1671,99 @@ async function revealColumnHeader(frame: Frame, column: string, deadline: number
   throw new JourneyTimeout("profile-all", `Timed out revealing profile column ${column}.`);
 }
 
-/** Public-text profile oracle; it never returns row values. */
-export function observeIntegerProfileReady(input: {
-  readonly column: string;
-  readonly minimum: number;
-  readonly maximum: number;
-}): boolean {
-  type Candidate = {
-    readonly isConnected: boolean;
-    readonly parentElement: Candidate | null;
-    readonly textContent: string | null;
-    getBoundingClientRect(): { readonly width: number; readonly height: number };
-  };
-  const runtime = globalThis as unknown as {
-    readonly document: { querySelectorAll(selector: string): ArrayLike<Candidate> };
-  };
-  if (!/^c\d{2}$/u.test(input.column) || !Number.isSafeInteger(input.minimum) || !Number.isSafeInteger(input.maximum))
-    return false;
-  const normalize = (value: string | null): string => (value ?? "").replace(/[,_]/gu, "").replace(/\s+/gu, " ").trim();
-  return Array.from(
-    runtime.document.querySelectorAll(
-      'aside, [role="complementary"], [role="region"], section, [role="tabpanel"], [role="columnheader"]'
-    )
-  )
-    .slice(0, 1_024)
-    .some((candidate) => {
-      const box = candidate.getBoundingClientRect();
-      if (!candidate.isConnected || box.width <= 0 || box.height <= 0) return false;
-      const text = normalize(candidate.textContent);
-      if (!new RegExp(`(?:^|\\b)${input.column}(?:\\b|[,;:()\\[\\]{}-])`, "u").test(text)) return false;
-      if (/\b(?:loading|profiling|calculating|pending)\b/iu.test(text)) return false;
-      return (
-        /\b(?:int64|integer|number|numeric)\b/iu.test(text) &&
-        /\b(?:missing|null(?:s| values?)?)\s*[:=]?\s*0(?:\b|%)/iu.test(text) &&
-        /\b(?:distinct|unique)\b/iu.test(text) &&
-        new RegExp(`\\b(?:min|minimum)\\s*[:=]?\\s*${input.minimum}\\b`, "iu").test(text) &&
-        new RegExp(`\\b(?:max|maximum)\\s*[:=]?\\s*${input.maximum}\\b`, "iu").test(text)
-      );
-    });
-}
-
 async function clickColumnForProfile(
   frame: Frame,
-  product: Product,
   index: number,
   deadline: number,
   beforeClick?: () => void
 ): Promise<ActionEvidence> {
   const column = `c${String(index).padStart(2, "0")}`;
   const header = await revealColumnHeader(frame, column, deadline);
-  if (product === "data-wrangler") {
-    const name = await locatorName(header);
-    return clickTarget(locatorTarget(header, frame, name), beforeClick ?? (() => undefined));
-  }
-  const ariaColumnIndex = (await header.getAttribute("aria-colindex")) ?? String(index + 2);
-  const root = await gridRoot(frame);
-  const cells = root.locator(
-    `[role="gridcell"][aria-colindex="${ariaColumnIndex}"], [role="cell"][aria-colindex="${ariaColumnIndex}"]`
-  );
-  const count = Math.min(await cells.count().catch(() => 0), 64);
-  for (let cellIndex = 0; cellIndex < count; cellIndex += 1) {
-    const cell = cells.nth(cellIndex);
-    if (!(await cell.isVisible().catch(() => false))) continue;
-    return clickTarget(locatorTarget(cell, frame, await locatorName(cell)), beforeClick ?? (() => undefined));
-  }
-  throw new Error(`Open Wrangler did not expose one visible data cell for ${column}.`);
+  const name = await locatorName(header);
+  const evidence = await clickTarget(locatorTarget(header, frame, name), beforeClick ?? (() => undefined));
+  return Object.freeze({ ...evidence, accessibleName: column });
+}
+
+async function selectOpenWranglerProfileColumn(frame: Frame, column: string, deadline: number): Promise<void> {
+  const search = frame.getByRole("combobox", { name: "Column", exact: true });
+  const optionName = new RegExp(`^${escapeRegex(column)}, [^,]{1,40} column$`, "u");
+  do {
+    if ((await search.count().catch(() => 0)) === 1 && (await search.isVisible().catch(() => false))) {
+      await search.fill(column);
+      const option = frame.getByRole("option", { name: optionName });
+      if ((await option.count().catch(() => 0)) === 1 && (await option.isVisible().catch(() => false))) {
+        await search.press("Enter");
+        return;
+      }
+    }
+    await frame.page().waitForTimeout(POLL_MS);
+  } while (Date.now() < deadline);
+  throw new JourneyTimeout("profile-all", `Timed out selecting Open Wrangler profile column ${column}.`);
 }
 
 async function waitForProfile(
-  frame: Frame,
+  page: Page,
   column: string,
   minimum: number,
   maximum: number,
   deadline: number,
   stage: FailureStage
-): Promise<void> {
+): Promise<Frame> {
   do {
-    if (await frame.evaluate(observeIntegerProfileReady, { column, minimum, maximum }).catch(() => false)) return;
-    await frame.page().waitForTimeout(POLL_MS);
+    for (const frame of comparisonFrames(page).slice(0, 64)) {
+      const header = await visibleColumnHeader(frame, column).catch(() => undefined);
+      if (!header) continue;
+      const [name, text] = await Promise.all([locatorName(header).catch(() => ""), header.innerText().catch(() => "")]);
+      if (integerProfileTextReady({ column, minimum, maximum, text: `${name} ${text}` })) {
+        return frame;
+      }
+    }
+    await page.waitForTimeout(POLL_MS);
   } while (Date.now() < deadline);
   throw new JourneyTimeout(stage, `Timed out waiting for the completed public profile for ${column}.`);
 }
 
-function boundedFailureMessage(error: unknown, request: ComparisonTrialRequest): string {
-  const raw = error instanceof Error ? error.message : String(error);
+async function waitForOpenWranglerProfile(
+  frame: Frame,
+  column: string,
+  deadline: number,
+  stage: FailureStage
+): Promise<void> {
+  const drawer = frame.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  do {
+    if ((await drawer.count().catch(() => 0)) === 1 && (await drawer.isVisible().catch(() => false))) {
+      const heading = drawer.getByRole("heading", { name: column, exact: true });
+      const complete = await drawer
+        .evaluate((element) => {
+          const text = (element.textContent ?? "").replace(/\s+/gu, " ");
+          return (
+            !/Preparing column summary|Profiling selected column/iu.test(text) &&
+            ["Exact statistics", "Rows", "Null", "Distinct", "Min", "Max"].every((label) => text.includes(label))
+          );
+        })
+        .catch(() => false);
+      if ((await heading.count().catch(() => 0)) === 1 && (await heading.isVisible().catch(() => false)) && complete) {
+        return;
+      }
+    }
+    await frame.page().waitForTimeout(POLL_MS);
+  } while (Date.now() < deadline);
+  throw new JourneyTimeout(stage, `Timed out waiting for Open Wrangler's completed profile for ${column}.`);
+}
+
+export function boundedFailureMessage(error: unknown, request: ComparisonTrialRequest): string {
+  const raw = (error instanceof Error ? error.message : String(error)).split(/\r?\n/u, 1)[0] ?? "Unknown failure.";
   return raw
     .replaceAll(request.isolatedRoot, "<isolated-root>")
     .replaceAll(request.notebookPath, "<notebook>")
     .replaceAll(request.cell.source, "<source>")
+    .replaceAll(/\bfile:(?:\/+|\\+)[^\s:]+/giu, "<path>")
+    .replaceAll(/(?:[A-Za-z]:)?[\\/][^\s:]+/gu, "<path>")
+    .replaceAll(/(^|[^\p{L}\p{N}])~[^\s]*/gu, "$1<path>")
+    .replaceAll(/(?:%[0-9A-Fa-f]{2})+[^\s]*/gu, "<encoded-path>")
+    .replaceAll(/(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}\s]+\}|%[^%\s]+%)/gu, "<environment>")
+    .replaceAll(/[\\/]/gu, "")
+    .replaceAll(/[^\p{L}\p{N}\s,;()[\]{}'"+=-]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, 500);
@@ -1740,10 +1807,9 @@ async function executeWarmSetup(
   page: Page,
   captured: CapturedNotebook
 ): Promise<void> {
-  if (captured.setupCell === null) return;
-  assert.equal(request.kind, "warm", "Only a warm comparison trial may execute an untimed setup cell.");
-  assert.equal(captured.editor.notebook, captured.notebook, "The warm setup changed the captured notebook editor.");
-  assert.equal(vscode.window.activeNotebookEditor, captured.editor, "The warm setup notebook is not active.");
+  assert.ok(captured.setupCell, "The comparison notebook omitted its untimed setup cell.");
+  assert.equal(captured.editor.notebook, captured.notebook, "The untimed setup changed the captured notebook editor.");
+  assert.equal(vscode.window.activeNotebookEditor, captured.editor, "The untimed setup notebook is not active.");
   const setupCell = captured.setupCell;
   const summaryBeforeDispatch = executionSummaryFingerprint(setupCell);
   let freshExecution = false;
@@ -1770,17 +1836,17 @@ async function executeWarmSetup(
       const executionChanged = freshExecution || executionSummaryFingerprint(setupCell) !== summaryBeforeDispatch;
       if (executionChanged && setupCell.executionSummary?.success === true) {
         await command;
-        assert.equal(setupCell.outputs.length, 0, "The untimed warm setup cell must not publish dataframe output.");
+        assert.equal(setupCell.outputs.length, 0, "The untimed setup cell must not publish dataframe output.");
         selectNotebookCell(captured, captured.cell);
         recordProgress(`comparison:${request.trialId}:warm-setup-complete`);
         return;
       }
       if (executionChanged && setupCell.executionSummary?.success === false) {
-        throw new Error("The untimed warm setup cell failed.");
+        throw new Error("The untimed setup cell failed.");
       }
       await page.waitForTimeout(POLL_MS);
     } while (Date.now() < deadline);
-    throw new JourneyTimeout("run-cell", "Timed out waiting for the untimed warm setup cell.");
+    throw new JourneyTimeout("run-cell", "Timed out waiting for the untimed setup cell.");
   } finally {
     listener.dispose();
   }
@@ -1793,30 +1859,42 @@ async function executeJourney(
   milestones: Milestones,
   evidence: MutableEvidence
 ): Promise<void> {
-  await allowComparisonKernelAccess(page, request.product);
-  await executeWarmSetup(request, page, captured);
-  await allowComparisonKernelAccess(page, request.product);
-  const runTarget = await findRunCellTarget(page, captured, captured.cell);
-  const summaryBeforeClick = executionSummaryFingerprint(captured.cell);
-  let freshExecution = false;
-  const listener = vscode.workspace.onDidChangeNotebookDocument((event) => {
-    if (event.notebook !== captured.notebook) return;
-    if (event.cellChanges.some((change) => change.cell === captured.cell && change.executionSummary !== undefined)) {
-      freshExecution = true;
-    }
-  });
+  const accessController = new AbortController();
+  const access = settlePromise(allowComparisonKernelAccess(page, request.product, accessController.signal));
+  let runTarget: PointerTarget | undefined;
+  let listener: vscode.Disposable | undefined;
   let inlineTarget: PointerTarget | undefined;
+  let journeyError: unknown;
+  let journeyFailed = false;
   try {
+    await Promise.all([activateComparisonProduct(request.product), executeWarmSetup(request, page, captured)]);
+    if (request.product === "data-wrangler") {
+      await authorizeDataWranglerFromNotebookToolbar(page, captured, access);
+    } else {
+      assert.equal(outcomeValue(await access), true, "Open Wrangler did not receive first-use Jupyter kernel access.");
+    }
+    const measuredCell = captured.notebook.cellAt(captured.cell.index);
+    runTarget = await findRunCellTarget(page, captured, measuredCell);
+    const summaryBeforeClick = executionSummaryFingerprint(measuredCell);
+    let freshExecution = false;
+    listener = vscode.workspace.onDidChangeNotebookDocument((event) => {
+      if (event.notebook !== captured.notebook) return;
+      if (event.cellChanges.some((change) => change.cell === measuredCell && change.executionSummary !== undefined)) {
+        freshExecution = true;
+      }
+    });
     evidence.runCell = await clickTarget(runTarget, () => milestones.mark("run-cell-click"));
     recordProgress(`comparison:${request.trialId}:run-cell-click`);
     const inlineDeadline = Date.now() + request.timeoutsMs.inlinePreview;
     inlineTarget = await waitForInlineTarget(
       page,
       request,
-      captured.cell,
-      () => freshExecution || executionSummaryFingerprint(captured.cell) !== summaryBeforeClick,
+      measuredCell,
+      () => freshExecution || executionSummaryFingerprint(measuredCell) !== summaryBeforeClick,
       inlineDeadline
     );
+    accessController.abort();
+    outcomeValue(await access);
     milestones.mark("inline-ready");
     evidence.inline = Object.freeze({
       accessibleName: inlineTarget.accessibleName,
@@ -1831,18 +1909,52 @@ async function executeJourney(
     const baselinePages = new Set([...baselineFrames].map((frame) => frame.page()));
     await clickTarget(inlineTarget, () => milestones.mark("launch-click"));
     recordProgress(`comparison:${request.trialId}:launch-click`);
+    const workbenchDeadline = Date.now() + request.timeoutsMs.workbenchOpen;
+    let targetSelected = false;
+    do {
+      const targetTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      if (
+        targetTab !== undefined &&
+        targetTab !== captured.sourceTab &&
+        (targetTab.input instanceof vscode.TabInputCustom || targetTab.input instanceof vscode.TabInputWebview)
+      ) {
+        targetSelected = true;
+        break;
+      }
+      await page.waitForTimeout(POLL_MS);
+    } while (Date.now() < workbenchDeadline);
+    if (!targetSelected) {
+      const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      const opened = comparisonTabsOpenedAfter(baselineTabs, allEditorTabs());
+      const inputType = (input: unknown): string =>
+        input && typeof input === "object"
+          ? ((input as { readonly constructor?: { readonly name?: string } }).constructor?.name ?? "object")
+          : typeof input;
+      throw new JourneyTimeout(
+        "workbench-open",
+        `The launch action did not select a custom or webview editor. Active ${activeTab ? inputType(activeTab.input) : "none"}; ` +
+          `source ${String(activeTab === captured.sourceTab)}; opened ${JSON.stringify(
+            opened.map((tab) => [inputType(tab.input), tab.isActive])
+          )}.`
+      );
+    }
     let readiness;
     try {
+      const discoveryBaselineFrames = request.product === "data-wrangler" ? new Set<Frame>() : baselineFrames;
+      const discoveryBaselinePages = request.product === "data-wrangler" ? new Set<Page>() : baselinePages;
       readiness = await waitForGenericGridReadiness(
         page,
-        baselineFrames,
-        baselinePages,
-        request.timeoutsMs.workbenchOpen
+        discoveryBaselineFrames,
+        discoveryBaselinePages,
+        Math.max(1, workbenchDeadline - Date.now())
       );
     } catch (error) {
-      throw new JourneyTimeout("workbench-open", "Timed out waiting for the full product grid.", { cause: error });
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new JourneyTimeout("workbench-open", `Timed out waiting for the full product grid. ${detail}`, {
+        cause: error
+      });
     }
-    await comparisonWorkbenchReadiness(page, captured.sourceTab, true);
+    await comparisonWorkbenchReadiness(page, captured.sourceTab, readiness.rendererFramePointerUsable);
     const opened = comparisonTabsOpenedAfter(baselineTabs, allEditorTabs());
     assert.equal(opened.length, 1, "The public launch action must open exactly one product editor.");
     const fullShape =
@@ -1856,7 +1968,10 @@ async function executeJourney(
           : undefined;
     assert.ok(fullShape, "The product grid did not expose the full dataframe shape.");
     const scrollability = await readiness.frame.evaluate(observeGridScrollability);
-    assert.ok(scrollability, "The full dataframe grid was not vertically and horizontally scrollable.");
+    assert.ok(
+      scrollability && scrollability.verticalOverflow > 0 && scrollability.horizontalOverflow > 0,
+      `The full dataframe grid was not vertically and horizontally scrollable: ${JSON.stringify(scrollability)}.`
+    );
     milestones.mark("workbench-ready");
     evidence.workbench = Object.freeze({
       rootRole: readiness.grid.rootRole,
@@ -1868,12 +1983,13 @@ async function executeJourney(
     recordProgress(`comparison:${request.trialId}:workbench-ready`);
 
     const profileDeadline = Date.now() + request.timeoutsMs.completeProfile;
+    let profileFrame = readiness.frame;
     let profileAction: ActionEvidence;
     if (request.product === "open-wrangler") {
-      const target = await findExactButton(readiness.frame, "Column profiles and filters");
+      const target = await findExactButton(profileFrame, "Column profiles and filters");
       profileAction = await clickTarget(target, () => milestones.mark("profile-click"));
     } else {
-      profileAction = await clickColumnForProfile(readiness.frame, request.product, 0, profileDeadline, () =>
+      profileAction = await clickColumnForProfile(profileFrame, 0, profileDeadline, () =>
         milestones.mark("profile-click")
       );
     }
@@ -1886,17 +2002,24 @@ async function executeJourney(
 
     for (let index = 0; index < request.cell.columns; index += 1) {
       const column = `c${String(index).padStart(2, "0")}`;
-      if (request.product === "open-wrangler" || index > 0) {
-        await clickColumnForProfile(readiness.frame, request.product, index, profileDeadline);
+      if (request.product === "open-wrangler") {
+        await selectOpenWranglerProfileColumn(profileFrame, column, profileDeadline);
+      } else if (index > 0) {
+        await clickColumnForProfile(profileFrame, index, profileDeadline);
       }
-      await waitForProfile(
-        readiness.frame,
-        column,
-        index,
-        request.cell.rows - 1 + index,
-        profileDeadline,
-        index === 0 ? "profile-first" : "profile-all"
-      );
+      const profileStage = index === 0 ? "profile-first" : "profile-all";
+      if (request.product === "open-wrangler") {
+        await waitForOpenWranglerProfile(profileFrame, column, profileDeadline, profileStage);
+      } else {
+        profileFrame = await waitForProfile(
+          page,
+          column,
+          index,
+          request.cell.rows - 1 + index,
+          profileDeadline,
+          profileStage
+        );
+      }
       if (index === 0) milestones.mark("first-profile-ready");
       evidence.profiling = Object.freeze({
         ...profileAction,
@@ -1906,11 +2029,28 @@ async function executeJourney(
     }
     milestones.mark("profiles-complete");
     recordProgress(`comparison:${request.trialId}:profiles-complete`);
-  } finally {
-    listener.dispose();
-    await inlineTarget?.dispose();
-    await runTarget.dispose();
+  } catch (error) {
+    journeyFailed = true;
+    journeyError = error;
   }
+  accessController.abort();
+  let cleanupError: unknown;
+  try {
+    listener?.dispose();
+  } catch (error) {
+    cleanupError = error;
+  }
+  for (const target of [inlineTarget, runTarget]) {
+    try {
+      await target?.dispose();
+    } catch (error) {
+      cleanupError ??= error;
+    }
+  }
+  const accessOutcome = await access;
+  if (journeyFailed) throw journeyError;
+  if (!accessOutcome.ok) throw accessOutcome.error;
+  if (cleanupError !== undefined) throw cleanupError;
 }
 
 export async function run(): Promise<void> {

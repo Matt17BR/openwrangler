@@ -31,6 +31,15 @@ test("uses type-7 statistics and recomputes retained PSS evidence", () => {
     samples: pssSamples()
   });
   assert.throws(() => summarizeStudyPssSamples([pss("90", 100), pss("50", 120)], milestones()), /increase strictly/u);
+  assert.throws(
+    () => summarizeStudyPssSamples([pss("100000000", 100), pss("160000000", 120)], milestones()),
+    /pre-action baseline/u
+  );
+  assert.throws(
+    () => summarizeStudyPssSamples([pss("50000000", 100), pss("90000000", 120), pss("190000000", 150)], milestones()),
+    /inside the measurement window/u
+  );
+  assert.throws(() => summarizeStudyPssSamples(pssSamples(), []), /measurement window/u);
 });
 
 test("binds trials to the exact schedule and provenance and rejects rewritten PSS", () => {
@@ -39,7 +48,10 @@ test("binds trials to the exact schedule and provenance and rejects rewritten PS
   const trial = studyTrial(entry, manifest);
   assert.equal(validateDataWranglerComparisonStudyTrial(trial, entry, manifest), trial);
   for (const [mutated, expected] of [
-    [{ ...trial, product: "data-wrangler" }, /scheduled product/u],
+    [
+      { ...trial, product: trial.product === "open-wrangler" ? "data-wrangler" : "open-wrangler" },
+      /scheduled product/u
+    ],
     [{ ...trial, order: 42 }, /scheduled order/u],
     [
       { ...trial, provenance: { ...trial.provenance, editor: { ...trial.provenance.editor, sha256: digest("9") } } },
@@ -58,18 +70,37 @@ test("binds trials to the exact schedule and provenance and rejects rewritten PS
   }
 });
 
+test("validates host timings at the retained microsecond precision", () => {
+  const manifest = studyManifest();
+  const entry = manifest.schedule[0];
+  const trial = studyTrial(entry, manifest, 10.123);
+  assert.equal(validateDataWranglerComparisonStudyTrial(trial, entry, manifest), trial);
+});
+
 test("retains raw trials in the report and derives paired summaries", () => {
   const manifest = studyManifest();
-  const open = studyTrial(manifest.schedule[0], manifest);
-  const baseline = studyTrial(manifest.schedule[1], manifest, 15, 200);
+  const firstPair = manifest.schedule.slice(0, 2);
+  const open = studyTrial(
+    firstPair.find(({ product }) => product === "open-wrangler"),
+    manifest
+  );
+  const baseline = studyTrial(
+    firstPair.find(({ product }) => product === "data-wrangler"),
+    manifest,
+    15,
+    200
+  );
   const report = buildDataWranglerComparisonStudyReport({
     generatedAtUtc: "2026-08-04T12:00:00.000Z",
     manifest,
     trials: [open, baseline]
   });
   assert.equal(report.protocol, DATA_WRANGLER_STUDY_REPORT_PROTOCOL);
-  assert.deepEqual(report.trials, [open, baseline]);
-  assert.deepEqual(report.trials[0].memory.samples, open.memory.samples);
+  assert.deepEqual(report.trials, [baseline, open]);
+  assert.deepEqual(
+    report.trials.find(({ product }) => product === "open-wrangler").memory.samples,
+    open.memory.samples
+  );
   assert.equal(report.incompleteTrialIds.length, 94);
   const paired = report.pairedWarm.find(
     ({ cellId, metric }) => cellId === "pandas-csv" && metric === "inlinePreviewMs"
@@ -101,6 +132,25 @@ test("requires complete editor, Python, fixture, and machine provenance", () => 
   }
 });
 
+test("rejects a study schedule whose product order is not counterbalanced", () => {
+  const manifest = studyManifest();
+  const invalid = structuredClone(manifest);
+  const pair = invalid.schedule.filter(
+    ({ cellId, kind, repetition }) => cellId === "pandas-csv" && kind === "warm" && repetition === 2
+  );
+  assert.equal(pair.length, 2);
+  [pair[0].product, pair[1].product] = [pair[1].product, pair[0].product];
+  assert.throws(
+    () =>
+      buildDataWranglerComparisonStudyReport({
+        generatedAtUtc: "2026-08-04T12:00:00.000Z",
+        manifest: invalid,
+        trials: []
+      }),
+    /not counterbalanced/u
+  );
+});
+
 function studyManifest() {
   const cells = [
     { id: "pandas-csv", engine: "pandas", format: "csv", rows: 100_000, columns: 50 },
@@ -110,7 +160,9 @@ function studyManifest() {
   ];
   const schedule = [];
   for (let repetition = 1; repetition <= 10; repetition += 1) {
-    for (const cell of cells) addPair(schedule, `warm.${cell.id}.r${repetition}`, "warm", repetition, cell);
+    for (const [cellIndex, cell] of cells.entries()) {
+      addPair(schedule, `warm.${cell.id}.r${repetition}`, "warm", repetition, cell, (repetition + cellIndex) % 2 !== 0);
+    }
   }
   for (const cell of cells) {
     addPair(schedule, `cold.${cell.id}.ab`, "cold", 1, cell);

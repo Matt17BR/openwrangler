@@ -46,8 +46,12 @@ contains `1, 2, 3, ...`. The CSV and Parquet files are hashed before the study a
 inside its private root. Before collection, the existing benchmark fixture contract scans the full schema, row count,
 types, and value formula. The runner checks the original and copied hashes again for every trial. No user data is used.
 
-Warm trials load `study_frame` in an untimed setup cell. The measured cell only renders the resident variable. Cold
-trials load and render the file in the measured cell. Warm setup and measured cells have separate exact tags:
+Every trial first runs an untimed setup cell that creates a one-row dataframe. The host uses it to start the kernel,
+activate the selected product, and settle first-use permission before timing. Open Wrangler requests permission while
+it prepares notebook previews. For Data Wrangler, the host clicks the notebook toolbar's documented **View data**
+action, waits for the bootstrap variable to appear, then closes the picker without opening a viewer. Warm trials also
+load `study_frame` in the setup cell, so the measured cell only renders the resident variable. Cold trials leave the
+source unopened until the measured cell loads and renders it. Setup and measured cells have separate exact tags:
 
 ```text
 ow-comparison-setup:<cell-id>
@@ -56,6 +60,9 @@ ow-comparison-cell:<cell-id>
 
 The neutral host uses that tag and the requested variable name. It does not use whichever notebook or editor happens
 to be active.
+
+Here, "cold" means the dataframe is not resident in the kernel before timing. The study does not flush the operating
+system's filesystem cache, so cold results must not be presented as uncached-storage measurements.
 
 ## Schedule
 
@@ -120,6 +127,9 @@ For each successful trial, report:
 - median PSS immediately before the **Run Cell** action;
 - peak absolute PSS between **Run Cell** and final profiling; and
 - baseline-adjusted peak PSS (`peak - baseline`, floored at zero).
+
+The result must contain at least one sample before **Run Cell** and one sample inside the measured window. A missing
+sample fails the trial; startup or post-profile samples are never substituted for the stated boundaries.
 
 PSS is a process-tree measure and includes the editor, extension host, renderer, kernel, and Open Wrangler runtime when
 present. It is not an allocation profile of either extension. Each result retains only the bounded, path-free

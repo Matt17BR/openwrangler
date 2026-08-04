@@ -270,18 +270,33 @@ export async function runDataWranglerComparisonSmoke(options, dependencies = {})
   if (existsSync(output)) {
     throw new Error("Comparison smoke requires a new output path so it always runs one complete pair.");
   }
-  const result = await runDataWranglerComparisonStudy({ ...options, output, limit: 2 }, dependencies);
-  const pair = result.manifest.schedule.slice(0, 2);
-  if (
-    pair.length !== 2 ||
-    pair[0].pairId !== pair[1].pairId ||
-    pair[0].orderInPair !== 0 ||
-    pair[1].orderInPair !== 1 ||
-    new Set(pair.map(({ product }) => product)).size !== 2
-  ) {
-    throw new Error("Comparison smoke did not select one complete product pair.");
+  try {
+    const result = await runDataWranglerComparisonStudy({ ...options, output, limit: 2 }, dependencies);
+    const pair = result.manifest.schedule.slice(0, 2);
+    if (
+      pair.length !== 2 ||
+      pair[0].pairId !== pair[1].pairId ||
+      pair[0].orderInPair !== 0 ||
+      pair[1].orderInPair !== 1 ||
+      new Set(pair.map(({ product }) => product)).size !== 2
+    ) {
+      throw new Error("Comparison smoke did not select one complete product pair.");
+    }
+    const pairIds = new Set(pair.map(({ id }) => id));
+    const failures = loadStudyResults(output).trials.filter(
+      ({ trialId, status }) => pairIds.has(trialId) && status !== "success"
+    );
+    if (failures.length > 0) {
+      throw new Error(
+        `Comparison smoke failed: ${failures
+          .map(({ trialId, status, failure }) => `${trialId} (${status}, ${failure?.stage ?? "unknown"})`)
+          .join(", ")}.`
+      );
+    }
+    return result;
+  } finally {
+    if (existsSync(output)) removePreparedExtensionDirectories(output);
   }
-  return result;
 }
 
 export function removePreparedExtensionDirectories(output) {
@@ -622,10 +637,13 @@ function studyNotebook(entry, source) {
         ? `pl.read_csv(${JSON.stringify(source)})`
         : `pl.read_parquet(${JSON.stringify(source)})`;
   const importLine = entry.engine === "pandas" ? "import pandas as pd" : "import polars as pl";
-  const setup = `${importLine}\nstudy_frame = ${reader}`;
-  const measured = entry.kind === "warm" ? "study_frame" : `${setup}\nstudy_frame`;
-  const cells = [];
-  if (entry.kind === "warm") cells.push(codeCell(setup, [`ow-comparison-setup:${entry.cellId}`]));
+  const bootstrap =
+    entry.engine === "pandas" ? 'pd.DataFrame({"c00": [0], "c01": [1]})' : 'pl.DataFrame({"c00": [0], "c01": [1]})';
+  const setup =
+    `${importLine}\naaa_comparison_bootstrap = ${bootstrap}` +
+    (entry.kind === "warm" ? `\nstudy_frame = ${reader}` : "");
+  const measured = entry.kind === "warm" ? "study_frame" : `${importLine}\nstudy_frame = ${reader}\nstudy_frame`;
+  const cells = [codeCell(setup, [`ow-comparison-setup:${entry.cellId}`])];
   cells.push(codeCell(measured, [`ow-comparison-cell:${entry.cellId}`]));
   return {
     cells,
@@ -813,8 +831,12 @@ function readJson(path) {
 function writeJsonAtomic(path, value) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  renameSync(temporary, path);
+  try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
 
 function sanitizeError(error) {
@@ -824,9 +846,10 @@ function sanitizeError(error) {
     .replaceAll(/(^|[^\p{L}\p{N}])\.{1,3}(?=$|[^\p{L}\p{N}])/gu, "$1")
     .replaceAll(/(^|[^\p{L}\p{N}])~[^\s]*/gu, "$1<path>")
     .replaceAll(/(^|[^\p{L}\p{N}])[A-Za-z]:[^\s]*/gu, "$1<path>")
+    .replaceAll(/(?:%[0-9A-Fa-f]{2})+[^\s]*/gu, "<encoded-path>")
     .replaceAll(/(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}\s]+\}|%[^%\s]+%)/gu, "<environment>")
-    .replaceAll(/%[0-9A-Fa-f]{2}/gu, "")
     .replaceAll(/[\\/]/gu, "")
+    .replaceAll(/[^\p{L}\p{N}\s,;()[\]{}'"+=-]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, 500);

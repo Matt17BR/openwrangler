@@ -97,15 +97,49 @@ test("paired smoke requires a fresh output and runs both products in one pair", 
   const root = join(tmpdir(), `ow-simple-smoke-${process.pid}-${Date.now()}`);
   const calls = [];
   try {
-    const result = await runDataWranglerComparisonSmoke(studyOptions(root), fakeDependencies(calls));
+    const dependencies = fakeDependencies(calls);
+    dependencies.prepareTools = async () => {
+      for (const product of ["open-wrangler", "data-wrangler"]) {
+        mkdirSync(join(root, `prepared-extensions-${product}`), { recursive: true });
+      }
+    };
+    const result = await runDataWranglerComparisonSmoke(studyOptions(root), dependencies);
     assert.equal(result.completed, 2);
     assert.equal(result.remaining, 94);
     assert.equal(result.manifest.schedule[0].pairId, result.manifest.schedule[1].pairId);
     assert.deepEqual(new Set(calls), new Set([result.manifest.schedule[0].id, result.manifest.schedule[1].id]));
+    assert.equal(existsSync(join(root, "prepared-extensions-open-wrangler")), false);
+    assert.equal(existsSync(join(root, "prepared-extensions-data-wrangler")), false);
     await assert.rejects(
       runDataWranglerComparisonSmoke(studyOptions(root), fakeDependencies([])),
       /requires a new output path/u
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("paired smoke fails when either product journey is unsuccessful", async () => {
+  const root = join(tmpdir(), `ow-simple-smoke-failure-${process.pid}-${Date.now()}`);
+  const dependencies = fakeDependencies([]);
+  dependencies.runTrial = async ({ entry, manifest }) => ({
+    protocol: TRIAL_RESULT_PROTOCOL,
+    trialId: entry.id,
+    product: entry.product,
+    engine: entry.engine,
+    format: entry.format,
+    kind: entry.kind,
+    order: entry.order,
+    status: "failure",
+    failure: { stage: "harness", kind: "product", message: "Synthetic journey failure." },
+    metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
+    milestones: [],
+    publicUi: { runCell: null, inline: null, workbench: null, profiling: null },
+    memory: null,
+    provenance: trialRequestProvenance(manifest)
+  });
+  try {
+    await assert.rejects(runDataWranglerComparisonSmoke(studyOptions(root), dependencies), /smoke failed.*harness/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -154,7 +188,8 @@ test("failed trial evidence redacts file URIs, paths, and environment references
     const entry = result.manifest.schedule[0];
     const trial = JSON.parse(readFileSync(join(root, "trials", `${entry.id}.json`), "utf8"));
     assert.equal(trial.status, "failure");
-    assert.equal(trial.failure.message, "failed <path> from <path> and <environment> <path> <path> <path> secret");
+    assert.equal(trial.failure.message, "failed path from path and environment path path path encoded-path");
+    assert.doesNotMatch(trial.failure.message, /private|secret|home|tmp/iu);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -228,8 +263,37 @@ test("warm trial preparation tags one untimed setup cell before one measured cel
     assert.equal(measured.length, 1);
     assert.equal(notebook.cells.indexOf(setup[0]), 0);
     assert.equal(notebook.cells.indexOf(measured[0]), 1);
+    assert.match(setup[0].source.join(""), /aaa_comparison_bootstrap =/u);
     assert.match(setup[0].source.join(""), /study_frame =/u);
     assert.match(measured[0].source.join(""), /study_frame/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("cold trial preparation keeps the source load in the measured cell", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-simple-cold-trial-"));
+  try {
+    const csv = join(root, "source.csv");
+    writeFileSync(csv, "c00,c01\n0,1\n1,2\n");
+    const trialRoot = join(root, "isolated");
+    const entry = createDataWranglerComparisonSchedule().find(
+      ({ kind, cellId, product }) => kind === "cold" && cellId === "pandas-csv" && product === "open-wrangler"
+    );
+    assert.ok(entry);
+    const manifest = manifestFixture();
+    manifest.provenance.fixtures.csv.sha256 = sha256(csv);
+    const prepared = prepareTrial({
+      entry,
+      manifest,
+      options: { ...studyOptions(join(root, "study")), csv },
+      trialRoot
+    });
+    const notebook = JSON.parse(readFileSync(prepared.request.notebookPath, "utf8"));
+    const [setup, measured] = notebook.cells;
+    assert.match(setup.source.join(""), /aaa_comparison_bootstrap =/u);
+    assert.doesNotMatch(setup.source.join(""), /study_frame =/u);
+    assert.match(measured.source.join(""), /study_frame = .*read_csv/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

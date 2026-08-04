@@ -139,14 +139,18 @@ export function startLinuxPssSampler(rootPid, options = {}) {
   const clearTimer = options.clearTimer ?? clearInterval;
   const samples = [];
   let error;
+  let pendingInitialError;
   let ended = false;
   const capture = () => {
     if (error || ended) return;
     try {
       samples.push(read());
+      pendingInitialError = undefined;
     } catch (caught) {
       if (samples.length > 0 && /no longer running/u.test(String(caught?.message))) ended = true;
-      else error = caught;
+      else if (samples.length === 0 && /No owned process supplied a PSS sample/u.test(String(caught?.message))) {
+        pendingInitialError = caught;
+      } else error = caught;
     }
   };
   capture();
@@ -156,6 +160,7 @@ export function startLinuxPssSampler(rootPid, options = {}) {
       clearTimer(timer);
       if (captureFinal) capture();
       if (error) throw error;
+      if (samples.length === 0 && pendingInitialError) throw pendingInitialError;
       return Object.freeze([...samples]);
     }
   });

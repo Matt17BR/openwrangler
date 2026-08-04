@@ -5,10 +5,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  comparisonProductSettings,
   comparisonHostRequest,
   summarizePss,
   verifyComparisonSource
 } from "./data-wrangler-comparison-neutral-driver.mjs";
+
+test("enables each product's public notebook renderer for Pandas and Polars", () => {
+  assert.deepEqual(comparisonProductSettings("open-wrangler"), {
+    "openWrangler.notebookPreviewProvider": "openWrangler"
+  });
+  assert.deepEqual(comparisonProductSettings("data-wrangler"), {
+    "dataWrangler.outputRenderer.enabled": true,
+    "dataWrangler.outputRenderer.enabledTypes": {
+      "pandas.core.frame.DataFrame": true,
+      "pandas.DataFrame": true,
+      "polars.dataframe.frame.DataFrame": true
+    }
+  });
+});
 
 test("host request omits the launcher-only VS Code CLI path", () => {
   const request = {

@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   COMPARISON_TRIAL_REQUEST_PROTOCOL,
   COMPARISON_TRIAL_RESULT_PROTOCOL,
+  boundedFailureMessage,
+  integerProfileTextReady,
   isComparisonKernelLabel,
-  observeIntegerProfileReady,
   observePointerReady,
   observeVisibleFullShape,
   validateComparisonNotebookLayout,
@@ -120,7 +121,9 @@ describe("prepared notebook layout", () => {
   const setup = {
     kind: "code" as const,
     tags: ["ow-comparison-setup:pandas-csv"],
-    source: "import pandas as pd\nstudy_frame = pd.read_csv(source)",
+    source:
+      'import pandas as pd\naaa_comparison_bootstrap = pd.DataFrame({"c00": [0], "c01": [1]})\n' +
+      "study_frame = pd.read_csv(source)",
     outputCount: 0
   };
   const measured = {
@@ -149,7 +152,11 @@ describe("prepared notebook layout", () => {
     ).toThrow(/exactly one ow-comparison-setup/u);
   });
 
-  it("requires a cold notebook to contain only its measured load-and-display cell", () => {
+  it("keeps the cold source out of its untimed bootstrap cell", () => {
+    const coldSetup = {
+      ...setup,
+      source: 'import pandas as pd\naaa_comparison_bootstrap = pd.DataFrame({"c00": [0], "c01": [1]})'
+    };
     const cold = {
       ...measured,
       source: "import pandas as pd\nstudy_frame = pd.read_csv(source)\nstudy_frame"
@@ -159,9 +166,9 @@ describe("prepared notebook layout", () => {
         kind: "cold",
         cellId: "pandas-csv",
         variableName: "study_frame",
-        cells: [cold]
+        cells: [coldSetup, cold]
       })
-    ).toEqual({ setupIndex: null, measuredIndex: 0 });
+    ).toEqual({ setupIndex: 0, measuredIndex: 1 });
     expect(() =>
       validateComparisonNotebookLayout({
         kind: "cold",
@@ -169,7 +176,7 @@ describe("prepared notebook layout", () => {
         variableName: "study_frame",
         cells: [setup, cold]
       })
-    ).toThrow(/exactly 1 code cell/u);
+    ).toThrow(/assign the measured variable only for a warm trial/u);
   });
 
   it("rejects stale output and an extra comparison-tagged cell", () => {
@@ -234,7 +241,38 @@ describe("neutral comparison result", () => {
   });
 });
 
+describe("comparison failure redaction", () => {
+  it("removes the complete percent-encoded path instead of exposing its trailing text", () => {
+    const message = boundedFailureMessage(
+      new Error("Could not open file:%2Fhome%2Falice%2Fsecret.csv from $PRIVATE_SOURCE"),
+      request()
+    );
+
+    expect(message).toBe("Could not open file encoded-path from environment");
+    expect(message).not.toMatch(/alice|secret|%2F/iu);
+  });
+});
+
 describe("public readiness oracles", () => {
+  it("matches exact profile extrema and the UI's rounded suffix notation", () => {
+    expect(
+      integerProfileTextReady({
+        column: "c00",
+        minimum: 1_000,
+        maximum: 1_999,
+        text: "c00 Missing 0 Distinct 10 Min 1k Max 2k"
+      })
+    ).toBe(true);
+    expect(
+      integerProfileTextReady({
+        column: "c00",
+        minimum: 1_000,
+        maximum: 1_999,
+        text: "c00 Float64 Missing 0 Distinct 10 Min 2k Max 2k"
+      })
+    ).toBe(false);
+  });
+
   it("recognizes a full-shape label without reading row values", () => {
     Object.defineProperty(globalThis, "document", {
       configurable: true,
@@ -252,22 +290,6 @@ describe("public readiness oracles", () => {
     expect(observeVisibleFullShape({ rows: 100_000, columns: 50 })).toBe(true);
   });
 
-  it("requires a completed integer profile rather than loading text", () => {
-    const candidate = {
-      isConnected: true,
-      parentElement: null,
-      textContent: "c00 Int64 Missing 0% Distinct 100% Min 0 Max 99999",
-      getBoundingClientRect: () => ({ width: 180, height: 80 })
-    };
-    Object.defineProperty(globalThis, "document", {
-      configurable: true,
-      value: { querySelectorAll: () => [candidate] }
-    });
-    expect(observeIntegerProfileReady({ column: "c00", minimum: 0, maximum: 99_999 })).toBe(true);
-    candidate.textContent = "c00 Int64 Profiling… Missing 0% Distinct 100% Min 0 Max 99999";
-    expect(observeIntegerProfileReady({ column: "c00", minimum: 0, maximum: 99_999 })).toBe(false);
-  });
-
   it("requires a stable unobstructed exact pointer target", async () => {
     const element = {
       isConnected: true,
@@ -279,10 +301,12 @@ describe("public readiness oracles", () => {
       getBoundingClientRect: () => ({ left: 1, top: 2, width: 20, height: 10 }),
       ownerDocument: {
         defaultView: {
+          clearTimeout,
           requestAnimationFrame: (callback: () => void) => {
             callback();
             return 1;
           },
+          setTimeout,
           getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" })
         },
         elementFromPoint: () => element,
