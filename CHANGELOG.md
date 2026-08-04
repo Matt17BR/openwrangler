@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-04
+
 ### Changed
 
 - Removed the completed v1.0 performance-evidence workflow and its dedicated maintenance checks. Stable performance
