@@ -1967,7 +1967,10 @@ async function executeJourney(
   let journeyFailed = false;
   try {
     await activateComparisonProduct(request.product, preActionDeadline);
-    if (request.product === "open-wrangler") {
+    await executeWarmSetup(request, page, captured, preActionDeadline);
+    if (request.product === "data-wrangler") {
+      await authorizeDataWranglerFromNotebookToolbar(page, captured, access, preActionDeadline);
+    } else {
       assert.equal(
         outcomeValue(
           await beforePreActionDeadline(access, preActionDeadline, "Timed out granting Open Wrangler kernel access.")
@@ -1975,10 +1978,6 @@ async function executeJourney(
         true,
         "Open Wrangler did not receive first-use Jupyter kernel access."
       );
-    }
-    await executeWarmSetup(request, page, captured, preActionDeadline);
-    if (request.product === "data-wrangler") {
-      await authorizeDataWranglerFromNotebookToolbar(page, captured, access, preActionDeadline);
     }
     if (
       remainingPreActionMs(preActionDeadline, "Timed out before the memory settle window.") < request.preActionSettleMs
