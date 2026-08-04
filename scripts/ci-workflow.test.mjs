@@ -1068,9 +1068,14 @@ updates:
         applies-to: version-updates
         patterns:
           - "*"
+        exclude-patterns:
+          - "@types/vscode"
+          - "playwright-core"
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: "@types/vscode"
   - package-ecosystem: pip
     directory: /python
     schedule:
