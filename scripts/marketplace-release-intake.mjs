@@ -114,7 +114,7 @@ function packageJsonAtCommit(root, commit) {
 
 function currentProtectedBranchCommit(sourceRef) {
   if (!PROTECTED_RELEASE_REFS.has(sourceRef)) {
-    throw new Error("Marketplace recovery requires one recognized protected release branch.");
+    throw new Error("Marketplace recovery requires protected main.");
   }
   const output = execFileSync("git", ["ls-remote", "--refs", CANONICAL_REPOSITORY, sourceRef], {
     encoding: "utf8",
@@ -124,7 +124,7 @@ function currentProtectedBranchCommit(sourceRef) {
   });
   const match = /^(?<commit>[0-9a-f]{40})\t(?<ref>[^\t\r\n]+)\n?$/u.exec(output);
   if (match?.groups?.commit === undefined || match.groups.ref !== sourceRef) {
-    throw new Error("The canonical protected release branch did not resolve to one unambiguous full commit.");
+    throw new Error("Protected main did not resolve to one unambiguous full commit.");
   }
   return match.groups.commit;
 }
@@ -161,7 +161,7 @@ function releaseBranchEvidence(root, sourceRef, releaseCommit) {
     windowsHide: true
   }).trim();
   if (!FULL_COMMIT.test(branchCommit)) {
-    throw new Error("The fetched protected release branch did not resolve to one full commit.");
+    throw new Error("The fetched protected main branch did not resolve to one full commit.");
   }
   let contained;
   try {
@@ -181,7 +181,7 @@ function releaseBranchEvidence(root, sourceRef, releaseCommit) {
     }
   }
   if (currentProtectedBranchCommit(sourceRef) !== branchCommit) {
-    throw new Error("The fetched protected release branch changed before containment could be accepted.");
+    throw new Error("The fetched protected main branch changed before containment could be accepted.");
   }
   return Object.freeze({ branchCommit, contained, sourceRef });
 }
@@ -216,7 +216,7 @@ export function inspectMarketplaceRecoveryChange({ changedPaths, parentCommits }
     parentCommits.some((commit) => typeof commit !== "string" || !FULL_COMMIT.test(commit)) ||
     new Set(parentCommits).size !== parentCommits.length
   ) {
-    problems.push("Protected release-branch recovery requires an unambiguous bounded parent-commit list.");
+    problems.push("Main-branch recovery requires an unambiguous bounded parent-commit list.");
   }
   const boundedPathList = Array.isArray(changedPaths) && changedPaths.length <= MAX_RECOVERY_CHANGED_PATHS;
   let changedPathBytes = 0;
@@ -241,7 +241,7 @@ export function inspectMarketplaceRecoveryChange({ changedPaths, parentCommits }
     ) ||
     new Set(changedPaths).size !== changedPaths.length
   ) {
-    problems.push("Protected release-branch recovery requires one unambiguous bounded changed-path list.");
+    problems.push("Main-branch recovery requires one unambiguous bounded changed-path list.");
   }
   if (problems.length > 0) {
     return Object.freeze({
@@ -267,7 +267,7 @@ export function inspectMarketplaceRecoveryChange({ changedPaths, parentCommits }
 
 function recoveryChangeAtCommit(root, commit) {
   if (!FULL_COMMIT.test(commit)) {
-    throw new Error("Protected release-branch recovery change detection requires one full Git commit.");
+    throw new Error("Main-branch recovery change detection requires one full Git commit.");
   }
   const history = execFileSync("git", ["rev-list", "--parents", "-n", "1", commit], {
     cwd: root,
@@ -282,7 +282,7 @@ function recoveryChangeAtCommit(root, commit) {
     parentCommits.some((parent) => !FULL_COMMIT.test(parent)) ||
     new Set(parentCommits).size !== parentCommits.length
   ) {
-    throw new Error("Protected release-branch recovery could not bind one exact commit ancestry.");
+    throw new Error("Main-branch recovery could not bind one exact commit ancestry.");
   }
   if (parentCommits.length !== 1) {
     return Object.freeze({ changedPaths: Object.freeze([]), parentCommits: Object.freeze(parentCommits) });
@@ -295,14 +295,14 @@ function recoveryChangeAtCommit(root, commit) {
     windowsHide: true
   });
   if (output.length > 0 && output.at(-1) !== 0) {
-    throw new Error("Protected release-branch recovery received an unterminated Git path list.");
+    throw new Error("Main-branch recovery received an unterminated Git path list.");
   }
   const encodedPaths = output.length === 0 ? [] : output.subarray(0, -1).toString("binary").split("\0");
   const changedPaths = encodedPaths.map((encoded) => {
     const bytes = Buffer.from(encoded, "binary");
     const path = bytes.toString("utf8");
     if (path.length === 0 || !Buffer.from(path, "utf8").equals(bytes)) {
-      throw new Error("Protected release-branch recovery received a non-canonical Git path.");
+      throw new Error("Main-branch recovery received a non-canonical Git path.");
     }
     return path;
   });
@@ -318,7 +318,7 @@ export function inspectMarketplaceRecoverySource(packageJson) {
   try {
     manifest = parseStrictJson(packageJson, { maxBytes: 1024 * 1024 });
   } catch {
-    problems.push("Protected release-branch recovery requires one bounded strict package.json.");
+    problems.push("Main-branch recovery requires one bounded strict package.json.");
   }
   if (
     typeof manifest !== "object" ||
@@ -327,7 +327,7 @@ export function inspectMarketplaceRecoverySource(packageJson) {
     manifest.publisher !== "Matt17BR" ||
     manifest.name !== "openwrangler"
   ) {
-    problems.push("Protected release-branch recovery must describe Matt17BR.openwrangler.");
+    problems.push("Main-branch recovery must describe Matt17BR.openwrangler.");
   }
   const version =
     typeof manifest === "object" &&
@@ -338,7 +338,7 @@ export function inspectMarketplaceRecoverySource(packageJson) {
       ? manifest.version
       : undefined;
   if (version === undefined) {
-    problems.push("Protected release-branch recovery requires one canonical numeric package version.");
+    problems.push("Main-branch recovery requires one canonical numeric package version.");
   }
   const releaseTag = version === undefined ? undefined : `v${version}`;
   if (releaseTag !== undefined) {
