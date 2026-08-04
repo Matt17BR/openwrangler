@@ -33,10 +33,12 @@ export const TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v1";
 export const DATA_WRANGLER_VERSION = "1.24.2";
 export const WARM_REPETITIONS = 10;
 export const STUDY_TIMEOUTS_MS = Object.freeze({
-  inlinePreview: 45_000,
-  workbenchOpen: 60_000,
-  completeProfile: 135_000,
-  driver: 300_000
+  preAction: 75_000,
+  inlinePreview: 30_000,
+  workbenchOpen: 40_000,
+  completeProfile: 110_000,
+  editorPhase: 300_000,
+  neutralDriver: 2_400_000
 });
 export const STUDY_CELLS = Object.freeze([
   Object.freeze({ id: "pandas-csv", engine: "pandas", format: "csv", rows: 100_000, columns: 50 }),
@@ -152,7 +154,7 @@ export function buildStudyManifest({ createdAtUtc, candidate, editor, python, fi
         completeProfile: "public profiling action to final summaries for every column"
       },
       statistics: "successful warm trials; Hyndman-Fan type 7 median and p95; paired differences retain order",
-      memory: "absolute peak process-tree PSS after a fixed ten-second pre-action settle window"
+      memory: "highest observed absolute process-tree PSS after a fixed ten-second pre-action settle window"
     },
     provenance: {
       openWrangler: { extensionId: "Matt17BR.openwrangler", version: candidate.version, sha256: candidate.sha256 },
@@ -235,7 +237,7 @@ export async function runDataWranglerComparisonStudy(options, dependencies = {})
         entry,
         request: prepared.request,
         runTrial,
-        timeoutMs: STUDY_TIMEOUTS_MS.driver + 5_000
+        timeoutMs: STUDY_TIMEOUTS_MS.neutralDriver + 5_000
       });
     } catch (error) {
       trialError = error;
@@ -303,6 +305,15 @@ export async function runDataWranglerComparisonSmoke(options, dependencies = {})
   } finally {
     if (existsSync(output)) removePreparedExtensionDirectories(output);
   }
+}
+
+export function writeDataWranglerComparisonStudyReport(output, report) {
+  const path = resolve(output);
+  if (existsSync(path)) {
+    throw new Error("Comparison report requires a new output path.");
+  }
+  writeJsonAtomic(path, report);
+  assertReleaseCompleteStudyReport(report);
 }
 
 export function removePreparedExtensionDirectories(output) {
@@ -383,6 +394,7 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
       sha256: manifest.provenance.openWrangler.sha256
     },
     dataWranglerVersion: DATA_WRANGLER_VERSION,
+    preActionSettleMs: manifest.method.preActionSettle.fixedWaitMs,
     editor: {
       path: resolve(options.editor),
       cliPath: resolve(options.editorCli),
@@ -396,6 +408,7 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
       sha256: manifest.provenance.python.sha256
     },
     timeoutsMs: {
+      preAction: STUDY_TIMEOUTS_MS.preAction,
       inlinePreview: STUDY_TIMEOUTS_MS.inlinePreview,
       workbenchOpen: STUDY_TIMEOUTS_MS.workbenchOpen,
       completeProfile: STUDY_TIMEOUTS_MS.completeProfile
@@ -419,7 +432,7 @@ export async function runNeutralDriver(
   writeJsonAtomic(requestPath, request);
   await spawnCommand(process.execPath, [driver, "--request", requestPath, "--out", resultPath], {
     cwd: resolve(import.meta.dirname, ".."),
-    timeoutMs: STUDY_TIMEOUTS_MS.driver
+    timeoutMs: STUDY_TIMEOUTS_MS.neutralDriver
   });
   return readJson(resultPath);
 }
@@ -917,8 +930,7 @@ async function main() {
   }
   const { manifest, trials } = loadStudyResults(options.study);
   const report = buildDataWranglerComparisonStudyReport({ generatedAtUtc: new Date().toISOString(), manifest, trials });
-  assertReleaseCompleteStudyReport(report);
-  writeJsonAtomic(resolve(options.output), report);
+  writeDataWranglerComparisonStudyReport(options.output, report);
   console.log(`Comparison report written to ${options.output}.`);
 }
 

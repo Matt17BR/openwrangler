@@ -167,6 +167,33 @@ test("pins the root process start time after the first sample", () => {
   assert.throws(() => sampler.stop({ captureFinal: false }), /was replaced/u);
 });
 
+test("pins ownership before a missing first PSS read and follows the reparented group", () => {
+  let callback;
+  let firstSample = true;
+  const sampler = startLinuxPssSampler(10, {
+    readDirectory: () => (firstSample ? ["10", "11"] : ["11"]),
+    readFile: (path) => {
+      if (path === "/proc/10/stat" && firstSample) return stat(10, 1, 10, 100);
+      if (path === "/proc/11/stat") return stat(11, firstSample ? 10 : 1, 10, 101);
+      if (path === "/proc/11/smaps_rollup" && !firstSample) return "Pss:               25 kB\n";
+      throw Object.assign(new Error("gone"), { code: "ENOENT" });
+    },
+    setTimer: (value) => {
+      callback = value;
+      return 17;
+    },
+    clearTimer: () => undefined
+  });
+
+  firstSample = false;
+  callback();
+  const samples = sampler.stop({ captureFinal: false });
+  assert.equal(samples.length, 1);
+  assert.equal(samples[0].rootStartTimeTicks, "100");
+  assert.equal(samples[0].processGroupId, 10);
+  assert.deepEqual(samples[0].processes, [{ pid: 11, pssBytes: 25 * 1024 }]);
+});
+
 test("surfaces sampling errors when the caller stops", () => {
   const sampler = startLinuxPssSampler(10, {
     read: () => {
@@ -195,4 +222,23 @@ test("retries a missing initial PSS sample before latching an error", () => {
   });
   callback();
   assert.equal(sampler.stop({ captureFinal: false }).length, 1);
+});
+
+test("ends cleanly when an already-sampled process group drains", () => {
+  let callback;
+  let reads = 0;
+  const sampler = startLinuxPssSampler(10, {
+    read: () => {
+      reads += 1;
+      if (reads > 1) throw new Error("No owned process supplied a PSS sample.");
+      return { monotonicNs: "1", rootPid: 10, processCount: 1, pssBytes: 100 };
+    },
+    setTimer: (value) => {
+      callback = value;
+      return 1;
+    },
+    clearTimer: () => undefined
+  });
+  callback();
+  assert.deepEqual(sampler.stop(), [{ monotonicNs: "1", rootPid: 10, processCount: 1, pssBytes: 100 }]);
 });

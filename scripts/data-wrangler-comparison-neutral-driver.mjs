@@ -331,6 +331,7 @@ function validateRequest(request) {
     !Number.isSafeInteger(request.order) ||
     request.order < 0 ||
     request.order > 255 ||
+    request.preActionSettleMs !== 10_000 ||
     !isAbsolute(request.isolatedRoot) ||
     !isAbsolute(request.notebookPath) ||
     !isAbsolute(request.cell?.source) ||

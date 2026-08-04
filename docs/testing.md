@@ -492,10 +492,14 @@ The v1.2.1 study method is in [`docs/performance-comparison.md`](performance-com
 - `npm run comparison:study` for the fixed 96-trial collection; and
 - `npm run comparison:report` for the path-free summary.
 
+The report command requires a new output path. It writes the diagnostic aggregate first, then exits nonzero unless all
+96 trials succeeded and the median and p95 results stay within the predeclared limits.
+
 The full study covers Pandas/Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. It retains ten paired,
 counterbalanced warm samples per cell and one AB plus one BA cold pair. Timings use the public Run Cell, launch, usable
-grid, and all-column-profile boundaries. Linux PSS records the owned editor tree's pre-action baseline, measured peak,
-and adjusted peak. Median and p95 use type 7. Failures and timeouts stay in the result set.
+grid, and all-column-profile boundaries. After a fixed ten-second settle check, Linux PSS records the highest observed
+absolute value for the owned editor tree during the measured action. Median and p95 use type 7. Failures and timeouts
+stay in the result set, but release evidence requires all 96 trials to succeed and stay within the predeclared limits.
 
 Each trial owns a fresh mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
 extension directories are prepared once per arm and reused only to avoid 96 repeated Marketplace downloads. The study

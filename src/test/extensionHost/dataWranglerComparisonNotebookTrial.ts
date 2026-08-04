@@ -25,6 +25,7 @@ export const COMPARISON_TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-r
 
 const CELL_IDS = ["pandas-csv", "pandas-parquet", "polars-csv", "polars-parquet"] as const;
 const MILESTONE_NAMES = [
+  "memory-settle-start",
   "run-cell-click",
   "inline-ready",
   "launch-click",
@@ -48,8 +49,6 @@ const VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u;
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESULT_BYTES = 64 * 1024;
-const SETUP_TIMEOUT_MS = 45_000;
-const MEMORY_SETTLE_MS = 10_000;
 const POLL_MS = 25;
 const COMPARISON_KERNEL_LABEL = "Python 3.12 (Comparison)";
 const COMPARISON_BOOTSTRAP_VARIABLE = "aaa_comparison_bootstrap";
@@ -101,9 +100,11 @@ export interface ComparisonTrialRequest {
   };
   readonly candidate: ArtifactIdentity;
   readonly dataWranglerVersion: "1.24.2";
+  readonly preActionSettleMs: 10_000;
   readonly editor: ArtifactIdentity;
   readonly python: ArtifactIdentity;
   readonly timeoutsMs: {
+    readonly preAction: number;
     readonly inlinePreview: number;
     readonly workbenchOpen: number;
     readonly completeProfile: number;
@@ -214,6 +215,31 @@ class JourneyTimeout extends Error {
   }
 }
 
+function remainingPreActionMs(deadline: number, message: string): number {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new JourneyTimeout("run-cell", message);
+  return remaining;
+}
+
+async function beforePreActionDeadline<Value>(
+  operation: PromiseLike<Value>,
+  deadline: number,
+  message: string
+): Promise<Value> {
+  const remaining = remainingPreActionMs(deadline, message);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(operation),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new JourneyTimeout("run-cell", message)), remaining);
+      })
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function fail(message: string): never {
   throw new TypeError(message);
 }
@@ -289,6 +315,7 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
       "cell",
       "candidate",
       "dataWranglerVersion",
+      "preActionSettleMs",
       "editor",
       "python",
       "timeoutsMs"
@@ -304,7 +331,11 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
   const format = oneOf(cell.format, ["csv", "parquet"] as const, "Comparison request cell.format");
   if (id !== `${engine}-${format}`) fail("Comparison request cell identity does not match its engine and format.");
   const timeouts = record(request.timeoutsMs, "Comparison request timeoutsMs");
-  exactKeys(timeouts, ["inlinePreview", "workbenchOpen", "completeProfile"], "Comparison request timeoutsMs");
+  exactKeys(
+    timeouts,
+    ["preAction", "inlinePreview", "workbenchOpen", "completeProfile"],
+    "Comparison request timeoutsMs"
+  );
   if (request.dataWranglerVersion !== "1.24.2") fail("The comparison baseline must be Data Wrangler 1.24.2.");
   return Object.freeze({
     protocol: COMPARISON_TRIAL_REQUEST_PROTOCOL,
@@ -325,9 +356,16 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
     }),
     candidate: artifact(request.candidate, "Comparison request candidate"),
     dataWranglerVersion: "1.24.2",
+    preActionSettleMs: boundedInteger(
+      request.preActionSettleMs,
+      10_000,
+      10_000,
+      "Comparison request preActionSettleMs"
+    ) as 10_000,
     editor: artifact(request.editor, "Comparison request editor"),
     python: artifact(request.python, "Comparison request python"),
     timeoutsMs: Object.freeze({
+      preAction: boundedInteger(timeouts.preAction, 20_000, 120_000, "preAction timeout"),
       inlinePreview: boundedInteger(timeouts.inlinePreview, 5_000, 120_000, "inlinePreview timeout"),
       workbenchOpen: boundedInteger(timeouts.workbenchOpen, 5_000, 180_000, "workbenchOpen timeout"),
       completeProfile: boundedInteger(timeouts.completeProfile, 10_000, 600_000, "completeProfile timeout")
@@ -711,8 +749,7 @@ async function quickPickLabels(page: Page): Promise<readonly string[]> {
   return Object.freeze(labels);
 }
 
-async function waitForComparisonKernelLabel(page: Page): Promise<void> {
-  const deadline = Date.now() + 10_000;
+async function waitForComparisonKernelLabel(page: Page, deadline: number): Promise<void> {
   do {
     let exactMatches = 0;
     for (const frame of comparisonFrames(page).slice(0, 64)) {
@@ -737,10 +774,14 @@ async function waitForComparisonKernelLabel(page: Page): Promise<void> {
   throw new Error(`The workbench did not confirm selected kernel ${JSON.stringify(COMPARISON_KERNEL_LABEL)}.`);
 }
 
-async function selectComparisonKernel(page: Page, captured: CapturedNotebook): Promise<void> {
+async function selectComparisonKernel(page: Page, captured: CapturedNotebook, deadline: number): Promise<void> {
   const jupyter = vscode.extensions.getExtension("ms-toolsai.jupyter");
   assert.ok(jupyter, "The pinned Jupyter extension is not installed for the comparison trial.");
-  await jupyter.activate();
+  await beforePreActionDeadline(
+    jupyter.activate(),
+    deadline,
+    `Timed out activating Jupyter before selecting ${JSON.stringify(COMPARISON_KERNEL_LABEL)}.`
+  );
   assert.equal(captured.editor.notebook, captured.notebook, "Jupyter activation changed the measured notebook editor.");
   assert.equal(
     vscode.window.activeNotebookEditor,
@@ -757,7 +798,6 @@ async function selectComparisonKernel(page: Page, captured: CapturedNotebook): P
     () => (selectionState = { kind: "fulfilled" }),
     (error: unknown) => (selectionState = { kind: "rejected", error })
   );
-  const deadline = Date.now() + 30_000;
   const traversed = new Set<string>();
   let filterForTarget = false;
   try {
@@ -767,7 +807,7 @@ async function selectComparisonKernel(page: Page, captured: CapturedNotebook): P
       const quickInput = await visibleQuickInput(page);
       if (!quickInput) {
         if (currentSelectionState.kind === "fulfilled") {
-          await waitForComparisonKernelLabel(page);
+          await waitForComparisonKernelLabel(page, deadline);
           recordProgress("comparison:kernel-selected");
           return;
         }
@@ -776,20 +816,23 @@ async function selectComparisonKernel(page: Page, captured: CapturedNotebook): P
       }
       const target = await comparisonKernelQuickPickRow(quickInput);
       if (target) {
-        await target.click();
-        const outcome = await Promise.race([
+        await beforePreActionDeadline(
+          target.click(),
+          deadline,
+          `Timed out selecting ${JSON.stringify(COMPARISON_KERNEL_LABEL)}.`
+        );
+        const outcome = await beforePreActionDeadline(
           selection,
-          page.waitForTimeout(30_000).then(() => {
-            throw new Error("Timed out applying the comparison kernel selection.");
-          })
-        ]);
+          deadline,
+          "Timed out applying the comparison kernel selection."
+        );
         if (outcome.kind === "rejected") throw outcome.error;
         assert.equal(
           captured.editor.notebook,
           captured.notebook,
           "Kernel selection changed the measured notebook editor."
         );
-        await waitForComparisonKernelLabel(page);
+        await waitForComparisonKernelLabel(page, deadline);
         recordProgress("comparison:kernel-selected");
         return;
       }
@@ -834,10 +877,14 @@ async function selectComparisonKernel(page: Page, captured: CapturedNotebook): P
   }
 }
 
-async function activateComparisonProduct(product: Product): Promise<void> {
+async function activateComparisonProduct(product: Product, deadline: number): Promise<void> {
   const extension = vscode.extensions.getExtension(PRODUCT_EXTENSION_IDS[product]);
   assert.ok(extension, `The ${product} comparison extension is not installed.`);
-  await extension.activate();
+  await beforePreActionDeadline(
+    extension.activate(),
+    deadline,
+    `Timed out activating the ${product} comparison extension.`
+  );
 }
 
 function settlePromise<T>(promise: Promise<T>): Promise<PromiseOutcome<T>> {
@@ -852,12 +899,16 @@ function outcomeValue<T>(outcome: PromiseOutcome<T>): T {
   return outcome.value;
 }
 
-async function allowComparisonKernelAccess(page: Page, product: Product, signal: AbortSignal): Promise<boolean> {
+async function allowComparisonKernelAccess(
+  page: Page,
+  product: Product,
+  signal: AbortSignal,
+  deadline: number
+): Promise<boolean> {
   const message =
     product === "open-wrangler"
       ? "Do you want to grant Kernel access to the extension Open Wrangler (Matt17BR.openwrangler)?"
       : "Do you want to grant Kernel access to the extension Data Wrangler (ms-toolsai.datawrangler)?";
-  const settleDeadline = Date.now() + SETUP_TIMEOUT_MS;
   let match: { readonly dialog: Locator; readonly frame: Frame } | undefined;
   do {
     if (signal.aborted) {
@@ -886,7 +937,7 @@ async function allowComparisonKernelAccess(page: Page, product: Product, signal:
     if (match) break;
     assert.equal(visibleDialogCount, 0, "An unexpected dialog blocked the comparison notebook.");
     await page.waitForTimeout(POLL_MS);
-  } while (Date.now() < settleDeadline);
+  } while (Date.now() < deadline);
   if (!match) {
     recordProgress(`comparison:kernel-access-not-requested:${product}`);
     return false;
@@ -910,8 +961,11 @@ async function allowComparisonKernelAccess(page: Page, product: Product, signal:
     recordProgress(`comparison:kernel-access-not-requested:${product}`);
     return false;
   }
-  await clickTarget(locatorTarget(allow, match.frame, "Allow"), () => undefined);
-  const deadline = Date.now() + SETUP_TIMEOUT_MS;
+  await beforePreActionDeadline(
+    clickTarget(locatorTarget(allow, match.frame, "Allow"), () => undefined),
+    deadline,
+    `Timed out allowing ${product} kernel access.`
+  );
   do {
     if (!(await match.dialog.isVisible().catch(() => false))) {
       recordProgress(`comparison:kernel-access-allowed:${product}`);
@@ -993,15 +1047,23 @@ async function findDataWranglerViewDataAction(page: Page, deadline: number): Pro
 async function authorizeDataWranglerFromNotebookToolbar(
   page: Page,
   captured: CapturedNotebook,
-  access: Promise<PromiseOutcome<boolean>>
+  access: Promise<PromiseOutcome<boolean>>,
+  deadline: number
 ): Promise<void> {
   assert.equal(vscode.window.activeNotebookEditor, captured.editor, "The comparison notebook is not active.");
-  const target = await findDataWranglerViewDataAction(page, Date.now() + SETUP_TIMEOUT_MS);
+  const target = await findDataWranglerViewDataAction(page, deadline);
   const baselineTabs = Object.freeze([...allEditorTabs()]);
   try {
-    await clickTarget(target, () => undefined);
-    assert.equal(outcomeValue(await access), true, "Data Wrangler did not receive first-use Jupyter kernel access.");
-    const pickerDeadline = Date.now() + SETUP_TIMEOUT_MS;
+    await beforePreActionDeadline(
+      clickTarget(target, () => undefined),
+      deadline,
+      "Timed out opening Data Wrangler's variable picker."
+    );
+    assert.equal(
+      outcomeValue(await beforePreActionDeadline(access, deadline, "Timed out granting Data Wrangler kernel access.")),
+      true,
+      "Data Wrangler did not receive first-use Jupyter kernel access."
+    );
     do {
       const opened = comparisonTabsOpenedAfter(baselineTabs, allEditorTabs());
       assert.equal(opened.length, 0, "View data opened a product editor before a variable was selected.");
@@ -1012,8 +1074,7 @@ async function authorizeDataWranglerFromNotebookToolbar(
           const input = quickInput.locator(".quick-input-box input:visible");
           assert.equal(await input.count(), 1, "View data must expose one variable-picker input.");
           await input.press("Escape");
-          const dismissDeadline = Date.now() + SETUP_TIMEOUT_MS;
-          while ((await visibleQuickInput(page)) && Date.now() < dismissDeadline) {
+          while ((await visibleQuickInput(page)) && Date.now() < deadline) {
             await page.waitForTimeout(POLL_MS);
           }
           assert.equal(await visibleQuickInput(page), undefined, "The View data variable picker did not close.");
@@ -1027,7 +1088,7 @@ async function authorizeDataWranglerFromNotebookToolbar(
         }
       }
       await page.waitForTimeout(POLL_MS);
-    } while (Date.now() < pickerDeadline);
+    } while (Date.now() < deadline);
     throw new Error(
       `View data did not expose the bootstrap variable picker. Visible options: ${JSON.stringify(
         await quickPickLabels(page)
@@ -1223,7 +1284,8 @@ export function comparisonSetupExecutionOutcome(
 async function findRunCellTarget(
   page: Page,
   captured: CapturedNotebook,
-  cell: vscode.NotebookCell
+  cell: vscode.NotebookCell,
+  deadline: number
 ): Promise<PointerTarget> {
   const visibleEditors = vscode.window.visibleNotebookEditors;
   assert.equal(visibleEditors.length, 1, "The comparison trial must have exactly one visible notebook editor.");
@@ -1236,7 +1298,6 @@ async function findRunCellTarget(
     `.notebookOverlay .cell-list-container .monaco-list-rows > ` +
     `.monaco-list-row.code-cell-row[data-index="${cell.index}"]`;
   const executeCellName = /^Execute Cell(?: \([^\r\n]{1,64}\))?$/u;
-  const deadline = Date.now() + SETUP_TIMEOUT_MS;
   do {
     const rowMatches: Array<{ readonly row: Locator; readonly frame: Frame }> = [];
     for (const frame of comparisonFrames(page).slice(0, 64)) {
@@ -1600,8 +1661,7 @@ export function comparisonAriaCountsMatch(input: {
   return rowMatches && columnMatches;
 }
 
-async function findExactButton(frame: Frame, name: string, timeoutMs = SETUP_TIMEOUT_MS): Promise<PointerTarget> {
-  const deadline = Date.now() + timeoutMs;
+async function findExactButton(frame: Frame, name: string, deadline: number): Promise<PointerTarget> {
   do {
     const buttons = frame.getByRole("button", { name, exact: true });
     const matches: Locator[] = [];
@@ -1824,7 +1884,8 @@ async function closeNewTabs(baselineTabs: readonly vscode.Tab[]): Promise<void> 
 async function executeWarmSetup(
   request: ComparisonTrialRequest,
   page: Page,
-  captured: CapturedNotebook
+  captured: CapturedNotebook,
+  deadline: number
 ): Promise<void> {
   assert.ok(captured.setupCell, "The comparison notebook omitted its untimed setup cell.");
   assert.equal(captured.editor.notebook, captured.notebook, "The untimed setup changed the captured notebook editor.");
@@ -1867,14 +1928,13 @@ async function executeWarmSetup(
       commandError = error;
     });
     recordProgress(`comparison:${request.trialId}:warm-setup-dispatch`);
-    const deadline = Date.now() + SETUP_TIMEOUT_MS;
     do {
       if (commandError) throw commandError;
       const setupCell = currentSetupCell();
       const executionChanged = freshExecution || executionSummaryFingerprint(setupCell) !== summaryBeforeDispatch;
       const outcome = comparisonSetupExecutionOutcome(setupCell.executionSummary, executionChanged);
       if (outcome === "success") {
-        await command;
+        await beforePreActionDeadline(command, deadline, "Timed out completing the untimed setup cell.");
         assert.equal(setupCell.outputs.length, 0, "The untimed setup cell must not publish dataframe output.");
         selectNotebookCell(captured, captured.notebook.cellAt(measuredIndex));
         recordProgress(`comparison:${request.trialId}:warm-setup-complete`);
@@ -1896,28 +1956,43 @@ async function executeJourney(
   page: Page,
   captured: CapturedNotebook,
   milestones: Milestones,
-  evidence: MutableEvidence
+  evidence: MutableEvidence,
+  preActionDeadline: number
 ): Promise<void> {
   const accessController = new AbortController();
-  const access = settlePromise(allowComparisonKernelAccess(page, request.product, accessController.signal));
+  const access = settlePromise(
+    allowComparisonKernelAccess(page, request.product, accessController.signal, preActionDeadline)
+  );
   let runTarget: PointerTarget | undefined;
   let listener: vscode.Disposable | undefined;
   let inlineTarget: PointerTarget | undefined;
   let journeyError: unknown;
   let journeyFailed = false;
   try {
-    await activateComparisonProduct(request.product);
-    await executeWarmSetup(request, page, captured);
+    await activateComparisonProduct(request.product, preActionDeadline);
+    await executeWarmSetup(request, page, captured, preActionDeadline);
     if (request.product === "data-wrangler") {
-      await authorizeDataWranglerFromNotebookToolbar(page, captured, access);
+      await authorizeDataWranglerFromNotebookToolbar(page, captured, access, preActionDeadline);
     } else {
-      assert.equal(outcomeValue(await access), true, "Open Wrangler did not receive first-use Jupyter kernel access.");
+      assert.equal(
+        outcomeValue(
+          await beforePreActionDeadline(access, preActionDeadline, "Timed out granting Open Wrangler kernel access.")
+        ),
+        true,
+        "Open Wrangler did not receive first-use Jupyter kernel access."
+      );
     }
+    if (
+      remainingPreActionMs(preActionDeadline, "Timed out before the memory settle window.") < request.preActionSettleMs
+    ) {
+      throw new JourneyTimeout("run-cell", "The shared pre-action budget cannot fit the memory settle window.");
+    }
+    milestones.mark("memory-settle-start");
     recordProgress(`comparison:${request.trialId}:memory-settle-start`);
-    await page.waitForTimeout(MEMORY_SETTLE_MS);
+    await page.waitForTimeout(request.preActionSettleMs);
     recordProgress(`comparison:${request.trialId}:memory-settle-complete`);
     const measuredCell = captured.notebook.cellAt(captured.cell.index);
-    runTarget = await findRunCellTarget(page, captured, measuredCell);
+    runTarget = await findRunCellTarget(page, captured, measuredCell, preActionDeadline);
     const summaryBeforeClick = executionSummaryFingerprint(measuredCell);
     let freshExecution = false;
     listener = vscode.workspace.onDidChangeNotebookDocument((event) => {
@@ -1926,7 +2001,11 @@ async function executeJourney(
         freshExecution = true;
       }
     });
-    evidence.runCell = await clickTarget(runTarget, () => milestones.mark("run-cell-click"));
+    evidence.runCell = await beforePreActionDeadline(
+      clickTarget(runTarget, () => milestones.mark("run-cell-click")),
+      preActionDeadline,
+      "Timed out clicking Run Cell after setup."
+    );
     recordProgress(`comparison:${request.trialId}:run-cell-click`);
     const inlineDeadline = Date.now() + request.timeoutsMs.inlinePreview;
     inlineTarget = await waitForInlineTarget(
@@ -2033,7 +2112,7 @@ async function executeJourney(
     let profileFrame = readiness.frame;
     let profileAction: ActionEvidence;
     if (request.product === "open-wrangler") {
-      const target = await findExactButton(profileFrame, "Column profiles and filters");
+      const target = await findExactButton(profileFrame, "Column profiles and filters", profileDeadline);
       profileAction = await clickTarget(target, () => milestones.mark("profile-click"));
     } else {
       profileAction = await clickColumnForProfile(profileFrame, 0, profileDeadline, () =>
@@ -2107,26 +2186,38 @@ export async function run(): Promise<void> {
   containedPath(request.isolatedRoot, requestPath, "Comparison request path");
   containedPath(request.isolatedRoot, resultPath, "Comparison result path");
   assert.equal(vscode.env.language, "en", "The comparison journey requires VS Code launched with --locale=en.");
+  const preActionDeadline = Date.now() + request.timeoutsMs.preAction;
   recordProgress(`comparison:${request.trialId}:connect`);
-  const { page } = await connectToEditorWorkbench();
-  const captured = await captureNotebook(request);
-  await selectComparisonKernel(page, captured);
+  const { page } = await beforePreActionDeadline(
+    connectToEditorWorkbench(),
+    preActionDeadline,
+    "Timed out connecting to the comparison workbench."
+  );
+  const captured = await beforePreActionDeadline(
+    captureNotebook(request),
+    preActionDeadline,
+    "Timed out capturing the comparison notebook."
+  );
+  await selectComparisonKernel(page, captured, preActionDeadline);
   const baselineTabs = Object.freeze([...allEditorTabs()]);
   const milestones = new Milestones();
   const evidence: MutableEvidence = { runCell: null, inline: null, workbench: null, profiling: null };
   let failure: ComparisonTrialResult["failure"] = null;
   let stage: FailureStage = "run-cell";
   try {
-    await executeJourney(request, page, captured, milestones, evidence);
+    await executeJourney(request, page, captured, milestones, evidence, preActionDeadline);
   } catch (error) {
-    if (error instanceof JourneyTimeout) stage = error.stage;
-    else if (milestones.snapshot().some((item) => item.name === "profile-click")) {
+    const observedMilestones = milestones.snapshot();
+    const measuredActionStarted = observedMilestones.some((item) => item.name === "run-cell-click");
+    if (!measuredActionStarted) stage = "harness";
+    else if (error instanceof JourneyTimeout) stage = error.stage;
+    else if (observedMilestones.some((item) => item.name === "profile-click")) {
       stage = evidence.profiling?.completedColumns === 0 ? "profile-first" : "profile-all";
-    } else if (milestones.snapshot().some((item) => item.name === "launch-click")) stage = "workbench-open";
-    else if (milestones.snapshot().some((item) => item.name === "run-cell-click")) stage = "inline-preview";
+    } else if (observedMilestones.some((item) => item.name === "launch-click")) stage = "workbench-open";
+    else stage = "inline-preview";
     failure = Object.freeze({
       stage,
-      kind: error instanceof JourneyTimeout ? "timeout" : "product",
+      kind: !measuredActionStarted ? "harness" : error instanceof JourneyTimeout ? "timeout" : "product",
       message: boundedFailureMessage(error, request)
     });
   }
@@ -2134,7 +2225,7 @@ export async function run(): Promise<void> {
     await closeNewTabs(baselineTabs);
   } catch (error) {
     if (failure === null) {
-      failure = Object.freeze({ stage: "cleanup", kind: "product", message: boundedFailureMessage(error, request) });
+      failure = Object.freeze({ stage: "cleanup", kind: "harness", message: boundedFailureMessage(error, request) });
     }
   }
   const result = resultFromState(request, milestones, evidence, failure);

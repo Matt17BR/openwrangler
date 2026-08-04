@@ -53,6 +53,7 @@ export const DATA_WRANGLER_REGRESSION_LIMITS = Object.freeze({
 const STUDY_METRICS = Object.freeze(["inlinePreviewMs", "workbenchOpenMs", "firstProfileMs", "completeProfileMs"]);
 const STUDY_MEMORY_METRICS = Object.freeze(["peakPssBytes"]);
 const STUDY_MILESTONES = Object.freeze([
+  "memory-settle-start",
   "run-cell-click",
   "inline-ready",
   "launch-click",
@@ -135,11 +136,20 @@ export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) 
   });
   const start = milestoneTimestamp(milestones, "run-cell-click");
   const end = milestoneTimestamp(milestones, "profiles-complete");
-  if (start === undefined || end === undefined || end <= start) {
+  const settleStart = milestoneTimestamp(milestones, "memory-settle-start");
+  if (settleStart === undefined || start === undefined || end === undefined || end <= start) {
     throw new TypeError("Study PSS evidence requires a valid Run Cell-to-profiles measurement window.");
   }
   const settle = DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY;
-  const before = sanitized.filter(({ monotonicNs }) => BigInt(monotonicNs) < start).slice(-settle.windowSamples);
+  if (start - settleStart < BigInt(settle.fixedWaitMs) * 1_000_000n) {
+    throw new TypeError("Study PSS evidence requires the fixed pre-action settle wait.");
+  }
+  const before = sanitized
+    .filter(({ monotonicNs }) => {
+      const at = BigInt(monotonicNs);
+      return at >= settleStart && at < start;
+    })
+    .slice(-settle.windowSamples);
   if (before.length !== settle.windowSamples) {
     throw new TypeError("Study PSS evidence requires twenty pre-action settle samples.");
   }
@@ -179,6 +189,19 @@ export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) 
     return at >= start && at <= end;
   });
   if (measured.length === 0) throw new TypeError("Study PSS evidence requires a sample inside the measurement window.");
+  const firstMeasured = BigInt(measured[0].monotonicNs);
+  const lastMeasured = BigInt(measured.at(-1).monotonicNs);
+  const maximumMeasuredGap = measured.slice(1).reduce((maximum, sample, index) => {
+    const gap = BigInt(sample.monotonicNs) - BigInt(measured[index].monotonicNs);
+    return gap > maximum ? gap : maximum;
+  }, 0n);
+  if (
+    firstMeasured - start > BigInt(settle.latestSampleMaximumAgeMs) * 1_000_000n ||
+    end - lastMeasured > BigInt(settle.latestSampleMaximumAgeMs) * 1_000_000n ||
+    maximumMeasuredGap > BigInt(settle.maximumGapMs) * 1_000_000n
+  ) {
+    throw new TypeError("Study PSS samples do not continuously cover the measured action.");
+  }
   const peakPssBytes = Math.max(...measured.map(({ pssBytes }) => pssBytes));
   return Object.freeze({
     peakPssBytes,
@@ -223,7 +246,7 @@ export function validateDataWranglerComparisonStudyTrial(trial, entry, manifest)
   const milestones = validateStudyMilestones(trial.milestones);
   validateStudyMetrics(trial.metrics, milestones);
   validateStudyFailure(trial.failure, trial.status);
-  validateStudyPublicUi(trial.publicUi, trial.status, entry?.columns);
+  validateStudyPublicUi(trial.publicUi, trial.status, entry);
   if (trial.status === "success") {
     if (trial.failure !== null || milestones.length !== STUDY_MILESTONES.length) {
       throw new TypeError("A successful study trial requires every milestone and no failure.");
@@ -437,12 +460,51 @@ function validateStudyManifest(manifest) {
   ) {
     throw new TypeError("Study report requires the fixed 96-trial study manifest.");
   }
+  exactKeys(
+    manifest.method,
+    [
+      "cells",
+      "warmPairsPerCell",
+      "coldOrder",
+      "preActionSettle",
+      "regressionLimits",
+      "timingBoundaries",
+      "statistics",
+      "memory"
+    ],
+    "study manifest method"
+  );
   if (
     JSON.stringify(manifest.method.preActionSettle) !== JSON.stringify(DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY) ||
     JSON.stringify(manifest.method.regressionLimits) !== JSON.stringify(DATA_WRANGLER_REGRESSION_LIMITS)
   ) {
     throw new TypeError("Study report method policies do not match the predeclared release contract.");
   }
+  assertEqual(manifest.method.warmPairsPerCell, 10, "study manifest warm pairs per cell");
+  assertEqual(manifest.method.coldOrder, "one AB pair and one BA pair per cell", "study manifest cold order");
+  exactKeys(
+    manifest.method.timingBoundaries,
+    ["inlinePreview", "workbenchOpen", "firstProfile", "completeProfile"],
+    "study manifest timing boundaries"
+  );
+  for (const [key, expected] of Object.entries({
+    inlinePreview: "Run Cell click to stable public inline output and a usable launch action",
+    workbenchOpen: "public launch-action click to a stable, unobstructed, scrollable workbench grid",
+    firstProfile: "public profiling action to the first completed column summary",
+    completeProfile: "public profiling action to final summaries for every column"
+  })) {
+    assertEqual(manifest.method.timingBoundaries[key], expected, `study manifest ${key} timing boundary`);
+  }
+  assertEqual(
+    manifest.method.statistics,
+    "successful warm trials; Hyndman-Fan type 7 median and p95; paired differences retain order",
+    "study manifest statistics"
+  );
+  assertEqual(
+    manifest.method.memory,
+    "highest observed absolute process-tree PSS after a fixed ten-second pre-action settle window",
+    "study manifest memory method"
+  );
   const cells = new Map();
   for (const cell of manifest.method.cells) {
     exactKeys(cell, ["id", "engine", "format", "rows", "columns"], "study manifest cell");
@@ -659,7 +721,7 @@ function validateStudyFailure(failure, status) {
   }
 }
 
-function validateStudyPublicUi(value, status, scheduledColumns) {
+function validateStudyPublicUi(value, status, scheduledEntry) {
   exactKeys(value, ["runCell", "inline", "workbench", "profiling"], "study trial public UI");
   const runCell = validateStudyAction(value.runCell, "study trial Run Cell");
   const inline = validateStudyAction(value.inline, "study trial inline action", ["tableReady"]);
@@ -690,6 +752,14 @@ function validateStudyPublicUi(value, status, scheduledColumns) {
         throw new TypeError("Study trial workbench ARIA count is invalid.");
       }
     }
+    if (
+      workbench.fullShape === "aria-counts" &&
+      scheduledEntry &&
+      (![scheduledEntry.rows, scheduledEntry.rows + 1].includes(workbench.ariaRowCount) ||
+        ![scheduledEntry.columns, scheduledEntry.columns + 1].includes(workbench.ariaColumnCount))
+    ) {
+      throw new TypeError("Study trial ARIA shape proof does not match the scheduled dataframe.");
+    }
     for (const overflow of [workbench.verticalOverflow, workbench.horizontalOverflow]) {
       if (!Number.isSafeInteger(overflow) || overflow < 1 || overflow > 1_000_000_000) {
         throw new TypeError("Study trial workbench overflow proof is invalid.");
@@ -709,8 +779,8 @@ function validateStudyPublicUi(value, status, scheduledColumns) {
       value.profiling.expectedColumns,
       "study trial completed profile columns"
     );
-    if (scheduledColumns !== undefined) {
-      assertEqual(value.profiling.expectedColumns, scheduledColumns, "study trial scheduled profile columns");
+    if (scheduledEntry !== undefined) {
+      assertEqual(value.profiling.expectedColumns, scheduledEntry.columns, "study trial scheduled profile columns");
     }
   }
   if (

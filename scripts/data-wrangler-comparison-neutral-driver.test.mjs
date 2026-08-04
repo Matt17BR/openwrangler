@@ -28,6 +28,7 @@ test("enables each product's public notebook renderer for Pandas and Polars", ()
 test("host request omits the launcher-only VS Code CLI path", () => {
   const request = {
     protocol: "openwrangler-comparison-trial-request-v1",
+    preActionSettleMs: 10_000,
     editor: {
       path: "/code",
       cliPath: "/code-cli",
@@ -53,6 +54,7 @@ test("host request omits the launcher-only VS Code CLI path", () => {
     sha256: "a".repeat(64)
   });
   assert.equal(request.editor.cliPath, "/code-cli");
+  assert.equal(host.preActionSettleMs, 10_000);
   assert.equal(Object.hasOwn(host.cell, "sourceSha256"), false);
 });
 
@@ -72,14 +74,15 @@ test("private trial sources are checked before and after editor use", () => {
 
 test("PSS summary requires a settled pre-action window and keeps the measured absolute peak", () => {
   const samples = [
-    ...Array.from({ length: 20 }, (_unused, index) => sample(1_000_000_000 + index * 200_000_000, 100)),
-    sample(5_000_000_000, 180),
-    sample(5_200_000_000, 160),
-    sample(5_400_000_000, 999)
+    ...Array.from({ length: 20 }, (_unused, index) => sample(7_000_000_000 + index * 200_000_000, 100)),
+    sample(11_000_000_000, 180),
+    sample(11_200_000_000, 160),
+    sample(11_400_000_000, 999)
   ];
   const summary = summarizePss(samples, [
-    { name: "run-cell-click", monotonicNs: "5000000000" },
-    { name: "profiles-complete", monotonicNs: "5300000000" }
+    { name: "memory-settle-start", monotonicNs: "1000000000" },
+    { name: "run-cell-click", monotonicNs: "11000000000" },
+    { name: "profiles-complete", monotonicNs: "11300000000" }
   ]);
   assert.deepEqual(summary, {
     peakPssBytes: 180,
@@ -98,15 +101,16 @@ test("PSS evidence rejects an out-of-order raw series", () => {
 test("PSS evidence rejects a rising pre-action process tree", () => {
   const samples = [
     ...Array.from({ length: 20 }, (_unused, index) =>
-      sample(1_000_000_000 + index * 200_000_000, 100_000_000 + index * 10_000_000)
+      sample(7_000_000_000 + index * 200_000_000, 100_000_000 + index * 10_000_000)
     ),
-    sample(5_000_000_000, 300_000_000)
+    sample(11_000_000_000, 300_000_000)
   ];
   assert.throws(
     () =>
       summarizePss(samples, [
-        { name: "run-cell-click", monotonicNs: "5000000000" },
-        { name: "profiles-complete", monotonicNs: "5100000000" }
+        { name: "memory-settle-start", monotonicNs: "1000000000" },
+        { name: "run-cell-click", monotonicNs: "11000000000" },
+        { name: "profiles-complete", monotonicNs: "11100000000" }
       ]),
     /plateau|drifting/u
   );

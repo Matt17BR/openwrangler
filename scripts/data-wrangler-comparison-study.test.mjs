@@ -9,6 +9,7 @@ import {
   DATA_WRANGLER_VERSION,
   STUDY_CELLS,
   STUDY_PROTOCOL,
+  STUDY_TIMEOUTS_MS,
   TRIAL_REQUEST_PROTOCOL,
   TRIAL_RESULT_PROTOCOL,
   WARM_REPETITIONS,
@@ -20,10 +21,24 @@ import {
   runDataWranglerComparisonStudy,
   runDataWranglerComparisonSmoke,
   runOneTrial,
-  validateTrialResult
+  validateTrialResult,
+  writeDataWranglerComparisonStudyReport
 } from "./data-wrangler-comparison-study.mjs";
 
 const hash = (character) => character.repeat(64);
+
+test("writes a fresh diagnostic report before enforcing the release gate", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-comparison-report-"));
+  const output = join(root, "report.json");
+  const report = { protocol: "openwrangler-data-wrangler-study-report-v1", completedTrials: 1 };
+  try {
+    assert.throws(() => writeDataWranglerComparisonStudyReport(output, report), /96 successful scheduled trials/u);
+    assert.deepEqual(JSON.parse(readFileSync(output, "utf8")), report);
+    assert.throws(() => writeDataWranglerComparisonStudyReport(output, report), /new output path/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("schedule contains ten counterbalanced warm pairs and AB/BA cold pairs for all four cells", () => {
   const schedule = createDataWranglerComparisonSchedule();
@@ -48,6 +63,17 @@ test("schedule contains ten counterbalanced warm pairs and AB/BA cold pairs for 
       ]
     );
   }
+});
+
+test("inner stage deadlines leave explicit room below the 300-second editor deadline", () => {
+  const declaredStages =
+    STUDY_TIMEOUTS_MS.preAction +
+    STUDY_TIMEOUTS_MS.inlinePreview +
+    STUDY_TIMEOUTS_MS.workbenchOpen +
+    STUDY_TIMEOUTS_MS.completeProfile;
+  assert.equal(declaredStages, 255_000);
+  assert.equal(STUDY_TIMEOUTS_MS.editorPhase - declaredStages, 45_000);
+  assert.ok(STUDY_TIMEOUTS_MS.neutralDriver > STUDY_TIMEOUTS_MS.editorPhase);
 });
 
 test("manifest records public boundaries, exact provenance, and no Microsoft package hash", () => {
@@ -257,6 +283,7 @@ test("warm trial preparation tags one untimed setup cell before one measured cel
       trialRoot
     });
     assert.equal(prepared.request.protocol, TRIAL_REQUEST_PROTOCOL);
+    assert.equal(prepared.request.preActionSettleMs, manifest.method.preActionSettle.fixedWaitMs);
     assert.equal(prepared.request.cell.variableName, "study_frame");
     assert.ok(prepared.request.cell.source.startsWith(`${resolve(trialRoot)}/`));
     assert.ok(prepared.request.notebookPath.startsWith(`${resolve(trialRoot)}/`));
@@ -448,22 +475,23 @@ function successResult(entry, manifest) {
     failure: null,
     metrics: { inlinePreviewMs: 10, workbenchOpenMs: 20, firstProfileMs: 5, completeProfileMs: 30 },
     milestones: [
-      milestone("run-cell-click", 5_000_000_000),
-      milestone("inline-ready", 5_010_000_000),
-      milestone("launch-click", 5_020_000_000),
-      milestone("workbench-ready", 5_040_000_000),
-      milestone("profile-click", 5_050_000_000),
-      milestone("first-profile-ready", 5_055_000_000),
-      milestone("profiles-complete", 5_080_000_000)
+      milestone("memory-settle-start", 1_000_000_000),
+      milestone("run-cell-click", 11_000_000_000),
+      milestone("inline-ready", 11_010_000_000),
+      milestone("launch-click", 11_020_000_000),
+      milestone("workbench-ready", 11_040_000_000),
+      milestone("profile-click", 11_050_000_000),
+      milestone("first-profile-ready", 11_055_000_000),
+      milestone("profiles-complete", 11_080_000_000)
     ],
-    publicUi: publicUi(entry.columns),
+    publicUi: publicUi(entry),
     memory: {
       peakPssBytes: 160,
       sampleCount: 21,
       intervalMs: 200,
       samples: [
-        ...Array.from({ length: 20 }, (_unused, index) => pss(1_000_000_000 + index * 200_000_000, 100)),
-        pss(5_000_000_000, 160)
+        ...Array.from({ length: 20 }, (_unused, index) => pss(7_000_000_000 + index * 200_000_000, 100)),
+        pss(11_000_000_000, 160)
       ]
     },
     provenance: trialRequestProvenance(manifest)
@@ -490,7 +518,7 @@ function pss(monotonicNs, pssBytes) {
   return { monotonicNs: String(monotonicNs), pssBytes, processCount: 3 };
 }
 
-function publicUi(columns) {
+function publicUi(entry) {
   const action = { accessibleName: "Open in product", unique: true, pointer: true };
   return {
     runCell: { ...action, accessibleName: "Run Cell" },
@@ -498,12 +526,17 @@ function publicUi(columns) {
     workbench: {
       rootRole: "grid",
       fullShape: "aria-counts",
-      ariaRowCount: 100_000,
-      ariaColumnCount: columns,
+      ariaRowCount: entry.rows,
+      ariaColumnCount: entry.columns,
       verticalOverflow: 100,
       horizontalOverflow: 100,
       pointerUsable: true
     },
-    profiling: { ...action, accessibleName: "Profile columns", expectedColumns: columns, completedColumns: columns }
+    profiling: {
+      ...action,
+      accessibleName: "Profile columns",
+      expectedColumns: entry.columns,
+      completedColumns: entry.columns
+    }
   };
 }

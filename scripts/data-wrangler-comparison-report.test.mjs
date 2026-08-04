@@ -38,10 +38,48 @@ test("uses type-7 statistics and recomputes retained PSS evidence", () => {
     /twenty pre-action settle samples/u
   );
   assert.throws(
-    () => summarizeStudyPssSamples([...pssSamples().slice(0, 20), pss("5200000000", 150)], milestones()),
+    () => summarizeStudyPssSamples([...pssSamples().slice(0, 20), pss("11200000000", 150)], milestones()),
     /inside the measurement window/u
   );
   assert.throws(() => summarizeStudyPssSamples(pssSamples(), []), /measurement window/u);
+});
+
+test("requires the declared settle wait and continuous measured PSS coverage", () => {
+  const preAction = pssSamples().slice(0, 20);
+  assert.throws(
+    () =>
+      summarizeStudyPssSamples([...preAction, pss("11000000000", 150)], milestones(10, { settleStart: 1_000_000_001 })),
+    /fixed pre-action settle wait/u
+  );
+  assert.throws(
+    () =>
+      summarizeStudyPssSamples(
+        [...preAction, pss("11400000001", 150), pss("11800000000", 140)],
+        milestones(10, { end: 11_800_000_000 })
+      ),
+    /continuously cover/u
+  );
+  assert.throws(
+    () =>
+      summarizeStudyPssSamples(
+        [...preAction, pss("11000000000", 150), pss("11300000000", 140)],
+        milestones(10, { end: 11_800_000_000 })
+      ),
+    /continuously cover/u
+  );
+  assert.throws(
+    () =>
+      summarizeStudyPssSamples(
+        [...preAction, pss("11000000000", 150), pss("11600000000", 170), pss("12000000000", 140)],
+        milestones(10, { end: 12_000_000_000 })
+      ),
+    /continuously cover/u
+  );
+  assert.equal(
+    summarizeStudyPssSamples([...preAction, pss("11400000000", 175)], milestones(10, { end: 11_800_000_000 }))
+      .peakPssBytes,
+    175
+  );
 });
 
 test("binds trials to the exact schedule and provenance and rejects rewritten PSS", () => {
@@ -60,6 +98,16 @@ test("binds trials to the exact schedule and provenance and rejects rewritten PS
       /editor SHA-256/u
     ],
     [{ ...trial, memory: { ...trial.memory, peakPssBytes: 151 } }, /memory peakPssBytes/u],
+    [
+      {
+        ...trial,
+        publicUi: {
+          ...trial.publicUi,
+          workbench: { ...trial.publicUi.workbench, ariaRowCount: 1_006 }
+        }
+      },
+      /ARIA shape proof/u
+    ],
     [
       {
         ...trial,
@@ -163,6 +211,21 @@ test("requires complete editor, Python, fixture, and machine provenance", () => 
   }
 });
 
+test("binds the report to the complete declared method", () => {
+  const manifest = studyManifest();
+  const invalid = structuredClone(manifest);
+  invalid.method.memory = "peak memory";
+  assert.throws(
+    () =>
+      buildDataWranglerComparisonStudyReport({
+        generatedAtUtc: "2026-08-04T12:00:00.000Z",
+        manifest: invalid,
+        trials: []
+      }),
+    /memory method/u
+  );
+});
+
 test("rejects a study schedule whose product order is not counterbalanced", () => {
   const manifest = studyManifest();
   const invalid = structuredClone(manifest);
@@ -203,8 +266,18 @@ function studyManifest() {
     protocol: "openwrangler-data-wrangler-study-v1",
     method: {
       cells,
+      warmPairsPerCell: 10,
+      coldOrder: "one AB pair and one BA pair per cell",
       preActionSettle: structuredClone(DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY),
-      regressionLimits: structuredClone(DATA_WRANGLER_REGRESSION_LIMITS)
+      regressionLimits: structuredClone(DATA_WRANGLER_REGRESSION_LIMITS),
+      timingBoundaries: {
+        inlinePreview: "Run Cell click to stable public inline output and a usable launch action",
+        workbenchOpen: "public launch-action click to a stable, unobstructed, scrollable workbench grid",
+        firstProfile: "public profiling action to the first completed column summary",
+        completeProfile: "public profiling action to final summaries for every column"
+      },
+      statistics: "successful warm trials; Hyndman-Fan type 7 median and p95; paired differences retain order",
+      memory: "highest observed absolute process-tree PSS after a fixed ten-second pre-action settle window"
     },
     provenance: {
       openWrangler: { extensionId: "Matt17BR.openwrangler", version: "1.2.1", sha256: digest("a") },
@@ -293,15 +366,16 @@ function studyTrial(entry, manifest, inlinePreviewMs = 10, peakPssBytes = 150) {
   };
 }
 
-function milestones(inlinePreviewMs = 10) {
+function milestones(inlinePreviewMs = 10, { settleStart = 1_000_000_000, end = 11_080_000_000 } = {}) {
   return [
-    mark("run-cell-click", 5_000_000_000),
-    mark("inline-ready", 5_000_000_000 + inlinePreviewMs * 1_000_000),
-    mark("launch-click", 5_020_000_000),
-    mark("workbench-ready", 5_040_000_000),
-    mark("profile-click", 5_050_000_000),
-    mark("first-profile-ready", 5_055_000_000),
-    mark("profiles-complete", 5_080_000_000)
+    mark("memory-settle-start", settleStart),
+    mark("run-cell-click", 11_000_000_000),
+    mark("inline-ready", 11_000_000_000 + inlinePreviewMs * 1_000_000),
+    mark("launch-click", 11_020_000_000),
+    mark("workbench-ready", 11_040_000_000),
+    mark("profile-click", 11_050_000_000),
+    mark("first-profile-ready", 11_055_000_000),
+    mark("profiles-complete", end)
   ];
 }
 
@@ -311,8 +385,8 @@ function mark(name, monotonicNs) {
 
 function pssSamples(peak = 150) {
   return [
-    ...Array.from({ length: 20 }, (_unused, index) => pss(String(1_000_000_000 + index * 200_000_000), 110)),
-    pss("5000000000", peak)
+    ...Array.from({ length: 20 }, (_unused, index) => pss(String(7_000_000_000 + index * 200_000_000), 110)),
+    pss("11000000000", peak)
   ];
 }
 

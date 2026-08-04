@@ -107,6 +107,28 @@ function ownedProcesses(census, rootPid, expectedRootStartTimeTicks, expectedPro
   };
 }
 
+function captureRootOwnership(
+  rootPid,
+  { expectedRootStartTimeTicks, expectedProcessGroupId, procRoot = "/proc", readFile = readFileSync } = {}
+) {
+  const root = readStat(procRoot, rootPid, readFile);
+  if (!root) throw new Error(`Root process ${rootPid} is no longer running.`);
+  if (expectedRootStartTimeTicks && root.startTimeTicks !== expectedRootStartTimeTicks) {
+    throw new Error(`Root process ${rootPid} was replaced.`);
+  }
+  const processGroupId = expectedProcessGroupId ?? root.processGroupId;
+  if (root.processGroupId !== processGroupId) {
+    throw new Error(`Root process ${rootPid} changed process group.`);
+  }
+  if (expectedProcessGroupId === undefined && processGroupId !== rootPid) {
+    throw new Error(`Root process ${rootPid} does not own its process group.`);
+  }
+  return Object.freeze({
+    rootStartTimeTicks: expectedRootStartTimeTicks ?? root.startTimeTicks,
+    processGroupId
+  });
+}
+
 export function readLinuxPssTree(
   rootPid,
   {
@@ -144,9 +166,19 @@ export function readLinuxPssTree(
 
 export function startLinuxPssSampler(rootPid, options = {}) {
   const intervalMs = options.intervalMs ?? 200;
+  positiveInteger(rootPid, "Root PID");
   positiveInteger(intervalMs, "PSS sample interval");
   let expectedRootStartTimeTicks = options.expectedRootStartTimeTicks;
   let expectedProcessGroupId = options.expectedProcessGroupId;
+  if (!options.read) {
+    const ownership = captureRootOwnership(rootPid, {
+      ...options,
+      expectedRootStartTimeTicks,
+      expectedProcessGroupId
+    });
+    expectedRootStartTimeTicks = ownership.rootStartTimeTicks;
+    expectedProcessGroupId = ownership.processGroupId;
+  }
   const read =
     options.read ??
     (() => {
@@ -171,8 +203,12 @@ export function startLinuxPssSampler(rootPid, options = {}) {
       samples.push(read());
       pendingInitialError = undefined;
     } catch (caught) {
-      if (samples.length > 0 && /no longer running/u.test(String(caught?.message))) ended = true;
-      else if (samples.length === 0 && /No owned process supplied a PSS sample/u.test(String(caught?.message))) {
+      if (
+        samples.length > 0 &&
+        /(?:no longer running|No owned process supplied a PSS sample)/u.test(String(caught?.message))
+      ) {
+        ended = true;
+      } else if (samples.length === 0 && /No owned process supplied a PSS sample/u.test(String(caught?.message))) {
         pendingInitialError = caught;
       } else error = caught;
     }

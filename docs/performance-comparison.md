@@ -109,12 +109,22 @@ editor, or benchmark jobs during collection.
 
 The fixed UI deadlines are:
 
-| Boundary           | Deadline |
-| ------------------ | -------: |
-| Inline preview     |     45 s |
-| Workbench open     |     60 s |
-| Complete profile   |    135 s |
-| Whole driver phase |    300 s |
+| Boundary                                                | Deadline |
+| ------------------------------------------------------- | -------: |
+| Everything before **Run Cell**, including the 10 s wait |     75 s |
+| Inline preview                                          |     30 s |
+| Workbench open                                          |     40 s |
+| Complete profile                                        |    110 s |
+| Editor phase                                            |    300 s |
+| Neutral setup, editor phase, and teardown               |     40 m |
+
+The pre-action deadline is one shared clock. Kernel selection, permission handling, setup, the fixed memory wait, and
+finding **Run Cell** cannot each restart it. The four inner deadlines total 255 seconds, leaving 45 seconds for result
+publication and cleanup inside the 300-second phase limit.
+
+The 40-minute outer bound is not a product timing. It covers the first isolated installation of the pinned Jupyter,
+Python, and product extensions as well as display startup and teardown. Each installer remains independently bounded;
+later trials reuse the two verified product extension directories.
 
 A product error or UI deadline is a trial outcome. Keep it in the report. Harness/setup failures are recorded
 separately and invalidate the release study; fix the harness and start a fresh 96-trial directory. There is no outlier
@@ -131,7 +141,8 @@ count, and end no more than 400 ms before the click. Their range must stay withi
 The difference between the first-five and last-five medians must stay within both 32 MiB and 1.25%. A window that
 misses any bound is a harness failure.
 
-For each successful trial, report peak absolute PSS between **Run Cell** and final profiling. We do not publish a
+For each successful trial, report the highest observed absolute PSS between **Run Cell** and final profiling. Samples
+must cover both ends of that window and may not have a gap above 500 ms. We do not publish a
 baseline-adjusted figure: the diagnostic run showed that it could make the product with the lower absolute peak look
 worse simply because its startup baseline was lower.
 
@@ -231,7 +242,7 @@ Before publishing results, a reviewer who did not write the runner checks:
 - 96 unique planned IDs and one retained outcome for every ID;
 - type-7 median/p95 recalculation from raw trial files;
 - paired differences and failure/timeout counts;
-- the settle-window decision and absolute peak PSS calculation;
+- the settle-window decision and highest observed absolute PSS calculation;
 - every release-limit decision for both median and p95;
 - the absence of private paths, source values, screenshots, logs, or proprietary package contents; and
 - the wording of any performance claim against what the public UI evidence actually proves.

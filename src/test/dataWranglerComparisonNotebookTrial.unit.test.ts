@@ -45,9 +45,10 @@ function request(overrides: Partial<ComparisonTrialRequest> = {}): ComparisonTri
     },
     candidate: { path: "/tmp/openwrangler.vsix", version: "1.2.1", sha256: SHA },
     dataWranglerVersion: "1.24.2",
+    preActionSettleMs: 10_000,
     editor: { path: "/opt/code/code", version: "1.105.0", sha256: SHA },
     python: { path: "/opt/python/bin/python", version: "3.12.11", sha256: SHA },
-    timeoutsMs: { inlinePreview: 45_000, workbenchOpen: 60_000, completeProfile: 135_000 },
+    timeoutsMs: { preAction: 75_000, inlinePreview: 30_000, workbenchOpen: 40_000, completeProfile: 110_000 },
     ...overrides
   };
 }
@@ -72,13 +73,14 @@ function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrial
       completeProfileMs: 4
     },
     milestones: [
-      { name: "run-cell-click", monotonicNs: "1" },
-      { name: "inline-ready", monotonicNs: "2" },
-      { name: "launch-click", monotonicNs: "3" },
-      { name: "workbench-ready", monotonicNs: "4" },
-      { name: "profile-click", monotonicNs: "5" },
-      { name: "first-profile-ready", monotonicNs: "6" },
-      { name: "profiles-complete", monotonicNs: "7" }
+      { name: "memory-settle-start", monotonicNs: "1" },
+      { name: "run-cell-click", monotonicNs: "2" },
+      { name: "inline-ready", monotonicNs: "3" },
+      { name: "launch-click", monotonicNs: "4" },
+      { name: "workbench-ready", monotonicNs: "5" },
+      { name: "profile-click", monotonicNs: "6" },
+      { name: "first-profile-ready", monotonicNs: "7" },
+      { name: "profiles-complete", monotonicNs: "8" }
     ],
     publicUi: {
       runCell: action,
@@ -117,6 +119,9 @@ describe("neutral comparison request", () => {
     expect(() =>
       validateComparisonTrialRequest(request({ timeoutsMs: { ...request().timeoutsMs, completeProfile: 1 } }))
     ).toThrow(/completeProfile timeout/u);
+    expect(() => validateComparisonTrialRequest(request({ preActionSettleMs: 9_999 as 10_000 }))).toThrow(
+      /preActionSettleMs/u
+    );
   });
 });
 
@@ -237,7 +242,10 @@ describe("neutral comparison result", () => {
       status: "timeout",
       failure: { stage: "inline-preview", kind: "timeout", message: "Inline preview timed out." },
       metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
-      milestones: [{ name: "run-cell-click", monotonicNs: "1" }],
+      milestones: [
+        { name: "memory-settle-start", monotonicNs: "1" },
+        { name: "run-cell-click", monotonicNs: "2" }
+      ],
       publicUi: { runCell: action, inline: null, workbench: null, profiling: null }
     });
     expect(validateComparisonTrialResult(failed)).toEqual(failed);
@@ -248,8 +256,8 @@ describe("neutral comparison result", () => {
       validateComparisonTrialResult(
         result({
           milestones: [
-            { name: "run-cell-click", monotonicNs: "2" },
-            { name: "inline-ready", monotonicNs: "1" }
+            { name: "memory-settle-start", monotonicNs: "2" },
+            { name: "run-cell-click", monotonicNs: "1" }
           ]
         })
       )
