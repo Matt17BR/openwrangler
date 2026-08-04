@@ -126,9 +126,9 @@ const EXPECTED_SCRIPT_GROUP_FILES = Object.freeze({
   native: ["scripts/windows-job-supervisor.native.test.mjs"]
 });
 const CANONICAL_CI_IF =
-  "${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}";
+  "${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}";
 const FULL_CI_IF =
-  "${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
+  "${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
 const MATRIX_CONTEXT_IF = "${{ !cancelled() }}";
 const NON_MATRIX_CONTEXT_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}";
@@ -169,7 +169,7 @@ test("product CI covers both protected integration and v1 maintenance branches",
     const workflow = parseYaml(readFileSync(new URL(`../.github/workflows/${path}`, import.meta.url), "utf8"));
     assert.deepEqual(workflow?.on?.pull_request?.branches, PROTECTED_PRODUCT_BRANCHES);
     assert.deepEqual(workflow?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
-    assert.deepEqual(workflow?.on?.push?.branches, PROTECTED_PRODUCT_BRANCHES);
+    assert.equal(workflow?.on?.push, undefined, `${path} must not repeat the ready-PR matrix after merge.`);
   }
 });
 
@@ -499,7 +499,7 @@ test("affected PR released-Jupyter acceptance consumes the exact canonical VSIX"
   assert.deepEqual(job?.needs, ["classify", "canonical-vsix"]);
   assert.equal(
     normalizedCommand(job?.if),
-    "${{ !cancelled() && needs.classify.outputs.full_matrix_required == 'true' && needs.classify.outputs.released_jupyter_required == 'true' }}"
+    "${{ !cancelled() && github.event_name == 'pull_request' && needs.classify.outputs.full_matrix_required == 'true' && needs.classify.outputs.released_jupyter_required == 'true' }}"
   );
   assert.equal(job?.["runs-on"], "ubuntu-latest");
   assert.equal(job?.["timeout-minutes"], 90);
@@ -765,7 +765,7 @@ test("authoritative CI work is independently attributable before the required ag
   assert.deepEqual(ownersByCommand.get("npm run test:scripts:native"), ["native-script-portability"]);
 });
 
-test("non-matrix PR tiers preserve direct contexts while substantive changes and protected pushes run full", () => {
+test("ready substantive PRs run full while protected pushes keep only fast feedback", () => {
   const classifierEnvironment = {
     CI_EVENT_NAME: "${{ github.event_name }}",
     CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
@@ -794,6 +794,7 @@ test("non-matrix PR tiers preserve direct contexts while substantive changes and
 
   const ci = loadWorkflow(".github/workflows/ci.yml");
   assertClassifier(ci, "CI change classification");
+  assert.equal(ci?.jobs?.classify?.if, "${{ github.event_name == 'pull_request' }}");
   for (const jobId of FULL_MATRIX_CI_JOBS) {
     const job = ci?.jobs?.[jobId];
     const needs = Array.isArray(job?.needs) ? job.needs : [job?.needs];
@@ -875,7 +876,7 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
   assert.equal(aggregate?.name, undefined, "The protected validate context must keep its existing name.");
   assert.deepEqual(REQUIRED_CI_JOBS, EXPECTED_BLOCKING_CI_JOBS);
   assert.deepEqual(aggregate?.needs, [...EXPECTED_BLOCKING_CI_JOBS, CONDITIONAL_CI_JOB, OPTIONAL_CI_JOB]);
-  assert.equal(aggregate?.if, "${{ !cancelled() }}");
+  assert.equal(aggregate?.if, "${{ !cancelled() && github.event_name == 'pull_request' }}");
   assert.equal(aggregate?.["runs-on"], "ubuntu-latest");
   assert.equal(aggregate?.["timeout-minutes"], 5);
   assert.equal(aggregate?.["continue-on-error"], undefined);

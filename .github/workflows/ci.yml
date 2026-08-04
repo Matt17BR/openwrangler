@@ -16,6 +16,7 @@ concurrency:
 jobs:
   classify:
     name: CI change classification
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -70,7 +71,7 @@ jobs:
 
   canonical-vsix:
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}
     runs-on: ubuntu-latest
     outputs:
       released_jupyter_required: ${{ needs.classify.outputs.released_jupyter_required }}
@@ -123,7 +124,7 @@ jobs:
   contract-tests:
     name: Contract tests
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -154,7 +155,7 @@ jobs:
   visual-accessibility:
     name: Visual and accessibility
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -184,7 +185,7 @@ jobs:
   production-audits:
     name: Production dependency audits
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -206,7 +207,7 @@ jobs:
   linux-packaged-editor:
     name: Packaged VS Code (Linux)
     needs: [classify, canonical-vsix]
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -267,6 +268,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
+        github.event_name == 'pull_request' &&
         needs.classify.outputs.full_matrix_required == 'true' &&
         needs.classify.outputs.released_jupyter_required == 'true'
       }}
@@ -362,7 +364,7 @@ jobs:
 
   coverage:
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -404,7 +406,7 @@ jobs:
 
   python-matrix:
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -435,7 +437,7 @@ jobs:
   native-r-contract:
     name: Native R contract (R ${{ matrix.r }})
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -461,7 +463,7 @@ jobs:
 
   extension-host:
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -486,7 +488,7 @@ jobs:
   native-script-portability:
     name: Native script contracts (Windows)
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -501,7 +503,7 @@ jobs:
   native-extension-host:
     name: Native extension host (${{ matrix.os }})
     needs: classify
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -528,7 +530,7 @@ jobs:
   native-editor-matrix:
     name: Native editor (${{ matrix.os }})
     needs: [classify, canonical-vsix]
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -590,7 +592,7 @@ jobs:
   native-cursor-smoke:
     name: Cursor smoke (${{ matrix.os }})
     needs: [classify, canonical-vsix]
-    if: ${{ !cancelled() && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -805,7 +807,7 @@ jobs:
       - native-cursor-smoke
       - released-jupyter
       - remote-workspace
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

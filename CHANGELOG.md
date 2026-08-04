@@ -6,6 +6,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- After a pull request is merged, pushes to `main` and `release/1.x` now run just `Fast feedback` instead of repeating
+  the full matrix. Ready pull requests still run every required check, and release candidates run the complete matrix
+  again against the package that may be published.
+- Replaced a 1.5-second timer in the Windows dependency-lock test with a signal from the parent test process. Slow
+  process startup can no longer make the validation subprocess miss the lock.
 - Split the portable script contracts into product/package, editor harness, release/registry, and benchmark commands.
   The complete test command and CI gates are unchanged.
 - Open VSX recovery now checks public screenshots with the verifier from the exact release tag, so a v1 release is
@@ -22,7 +27,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added bounded draft-pull-request feedback without weakening ready-PR evidence. Draft updates run the existing static
   source lane plus bounded carriers for directly protected matrix names, while the protected `validate` context
   deliberately remains failed until `ready_for_review` reruns the required tier at the same commit. Missing,
-  malformed, or contradictory path/draft classification fails closed; protected-branch pushes remain complete.
+  malformed, or contradictory path/draft classification fails closed.
 - Added an exact package-only pull-request tier for non-empty changes limited to `README.md`, `CHANGELOG.md`, `LICENSE`,
   and `THIRD_PARTY_NOTICES.md`. Ready changes build and inspect the canonical VSIX, require all four shipped documents
   to match their source bytes, pin the project manifest and reviewed license text to MIT, and run the focused
@@ -93,8 +98,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   licenses, and workflow contracts, while checksum packaging and main-CI product/editor job IDs report explicit
   skips to the protected aggregate. A hosted probe found that job-level skipped matrices lose their expanded check
   names, so directly protected cross-platform and CodeQL matrices now expand lightweight context-carrier cells
-  without checkout, toolchain setup, analysis, or tests. Empty, mixed, unknown, shipped README/license/changelog,
-  substantive, and non-PR changes keep the complete matrix; malformed classification fails every protected context.
+  without checkout, toolchain setup, analysis, or tests. Empty, mixed, unknown, shipped README/license/changelog, and
+  substantive ready pull-request changes keep the complete matrix; malformed classification fails every protected
+  context.
 - Reserved the exact numeric `1.99.x` band for Open Wrangler 2 Marketplace pre-releases while retaining legacy
   `0.<odd-minor>.x` previews and every historical stable `1.x` classification outside that band. Release metadata
   must still opt into the matching channel explicitly; this classifier change does not publish or trigger a release.
@@ -104,9 +110,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
 - Made affected pull-request released-Jupyter acceptance consume and revalidate the same checksum-bound canonical
   VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
-  for ready product changes and to be skipped for documentation-only or package-only changes, draft feedback, or
-  protected-branch pushes. Draft `validate` remains deliberately failed; the separate weekly/manual workflow remains non-cancelling
-  ecosystem-drift evidence.
+  for ready product changes and to be skipped for documentation-only or package-only changes and draft feedback.
+  Protected-branch pushes no longer start the job. Draft `validate` remains deliberately failed; the separate
+  weekly/manual workflow remains non-cancelling ecosystem-drift evidence.
 - Unblocked the optional clean-room Data Wrangler comparison on current ipykernel launch syntax: the exact-runtime
   guard now accepts both separate and equals-style connection-file arguments, while bounded path-free command-shape
   diagnostics explain future mismatches without exposing interpreter or connection paths. The documented fixture
