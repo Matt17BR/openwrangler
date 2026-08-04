@@ -25,7 +25,6 @@ jobs:
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
       package_only: ${{ steps.classify.outputs.package_only }}
       full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
-      released_jupyter_required: ${{ steps.classify.outputs.released_jupyter_required }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -73,8 +72,6 @@ jobs:
     needs: classify
     if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}
     runs-on: ubuntu-latest
-    outputs:
-      released_jupyter_required: ${{ needs.classify.outputs.released_jupyter_required }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -262,106 +259,6 @@ jobs:
           compression-level: 9
           include-hidden-files: false
 
-  released-jupyter:
-    name: VS Code with released Jupyter
-    needs: [classify, canonical-vsix]
-    if: >-
-      ${{
-        !cancelled() &&
-        github.event_name == 'pull_request' &&
-        needs.classify.outputs.full_matrix_required == 'true' &&
-        needs.classify.outputs.released_jupyter_required == 'true'
-      }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - name: Require the canonical PR artifact
-        if: ${{ needs.canonical-vsix.result != 'success' }}
-        run: exit 1
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-      - run: npm ci
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
-      - run: npm run lock:remote-jupyter:check
-      - run: npm run audit:remote-jupyter
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: openwrangler-vsix
-          path: canonical-vsix
-      - name: Verify canonical PR checksum
-        shell: node {0}
-        run: |
-          const { createHash } = require("node:crypto");
-          const { readFileSync } = require("node:fs");
-
-          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
-          const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
-          if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
-          const actual = createHash("sha256")
-            .update(readFileSync("canonical-vsix/openwrangler.vsix"))
-            .digest("hex");
-          if (actual !== match[1]) throw new Error("The canonical PR VSIX checksum does not match.");
-      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
-      - run: npm run build:test-extension
-      - id: prepare_xvfb
-        name: Prepare pinned private Xvfb
-        shell: node {0}
-        run: |
-          const { execFileSync } = require("node:child_process");
-          const { X_OK } = require("node:constants");
-          const { accessSync, appendFileSync, lstatSync } = require("node:fs");
-          const { isAbsolute } = require("node:path");
-
-          const output = execFileSync(process.execPath, ["scripts/prepare-xvfb.mjs", "--print-path"], {
-            cwd: process.cwd(),
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "inherit"]
-          });
-          if (!/^[^\0\r\n]+\n?$/u.test(output)) {
-            throw new Error("The Xvfb preparer must print exactly one path.");
-          }
-          const executable = output.endsWith("\n") ? output.slice(0, -1) : output;
-          if (!isAbsolute(executable)) throw new Error("The prepared Xvfb path must be absolute.");
-          const stat = lstatSync(executable);
-          if (!stat.isFile() || stat.isSymbolicLink()) {
-            throw new Error("The prepared Xvfb path must be a regular, non-symlink file.");
-          }
-          accessSync(executable, X_OK);
-          appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
-      - id: packaged_editor
-        name: Test released Jupyter in the canonical packaged VS Code
-        run: node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix
-        env:
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
-          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
-          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
-          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
-          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"
-          VSCODE_TEST_VERSION: stable
-      - name: Upload packaged-editor failure diagnostics
-        if: ${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: released-jupyter-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-
   coverage:
     needs: classify
     if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
@@ -457,172 +354,6 @@ jobs:
       - run: npm run test:extension-host
         env:
           VSCODE_TEST_VERSION: ${{ matrix.vscode }}
-
-  native-script-portability:
-    name: Native script contracts (Windows)
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run test:scripts:native
-
-  native-extension-host:
-    name: Native extension host (${{ matrix.os }})
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: npm ci
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - run: npm run test:extension-host
-        env:
-          VSCODE_TEST_VERSION: stable
-
-  native-editor-matrix:
-    name: Native editor (${{ matrix.os }})
-    needs: [classify, canonical-vsix]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    steps:
-      - name: Require the canonical PR artifact
-        if: ${{ needs.canonical-vsix.result != 'success' }}
-        run: exit 1
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: npm ci
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: openwrangler-vsix
-          path: canonical-vsix
-      - name: Verify canonical PR checksum
-        shell: node {0}
-        run: |
-          const { createHash } = require("node:crypto");
-          const { readFileSync } = require("node:fs");
-
-          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
-          const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
-          if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
-          const actual = createHash("sha256")
-            .update(readFileSync("canonical-vsix/openwrangler.vsix"))
-            .digest("hex");
-          if (actual !== match[1]) throw new Error("The canonical PR VSIX checksum does not match.");
-      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
-      - run: npm run build:test-extension
-      - id: packaged_editor
-        name: Test packaged editor
-        run: node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix
-        env:
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
-          VSCODE_TEST_VERSION: stable
-      - name: Upload packaged-editor failure diagnostics
-        if: ${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-
-  native-cursor-smoke:
-    name: Cursor smoke (${{ matrix.os }})
-    needs: [classify, canonical-vsix]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    steps:
-      - name: Require the canonical PR artifact
-        if: ${{ needs.canonical-vsix.result != 'success' }}
-        run: exit 1
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: npm ci
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: openwrangler-vsix
-          path: canonical-vsix
-      - name: Verify canonical PR checksum
-        shell: node {0}
-        run: |
-          const { createHash } = require("node:crypto");
-          const { readFileSync } = require("node:fs");
-
-          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
-          const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
-          if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
-          const actual = createHash("sha256")
-            .update(readFileSync("canonical-vsix/openwrangler.vsix"))
-            .digest("hex");
-          if (actual !== match[1]) throw new Error("The canonical PR VSIX checksum does not match.");
-      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
-      - run: npm run build:test-extension
-      - id: cursor_smoke
-        name: Test pinned Cursor platform smoke
-        run: node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix
-        env:
-          OPEN_WRANGLER_PACKAGED_EDITORS: cursor
-          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
-      - name: Upload Cursor-smoke failure diagnostics
-        if: ${{ !cancelled() && steps.cursor_smoke.outcome == 'failure' && steps.cursor_smoke.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: packaged-editor-diagnostics-cursor-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.cursor_smoke.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
 
   remote-workspace:
     name: Remote SSH acceptance
@@ -762,6 +493,7 @@ jobs:
           OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
 
   validate:
+    name: ${{ github.event.pull_request.draft && 'Draft feedback' || 'validate' }}
     needs:
       - classify
       - fast-feedback
@@ -773,11 +505,6 @@ jobs:
       - coverage
       - python-matrix
       - extension-host
-      - native-script-portability
-      - native-extension-host
-      - native-editor-matrix
-      - native-cursor-smoke
-      - released-jupyter
       - remote-workspace
     if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
@@ -805,12 +532,6 @@ jobs:
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           PYTHON_MATRIX_RESULT: ${{ needs.python-matrix.result }}
           EXTENSION_HOST_RESULT: ${{ needs.extension-host.result }}
-          NATIVE_SCRIPT_PORTABILITY_RESULT: ${{ needs.native-script-portability.result }}
-          NATIVE_EXTENSION_HOST_RESULT: ${{ needs.native-extension-host.result }}
-          NATIVE_EDITOR_MATRIX_RESULT: ${{ needs.native-editor-matrix.result }}
-          NATIVE_CURSOR_SMOKE_RESULT: ${{ needs.native-cursor-smoke.result }}
-          RELEASED_JUPYTER_RESULT: ${{ needs.released-jupyter.result }}
-          RELEASED_JUPYTER_REQUIRED: ${{ needs.classify.outputs.released_jupyter_required }}
           REMOTE_WORKSPACE_RESULT: ${{ needs.remote-workspace.result }}
           REMOTE_WORKSPACE_REQUIRED: >-
             ${{

@@ -92,6 +92,7 @@ function githubFixture({
   assetByteOverrides = new Map(),
   createConflict,
   createConflictProvidesRelease = false,
+  hiddenInventoryReadsAfterMutation = 0,
   initialReleases = [],
   immutableOnPublish = false,
   inventoryPrefix = [],
@@ -120,6 +121,7 @@ function githubFixture({
   let completeDraftLookups = 0;
   let returnedStaleDraftInventory = false;
   let transitionedAfterMiss = false;
+  let hiddenInventoryReads = 0;
   const requests = [];
   const fetchImpl = async (input, options = {}) => {
     const url = String(input);
@@ -169,6 +171,10 @@ function githubFixture({
 
     if (url.startsWith(`${apiRoot}/releases?`) && method === "GET") {
       if (malformedInventory !== undefined) return jsonResponse(malformedInventory);
+      if (hiddenInventoryReads > 0) {
+        hiddenInventoryReads -= 1;
+        return jsonResponse([]);
+      }
       const page = Number(new URL(url).searchParams.get("page"));
       const inventory = [...inventoryPrefix, ...releases];
       if (staleDraftInventoryOnce && !returnedStaleDraftInventory) {
@@ -214,6 +220,7 @@ function githubFixture({
         version: body.tag_name.slice(1)
       });
       releases.push(created);
+      hiddenInventoryReads = hiddenInventoryReadsAfterMutation;
       return jsonResponse(clone(created), 201);
     }
 
@@ -268,6 +275,7 @@ function githubFixture({
       nextAssetId += 1;
       release.assets.push(created);
       assetBytes.set(created.id, expected.bytes);
+      hiddenInventoryReads = hiddenInventoryReadsAfterMutation;
       return jsonResponse(clone(created), 201);
     }
 
@@ -326,6 +334,16 @@ test("creates a draft, verifies all three assets, and only then publishes", asyn
     .filter((request) => request.method !== "GET")
     .map((request) => request.method);
   assert.deepEqual(mutationMethods, ["POST", "POST", "POST", "POST", "PATCH"]);
+});
+
+test("retries temporary absent inventories after mutations without delaying initial discovery", async () => {
+  const fixture = githubFixture({ hiddenInventoryReadsAfterMutation: 1 });
+  assert.equal((await publish(fixture.fetchImpl)).releaseId, 71);
+  const firstMutation = fixture.requests.findIndex((request) => request.method !== "GET");
+  assert.equal(
+    fixture.requests.slice(0, firstMutation).filter((request) => request.url.startsWith(`${apiRoot}/releases?`)).length,
+    1
+  );
 });
 
 test("reads release notes from the exact commit instead of the mutable checkout", (context) => {

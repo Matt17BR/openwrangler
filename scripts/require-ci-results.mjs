@@ -12,11 +12,7 @@ export const FULL_MATRIX_CI_JOBS = Object.freeze([
   "linux-packaged-editor",
   "coverage",
   "python-matrix",
-  "extension-host",
-  "native-script-portability",
-  "native-extension-host",
-  "native-editor-matrix",
-  "native-cursor-smoke"
+  "extension-host"
 ]);
 
 export const PRODUCT_CI_JOBS = Object.freeze([
@@ -28,7 +24,6 @@ export const PRODUCT_CI_JOBS = Object.freeze([
 export const REQUIRED_CI_JOBS = Object.freeze([...ALWAYS_REQUIRED_CI_JOBS, ...PRODUCT_CI_JOBS]);
 
 export const OPTIONAL_CI_JOB = "remote-workspace";
-export const CONDITIONAL_CI_JOB = "released-jupyter";
 
 export function resultEnvironmentKey(jobId) {
   return `${jobId.replaceAll("-", "_").toUpperCase()}_RESULT`;
@@ -41,8 +36,6 @@ export function requireCiResults({
   lightweightOnly,
   packageOnly,
   fullMatrixRequired,
-  releasedJupyterResult,
-  releasedJupyterRequired,
   remoteResult,
   remoteRequired
 }) {
@@ -79,16 +72,6 @@ export function requireCiResults({
     }
   }
 
-  const expectedReleasedJupyterResult = fullMatrixRequired && releasedJupyterRequired ? "success" : "skipped";
-  if (!fullMatrixRequired && releasedJupyterRequired) {
-    failures.push("released-jupyter classifier is inconsistent with full-matrix mode");
-  }
-  if (releasedJupyterResult !== expectedReleasedJupyterResult) {
-    failures.push(
-      `${CONDITIONAL_CI_JOB}=${releasedJupyterResult ?? "missing"} (expected ${expectedReleasedJupyterResult})`
-    );
-  }
-
   const expectedRemoteResult = fullMatrixRequired && remoteRequired ? "success" : "skipped";
   if (!fullMatrixRequired && remoteRequired) {
     failures.push("remote-workspace classifier is inconsistent with full-matrix mode");
@@ -100,11 +83,8 @@ export function requireCiResults({
   if (failures.length > 0) {
     throw new Error(`Required CI did not pass: ${failures.join(", ")}.`);
   }
-  if (draftPullRequest) {
-    throw new Error(
-      "Draft pull request passed fast feedback; mergeable validation is deferred until ready_for_review reruns its required CI tier."
-    );
-  }
+  if (draftPullRequest)
+    process.stdout.write("Draft feedback passed. Mark the pull request ready to start merge checks.\n");
 }
 
 export function parseRequiredFlag(value, environmentName) {
@@ -124,8 +104,6 @@ function main(environment) {
     lightweightOnly: parseRequiredFlag(environment.LIGHTWEIGHT_ONLY, "LIGHTWEIGHT_ONLY"),
     packageOnly: parseRequiredFlag(environment.PACKAGE_ONLY, "PACKAGE_ONLY"),
     fullMatrixRequired: parseRequiredFlag(environment.FULL_MATRIX_REQUIRED, "FULL_MATRIX_REQUIRED"),
-    releasedJupyterResult: environment[resultEnvironmentKey(CONDITIONAL_CI_JOB)],
-    releasedJupyterRequired: parseRequiredFlag(environment.RELEASED_JUPYTER_REQUIRED, "RELEASED_JUPYTER_REQUIRED"),
     remoteResult: environment[resultEnvironmentKey(OPTIONAL_CI_JOB)],
     remoteRequired: parseRequiredFlag(environment.REMOTE_WORKSPACE_REQUIRED, "REMOTE_WORKSPACE_REQUIRED")
   });

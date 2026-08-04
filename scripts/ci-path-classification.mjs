@@ -66,8 +66,7 @@ export function classifyCiChange({ eventName, changedPaths, pullRequestDraft }) 
     draftPullRequest,
     lightweightOnly,
     packageOnly,
-    fullMatrixRequired,
-    releasedJupyterRequired: eventName === "pull_request" && fullMatrixRequired
+    fullMatrixRequired
   };
 }
 
@@ -86,12 +85,6 @@ export function parseChangedPathBuffer(buffer) {
     start = index + 1;
   }
   return paths;
-}
-
-export function requiresReleasedJupyter({ eventName, changedPaths, pullRequestDraft }) {
-  if (eventName === "push") return false;
-  if (eventName !== "pull_request") throw new Error(`Unsupported CI event: ${eventName || "missing"}.`);
-  return classifyCiChange({ eventName, changedPaths, pullRequestDraft }).releasedJupyterRequired;
 }
 
 function readPullRequestPaths({ baseSha, headSha }) {
@@ -135,7 +128,6 @@ function main(environment) {
       `lightweight_only=${classification.lightweightOnly}`,
       `package_only=${classification.packageOnly}`,
       `full_matrix_required=${classification.fullMatrixRequired}`,
-      `released_jupyter_required=${classification.releasedJupyterRequired}`,
       ""
     ].join("\n"),
     "utf8"
