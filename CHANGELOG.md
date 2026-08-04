@@ -15,7 +15,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   warm notebook samples in each session. Median performance can
   block a release; p95 is reported for context. Its separate harness smoke now runs two samples per product instead
   of repeating the full benchmark. Resume keeps genuine product failures and timeouts, reruns only harness-aborted
-  sessions, and rejects memory samples with a gap longer than one second.
+  sessions, and rejects memory samples with a gap longer than one second. In the primary study Open Wrangler completed
+  40/40 journeys and stayed within every median limit; Data Wrangler completed 37/40 because three full-profile
+  journeys failed or timed out, so the comparison is reported as descriptive evidence rather than an 80/80 pass.
 - Removed the completed v1.0 performance-evidence workflow and its dedicated maintenance checks. Stable performance
   acceptance now has one documented path through the canonical stable-release artifact.
 - GitHub releases now use the versioned notes stored in the tagged commit instead of generated pull-request summaries.
