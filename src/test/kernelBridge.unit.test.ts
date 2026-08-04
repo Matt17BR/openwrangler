@@ -141,8 +141,16 @@ describe("kernel protocol responses", () => {
   });
 
   it("stops collecting kernel output at the caller's UTF-8 byte limit", async () => {
+    const encoder = new TextEncoder();
     async function* outputs() {
-      yield { text: "éé" };
+      yield {
+        items: [
+          {
+            mime: "application/x.notebook.stream.stdout",
+            data: encoder.encode("éé")
+          }
+        ]
+      };
     }
 
     await expect(kernelOutputsToText(outputs(), 3)).rejects.toThrow("kernel output exceeds the byte limit");
