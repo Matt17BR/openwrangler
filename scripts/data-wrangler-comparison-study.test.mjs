@@ -201,7 +201,7 @@ test("session deadline yields ten timeout samples", async () => {
   );
 });
 
-test("prepared request loads one resident dataframe and asks the host for ten measured journeys", () => {
+test("prepared request loads one resident dataframe and asks the host for ten measured samples", () => {
   const root = mkdtempSync(join(tmpdir(), "ow-batched-prepare-"));
   const csv = join(root, "fixture.csv");
   const parquet = join(root, "fixture.parquet");

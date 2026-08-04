@@ -513,7 +513,7 @@ The v1.2.1 method is in [`docs/performance-comparison.md`](performance-compariso
 - `npm run comparison:report` for the path-free summary.
 
 The benchmark covers Pandas and Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. A session is one isolated
-headless VS Code window for one product and workload; a sample is one measured notebook journey inside it. The full
+headless VS Code window for one product and workload; a sample is one timed pass through the notebook workflow. The full
 study has eight sessions and 80 samples. Each sample uses the public Run Cell, launch, usable-grid, and
 all-column-profile controls. Linux PSS sampling covers the same measured window, requires at least two observations,
 and rejects a gap longer than one second.
