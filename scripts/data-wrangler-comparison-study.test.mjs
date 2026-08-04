@@ -62,7 +62,11 @@ test("manifest records public boundaries, exact provenance, and no Microsoft pac
   assert.equal(manifest.provenance.machine.powerSource, "ac");
   assert.match(manifest.method.timingBoundaries.inlinePreview, /Run Cell click/u);
   assert.match(manifest.method.timingBoundaries.workbenchOpen, /public launch-action click/u);
+  assert.match(manifest.method.timingBoundaries.firstProfile, /first completed column/u);
   assert.match(manifest.method.timingBoundaries.completeProfile, /every column/u);
+  assert.equal(manifest.method.preActionSettle.fixedWaitMs, 10_000);
+  assert.equal(manifest.method.preActionSettle.windowSamples, 20);
+  assert.equal(manifest.method.regressionLimits.peakPssBytes.absolute, 256 * 1024 * 1024);
 });
 
 test("study resumes from completed trial IDs without repeating an earlier trial", async () => {
@@ -131,7 +135,7 @@ test("paired smoke fails when either product journey is unsuccessful", async () 
     kind: entry.kind,
     order: entry.order,
     status: "failure",
-    failure: { stage: "harness", kind: "product", message: "Synthetic journey failure." },
+    failure: { stage: "harness", kind: "harness", message: "Synthetic journey failure." },
     metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
     milestones: [],
     publicUi: { runCell: null, inline: null, workbench: null, profiling: null },
@@ -327,7 +331,7 @@ test("trial preparation rejects source drift and resume removes only stale trial
   }
 });
 
-test("successful trial validation requires every timing and both absolute and adjusted PSS", () => {
+test("successful trial validation requires every timing and absolute peak PSS", () => {
   const manifest = manifestFixture();
   const entry = manifest.schedule[0];
   const result = successResult(entry, manifest);
@@ -444,22 +448,23 @@ function successResult(entry, manifest) {
     failure: null,
     metrics: { inlinePreviewMs: 10, workbenchOpenMs: 20, firstProfileMs: 5, completeProfileMs: 30 },
     milestones: [
-      milestone("run-cell-click", 100_000_000),
-      milestone("inline-ready", 110_000_000),
-      milestone("launch-click", 120_000_000),
-      milestone("workbench-ready", 140_000_000),
-      milestone("profile-click", 150_000_000),
-      milestone("first-profile-ready", 155_000_000),
-      milestone("profiles-complete", 180_000_000)
+      milestone("run-cell-click", 5_000_000_000),
+      milestone("inline-ready", 5_010_000_000),
+      milestone("launch-click", 5_020_000_000),
+      milestone("workbench-ready", 5_040_000_000),
+      milestone("profile-click", 5_050_000_000),
+      milestone("first-profile-ready", 5_055_000_000),
+      milestone("profiles-complete", 5_080_000_000)
     ],
     publicUi: publicUi(entry.columns),
     memory: {
-      baselinePssBytes: 100,
       peakPssBytes: 160,
-      adjustedPeakPssBytes: 60,
-      sampleCount: 3,
+      sampleCount: 21,
       intervalMs: 200,
-      samples: [pss(50_000_000, 100), pss(90_000_000, 100), pss(160_000_000, 160)]
+      samples: [
+        ...Array.from({ length: 20 }, (_unused, index) => pss(1_000_000_000 + index * 200_000_000, 100)),
+        pss(5_000_000_000, 160)
+      ]
     },
     provenance: trialRequestProvenance(manifest)
   };

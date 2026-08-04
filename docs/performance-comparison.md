@@ -61,6 +61,10 @@ ow-comparison-cell:<cell-id>
 The neutral host uses that tag and the requested variable name. It does not use whichever notebook or editor happens
 to be active.
 
+After setup and permission handling, every trial waits a fixed 10 seconds before **Run Cell**. The PSS samples must
+show that the process tree was stable during the last four seconds of that wait. The wait is never shortened or
+extended to obtain a favorable sample.
+
 Here, "cold" means the dataframe is not resident in the kernel before timing. The study does not flush the operating
 system's filesystem cache, so cold results must not be presented as uncached-storage measurements.
 
@@ -112,28 +116,28 @@ The fixed UI deadlines are:
 | Complete profile   |    135 s |
 | Whole driver phase |    300 s |
 
-A product error or UI deadline is a trial outcome. Keep it in the report. Harness/setup failures are also recorded,
-but they must be fixed before the study can support a release claim. There is no outlier trimming, automatic retry,
-or replacement run after a product action.
+A product error or UI deadline is a trial outcome. Keep it in the report. Harness/setup failures are recorded
+separately and invalidate the release study; fix the harness and start a fresh 96-trial directory. There is no outlier
+trimming, automatic retry, or replacement run after a product action.
 
 ## Memory
 
-On Linux, the parent launcher samples proportional set size (PSS) for the owned editor process and its descendants at
-200 ms intervals. `/proc/<pid>/stat` start times guard against PID reuse. The sampler reads `smaps_rollup` only for
-the root and descendants it has identified.
+On Linux, the parent launcher samples proportional set size (PSS) for the editor's owned process group and descendant
+closure at 200 ms intervals. `/proc/<pid>/stat` start times guard against PID reuse. The sampler reads
+`smaps_rollup` only for processes it can still prove belong to that launch.
 
-For each successful trial, report:
+The last 20 samples before **Run Cell** must span at least 3.4 seconds, have no gap above 500 ms, keep the same process
+count, and end no more than 400 ms before the click. Their range must stay within both 64 MiB and 2.5% of the median.
+The difference between the first-five and last-five medians must stay within both 32 MiB and 1.25%. A window that
+misses any bound is a harness failure.
 
-- median PSS immediately before the **Run Cell** action;
-- peak absolute PSS between **Run Cell** and final profiling; and
-- baseline-adjusted peak PSS (`peak - baseline`, floored at zero).
+For each successful trial, report peak absolute PSS between **Run Cell** and final profiling. We do not publish a
+baseline-adjusted figure: the diagnostic run showed that it could make the product with the lower absolute peak look
+worse simply because its startup baseline was lower.
 
-The result must contain at least one sample before **Run Cell** and one sample inside the measured window. A missing
-sample fails the trial; startup or post-profile samples are never substituted for the stated boundaries.
-
-PSS is a process-tree measure and includes the editor, extension host, renderer, kernel, and Open Wrangler runtime when
-present. It is not an allocation profile of either extension. Each result retains only the bounded, path-free
-timestamp/PSS/process-count series needed to recalculate the summary; it never retains PIDs or process arguments.
+PSS includes the editor, extension host, renderer, kernel, and Open Wrangler runtime when present. It is not an
+allocation profile of either extension. Each result retains only the bounded, path-free timestamp/PSS/process-count
+series needed to recalculate the peak and settle check; it never retains PIDs or process arguments.
 
 ## Statistics
 
@@ -151,6 +155,30 @@ Pairs with a failed or timed-out arm remain in the outcome table but do not ente
 
 Ten samples are enough for a release comparison, not a universal performance claim. The report must name the machine,
 versions, data shapes, success counts, and boundaries next to any headline result.
+
+## Release limits
+
+The final report requires all 96 trials to succeed and all ten warm pairs to be present for every workload. For each
+warm median and p95, Open Wrangler is a material regression only when it exceeds both the relative and absolute
+allowance below. One breach blocks the release; faster workloads do not cancel it out.
+
+| Measure           | Relative allowance | Absolute allowance |
+| ----------------- | -----------------: | -----------------: |
+| Inline preview    |                20% |             250 ms |
+| Workbench open    |                20% |             250 ms |
+| First profile     |                20% |             500 ms |
+| All profiles      |                20% |           2,000 ms |
+| Absolute peak PSS |                10% |            256 MiB |
+
+The first complete 96-trial run on 4 August 2026 was diagnostic. It found harness failures, an unsettled process tree,
+and a Pandas/Parquet profiling regression. The candidate and method changed afterward, so that run is not v1.2.1
+release evidence.
+
+Both viewers showed the fixture's full shape in their public UI during that diagnostic. Their ARIA counts differed:
+Open Wrangler reported N+1 rows and M+1 columns, while Data Wrangler reported 1,006 rows and M+1 columns. We retain
+those values as accessibility metadata only. They do not prove how either product pages, samples, loads, or profiles
+the data, and they do not alter the timing boundaries. Profiling time is the public end-to-end user experience, not a
+claim that both opaque implementations perform the same internal work.
 
 ## Running the study
 
@@ -203,7 +231,8 @@ Before publishing results, a reviewer who did not write the runner checks:
 - 96 unique planned IDs and one retained outcome for every ID;
 - type-7 median/p95 recalculation from raw trial files;
 - paired differences and failure/timeout counts;
-- absolute and adjusted PSS calculations;
+- the settle-window decision and absolute peak PSS calculation;
+- every release-limit decision for both median and p95;
 - the absence of private paths, source values, screenshots, logs, or proprietary package contents; and
 - the wording of any performance claim against what the public UI evidence actually proves.
 

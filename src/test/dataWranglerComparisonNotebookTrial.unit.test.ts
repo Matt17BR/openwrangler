@@ -3,6 +3,9 @@ import {
   COMPARISON_TRIAL_REQUEST_PROTOCOL,
   COMPARISON_TRIAL_RESULT_PROTOCOL,
   boundedFailureMessage,
+  comparisonAriaCountsMatch,
+  clickComparisonPointerTarget,
+  comparisonSetupExecutionOutcome,
   integerProfileTextReady,
   isComparisonKernelLabel,
   observePointerReady,
@@ -199,6 +202,22 @@ describe("prepared notebook layout", () => {
   });
 });
 
+describe("untimed setup completion", () => {
+  it("accepts VS Code's completed timing when success is omitted", () => {
+    expect(comparisonSetupExecutionOutcome({ timing: { startTime: 1, endTime: 2 } }, true)).toBe("success");
+  });
+
+  it("fails an explicit unsuccessful execution and ignores stale summaries", () => {
+    expect(comparisonSetupExecutionOutcome({ success: false, timing: { startTime: 1, endTime: 2 } }, true)).toBe(
+      "failure"
+    );
+    expect(comparisonSetupExecutionOutcome({ success: true, timing: { startTime: 1, endTime: 2 } }, false)).toBe(
+      "pending"
+    );
+    expect(comparisonSetupExecutionOutcome({ success: undefined, timing: undefined }, true)).toBe("pending");
+  });
+});
+
 describe("private comparison kernel label", () => {
   it("accepts the display name with or without VS Code's interpreter suffix", () => {
     expect(isComparisonKernelLabel("Python 3.12 (Comparison)")).toBe(true);
@@ -290,6 +309,15 @@ describe("public readiness oracles", () => {
     expect(observeVisibleFullShape({ rows: 100_000, columns: 50 })).toBe(true);
   });
 
+  it("accepts ARIA counts with grid headers without treating a renderer window as the full shape", () => {
+    expect(comparisonAriaCountsMatch({ rows: 100_000, columns: 50, ariaRowCount: 100_001, ariaColumnCount: 51 })).toBe(
+      true
+    );
+    expect(comparisonAriaCountsMatch({ rows: 100_000, columns: 50, ariaRowCount: 1006, ariaColumnCount: 51 })).toBe(
+      false
+    );
+  });
+
   it("requires a stable unobstructed exact pointer target", async () => {
     const element = {
       isConnected: true,
@@ -315,5 +343,26 @@ describe("public readiness oracles", () => {
     };
     await expect(observePointerReady(element, "Run")).resolves.toBe(true);
     await expect(observePointerReady(element, "Different")).resolves.toBe(false);
+  });
+
+  it("performs one real click after pointer readiness without an intermediate geometry read", async () => {
+    let beforeClicks = 0;
+    let clicks = 0;
+    const evidence = await clickComparisonPointerTarget(
+      {
+        accessibleName: "Run",
+        pointerReady: async () => true,
+        click: async () => {
+          clicks += 1;
+        }
+      },
+      () => {
+        beforeClicks += 1;
+      }
+    );
+
+    expect(evidence).toEqual({ accessibleName: "Run", unique: true, pointer: true });
+    expect(beforeClicks).toBe(1);
+    expect(clicks).toBe(1);
   });
 });

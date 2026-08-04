@@ -70,33 +70,22 @@ test("private trial sources are checked before and after editor use", () => {
   }
 });
 
-test("PSS summary uses the pre-action median and measured-window peak", () => {
+test("PSS summary requires a settled pre-action window and keeps the measured absolute peak", () => {
   const samples = [
-    sample(100, 100),
-    sample(200, 120),
-    sample(300, 110),
-    sample(400, 180),
-    sample(500, 160),
-    sample(600, 999)
+    ...Array.from({ length: 20 }, (_unused, index) => sample(1_000_000_000 + index * 200_000_000, 100)),
+    sample(5_000_000_000, 180),
+    sample(5_200_000_000, 160),
+    sample(5_400_000_000, 999)
   ];
   const summary = summarizePss(samples, [
-    { name: "run-cell-click", monotonicNs: "350" },
-    { name: "profiles-complete", monotonicNs: "550" }
+    { name: "run-cell-click", monotonicNs: "5000000000" },
+    { name: "profiles-complete", monotonicNs: "5300000000" }
   ]);
   assert.deepEqual(summary, {
-    baselinePssBytes: 110,
     peakPssBytes: 180,
-    adjustedPeakPssBytes: 70,
-    sampleCount: 6,
+    sampleCount: 23,
     intervalMs: 200,
-    samples: [
-      sanitizedSample(100, 100),
-      sanitizedSample(200, 120),
-      sanitizedSample(300, 110),
-      sanitizedSample(400, 180),
-      sanitizedSample(500, 160),
-      sanitizedSample(600, 999)
-    ]
+    samples: samples.map(({ monotonicNs, pssBytes }) => sanitizedSample(monotonicNs, pssBytes))
   });
   assert.equal(JSON.stringify(summary).includes("rootPid"), false);
   assert.equal(JSON.stringify(summary).includes("processes"), false);
@@ -104,6 +93,23 @@ test("PSS summary uses the pre-action median and measured-window peak", () => {
 
 test("PSS evidence rejects an out-of-order raw series", () => {
   assert.throws(() => summarizePss([sample(200, 100), sample(100, 200)], []), /increase strictly/u);
+});
+
+test("PSS evidence rejects a rising pre-action process tree", () => {
+  const samples = [
+    ...Array.from({ length: 20 }, (_unused, index) =>
+      sample(1_000_000_000 + index * 200_000_000, 100_000_000 + index * 10_000_000)
+    ),
+    sample(5_000_000_000, 300_000_000)
+  ];
+  assert.throws(
+    () =>
+      summarizePss(samples, [
+        { name: "run-cell-click", monotonicNs: "5000000000" },
+        { name: "profiles-complete", monotonicNs: "5100000000" }
+      ]),
+    /plateau|drifting/u
+  );
 });
 
 function sample(monotonicNs, pssBytes) {

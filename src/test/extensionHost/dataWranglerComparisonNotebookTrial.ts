@@ -34,6 +34,7 @@ const MILESTONE_NAMES = [
   "profiles-complete"
 ] as const;
 const FAILURE_STAGES = [
+  "harness",
   "run-cell",
   "inline-preview",
   "workbench-open",
@@ -48,6 +49,7 @@ const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESULT_BYTES = 64 * 1024;
 const SETUP_TIMEOUT_MS = 45_000;
+const MEMORY_SETTLE_MS = 10_000;
 const POLL_MS = 25;
 const COMPARISON_KERNEL_LABEL = "Python 3.12 (Comparison)";
 const COMPARISON_BOOTSTRAP_VARIABLE = "aaa_comparison_bootstrap";
@@ -130,7 +132,7 @@ export interface ComparisonTrialResult {
   readonly status: "success" | "failure" | "timeout";
   readonly failure: {
     readonly stage: FailureStage;
-    readonly kind: "product" | "timeout";
+    readonly kind: "harness" | "product" | "timeout";
     readonly message: string;
   } | null;
   readonly metrics: {
@@ -191,12 +193,6 @@ export interface ComparisonNotebookLayout {
 interface PointerTarget {
   readonly accessibleName: string;
   readonly page: Page;
-  boundingBox(): Promise<{
-    readonly x: number;
-    readonly y: number;
-    readonly width: number;
-    readonly height: number;
-  } | null>;
   pointerReady(): Promise<boolean>;
   click(): Promise<void>;
   inlineReady(input: {
@@ -469,7 +465,7 @@ function validateFailure(value: unknown): ComparisonTrialResult["failure"] {
   const failure = record(value, "Comparison result failure");
   exactKeys(failure, ["stage", "kind", "message"], "Comparison result failure");
   const stage = oneOf(failure.stage, FAILURE_STAGES, "Comparison result failure stage");
-  const kind = oneOf(failure.kind, ["product", "timeout"] as const, "Comparison result failure kind");
+  const kind = oneOf(failure.kind, ["harness", "product", "timeout"] as const, "Comparison result failure kind");
   if (typeof failure.message !== "string" || failure.message.length < 1 || failure.message.length > 500) {
     fail("Comparison result failure message is invalid.");
   }
@@ -1067,7 +1063,6 @@ function locatorTarget(locator: Locator, frame: Frame, accessibleName: string): 
   return {
     accessibleName,
     page: frame.page(),
-    boundingBox: () => locator.boundingBox(),
     pointerReady: async () => {
       if ((await locatorName(locator)) !== accessibleName) return false;
       await locator.click({ trial: true, timeout: 1_000 });
@@ -1083,7 +1078,6 @@ function elementTarget(element: ElementHandle<unknown>, frame: Frame, accessible
   return {
     accessibleName,
     page: frame.page(),
-    boundingBox: () => element.boundingBox(),
     pointerReady: () => element.evaluate(observePointerReady, accessibleName),
     click: async () => {
       const box = await element.boundingBox();
@@ -1183,15 +1177,18 @@ export function observePointerReady(elementValue: unknown, expectedName: string)
   });
 }
 
-async function clickTarget(target: PointerTarget, beforeClick: () => void): Promise<ActionEvidence> {
+export async function clickComparisonPointerTarget(
+  target: Pick<PointerTarget, "accessibleName" | "pointerReady" | "click">,
+  beforeClick: () => void
+): Promise<ActionEvidence> {
   const ready = await target.pointerReady();
   assert.equal(ready, true, `Public action ${JSON.stringify(target.accessibleName)} was not pointer-ready.`);
-  const box = await target.boundingBox();
-  assert.ok(box && box.width > 0 && box.height > 0, "Public action lost its visible geometry.");
   beforeClick();
   await target.click();
   return Object.freeze({ accessibleName: target.accessibleName, unique: true, pointer: true });
 }
+
+const clickTarget = clickComparisonPointerTarget;
 
 function selectNotebookCell(captured: CapturedNotebook, cell: vscode.NotebookCell): void {
   assert.equal(cell.notebook, captured.notebook, "The comparison cell no longer belongs to its captured notebook.");
@@ -1210,6 +1207,17 @@ function executionSummaryFingerprint(cell: vscode.NotebookCell): string {
     summary.timing?.startTime ?? "",
     summary.timing?.endTime ?? ""
   ].join(":");
+}
+
+export function comparisonSetupExecutionOutcome(
+  summary: Pick<vscode.NotebookCellExecutionSummary, "success" | "timing"> | undefined,
+  changed: boolean
+): "pending" | "success" | "failure" {
+  if (!changed || !summary) return "pending";
+  if (summary.success === false) return "failure";
+  if (summary.success === true) return "success";
+  const endTime = summary.timing?.endTime;
+  return typeof endTime === "number" && Number.isFinite(endTime) ? "success" : "pending";
 }
 
 async function findRunCellTarget(
@@ -1581,6 +1589,17 @@ export function observeVisibleFullShape(input: { readonly rows: number; readonly
     });
 }
 
+export function comparisonAriaCountsMatch(input: {
+  readonly rows: number;
+  readonly columns: number;
+  readonly ariaRowCount: number | null;
+  readonly ariaColumnCount: number | null;
+}): boolean {
+  const rowMatches = input.ariaRowCount === input.rows || input.ariaRowCount === input.rows + 1;
+  const columnMatches = input.ariaColumnCount === input.columns || input.ariaColumnCount === input.columns + 1;
+  return rowMatches && columnMatches;
+}
+
 async function findExactButton(frame: Frame, name: string, timeoutMs = SETUP_TIMEOUT_MS): Promise<PointerTarget> {
   const deadline = Date.now() + timeoutMs;
   do {
@@ -1810,20 +1829,38 @@ async function executeWarmSetup(
   assert.ok(captured.setupCell, "The comparison notebook omitted its untimed setup cell.");
   assert.equal(captured.editor.notebook, captured.notebook, "The untimed setup changed the captured notebook editor.");
   assert.equal(vscode.window.activeNotebookEditor, captured.editor, "The untimed setup notebook is not active.");
-  const setupCell = captured.setupCell;
-  const summaryBeforeDispatch = executionSummaryFingerprint(setupCell);
+  const setupIndex = captured.setupCell.index;
+  const measuredIndex = captured.cell.index;
+  const setupSource = captured.setupCell.document.getText();
+  const setupTags = notebookCellTags(captured.setupCell);
+  const currentSetupCell = (): vscode.NotebookCell => {
+    const cell = captured.notebook.cellAt(setupIndex);
+    assert.equal(cell.index, setupIndex, "The untimed setup cell moved during the comparison journey.");
+    assert.equal(
+      cell.document.getText(),
+      setupSource,
+      "The untimed setup source changed during the comparison journey."
+    );
+    assert.deepEqual(
+      notebookCellTags(cell),
+      setupTags,
+      "The untimed setup tags changed during the comparison journey."
+    );
+    return cell;
+  };
+  const summaryBeforeDispatch = executionSummaryFingerprint(currentSetupCell());
   let freshExecution = false;
   let commandError: unknown;
   const listener = vscode.workspace.onDidChangeNotebookDocument((event) => {
     if (event.notebook !== captured.notebook) return;
-    if (event.cellChanges.some((change) => change.cell === setupCell && change.executionSummary !== undefined)) {
+    if (event.cellChanges.some((change) => change.cell.index === setupIndex && change.executionSummary !== undefined)) {
       freshExecution = true;
     }
   });
   try {
     const command = Promise.resolve(
       vscode.commands.executeCommand("notebook.cell.execute", {
-        ranges: [{ start: setupCell.index, end: setupCell.index + 1 }],
+        ranges: [{ start: setupIndex, end: setupIndex + 1 }],
         document: captured.notebook.uri
       })
     ).catch((error: unknown) => {
@@ -1833,15 +1870,17 @@ async function executeWarmSetup(
     const deadline = Date.now() + SETUP_TIMEOUT_MS;
     do {
       if (commandError) throw commandError;
+      const setupCell = currentSetupCell();
       const executionChanged = freshExecution || executionSummaryFingerprint(setupCell) !== summaryBeforeDispatch;
-      if (executionChanged && setupCell.executionSummary?.success === true) {
+      const outcome = comparisonSetupExecutionOutcome(setupCell.executionSummary, executionChanged);
+      if (outcome === "success") {
         await command;
         assert.equal(setupCell.outputs.length, 0, "The untimed setup cell must not publish dataframe output.");
-        selectNotebookCell(captured, captured.cell);
+        selectNotebookCell(captured, captured.notebook.cellAt(measuredIndex));
         recordProgress(`comparison:${request.trialId}:warm-setup-complete`);
         return;
       }
-      if (executionChanged && setupCell.executionSummary?.success === false) {
+      if (outcome === "failure") {
         throw new Error("The untimed setup cell failed.");
       }
       await page.waitForTimeout(POLL_MS);
@@ -1867,12 +1906,16 @@ async function executeJourney(
   let journeyError: unknown;
   let journeyFailed = false;
   try {
-    await Promise.all([activateComparisonProduct(request.product), executeWarmSetup(request, page, captured)]);
+    await activateComparisonProduct(request.product);
+    await executeWarmSetup(request, page, captured);
     if (request.product === "data-wrangler") {
       await authorizeDataWranglerFromNotebookToolbar(page, captured, access);
     } else {
       assert.equal(outcomeValue(await access), true, "Open Wrangler did not receive first-use Jupyter kernel access.");
     }
+    recordProgress(`comparison:${request.trialId}:memory-settle-start`);
+    await page.waitForTimeout(MEMORY_SETTLE_MS);
+    recordProgress(`comparison:${request.trialId}:memory-settle-complete`);
     const measuredCell = captured.notebook.cellAt(captured.cell.index);
     runTarget = await findRunCellTarget(page, captured, measuredCell);
     const summaryBeforeClick = executionSummaryFingerprint(measuredCell);
@@ -1957,15 +2000,19 @@ async function executeJourney(
     await comparisonWorkbenchReadiness(page, captured.sourceTab, readiness.rendererFramePointerUsable);
     const opened = comparisonTabsOpenedAfter(baselineTabs, allEditorTabs());
     assert.equal(opened.length, 1, "The public launch action must open exactly one product editor.");
-    const fullShape =
-      readiness.grid.ariaRowCount === request.cell.rows && readiness.grid.ariaColumnCount === request.cell.columns
-        ? "aria-counts"
-        : (await readiness.frame.evaluate(observeVisibleFullShape, {
-              rows: request.cell.rows,
-              columns: request.cell.columns
-            }))
-          ? "visible-label"
-          : undefined;
+    const fullShape = comparisonAriaCountsMatch({
+      rows: request.cell.rows,
+      columns: request.cell.columns,
+      ariaRowCount: readiness.grid.ariaRowCount,
+      ariaColumnCount: readiness.grid.ariaColumnCount
+    })
+      ? "aria-counts"
+      : (await readiness.frame.evaluate(observeVisibleFullShape, {
+            rows: request.cell.rows,
+            columns: request.cell.columns
+          }))
+        ? "visible-label"
+        : undefined;
     assert.ok(fullShape, "The product grid did not expose the full dataframe shape.");
     const scrollability = await readiness.frame.evaluate(observeGridScrollability);
     assert.ok(

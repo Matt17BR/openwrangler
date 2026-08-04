@@ -12,9 +12,10 @@ checked the following points:
 - one AB and one BA cold pair per cell;
 - public notebook, launch, grid, and profiling boundaries;
 - fixed UI and whole-phase deadlines;
-- one retained result for success, product failure, or timeout;
+- one retained result for success, product failure, timeout, or harness failure;
 - type-7 median and p95 plus paired differences;
-- absolute and baseline-adjusted process-tree PSS;
+- a fixed pre-action settle check and absolute peak process-tree PSS;
+- predeclared release limits for every median and p95;
 - exact candidate, editor, Python, fixture, and harness versions/hashes;
 - a fresh headless user profile and source copy per trial;
 - resume by completed trial ID; and
@@ -51,8 +52,9 @@ The final reviewer will record the report SHA-256 and independently recalculate:
 - success, failure, timeout, and incomplete counts;
 - every warm median and p95 using type 7;
 - every paired Open Wrangler minus Data Wrangler distribution;
-- cold results as a separate descriptive table; and
-- baseline, peak, and adjusted PSS for each successful trial.
+- cold results as a separate descriptive table;
+- the settle-window decision and absolute peak PSS for each successful trial; and
+- every relative-plus-absolute release-limit decision.
 
 The reviewer must also confirm that the published report contains no private paths, source values, raw logs,
 screenshots, DOM captures, or Microsoft package contents.

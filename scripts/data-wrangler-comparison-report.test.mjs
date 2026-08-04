@@ -3,7 +3,11 @@ import test from "node:test";
 import {
   DATA_WRANGLER_STUDY_REPORT_PROTOCOL,
   DATA_WRANGLER_STUDY_TOOL_NAMES,
+  DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY,
+  DATA_WRANGLER_REGRESSION_LIMITS,
+  assertReleaseCompleteStudyReport,
   buildDataWranglerComparisonStudyReport,
+  exceedsMaterialRegressionLimit,
   summarizeComparisonValues,
   summarizeStudyPssSamples,
   type7Quantile,
@@ -23,20 +27,18 @@ test("uses type-7 statistics and recomputes retained PSS evidence", () => {
     maximum: 4
   });
   assert.deepEqual(summarizeStudyPssSamples(pssSamples(), milestones()), {
-    baselinePssBytes: 110,
     peakPssBytes: 150,
-    adjustedPeakPssBytes: 40,
-    sampleCount: 3,
+    sampleCount: 21,
     intervalMs: 200,
     samples: pssSamples()
   });
   assert.throws(() => summarizeStudyPssSamples([pss("90", 100), pss("50", 120)], milestones()), /increase strictly/u);
   assert.throws(
     () => summarizeStudyPssSamples([pss("100000000", 100), pss("160000000", 120)], milestones()),
-    /pre-action baseline/u
+    /twenty pre-action settle samples/u
   );
   assert.throws(
-    () => summarizeStudyPssSamples([pss("50000000", 100), pss("90000000", 120), pss("190000000", 150)], milestones()),
+    () => summarizeStudyPssSamples([...pssSamples().slice(0, 20), pss("5200000000", 150)], milestones()),
     /inside the measurement window/u
   );
   assert.throws(() => summarizeStudyPssSamples(pssSamples(), []), /measurement window/u);
@@ -106,6 +108,35 @@ test("retains raw trials in the report and derives paired summaries", () => {
     ({ cellId, metric }) => cellId === "pandas-csv" && metric === "inlinePreviewMs"
   );
   assert.equal(paired.differences.median, -5);
+  assert.throws(() => assertReleaseCompleteStudyReport(report), /96 successful scheduled trials/u);
+});
+
+test("release reports require all ten warm pairs and every cold trial", () => {
+  const manifest = studyManifest();
+  const report = buildDataWranglerComparisonStudyReport({
+    generatedAtUtc: "2026-08-04T12:00:00.000Z",
+    manifest,
+    trials: manifest.schedule.map((entry) => studyTrial(entry, manifest))
+  });
+
+  assert.equal(assertReleaseCompleteStudyReport(report), report);
+  const incompletePair = structuredClone(report);
+  incompletePair.pairedWarm[0].differences.count = 9;
+  assert.throws(() => assertReleaseCompleteStudyReport(incompletePair), /ten complete warm pairs/u);
+  const regression = structuredClone(report);
+  const openSummary = regression.summaries.find(
+    ({ kind, cellId, product }) => kind === "warm" && cellId === "pandas-csv" && product === "open-wrangler"
+  );
+  openSummary.metrics.inlinePreviewMs.median = 1_000;
+  assert.throws(() => assertReleaseCompleteStudyReport(regression), /material-regression limit/u);
+});
+
+test("material regression limits require both the relative and absolute allowance to be exceeded", () => {
+  const limit = { relative: 0.2, absolute: 250 };
+  assert.equal(exceedsMaterialRegressionLimit(1_201, 1_000, limit), false);
+  assert.equal(exceedsMaterialRegressionLimit(1_251, 1_000, limit), true);
+  assert.equal(exceedsMaterialRegressionLimit(1_250, 1_000, limit), false);
+  assert.equal(exceedsMaterialRegressionLimit(251, 1, limit), false);
 });
 
 test("requires complete editor, Python, fixture, and machine provenance", () => {
@@ -170,7 +201,11 @@ function studyManifest() {
   }
   return {
     protocol: "openwrangler-data-wrangler-study-v1",
-    method: { cells },
+    method: {
+      cells,
+      preActionSettle: structuredClone(DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY),
+      regressionLimits: structuredClone(DATA_WRANGLER_REGRESSION_LIMITS)
+    },
     provenance: {
       openWrangler: { extensionId: "Matt17BR.openwrangler", version: "1.2.1", sha256: digest("a") },
       dataWrangler: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
@@ -241,9 +276,7 @@ function studyTrial(entry, manifest, inlinePreviewMs = 10, peakPssBytes = 150) {
     milestones: marks,
     publicUi: publicUi(entry),
     memory: {
-      baselinePssBytes: 110,
       peakPssBytes,
-      adjustedPeakPssBytes: peakPssBytes - 110,
       sampleCount: samples.length,
       intervalMs: 200,
       samples
@@ -262,13 +295,13 @@ function studyTrial(entry, manifest, inlinePreviewMs = 10, peakPssBytes = 150) {
 
 function milestones(inlinePreviewMs = 10) {
   return [
-    mark("run-cell-click", 100_000_000),
-    mark("inline-ready", 100_000_000 + inlinePreviewMs * 1_000_000),
-    mark("launch-click", 120_000_000),
-    mark("workbench-ready", 140_000_000),
-    mark("profile-click", 150_000_000),
-    mark("first-profile-ready", 155_000_000),
-    mark("profiles-complete", 180_000_000)
+    mark("run-cell-click", 5_000_000_000),
+    mark("inline-ready", 5_000_000_000 + inlinePreviewMs * 1_000_000),
+    mark("launch-click", 5_020_000_000),
+    mark("workbench-ready", 5_040_000_000),
+    mark("profile-click", 5_050_000_000),
+    mark("first-profile-ready", 5_055_000_000),
+    mark("profiles-complete", 5_080_000_000)
   ];
 }
 
@@ -277,7 +310,10 @@ function mark(name, monotonicNs) {
 }
 
 function pssSamples(peak = 150) {
-  return [pss("50000000", 100), pss("90000000", 120), pss("160000000", peak)];
+  return [
+    ...Array.from({ length: 20 }, (_unused, index) => pss(String(1_000_000_000 + index * 200_000_000), 110)),
+    pss("5000000000", peak)
+  ];
 }
 
 function pss(monotonicNs, pssBytes) {

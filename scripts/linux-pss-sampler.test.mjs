@@ -37,12 +37,82 @@ test("reads PSS for the root and descendants without counting unrelated processe
   });
   assert.equal(sample.monotonicNs, "123");
   assert.equal(sample.rootStartTimeTicks, "100");
+  assert.equal(sample.processGroupId, 10);
   assert.equal(sample.processCount, 3);
   assert.equal(sample.pssBytes, 130 * 1024);
   assert.deepEqual(
     sample.processes.map(({ pid }) => pid),
     [10, 11, 12]
   );
+});
+
+test("keeps sampling a reparented owned process group after the launcher exits", () => {
+  const files = new Map([
+    ["/proc/11/stat", stat(11, 1, 10, 101)],
+    ["/proc/12/stat", stat(12, 11, 12, 102)],
+    ["/proc/20/stat", stat(20, 1, 20, 200)],
+    ["/proc/11/smaps_rollup", "Pss:               25 kB\n"],
+    ["/proc/12/smaps_rollup", "Pss:                5 kB\n"],
+    ["/proc/20/smaps_rollup", "Pss:              900 kB\n"]
+  ]);
+  const sample = readLinuxPssTree(10, {
+    expectedRootStartTimeTicks: "100",
+    expectedProcessGroupId: 10,
+    readDirectory: () => ["11", "12", "20"],
+    readFile: (path) => {
+      if (!files.has(path)) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return files.get(path);
+    },
+    now: () => 456n
+  });
+
+  assert.equal(sample.rootStartTimeTicks, "100");
+  assert.equal(sample.processGroupId, 10);
+  assert.deepEqual(
+    sample.processes.map(({ pid }) => pid),
+    [11, 12]
+  );
+  assert.equal(sample.pssBytes, 30 * 1024);
+});
+
+test("requires the launcher to own the process group on first attachment", () => {
+  const proc = fakeProc();
+  assert.throws(
+    () =>
+      readLinuxPssTree(10, {
+        ...proc,
+        readFile: (path) => (path === "/proc/10/stat" ? stat(10, 1, 1, 100) : proc.readFile(path))
+      }),
+    /does not own its process group/u
+  );
+});
+
+test("drops a process that disappears while its PSS is read", () => {
+  let childStatReads = 0;
+  const files = new Map([
+    ["/proc/10/stat", stat(10, 1, 10, 100)],
+    ["/proc/11/stat", stat(11, 10, 10, 101)],
+    ["/proc/10/smaps_rollup", "Pss:              100 kB\n"],
+    ["/proc/11/smaps_rollup", "Pss:               25 kB\n"]
+  ]);
+  const sample = readLinuxPssTree(10, {
+    expectedRootStartTimeTicks: "100",
+    expectedProcessGroupId: 10,
+    readDirectory: () => ["10", "11"],
+    readFile: (path) => {
+      if (path === "/proc/11/stat" && ++childStatReads >= 3) {
+        throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      }
+      if (!files.has(path)) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return files.get(path);
+    }
+  });
+
+  assert.deepEqual(
+    sample.processes.map(({ pid }) => pid),
+    [10]
+  );
+  assert.equal(sample.pssBytes, 100 * 1024);
 });
 
 test("rejects a reused root PID", () => {

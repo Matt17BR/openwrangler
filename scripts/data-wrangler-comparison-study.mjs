@@ -19,6 +19,9 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   DATA_WRANGLER_STUDY_TOOL_NAMES,
+  DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY,
+  DATA_WRANGLER_REGRESSION_LIMITS,
+  assertReleaseCompleteStudyReport,
   buildDataWranglerComparisonStudyReport,
   validateDataWranglerComparisonStudyTrial
 } from "./data-wrangler-comparison-report.mjs";
@@ -140,13 +143,16 @@ export function buildStudyManifest({ createdAtUtc, candidate, editor, python, fi
       cells: STUDY_CELLS.map((cell) => ({ ...cell })),
       warmPairsPerCell: WARM_REPETITIONS,
       coldOrder: "one AB pair and one BA pair per cell",
+      preActionSettle: structuredClone(DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY),
+      regressionLimits: structuredClone(DATA_WRANGLER_REGRESSION_LIMITS),
       timingBoundaries: {
         inlinePreview: "Run Cell click to stable public inline output and a usable launch action",
         workbenchOpen: "public launch-action click to a stable, unobstructed, scrollable workbench grid",
+        firstProfile: "public profiling action to the first completed column summary",
         completeProfile: "public profiling action to final summaries for every column"
       },
       statistics: "successful warm trials; Hyndman-Fan type 7 median and p95; paired differences retain order",
-      memory: "absolute peak PSS and peak PSS minus the pre-action baseline"
+      memory: "absolute peak process-tree PSS after a fixed ten-second pre-action settle window"
     },
     provenance: {
       openWrangler: { extensionId: "Matt17BR.openwrangler", version: candidate.version, sha256: candidate.sha256 },
@@ -679,7 +685,7 @@ function failedResult(entry, error, status, provenance) {
     kind: entry.kind,
     order: entry.order,
     status: status === "timeout" ? "timeout" : "failure",
-    failure: { stage: "harness", kind: status === "timeout" ? "timeout" : "product", message: sanitizeError(error) },
+    failure: { stage: "harness", kind: status === "timeout" ? "timeout" : "harness", message: sanitizeError(error) },
     metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
     milestones: [],
     publicUi: { runCell: null, inline: null, workbench: null, profiling: null },
@@ -911,6 +917,7 @@ async function main() {
   }
   const { manifest, trials } = loadStudyResults(options.study);
   const report = buildDataWranglerComparisonStudyReport({ generatedAtUtc: new Date().toISOString(), manifest, trials });
+  assertReleaseCompleteStudyReport(report);
   writeJsonAtomic(resolve(options.output), report);
   console.log(`Comparison report written to ${options.output}.`);
 }

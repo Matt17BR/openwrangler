@@ -8,6 +8,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Pandas column profiles no longer scan native integer, float, boolean, date, and duration columns in Python just to
+  count missing values. On the 1M × 20 Parquet comparison fixture, all 20 profiles fell from about 21 seconds to
+  about 6.5 seconds in the focused runtime check.
+- Tightened the Data Wrangler comparison before the final run: notebook setup now follows VS Code's optional success
+  contract, Linux memory sampling follows the owned process group, every journey gets the same settle window, and a
+  release report requires all 96 trials and all ten warm pairs. The diagnostic run is not release evidence.
 - Removed the completed v1.0 performance-evidence workflow and its dedicated maintenance checks. Stable performance
   acceptance now has one documented path through the canonical stable-release artifact.
 - GitHub releases now use the versioned notes stored in the tagged commit instead of generated pull-request summaries.
