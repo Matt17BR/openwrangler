@@ -13,7 +13,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   seconds.
 - Open Wrangler was faster than Data Wrangler 1.24.2 in the median notebook-preview, workbench-open, and full-profile
   measurements across Pandas, Polars, CSV, and Parquet. The
-  [full report](docs/performance/data-wrangler-1.2.1/review.md) includes p95, memory, raw outcomes, and exact versions.
+  [full report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
+  includes p95, memory, raw outcomes, and exact versions.
 - PySpark notebook sessions now show the first page without indexing, counting, and caching the entire DataFrame. The
   total appears after the final page, and a changed page boundary asks the user to reopen the variable.
 - Generated columns stay in view when Cursor opens Code Preview and resizes the grid.
