@@ -18,11 +18,9 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 
 ## Repository scope
 
-Track only the extension, bundled runtime, product assets and fixtures, product documentation, and the ordinary tooling
-needed to build, test, benchmark, package, or publish them. Agent housekeeping does not belong here. Never add a
-checkout/worktree manager, task-resume state, personal-machine cleanup, Codex-specific orchestration, or other local
-operator machinery. Keep that work outside the repository. Agents must remove temporary checkouts as soon as their
-branch is integrated or abandoned; this is a direct Git/filesystem task, not a reason to add lifecycle code here.
+Track only the extension, runtime, product assets and documentation, and ordinary build, test, benchmark, package,
+and release tooling. Keep agent housekeeping outside the repository. Remove temporary development checkouts when
+their branches are integrated or abandoned.
 
 ## Non-negotiable invariants
 

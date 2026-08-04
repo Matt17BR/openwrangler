@@ -544,7 +544,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /\*\*Next in v1:\*\*[\s\S]{0,220}#36[\s\S]{0,220}#86[\s\S]{0,220}#91[\s\S]{0,180}currently\s+experimental/u
+    /\*\*Next in v1:\*\*[\s\S]{0,220}#91[\s\S]{0,220}#36[\s\S]{0,180}experimental/u
   );
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   assert.match(readme, /\*\*v2:\*\* add native R data frames[\s\S]{0,200}#87/u);

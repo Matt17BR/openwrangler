@@ -36,6 +36,5 @@ editorial read; do not rely on an AI detector or a word list.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
 - Push independently green branch commits before opening a pull request when early review is not needed. A draft pull request runs bounded feedback and remains non-mergeable until marking it ready reruns the required evidence at the same commit.
 - Do not commit generated VSIX files, local virtual environments, editor profiles, notebook execution caches, or user scratch files.
-- Do not commit agent or personal-machine housekeeping such as checkout/worktree managers, task state, or local cleanup scripts.
 
 All required checks must pass before merge. Feature work is tested in both VS Code and Cursor before a prerelease.

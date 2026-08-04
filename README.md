@@ -213,11 +213,9 @@ Wrangler using the same files, editor, Python environment, and actions.
 
 ## Roadmap
 
-- **Next in v1:** finish the distributed Spark follow-ups in
-  [#36](https://github.com/Matt17BR/openwrangler/issues/36), test more VS Code-based desktop editors in
-  [#86](https://github.com/Matt17BR/openwrangler/issues/86), and complete the Data Wrangler comparison in
-  [#91](https://github.com/Matt17BR/openwrangler/issues/91). Support for other desktop forks is currently
-  experimental.
+- **Next in v1:** complete the Data Wrangler comparison in
+  [#91](https://github.com/Matt17BR/openwrangler/issues/91), then continue the distributed Spark work in
+  [#36](https://github.com/Matt17BR/openwrangler/issues/36). Support for other desktop forks is experimental.
 - **v2:** add native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 
