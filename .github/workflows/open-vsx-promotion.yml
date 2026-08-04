@@ -140,4 +140,4 @@ jobs:
         env:
           RELEASE_SOURCE_SHA: ${{ steps.release_source.outputs.release_commit }}
           RELEASE_VERSION: ${{ steps.release_source.outputs.release_version }}
-        run: node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --source-root release-source --wait-for-propagation
+        run: node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --wait-for-propagation

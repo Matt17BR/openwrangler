@@ -60,7 +60,10 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
       "RELEASE_VERSION: ${{ steps.release_source.outputs.release_version }}",
       "OVSX_PAT: ${{ secrets.OVSX_PAT }}\n          RELEASE_VERSION: ${{ steps.release_source.outputs.release_version }}"
     ),
-    source.replace("--source-root release-source", "--source-root automation-source")
+    source.replace(
+      "node release-source/scripts/verify-public-media-surfaces.mjs",
+      "node scripts/verify-public-media-surfaces.mjs"
+    )
   ];
   for (const [index, candidate] of mutations.entries()) {
     assert.notEqual(candidate, source, `mutation ${index + 1} must change the workflow`);
