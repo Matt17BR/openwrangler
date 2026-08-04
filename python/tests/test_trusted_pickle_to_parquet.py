@@ -22,8 +22,16 @@ def source_fingerprint(path: Path) -> conversion.SourceFingerprint:
 
 
 def file_identity(path: Path) -> tuple[int, int]:
-    details = path.lstat()
-    return details.st_dev, details.st_ino
+    return conversion._regular_file_identity(path)
+
+
+def descriptor_identity(descriptor: int) -> tuple[int, int]:
+    details = os.fstat(descriptor)
+    return (
+        conversion._windows_file_identity(descriptor)
+        if sys.platform == "win32"
+        else (details.st_dev, details.st_ino)
+    )
 
 
 def cli_arguments(
@@ -48,26 +56,30 @@ def test_windows_source_fingerprint_matches_node_lstat(tmp_path: Path) -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is unavailable")
-    source = tmp_path / "trusted.pkl"
-    source.write_bytes(b"fixture")
+    for name, contents in [("trusted.pkl", b"fixture"), ("reserved.tmp", b"")]:
+        path = tmp_path / name
+        path.write_bytes(contents)
 
-    result = subprocess.run(
-        [
-            node,
-            "-e",
-            "const fs=require('node:fs'); "
-            "const s=fs.lstatSync(process.argv[1], {bigint:true}); "
-            "process.stdout.write([s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs].join('\\n'))",
-            str(source),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+        result = subprocess.run(
+            [
+                node,
+                "-e",
+                "const fs=require('node:fs'); "
+                "const s=fs.lstatSync(process.argv[1], {bigint:true}); "
+                "process.stdout.write([s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs].join('\\n'))",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
 
-    node_fingerprint = conversion.SourceFingerprint(*(int(value, 10) for value in result.stdout.splitlines()))
-    assert source_fingerprint(source) == node_fingerprint
+        node_fingerprint = conversion.SourceFingerprint(
+            *(int(value, 10) for value in result.stdout.splitlines())
+        )
+        assert source_fingerprint(path) == node_fingerprint
+        assert file_identity(path) == node_fingerprint[:2]
 
 
 def windows_process_is_running(process_id: int) -> bool:
@@ -151,15 +163,13 @@ def test_reads_the_pickle_exactly_once_and_requests_pyarrow(tmp_path: Path, monk
     writes: list[tuple[tuple[int, int], str | None, bool | None]] = []
 
     def read_pickle(input_file: BinaryIO) -> pd.DataFrame:
-        details = os.fstat(input_file.fileno())
-        reads.append((input_file.read(), (details.st_dev, details.st_ino)))
+        reads.append((input_file.read(), descriptor_identity(input_file.fileno())))
         return frame
 
     def to_parquet(
         _frame: pd.DataFrame, output: BinaryIO, *, engine: str | None = None, index: bool | None = None
     ) -> None:
-        details = os.fstat(output.fileno())
-        writes.append(((details.st_dev, details.st_ino), engine, index))
+        writes.append((descriptor_identity(output.fileno()), engine, index))
         output.write(b"PAR1fixturePAR1")
 
     monkeypatch.setattr(pd, "read_pickle", read_pickle)
@@ -174,8 +184,7 @@ def test_reads_the_pickle_exactly_once_and_requests_pyarrow(tmp_path: Path, monk
     )
 
     assert reads == [(b"fixture", expected_source_fingerprint[:2])]
-    details = destination.stat()
-    assert writes == [((details.st_dev, details.st_ino), "pyarrow", False)]
+    assert writes == [(file_identity(destination), "pyarrow", False)]
 
 
 def test_rejects_a_non_dataframe_without_touching_the_reserved_destination(tmp_path: Path) -> None:

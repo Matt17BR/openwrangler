@@ -221,21 +221,40 @@ def _regular_file_identity(path: Path) -> tuple[int, int]:
     details = path.lstat()
     if not stat.S_ISREG(details.st_mode) or stat.S_ISLNK(details.st_mode):
         raise ValueError("Trusted-pickle conversion accepts regular files only.")
-    identity = (details.st_dev, details.st_ino)
+    if sys.platform == "win32":
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
+        descriptor = os.open(path, flags)
+        try:
+            descriptor_details = os.fstat(descriptor)
+            current_path_details = path.lstat()
+            if (
+                not stat.S_ISREG(descriptor_details.st_mode)
+                or not stat.S_ISREG(current_path_details.st_mode)
+                or stat.S_ISLNK(current_path_details.st_mode)
+            ):
+                raise ValueError("Trusted-pickle conversion accepts regular files only.")
+            identity = _windows_file_identity(descriptor)
+        finally:
+            os.close(descriptor)
+    else:
+        identity = (details.st_dev, details.st_ino)
     if identity == (0, 0):
         raise ValueError("The filesystem did not provide a usable file identity.")
     return identity
 
 
 def _source_fingerprint(details: os.stat_result, descriptor: int | None = None) -> SourceFingerprint:
-    changed_time_ns = (
-        _windows_change_time_ns(descriptor)
-        if sys.platform == "win32" and descriptor is not None
-        else details.st_ctime_ns
-    )
+    if sys.platform == "win32":
+        if descriptor is None:
+            raise ValueError("Windows file fingerprints require an open descriptor.")
+        device, inode = _windows_file_identity(descriptor)
+        changed_time_ns = _windows_change_time_ns(descriptor)
+    else:
+        device, inode = details.st_dev, details.st_ino
+        changed_time_ns = details.st_ctime_ns
     return SourceFingerprint(
-        details.st_dev,
-        details.st_ino,
+        device,
+        inode,
         details.st_size,
         details.st_mtime_ns,
         changed_time_ns,
@@ -244,6 +263,53 @@ def _source_fingerprint(details: os.stat_result, descriptor: int | None = None) 
 
 def _source_fingerprint_matches(actual: SourceFingerprint, expected: SourceFingerprint) -> bool:
     return actual == expected
+
+
+def _windows_file_identity(descriptor: int) -> tuple[int, int]:
+    """Return the Windows identity exposed by Node's bigint fs.stat APIs."""
+
+    if sys.platform != "win32":
+        raise RuntimeError("Windows file identity is available only on Windows.")
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class FileTime(ctypes.Structure):
+        _fields_ = [
+            ("low_date_time", wintypes.DWORD),
+            ("high_date_time", wintypes.DWORD),
+        ]
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("file_attributes", wintypes.DWORD),
+            ("creation_time", FileTime),
+            ("last_access_time", FileTime),
+            ("last_write_time", FileTime),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    information = ByHandleFileInformation()
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(descriptor))
+    if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    return (
+        int(information.volume_serial_number),
+        (int(information.file_index_high) << 32) | int(information.file_index_low),
+    )
 
 
 def _windows_change_time_ns(descriptor: int) -> int:
@@ -298,8 +364,7 @@ def _confirmed_source_path_fingerprint(path: Path) -> SourceFingerprint:
                 not stat.S_ISREG(descriptor_details.st_mode)
                 or not stat.S_ISREG(current_path_details.st_mode)
                 or stat.S_ISLNK(current_path_details.st_mode)
-                or (descriptor_details.st_dev, descriptor_details.st_ino)
-                != (current_path_details.st_dev, current_path_details.st_ino)
+                or _windows_file_identity(descriptor) != _regular_file_identity(path)
             ):
                 raise ValueError("Trusted-pickle conversion accepts regular files only.")
             fingerprint = _source_fingerprint(descriptor_details, descriptor)
@@ -351,7 +416,12 @@ def _open_reserved_destination(path: Path, expected_identity: tuple[int, int]) -
     descriptor = os.open(path, flags)
     try:
         details = os.fstat(descriptor)
-        if not stat.S_ISREG(details.st_mode) or (details.st_dev, details.st_ino) != expected_identity:
+        identity = (
+            _windows_file_identity(descriptor)
+            if sys.platform == "win32"
+            else (details.st_dev, details.st_ino)
+        )
+        if not stat.S_ISREG(details.st_mode) or identity != expected_identity:
             raise RuntimeError("The Parquet destination changed during conversion.")
         return descriptor
     except BaseException:
@@ -361,9 +431,14 @@ def _open_reserved_destination(path: Path, expected_identity: tuple[int, int]) -
 
 def _recheck_destination(path: Path, descriptor: int, expected_identity: tuple[int, int]) -> None:
     details = os.fstat(descriptor)
+    descriptor_identity = (
+        _windows_file_identity(descriptor)
+        if sys.platform == "win32"
+        else (details.st_dev, details.st_ino)
+    )
     if (
         not stat.S_ISREG(details.st_mode)
-        or (details.st_dev, details.st_ino) != expected_identity
+        or descriptor_identity != expected_identity
         or _regular_file_identity(path) != expected_identity
     ):
         raise RuntimeError("The Parquet destination changed during conversion.")

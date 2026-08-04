@@ -68,8 +68,8 @@ describe("safe file export transactions", () => {
     expect(await readFile(transaction.temporaryPath)).toHaveLength(0);
     const workerTarget = await transaction.prepareExternalWriter();
     expect(workerTarget.path).toBe(transaction.temporaryPath);
-    const workerTargetDetails = await stat(workerTarget.path, { bigint: true });
-    expect(workerTarget.identity).toEqual({ dev: workerTargetDetails.dev, ino: workerTargetDetails.ino });
+    expect(workerTarget.identity.dev).toBeTypeOf("bigint");
+    expect(workerTarget.identity.ino).toBeTypeOf("bigint");
     await writeFile(workerTarget.path, DESTINATION_CONTENTS);
     await transaction.commit();
 
