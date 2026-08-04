@@ -15,6 +15,10 @@ const lifecycle = vi.hoisted(() => ({
   coordinatedBridge: {
     request: vi.fn(),
     cancelViewRequests: vi.fn()
+  },
+  pickleWorkers: {
+    run: vi.fn(),
+    shutdown: vi.fn()
   }
 }));
 
@@ -31,6 +35,12 @@ vi.mock("../extension/sessionCoordinator", () => ({
 }));
 
 vi.mock("../extension/files/fileOpen", () => ({ registerFileCommands: vi.fn() }));
+vi.mock("../extension/files/trustedPickleConversion", () => ({ registerTrustedPickleConversion: vi.fn() }));
+vi.mock("../extension/files/trustedPickleWorker", () => ({
+  TrustedPickleWorkerLifecycle: vi.fn(function MockTrustedPickleWorkerLifecycle() {
+    return lifecycle.pickleWorkers;
+  })
+}));
 vi.mock("../extension/notebooks/jupyterBridge", () => ({ registerNotebookCommands: vi.fn() }));
 vi.mock("../extension/notebooks/rendererMessaging", () => ({ registerNotebookRendererMessaging: vi.fn() }));
 vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
@@ -56,6 +66,8 @@ describe("extension deactivation", () => {
     lifecycle.bridge.reportDiagnostic.mockReset();
     lifecycle.bridge.declineRuntimeDependencyRevalidationForTesting.mockReset().mockResolvedValue(false);
     lifecycle.coordinator.shutdown.mockReset().mockResolvedValue(undefined);
+    lifecycle.pickleWorkers.run.mockReset();
+    lifecycle.pickleWorkers.shutdown.mockReset().mockResolvedValue(undefined);
     lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReset();
     lifecycle.coordinatedBridge.request.mockReset();
     lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
@@ -66,6 +78,7 @@ describe("extension deactivation", () => {
   afterEach(async () => {
     lifecycle.bridge.shutdown.mockResolvedValue(undefined);
     lifecycle.coordinator.shutdown.mockResolvedValue(undefined);
+    lifecycle.pickleWorkers.shutdown.mockResolvedValue(undefined);
     await deactivate();
     vi.restoreAllMocks();
     if (originalExtensionTests === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
@@ -77,11 +90,28 @@ describe("extension deactivation", () => {
     lifecycle.coordinator.shutdown.mockReturnValue(coordinatorGate.promise);
 
     const deactivation = deactivate();
-    expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce();
+    expect(lifecycle.pickleWorkers.shutdown).toHaveBeenCalledOnce();
     expect(lifecycle.bridge.shutdown).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce();
 
     coordinatorGate.resolve();
     await expect(deactivation).resolves.toBeUndefined();
+    expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("waits for active pickle workers before starting coordinator or bridge shutdown", async () => {
+    const workerGate = deferred<void>();
+    lifecycle.pickleWorkers.shutdown.mockReturnValue(workerGate.promise);
+
+    const deactivation = deactivate();
+    expect(lifecycle.pickleWorkers.shutdown).toHaveBeenCalledOnce();
+    expect(lifecycle.coordinator.shutdown).not.toHaveBeenCalled();
+    expect(lifecycle.bridge.shutdown).not.toHaveBeenCalled();
+
+    workerGate.resolve();
+    await expect(deactivation).resolves.toBeUndefined();
+    expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce();
     expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
   });
 
@@ -100,16 +130,18 @@ describe("extension deactivation", () => {
     await expect(deactivate()).rejects.toBe(bridgeFailure);
   });
 
-  it("aggregates coordinator and bridge failures in shutdown order", async () => {
+  it("aggregates worker, coordinator, and bridge failures in shutdown order", async () => {
+    const workerFailure = new Error("pickle worker exit was not confirmed");
     const coordinatorFailure = new Error("coordinator drain failed");
     const bridgeFailure = new Error("runtime exit was not confirmed");
+    lifecycle.pickleWorkers.shutdown.mockRejectedValue(workerFailure);
     lifecycle.coordinator.shutdown.mockRejectedValue(coordinatorFailure);
     lifecycle.bridge.shutdown.mockRejectedValue(bridgeFailure);
 
     const error = await deactivate().catch((reason: unknown) => reason);
 
     expect(error).toBeInstanceOf(AggregateError);
-    expect((error as AggregateError).errors).toEqual([coordinatorFailure, bridgeFailure]);
+    expect((error as AggregateError).errors).toEqual([workerFailure, coordinatorFailure, bridgeFailure]);
     expect((error as Error).message).toBe(
       "Open Wrangler extension deactivation encountered multiple shutdown failures."
     );

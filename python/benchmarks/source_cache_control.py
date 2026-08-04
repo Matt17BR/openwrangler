@@ -202,13 +202,15 @@ def _require_regular_single_link(metadata: os.stat_result) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--mode", choices=["cold", "warm"], required=True)
+    parser.add_argument("--source", type=Path)
+    parser.add_argument("--mode", choices=["cold", "warm"])
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
+    if arguments.source is None or arguments.mode is None:
+        raise ValueError("Source-cache preparation requires --source and --mode.")
     result = prepare_source_cache(arguments.source, arguments.mode)
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
     return 0

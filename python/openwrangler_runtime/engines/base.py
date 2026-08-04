@@ -15,7 +15,7 @@ from importlib import import_module
 from math import isfinite, isinf, isnan
 from numbers import Integral, Real
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 ColumnType = Literal[
     "string",
@@ -36,6 +36,12 @@ ExportFormat = Literal["csv", "parquet"]
 PageColumnProjection = Sequence[tuple[int, str]]
 SummaryColumnProjection = Sequence[tuple[int, str]]
 ExcelSheetSelector = tuple[Literal["sheetName"], str] | tuple[Literal["sheetIndex"], int]
+
+
+class SessionDataShape(TypedDict):
+    rows: int | None
+    columns: int
+
 
 INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
 _INTERNAL_ROW_ID_PREFIX_CASEFOLD = INTERNAL_ROW_ID_PREFIX.casefold()
@@ -664,7 +670,7 @@ class DataFrameEngine(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def shape(self, frame: Any) -> dict[str, int]:
+    def shape(self, frame: Any) -> SessionDataShape:
         raise NotImplementedError
 
     @abstractmethod

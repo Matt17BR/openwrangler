@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import transportSchema from "../../protocol/openwrangler.v2.schema.json";
 import type {
   GridPage,
+  LiveGridPage,
   OpenWranglerRequest,
   OpenWranglerResponse,
   RuntimeResponseEnvelope,
@@ -434,6 +435,47 @@ describe("protocol-v2 response validation", () => {
         })
       )
     ).toBe(false);
+  });
+
+  it("accepts unknown totals only for full progressive PySpark pages", () => {
+    const { latestStepInputSchema: _latestStepInputSchema, stats: _stats, ...metadataWithoutEditingState } = metadata;
+    const sparkMetadata: SessionMetadata = {
+      ...metadataWithoutEditingState,
+      backend: "pyspark",
+      mode: "viewing",
+      source: { kind: "notebookVariable", label: "spark_df", variableName: "spark_df" },
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: null, columns: 1 },
+      filteredShape: { rows: null, columns: 1 },
+      filterModel: { logic: "and", filters: [], sort: [] },
+      steps: []
+    };
+    const progressivePage: LiveGridPage = { ...page, limit: 1, totalRows: null, hasMore: true };
+    const opened = { kind: "sessionOpened", metadata: sparkMetadata, page: progressivePage, summaries: [] };
+
+    expect(isOpenWranglerResponse(opened)).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 2, requestId: "spark-open", response: opened })).toBe(true);
+    expect(isOpenWranglerResponse({ ...opened, metadata: { ...sparkMetadata, backend: "polars" } })).toBe(false);
+    expect(isOpenWranglerResponse({ ...opened, page: { ...progressivePage, hasMore: false } })).toBe(false);
+    expect(isOpenWranglerResponse({ ...opened, page: { ...progressivePage, rows: [] } })).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...opened,
+        metadata: {
+          ...sparkMetadata,
+          shape: { rows: 1, columns: 1 },
+          filteredShape: { rows: 1, columns: 1 }
+        },
+        page
+      })
+    ).toBe(true);
   });
 
   it("requires projected columns to follow schema order with exact row widths", () => {

@@ -125,7 +125,7 @@ Choose Notebook Preview Provider**.
 <table>
   <tr>
     <td width="44%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling Pandas, Polars, and DuckDB variables by engine and dataframe type" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-variable-picker-detail.png" width="602" height="380"></a></td>
-    <td width="56%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-code-insertion-detail.png" width="1000" height="288"></a></td>
+    <td width="56%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-code-insertion.png" width="1000" height="288"></a></td>
   </tr>
   <tr>
     <td>The notebook picker labels each live variable by engine and dataframe type.</td>
@@ -152,9 +152,10 @@ Choose Notebook Preview Provider**.
   </tr>
 </table>
 
-DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's Spark session and may scan and index
-data for paging, so large or remote dataframes can be expensive to open. Open Wrangler does not install PySpark or
-manage cluster authentication.
+DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's existing Spark session and reads pages
+in order. It does not count or cache the whole dataframe before showing the first page; the row total appears after
+the final page. If the data changes while you page through it, Open Wrangler asks you to reopen the variable. It does
+not install PySpark, handle cluster authentication, or stop your Spark session.
 
 ## Export
 
@@ -173,7 +174,7 @@ manage cluster authentication.
 
 | Engine                      | Files                                  | Notebook data                | How it runs                                               |
 | --------------------------- | -------------------------------------- | ---------------------------- | --------------------------------------------------------- |
-| Polars                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; lazy scans where the format permits               |
+| Polars                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; lazy scans for CSV, TSV, Parquet, and JSONL       |
 | Pandas                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series            | Native, including duplicate column labels                 |
 | DuckDB, experimental        | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only               |
 | PySpark 4.2.x, experimental | Not currently supported                | DataFrame                    | Native notebook viewing, filtering, sorting, and profiles |
@@ -186,36 +187,49 @@ To keep a notebook result native to DuckDB, open the relation itself. For exampl
 `orders = duckdb.read_csv("orders.csv")`. Calling `orders.df()` explicitly creates a Pandas DataFrame, so Open
 Wrangler correctly opens that resulting object with Pandas.
 
-Pickle files are not supported because opening one can run arbitrary code. Convert trusted pickles to Parquet, CSV,
-or JSONL first.
+For a trusted Pandas pickle, right-click the file and choose **Convert Trusted Pickle to Parquet…**. Open Wrangler
+asks where to save the Parquet file and asks again before Python loads the pickle. The conversion is saved separately;
+Open Wrangler never overwrites the pickle.
 
 See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md)
 for the complete surface.
 
 ## Performance and scale
 
-The current installed-editor benchmark uses native Polars with a 100,000 by 50 CSV and a 1,000,000 by 20 Parquet
-file. Open Wrangler can open larger datasets; usable size depends on the engine, format, operation, storage, memory,
-and machine.
+Open Wrangler fetches the rows and columns needed by the grid instead of loading the whole dataset into the webview.
+The release benchmark uses a 100,000 × 50 CSV and a 1,000,000 × 20 Parquet file. Larger datasets can work, but the
+practical limit depends on the engine and machine.
 
-| Editor        | CSV first grid p95 | Parquet first grid p95 | Cached grid p95 | Uncached grid p95 |
-| ------------- | ------------------ | ---------------------- | --------------- | ----------------- |
-| VS Code 1.130 | 1.09 s             | 1.47 s                 | 63.8 ms         | 131.1 ms          |
-| Cursor 3.13   | 1.91 s             | 1.72 s                 | 96.8 ms         | 148.2 ms          |
+We compared Open Wrangler 1.2.1 with Microsoft Data Wrangler 1.24.2 on the same machine. The table reports median
+times; the faster result is **bold**. Data Wrangler converts Polars data to Pandas for these workflows, while Open
+Wrangler runs it with Polars.
 
-The [performance test documentation](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md#performance-fixtures)
-contains the method, raw samples, and cleanup checks.
+| Data           | Task                  | Open Wrangler | Data Wrangler |
+| -------------- | --------------------- | ------------: | ------------: |
+| Pandas CSV     | Show notebook preview |    **0.34 s** |        1.49 s |
+| Pandas CSV     | Open workbench        |    **0.60 s** |        1.01 s |
+| Pandas CSV     | Profile every column  |    **5.58 s** |       18.80 s |
+| Polars CSV     | Show notebook preview |    **0.32 s** |        1.50 s |
+| Polars CSV     | Open workbench        |    **0.53 s** |        0.99 s |
+| Polars CSV     | Profile every column  |    **5.54 s** |       18.81 s |
+| Pandas Parquet | Show notebook preview |    **0.24 s** |        1.53 s |
+| Pandas Parquet | Open workbench        |    **0.67 s** |        0.69 s |
+| Pandas Parquet | Profile every column  |    **7.64 s** |        7.95 s |
+| Polars Parquet | Show notebook preview |    **0.20 s** |        1.49 s |
+| Polars Parquet | Open workbench        |    **0.48 s** |        0.69 s |
+| Polars Parquet | Profile every column  |    **7.20 s** |        8.23 s |
 
-Issue [#91](https://github.com/Matt17BR/openwrangler/issues/91) tracks a planned comparison with Microsoft Data
-Wrangler using the same files, editor, Python environment, and actions.
+The [full results](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
+include p95 timings, memory use, outcome counts, exact versions, and the test method. Small Pandas/Polars differences
+within Data Wrangler are not conversion benchmarks: variables were created before timing, and the measured UI work
+dominates those rows. The
+[installed-editor benchmarks](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md#performance-fixtures)
+cover first-grid and scrolling performance in VS Code and Cursor.
 
 ## Roadmap
 
-- **Next in v1:** finish the distributed Spark follow-ups in
-  [#36](https://github.com/Matt17BR/openwrangler/issues/36), test more VS Code-based desktop editors in
-  [#86](https://github.com/Matt17BR/openwrangler/issues/86), and complete the Data Wrangler comparison in
-  [#91](https://github.com/Matt17BR/openwrangler/issues/91). Support for other desktop forks is currently
-  experimental.
+- **Next in v1:** continue the distributed Spark work in [#36](https://github.com/Matt17BR/openwrangler/issues/36).
+  Support for other VS Code-based desktop editors is currently experimental.
 - **v2:** add native R data frames, tibbles, and `data.table`, then add Quarto and R Markdown workflows. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in

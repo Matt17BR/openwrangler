@@ -1023,6 +1023,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
   it("reveals Code Preview only after the exact first draft synchronization and only once per session", async () => {
     const executeCommand = vi.spyOn(commands, "executeCommand");
+    const codePreviewFocus = deferred<unknown>();
     const draft = {
       id: "acknowledged-uppercase",
       kind: "upperText",
@@ -1087,8 +1088,12 @@ describe("OpenWranglerPanel retained view state", () => {
     );
     await harness.open();
     await harness.receive({ kind: "ready" });
-    await acknowledgeLatestRendererSynchronization(harness);
+    const initialMarker = await acknowledgeLatestRendererSynchronization(harness);
+    expect(initialMarker.layoutTransitionPending).toBe(false);
     executeCommand.mockClear();
+    executeCommand.mockImplementation((command: string) =>
+      command === "openWrangler.codePreview.focus" ? codePreviewFocus.promise : Promise.resolve(undefined)
+    );
     harness.posted.length = 0;
 
     await OpenWranglerPanel.previewStepForSessionForTesting({
@@ -1103,6 +1108,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
     const draftMarker = latestRendererSynchronization(harness.posted);
+    expect(draftMarker.layoutTransitionPending).toBe(true);
 
     expect(executeCommand).not.toHaveBeenCalledWith("openWrangler.codePreview.focus", { preserveFocus: true });
     expect(harness.htmlAssignmentCount).toBe(1);
@@ -1123,16 +1129,34 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(1);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
 
+    codePreviewFocus.resolve(undefined);
+    await vi.waitFor(() => expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2));
+    const settledMarker = latestRendererSynchronization(harness.posted);
+    expect(settledMarker).not.toEqual(draftMarker);
+    expect(settledMarker.layoutTransitionPending).toBe(false);
+
+    // A stale duplicate acknowledgement cannot satisfy the new post-layout
+    // barrier or reopen Code Preview.
     await harness.receive({
       kind: "rendererSynchronized",
       syncId: draftMarker.syncId,
       sessionId: draftMarker.sessionId,
       revision: draftMarker.revision
     });
-    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
     expect(executeCommand).toHaveBeenCalledTimes(1);
     expect(harness.htmlAssignmentCount).toBe(1);
-    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(1);
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
+
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: settledMarker.syncId,
+      sessionId: settledMarker.sessionId,
+      revision: settledMarker.revision
+    });
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
 
     harness.posted.length = 0;
     await harness.receive({
@@ -1180,6 +1204,74 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.htmlAssignmentCount).toBe(1);
     expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(1);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+  });
+
+  it("publishes a settled renderer barrier when Code Preview cannot be revealed", async () => {
+    const executeCommand = vi.spyOn(commands, "executeCommand");
+    const reportDiagnostic = vi.fn();
+    const draft = {
+      id: "failed-code-preview",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    } as const;
+    const preview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { ...metadata, revision: 1, draftStep: draft },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df\n"
+    };
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async (candidate: OpenWranglerRequest) =>
+          candidate.kind === "previewStep" ? preview : openedResponse
+        ),
+        reportDiagnostic
+      },
+      { openResponse: openedResponse }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    harness.posted.length = 0;
+    executeCommand.mockRejectedValueOnce(new Error("Code Preview is unavailable"));
+
+    await OpenWranglerPanel.previewStepForSessionForTesting({
+      kind: "previewStep",
+      sessionId: metadata.sessionId,
+      revision: metadata.revision,
+      step: draft,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+    await vi.waitFor(() => expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(1));
+    const pendingMarker = latestRendererSynchronization(harness.posted);
+    expect(pendingMarker.layoutTransitionPending).toBe(true);
+
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: pendingMarker.syncId,
+      sessionId: pendingMarker.sessionId,
+      revision: pendingMarker.revision
+    });
+    await vi.waitFor(() => expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2));
+
+    expect(latestRendererSynchronization(harness.posted).layoutTransitionPending).toBe(false);
+    expect(executeCommand).toHaveBeenCalledWith("openWrangler.codePreview.focus", { preserveFocus: true });
+    expect(reportDiagnostic).toHaveBeenCalledWith(
+      "Open Wrangler could not reveal Code Preview: Code Preview is unavailable"
+    );
   });
 
   it("does not let a pre-draft page replace the retained preview snapshot", async () => {
@@ -4094,6 +4186,7 @@ interface RendererSynchronizationMessage {
   syncId: string;
   sessionId: string | null;
   revision: number | null;
+  layoutTransitionPending: boolean;
 }
 
 interface RendererImportRequest {
@@ -4119,7 +4212,8 @@ function isRendererSynchronizationMessage(message: unknown): message is Renderer
     candidate.kind === "rendererSynchronization" &&
     typeof candidate.syncId === "string" &&
     (typeof candidate.sessionId === "string" || candidate.sessionId === null) &&
-    (typeof candidate.revision === "number" || candidate.revision === null)
+    (typeof candidate.revision === "number" || candidate.revision === null) &&
+    typeof candidate.layoutTransitionPending === "boolean"
   );
 }
 

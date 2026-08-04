@@ -410,64 +410,25 @@ describe("notebook command provenance", () => {
     expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
   });
 
-  it("binds a variable-viewer URI to its exact open document instead of the active notebook", async () => {
+  it.each(["notebookUri", "uri"] as const)("rejects the removed %s origin alias", async (field) => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");
     notebookMocks.notebookDocuments.push(notebookA, notebookB);
     notebookMocks.activeNotebookEditor = editor(notebookB);
-    const { context, coordinator, coordinatedBridge } = register();
-
-    await command("openWrangler.launchDataViewer")({
-      variableName: "frame_a",
-      notebookUri: notebookA.uri
-    });
-
-    expect(notebookMocks.kernelOrigins).toEqual([{ uri: notebookA.uri.toString(), document: notebookA }]);
-    expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), notebookA);
-    expect(notebookMocks.createPanel).toHaveBeenCalledWith(context, coordinatedBridge, {
-      kind: "notebookVariable",
-      label: "frame_a",
-      variableName: "frame_a",
-      uri: notebookA.uri.toString()
-    });
-    expect(notebookMocks.activeEditorReads).toBe(0);
-  });
-
-  it("accepts agreeing released and legacy origin fields", async () => {
-    const original = notebook("file:///workspace/shared.ipynb");
-    const active = notebook("file:///workspace/active.ipynb");
-    notebookMocks.notebookDocuments.push(original, active);
-    notebookMocks.activeNotebookEditor = editor(active);
     const { coordinator } = register();
 
     await command("openWrangler.launchDataViewer")({
-      name: "frame",
-      fileName: vscode.Uri.parse(original.uri.toString()),
-      notebookUri: vscode.Uri.parse(original.uri.toString()),
-      uri: vscode.Uri.parse(original.uri.toString())
+      variableName: "frame_a",
+      [field]: notebookA.uri
     });
 
-    expect(notebookMocks.kernelOrigins).toHaveLength(1);
-    expect(notebookMocks.kernelOrigins[0]?.document).toBe(original);
-    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.kernelOrigins).toEqual([]);
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
     expect(notebookMocks.activeEditorReads).toBe(0);
-  });
-
-  it("accepts an agreeing serialized released origin and real legacy origin", async () => {
-    const original = notebook("file:///workspace/shared.ipynb");
-    const active = notebook("file:///workspace/active.ipynb");
-    notebookMocks.notebookDocuments.push(original, active);
-    notebookMocks.activeNotebookEditor = editor(active);
-    const { coordinator } = register();
-
-    await command("openWrangler.launchDataViewer")({
-      name: "frame",
-      fileName: serializedFileUri("/workspace/shared.ipynb"),
-      notebookUri: vscode.Uri.parse(original.uri.toString())
-    });
-
-    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
-    expect(notebookMocks.activeEditorReads).toBe(0);
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler received an invalid originating notebook. Launch the variable again from its notebook."
+    );
   });
 
   it.each(["fileName", "notebookUri", "uri"] as const)(
@@ -642,7 +603,7 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.activeEditorReads).toBe(0);
   });
 
-  it("rejects conflicting released and legacy origin fields", async () => {
+  it("rejects a removed origin alias alongside the released fileName", async () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");
     notebookMocks.notebookDocuments.push(notebookA, notebookB);
@@ -660,7 +621,7 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.createPanel).not.toHaveBeenCalled();
     expect(notebookMocks.activeEditorReads).toBe(0);
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
-      "Open Wrangler received more than one originating notebook. Launch the variable again from one notebook."
+      "Open Wrangler received an invalid originating notebook. Launch the variable again from its notebook."
     );
   });
 
@@ -1005,7 +966,7 @@ describe("notebook command provenance", () => {
       expect.objectContaining({
         label: "spark_connect",
         description: "PySpark Connect · DataFrame",
-        detail: "Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x"
+        detail: "Viewing only · First page loads without counting rows · PySpark 4.2.x required"
       })
     ]);
     const sparkItems = (items as readonly { description?: string; detail?: string }[]).filter((item) =>

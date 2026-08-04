@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import { registerFileCommands } from "./files/fileOpen";
+import { registerTrustedPickleConversion } from "./files/trustedPickleConversion";
+import { TrustedPickleWorkerLifecycle } from "./files/trustedPickleWorker";
 import { registerNotebookCommands } from "./notebooks/jupyterBridge";
 import { registerNotebookRendererMessaging } from "./notebooks/rendererMessaging";
 import { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinator";
@@ -53,6 +55,7 @@ export interface OpenWranglerExtensionApi {
 
 let activeCoordinator: SessionCoordinator | undefined;
 let activeBridge: PythonBridge | undefined;
+let activePickleWorkers: TrustedPickleWorkerLifecycle | undefined;
 
 const NOTEBOOK_EDITOR_TITLE_ACTION_CONTEXT = "openWrangler.forceNotebookEditorTitleAction";
 
@@ -66,12 +69,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
 
   const bridge = new PythonBridge(context);
   const coordinator = new SessionCoordinator(context.workspaceState, (message) => bridge.reportDiagnostic(message));
+  const pickleWorkers = new TrustedPickleWorkerLifecycle();
   activeCoordinator = coordinator;
   activeBridge = bridge;
+  activePickleWorkers = pickleWorkers;
   const coordinatedBridge = coordinator.createBridge(bridge);
-  context.subscriptions.push(coordinator, bridge);
+  context.subscriptions.push(pickleWorkers, coordinator, bridge);
 
   registerFileCommands(context, coordinatedBridge);
+  registerTrustedPickleConversion(context, bridge, { runWorker: (options) => pickleWorkers.run(options) });
   const nativeViews = registerNativeViews(context, coordinator);
   registerRuntimeCommands(context, bridge);
   registerNotebookCommands(context, coordinator);
@@ -124,10 +130,17 @@ async function setNotebookEditorTitleActionContext(value: boolean): Promise<void
 export async function deactivate(): Promise<void> {
   const coordinator = activeCoordinator;
   const bridge = activeBridge;
+  const pickleWorkers = activePickleWorkers;
   activeCoordinator = undefined;
   activeBridge = undefined;
+  activePickleWorkers = undefined;
 
   const failures: unknown[] = [];
+  try {
+    await pickleWorkers?.shutdown();
+  } catch (error) {
+    failures.push(error);
+  }
   try {
     await coordinator?.shutdown();
   } catch (error) {

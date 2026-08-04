@@ -4,7 +4,8 @@ import {
   automaticBackends,
   isFileDataBackend,
   isSupportedPythonVersion,
-  requiredDependencies
+  requiredDependencies,
+  trustedPickleConversionDependencies
 } from "../extension/pythonEnvironmentModel";
 
 describe("Python environment requirements", () => {
@@ -57,6 +58,13 @@ describe("Python environment requirements", () => {
     ]);
     expect(requiredDependencies("polars", xlsx).map((item) => item.installSpec)).toEqual(["polars", "fastexcel>=0.9"]);
     expect(requiredDependencies("polars", xls).map((item) => item.installSpec)).toEqual(["polars", "fastexcel>=0.9"]);
+  });
+
+  it("requires Pandas and PyArrow for trusted pickle conversion", () => {
+    expect(trustedPickleConversionDependencies()).toEqual([
+      { importModule: "pandas", distribution: "pandas", installSpec: "pandas" },
+      { importModule: "pyarrow", distribution: "pyarrow", installSpec: "pyarrow" }
+    ]);
   });
 
   it("prefers native engines deterministically without offering unsupported DuckDB inputs", () => {

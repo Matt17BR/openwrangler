@@ -5,8 +5,42 @@ import json
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
+from importlib import import_module
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, Protocol, TypedDict, cast
+
+import polars as pl
+import pytest
+
+
+class _FixtureSpec(Protocol):
+    kind: Literal["csv", "parquet"]
+    rows: int
+    columns: int
+
+    @property
+    def names(self) -> list[str]: ...
+
+    @property
+    def sentinel_rows(self) -> tuple[int, ...]: ...
+
+
+class _FixtureSpecFactory(Protocol):
+    def __call__(self, kind: Literal["csv", "parquet"], rows: int, columns: int) -> _FixtureSpec: ...
+
+
+benchmark_directory = Path(__file__).parents[1] / "benchmarks"
+sys.path.insert(0, str(benchmark_directory))
+try:
+    fixture_contract = import_module("fixture_contract")
+    FixtureSpec = cast(_FixtureSpecFactory, fixture_contract.FixtureSpec)
+    assert_fixture_contract = cast(
+        Callable[[Path, _FixtureSpec], None],
+        fixture_contract.assert_fixture_contract,
+    )
+finally:
+    sys.path.remove(str(benchmark_directory))
 
 
 class _FixtureEvidence(TypedDict):
@@ -120,6 +154,57 @@ def test_installed_editor_fixture_generation_rejects_a_symlink_target(tmp_path: 
     assert "single-link regular file" in result.stderr
     assert outside.read_text(encoding="utf-8") == "do-not-overwrite\n"
     assert not manifest.exists()
+
+
+@pytest.mark.parametrize("kind", ["csv", "parquet"])
+def test_fixture_contract_rejects_an_interior_value_tamper(tmp_path: Path, kind: Literal["csv", "parquet"]) -> None:
+    spec = FixtureSpec(kind, rows=101, columns=4)
+    interior_row = 37
+    assert interior_row not in spec.sentinel_rows
+    frame = pl.DataFrame(
+        {name: pl.int_range(column, spec.rows + column, eager=True) for column, name in enumerate(spec.names)}
+    ).with_row_index("row")
+    frame = frame.with_columns(
+        pl.when(pl.col("row") == interior_row).then(pl.lit(-1)).otherwise(pl.col("c02")).alias("c02")
+    ).drop("row")
+    path = tmp_path / f"tampered.{kind}"
+    if kind == "csv":
+        frame.write_csv(path)
+    else:
+        frame.write_parquet(path)
+
+    with pytest.raises(AssertionError, match="invalid value counts by column"):
+        assert_fixture_contract(path, spec)
+
+
+def test_semantically_equal_csv_with_different_newlines_has_different_bytes(tmp_path: Path) -> None:
+    spec = FixtureSpec("csv", rows=101, columns=4)
+    frame = pl.DataFrame(
+        {name: pl.int_range(column, spec.rows + column, eager=True) for column, name in enumerate(spec.names)}
+    )
+    canonical = tmp_path / "canonical.csv"
+    alternate = tmp_path / "alternate.csv"
+    frame.write_csv(canonical)
+    alternate.write_bytes(canonical.read_bytes().replace(b"\n", b"\r\n"))
+
+    assert_fixture_contract(canonical, spec)
+    assert_fixture_contract(alternate, spec)
+    assert hashlib.sha256(canonical.read_bytes()).digest() != hashlib.sha256(alternate.read_bytes()).digest()
+
+
+def test_semantically_equal_parquet_layout_has_different_bytes(tmp_path: Path) -> None:
+    spec = FixtureSpec("parquet", rows=101, columns=4)
+    frame = pl.DataFrame(
+        {name: pl.int_range(column, spec.rows + column, eager=True) for column, name in enumerate(spec.names)}
+    )
+    canonical = tmp_path / "canonical.parquet"
+    alternate = tmp_path / "alternate.parquet"
+    frame.write_parquet(canonical)
+    frame.write_parquet(alternate, compression="uncompressed", row_group_size=17)
+
+    assert_fixture_contract(canonical, spec)
+    assert_fixture_contract(alternate, spec)
+    assert hashlib.sha256(canonical.read_bytes()).digest() != hashlib.sha256(alternate.read_bytes()).digest()
 
 
 def _generate(root: Path) -> _FixtureManifest:

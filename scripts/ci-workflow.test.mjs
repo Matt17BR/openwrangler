@@ -54,77 +54,7 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
   "native-cursor-smoke"
 ]);
 const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
-const SCRIPT_TEST_GROUPS = Object.freeze([
-  "workflow",
-  "product-package",
-  "editor-harness",
-  "release-registry",
-  "benchmark",
-  "media",
-  "native"
-]);
-const CONCURRENT_SCRIPT_TEST_GROUPS = new Set(["product-package", "editor-harness", "release-registry", "benchmark"]);
-const EXPECTED_SCRIPT_GROUP_FILES = Object.freeze({
-  workflow: ["scripts/ci-workflow.test.mjs"],
-  "product-package": [
-    "scripts/capture-screenshots-json.test.mjs",
-    "scripts/check-licenses.test.mjs",
-    "scripts/package-current-channel.test.mjs",
-    "scripts/packaged-python-preflight.test.mjs",
-    "scripts/public-writing.test.mjs",
-    "scripts/repository-python-environment.test.mjs",
-    "scripts/run-heavy-local-command.test.mjs",
-    "scripts/vsix-archive.test.mjs"
-  ],
-  "editor-harness": [
-    "scripts/cursor-acquisition.test.mjs",
-    "scripts/editor-acceptance-artifact.test.mjs",
-    "scripts/editor-acceptance-evidence.test.mjs",
-    "scripts/editor-acceptance.test.mjs",
-    "scripts/jupyter-acceptance-environment.test.mjs",
-    "scripts/packaged-editor-orchestration.test.mjs",
-    "scripts/prepare-xvfb.test.mjs",
-    "scripts/remote-jupyter-acceptance.test.mjs",
-    "scripts/remote-jupyter-lock.test.mjs",
-    "scripts/remote-workspace-acceptance.test.mjs",
-    "scripts/remote-workspace-acquisition.test.mjs",
-    "scripts/remote-workspace-cleanup.test.mjs",
-    "scripts/remote-workspace-launch.test.mjs",
-    "scripts/remote-workspace-phase-loader.test.mjs",
-    "scripts/remote-workspace-processes.test.mjs",
-    "scripts/remote-workspace-provenance.test.mjs",
-    "scripts/remote-workspace-staging.test.mjs",
-    "scripts/remote-workspace-terminal.test.mjs",
-    "scripts/windows-owned-process.test.mjs"
-  ],
-  "release-registry": [
-    "scripts/create-canonical-release-artifact.test.mjs",
-    "scripts/download-canonical-github-release.test.mjs",
-    "scripts/marketplace-identity-profile.test.mjs",
-    "scripts/marketplace-promotion-workflow.test.mjs",
-    "scripts/marketplace-release-intake.test.mjs",
-    "scripts/open-vsx-promotion-workflow.test.mjs",
-    "scripts/prepare-stable-candidate-tag.test.mjs",
-    "scripts/publish-github-stable-release.test.mjs",
-    "scripts/push-stable-release-tag.test.mjs",
-    "scripts/registry-release-source.test.mjs",
-    "scripts/release-readiness.test.mjs",
-    "scripts/stable-release-workflow.test.mjs",
-    "scripts/verify-canonical-release-artifact.test.mjs",
-    "scripts/verify-marketplace-publication.test.mjs",
-    "scripts/verify-open-vsx-release.test.mjs",
-    "scripts/verify-registry-release-artifact.test.mjs"
-  ],
-  benchmark: [
-    "scripts/data-wrangler-comparison-report.test.mjs",
-    "scripts/installed-performance-report.test.mjs",
-    "scripts/installed-performance-system.test.mjs",
-    "scripts/run-data-wrangler-comparison.test.mjs",
-    "scripts/run-installed-performance.test.mjs"
-  ],
-  media: ["scripts/public-media-surfaces.test.mjs", "scripts/readme-media.test.mjs"],
-  native: ["scripts/windows-job-supervisor.native.test.mjs"]
-});
+const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
 const CANONICAL_CI_IF =
   "${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}";
 const FULL_CI_IF =
@@ -146,12 +76,17 @@ function normalizedCommand(value) {
 function nodeTestFiles(command, group) {
   const segments = normalizedCommand(command)?.split(" && ") ?? [];
   const parts = segments[0]?.split(" ") ?? [];
-  assert.deepEqual(segments.slice(1), [], `${group} must not hide unrelated commands in its script contract.`);
-  const prefix = CONCURRENT_SCRIPT_TEST_GROUPS.has(group)
-    ? ["node", "--test", "--test-concurrency=4"]
-    : group === "media"
-      ? ["node", "--max-old-space-size=1024", "--test", "--test-concurrency=1"]
-      : ["node", "--test"];
+  assert.deepEqual(
+    segments.slice(1),
+    group === "portable" ? ["npm run test:scripts:media"] : [],
+    `${group} must not hide unrelated commands in its script contract.`
+  );
+  const prefix =
+    group === "portable"
+      ? ["node", "--test", "--test-concurrency=4"]
+      : group === "media"
+        ? ["node", "--max-old-space-size=1024", "--test", "--test-concurrency=1"]
+        : ["node", "--test"];
   assert.deepEqual(parts.slice(0, prefix.length), prefix, `${group} must invoke Node's test runner directly.`);
   const files = parts.slice(prefix.length);
   assert.ok(files.length > 0, `${group} must own at least one script contract.`);
@@ -182,33 +117,31 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
   const groups = Object.fromEntries(
     SCRIPT_TEST_GROUPS.map((group) => [
       group,
-      nodeTestFiles(manifest?.scripts?.[`test:scripts:${group}${group === "media" ? ":run" : ""}`], group)
+      nodeTestFiles(
+        manifest?.scripts?.[`test:scripts:${group}${["portable", "media"].includes(group) ? ":run" : ""}`],
+        group
+      )
     ])
   );
 
-  assert.equal(
-    manifest?.scripts?.["test:scripts"],
-    "node scripts/run-heavy-local-command.mjs test:scripts -- npm run test:scripts:run"
-  );
+  assert.equal(manifest?.scripts?.["test:scripts"], "npm run test:scripts:run");
   assert.equal(
     manifest?.scripts?.["test:scripts:run"],
     "npm run test:scripts:workflow && npm run test:scripts:portable && npm run test:scripts:native"
   );
-  assert.equal(
-    manifest?.scripts?.["test:scripts:portable"],
-    "node scripts/run-heavy-local-command.mjs test:scripts:portable -- npm run test:scripts:portable:run"
-  );
-  assert.equal(
-    manifest?.scripts?.["test:scripts:portable:run"],
-    "npm run test:scripts:product-package && npm run test:scripts:editor-harness && npm run test:scripts:release-registry && npm run test:scripts:benchmark && npm run test:scripts:media"
-  );
-  assert.equal(
-    manifest?.scripts?.["test:scripts:media"],
-    "node scripts/run-heavy-local-command.mjs test:scripts:media -- npm run test:scripts:media:run"
-  );
-  assert.equal(manifest?.scripts?.test, "node scripts/run-heavy-local-command.mjs test -- npm run test:run");
+  assert.equal(manifest?.scripts?.["test:scripts:portable"], "npm run test:scripts:portable:run");
+  assert.equal(manifest?.scripts?.["test:scripts:media"], "npm run test:scripts:media:run");
+  assert.equal(manifest?.scripts?.test, "npm run test:run");
   assert.equal(manifest?.scripts?.["test:run"], "npm run test:scripts && npm run test:ts && npm run test:python");
-  assert.deepEqual(groups, EXPECTED_SCRIPT_GROUP_FILES);
+  assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs"]);
+  assert.deepEqual(groups.media, ["scripts/public-media-surfaces.test.mjs", "scripts/readme-media.test.mjs"]);
+  assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
+  assert.deepEqual(
+    groups.portable,
+    inventory.filter((file) =>
+      SCRIPT_TEST_GROUPS.filter((group) => group !== "portable").every((group) => !groups[group].includes(file))
+    )
+  );
 
   for (let left = 0; left < SCRIPT_TEST_GROUPS.length; left += 1) {
     for (let right = left + 1; right < SCRIPT_TEST_GROUPS.length; right += 1) {
@@ -283,7 +216,7 @@ test("PR workflows cancel only obsolete pull-request heads", () => {
   }
 });
 
-test("NUL-safe path classification limits every fast path to explicit files", () => {
+test("NUL-safe path classification fast-paths only explicit non-packaged documentation", () => {
   assert.deepEqual(
     parseChangedPathBuffer(Buffer.from("docs/testing.md\0AGENTS.md\0docs/images/über.png\0docs/a\nfile.md\0", "utf8")),
     ["docs/testing.md", "AGENTS.md", "docs/images/über.png", "docs/a\nfile.md"]
@@ -319,7 +252,6 @@ test("NUL-safe path classification limits every fast path to explicit files", ()
     fullMatrixRequired: false,
     releasedJupyterRequired: false
   });
-
   const packagedDocuments = ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"];
   assert.equal(packageOnly("pull_request", packagedDocuments), true);
   assert.deepEqual(
@@ -344,7 +276,6 @@ test("NUL-safe path classification limits every fast path to explicit files", ()
       releasedJupyterRequired: false
     }
   );
-
   for (const path of [
     ".github/workflows/ci.yml",
     ".vscodeignore",
@@ -353,8 +284,6 @@ test("NUL-safe path classification limits every fast path to explicit files", ()
     "protocol/openwrangler.v2.schema.json",
     "python/openwrangler_runtime/notebook.py",
     "scripts/build-webviews.mjs",
-    "scripts/repository-python-environment.mjs",
-    "scripts/repository-python-environment.test.mjs",
     "src/extension/notebooks/jupyterBridge.ts",
     "src/webviews/notebookRenderer.ts",
     "docs/images/acceptance/grid-dark-1920.png",
@@ -381,7 +310,6 @@ test("NUL-safe path classification limits every fast path to explicit files", ()
     assert.equal(packageOnly("pull_request", [path]), true, `${path} must select package-only CI.`);
     assert.equal(required([path]), false, `${path} must not require released-Jupyter acceptance.`);
   }
-
   assert.equal(packageOnly("pull_request", ["README.md", "docs/testing.md"]), false);
   assert.equal(packageOnly("pull_request", ["README.md", "src/shared/notebookOutput.ts"]), false);
   assert.equal(documentationOnly("pull_request", ["docs/testing.md", "src/shared/notebookOutput.ts"]), false);
@@ -405,7 +333,6 @@ test("NUL-safe path classification limits every fast path to explicit files", ()
   assert.equal(documentationOnly("pull_request", []), false, "an empty PR diff must fail closed");
   assert.equal(packageOnly("pull_request", []), false, "an empty PR diff must fail closed");
   assert.equal(required([]), true, "an empty PR diff must fail closed into acceptance");
-
   for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
     assert.equal(documentationOnly(eventName, allowed), false, `${eventName} must always use the complete workflow.`);
     assert.equal(
@@ -422,7 +349,6 @@ test("NUL-safe path classification limits every fast path to explicit files", ()
       releasedJupyterRequired: false
     });
   }
-
   assert.equal(documentationOnly("pull_request", [undefined]), false);
   assert.equal(documentationOnly("pull_request", ["docs/testing.md", 42]), false);
   assert.throws(() => documentationOnly("pull_request", undefined), /changedPaths must be an array/u);
@@ -899,10 +825,7 @@ test("validate remains the fail-closed required aggregate without a skipped-succ
 });
 
 test("required CI result validation rejects every absent or non-success blocking result", () => {
-  const successes = Object.fromEntries([
-    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
-    ...PRODUCT_CI_JOBS.map((jobId) => [jobId, "success"])
-  ]);
+  const successes = Object.fromEntries(REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]));
   const documentationResults = Object.fromEntries([
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...PRODUCT_CI_JOBS.map((jobId) => [jobId, "skipped"])
@@ -919,7 +842,6 @@ test("required CI result validation rejects every absent or non-success blocking
       !normalized.documentationOnly && !normalized.packageOnly && !normalized.draftPullRequest;
     return requireCiResults(normalized);
   };
-
   assert.doesNotThrow(() =>
     validateResults({
       requiredResults: successes,
@@ -961,25 +883,34 @@ test("required CI result validation rejects every absent or non-success blocking
       remoteRequired: true
     })
   );
-
-  for (const configuration of [
-    { documentationOnly: false, draftPullRequest: true, lightweightOnly: true },
-    { documentationOnly: false, draftPullRequest: true, packageOnly: true, lightweightOnly: true }
-  ]) {
-    assert.throws(
-      () =>
-        validateResults({
-          requiredResults: documentationResults,
-          ...configuration,
-          releasedJupyterResult: "skipped",
-          releasedJupyterRequired: false,
-          remoteResult: "skipped",
-          remoteRequired: false
-        }),
-      /mergeable validation is deferred until ready_for_review/u
-    );
-  }
-
+  assert.throws(
+    () =>
+      validateResults({
+        requiredResults: documentationResults,
+        documentationOnly: false,
+        draftPullRequest: true,
+        lightweightOnly: true,
+        releasedJupyterResult: "skipped",
+        releasedJupyterRequired: false,
+        remoteResult: "skipped",
+        remoteRequired: false
+      }),
+    /mergeable validation is deferred until ready_for_review/u
+  );
+  assert.throws(
+    () =>
+      validateResults({
+        requiredResults: documentationResults,
+        documentationOnly: false,
+        draftPullRequest: true,
+        packageOnly: true,
+        releasedJupyterResult: "skipped",
+        releasedJupyterRequired: false,
+        remoteResult: "skipped",
+        remoteRequired: false
+      }),
+    /mergeable validation is deferred until ready_for_review/u
+  );
   for (const [documentationOnly, draftPullRequest, lightweightOnly] of [
     [false, false, true],
     [true, false, false],
@@ -1001,13 +932,12 @@ test("required CI result validation rejects every absent or non-success blocking
       /lightweight classifier is inconsistent/u
     );
   }
-
   for (const configuration of [
     {
       documentationOnly: true,
       packageOnly: true,
       fullMatrixRequired: false,
-      message: /classifiers are mutually exclusive/u
+      message: /documentation-only and package-only classifiers are mutually exclusive/u
     },
     {
       documentationOnly: false,
@@ -1038,7 +968,7 @@ test("required CI result validation rejects every absent or non-success blocking
     );
   }
 
-  for (const jobId of [...ALWAYS_REQUIRED_CI_JOBS, ...PRODUCT_CI_JOBS]) {
+  for (const jobId of REQUIRED_CI_JOBS) {
     for (const result of [undefined, "failure", "cancelled", "skipped"]) {
       const candidate = { ...successes };
       if (result === undefined) delete candidate[jobId];
@@ -1132,7 +1062,6 @@ test("required CI result validation rejects every absent or non-success blocking
       );
     }
   }
-
   for (const inconsistent of [
     { releasedJupyterRequired: true, remoteRequired: false, message: /released-jupyter classifier is inconsistent/u },
     { releasedJupyterRequired: false, remoteRequired: true, message: /remote-workspace classifier is inconsistent/u }
@@ -1488,11 +1417,7 @@ test("coverage provisions the exact PySpark runtime before enforcing the unchang
   assert.ok(steps.indexOf(java) < steps.indexOf(coverage));
   assert.ok(steps.indexOf(install) < steps.indexOf(coverage));
   assert.ok(steps.indexOf(verification) < steps.indexOf(coverage));
-  assert.equal(
-    manifest?.scripts?.["test:coverage"],
-    "node scripts/run-heavy-local-command.mjs test:coverage -- npm run test:coverage:run",
-    "Coverage must acquire the shared local heavy-command lease."
-  );
+  assert.equal(manifest?.scripts?.["test:coverage"], "npm run test:coverage:run");
   assert.equal(
     manifest?.scripts?.["test:coverage:run"],
     "npm run test:coverage:ts && npm run test:coverage:python",

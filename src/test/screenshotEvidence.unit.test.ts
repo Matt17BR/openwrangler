@@ -387,7 +387,6 @@ describe("packaged editor screenshot evidence", () => {
       ["gallery/notebook-variable-picker.png", 1_040, 590, 50_000],
       ["gallery/notebook-variable-picker-detail.png", 602, 380, 20_000],
       ["gallery/notebook-code-insertion.png", 1_000, 288, 10_000],
-      ["gallery/notebook-code-insertion-detail.png", 1_000, 288, 10_000],
       ["notebook-pandas.png", 1_210, 540, 50_000],
       ["gallery/notebook-pandas-detail.png", 698, 535, 20_000],
       ["gallery/notebook-polars.png", 1_440, 900, 50_000],
@@ -418,9 +417,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(actionIconLightSvg).not.toContain("currentColor");
     expect(packageJson.scripts?.check).toContain("npm run brand:check");
     expect(packageJson.scripts?.["brand:render-check"]).toContain("--render-check");
-    expect(packageJson.scripts?.["test:webview-acceptance"]).toBe(
-      "node scripts/run-heavy-local-command.mjs test:webview-acceptance -- npm run test:webview-acceptance:run"
-    );
+    expect(packageJson.scripts?.["test:webview-acceptance"]).toBe("npm run test:webview-acceptance:run");
     expect(packageJson.scripts?.["test:webview-acceptance:run"]).toContain("npm run brand:render-check");
     expect(packageJson.icon).toBe("media/icon.png");
     expect(viteConfig).toContain('publicDir: notebookRendererBuild ? false : "assets"');

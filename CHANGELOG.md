@@ -4,119 +4,52 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- Added **Convert Trusted Pickle to Parquet…** to the file menu for local `.pkl` and `.pickle` files. The command
+  names the selected Python interpreter, requires confirmation before loading the pickle, accepts Pandas DataFrames,
+  and saves the result as a separate Parquet file instead of overwriting the pickle.
+
 ### Changed
 
+- Open VSX recovery now verifies public screenshots with the media rules from the exact release tag, rather than a
+  different inventory from `main`.
+- Registry recovery now checks historical v1 packages against the files shipped by their exact release tag. Packages
+  from before the R runtime may omit its frame-contract file; current packages and Open Wrangler 2 releases may not.
 - After a pull request is merged, pushes to `main` and `release/1.x` now run just `Fast feedback` instead of repeating
   the full matrix. Ready pull requests still run every required check, and release candidates run the complete matrix
   again against the package that may be published.
 - Replaced a 1.5-second timer in the Windows dependency-lock test with a signal from the parent test process. Slow
   process startup can no longer make the validation subprocess miss the lock.
-- Split the portable script contracts into product/package, editor harness, release/registry, and benchmark commands.
-  The complete test command and CI gates are unchanged.
-- Open VSX recovery now checks public screenshots with the verifier from the exact release tag, so a v1 release is
-  not compared with a different media inventory from `main`.
-- Registry recovery now checks a historical v1 package against the files in its exact release tag. Packages from
-  before the R runtime may omit its frame-contract file; current packages and every Open Wrangler 2 release must
-  still include it.
-- Removed the completed v1.0 performance-evidence workflow and its dedicated maintenance checks. Stable performance
-  acceptance now has one documented path through the canonical stable-release artifact.
-- GitHub releases now use the versioned notes stored in the tagged commit instead of generated pull-request summaries.
-  Missing, malformed, invalid UTF-8, oversized, or conflicting notes stop publication before the release is changed.
-- Generated columns now scroll into view even when Cursor finishes laying out Code Preview without sending a resize
-  event. The retry stops after a fixed number of frames and cancels immediately when you scroll or click the grid.
-- Added bounded draft-pull-request feedback without weakening ready-PR evidence. Draft updates run the existing static
-  source lane plus bounded carriers for directly protected matrix names, while the protected `validate` context
-  deliberately remains failed until `ready_for_review` reruns the required tier at the same commit. Missing,
-  malformed, or contradictory path/draft classification fails closed.
-- Added an exact package-only pull-request tier for non-empty changes limited to `README.md`, `CHANGELOG.md`, `LICENSE`,
-  and `THIRD_PARTY_NOTICES.md`. Ready changes build and inspect the canonical VSIX, require all four shipped documents
-  to match their source bytes, pin the project manifest and reviewed license text to MIT, and run the focused
-  lossless-media contracts without repeating unrelated engine/editor matrices. Drafts still take precedence, mixed or
-  unknown paths fail into full CI, and public/accepted evidence under `docs/images/**`, `docs/media-gallery.md`, or
-  `docs/media-spec-*` remains full-matrix so PNG quality cannot bypass its visual checks.
-  Directly protected CodeQL and cross-platform check names remain present through classification-only carrier cells.
-- Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
-  kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
-  serialization, nested lease inheritance, and automatic crash release.
-- Made packaged Cursor/VS Code interaction barriers follow an authoritative renderer generation when recovery
-  supersedes the test's acknowledgement marker. Exact-session hydration remains deadline-bound; the harness neither
-  sleeps nor retries a failed editor phase.
-- Upgraded public README and gallery screenshots to a dedicated lossless 2× capture path while leaving ordinary
-  visual baselines at 1×. Logical layouts and crops are converted exactly once, every product image declares its
-  intrinsic logical dimensions, bounded per-file/total budgets reject accidental bloat or downscaling, and a
-  post-publication check detects browser upscaling across GitHub, Visual Studio Marketplace, and Open VSX. The
-  versioned `1.2.1+` promotion contract pre-stats a bounded inventory, validates PNG CRC/order/decode, verifies all 46
-  declared sRGB assets and all 18 rendered README images, and retries only typed stale/unavailable registry
-  observations in fresh bounded browser contexts. Historical recovery below `1.2.1` is unchanged. Main protects
-  preview promotion; stable coverage requires the same reviewed backport on `release/1.x`. Because rendering is
-  observed after publication, failure blocks workflow success but cannot retract already-public bytes.
-- Made obsolete pull-request heads actually cancellable by replacing cancellation-resistant `always()` job and
-  evidence-upload guards with `!cancelled()` across CI, CodeQL, and cross-platform acceptance. Failed current heads
-  still aggregate and retain safe diagnostics, while superseded native editor runs stop before blocking their replacement.
-- Bound packaged-editor failure-evidence workflow tests to the actual safety contract across pull-request, preview,
-  and stable publication: producer identity, immediate pinned uploader, exact emitted path and readiness gate, and
-  seven-day retention. Human-facing step labels are no longer treated as release-critical behavior.
-- Kept the stable and preview GitHub publishers on one descriptor-pinned canonical artifact triple from semantic
-  verification through remote publication. The exact VSIX, checksum, and provenance paths are revalidated before
-  every draft mutation, so sidecar replacement, symlink, hard-link, identity, metadata, or in-memory byte drift
-  fails before that mutation. The publisher now accepts the canonical 128 MiB VSIX ceiling while retaining separate
-  4 KiB provenance and 512 byte checksum bounds.
-- Rebuilt preview delivery as a manual candidate-first flow from protected `main`. One package job authors the exact
-  VSIX/checksum/provenance triple, Linux owns the complete source/full suite once, and parallel native,
-  installed-performance, released/remote Jupyter, and Remote SSH lanes consume only that immutable artifact ID.
-  `publish: false` reaches no protected environment, secret, write permission, tag, or registry mutation.
-- Unified stable and preview GitHub publication with an explicit reusable Open VSX promotion. Every public mutation
-  owner shares one non-cancelling `queue: max` group so pending releases are not displaced, and preview Open VSX
-  publication derives `--pre-release` only from verified public metadata. The branch-neutral exact-tag transaction is
-  now separate from stable and preview source-branch policy wrappers.
-- Reserved the protected `release/1.x` line for stable v1 maintenance while `main` owns `1.99.x` v2 previews and
-  later v2 releases. CI, CodeQL, cross-platform acceptance, stable tag publication, and Marketplace recovery now
-  enforce that version-derived boundary; fixes merge into v1 first and move to `main` through reviewed forward-port
-  pull requests. Marketplace intake also proves every selected tag commit is contained in its version-owned public
-  branch and is the exact public lightweight tag target instead of trusting matching package metadata or a peeled
-  annotated tag.
-- Completed immutable GitHub publication for both stable and future preview channels. The publisher now
-  creates or resumes one exact draft, uploads and downloads all three canonical assets for byte verification, and
-  only then publishes. The future-only repository setting is enabled and both workflows now require
-  `immutable: true` before registry promotion; partial public releases, duplicate/conflicting drafts, tag or asset
-  drift, missing/false immutable state, and post-publication changes fail closed.
-- Bounded failure-evidence credential matching to 8 KiB logical lines, with conservative fail-closed handling for
-  longer credential-shaped diagnostics. Maximum-size hostile inputs now run in a dedicated 64 MiB child heap with
-  a hard deadline, preventing malformed editor output from exhausting the developer desktop during local tests.
-- Serialized public memory-intensive local commands through one crash-released repository lease shared across clones
-  and worktrees. Overlapping tests, packaging, editor runs, media capture, and benchmarks now fail before allocating
-  substantial memory; packaging retains that lease across clean, build, checks, tests, and the final VSIX writer. The
-  local Linux wrapper also applies a conservative process-tree memory watchdog. It arms a parent-leased child
-  subreaper and a secondary cleanup lease before launch, so killing the wrapper makes the helper terminate and reap its
-  exact tree while preventing a replacement command from overlapping cleanup. Cleanup-token accept failures remain
-  latched behind that lease until the tree is empty. Every per-PID signal revalidates the captured process-start
-  identity first. macOS, Windows, and explicitly disabled modes make no descendant-containment claim; numeric limits
-  fail closed on those unsupported platforms. The editor-heavy feasibility comparison now acquires the same lease and
-  guard.
-- Added a fail-closed pull-request fast path for non-packaged documentation. Exact `docs/**`, contributor/security
-  guides, and contribution-template changes still run formatting, lint, strict types, generated-document freshness,
-  licenses, and workflow contracts, while checksum packaging and main-CI product/editor job IDs report explicit
-  skips to the protected aggregate. A hosted probe found that job-level skipped matrices lose their expanded check
-  names, so directly protected cross-platform and CodeQL matrices now expand lightweight context-carrier cells
-  without checkout, toolchain setup, analysis, or tests. Empty, mixed, unknown, shipped README/license/changelog, and
-  substantive ready pull-request changes keep the complete matrix; malformed classification fails every protected
-  context.
-- Reserved the exact numeric `1.99.x` band for Open Wrangler 2 Marketplace pre-releases while retaining legacy
-  `0.<odd-minor>.x` previews and every historical stable `1.x` classification outside that band. Release metadata
-  must still opt into the matching channel explicitly; this classifier change does not publish or trigger a release.
-- Reduced CI repetition without relaxing product acceptance: obsolete pull-request heads now cancel their own
-  superseded runs, the coverage lane exclusively owns the complete TypeScript/Python and exact PySpark suites, and
-  stable Linux validation runs script contracts once before instrumented coverage instead of executing both full
-  suites twice. Packaged VS Code/Cursor, notebook, visual/accessibility, performance, and publication gates remain.
-- Made affected pull-request released-Jupyter acceptance consume and revalidate the same checksum-bound canonical
-  VSIX as the other packaged jobs instead of rebuilding it. The protected aggregate requires that job to succeed
-  for ready product changes and to be skipped for documentation-only or package-only changes and draft feedback.
-  Protected-branch pushes no longer start the job. Draft `validate` remains deliberately failed; the separate
-  weekly/manual workflow remains non-cancelling ecosystem-drift evidence.
-- Unblocked the optional clean-room Data Wrangler comparison on current ipykernel launch syntax: the exact-runtime
-  guard now accepts both separate and equals-style connection-file arguments, while bounded path-free command-shape
-  diagnostics explain future mismatches without exposing interpreter or connection paths. The documented fixture
-  environment now includes Polars, and the complete feasibility sequence is verified with pinned Python 3.12.
+
+## [1.2.1] - 2026-08-04
+
+### Changed
+
+- Pandas profiles no longer scan ordinary numeric, boolean, date, and duration columns in Python just to count
+  missing values. In the 1 million × 20 Parquet test, profiling all 20 columns dropped from about 21 seconds to 6.5
+  seconds.
+- Open Wrangler was faster than Data Wrangler 1.24.2 in the median notebook-preview, workbench-open, and full-profile
+  measurements across Pandas, Polars, CSV, and Parquet. The
+  [full report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
+  includes p95, memory, outcome counts, and exact versions.
+- PySpark notebook sessions now show the first page without indexing, counting, and caching the entire DataFrame. The
+  total appears after the final page, and a changed page boundary asks the user to reopen the variable.
+- Generated columns stay in view when Cursor opens Code Preview and resizes the grid.
+- README and gallery screenshots now use lossless 2× captures. Post-release checks catch missing or downscaled images
+  on GitHub, the Visual Studio Marketplace, and Open VSX.
+- Pull requests now cancel superseded work, use shorter paths for documentation and package-only changes, and avoid
+  repeating the same full test suites. Product changes still run packaged VS Code and Cursor, notebook,
+  visual/accessibility, performance, and platform checks against one checksummed VSIX.
+- Editor failure reports now have fixed memory and time limits, preventing malformed or oversized diagnostics from
+  exhausting a developer machine.
+- Stable and preview publishing now sends one checksummed VSIX to GitHub, Open VSX, and the Visual Studio Marketplace.
+  GitHub release notes come from the tagged commit, and public releases are verified before either registry receives
+  them.
+- Stable v1 fixes ship from `release/1.x`. Future Open Wrangler 2 previews use the reserved `1.99.x` versions on
+  `main` before the project moves to 2.x.
+- The Data Wrangler comparison now works with current ipykernel connection arguments, and its Python 3.12 fixture
+  includes Polars.
 
 ## [1.2.0] - 2026-08-01
 
@@ -137,13 +70,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Import-option Quick Picks and input fields now explicitly reclaim workbench keyboard focus after opening. This
   preserves the existing keyboard-only flow in VS Code and fixes Cursor 3.13.21 leaving focus inside the dataframe
   webview; experimental forks that omit the standard focus command retain their native Quick Input behavior.
-- Hardened the optional clean-room Data Wrangler feasibility smoke against its real first-use UI: it now follows
-  the post-click editor's public runtime control through VS Code's local-interpreter overlay to the exact correlated
-  kernelspec, waits out transient duplicate controls without clicking, ignores only non-modal notification toasts,
-  and fails closed on persistent ambiguity or connection stalls. The fixed-order smoke has completed the full
-  CSV/Parquet matrix, while repeated baseline connection stalls correctly withhold a report instead of being retried.
-  Any completed run remains explicitly non-publishable diagnostic evidence, not a performance claim or grounds for
-  naming a winner.
+- Updated the optional Data Wrangler comparison for its real first-use UI. It selects the exact notebook kernel,
+  waits for temporary duplicate controls to settle, and stops on persistent ambiguity or connection failures. These
+  early results were diagnostic only and were not used for performance claims.
 - Local PySpark Classic and Connect variables now invalidate cached blocks when their dataframe is replaced or
   their Spark session stops. Recreating the same variable with the same schema lets the next current read reopen
   it on the exact originating notebook and kernel while preserving confirmed filters, ordered sorts, selection,
@@ -456,11 +385,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
-- Added an experimental, viewing-only PySpark 4.2 live-notebook path for Classic and local Spark Connect DataFrames. Grid projection, filtering, sorting, counts, profiles, and bounded value/page collection stay native to Spark; the adapter never converts through a local dataframe engine, never performs an unbounded collection, and unpersists only its owned indexed child without stopping the user Spark session. Real packaged VS Code acceptance now covers Jupyter Variables launch, filtering, sorting, paging, profiling, deterministic Classic kernel restart and replay, local Connect, cleanup, and Restricted Mode denial. Editing, exports, saved-output formatting, external or authenticated Spark Connect servers, cancellation, and generated-code insertion remain outside this preview.
+- Added an experimental, viewing-only PySpark 4.2 live-notebook path for Classic and local Spark Connect DataFrames. Grid projection, filtering, sorting, counts, profiles, and bounded value/page collection stay native to Spark; the adapter never converts through a local dataframe engine, never performs an unbounded collection, and releases only its owned logical-plan references without stopping the user Spark session. Real packaged VS Code acceptance now covers Jupyter Variables launch, filtering, sorting, paging, profiling, deterministic Classic kernel restart and replay, local Connect, cleanup, and Restricted Mode denial. Editing, exports, saved-output formatting, external or authenticated Spark Connect servers, cancellation, and generated-code insertion remain outside this preview.
 
 ### Changed
 
-- Rebuilt the README media around three compact, portable product views: a realistic file-backed dataframe, an automatic Pandas notebook snapshot, and a live Polars notebook draft with summaries, diff, and generated code. The copy now distinguishes saved snapshots from live variables, describes DuckDB's current file-only scope, and treats benchmark fixture sizes as evidence points rather than row limits.
+- Rebuilt the README media around three product views: a realistic file-backed dataframe, an automatic Pandas
+  notebook preview, and a live Polars draft with summaries, a diff, and generated code. The copy distinguishes saved
+  previews from live variables, describes DuckDB's file support, and makes clear that benchmark fixture sizes are not
+  hard row limits.
 - Raised the gallery and README logo raster to 512 × 512 from its committed vector source while retaining the 128px fallback and monochrome Activity Bar icon. Static PNG delivery now stays sharp and predictable across GitHub, the Visual Studio Marketplace, and Open VSX.
 - Shortened the isolated packaged-editor capture viewport and added deterministic real-Jupyter media checks for 100,000-row by 15-column Pandas and Polars dataframes. Captures reject transient hovers and notifications while keeping the required notebook context, type-aware statistics, and native code visible.
 - Composed the packaged workbench and notebook evidence into fixed-size sRGB images for GitHub, the Visual Studio Marketplace, and Open VSX. The workbench requires exact revenue minimum, maximum, mean, and median values, while README copy distinguishes bounded saved snapshots from live paged sources and benchmark evidence from dataframe limits.
@@ -578,7 +510,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Made the tag release workflow preview-only. A separate metadata job accepts only a matching preview tag and manifest before the build job can start; stable metadata fails there, all stable packaging/readiness branches are absent, and GitHub Release creation is fixed to prerelease. The complete build and validation job structures are exact allowlists with commit-pinned external actions, so extra jobs, secret-bearing publisher steps, write-capable validation mutations, and moving action substitutions fail documentation checks. Stable publication must promote the exact provenance-bound artifact set that passed stable acceptance instead of rebuilding production bytes.
 - The isolated Remote SSH host now gives the pinned VS Code CLI a namespace-only `/usr/lib64/libstdc++.so.6` compatibility alias into Ubuntu's already validated read-only multiarch runtime and verifies the exact resolution in both bootstrap and the real phase. Result-wait failures report only a fixed last-observed startup or acceptance-action stage after verified process/display cleanup, namespace revalidation, and zero-capability capture. The classifier reads no log contents and never publishes paths, raw checkpoint text, user data, or caught errors; unsafe or ambiguous observations remain the generic failure.
 - Removed the Remote SSH controller's writable dynamic-loader-cache step: the pinned Dropbear binary is now probed and launched directly through its pinned loader and explicit read-only library path. Its immutable runtime is mounted under private `/ow/ssh-runtime`, outside every host-backed mutable home, so an ancestor rename cannot shadow the executable or libraries. A shared loader-argument contract supplies a fixed, verified-absent `--argv0` named `dropbear` beneath the namespace's kernel-owned procfs for bootstrap, real-phase, and daemon launches, after explicitly validating the procfs filesystem identity. Dropbear 2025.89 consequently uses its supported plain-fork fallback instead of reopening and re-executing itself without the loader's one-shot search path; the acceptance-only daemon intentionally trades per-connection ASLR rerandomization for deterministic private-library resolution inside its ephemeral loopback and network namespace. Exact pinned TomCrypt and TomMath files remain independently leased over their read-only multiarch SONAME paths after the host runtime-directory mount. Bounded default-loader listings in bootstrap and the real phase require both SONAMEs to resolve through only the namespace's fixed `/lib -> /usr/lib` aliases to those exact mounts, rejecting glibc hardware-capability and other shadows before direct ELF probes or daemon launch. The namespace supplies a full Coreutils-compatible `printenv` and Procps `ps` instead of BusyBox's incompatible `ps`, and its already-pinned Bash owns `/bin/sh` so BusyBox's compiled applet lookup cannot shadow the exact `ps` mount; its SSH probe requires exact helper paths and working `getconf LONG_BIT`, `printenv HOME`, and `ps -p` behavior before editor launch. Before the cleanup embargo, the exact sealed Bubblewrap argument and descriptor-FD set runs a no-editor bootstrap that loads the controller imports and validates mounted descriptor leaves, critical executable modes, loopback and both Dropbear loader probes, namespace identities, host privacy, empty process/display state, and zero capabilities; the real spawn then seals the same inputs again. Bubblewrap must create the private namespace root with mode `0700`, and the copied virtual environment exposes a receipt-bound regular Python launcher instead of trusting its conventional symlink. Descriptor, namespace, and ownership uncertainty remain unrecoverable; later phase failures can expose only a fixed correlated stage after a second empty-child/display, five-namespace-isolation, host-privacy, and zero-capability boundary. Pre-result failures use randomized-temporary, flush, close, atomic no-overwrite publication, identified cleanup, and lease validation. Post-result cleanup or validation failures carry only the receipt from the first-observed lease after its final identity check and successful close; any earlier identity fault remains latched even if the named path is restored. Host validation binds the surviving named result to that receipt before surfacing a synthetic fixed controller failure. The underlying result is neither overwritten nor exposed as success. Raw process output remains suppressed and any uncertainty still withholds cleanup.
-- Hardened installed-performance publication from source to final evidence. Guarded packaging now requires every VSCE source to be tracked or an exact generated output, derives compiled paths only from tracked production TypeScript, uses a fixed nine-file media registry, and pins every tracked and generated input's identity, size, and SHA-256 around `createVSIX`. The README uses absolute links so VSCE leaves its tracked bytes unchanged, and the sealed archive must match both the complete source inventory and every pinned digest. Ignored extras, restored source rewrites, altered bundles, and transient runtime files therefore fail even if a later scan looks clean; excluded user-owned `scratch.txt` remains untouched and outside the candidate. Final candidate/report validation now rechecks both receipts in one pinned joint window, and failed extension-host fragment publication removes only the still-identified temporary rather than a substituted path.
+- Hardened installed-performance publication from source to final evidence. Guarded packaging now requires every VSCE source to be tracked or an exact generated output, derives compiled paths only from tracked production TypeScript, uses a fixed nine-file media registry, and pins every tracked and generated input's identity, size, and SHA-256 around `createVSIX`. The README uses absolute links so VSCE leaves its tracked bytes unchanged, and the sealed archive must match both the complete source inventory and every pinned digest. Ignored extras, restored source rewrites, altered bundles, and transient runtime files therefore fail even if a later scan looks clean; excluded user files remain untouched and outside the candidate. Final candidate/report validation now rechecks both receipts in one pinned joint window, and failed extension-host fragment publication removes only the still-identified temporary rather than a substituted path.
 - Corrected installed-performance phase-fragment publication for filesystem ctime semantics and destination collisions. The publisher now commits with an atomic no-clobber hard link, allows ctime to advance only while that link is created and its temporary name is retired, pins the destination's resulting ctime through a no-follow descriptor read, verifies the exact destination bytes before minting the receipt, and removes only a still-identified link when validation fails. Cross-platform guard fixtures now canonicalize only their owned OS temporary roots, preserving strict alias rejection in production.
 - Made the installed-performance test build guard its complete generated tree before compilation, stage declaration-shadowed CommonJS modules through no-follow descriptor-bound writes, and preflight plus revalidate the exact local module closure before editor acquisition and every phase, so an incomplete or substituted hosted harness fails locally instead of consuming release evidence.
 - Retained hosted installed-performance reports for actionable numeric regressions without weakening the gate. Only a complete report whose validated verdict contains numeric threshold failures and no structural failure may emit a revalidated exact path/SHA-256/size receipt; absolute, home/drive/environment-relative, percent-encoded, and ambiguous path-shaped values all fail closed, and candidate revalidation occurs inside the report's final pinned descriptor snapshot before output. The workflow uploads that report alone under a distinct seven-day failure artifact. Passing evidence remains a separate 90-day artifact, while incomplete runs, mixed or structural verdicts, cleanup/ownership faults, candidate or report drift, unsafe paths, and output faults publish no failure artifact.
@@ -632,7 +564,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Bound every notebook launch and renderer action to the exact originating `NotebookDocument` supplied by VS Code. Split-editor focus changes, simultaneous same-URI document objects, and same-path close/reopen races can no longer redirect URI-addressed kernel access, session provenance, or integration checks. A saved output's explicit live action reruns backend detection against the current variable instead of pinning its historical backend. Generated-code insertion repeats exact-object/version/uniqueness checks immediately before its URI-addressed stable VS Code edit and reports success only after the original document contains its uniquely marked cell; an accepted but unprovable edit is reported as indeterminate and is never retried or rolled back. Timed-out, cancelled, malformed, stale, and mis-correlated opens retain the exact dispatched kernel only long enough for bounded candidate cleanup; terminal close never reacquires by URI against a replacement notebook.
 - Moved Linux VS Code/Cursor acceptance to a private zero-window Chromium/Electron platform by default, preserving real workbench, CDP, dialog, and screenshot coverage without opening or focusing windows on the user's desktop. Headless and Xvfb runs receive one mode-0700 `tmp/ow/x-*` root for private home, runtime, config, cache, data, profiles, and inherited editor temporaries, avoiding shared-system-temp quota failures while keeping VS Code's Unix socket below Linux's path limit; the whole per-run root is removed in a nested `finally` only after editor/display ownership is verified. The private display disables unused GLX loading so host GPU drivers cannot crash Xvfb startup. Each POSIX editor launch owns a process group so timeout cleanup includes its extension-host and test-kernel descendants; visible runs require an explicit debug override, and Xvfb remains an explicit compatibility fallback.
 - Classified native-editor failures by spawn, early exit, timeout, result protocol, explicit test, runner, and interruption state, with exact editor/version, phase, elapsed time, exit status, result, and progress context. Standalone, seed, and verify phases combine a 300-second hard deadline with a 180-second changed-checkpoint inactivity deadline and never retry automatically; supervisor preparation, receipt validation, spawn work, and the cancellable private debugging-port reservation all consume that same wall-clock budget. Exclusive atomic progress and result files are limited to 1 KiB and 1 MiB; run-specific progress paths and every payload must match the current phase's strict `protocol`/`runId`/`phase` envelope, so stale checkpoints cannot extend inactivity, while the first-observed result identity remains pinned through the final read. Windows writers additionally publish an empty run/phase-derived heartbeat, allowing live inactivity checks without opening mutable content; wrong-correlation writers update a different path. Progress readers discard and retry only verified atomic checkpoint replacement races, while in-place mutation and every result-file identity change still fail closed. Major extension-host checkpoints use bounded, exclusive, randomized, no-follow sibling temporaries, and publication errors fail acceptance. Phase stdout/stderr is captured under fixed bounds, discarded on success, and redacted before failure reporting; an exact early Cursor/headless-Ozone `SIGABRT` adds a fixed, metadata-only private-Xvfb remedy without admitting control-sequence output. Editor CLI, workbench, and private-display processes inherit only an explicit platform/isolation allowlist plus runner-owned test values. Late child errors cannot impersonate exit, while downloader, editor, and display ownership uncertainty remains sticky. POSIX launches own process groups. Windows compiles the checked-in C# supervisor once per private run root inside the same command or phase deadline, pins its executable and parent identity plus SHA-256, permanently rejects a root involved in an unverified bootstrap, and uses that exact executable to create every target suspended, assign it to a private kill-on-close Job Object with strict handle inheritance, and resume only after ownership succeeds; normal completion requires exactly one random supervisor attestation, absent from the target environment and emitted only after `ActiveProcessCount == 0`, and every settled path closes control stdin. Any ambiguous attestation permanently latches ownership uncertainty, the correlated control marker is removed before stderr limits or diagnostics are computed, and a Windows-owned launch without piped stderr fails before spawn. Native Windows CI exercises the compiled supervisor's compile-once contract, natural descendant containment, forced termination, and malformed framing. If any editor/display verification is lost, environment restoration is lexical only, no diagnostic artifact or workflow output path is published, and inherited private runtime, root, profile, result, progress, log, and staging paths remain untouched. Verified private and staging roots are atomically moved to unadvertised random siblings and revalidated against captured root and parent identities immediately before deletion, so a rebound pathname is retained rather than recursively removed. Once the Windows Job Object is proven empty, only a short-lived `EACCES`, `EBUSY`, or `EPERM` on that atomic quarantine move receives a fixed, receipt-revalidated retry schedule; source drift, a planted target, any other error, exhaustion, and recursive-delete faults remain terminal. Package discovery, display, installation, and phase failures otherwise retain only a redacted, bounded allowlist before verified profile deletion; cleanup-only and combined failures receive distinct `cleanup` evidence with the originating phase recorded. A prelaunch-pinned staging root and in-memory inventories bind every retained file through sealing; strict UTF-8 text is re-redacted into one exclusive random JSON artifact outside that staging root. Failed CI/release runs upload only the exact emitted artifact path for seven days; success and ownership uncertainty create none, and raw disposable profiles or secrets are never uploaded. Pull requests and releases now run real stable VS Code extension-host and packaged-artifact acceptance natively on macOS and Windows as well as Linux.
-- Moved standalone extension-host acceptance from the repository workspace into a fresh copied fixture workspace under the per-run private root. Interrupted runs, forced editor termination, and laptop shutdown can no longer leave a deleted temporary Python override in the checkout.
+- Moved standalone extension-host acceptance from the repository workspace into a fresh copied fixture workspace under the per-run private root. Interrupted or terminated runs can no longer leave a stale temporary Python override in the source tree.
 - Kept supervisor stdout/stderr draining through ownership verification and added split-marker/final-suffix backpressure regressions so transform flush cannot lose target diagnostics. The pull-request native-editor matrix now runs the complete script suite on macOS and Windows, making the real Windows-supervisor compile and lifecycle smoke a required guard.
 - Kept Open VSX and Visual Studio Marketplace publication as the final release priority after parity and exact-artifact acceptance. Registry workflows remain disabled until the owner reserves `Matt17BR`, signs the required agreements, provisions protected Open VSX and Microsoft Entra publishing identities, and separately approves the verified live publication.
 - Replaced full-width page transport with required two-dimensional grid windows across open, paging, draft, history, apply, discard, and undo flows. Returned values are aligned to stable column IDs; cache keys include the projection; Pandas projects positionally, lazy Polars projects before collection, and DuckDB uses explicit terminal columns while preserving private row identity. Horizontal paging stays in the confirmed logical view, reconciles diagonal scroll and mutation races, exposes an accessible cleaning-action busy state, preserves full-schema keyboard/ARIA coordinates, and identifies duplicate/reordered diff columns by stable ID. The host rejects same-revision schema changes before publishing projected values. Previously saved full-width MIME-v2 notebook outputs are migrated only when their row width exactly matches the saved schema; incomplete self-contained snapshots fail closed, and explicit notebook snapshots are capped at the protocol's 10,000-row page limit.

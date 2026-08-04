@@ -376,6 +376,32 @@ def test_pandas_summaries_separate_nan_from_other_missing_values():
     assert (summaries["datetime"]["nullCount"], summaries["datetime"]["nanCount"]) == (1, 0)
 
 
+def test_pandas_primitive_missing_counts_do_not_box_values(monkeypatch: pytest.MonkeyPatch):
+    def fail_scalar_fallback(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("primitive dtypes must not use the scalar missing-value fallback")
+
+    monkeypatch.setattr(pandas_engine_module, "_scalar_mask", fail_scalar_fallback)
+    frame = pd.DataFrame(
+        {
+            "integer": pd.Series([1, 2], dtype="int64"),
+            "unsigned": pd.Series([1, 2], dtype="uint64"),
+            "boolean": pd.Series([True, False], dtype="bool"),
+            "float": pd.Series([1.0, float("nan")], dtype="float64"),
+            "datetime": pd.Series([pd.Timestamp("2026-01-01"), pd.NaT]),
+            "duration": pd.Series([pd.Timedelta(days=1), pd.NaT]),
+        }
+    )
+
+    summaries = {summary["column"]: summary for summary in PandasEngine().summaries(frame)}
+
+    assert (summaries["integer"]["nullCount"], summaries["integer"]["nanCount"]) == (0, 0)
+    assert (summaries["unsigned"]["nullCount"], summaries["unsigned"]["nanCount"]) == (0, 0)
+    assert (summaries["boolean"]["nullCount"], summaries["boolean"]["nanCount"]) == (0, 0)
+    assert (summaries["float"]["nullCount"], summaries["float"]["nanCount"]) == (0, 1)
+    assert (summaries["datetime"]["nullCount"], summaries["datetime"]["nanCount"]) == (1, 0)
+    assert (summaries["duration"]["nullCount"], summaries["duration"]["nanCount"]) == (1, 0)
+
+
 def test_pandas_text_summaries_are_exact_for_unicode_empty_all_null_and_mixed_display_values():
     frame = pd.DataFrame(
         {

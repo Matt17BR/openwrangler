@@ -19,6 +19,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    SessionDataShape,
     SummaryColumnProjection,
     bound_column_name,
     categorical_visualization,
@@ -313,7 +314,7 @@ class DuckDBEngine(DataFrameEngine):
         except Exception as error:
             raise EngineError(f"DuckDB could not open {path}: {error}") from error
 
-    def shape(self, frame: Any) -> dict[str, int]:
+    def shape(self, frame: Any) -> SessionDataShape:
         row_count = int(self._terminal_scalar(frame, "SELECT count(*) FROM ow") or 0)
         return {"rows": row_count, "columns": len(self._visible_columns(frame))}
 

@@ -1,6 +1,6 @@
 # Support
 
-Open Wrangler is experimental prerelease software. For usage questions, reproducible defects, or feature requests, open a [GitHub issue](https://github.com/Matt17BR/openwrangler/issues/new/choose).
+For usage questions, reproducible defects, or feature requests, open a [GitHub issue](https://github.com/Matt17BR/openwrangler/issues/new/choose).
 
 Before reporting a defect, include:
 

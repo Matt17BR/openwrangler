@@ -1,8 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ColumnSummary, GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
-import { DataGrid } from "../webviews/grid/DataGrid";
+import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata, TransformStep } from "../shared/protocol";
+import { DataGrid, requestedGridPageOffset } from "../webviews/grid/DataGrid";
 import { maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
 
 const webviewPostMessage = vi.hoisted(() => vi.fn());
@@ -213,6 +213,91 @@ describe("DataGrid", () => {
     expect(next).not.toHaveAttribute("aria-disabled");
     fireEvent.click(next);
     expect(onPage).toHaveBeenCalledWith(200);
+  });
+
+  it("keeps progressive PySpark paging honest until the terminal block confirms a total", () => {
+    const onPage = vi.fn();
+    const progressivePage: LiveGridPage = { ...page, totalRows: null, hasMore: true };
+    const sparkMetadata: SessionMetadata = {
+      ...metadata,
+      backend: "pyspark",
+      mode: "viewing",
+      source: { kind: "notebookVariable", label: "spark_df", variableName: "spark_df" },
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: null, columns: 2 },
+      filteredShape: { rows: null, columns: 2 }
+    };
+    render(
+      <DataGrid
+        metadata={sparkMetadata}
+        page={progressivePage}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={onPage}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "-1");
+    expect(screen.getByRole("status", { name: "Visible rows" })).toHaveTextContent(
+      "Rows 1\u20132 · total appears after the last page"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    expect(onPage).toHaveBeenCalledWith(2);
+  });
+
+  it("keeps exact PySpark scroll demand contiguous after terminal total promotion", () => {
+    expect(requestedGridPageOffset(8_000, 400, 200, true)).toBe(600);
+    expect(requestedGridPageOffset(0, 400, 200, true)).toBe(200);
+    expect(requestedGridPageOffset(8_000, 400, 200, false)).toBe(8_000);
+  });
+
+  it("turns an exact-total PySpark Ctrl+End jump into the next contiguous block", () => {
+    const onPage = vi.fn();
+    const totalRows = 10_000;
+    const currentOffset = 400;
+    render(
+      <DataGrid
+        metadata={{
+          ...metadata,
+          backend: "pyspark",
+          mode: "viewing",
+          shape: { rows: totalRows, columns: 2 },
+          filteredShape: { rows: totalRows, columns: 2 }
+        }}
+        page={pageAt(currentOffset, totalRows)}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: currentOffset, scrollLeft: 0 } }}
+        viewStateRestoreVersion={1}
+        summaries={[]}
+        pageSize={largeGridPageSize}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={onPage}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const firstCell = document.querySelector<HTMLTableCellElement>(
+      `[data-grid-row="${currentOffset}"][data-grid-column="0"]`
+    );
+    expect(firstCell).not.toBeNull();
+    expect(screen.getByRole("status", { name: "Visible rows" })).toHaveTextContent("Rows 401\u2013600 of 10,000");
+    expect(screen.getByRole("status", { name: "Visible rows" })).not.toHaveTextContent("Spark");
+    fireEvent.keyDown(firstCell!, { key: "End", ctrlKey: true });
+    expect(onPage).toHaveBeenCalledWith(currentOffset + largeGridPageSize);
   });
 
   it("keeps an exact terminal range and both status-bar actions available for very large datasets", () => {
@@ -2009,10 +2094,8 @@ describe("App file import options", () => {
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "preparingSparkView" });
     expect(status).toHaveTextContent("Preparing PySpark 4.2 (viewing only)");
-    expect(status).toHaveTextContent("scans, indexes, and caches the complete PySpark DataFrame");
-    expect(status).toHaveTextContent("stable row positions and an exact row total");
-    expect(status).toHaveTextContent("protect unrelated Spark jobs");
-    expect(status).toHaveTextContent("allowed to finish even if you close the view");
+    expect(status).toHaveTextContent("Loading the first page without counting every row");
+    expect(status).toHaveTextContent("The exact total appears after the last page");
     expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "untrusted-stage" });
@@ -2024,7 +2107,7 @@ describe("App file import options", () => {
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "openingNotebookVariable" });
     expect(status).toHaveTextContent("Opening the live notebook variable");
-    expect(status).not.toHaveTextContent("scans, indexes, and caches");
+    expect(status).not.toHaveTextContent("without counting every row");
     expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
   });
 

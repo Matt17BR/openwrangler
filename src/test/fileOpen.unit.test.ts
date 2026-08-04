@@ -12,6 +12,9 @@ const fileMocks = vi.hoisted(() => ({
   panelConstructor: vi.fn(),
   changeActiveImportOptions: vi.fn(async () => false),
   detectImportOptions: vi.fn<(uri: unknown) => Promise<unknown>>(async () => undefined),
+  bridgeRequest: vi.fn(async () => {
+    throw new Error("Unsupported files must not start Python.");
+  }),
   stat: vi.fn(async () => ({ type: 1 })),
   showWarningMessage: vi.fn(async () => undefined),
   showInformationMessage: vi.fn(async () => undefined),
@@ -173,6 +176,7 @@ describe("file launch command", () => {
     fileMocks.changeActiveImportOptions.mockResolvedValue(false);
     fileMocks.detectImportOptions.mockReset();
     fileMocks.detectImportOptions.mockResolvedValue(undefined);
+    fileMocks.bridgeRequest.mockClear();
     fileMocks.stat.mockReset();
     fileMocks.stat.mockResolvedValue({ type: vscode.FileType.File });
     fileMocks.showWarningMessage.mockClear();
@@ -329,6 +333,7 @@ describe("file launch command", () => {
     expect(fileMocks.stat).not.toHaveBeenCalled();
     expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
     expect(fileMocks.createPanel).not.toHaveBeenCalled();
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
 
     await command("openWrangler.openPath")();
     const pickerExtensions = fileMocks.showOpenDialog.mock.calls[0]?.[0]?.filters?.["Data files"];
@@ -567,7 +572,7 @@ function register(): { context: ExtensionContext; bridge: OpenWranglerBridge } {
       }
     }
   } as unknown as ExtensionContext;
-  const bridge = {} as OpenWranglerBridge;
+  const bridge = { request: fileMocks.bridgeRequest } as OpenWranglerBridge;
   registerFileCommands(context, bridge);
   return { context, bridge };
 }
