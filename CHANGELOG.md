@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Split the portable script contracts into product/package, editor harness, release/registry, and benchmark commands.
+  The complete test command and CI gates are unchanged.
 - Open VSX recovery now checks public screenshots with the verifier from the exact release tag, so a v1 release is
   not compared with a different media inventory from `main`.
 - Registry recovery now checks a historical v1 package against the files in its exact release tag. Packages from
