@@ -220,7 +220,9 @@ Wrangler runs it with Polars.
 | Polars Parquet | Profile every column  |    **7.20 s** |        8.23 s |
 
 The [full results](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
-include p95 timings, memory use, raw outcomes, exact versions, and the test method. The
+include p95 timings, memory use, outcome counts, exact versions, and the test method. Small Pandas/Polars differences
+within Data Wrangler are not conversion benchmarks: variables were created before timing, and the measured UI work
+dominates those rows. The
 [installed-editor benchmarks](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md#performance-fixtures)
 cover first-grid and scrolling performance in VS Code and Cursor.
 

@@ -11,7 +11,6 @@ import {
   readdirSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync
 } from "node:fs";
 import { arch, cpus, platform, release, totalmem } from "node:os";
@@ -858,9 +857,11 @@ function digest(value) {
 }
 
 function readJson(path) {
-  const size = statSync(path).size;
-  if (size <= 0 || size > MAX_JSON_BYTES) throw new Error(`${basename(path)} is empty or too large.`);
-  return JSON.parse(readFileSync(path, "utf8"));
+  const source = readFileSync(path);
+  if (source.byteLength <= 0 || source.byteLength > MAX_JSON_BYTES) {
+    throw new Error(`${basename(path)} is empty or too large.`);
+  }
+  return JSON.parse(source.toString("utf8"));
 }
 
 function writeJsonAtomic(path, value) {
