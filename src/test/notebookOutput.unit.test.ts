@@ -118,21 +118,25 @@ describe("notebook output", () => {
     }
   });
 
-  it("migrates saved full-width MIME v2 pages created before column projections", () => {
-    const { columnIds: _columnIds, ...legacyPage } = page;
+  it("requires current MIME v2 pages to declare their column identities", () => {
+    const { columnIds: _columnIds, ...pageWithoutColumnIds } = page;
 
-    const normalized = normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page: legacyPage, summaries: [] });
+    const normalized = normalizeNotebookOutputPayload({
+      mimeVersion: 2,
+      metadata,
+      page: pageWithoutColumnIds,
+      summaries: []
+    });
 
-    expect(normalized?.page.columnIds).toEqual(["c:0"]);
-    expect(normalized?.page.rows[0]?.values).toHaveLength(1);
+    expect(normalized).toBeUndefined();
   });
 
-  it("rejects oversized legacy containers before migration traverses them", () => {
+  it("rejects oversized containers before traversing their nested fields", () => {
     let schemaFieldRead = false;
     const oversizedSchema = Array.from({ length: 2_049 }, (_, position) => ({
       get id() {
         schemaFieldRead = true;
-        throw new Error("legacy migration traversed an oversized schema");
+        throw new Error("validation traversed an oversized schema");
       },
       name: `column-${position}`,
       position,
@@ -144,7 +148,7 @@ describe("notebook output", () => {
       normalizeNotebookOutputPayload({
         mimeVersion: 2,
         metadata: { ...metadata, schema: oversizedSchema },
-        page: { offset: 0, limit: 1, totalRows: 0, rows: [] },
+        page: { offset: 0, limit: 1, totalRows: 0, columnIds: ["c:0"], rows: [] },
         summaries: []
       })
     ).toBeUndefined();
@@ -156,14 +160,14 @@ describe("notebook output", () => {
       rowNumber,
       get values() {
         rowFieldRead = true;
-        throw new Error("legacy migration traversed oversized rows");
+        throw new Error("validation traversed oversized rows");
       }
     }));
     expect(
       normalizeNotebookOutputPayload({
         mimeVersion: 2,
         metadata,
-        page: { offset: 0, limit: 10_001, totalRows: 10_001, rows: oversizedRows },
+        page: { offset: 0, limit: 10_001, totalRows: 10_001, columnIds: ["c:0"], rows: oversizedRows },
         summaries: []
       })
     ).toBeUndefined();
@@ -185,29 +189,20 @@ describe("notebook output", () => {
       filteredShape: { rows: 1, columns: 2 },
       schema: [...metadata.schema, secondColumn]
     };
-    const { columnIds: _columnIds, ...legacyNarrowPage } = page;
-
     expect(
       normalizeNotebookOutputPayload({ mimeVersion: 2, metadata: wideMetadata, page, summaries: [] })
     ).toBeUndefined();
-    expect(
-      normalizeNotebookOutputPayload({ mimeVersion: 2, metadata: wideMetadata, page: legacyNarrowPage, summaries: [] })
-    ).toBeUndefined();
   });
 
-  it("rejects current and legacy snapshots that omit claimed rows", () => {
-    const { columnIds: _columnIds, ...legacyPage } = page;
-
-    for (const candidate of [page, legacyPage]) {
-      expect(
-        normalizeNotebookOutputPayload({
-          mimeVersion: 2,
-          metadata,
-          page: { ...candidate, totalRows: 1, rows: [] },
-          summaries: []
-        })
-      ).toBeUndefined();
-    }
+  it("rejects snapshots that omit claimed rows", () => {
+    expect(
+      normalizeNotebookOutputPayload({
+        mimeVersion: 2,
+        metadata,
+        page: { ...page, totalRows: 1, rows: [] },
+        summaries: []
+      })
+    ).toBeUndefined();
   });
 
   it("rejects contradictory or unstable captured-row identity", () => {
@@ -265,19 +260,15 @@ describe("notebook output", () => {
     }
   });
 
-  it("rejects current and legacy snapshots that do not start at the first row", () => {
-    const { columnIds: _columnIds, ...legacyPage } = page;
-
-    for (const candidate of [page, legacyPage]) {
-      expect(
-        normalizeNotebookOutputPayload({
-          mimeVersion: 2,
-          metadata,
-          page: { ...candidate, offset: 1 },
-          summaries: []
-        })
-      ).toBeUndefined();
-    }
+  it("rejects snapshots that do not start at the first row", () => {
+    expect(
+      normalizeNotebookOutputPayload({
+        mimeVersion: 2,
+        metadata,
+        page: { ...page, offset: 1 },
+        summaries: []
+      })
+    ).toBeUndefined();
   });
 
   it("rejects malformed and unknown-version outputs", () => {
