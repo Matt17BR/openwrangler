@@ -70,6 +70,7 @@ export async function runDataWranglerComparisonNeutralDriver({ requestPath, outp
   writeEditorSettings(userData, {
     "python.defaultInterpreterPath": request.python.path,
     "openWrangler.pythonPath": request.python.path,
+    "jupyter.experiments.enabled": true,
     "telemetry.telemetryLevel": "off",
     "update.mode": "none",
     "extensions.autoUpdate": false,
