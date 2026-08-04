@@ -13,16 +13,20 @@ counts.
 
 The new test uses one synthetic 10,000,000 × 100 Parquet file. Its columns are split across floating-point and integer
 data, low-cardinality categories, high-cardinality text, timestamps, dates, durations, and booleans. The generator
-adds nulls and occasional numeric outliers. It writes 100,000-row groups with PyArrow and Zstandard compression, so
+adds nulls and fixed profile markers. It writes 100,000-row groups with PyArrow and Zstandard compression, so
 it never holds the complete fixture in memory.
 
-The column names stay `c00` through `c99` because both products must receive the same simple schema. The fixture
-manifest records the role and Arrow type of every column, plus its seed, file hash, size, compression settings, and
-row-group layout. No user data is read.
+The column names stay `c00` through `c99` because both products must receive the same simple schema. Each column
+family has a known profile value: fixed numeric and date bounds, a dominant category, a repeated text value, or both
+boolean values. The test waits for those values in every profile instead of treating a generic column header as a
+completed summary. The fixture manifest records the markers along with every column type, the seed, file hash, size,
+compression settings, and row-group layout. No user data is read.
 
 Generation stops before writing if Linux reports less than 40 GiB of available memory or the output filesystem has
-less than 15 GiB free. Those checks are intentionally conservative: the file is several gigabytes and a Pandas load
-can require much more memory than the compressed source. The generator refuses to replace an existing file.
+less than 15 GiB free. The study repeats those checks immediately before every editor run and also requires the same
+machine, AC power, and CPU governor used when the study began. A changed condition stops the command before another
+run starts. These checks are conservative because a Pandas load can require much more memory than the compressed
+source. The generator refuses to replace an existing file.
 
 ## What is measured
 
@@ -38,16 +42,18 @@ Each run records:
 4. the profiling action to completed summaries for all 100 columns; and
 5. the first, highest, and increase in process-tree PSS during the UI part of the run.
 
-The native read is timed separately so disk and decoder work are not mixed into renderer time. The notebook kernel
-then loads the same dataframe before the UI measurement. This matches the common case where a dataframe already
-exists in a notebook and the user evaluates its name. Data Wrangler accepts a Polars input through its Pandas
-conversion path; the report keeps that input labelled Polars so the conversion cost stays visible. Each load uses a
-new Python process, but the test does not flush the operating-system file cache, so these are warm-source loads rather
-than cold-disk timings.
+The native read is timed separately so disk and decoder work are not mixed into renderer time. Native-load results
+are grouped only by engine; they are not attributed to either editor extension. The notebook kernel then loads the
+same dataframe before the UI measurement. This matches the common case where a dataframe already exists in a
+notebook and the user evaluates its name. Data Wrangler accepts a Polars input through its Pandas conversion path;
+the report keeps that input labelled Polars so the conversion cost stays visible in its UI timings. Each native load
+uses a new Python process, but the test does not flush the operating-system file cache, so these are warm-source loads
+rather than cold-disk timings.
 
-The report gives the minimum, median, and maximum for each measurement. Five values are enough for a practical
-manual comparison, but not for a useful p95, so the new report does not calculate one. It is a release review, not a
-job in normal pull-request CI and not a scheduled task on a developer laptop.
+The report gives the minimum, median, and maximum for each measurement. Each UI group has five values and each
+engine-only native-load group has ten. Five values are enough for a practical manual comparison but not for a useful
+p95, so the report does not calculate one. It is a release review, not a job in normal pull-request CI and not a
+scheduled task on a developer laptop.
 
 ## Run the study
 
@@ -75,8 +81,9 @@ npm run comparison:large:study -- \
 ```
 
 The command writes one result after each editor closes. If the machine sleeps or the command is stopped, run it again
-with the same arguments. It resumes at the first missing result. Use `--limit 1` for a single-run check before the
-full study; that result belongs in a separate output directory and is not part of the final comparison.
+with the same arguments. It removes the abandoned private trial directory, checks the fixture again, and resumes at
+the first missing result. Use `--limit 1` for a single-run check before the full study; that result belongs in a
+separate output directory and is not part of the final comparison.
 
 Generate the final report after all 20 runs finish:
 
@@ -88,7 +95,8 @@ npm run comparison:large:report -- \
 
 The report command writes the diagnostic result and then fails if any product/engine group lacks five successful
 runs. Before publishing numbers, a second person should check the exact product, editor, Python, package, fixture,
-and tool hashes and recalculate the four groups from the raw trials.
+and tool hashes, recalculate the four UI groups, and recalculate the two engine-only native-load groups from the raw
+trials.
 
 ## Fast regression tests
 

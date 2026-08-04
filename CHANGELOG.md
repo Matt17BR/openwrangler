@@ -4,6 +4,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- The optional Data Wrangler comparison now has a manual 10M × 100 mixed-type Parquet study. It uses five fresh
+  editor and kernel sessions per product/engine pair, times native file loading separately, and reports median and
+  range instead of calculating p95 from too few samples. Normal CI keeps the existing small regression benchmark.
+
 ### Changed
 
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
@@ -40,9 +46,6 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
-- The optional Data Wrangler comparison now has a manual 10M × 100 mixed-type Parquet study. It uses five fresh
-  editor and kernel sessions per product/engine pair, times native file loading separately, and reports median and
-  range instead of calculating p95 from too few samples. Normal CI keeps the existing small regression benchmark.
 - Open VSX recovery now verifies public screenshots with the media rules from the exact release tag, rather than a
   different inventory from `main`.
 - Registry recovery now checks historical v1 packages against the files shipped by their exact release tag. Packages

@@ -388,7 +388,7 @@ function validateRequest(request) {
     !isAbsolute(request.notebookPath) ||
     !isAbsolute(request.cell?.source) ||
     !SHA256.test(request.cell?.sourceSha256 ?? "") ||
-    !["integer-sentinel", "mixed-completion"].includes(request.cell?.profileContract) ||
+    !["integer-sentinel", "mixed-sentinels-v1"].includes(request.cell?.profileContract) ||
     !isAbsolute(request.candidate?.path) ||
     !SHA256.test(request.candidate?.sha256 ?? "") ||
     !isAbsolute(request.editor?.path) ||

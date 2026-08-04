@@ -574,10 +574,15 @@ scheduled, or local default workflow. Tests use small row counts through the Pyt
 never generate the full fixture.
 
 The study times native file loading separately from the resident-dataframe notebook UI. Each editor run measures
-inline preview, usable workbench grid, all-column profiling, and process-tree PSS. The fixture contains numeric,
-categorical, high-cardinality text, timestamp, date, duration, and boolean columns with nulls and outliers. It is
-written in bounded 100,000-row groups. The fixture and output must share a filesystem so the session runner can use
-read-only hard links rather than copy several gigabytes per trial.
+inline preview, usable workbench grid, all-column profiling, and process-tree PSS. Native file loads are grouped by
+engine rather than product. The fixture contains numeric, categorical, high-cardinality text, timestamp, date,
+duration, and boolean columns with nulls and known per-type profile markers. It is written in bounded 100,000-row
+groups. Profile completion requires the matching marker for every column family. The fixture and output must share a
+filesystem so the session runner can use read-only hard links rather than copy several gigabytes per trial.
+
+Before checking fixture provenance, the runner removes a private trial directory left by an interrupted process. It
+then resumes at the first missing result. Immediately before every new editor session it checks available memory,
+free disk, AC power, and the recorded CPU governor. A failed check creates no trial result and starts no editor.
 
 Run these focused checks while changing the new method:
 

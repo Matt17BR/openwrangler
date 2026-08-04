@@ -22,6 +22,14 @@ DEFAULT_ROW_GROUP_ROWS = 100_000
 DEFAULT_SEED = 17_031
 MIN_AVAILABLE_MEMORY_BYTES = 40 * 1024**3
 MIN_FREE_DISK_BYTES = 15 * 1024**3
+NUMERIC_SENTINEL_MIN = -900_000_000
+NUMERIC_SENTINEL_MAX = 900_000_000
+TIMESTAMP_SENTINEL_MIN_NS = 946_684_800_000_000_000
+TIMESTAMP_SENTINEL_MAX_NS = 4_102_358_400_000_000_000
+DATE_SENTINEL_MIN_DAYS = 10_957
+DATE_SENTINEL_MAX_DAYS = 47_481
+DURATION_SENTINEL_MIN_MS = -86_400_000
+DURATION_SENTINEL_MAX_MS = 31_536_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +144,23 @@ def _null_mask(row_numbers: np.ndarray, column: int) -> np.ndarray:
     return (row_numbers + column * 11) % period == 0
 
 
+def _sentinel_rows(column: int) -> tuple[int, int]:
+    candidates: list[int] = []
+    row = 101 + column * 3
+    period = 29 + (column % 53)
+    while len(candidates) < 2:
+        if (row + column * 11) % period != 0:
+            candidates.append(row)
+        row += 1
+    return candidates[0], candidates[1]
+
+
+def _set_numeric_sentinels(values: np.ndarray, rows: np.ndarray, column: int) -> None:
+    minimum_row, maximum_row = _sentinel_rows(column)
+    values[rows == minimum_row] = NUMERIC_SENTINEL_MIN
+    values[rows == maximum_row] = NUMERIC_SENTINEL_MAX
+
+
 def _string_values(prefix: str, mixed: np.ndarray, column: int) -> list[str]:
     return [f"{prefix}-{column:02d}-{int(value):016x}" for value in mixed]
 
@@ -156,30 +181,43 @@ def build_row_group(start: int, count: int, spec: LargeFixtureSpec) -> pa.Table:
             mixed = _splitmix64(unsigned_rows + np.uint64(spec.seed + column * 1_000_003))
             values = ((mixed >> np.uint64(11)).astype(np.float64) / float(1 << 53) - 0.5) * (column + 1) * 250
             values += np.sin((rows + column) / (17 + column)) * (column + 1)
-            values[(rows + column) % 100_003 == 0] *= 10_000
+            _set_numeric_sentinels(values, rows, column)
             arrays.append(pa.array(values, type=field.type, mask=mask))
         elif column < 66:
             mixed = _splitmix64(unsigned_rows + np.uint64(spec.seed + column * 2_000_033))
             modulus = np.uint64(10 ** (2 + column % 7))
             values = (mixed % modulus).astype(np.int64) - int(modulus // np.uint64(3))
-            values[(rows + column) % 131_071 == 0] = np.iinfo(np.int64).max - column
+            _set_numeric_sentinels(values, rows, column)
             arrays.append(pa.array(values, type=field.type, mask=mask))
         elif column < 74:
             positions = ((rows // (3 + column % 5) + column) % len(categories)).astype(np.int64)
+            positions[(rows + column) % 5 == 0] = 0
             arrays.append(pa.array(categories[positions].tolist(), type=field.type, mask=mask))
         elif column < 80:
             mixed = _splitmix64(unsigned_rows + np.uint64(spec.seed + column * 3_000_017))
-            arrays.append(pa.array(_string_values("record", mixed, column), type=field.type, mask=mask))
+            strings = _string_values("record", mixed, column)
+            for position in np.flatnonzero((rows + column) % 97 == 0):
+                strings[int(position)] = f"popular-c{column:02d}"
+            arrays.append(pa.array(strings, type=field.type, mask=mask))
         elif column < 86:
             base = np.int64(1_672_531_200_000_000_000)
             stride = np.int64((column - 79) * 1_000_000_000)
             values = base + rows * stride + ((rows + column) % 86_400) * np.int64(1_000_000_000)
+            minimum_row, maximum_row = _sentinel_rows(column)
+            values[rows == minimum_row] = TIMESTAMP_SENTINEL_MIN_NS
+            values[rows == maximum_row] = TIMESTAMP_SENTINEL_MAX_NS
             arrays.append(pa.array(values, type=field.type, mask=mask))
         elif column < 89:
             values = np.int32(18_000 + column * 17) + (rows % np.int64(3_650)).astype(np.int32)
+            minimum_row, maximum_row = _sentinel_rows(column)
+            values[rows == minimum_row] = DATE_SENTINEL_MIN_DAYS
+            values[rows == maximum_row] = DATE_SENTINEL_MAX_DAYS
             arrays.append(pa.array(values, type=field.type, mask=mask))
         elif column < 92:
             values = ((rows * (column - 87) * 137) % np.int64(31_536_000_000)).astype(np.int64)
+            minimum_row, maximum_row = _sentinel_rows(column)
+            values[rows == minimum_row] = DURATION_SENTINEL_MIN_MS
+            values[rows == maximum_row] = DURATION_SENTINEL_MAX_MS
             arrays.append(pa.array(values, type=field.type, mask=mask))
         else:
             mixed = _splitmix64(unsigned_rows + np.uint64(spec.seed + column * 5_000_011))
@@ -257,6 +295,14 @@ def fixture_manifest(path: Path, spec: LargeFixtureSpec, capacity: dict[str, int
         "seed": spec.seed,
         "compression": {"codec": "zstd", "level": 3, "dictionaryColumns": [f"c{i:02d}" for i in range(66, 74)]},
         "schema": column_contract(),
+        "profileSentinels": {
+            "numericExtrema": [NUMERIC_SENTINEL_MIN, NUMERIC_SENTINEL_MAX],
+            "categoricalTopValue": "enterprise",
+            "highCardinalityTopValueTemplate": "popular-c{column}",
+            "datetimeExtrema": ["2000-01-01", "2099-12-31"],
+            "durationExtremaMs": [DURATION_SENTINEL_MIN_MS, DURATION_SENTINEL_MAX_MS],
+            "booleanValues": ["True", "False"],
+        },
         "bytes": path.stat().st_size,
         "sha256": _sha256(path),
         "capacityAtStart": capacity,

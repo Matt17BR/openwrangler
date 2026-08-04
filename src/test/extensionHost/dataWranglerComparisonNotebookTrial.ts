@@ -70,7 +70,7 @@ type Product = "open-wrangler" | "data-wrangler";
 type Engine = "pandas" | "polars";
 type Format = "csv" | "parquet";
 type TrialKind = "warm";
-type ProfileContract = "integer-sentinel" | "mixed-completion";
+type ProfileContract = "integer-sentinel" | "mixed-sentinels-v1";
 type FailureStage = (typeof FAILURE_STAGES)[number];
 type MilestoneName = (typeof MILESTONE_NAMES)[number];
 type PromiseOutcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
@@ -368,7 +368,7 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
       variableName: matchingString(cell.variableName, VARIABLE, "Comparison request cell.variableName"),
       profileContract: oneOf(
         cell.profileContract,
-        ["integer-sentinel", "mixed-completion"] as const,
+        ["integer-sentinel", "mixed-sentinels-v1"] as const,
         "Comparison request cell.profileContract"
       )
     }),
@@ -1388,60 +1388,81 @@ export function integerProfileTextReady(input: {
   if (!/^c\d{2}$/u.test(input.column) || !Number.isSafeInteger(input.minimum) || !Number.isSafeInteger(input.maximum)) {
     return false;
   }
-  const text = input.text
-    .replace(/\u2212/gu, "-")
-    .replace(/[,_]/gu, "")
-    .replace(/\s+/gu, " ")
-    .trim();
-  const displayedMetric = (label: "min" | "max", value: number): boolean => {
-    const match = new RegExp(
-      `\\b(?:${label}|${label === "min" ? "minimum" : "maximum"})\\s*[:=]?\\s*` +
-        `([-+]?(?:(?:\\d(?:[\\d ]*\\d)?)(?:\\.\\d+)?|\\.\\d+)(?:e[-+]?\\d+)?)([kmb]?)(?![\\d.\\p{L}])`,
-      "iu"
-    ).exec(text);
-    if (!match?.[1]) return false;
-    const token = match[1].replace(/\s/gu, "");
-    const suffix = (match[2] ?? "").toLowerCase();
-    const scale = suffix === "k" ? 1_000 : suffix === "m" ? 1_000_000 : suffix === "b" ? 1_000_000_000 : 1;
-    const displayed = Number(token) * scale;
-    if (!Number.isFinite(displayed)) return false;
-    if (suffix === "") return displayed === value;
-    const decimalPlaces = token.match(/\.(\d+)/u)?.[1]?.length ?? 0;
-    return Math.abs(displayed - value) <= (scale / 2) * 10 ** -decimalPlaces;
-  };
+  const text = normalizedProfileText(input.text);
   return (
     new RegExp(`(?:^|\\b)${input.column}(?:\\b|[,;:()\\[\\]{}-])`, "u").test(text) &&
     !/\b(?:loading|profiling|calculating|pending)\b/iu.test(text) &&
     /\b(?:missing|null(?:s| values?)?)\s*[:=]?\s*0(?:\b|%)/iu.test(text) &&
     /\b(?:distinct|unique)\b/iu.test(text) &&
-    displayedMetric("min", input.minimum) &&
-    displayedMetric("max", input.maximum)
+    displayedProfileMetric(text, "min", input.minimum) &&
+    displayedProfileMetric(text, "max", input.maximum)
   );
 }
 
 export function mixedProfileTextReady(input: { readonly column: string; readonly text: string }): boolean {
   if (!/^c\d{2}$/u.test(input.column)) return false;
-  const text = input.text.replace(/\s+/gu, " ").trim();
-  return (
+  const text = normalizedProfileText(input.text);
+  const baseReady =
     new RegExp(`(?:^|\\b)${input.column}(?:\\b|[,;:()\\[\\]{}-])`, "u").test(text) &&
     !/\b(?:loading|profiling|calculating|pending|preparing)\b/iu.test(text) &&
     /\b(?:missing|null(?:s| values?)?)\s*[:=]?\s*\d/iu.test(text) &&
-    /\b(?:distinct|unique)\s*[:=]?\s*\d/iu.test(text)
-  );
+    /\b(?:distinct|unique)\s*[:=]?\s*\d/iu.test(text);
+  if (!baseReady) return false;
+  const index = Number(input.column.slice(1));
+  if (index < 66) {
+    return displayedProfileMetric(text, "min", -900_000_000) && displayedProfileMetric(text, "max", 900_000_000);
+  }
+  if (index < 74) return /\benterprise\b/iu.test(text);
+  if (index < 80) return new RegExp(`\\bpopular-${input.column}\\b`, "iu").test(text);
+  if (index < 89) {
+    return (
+      /\bmin(?:imum)?\b/iu.test(text) &&
+      /\bmax(?:imum)?\b/iu.test(text) &&
+      text.includes("2000-01-01") &&
+      text.includes("2099-12-31")
+    );
+  }
+  if (index < 92) return /\bmin(?:imum)?\b/iu.test(text) && /\bmax(?:imum)?\b/iu.test(text);
+  return /\btrue\b/iu.test(text) && /\bfalse\b/iu.test(text);
 }
 
 export function openWranglerProfileTextReady(input: {
+  readonly column: string;
   readonly contract: ProfileContract;
+  readonly minimum: number;
+  readonly maximum: number;
   readonly text: string;
 }): boolean {
-  const text = input.text.replace(/\s+/gu, " ");
-  const labels =
-    input.contract === "integer-sentinel"
-      ? ["Exact statistics", "Rows", "Null", "Distinct", "Min", "Max"]
-      : ["Exact statistics", "Rows", "Null", "Distinct"];
-  return (
-    !/Preparing column summary|Profiling selected column/iu.test(text) && labels.every((label) => text.includes(label))
-  );
+  const text = normalizedProfileText(`${input.column} ${input.text}`);
+  if (!["Exact statistics", "Rows"].every((label) => text.includes(label))) return false;
+  return input.contract === "integer-sentinel"
+    ? integerProfileTextReady({ ...input, text })
+    : mixedProfileTextReady({ column: input.column, text });
+}
+
+function normalizedProfileText(text: string): string {
+  return text
+    .replace(/\u2212/gu, "-")
+    .replace(/[,_]/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function displayedProfileMetric(text: string, label: "min" | "max", value: number): boolean {
+  const match = new RegExp(
+    `\\b(?:${label}|${label === "min" ? "minimum" : "maximum"})\\s*[:=]?\\s*` +
+      `([-+]?(?:(?:\\d(?:[\\d ]*\\d)?)(?:\\.\\d+)?|\\.\\d+)(?:e[-+]?\\d+)?)([kmb]?)(?![\\d.\\p{L}])`,
+    "iu"
+  ).exec(text);
+  if (!match?.[1]) return false;
+  const token = match[1].replace(/\s/gu, "");
+  const suffix = (match[2] ?? "").toLowerCase();
+  const scale = suffix === "k" ? 1_000 : suffix === "m" ? 1_000_000 : suffix === "b" ? 1_000_000_000 : 1;
+  const displayed = Number(token) * scale;
+  if (!Number.isFinite(displayed)) return false;
+  if (suffix === "") return displayed === value;
+  const decimalPlaces = token.match(/\.(\d+)/u)?.[1]?.length ?? 0;
+  return Math.abs(displayed - value) <= (scale / 2) * 10 ** -decimalPlaces;
 }
 
 async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest): Promise<PointerTarget | undefined> {
@@ -1849,6 +1870,8 @@ async function waitForOpenWranglerProfile(
   frame: Frame,
   column: string,
   contract: ProfileContract,
+  minimum: number,
+  maximum: number,
   deadline: number,
   stage: FailureStage
 ): Promise<void> {
@@ -1857,7 +1880,10 @@ async function waitForOpenWranglerProfile(
     if ((await drawer.count().catch(() => 0)) === 1 && (await drawer.isVisible().catch(() => false))) {
       const heading = drawer.getByRole("heading", { name: column, exact: true });
       const complete = openWranglerProfileTextReady({
+        column,
         contract,
+        minimum,
+        maximum,
         text: (await drawer.textContent().catch(() => "")) ?? ""
       });
       if ((await heading.count().catch(() => 0)) === 1 && (await heading.isVisible().catch(() => false)) && complete) {
@@ -2273,6 +2299,8 @@ async function executeMeasuredIteration(
           profileFrame,
           column,
           request.cell.profileContract,
+          index,
+          request.cell.rows - 1 + index,
           profileDeadline,
           profileStage
         );

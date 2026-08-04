@@ -177,95 +177,150 @@ function isHarnessInterrupted(result) {
   return unsuccessful.length > 0 && unsuccessful.every(({ failure }) => failure?.kind === "harness");
 }
 
+export async function prepareComparisonStudyRun({ output, now, prepareTools, captureProvenance, buildManifest }) {
+  const root = resolve(output);
+  const trialsDirectory = join(root, "trials");
+  mkdirSync(trialsDirectory, { recursive: true, mode: 0o700 });
+  removeStaleTrialDirectories(root);
+  await prepareTools();
+  const observed = await captureProvenance();
+  const manifestPath = join(root, "manifest.json");
+  let manifest;
+  if (existsSync(manifestPath)) {
+    manifest = readJson(manifestPath);
+    const expected = buildManifest({
+      observed,
+      createdAtUtc: manifest.createdAtUtc,
+      existingManifest: manifest
+    });
+    if (digest(manifest) !== digest(expected)) {
+      throw new Error("Study inputs changed since manifest creation. Start a new output directory.");
+    }
+  } else {
+    manifest = buildManifest({ observed, createdAtUtc: now(), existingManifest: undefined });
+    writeJsonAtomic(manifestPath, manifest);
+  }
+  return Object.freeze({ output: root, trialsDirectory, manifest });
+}
+
+export async function runComparisonSchedule({
+  output,
+  trialsDirectory,
+  manifest,
+  schedule,
+  completedIds,
+  limit,
+  beforeTrial,
+  executeTrial,
+  afterTrial,
+  buildFailure,
+  validateTrial,
+  isTerminal,
+  stopAfter,
+  stopMessage,
+  cleanup
+}) {
+  const completed = new Set(completedIds);
+  const remaining = schedule.filter(({ id }) => !completed.has(id));
+  const selected = remaining.slice(0, limit ?? remaining.length);
+  for (const entry of selected) {
+    await beforeTrial?.({ entry, manifest });
+    const trialRoot = mkdtempSync(join(output, `trial-${entry.order.toString().padStart(3, "0")}-`));
+    let result;
+    let trialError;
+    try {
+      result = await executeTrial({ entry, manifest, trialRoot });
+    } catch (error) {
+      trialError = error;
+    } finally {
+      rmSync(trialRoot, { force: true, recursive: true });
+    }
+    if (trialError) result = buildFailure(entry, trialError, manifest);
+    try {
+      await afterTrial?.({ entry, manifest, result });
+    } catch (error) {
+      result = buildFailure(entry, error, manifest);
+    }
+    validateTrial(result, entry, manifest);
+    writeJsonAtomic(join(trialsDirectory, `${entry.id}.json`), result);
+    if (isTerminal(result)) completed.add(entry.id);
+    if (stopAfter?.(result)) {
+      throw new Error(stopMessage(result));
+    }
+  }
+  const remainingCount = manifest.schedule.length - completed.size;
+  if (remainingCount === 0) await cleanup?.();
+  return Object.freeze({ completed: completed.size, remaining: remainingCount });
+}
+
 export async function runDataWranglerComparisonStudy(options, dependencies = {}) {
   const now = dependencies.now ?? (() => new Date().toISOString());
   const prepareTools = dependencies.prepareTools ?? buildComparisonTestExtension;
   const runTrial = dependencies.runTrial ?? runNeutralDriver;
   const makeTrial = dependencies.prepareTrial ?? prepareTrial;
-  const output = resolve(options.output);
-  const trialsDirectory = join(output, "trials");
-  mkdirSync(trialsDirectory, { recursive: true, mode: 0o700 });
-  removeStaleTrialDirectories(output);
-  await prepareTools();
-  const observed = await captureProvenance(options, dependencies);
   const repetitionsPerSession = options.repetitionsPerSession ?? WARM_REPETITIONS;
-  const manifestPath = join(output, "manifest.json");
-  let manifest;
-  if (existsSync(manifestPath)) {
-    manifest = readJson(manifestPath);
-    const expected = buildStudyManifest({ ...observed, createdAtUtc: manifest.createdAtUtc, repetitionsPerSession });
-    if (digest(manifest) !== digest(expected)) {
-      throw new Error("Study inputs changed since manifest creation. Start a new output directory.");
-    }
-  } else {
-    manifest = buildStudyManifest({ ...observed, createdAtUtc: now(), repetitionsPerSession });
-    writeJsonAtomic(manifestPath, manifest);
-  }
-
-  const completed = terminalTrialIds(trialsDirectory, manifest);
+  const preparedStudy = await prepareComparisonStudyRun({
+    output: options.output,
+    now,
+    prepareTools,
+    captureProvenance: () => captureProvenance(options, dependencies),
+    buildManifest: ({ observed, createdAtUtc }) =>
+      buildStudyManifest({ ...observed, createdAtUtc, repetitionsPerSession })
+  });
+  const { output, trialsDirectory, manifest } = preparedStudy;
+  const completedIds = terminalTrialIds(trialsDirectory, manifest);
   const eligibleSchedule =
     options.scheduleLimit === undefined ? manifest.schedule : manifest.schedule.slice(0, options.scheduleLimit);
-  const remaining = eligibleSchedule.filter(({ id }) => !completed.has(id));
-  const limit = options.limit === undefined ? remaining.length : options.limit;
-  const selected = remaining.slice(0, limit);
-  for (const entry of selected) {
-    const currentMachine = (dependencies.inspectMachine ?? inspectMachineEnvironment)();
-    if (digest(currentMachine) !== digest(manifest.provenance.machine)) {
+  const inspectMachine = dependencies.inspectMachine ?? inspectMachineEnvironment;
+  const assertMachine = () => {
+    if (digest(inspectMachine()) !== digest(manifest.provenance.machine)) {
       throw new Error("Machine or power provenance changed during the study.");
     }
-    const trialRoot = mkdtempSync(join(output, `trial-${entry.order.toString().padStart(3, "0")}-`));
-    let prepared;
-    let result;
-    let trialError;
-    try {
-      prepared = makeTrial({ entry, manifest, options, trialRoot });
-      result = await runOneTrial({
-        entry,
-        request: prepared.request,
-        runTrial,
-        timeoutMs: STUDY_TIMEOUTS_MS.neutralDriver + 5_000
-      });
-    } catch (error) {
-      trialError = error;
-    } finally {
+  };
+  const status = await runComparisonSchedule({
+    output,
+    trialsDirectory,
+    manifest,
+    schedule: eligibleSchedule,
+    completedIds,
+    limit: options.limit,
+    beforeTrial: assertMachine,
+    executeTrial: async ({ entry, trialRoot }) => {
+      let prepared;
+      let result;
+      let trialError;
       try {
-        prepared?.verifySources?.();
+        prepared = makeTrial({ entry, manifest, options, trialRoot });
+        result = await runOneTrial({
+          entry,
+          request: prepared.request,
+          runTrial,
+          timeoutMs: STUDY_TIMEOUTS_MS.neutralDriver + 5_000
+        });
       } catch (error) {
-        trialError = trialError
-          ? new AggregateError([trialError, error], `${sanitizeError(trialError)}; ${sanitizeError(error)}`)
-          : error;
+        trialError = error;
+      } finally {
+        try {
+          prepared?.verifySources?.();
+        } catch (error) {
+          trialError = trialError
+            ? new AggregateError([trialError, error], `${sanitizeError(trialError)}; ${sanitizeError(error)}`)
+            : error;
+        }
       }
-      rmSync(trialRoot, { force: true, recursive: true });
-    }
-    if (trialError) {
-      result = failedResult(
-        entry,
-        trialError,
-        "harness",
-        trialProvenance(manifest),
-        manifest.method.repetitionsPerSession
-      );
-    }
-    const machineAfter = (dependencies.inspectMachine ?? inspectMachineEnvironment)();
-    if (digest(machineAfter) !== digest(manifest.provenance.machine)) {
-      result = failedResult(
-        entry,
-        new Error("Machine or power provenance changed during the trial."),
-        "harness",
-        trialProvenance(manifest),
-        manifest.method.repetitionsPerSession
-      );
-    }
-    validateTrialResult(result, entry, manifest);
-    writeJsonAtomic(join(trialsDirectory, `${entry.id}.json`), result);
-    if (!isHarnessInterrupted(result)) completed.add(entry.id);
-  }
-  const remainingCount = manifest.schedule.length - completed.size;
-  if (remainingCount === 0) removePreparedExtensionDirectories(output);
+      if (trialError) throw trialError;
+      return result;
+    },
+    afterTrial: assertMachine,
+    buildFailure: (entry, error) =>
+      failedResult(entry, error, "harness", trialProvenance(manifest), manifest.method.repetitionsPerSession),
+    validateTrial: validateTrialResult,
+    isTerminal: (result) => !isHarnessInterrupted(result),
+    cleanup: () => removePreparedExtensionDirectories(output)
+  });
   return Object.freeze({
     manifest,
-    completed: completed.size,
-    remaining: remainingCount
+    ...status
   });
 }
 
@@ -377,7 +432,7 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
   }
   chmodSync(source, 0o444);
   const notebookPath = join(trialRoot, `${entry.id}.ipynb`);
-  writeFileSync(notebookPath, `${JSON.stringify(studyNotebook(entry, source), null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(notebookPath, `${JSON.stringify(buildComparisonNotebook(entry, source), null, 2)}\n`, { mode: 0o600 });
   const request = {
     protocol: TRIAL_REQUEST_PROTOCOL,
     trialId: entry.id,
@@ -655,7 +710,7 @@ export async function buildComparisonTestExtension() {
   });
 }
 
-function studyNotebook(entry, source) {
+export function buildComparisonNotebook(entry, source) {
   const reader =
     entry.engine === "pandas"
       ? entry.format === "csv"
@@ -853,11 +908,11 @@ export function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function digest(value) {
+export function digest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function readJson(path) {
+export function readJson(path) {
   const source = readFileSync(path);
   if (source.byteLength <= 0 || source.byteLength > MAX_JSON_BYTES) {
     throw new Error(`${basename(path)} is empty or too large.`);
@@ -865,7 +920,7 @@ function readJson(path) {
   return JSON.parse(source.toString("utf8"));
 }
 
-function writeJsonAtomic(path, value) {
+export function writeJsonAtomic(path, value) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
@@ -876,7 +931,7 @@ function writeJsonAtomic(path, value) {
   }
 }
 
-function sanitizeError(error) {
+export function sanitizeError(error) {
   return String(error?.message ?? error)
     .replaceAll(/\bfile:(?:\/+|\\+)[^\s:]+/giu, "<path>")
     .replaceAll(/(?:[A-Za-z]:)?[\\/][^\s:]+/gu, "<path>")

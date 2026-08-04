@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +19,7 @@ import {
   LARGE_REPETITIONS,
   LARGE_REPORT_PROTOCOL,
   LARGE_ROWS,
+  assertLargeRunEnvironment,
   assertCompleteLargeReport,
   buildLargeComparisonReport,
   buildLargeStudyManifest,
@@ -74,12 +85,25 @@ test("large report requires five successful independent sessions in every group"
   assert.equal(report.protocol, LARGE_REPORT_PROTOCOL);
   assert.equal(report.completedTrials, 20);
   assert.equal(report.summaries.length, 4);
+  assert.equal(report.loadSummaries.length, 2);
   assert.equal(
     report.summaries.every(({ successful }) => successful === 5),
     true
   );
   assert.equal(
-    report.summaries.every(({ metrics }) => Object.hasOwn(metrics.fileLoadMs, "p95") === false),
+    report.loadSummaries.every(({ successful }) => successful === 10),
+    true
+  );
+  assert.equal(
+    report.loadSummaries.every((summary) => Object.hasOwn(summary, "product") === false),
+    true
+  );
+  assert.equal(
+    report.summaries.every(({ metrics }) => Object.hasOwn(metrics, "fileLoadMs") === false),
+    true
+  );
+  assert.equal(
+    report.loadSummaries.every(({ metrics }) => Object.hasOwn(metrics.fileLoadMs, "p95") === false),
     true
   );
   assert.doesNotThrow(() => assertCompleteLargeReport(report));
@@ -100,6 +124,7 @@ test("manual study resumes one fresh editor session at a time", async () => {
       now: () => "2026-08-05T10:00:00.000Z",
       captureProvenance: async () => provenanceFixture(),
       prepareTools: async () => {},
+      inspectRunEnvironment: async () => runEnvironmentFixture(),
       prepareTrial: ({ entry, trialRoot }) => ({
         request: { trialId: entry.id, cell: { engine: entry.engine }, isolatedRoot: trialRoot },
         verifySource() {}
@@ -125,6 +150,87 @@ test("manual study resumes one fresh editor session at a time", async () => {
   }
 });
 
+test("an abrupt interruption is cleaned before fixture provenance is checked", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-large-interrupted-"));
+  const fixture = join(root, "large.parquet");
+  const stale = join(root, "trial-000-AbCd12");
+  writeFileSync(fixture, "generated fixture");
+  mkdirSync(stale);
+  linkSync(fixture, join(stale, "large.parquet"));
+  assert.equal(lstatSync(fixture).nlink, 2);
+  try {
+    const calls = [];
+    const dependencies = fakeStudyDependencies(calls, {
+      captureProvenance: async () => {
+        assert.equal(lstatSync(fixture).nlink, 1);
+        return provenanceFixture();
+      }
+    });
+    const result = await runLargeComparisonStudy(
+      { output: root, parquet: fixture, confirmLargeStudy: true, limit: 1 },
+      dependencies
+    );
+    assert.deepEqual(result, { completed: 1, remaining: 19 });
+    assert.equal(existsSync(stale), false);
+    assert.equal(
+      readdirSync(root).some((name) => name.startsWith("trial-")),
+      false
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("memory and disk are rechecked immediately before every fresh editor run", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-large-preflight-"));
+  const calls = [];
+  let checks = 0;
+  try {
+    const dependencies = fakeStudyDependencies(calls, {
+      inspectRunEnvironment: async () => {
+        checks += 1;
+        if (checks === 3) {
+          return runEnvironmentFixture({ availableMemoryBytes: 1 });
+        }
+        return runEnvironmentFixture();
+      }
+    });
+    await assert.rejects(
+      runLargeComparisonStudy({ output: root, confirmLargeStudy: true, limit: 2 }, dependencies),
+      /memory or disk space/iu
+    );
+    assert.deepEqual(calls, [createLargeComparisonSchedule()[0].id]);
+    assert.equal(readdirSync(join(root, "trials")).filter((name) => name.endsWith(".json")).length, 1);
+    assert.equal(
+      readdirSync(root).some((name) => name.startsWith("trial-")),
+      false
+    );
+
+    dependencies.inspectRunEnvironment = async () => runEnvironmentFixture();
+    const resumed = await runLargeComparisonStudy({ output: root, confirmLargeStudy: true, limit: 1 }, dependencies);
+    assert.deepEqual(resumed, { completed: 2, remaining: 18 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("large-run preflight rejects low capacity, battery power, and governor changes", () => {
+  const expectedMachine = provenanceFixture().machine;
+  assert.doesNotThrow(() => assertLargeRunEnvironment(runEnvironmentFixture(), expectedMachine));
+  assert.throws(
+    () => assertLargeRunEnvironment(runEnvironmentFixture({ freeDiskBytes: 1 }), expectedMachine),
+    /memory or disk space/iu
+  );
+  assert.throws(
+    () => assertLargeRunEnvironment(runEnvironmentFixture(undefined, { powerSource: "battery" }), expectedMachine),
+    /power/iu
+  );
+  assert.throws(
+    () => assertLargeRunEnvironment(runEnvironmentFixture(undefined, { cpuGovernor: "powersave" }), expectedMachine),
+    /governor/iu
+  );
+});
+
 test("large trial hard-links the fixture and asks for one editor journey", () => {
   const root = mkdtempSync(join(tmpdir(), "ow-large-prepare-"));
   const fixture = join(root, "large.parquet");
@@ -147,7 +253,7 @@ test("large trial hard-links the fixture and asks for one editor journey", () =>
     assert.equal(prepared.request.repetitions, 1);
     assert.equal(prepared.request.cell.rows, LARGE_ROWS);
     assert.equal(prepared.request.cell.columns, LARGE_COLUMNS);
-    assert.equal(prepared.request.cell.profileContract, "mixed-completion");
+    assert.equal(prepared.request.cell.profileContract, "mixed-sentinels-v1");
     assert.match(prepared.request.cell.sourceIdentity.inode, /^\d+$/u);
     const notebook = JSON.parse(readFileSync(prepared.request.notebookPath, "utf8"));
     assert.equal(notebook.cells.length, 2);
@@ -161,6 +267,36 @@ test("large trial hard-links the fixture and asks for one editor journey", () =>
 
 function manifestFixture({ bytes = 5_000_000_000 } = {}) {
   return buildLargeStudyManifest({ createdAtUtc: "2026-08-05T10:00:00.000Z", ...provenanceFixture(bytes) });
+}
+
+function fakeStudyDependencies(calls, overrides = {}) {
+  return {
+    now: () => "2026-08-05T10:00:00.000Z",
+    captureProvenance: async () => provenanceFixture(),
+    prepareTools: async () => {},
+    inspectRunEnvironment: async () => runEnvironmentFixture(),
+    prepareTrial: ({ entry, trialRoot }) => ({
+      request: { trialId: entry.id, cell: { engine: entry.engine }, isolatedRoot: trialRoot },
+      verifySource() {}
+    }),
+    runLoad: async (request) => loadFixture(request.cell.engine),
+    runJourney: async (request) => {
+      calls.push(request.trialId);
+      return { samples: [journeyFixture()] };
+    },
+    ...overrides
+  };
+}
+
+function runEnvironmentFixture(capacity = {}, machine = {}) {
+  return {
+    machine: { ...provenanceFixture().machine, ...machine },
+    capacity: {
+      availableMemoryBytes: 48 * 1024 ** 3,
+      freeDiskBytes: 20 * 1024 ** 3,
+      ...capacity
+    }
+  };
 }
 
 function provenanceFixture(bytes = 5_000_000_000) {
@@ -185,7 +321,15 @@ function provenanceFixture(bytes = 5_000_000_000) {
         name: `c${String(index).padStart(2, "0")}`,
         role: index < 50 ? "number" : "other",
         arrowType: index < 50 ? "double" : "string"
-      }))
+      })),
+      profileSentinels: {
+        numericExtrema: [-900_000_000, 900_000_000],
+        categoricalTopValue: "enterprise",
+        highCardinalityTopValueTemplate: "popular-c{column}",
+        datetimeExtrema: ["2000-01-01", "2099-12-31"],
+        durationExtremaMs: [-86_400_000, 31_536_000_000],
+        booleanValues: ["True", "False"]
+      }
     },
     machine: {
       os: "linux",
@@ -197,7 +341,6 @@ function provenanceFixture(bytes = 5_000_000_000) {
       powerSource: "ac",
       cpuGovernor: "performance"
     },
-    capacity: { availableMemoryBytes: 48 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 },
     tools: { study: SHA, generator: SHA }
   };
 }

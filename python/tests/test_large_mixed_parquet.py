@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -18,6 +20,7 @@ finally:
 DEFAULT_COLUMNS = large_fixture.DEFAULT_COLUMNS
 LargeFixtureSpec = large_fixture.LargeFixtureSpec
 assert_large_study_capacity = large_fixture.assert_large_study_capacity
+build_row_group = large_fixture.build_row_group
 column_contract = large_fixture.column_contract
 generate_fixture = large_fixture.generate_fixture
 validate_fixture = large_fixture.validate_fixture
@@ -49,11 +52,38 @@ def test_small_fixture_is_deterministic_and_streamed_in_row_groups(tmp_path: Pat
 
     assert first_manifest["sha256"] == second_manifest["sha256"]
     assert first_manifest["schema"] == column_contract()
+    assert first_manifest["profileSentinels"]["numericExtrema"] == [-900_000_000, 900_000_000]
     assert first_manifest["capacityAtStart"] is None
     assert pq.ParquetFile(first).metadata.num_row_groups == 5
     assert pq.ParquetFile(first).metadata.num_rows == 257
     assert json.loads(first.with_suffix(".parquet.json").read_text(encoding="utf-8")) == first_manifest
     validate_fixture(first, spec)
+
+
+def test_mixed_column_families_contain_the_profile_sentinels() -> None:
+    table = build_row_group(0, 512, LargeFixtureSpec(rows=512, row_group_rows=512, seed=123))
+
+    for name in ["c00", "c35", "c36", "c65"]:
+        values = [value for value in table[name].to_pylist() if value is not None]
+        assert min(values) == -900_000_000
+        assert max(values) == 900_000_000
+
+    categories = Counter(value for value in table["c66"].to_pylist() if value is not None)
+    assert categories["enterprise"] > max(count for value, count in categories.items() if value != "enterprise")
+    assert "popular-c74" in table["c74"].to_pylist()
+
+    for name in ["c80", "c83"]:
+        values = [value for value in table[name].to_pylist() if value is not None]
+        assert min(values).date() == date(2000, 1, 1)
+        assert max(values).date() == date(2099, 12, 31)
+    dates = [value for value in table["c86"].to_pylist() if value is not None]
+    assert min(dates) == date(2000, 1, 1)
+    assert max(dates) == date(2099, 12, 31)
+
+    durations = [value for value in table["c89"].to_pylist() if value is not None]
+    assert min(durations).days == -1
+    assert max(durations).days == 365
+    assert set(value for value in table["c92"].to_pylist() if value is not None) == {False, True}
 
 
 def test_generator_refuses_to_replace_a_fixture(tmp_path: Path) -> None:
