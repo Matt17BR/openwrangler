@@ -416,11 +416,7 @@ def _open_reserved_destination(path: Path, expected_identity: tuple[int, int]) -
     descriptor = os.open(path, flags)
     try:
         details = os.fstat(descriptor)
-        identity = (
-            _windows_file_identity(descriptor)
-            if sys.platform == "win32"
-            else (details.st_dev, details.st_ino)
-        )
+        identity = _windows_file_identity(descriptor) if sys.platform == "win32" else (details.st_dev, details.st_ino)
         if not stat.S_ISREG(details.st_mode) or identity != expected_identity:
             raise RuntimeError("The Parquet destination changed during conversion.")
         return descriptor
@@ -432,9 +428,7 @@ def _open_reserved_destination(path: Path, expected_identity: tuple[int, int]) -
 def _recheck_destination(path: Path, descriptor: int, expected_identity: tuple[int, int]) -> None:
     details = os.fstat(descriptor)
     descriptor_identity = (
-        _windows_file_identity(descriptor)
-        if sys.platform == "win32"
-        else (details.st_dev, details.st_ino)
+        _windows_file_identity(descriptor) if sys.platform == "win32" else (details.st_dev, details.st_ino)
     )
     if (
         not stat.S_ISREG(details.st_mode)

@@ -28,9 +28,7 @@ def file_identity(path: Path) -> tuple[int, int]:
 def descriptor_identity(descriptor: int) -> tuple[int, int]:
     details = os.fstat(descriptor)
     return (
-        conversion._windows_file_identity(descriptor)
-        if sys.platform == "win32"
-        else (details.st_dev, details.st_ino)
+        conversion._windows_file_identity(descriptor) if sys.platform == "win32" else (details.st_dev, details.st_ino)
     )
 
 
@@ -75,9 +73,7 @@ def test_windows_source_fingerprint_matches_node_lstat(tmp_path: Path) -> None:
             timeout=30,
         )
 
-        node_fingerprint = conversion.SourceFingerprint(
-            *(int(value, 10) for value in result.stdout.splitlines())
-        )
+        node_fingerprint = conversion.SourceFingerprint(*(int(value, 10) for value in result.stdout.splitlines()))
         assert source_fingerprint(path) == node_fingerprint
         assert file_identity(path) == node_fingerprint[:2]
 
