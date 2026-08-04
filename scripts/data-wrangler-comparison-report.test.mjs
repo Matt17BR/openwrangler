@@ -35,7 +35,7 @@ test("uses type-7 statistics and recomputes retained PSS evidence", () => {
   assert.throws(() => summarizeStudyPssSamples([pss("90", 100), pss("50", 120)], milestones()), /increase strictly/u);
   assert.throws(
     () => summarizeStudyPssSamples([pss("100000000", 100), pss("160000000", 120)], milestones()),
-    /twenty pre-action settle samples/u
+    /twenty pre-action wait samples/u
   );
   assert.throws(
     () => summarizeStudyPssSamples([...pssSamples().slice(0, 20), pss("11200000000", 150)], milestones()),
@@ -49,7 +49,7 @@ test("requires the declared settle wait and continuous measured PSS coverage", (
   assert.throws(
     () =>
       summarizeStudyPssSamples([...preAction, pss("11000000000", 150)], milestones(10, { settleStart: 1_000_000_001 })),
-    /fixed pre-action settle wait/u
+    /fixed pre-action wait/u
   );
   assert.throws(
     () =>
@@ -277,7 +277,7 @@ function studyManifest() {
         completeProfile: "public profiling action to final summaries for every column"
       },
       statistics: "successful warm trials; Hyndman-Fan type 7 median and p95; paired differences retain order",
-      memory: "highest observed absolute process-tree PSS after a fixed ten-second pre-action settle window"
+      memory: "highest observed absolute process-tree PSS after a fixed ten-second pre-action wait"
     },
     provenance: {
       openWrangler: { extensionId: "Matt17BR.openwrangler", version: "1.2.1", sha256: digest("a") },

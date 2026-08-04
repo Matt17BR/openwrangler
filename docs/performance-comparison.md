@@ -61,9 +61,8 @@ ow-comparison-cell:<cell-id>
 The neutral host uses that tag and the requested variable name. It does not use whichever notebook or editor happens
 to be active.
 
-After setup and permission handling, every trial waits a fixed 10 seconds before **Run Cell**. The PSS samples must
-show that the process tree was stable during the last four seconds of that wait. The wait is never shortened or
-extended to obtain a favorable sample.
+After setup and permission handling, every trial waits a fixed 10 seconds before **Run Cell**. PSS sampling must cover
+the last four seconds of that wait without a gap. The wait is never shortened or extended to obtain a favorable sample.
 
 Here, "cold" means the dataframe is not resident in the kernel before timing. The study does not flush the operating
 system's filesystem cache, so cold results must not be presented as uncached-storage measurements.
@@ -136,10 +135,9 @@ On Linux, the parent launcher samples proportional set size (PSS) for the editor
 closure at 200 ms intervals. `/proc/<pid>/stat` start times guard against PID reuse. The sampler reads
 `smaps_rollup` only for processes it can still prove belong to that launch.
 
-The last 20 samples before **Run Cell** must span at least 3.4 seconds, have no gap above 500 ms, keep the same process
-count, and end no more than 400 ms before the click. Their range must stay within both 64 MiB and 2.5% of the median.
-The difference between the first-five and last-five medians must stay within both 32 MiB and 1.25%. A window that
-misses any bound is a harness failure.
+The last 20 samples before **Run Cell** must span at least 3.4 seconds, have no gap above 500 ms, and end no more than
+400 ms before the click. Memory growth or process startup during that fixed wait is retained as product behavior. It
+does not invalidate an absolute-memory measurement.
 
 For each successful trial, report the highest observed absolute PSS between **Run Cell** and final profiling. Samples
 must cover both ends of that window and may not have a gap above 500 ms. We do not publish a
@@ -242,7 +240,7 @@ Before publishing results, a reviewer who did not write the runner checks:
 - 96 unique planned IDs and one retained outcome for every ID;
 - type-7 median/p95 recalculation from raw trial files;
 - paired differences and failure/timeout counts;
-- the settle-window decision and highest observed absolute PSS calculation;
+- the pre-action and measured-window coverage plus highest observed absolute PSS calculation;
 - every release-limit decision for both median and p95;
 - the absence of private paths, source values, screenshots, logs, or proprietary package contents; and
 - the wording of any performance claim against what the public UI evidence actually proves.

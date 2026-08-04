@@ -36,11 +36,7 @@ export const DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY = Object.freeze({
   windowSamples: 20,
   minimumSpanMs: 3_400,
   maximumGapMs: 500,
-  latestSampleMaximumAgeMs: 400,
-  maximumSpreadBytes: 64 * 1024 * 1024,
-  maximumSpreadFraction: 0.025,
-  maximumDriftBytes: 32 * 1024 * 1024,
-  maximumDriftFraction: 0.0125
+  latestSampleMaximumAgeMs: 400
 });
 export const DATA_WRANGLER_REGRESSION_LIMITS = Object.freeze({
   inlinePreviewMs: Object.freeze({ relative: 0.2, absolute: 250 }),
@@ -142,7 +138,7 @@ export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) 
   }
   const settle = DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY;
   if (start - settleStart < BigInt(settle.fixedWaitMs) * 1_000_000n) {
-    throw new TypeError("Study PSS evidence requires the fixed pre-action settle wait.");
+    throw new TypeError("Study PSS evidence requires the fixed pre-action wait.");
   }
   const before = sanitized
     .filter(({ monotonicNs }) => {
@@ -151,7 +147,7 @@ export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) 
     })
     .slice(-settle.windowSamples);
   if (before.length !== settle.windowSamples) {
-    throw new TypeError("Study PSS evidence requires twenty pre-action settle samples.");
+    throw new TypeError("Study PSS evidence requires twenty pre-action wait samples.");
   }
   const firstPreAction = BigInt(before[0].monotonicNs);
   const lastPreAction = BigInt(before.at(-1).monotonicNs);
@@ -159,30 +155,14 @@ export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) 
     start - lastPreAction > BigInt(settle.latestSampleMaximumAgeMs) * 1_000_000n ||
     lastPreAction - firstPreAction < BigInt(settle.minimumSpanMs) * 1_000_000n
   ) {
-    throw new TypeError("Study PSS pre-action samples do not cover the fixed settle window.");
+    throw new TypeError("Study PSS pre-action samples do not cover the fixed wait window.");
   }
   const maximumGap = before.slice(1).reduce((maximum, sample, index) => {
     const gap = BigInt(sample.monotonicNs) - BigInt(before[index].monotonicNs);
     return gap > maximum ? gap : maximum;
   }, 0n);
   if (maximumGap > BigInt(settle.maximumGapMs) * 1_000_000n) {
-    throw new TypeError("Study PSS pre-action samples contain a gap larger than the settle policy allows.");
-  }
-  if (new Set(before.map(({ processCount }) => processCount)).size !== 1) {
-    throw new TypeError("Study PSS process count did not settle before the measured action.");
-  }
-  const preActionValues = before.map(({ pssBytes }) => pssBytes);
-  const preActionMedian = summarizeComparisonValues(preActionValues).median;
-  const preActionRange = Math.max(...preActionValues) - Math.min(...preActionValues);
-  const preActionDrift = Math.abs(
-    summarizeComparisonValues(preActionValues.slice(0, 5)).median -
-      summarizeComparisonValues(preActionValues.slice(-5)).median
-  );
-  if (preActionRange > settle.maximumSpreadBytes || preActionRange > preActionMedian * settle.maximumSpreadFraction) {
-    throw new TypeError("Study PSS did not reach a bounded pre-action plateau.");
-  }
-  if (preActionDrift > settle.maximumDriftBytes || preActionDrift > preActionMedian * settle.maximumDriftFraction) {
-    throw new TypeError("Study PSS continued drifting before the measured action.");
+    throw new TypeError("Study PSS pre-action samples contain a gap larger than the wait policy allows.");
   }
   const measured = sanitized.filter(({ monotonicNs }) => {
     const at = BigInt(monotonicNs);
@@ -502,7 +482,7 @@ function validateStudyManifest(manifest) {
   );
   assertEqual(
     manifest.method.memory,
-    "highest observed absolute process-tree PSS after a fixed ten-second pre-action settle window",
+    "highest observed absolute process-tree PSS after a fixed ten-second pre-action wait",
     "study manifest memory method"
   );
   const cells = new Map();

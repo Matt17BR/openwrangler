@@ -497,8 +497,8 @@ The report command requires a new output path. It writes the diagnostic aggregat
 
 The full study covers Pandas/Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. It retains ten paired,
 counterbalanced warm samples per cell and one AB plus one BA cold pair. Timings use the public Run Cell, launch, usable
-grid, and all-column-profile boundaries. After a fixed ten-second settle check, Linux PSS records the highest observed
-absolute value for the owned editor tree during the measured action. Median and p95 use type 7. Failures and timeouts
+grid, and all-column-profile boundaries. After a fixed ten-second wait with continuous sampling, Linux PSS records the
+highest observed absolute value for the owned editor tree during the measured action. Median and p95 use type 7. Failures and timeouts
 stay in the result set, but release evidence requires all 96 trials to succeed and stay within the predeclared limits.
 
 Each trial owns a fresh mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product

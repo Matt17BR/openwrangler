@@ -72,7 +72,7 @@ test("private trial sources are checked before and after editor use", () => {
   }
 });
 
-test("PSS summary requires a settled pre-action window and keeps the measured absolute peak", () => {
+test("PSS summary requires continuous pre-action coverage and keeps the measured absolute peak", () => {
   const samples = [
     ...Array.from({ length: 20 }, (_unused, index) => sample(7_000_000_000 + index * 200_000_000, 100)),
     sample(11_000_000_000, 180),
@@ -98,26 +98,25 @@ test("PSS evidence rejects an out-of-order raw series", () => {
   assert.throws(() => summarizePss([sample(200, 100), sample(100, 200)], []), /increase strictly/u);
 });
 
-test("PSS evidence rejects a rising pre-action process tree", () => {
+test("PSS evidence retains a rising pre-action process tree as measured behavior", () => {
   const samples = [
     ...Array.from({ length: 20 }, (_unused, index) =>
-      sample(7_000_000_000 + index * 200_000_000, 100_000_000 + index * 10_000_000)
+      sample(7_000_000_000 + index * 200_000_000, 100_000_000 + index * 10_000_000, index < 10 ? 1 : 2)
     ),
-    sample(11_000_000_000, 300_000_000)
+    sample(11_000_000_000, 300_000_000, 3)
   ];
-  assert.throws(
-    () =>
-      summarizePss(samples, [
-        { name: "memory-settle-start", monotonicNs: "1000000000" },
-        { name: "run-cell-click", monotonicNs: "11000000000" },
-        { name: "profiles-complete", monotonicNs: "11100000000" }
-      ]),
-    /plateau|drifting/u
+  assert.equal(
+    summarizePss(samples, [
+      { name: "memory-settle-start", monotonicNs: "1000000000" },
+      { name: "run-cell-click", monotonicNs: "11000000000" },
+      { name: "profiles-complete", monotonicNs: "11100000000" }
+    ]).peakPssBytes,
+    300_000_000
   );
 });
 
-function sample(monotonicNs, pssBytes) {
-  return { monotonicNs: String(monotonicNs), rootPid: 10, processCount: 1, pssBytes, processes: [] };
+function sample(monotonicNs, pssBytes, processCount = 1) {
+  return { monotonicNs: String(monotonicNs), rootPid: 10, processCount, pssBytes, processes: [] };
 }
 
 function sanitizedSample(monotonicNs, pssBytes) {

@@ -14,7 +14,7 @@ checked the following points:
 - fixed UI and whole-phase deadlines;
 - one retained result for success, product failure, timeout, or harness failure;
 - type-7 median and p95 plus paired differences;
-- a fixed pre-action settle check and highest observed absolute process-tree PSS;
+- a fixed pre-action wait, continuous sampling, and highest observed absolute process-tree PSS;
 - predeclared release limits for every median and p95;
 - exact candidate, editor, Python, fixture, and harness versions/hashes;
 - a fresh headless user profile and source copy per trial;
@@ -53,7 +53,7 @@ The final reviewer will record the report SHA-256 and independently recalculate:
 - every warm median and p95 using type 7;
 - every paired Open Wrangler minus Data Wrangler distribution;
 - cold results as a separate descriptive table;
-- the settle-window decision and highest observed absolute PSS for each successful trial; and
+- the pre-action and measured-window coverage plus highest observed absolute PSS for each successful trial; and
 - every relative-plus-absolute release-limit decision.
 
 The reviewer must also confirm that the published report contains no private paths, source values, raw logs,

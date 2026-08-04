@@ -154,7 +154,7 @@ export function buildStudyManifest({ createdAtUtc, candidate, editor, python, fi
         completeProfile: "public profiling action to final summaries for every column"
       },
       statistics: "successful warm trials; Hyndman-Fan type 7 median and p95; paired differences retain order",
-      memory: "highest observed absolute process-tree PSS after a fixed ten-second pre-action settle window"
+      memory: "highest observed absolute process-tree PSS after a fixed ten-second pre-action wait"
     },
     provenance: {
       openWrangler: { extensionId: "Matt17BR.openwrangler", version: candidate.version, sha256: candidate.sha256 },
