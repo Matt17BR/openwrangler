@@ -7,7 +7,7 @@ import {
   resolveMarketplaceIdentityProfile
 } from "./marketplace-identity-profile.mjs";
 
-const profileId = "584ec93a-2c66-4d01-b78d-3d32c0aad1b3";
+const profileId = "11111111-2222-4333-8444-555555555555";
 const secretToken = "header.payload.signature";
 
 function profileResponse(body = JSON.stringify({ displayName: "Open Wrangler publisher", id: profileId })) {

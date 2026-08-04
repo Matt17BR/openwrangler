@@ -21,7 +21,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
+import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Transform } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -715,6 +715,8 @@ const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
   DISPLAY_MODE_ENV,
   TEMP_ROOT_ENV,
   "OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS",
+  "OPEN_WRANGLER_COMPARISON_REQUEST_PATH",
+  "OPEN_WRANGLER_COMPARISON_RESULT_PATH",
   "OPEN_WRANGLER_EDITOR_CDP_PORT",
   "OPEN_WRANGLER_EXTENSION_TESTS",
   "OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO",
@@ -3030,145 +3032,6 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
   return environment;
 }
 
-function resolveEditorAcceptanceComparisonStudyEnvironment(comparisonStudyEnvironment, privateRoot, platform) {
-  if (comparisonStudyEnvironment === undefined) return {};
-  if (platform !== "linux") {
-    throw new Error("The Data Wrangler comparison study is supported only on Linux.");
-  }
-  if (
-    comparisonStudyEnvironment === null ||
-    typeof comparisonStudyEnvironment !== "object" ||
-    Array.isArray(comparisonStudyEnvironment)
-  ) {
-    throw new Error("A comparison-study environment must be an object.");
-  }
-  if (
-    typeof privateRoot !== "string" ||
-    privateRoot.length === 0 ||
-    !isAbsolute(privateRoot) ||
-    /[\0\r\n]/u.test(privateRoot)
-  ) {
-    throw new Error("A comparison-study environment requires one absolute private runner root.");
-  }
-  const fields = ["requestPath", "acknowledgementPath", "sourcePath", "publicSurfaceAvailability"];
-  const ownKeys = Reflect.ownKeys(comparisonStudyEnvironment);
-  if (
-    ownKeys.length !== fields.length ||
-    fields.some((field) => !Object.prototype.hasOwnProperty.call(comparisonStudyEnvironment, field))
-  ) {
-    throw new Error(
-      "A comparison-study environment must define exactly requestPath, acknowledgementPath, sourcePath, and publicSurfaceAvailability."
-    );
-  }
-  if (
-    !Object.values(Object.getOwnPropertyDescriptors(comparisonStudyEnvironment)).every(
-      (descriptor) => descriptor.enumerable && descriptor.get === undefined && descriptor.set === undefined
-    )
-  ) {
-    throw new Error("A comparison-study environment must contain only enumerable data fields.");
-  }
-  let canonicalRoot;
-  try {
-    const rootMetadata = lstatSync(privateRoot, { bigint: true });
-    if (
-      !rootMetadata.isDirectory() ||
-      rootMetadata.isSymbolicLink() ||
-      (rootMetadata.mode & 0o777n) !== 0o700n ||
-      (typeof process.getuid === "function" && rootMetadata.uid !== BigInt(process.getuid()))
-    ) {
-      throw new Error("invalid root");
-    }
-    canonicalRoot = realpathSync(privateRoot);
-  } catch {
-    throw new Error("A comparison-study environment requires one owned mode-0700 private runner root.");
-  }
-  const requireContainedPath = (path, label, expectedType) => {
-    if (
-      typeof path !== "string" ||
-      path.length === 0 ||
-      !isAbsolute(path) ||
-      /[\0\r\n]/u.test(path) ||
-      isSensitiveEditorEnvironmentValue(path)
-    ) {
-      throw new Error(`The comparison-study ${label} must be one safe absolute single-line path.`);
-    }
-    let canonicalPath;
-    try {
-      const metadata = lstatSync(path, { bigint: true });
-      if (
-        metadata.isSymbolicLink() ||
-        (typeof process.getuid === "function" && metadata.uid !== BigInt(process.getuid())) ||
-        (expectedType === "directory" && (!metadata.isDirectory() || (metadata.mode & 0o777n) !== 0o700n)) ||
-        (expectedType === "source" &&
-          (!metadata.isFile() ||
-            metadata.nlink !== 1n ||
-            metadata.size <= 0n ||
-            metadata.size > 4n * 1024n * 1024n * 1024n ||
-            (metadata.mode & 0o777n) !== 0o600n))
-      ) {
-        throw new Error("invalid path");
-      }
-      canonicalPath = realpathSync(path);
-    } catch {
-      throw new Error(`The comparison-study ${label} is not an owned private ${expectedType}.`);
-    }
-    const containedPath = relative(canonicalRoot, canonicalPath);
-    if (
-      containedPath.length === 0 ||
-      containedPath === ".." ||
-      containedPath.startsWith(`..${sep}`) ||
-      isAbsolute(containedPath)
-    ) {
-      throw new Error(`The comparison-study ${label} must stay inside its private runner root.`);
-    }
-    return canonicalPath;
-  };
-
-  const requestPath = comparisonStudyEnvironment.requestPath;
-  const acknowledgementPath = comparisonStudyEnvironment.acknowledgementPath;
-  if (
-    typeof requestPath !== "string" ||
-    typeof acknowledgementPath !== "string" ||
-    requestPath.length === 0 ||
-    acknowledgementPath.length === 0 ||
-    !isAbsolute(requestPath) ||
-    !isAbsolute(acknowledgementPath) ||
-    /[\0\r\n]/u.test(requestPath) ||
-    /[\0\r\n]/u.test(acknowledgementPath) ||
-    isSensitiveEditorEnvironmentValue(requestPath) ||
-    isSensitiveEditorEnvironmentValue(acknowledgementPath) ||
-    resolve(requestPath) === resolve(acknowledgementPath) ||
-    dirname(resolve(requestPath)) !== dirname(resolve(acknowledgementPath))
-  ) {
-    throw new Error("Comparison-study request and acknowledgement paths must be distinct siblings.");
-  }
-  const bridgeParent = requireContainedPath(dirname(resolve(requestPath)), "bridge parent", "directory");
-  for (const [path, label] of [
-    [requestPath, "request path"],
-    [acknowledgementPath, "acknowledgement path"]
-  ]) {
-    if (realpathSync(dirname(resolve(path))) !== bridgeParent) {
-      throw new Error(`The comparison-study ${label} must use the verified bridge parent.`);
-    }
-    try {
-      lstatSync(path);
-      throw new Error(`The comparison-study ${label} must be absent before launch.`);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-  }
-  const sourcePath = requireContainedPath(comparisonStudyEnvironment.sourcePath, "source", "source");
-  if (!["available", "undetermined"].includes(comparisonStudyEnvironment.publicSurfaceAvailability)) {
-    throw new Error("Comparison-study public-surface availability must be available or undetermined.");
-  }
-  return {
-    OPEN_WRANGLER_STUDY_REQUEST: resolve(requestPath),
-    OPEN_WRANGLER_STUDY_ACK: resolve(acknowledgementPath),
-    OPEN_WRANGLER_STUDY_SOURCE: sourcePath,
-    OPEN_WRANGLER_STUDY_PUBLIC_SURFACE_AVAILABILITY: comparisonStudyEnvironment.publicSurfaceAvailability
-  };
-}
-
 function resolveEditorAcceptanceRemoteJupyterDescriptor(descriptorPath, privateRoot, platform) {
   if (descriptorPath === undefined) return undefined;
   if (platform !== "linux") {
@@ -3234,7 +3097,6 @@ export async function runEditorAcceptancePhase(
     workspaceTrust = "trusted",
     requiresWorkbenchCdp = false,
     jupyterEnvironment,
-    comparisonStudyEnvironment,
     remoteJupyterDescriptorPath,
     runId = randomUUID(),
     progressPath = editorAcceptanceProgressPath(resultPath, runId, phase)
@@ -3270,11 +3132,6 @@ export async function runEditorAcceptancePhase(
   const jupyterEnvironmentOverrides = resolveEditorAcceptanceJupyterEnvironment(
     jupyterEnvironment,
     environment[TEMP_ROOT_ENV]
-  );
-  const comparisonStudyEnvironmentOverrides = resolveEditorAcceptanceComparisonStudyEnvironment(
-    comparisonStudyEnvironment,
-    environment[TEMP_ROOT_ENV],
-    platform
   );
   const remoteJupyterDescriptor = resolveEditorAcceptanceRemoteJupyterDescriptor(
     remoteJupyterDescriptorPath,
@@ -3454,6 +3311,8 @@ export async function runEditorAcceptancePhase(
       environment,
       {
         OPEN_WRANGLER_EXTENSION_TESTS: "1",
+        OPEN_WRANGLER_COMPARISON_REQUEST_PATH: environment.OPEN_WRANGLER_COMPARISON_REQUEST_PATH,
+        OPEN_WRANGLER_COMPARISON_RESULT_PATH: environment.OPEN_WRANGLER_COMPARISON_RESULT_PATH,
         OPEN_WRANGLER_TEST_PHASE: phase,
         OPEN_WRANGLER_TEST_EDITOR: editor.key ?? editor.name.toLowerCase().replaceAll(" ", "-"),
         OPEN_WRANGLER_TEST_EDITOR_PRODUCT_VERSION: editorProductVersion,
@@ -3472,7 +3331,6 @@ export async function runEditorAcceptancePhase(
       platform
     );
     Object.assign(phaseEnvironment, jupyterEnvironmentOverrides);
-    Object.assign(phaseEnvironment, comparisonStudyEnvironmentOverrides);
     const launchDirectory = linuxEditorPhaseLaunchDirectory(environment, phaseEnvironment, platform);
     child = launchProcess(
       editor.executable,

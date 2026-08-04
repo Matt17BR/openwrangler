@@ -75,12 +75,6 @@ const nativeAssets = [
     width: 448,
     height: 440
   }),
-  nativeCrop("gallery/notebook-code-insertion-detail.png", "vscode-notebook-code-insertion-dark.png", 1_440, 900, {
-    x: 45,
-    y: 29,
-    width: 1_000,
-    height: 288
-  }),
   nativeCrop("gallery/operation-configuration-detail.png", "vscode-operation-configuration-dark.png", 1_280, 874, {
     x: 744,
     y: 170,
@@ -234,7 +228,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const buildWebviews = readFileSync(resolve(root, "scripts", "build-webviews.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
   const gallery = readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8");
-  const legacyMediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.1.md"), "utf8");
   const mediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.2.md"), "utf8");
   const testing = readFileSync(resolve(root, "docs", "testing.md"), "utf8");
   const extensionHost = readFileSync(resolve(root, "src", "test", "extensionHost", "index.ts"), "utf8");
@@ -243,29 +236,14 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "utf8"
   );
 
-  assert.equal(
-    packageJson.scripts?.["compose:readme-media"],
-    "node scripts/run-heavy-local-command.mjs compose:readme-media -- node scripts/compose-readme-media.mjs"
-  );
-  assert.equal(
-    packageJson.scripts?.["verify:readme-media"],
-    "node scripts/run-heavy-local-command.mjs verify:readme-media -- node scripts/compose-readme-media.mjs --verify"
-  );
-  assert.equal(
-    packageJson.scripts?.["verify:public-media-surfaces"],
-    "node scripts/run-heavy-local-command.mjs verify:public-media-surfaces -- node scripts/verify-public-media-surfaces.mjs"
-  );
-  assert.equal(
-    packageJson.scripts?.["test:webview-acceptance"],
-    "node scripts/run-heavy-local-command.mjs test:webview-acceptance -- npm run test:webview-acceptance:run"
-  );
+  assert.equal(packageJson.scripts?.["compose:readme-media"], "node scripts/compose-readme-media.mjs");
+  assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
+  assert.equal(packageJson.scripts?.["verify:public-media-surfaces"], "node scripts/verify-public-media-surfaces.mjs");
+  assert.equal(packageJson.scripts?.["test:webview-acceptance"], "npm run test:webview-acceptance:run");
   assert.match(packageJson.scripts?.["test:webview-acceptance:run"] ?? "", /npm run verify:readme-media/u);
   assert.doesNotMatch(packageJson.scripts?.["test:scripts:portable:run"] ?? "", /scripts\/readme-media\.test\.mjs/u);
   assert.match(packageJson.scripts?.["test:scripts:portable:run"] ?? "", /&& npm run test:scripts:media$/u);
-  assert.equal(
-    packageJson.scripts?.["test:scripts:media"],
-    "node scripts/run-heavy-local-command.mjs test:scripts:media -- npm run test:scripts:media:run"
-  );
+  assert.equal(packageJson.scripts?.["test:scripts:media"], "npm run test:scripts:media:run");
   assert.equal(
     packageJson.scripts?.["test:scripts:media:run"],
     "node --max-old-space-size=1024 --test --test-concurrency=1 scripts/public-media-surfaces.test.mjs scripts/readme-media.test.mjs"
@@ -476,7 +454,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "gallery/notebook-variable-picker.png",
     "gallery/notebook-variable-picker-detail.png",
     "gallery/notebook-code-insertion.png",
-    "gallery/notebook-code-insertion-detail.png",
     "notebook-pandas.png",
     "gallery/notebook-pandas-detail.png",
     "gallery/notebook-polars.png",
@@ -565,10 +542,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /Issue \[#91\][\s\S]{0,120}tracks a planned comparison with Microsoft Data\s+Wrangler using the same files, editor, Python environment, and actions\./u
   );
-  assert.match(
-    readme,
-    /\*\*Next in v1:\*\*[\s\S]{0,220}#36[\s\S]{0,220}#86[\s\S]{0,220}#91[\s\S]{0,180}currently\s+experimental/u
-  );
+  assert.match(readme, /\*\*Next in v1:\*\*[\s\S]{0,220}#91[\s\S]{0,220}#36[\s\S]{0,180}experimental/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   assert.match(readme, /\*\*v2:\*\* add native R data frames[\s\S]{0,200}#87/u);
 
@@ -677,9 +651,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(mediaSpec, /2 MiB per PNG and 32 MiB for the complete inventory/u);
   assert.match(mediaSpec, /Private setup, restart-probe, and runtime-transfer cells are collapsed/u);
   assert.match(mediaSpec, /raw PySpark variable-picker capture is acceptance evidence, not public product media/u);
-  assert.match(legacyMediaSpec, /\*\*Historical record\.\*\*/u);
-  assert.match(legacyMediaSpec, /canonical v1\.2 media specification\]\(media-spec-v1\.2\.md\)/u);
-  assert.doesNotMatch(legacyMediaSpec, /^## v1\.2 native notebook capture refresh$/mu);
   assert.match(testing, /compose:readme-media[\s\S]{0,160}accepted packaged-editor and\s+production-webview sources/u);
   assert.match(testing, /pixel-exact decoded output/u);
   assert.match(testing, /Generated-code insertion is proven through the exact `NotebookDocument`/u);

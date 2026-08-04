@@ -14,9 +14,8 @@ import type {
   TransformSortRule,
   TransformStep
 } from "./protocol.generated";
-import { isExactNumericExtremumCell } from "./exactNumericExtrema";
+import { compareExactNumericExtremumCells, isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { PROTOCOL_VERSION } from "./protocol";
-import { compareTypedCells } from "./snapshotModel";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
 
 type UnknownRecord = Record<string, unknown>;
@@ -1419,7 +1418,7 @@ function isNumericSummary(value: unknown, columnType: unknown): boolean {
   }
 
   try {
-    return compareTypedCells(candidate.exactMin, candidate.exactMax, columnType) <= 0;
+    return compareExactNumericExtremumCells(candidate.exactMin, candidate.exactMax, columnType) <= 0;
   } catch {
     return false;
   }

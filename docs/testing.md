@@ -2,12 +2,9 @@
 
 ## Automated layers
 
-Public memory-intensive local test, package, media, benchmark, and editor commands acquire one shared repository lease,
-including across clones and worktrees. An overlapping command fails before it allocates substantial memory: resume or
-wait for the existing command instead of starting a duplicate. Nested npm phases verify and inherit that lease, while
-`:run` and `:prepare` continuations are internal implementation details and must not be invoked directly. The lease is
-released automatically when the wrapper exits; there is no lock file to remove after an interruption. Windows uses a
-kernel-owned named pipe so reserved or excluded TCP port ranges cannot prevent the guard from starting.
+Run memory-intensive local suites serially. This is an operator responsibility; the repository does not coordinate
+commands across clones or worktrees. Use the focused command for the code being changed, and reserve the complete
+matrix for release candidates or changes that cross all of its boundaries.
 
 - `npm run typecheck` checks the extension and webview projects independently.
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
@@ -30,7 +27,7 @@ kernel-owned named pipe so reserved or excluded TCP port ranges cannot prevent t
   Operation-builder coverage uses the real accessible checkbox lists without keyboard modifiers, preserves explicit selection order, moves and removes individual sort/aggregation rows without losing retained values, and verifies schema-type filtering for text, numeric, datetime, group-key, by-example, and per-calculation aggregation inputs.
 - `npm run test:python-environment-smoke` runs real system-interpreter discovery alone, with one worker and no override or Python-extension API. It must return a fully qualified supported `source: system` interpreter inside the 30-second aggregate resolution bound. The required CI Python 3.10 cell owns the Linux smoke; the cross-platform workflow adds independent macOS/Python 3.12 and Windows/Python 3.14 evidence. Failures retain only stable classification, stage, process-count, and candidate-limit metadata, never interpreter paths, subprocess output, causes, or inherited environment values.
 - `npm run test:python` covers the Pandas/Polars parity engines plus the file-backed DuckDB preview, transformations, code generation, exports, and runtime dispatch. Spark-dependent PySpark cases skip only when their optional runtime is absent from an ordinary developer environment. Required CI coverage installs and verifies exact PySpark 4.2 Connect extras, compatible Pandas, and Java 17 before running the complete instrumented Python corpus, so those cases cannot disappear behind that local-only skip.
-- `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and a copied private workspace, then uses separate zero-window seed/verify editor processes to validate workspace-state replay and injected runtime recovery in the rendered grid. The fresh verify process physically proves the committed output column, two-sort priority, selected column, distinctive width, nonzero row/column viewport, and visible-row status; a renderer-originated **Header profiles** request then restarts the runtime and must preserve that complete state. Actual Explorer-row, editor-title, and editor-tab file-launch clicks run through a private Electron debugging port. Each context action must appear exactly once, open the exact copied source without import prompts, render its grid, and leave its bytes unchanged. Multi-megabyte fixture-preservation checks compare exact bytes with bounded size/first-difference diagnostics; they never pass complete buffers to Node's assertion formatter. Runtime-selection commands may write workspace configuration only inside that per-run copy, so an interrupted editor phase or laptop shutdown cannot leave a deleted disposable interpreter configured in the repository. A same-URI session-to-custom-editor reload waits for the prior public tab model to become empty before dispatch, then requires the exact fresh `TabInputCustom`; runtime cleanup alone is not treated as editor-input disposal. Stable VS Code defaults to native context menus on macOS, which are outside the renderer debugging protocol, so the disposable profile selects VS Code's built-in custom menu style for these physical assertions.
+- `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and a copied private workspace, then uses separate zero-window seed/verify editor processes to validate workspace-state replay and injected runtime recovery in the rendered grid. The fresh verify process physically proves the committed output column, two-sort priority, selected column, distinctive width, nonzero row/column viewport, and visible-row status; a renderer-originated **Header profiles** request then restarts the runtime and must preserve that complete state. Actual Explorer-row, editor-title, and editor-tab file-launch clicks run through a private Electron debugging port. Each context action must appear exactly once, open the exact copied source without import prompts, render its grid, and leave its bytes unchanged. Multi-megabyte fixture-preservation checks compare exact bytes with bounded size/first-difference diagnostics; they never pass complete buffers to Node's assertion formatter. Runtime-selection commands may write workspace configuration only inside that per-run copy, so an interrupted editor phase cannot leave a stale disposable interpreter configured in the repository. A same-URI session-to-custom-editor reload waits for the prior public tab model to become empty before dispatch, then requires the exact fresh `TabInputCustom`; runtime cleanup alone is not treated as editor-input disposal. Stable VS Code defaults to native context menus on macOS, which are outside the renderer debugging protocol, so the disposable profile selects VS Code's built-in custom menu style for these physical assertions.
 - `npm run test:packaged-editors -- openwrangler.vsix` installs the release artifact into isolated VS Code/Cursor profiles and runs zero-window Restricted Mode, seed, and verify acceptance from a separately packaged and installed acceptance-only helper, so checkout code cannot shadow the product. It can additionally run the opt-in real Python-environment phase or released-Jupyter allow/deny pair documented below. The Restricted Mode phase uses no development extension, a fresh trust-enabled user-data profile, suppresses only the startup prompt, omits `--disable-workspace-trust`, proves `workspace.isTrusted === false`, and verifies the installed package cannot activate, create a dataframe tab, expose its coordinator, or start a runtime. Its verify process exercises the installed file-launch toolbar plus physical Explorer-row and tab context-menu contributions, and repeats the rendered fresh-process persistence/recovery assertions against the installed package. Native webview discovery has a fixed 30-second bound, checks workbench/CDP liveness, ignores only proven retired targets (including a Code Preview iframe replaced during provider refresh), and reports structural frame diagnostics without retaining dataframe text. Cursor hides third-party editor-title actions by default, so manifest and installed-editor tests require the package's declarative `cursor.general.pinnedTitleActions` default and prove the primary icon is visible without writing a setting into the disposable profile.
 - `OPEN_WRANGLER_EDITOR_DISPLAY=xvfb npm run test:remote-workspace -- /absolute/openwrangler.vsix <lowercase-sha256> <byte-size>` runs the pinned official VS Code/Remote SSH acceptance in private user, PID, network, IPC, and UTS namespaces. The trusted build caller must calculate and pass the candidate SHA-256 and byte size independently. The runner rejects a missing, malformed, oversized, or mismatched expectation; revalidates the exact source/staged candidate and pinned Remote SSH VSIX immediately before each install/use and after the editor phase; and carries the candidate size/hash plus the Remote SSH version/size/hash through the correlated namespace attestation. Host preflight and the isolated phase both require the exact Linux `CapInh`, `CapPrm`, `CapEff`, `CapBnd`, and `CapAmb` sets to be present once and zero, and the final attestation binds that all-zero capability object. The child treats the first strict correlated harness result as authoritative while retaining its no-follow descriptor through editor/SSH/Xvfb shutdown, offline-log validation, capability revalidation, and final path/byte identity checks. Both a success and a bounded explicit test failure exit zero only after publishing one exact terminal attestation containing the result outcome, size, and SHA-256; timeouts, malformed results, cleanup uncertainty, drift, or diagnostic stderr fail without a usable terminal envelope. The host reacquires that exact result, keeps it leased while it revalidates every staged input, immutable registry, host guard, candidate, and pinned Remote SSH receipt, and only then reports a redacted test failure or permits cleanup. The host derives the phase loader from a parser-verified, fixed three-module static ESM closure; only known `node:` builtins and its exact local modules are permitted, while dynamic, CommonJS, bare-package, decorated, nested, absolute, and parent imports fail closed. It stages those three files plus Xvfb into an exact root-only manifest, then revalidates the source graph, staged graph, byte/identity receipts, and manifest at the synchronous spawn boundary and after the process tree stops. One exact launch registry classifies mutable homes/output, host-only identity guards, and every phase-visible authority input: the descriptor and phase helpers, a private exact-file copy of the invoking Node runtime, Xvfb, VS Code client/remote CLI/server, installed local and remote extensions, copied Python, Dropbear, SSH/account configuration, compiled test module with Playwright, and workspace fixture/settings. The staged Node copy has its own byte/mode receipt and immutable descriptor mount, independent of its original toolcache or system path. Physical authority and setup trees live outside the mutable remote home; required extraction roots are precreated empty with mode `0700`, while that home contains only runtime/cache/data/config/state/temp roots and an empty server-state skeleton before launch. The phase opens the remote `remote.csv` through the resource-scoped private Python/Polars runtime, pages and filters it to Milan/42, proves the source bytes unchanged, and requires zero retained sessions and a stopped runtime before fixture cleanup. The selected private Python environment is copied without filtering or recovering its dependency journal: an existing journal is source-receipted before and after the real copy, only the copied journal directory is descriptor-pinned and restored to mode `0700`, and every retained leaf must remain byte- and identity-exact. A receipt-bound copy of the product dependency guard then runs through the copied interpreter with one bounded stdin frame; only its exact clean status is accepted before fixture creation or editor launch, while dirty, busy, malformed, changed, or recoverable state fails closed. At the synchronous process-spawn boundary the runner revalidates the registry, opens retained no-follow leases, and gives Bubblewrap only inherited descriptor numbers. Mutable roots are mounted with `--bind-fd` first; every authority root or file is then overlaid into its expected remote-home location with `--ro-bind-fd`. No host private-root pathname, physical setup tree, or broad writable `/ow` bind enters the Bubblewrap argument vector. Immutable manifests and receipts are checked again after the owned process tree stops. Verified cleanup first moves both the private root and the host-only sentinel to absent randomized siblings under their pinned parents, then revalidates the quarantined identities immediately before deleting them; a rebound parent, public path, or quarantine is retained untouched and fails cleanup.
 - The Remote SSH extension-host scenario does not treat coordinator session publication as renderer readiness. It bounded-waits for the exact panel's open operation and current session/revision synchronization marker to receive its renderer acknowledgement, then requests and asserts one fresh host-to-renderer synchronization exactly once. This closes the panel-publication race without retrying an editor phase, a Remote SSH attempt, or a failed synchronization.
@@ -62,7 +59,7 @@ The remote scenario and public **Open in Open Wrangler** command both open CSV/T
 
 If the editor reaches the result wait but never publishes a terminal result, diagnostics remain metadata-only. After the editor, SSH daemon, and display are proven stopped, the phase revalidates its private namespaces and zero capabilities, then reduces either the fixed private log topology or one strictly allowlisted correlated checkpoint to a fixed controller stage. A checkpoint can distinguish only harness bootstrap, activation, packaged preflight, scenario setup, file open, filter, session cleanup, or completed-harness publication; its raw text never crosses the controller boundary. Log contents are never read, and raw paths, names, user data, or caught errors are never emitted or persisted by the diagnostic. Unsafe, duplicated, malformed, unknown, or over-budget observations keep the generic result-wait failure.
 
-The `canonical-vsix` preparation job performs one clean production build, packages the channel derived from validated version/preview metadata, verifies it, requires `README.md`, `CHANGELOG.md`, `LICENSE`, and `THIRD_PARTY_NOTICES.md` to match their corresponding archive entries byte for byte, binds it to a strict SHA-256 receipt, and lets the Linux packaged VS Code, affected-path released-Jupyter, native macOS/Windows VS Code, and native Cursor jobs test those exact bytes independently. A ready pull request changing only those four shipped documents runs this producer plus the focused media contracts and skips unrelated product consumers. Each required artifact consumer fails explicitly if preparation did not succeed, and the aggregate accepts a skipped released-Jupyter result only for a documentation-only or package-only pull request, an exact draft whose `validate` result remains deliberately failed, or a protected-branch push. The heavyweight `Remote SSH acceptance` job is also opt-in: a ready full-matrix pull request carrying the `acceptance:remote-ssh` label when its next supported pull-request activity starts makes an ephemeral Ubuntu 24.04 VM consume the same canonical artifact, enable and verify the kernel namespace primitive required by Bubblewrap, and run the existing zero-window Remote SSH gate once. A hosted runner image may expose trusted system ancestors with runner ownership or writable modes: the current static Podman extraction assigns the top-level `/usr` and `/etc` directories to the runner UID, while `/usr/share` is writable. After package installation, the job first requires `/usr` and `/etc` to be canonical real directories owned only by root or the current runner, restores exactly those two ancestors to `root:root` without traversing either tree, removes their group/other write bits, and revalidates `/`, `/usr`, and `/etc`. It then restores the root-owned `/usr/share` parent mode, removes group/other write access from only the seven fixed font, icon, MIME, GLib, X11, and timezone subtrees used by the namespace, and recursively verifies their root ownership, entry types, and non-writable file/directory modes before the harness accepts them. The harness independently requires every system-runtime root and ancestor to remain canonical, root-owned, and non-writable before each pathname-bound read-only mount. It copies the exact Node executable that launched it into a private receipt-bound file and mounts that staged executable through the immutable launch descriptor, so setup-node toolcache layouts need no distro-level Node installation or unleased host path. It is evidence for an intentional release candidate, not another default PR cost; merely applying a label does not restart the complete CI workflow. A complete workflow re-run replaces the earlier run-attempt artifact before consumers start; rerunning only a failed consumer reuses and revalidates the unchanged existing artifact. CI owns the complete Linux/Python 3.10 and 3.14 suites; cross-platform runtime adds only the distinct macOS/Python 3.12 and Windows/Python 3.14 suites plus focused native Windows dependency guards. CI, cross-platform runtime, and CodeQL cancel only superseded pull-request heads within their ref-scoped groups; push, scheduled, and manual evidence is never cancelled, and a failed phase is never retried automatically. `scripts/ci-workflow.test.mjs` rejects loss of that grouping or PR-only boundary, reintroduction of duplicate plain TypeScript/Python or exact-runtime PySpark suites outside coverage, aggregate result omission, or a skipped-success aggregate path. The separate weekly/manual released-Jupyter workflow remains ecosystem-drift evidence and keeps its own deliberate package build because it has no caller artifact. Performance history and experimental-editor smokes remain scheduled/manual. `npm run package:prepared` is CI-internal: only the pull-request `canonical-vsix` producer and the candidate-first release producers may use it after a clean production build; their required quality, test, accessibility, package-inspection, and installed-editor consumers still gate the same commit and artifact. Local development, release candidates, tag builds, and every other workflow must use `npm run package`; its outer heavy-command lease remains held across the internal clean/build/check/test/package continuation, which must not be invoked directly.
+The `canonical-vsix` preparation job performs one clean production build, packages the channel derived from validated version/preview metadata, verifies it, requires `README.md`, `CHANGELOG.md`, `LICENSE`, and `THIRD_PARTY_NOTICES.md` to match their corresponding archive entries byte for byte, binds it to a strict SHA-256 receipt, and lets the Linux packaged VS Code, affected-path released-Jupyter, native macOS/Windows VS Code, and native Cursor jobs test those exact bytes independently. A ready pull request changing only those four shipped documents runs this producer plus the focused media contracts and skips unrelated product consumers. Each required artifact consumer fails explicitly if preparation did not succeed, and the aggregate accepts a skipped released-Jupyter result only for a documentation-only or package-only pull request, an exact draft whose `validate` result remains deliberately failed, or a protected-branch push. The heavyweight `Remote SSH acceptance` job is also opt-in: a ready full-matrix pull request carrying the `acceptance:remote-ssh` label when its next supported pull-request activity starts makes an ephemeral Ubuntu 24.04 VM consume the same canonical artifact, enable and verify the kernel namespace primitive required by Bubblewrap, and run the existing zero-window Remote SSH gate once. A hosted runner image may expose trusted system ancestors with runner ownership or writable modes: the current static Podman extraction assigns the top-level `/usr` and `/etc` directories to the runner UID, while `/usr/share` is writable. After package installation, the job first requires `/usr` and `/etc` to be canonical real directories owned only by root or the current runner, restores exactly those two ancestors to `root:root` without traversing either tree, removes their group/other write bits, and revalidates `/`, `/usr`, and `/etc`. It then restores the root-owned `/usr/share` parent mode, removes group/other write access from only the seven fixed font, icon, MIME, GLib, X11, and timezone subtrees used by the namespace, and recursively verifies their root ownership, entry types, and non-writable file/directory modes before the harness accepts them. The harness independently requires every system-runtime root and ancestor to remain canonical, root-owned, and non-writable before each pathname-bound read-only mount. It copies the exact Node executable that launched it into a private receipt-bound file and mounts that staged executable through the immutable launch descriptor, so setup-node toolcache layouts need no distro-level Node installation or unleased host path. It is evidence for an intentional release candidate, not another default PR cost; merely applying a label does not restart the complete CI workflow. A complete workflow re-run replaces the earlier run-attempt artifact before consumers start; rerunning only a failed consumer reuses and revalidates the unchanged existing artifact. CI owns the complete Linux/Python 3.10 and 3.14 suites; cross-platform runtime adds only the distinct macOS/Python 3.12 and Windows/Python 3.14 suites plus focused native Windows dependency guards. CI, cross-platform runtime, and CodeQL cancel only superseded pull-request heads within their ref-scoped groups; push, scheduled, and manual evidence is never cancelled, and a failed phase is never retried automatically. `scripts/ci-workflow.test.mjs` rejects loss of that grouping or PR-only boundary, reintroduction of duplicate plain TypeScript/Python or exact-runtime PySpark suites outside coverage, aggregate result omission, or a skipped-success aggregate path. The separate weekly/manual released-Jupyter workflow remains ecosystem-drift evidence and keeps its own deliberate package build because it has no caller artifact. Performance history and experimental-editor smokes remain scheduled/manual. `npm run package:prepared` is CI-internal: only the pull-request `canonical-vsix` producer and the candidate-first release producers may use it after a clean production build; their required quality, test, accessibility, package-inspection, and installed-editor consumers still gate the same commit and artifact. Local development, release candidates, tag builds, and every other workflow must use `npm run package`; run it serially and do not invoke its internal continuation directly.
 
 The manual stable workflow is the final exact-artifact gate, not another ordinary pull-request matrix. With `publish: false`, it packages once from the exact version-owned protected commit (`release/1.x` for stable v1, `main` for stable v2 and later), uploads one canonical VSIX/checksum/provenance triple, and runs every stable consumer against that upload's artifact ID. Its producer performs one clean production build and uses the internal prepared-packaging continuation; the Linux consumer remains the only complete source-suite owner. The release path adds full pinned Cursor acquisition on Linux, ordinary VS Code/Cursor installed-performance evidence, released and remote Jupyter in both editors, and label-equivalent Remote SSH alongside the macOS/Windows native matrix. Its structural inspector rejects repackaging, evidence-only provenance, moving actions, artifact-name downloads, skipped-result fan-in, extra write permissions, unreviewed publisher commands, token arguments, preview registry flags, or an unprotected publication boundary. With `publish: true`, the protected final job accepts only an absent or exact lightweight tag, pushes that single ref immediately after final artifact verification and immediately before GitHub Release creation, resumes only an absent or byte-exact GitHub release, and idempotently promotes the accepted stable VSIX to Open VSX. The real tag event is required to start Azure Marketplace promotion.
 
@@ -112,13 +109,13 @@ Operation-edge fixtures must exercise runtime and executable generated code for 
 
 File-source tests must cover quoted/delimited and headerless CSV, a non-UTF-8 Pandas CSV, invalid UTF-8 replacement decoding, TSV, JSONL, Parquet, modern `.xlsx`, and a real legacy BIFF `.xls` workbook by sheet name and zero-based sheet index in both Pandas/Polars parity engines. `utf8-lossy` acceptance must prove the sentinel never reaches a Python codec lookup, automatic selection probes only Pandas even when Polars and DuckDB are absent, invalid bytes become `�`, and a missing Pandas dependency remains a structured pre-start diagnostic. Dependency tests must prove the matching parser contract: DuckDB requests ordered `duckdb>=1.5.4,<1.6` and `pytz` requirements, Pandas `.xlsx` requests `openpyxl>=3.1.5`, Pandas `.xls` requests `xlrd>=2.0.1` and never `openpyxl`, and Polars Excel requests `fastexcel>=0.9`. Environment probes must canonicalize real symlink/junction and Linux `/proc` aliases to one absolute package root plus the same filesystem device/inode identity, accept the full Windows 128-bit inode range, reject malformed or unsafe identity payloads, and distinguish a same-path replacement. Command-resolution tests must prove a bare override cannot be shadowed by the workspace or empty/relative `PATH` entries, a wrapper is pinned to its reported fully qualified interpreter without realpathing away a virtual environment, and current-drive-rooted Windows paths are rejected by dependency probing, installation, and runtime startup. The Windows discovery seam may invoke `py.exe` only as `-0p` with automatic installation disabled; strict empty, malformed, legacy, free-threaded, drive, and UNC listings must either yield direct supported `.exe` paths or no interpreter probes. The public install command must ignore caller arguments, show a modal with exact requirements/interpreter, require the literal affirmative action, preserve retryable diagnostics on decline, serialize concurrent attempts and, after every matching runtime has quiesced, freshly revalidate trust, lifecycle, current interpreter, canonical root identity, requirements, event authorization, and exact barrier ownership immediately before pip. A trust, configuration, Python-environment, executable, path, or filesystem-identity change during that wait must launch no child. After successful pip, tests must prove the captured dependency epoch is invalidated so older probes fail closed, while a genuinely newer interpreter selection is preserved. The environment-gated test API's dependency-install decision may only decline and may never confirm installation or become a sticky production override. Pip-process tests must reject inherited alternate-interpreter, destination, config-file, extra-requirement, and auxiliary output-path overrides case-insensitively while retaining network and cache configuration, and the already-pinned absolute interpreter must run from a private mode-0700 directory rather than a home directory containing `pip.py`; that directory remains owned until exact close and is then removed. Packaged-editor affirmative acceptance requires exactly one visible and enabled **Install** action, moves the pointer to a neutral workbench edge until any unrelated Monaco hover is gone, dispatches the real control once with Playwright's own cancellable timeout and no post-click navigation wait, then requires the real modal to close against a private no-network fake-pip interpreter and proves exact arguments, disabled pip configuration, and sanitized environment. The first-use and full verify paths additionally require the same XLSX error tab and renderer to become a live, keyboard-usable Pandas grid after the successful reprobe while the workbook stays byte-identical; the terminal lifecycle case separately proves bridge shutdown waits for its exact child to exit naturally without reporting post-disposal success. Tests must invalidate stale targets after an `openWrangler.pythonPath` override change or successful later probe and reject stale continuations across every awaited selection boundary. File tests must reject missing and malformed inputs as structured engine errors, prove failed opens retain no session, and assert Polars CSV/TSV/JSONL/Parquet sources remain lazy. Literal-path regressions must cover brackets that would otherwise select a matching sibling, plus asterisks, question marks, and braces, across all four lazy Polars formats; they also prove native `glob=False`, the encoded-file-URI compatibility path, page access, close, and immutable source bytes. The DuckDB preview separately covers native lazy CSV/TSV/Parquet/JSONL reads, reports malformed JSONL as an input/open error even when its path resembles an extension diagnostic, and rejects Excel and non-UTF-8 CSV with an actionable diagnostic; `.duckdb` database browsing is not a file-source claim. Native DuckDB rich-Parquet fixtures preserve exact DECIMAL values, normalize TIMESTAMPTZ through UTC-owned connections, retain LIST and STRUCT values as strict JSON, and exercise the same page, summary, filter, sort, and export paths without conversion. A relation-lifetime spy must prove that open, page, custom transformation, apply, and export retain only connection-free `DuckDBSqlPlan` frames, dereference every request-local native relation before closing its owner, and never call `DuckDBPyRelation.close()`. A deterministic overlap test holds a completed summary connection while a concurrent page finishes, then requires every tracked connection to be released before atomic replacement. The Windows installed-editor checkpoint must replace the rich Parquet source immediately after a typed page and all correlated foreground and background reads quiesce, then receive the intended recoverable reopen diagnostic. Lazy-file tests atomically grow, shrink, replace, delete, and change the schema during and after open; every later data-reading request, including a cache hit and export, must reject the changed fingerprint while close still succeeds. Eager Pandas files and notebook variables remain in-memory snapshots and do not receive a file fingerprint. Typed-cell fixtures cover NumPy/Pandas nullable scalars and strict JSON, while nested Polars fixtures cover unsigned large integers, decimals, time zones, lists, structs, binary, categoricals, durations, null/NaN/infinity, and long Unicode text without a Pandas conversion. Pandas MultiIndex-column fixtures must prove the tuple-form sentinel stays excluded from shape, schema, pages, and exports. Pandas/Polars source frames remain page-safe with zero visible columns; no transformation may create that state because Polars/DuckDB generated functions and exports cannot preserve a positive-height zero-column frame. Equivalent DuckDB zero-column source acceptance remains pending where DuckDB cannot represent such a relation.
 
-Persistence tests must assert that only serializable replay state is stored, unknown fields and malformed operation kinds or parameters are rejected through the shared discriminated-step guard, import options participate in source identity, and runtime/public session identifiers never enter workspace state. The bounded `openWrangler.confirmedFileConfigurations.v2` registry must strictly reject malformed/mixed-format entries, unknown resolved backends or logical backend preferences, wrong versions, lone-surrogate delimiters/quotes, import options on Parquet/JSONL, and missing options on CSV/TSV/Excel; key configurations only by canonical file URI; prune oldest entries; and write only after a correlated successful file open/reconfiguration. Custom-editor tests allow one editor per document and prove recreation pins the last confirmed concrete backend, including option-free Parquet/JSONL, and reaches the identical source-plus-backend cleaning/view key despite later engine-availability or default-setting changes. Separate automatic and explicit cases must prove that the logical `backendPreference` survives recreation: crash recovery stays on the confirmed concrete backend, automatic import reconfiguration may choose another compatible backend, and explicit reconfiguration remains pinned. A deferred-Memento race must prove an authoritative replacement source/revision/snapshot is adopted before persistence, the next queued change targets that revision/source, and only stale UI publication is suppressed. Saved MIME v2 outputs pass their own bounded payload and cleaning-state validation before the inline renderer displays them. Direct `SnapshotBridge` contract tests may exercise the retained read-only capture model, but that machinery has no renderer or public-command entry point and must never enter workspace persistence. Packaged release acceptance applies a plan and view sort in one process, reopens the same source in a fresh process, and verifies the restored transformed grid in both VS Code and Cursor.
+Persistence tests must assert that only serializable replay state is stored, unknown fields and malformed operation kinds or parameters are rejected through the shared discriminated-step guard, import options participate in source identity, and runtime/public session identifiers never enter workspace state. The bounded `openWrangler.confirmedFileConfigurations.v2` registry must strictly reject malformed/mixed-format entries, unknown resolved backends or logical backend preferences, wrong versions, lone-surrogate delimiters/quotes, import options on Parquet/JSONL, and missing options on CSV/TSV/Excel; key configurations only by canonical file URI; prune oldest entries; and write only after a correlated successful file open/reconfiguration. Custom-editor tests allow one editor per document and prove recreation pins the last confirmed concrete backend, including option-free Parquet/JSONL, and reaches the identical source-plus-backend cleaning/view key despite later engine-availability or default-setting changes. Separate automatic and explicit cases must prove that the logical `backendPreference` survives recreation: crash recovery stays on the confirmed concrete backend, automatic import reconfiguration may choose another compatible backend, and explicit reconfiguration remains pinned. A deferred-Memento race must prove an authoritative replacement source/revision/snapshot is adopted before persistence, the next queued change targets that revision/source, and only stale UI publication is suppressed. Saved MIME-v2 outputs pass their own bounded payload validation before the inline renderer displays them and never enter workspace persistence. Packaged release acceptance applies a plan and view sort in one process, reopens the same source in a fresh process, and verifies the restored transformed grid in both VS Code and Cursor.
 
 Notebook tests must exercise complete and truncated MIME v2 captures, malformed versions, proactive Pandas/Polars formatter preparation after kernel permission, exact source-document retention, and insertion of the edited generated function. Provider-coordinator tests prove that trusted exact Jupyter notebooks prepare before any Open Wrangler command, transient retries remain bound to that document, kernel invalidation prepares the replacement generation, and close/disposal stops later work. With Microsoft Data Wrangler installed, the default `ask` state registers nothing until the modal choice resolves; Open Wrangler, Data Wrangler, disabled, dismissal, persisted preference, setting changes, and the new/restarted-kernel boundary remain deterministic.
 
-The renderer's **Open in Open Wrangler** action is live-only. A canonical linked output must open the complete current variable through the exact visible sender `NotebookEditor`, exact originating `NotebookDocument`, exact selected kernel, and normal backend detection. It may never create or fall back to a `SnapshotBridge`. An unlinked output remains readable inline, exposes no open button, and tells the user to run the cell again. A linked-but-missing variable or unavailable kernel must produce the same actionable run-cell/kernel recovery instead of opening captured rows. Toolbar and Jupyter Variables tests independently execute bounded discovery through the exact selected kernel and present canonical Pandas, Polars, PySpark, and recognized DuckDB relation variables. Pinned and auto-detected PySpark launches must run an isolated type-and-version probe inside the authoritative bridge generation immediately before runtime open dispatch; strict 4.2.x proceeds, while missing, malformed, 4.1, 4.3, and 4.20 versions fail with actionable guidance and zero created session. A silent A→B kernel switch and an observed restart must invalidate and reprobe B before dispatch. Probe tests preserve colliding user globals and prove module `__getattr__` is never invoked. The picker and opening stage must say both **Viewing only** and that opening scans, indexes, and caches the complete DataFrame. Free-form names, malformed or spoofed discovery, non-Python kernels, focus changes, closed documents, and duplicate same-URI documents fail without opening or retargeting a session.
+The renderer's **Open in Open Wrangler** action is live-only. A canonical linked output must open the complete current variable through the exact visible sender `NotebookEditor`, exact originating `NotebookDocument`, exact selected kernel, and normal backend detection. It may never open captured rows as a workbench session. An unlinked output remains readable inline, exposes no open button, and tells the user to run the cell again. A linked-but-missing variable or unavailable kernel must produce the same actionable run-cell/kernel recovery instead of opening captured rows. Toolbar and Jupyter Variables tests independently execute bounded discovery through the exact selected kernel and present canonical Pandas, Polars, PySpark, and recognized DuckDB relation variables. Pinned and auto-detected PySpark launches must run an isolated type-and-version probe inside the authoritative bridge generation immediately before runtime open dispatch; strict 4.2.x proceeds, while missing, malformed, 4.1, 4.3, and 4.20 versions fail with actionable guidance and zero created session. A silent A→B kernel switch and an observed restart must invalidate and reprobe B before dispatch. Probe tests preserve colliding user globals and prove module `__getattr__` is never invoked. The picker and opening stage must say both **Viewing only** and that opening scans, indexes, and caches the complete DataFrame. Free-form names, malformed or spoofed discovery, non-Python kernels, focus changes, closed documents, and duplicate same-URI documents fail without opening or retargeting a session.
 
-Producer/consumer contract tests pin the 10,000-row, 2,048-column, 100,000-cell, 16-MiB, field-text, 64-depth, and 1,000,000-node capture caps; cover exact boundaries, deeply nested cells, repeated/cyclic containers, strict typed-cell coherence, and UTF-8/code-point accounting; and reject oversized output incrementally. Polars `LazyFrame` capture proves no normalization or full-frame collection and one bounded terminal page with no eager profiles. Renderer component/browser tests page captured rows at 10, 20, 50, and 100 rows per page, keep Previous/Next inside the capture, expose every captured column horizontally, retain honest truncation labels, and preserve readability without host messaging. Direct `snapshotModel`/`SnapshotBridge` contract tests may continue to cover typed capture filters, sorts, profiles, exact literals, foreground/background ordering, cancellation, and cleanup, but that machinery has no renderer or public-command entry point.
+Producer/consumer contract tests pin the 10,000-row, 2,048-column, 100,000-cell, 16-MiB, field-text, 64-depth, and 1,000,000-node capture caps; cover exact boundaries, deeply nested cells, repeated/cyclic containers, strict typed-cell coherence, and UTF-8/code-point accounting; and reject oversized output incrementally. Every v2 page must carry exact full-width `columnIds`; missing or partial schemas fail closed. Polars `LazyFrame` capture proves no normalization or full-frame collection and one bounded terminal page with no eager profiles. Renderer component/browser tests page captured rows at 10, 20, 50, and 100 rows per page, keep Previous/Next inside the capture, expose every captured column horizontally, retain honest truncation labels, and preserve readability without host messaging.
 
 Two-notebook renderer acceptance keeps A and B visible with B active, activates A's physical linked action once, and proves only A's current live value and kernel are used. No active-editor, URI-match, other-split, capture, or snapshot fallback is accepted. Deferred activation, kernel lookup, bootstrap, dispatch, and response fixtures replace or close the exact origin at every boundary; malformed output, transport failure, cancellation, timeout, wrong identity, duplicate identity, and stale-generation success must clean each dispatched candidate once on its exact original kernel. Released-editor acceptance repeats proactive formatting, provider choice, typed toolbar discovery, linked inline live opening over a dataframe larger than its saved capture, unlinked inline guidance, recovery, denial, paging, and originating-notebook insertion in packaged VS Code and Cursor. The inactive split-notebook race uses one ordinary physical pointer activation with bounded geometry and an authoritative A-bound live-session receipt; it never uses a synthetic DOM click, forced locator action, or a retry after indeterminate dispatch.
 
@@ -485,363 +482,48 @@ Pull-request classification is covered by `npm run test:scripts:workflow`. The a
 
 The installed-performance manifest boundary is the complete Python-produced object, not a reduced extension-host projection: generator, license, redistribution, file-name, format, shape, Int64-column, sentinel-row, byte-size, and SHA-256 fields are all exact. The extension host and release report execute one shared decoder, and a Python regression feeds the generator's actual smoke-manifest stdout through that decoder.
 
-Guarded installed-performance packaging tests require every VSCE source to be tracked or an exact generated output, reject both a packageable untracked runtime module and an ignored `media` extra while leaving excluded `scratch.txt` outside every read, and pin each tracked and generated input's identity, size, and SHA-256 around packaging. The sealed archive must match the pinned source inventory and every source-byte digest. Regressions substitute a tracked or generated input and add an otherwise allowlisted runtime entry only to the simulated `createVSIX` result; all fail even when a later pathname scan would look clean. Product packaging disables VSCE's GitHub issue autolinker, ordinary VSIX verification rejects source-to-package README drift, and README links stay absolute so relative-link rewriting cannot create an undocumented transformation. Final-publication tests mutate the candidate while the report receipt is read and require the joint validation to fail.
+Guarded installed-performance packaging tests require every VSCE source to be tracked or an exact generated output, reject both a packageable untracked runtime module and an ignored `media` extra while leaving excluded user files outside every read, and pin each tracked and generated input's identity, size, and SHA-256 around packaging. The sealed archive must match the pinned source inventory and every source-byte digest. Regressions substitute a tracked or generated input and add an otherwise allowlisted runtime entry only to the simulated `createVSIX` result; all fail even when a later pathname scan would look clean. Product packaging disables VSCE's GitHub issue autolinker, ordinary VSIX verification rejects source-to-package README drift, and README links stay absolute so relative-link rewriting cannot create an undocumented transformation. Final-publication tests mutate the candidate while the report receipt is read and require the joint validation to fail.
 
-## Clean-room Data Wrangler comparison feasibility smoke
+## Clean-room Data Wrangler comparison
 
-The optional Linux x64 smoke checks whether Open Wrangler and Microsoft Data Wrangler 1.24.2 can complete the same
-deterministic resident-cache launch/readiness journey. It is a harness feasibility check, not a performance result.
-It uses only synthetic CC0-1.0 CSV and Parquet fixtures:
+The v1.2.1 study method is in [`docs/performance-comparison.md`](performance-comparison.md). Its public commands are:
 
-```bash
-npm run comparison:feasibility:smoke -- \
-  --candidate /absolute/path/openwrangler.vsix \
-  --python /absolute/path/python-comparison \
-  --out /absolute/path/data-wrangler-smoke.json
-```
+- `npm run comparison:smoke` for the first complete paired trial;
+- `npm run comparison:study` for the fixed 96-trial collection; and
+- `npm run comparison:report` for the path-free summary.
 
-`--python` must name a current-user-owned, executable, non-empty, single-link regular file rather than the usual
-virtual-environment symlink. It must be CPython 3.10 through 3.14 with Pandas, Polars, PyArrow, Jupyter Core, and
-ipykernel installed. Polars generates the deterministic fixture manifest and validates every fixture cell against the
-checked-in row-plus-column rule; the matched editor comparison
-still uses Pandas for both products. The `--out` target must be absent: the runner reserves the final path with one exclusive no-follow create, then
-writes, flushes, and validates only through that bound descriptor. It never replaces an existing file and never
-unlinks an output pathname after creation, so an ancestor or pathname rebind cannot turn failed-publication cleanup
-into deletion of the candidate or interpreter. If publication fails after creation, its partial or complete report
-inode is deliberately retained instead of being cleaned by pathname. The runner's filesystem-boundary tests are
-Linux-owned and self-skip on non-Linux release hosts; Ubuntu contract and release tests retain the exact coverage,
-while the pure report-contract tests remain portable.
+The full study covers Pandas/Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. It retains ten paired,
+counterbalanced warm samples per cell and one AB plus one BA cold pair. Timings use the public Run Cell, launch, usable
+grid, and all-column-profile boundaries. Linux PSS records the owned editor tree's pre-action baseline, measured peak,
+and adjusted peak. Median and p95 use type 7. Failures and timeouts stay in the result set.
 
-The runner acquires pinned official VS Code, installs the exact locked public Marketplace extensions into separate
-disposable extension directories, and starts only zero-window headless Ozone workbenches. Open Wrangler uses one
-diagnostic workbench; Data Wrangler uses one setup workbench followed by one diagnostic workbench in the same isolated
-product profile. It uses fixed Open Wrangler-then-Data Wrangler order, removes desktop-display and editor-IPC routes,
-and never falls back to the current desktop or normal profiles. Each product
-profile disables Git repository discovery and excludes the immutable synthetic fixture tree from filesystem
-watching so unrelated first-run notifications cannot alter the readiness boundary. Grid discovery ignores
-zero-area accessibility-tree remnants and non-modal VS Code notification toasts, while still requiring the target
-editor and renderer to be pointer-usable. It waits for transient visible workbench surfaces to clear; a persistent
-Quick Input, modal dialog, or pointer obstruction consumes the bounded deadline and fails. Before Data Wrangler's
-ordinary warm-up, a separate untimed editor phase exposes one private, uniquely named, product-neutral Jupyter
-kernelspec. Its picker label names the exact CPython 3.12 patch release, and `argv[0]` is the exact pinned comparison
-interpreter. The harness launches the public Explorer action and discovers candidates only through
-public roles plus their computed accessible names. It first accepts exactly one matching kernelspec option exposed
-directly by the product. Otherwise it requires exactly one runtime selector on the post-click Data Wrangler editor
-surface, activates the exact public **Connect using local Python interpreter** route that this action opens (including
-VS Code's causally triggered main-workbench overlay), and then requires exactly one matching kernelspec option.
-Transient duplicate representations are retried without activating any candidate; persistent ambiguity, a global
-workbench runtime selector without a product-owned selector, a missing route, or a persistent **Connecting to
-runtime...** state fails at the bounded deadline without retrying the Explorer action. Raw DOM labels, private
-selectors, and frame creation alone are not selection evidence.
-This setup phase must expose both the generic grid and the exact configured ipykernel process, then close cleanly. A
-second editor launch reuses the exact same isolated user-data directory and private Jupyter environment; its ordinary
-untimed warm-up must reach the grid without setup interaction before either timed diagnostic begins. The setup receipt
-is never report evidence: only the diagnostic phase receipt may authorize reading the report fragment. First-use setup
-is therefore excluded from all recorded durations. The harness never seeds extension storage or inspects Marketplace
-package contents.
+Each trial owns a fresh mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
+extension directories are prepared once per arm and reused only to avoid 96 repeated Marketplace downloads. The study
+runner writes a manifest and one plain JSON file per completed trial ID. Re-running the same command resumes at the
+first missing ID; it does not retry or replace a completed outcome. The runner removes the temporary extension
+directories after the final retained outcome.
 
-Each product then gets one untimed warm-up and one resident-cache CSV and Parquet diagnostic launch through its visible
-Files Explorer context menu. Each ready launch closes cleanly before the next begins; no cleanup enters a measured
-click-to-grid duration, and the sequence adds neither sleeps nor user-action retries. Open Wrangler's primary CSV path
-performs automatic import detection inside the click-to-grid boundary;
-the smoke does not answer delimiter, encoding, header, or quote prompts. The exact visible Explorer item must have one
-unambiguous basename, and cache residency is re-proven immediately before the action click.
-
-Readiness is product-neutral: a visible ARIA grid, ARIA table, or native table must appear on a post-click renderer
-surface, expose the deterministic `c00` and `c01` headers plus sentinel cells, report a non-busy state, and retain
-stable geometry across two animation frames. The launched target editor must be selected, its renderer-frame and
-sentinel cell must be pointer-usable rather than occluded, and no visible Quick Input, dialog, or modal may obstruct
-the workbench. The runner verifies source identity and SHA-256 before and after the action, exact installed-extension
-inventories before and after each product phase, the configured interpreter in the owned process tree, and terminal
-cleanup. The configured interpreter's installed Pandas/PyArrow/Jupyter/ipykernel versions are environment inventory,
-not proof of Data Wrangler's rendering backend. Backend matching remains unestablished until the publishable study in
-issue #91 can prove it without inspecting proprietary implementation. The report records public IDs and versions only.
-
-The harness never directly opens, hashes, archives, uploads, or preserves Data Wrangler package contents; VS Code
-alone installs and executes its public Marketplace package. Successful runs and failures with verified process/display
-ownership remove the complete isolated root, including both disposable extension directories. If ownership is
-uncertain, the runner fails closed, emits no report, and leaves the exact private root uninspected. No retained package
-byte may later be read, archived, uploaded, reused, or included in diagnostics.
-
-The path-free JSON report is always marked `feasibilityOnly: true` and `publishable: false`. Its one diagnostic
-duration per product and format is retained only to troubleshoot harness timeouts; it is non-comparative. These
-fixed-order observations are not release evidence, a statistical benchmark, a parity claim, or grounds for naming a
-performance winner. The report contains no screenshots, DOM dumps, raw logs, private paths, proprietary bytes, or
-serialized source/sentinel values. Any
-product-phase, process-ownership, headless-isolation, input-identity, or cleanup uncertainty prevents report
-publication. The publishable comparison tracked in [issue #91](https://github.com/Matt17BR/openwrangler/issues/91)
-still requires release-sized fixtures, ten samples per product and format, median and p95 reporting, resource and
-machine provenance, cold- and warm-cache controls, matched interaction scenarios, counterbalanced product order,
-and no trimming.
-
-The separate v1.2.1 release study is preregistered in
-[`docs/performance-comparison.md`](performance-comparison.md). Its notebook inline-preview, live-workbench,
-all-column-profile, and PSS boundaries supersede no feasibility-smoke contract above. Results are publishable only
-after that reviewed method, its versioned study protocol, the exact candidate artifact, and all raw scheduled outcomes
-land together.
-
-Every public `comparison:*` npm command holds the repository's shared heavy-command lease for its complete process
-tree. The script contract test enumerates that public command set, so adding an unguarded comparison entry fails CI.
-
-Build the neutral notebook journey, then publish the static preregistration. Its output directory must be private
-mode `0700`, and the target must not already contain a different record.
+Run the focused pure checks while changing the harness:
 
 ```bash
-install -d -m 0700 /absolute/path/to/study
-npm run build:test-extension
-
-npm run comparison:preregister -- \
-  --out /absolute/path/to/study/preregistration.json
+node --test \
+  scripts/data-wrangler-comparison-study.test.mjs \
+  scripts/data-wrangler-comparison-install.test.mjs \
+  scripts/data-wrangler-comparison-neutral-driver.test.mjs \
+  scripts/data-wrangler-comparison-report.test.mjs \
+  scripts/linux-pss-sampler.test.mjs
 ```
 
-The preregistration contains the reviewed methodology hash, complete 96-entry schedule, fixed limits and environment
-requirements, compiled neutral-journey graph, package-lock and Playwright pins, and hashes for the packager, fixture
-tools, JavaScript cache harness, Python cache controller, process supervisor, bootstrap, environment capture, study
-validator, and durable publisher. It also binds the exact public npm launch recipes and the complete static module
-graph reachable from preparation and study execution, including local hashes, literal edges, external package names,
-and the TypeScript parser version used to prove that graph.
-It deliberately contains no candidate, editor, machine, fixture, profile, capability, or warm-up evidence. Review
-this file before preparing the study; it is append-only and cannot be changed in place.
+Before the full collection, build the real candidate and run `npm run comparison:smoke` in a separate output
+directory. This complete two-arm `pandas-csv` pair must prove
+headless isolation, public actions, a scrollable sentinel-matched grid, final profile milestones, PSS samples, and
+terminal cleanup. Delete its output afterward; it is not performance evidence. The full run then uses the same
+candidate, editor, Python environment, machine policy, and fixed fixtures without concurrent build/test work.
 
-Run preparation once under the exact CPU affinity that the study will use. `--cpu-list` must use the canonical Linux
-CPU-list form and must match the process affinity established by `taskset`.
-
-```bash
-taskset --cpu-list 2-5 npm run comparison:prepare -- \
-  --preregistration /absolute/path/to/study/preregistration.json \
-  --candidate /absolute/path/to/openwrangler.vsix \
-  --python /absolute/path/to/cpython-3.12 \
-  --cache-controller /absolute/path/to/python/benchmarks/source_cache_control.py \
-  --csv /absolute/path/to/study-100k-x-50.csv \
-  --parquet /absolute/path/to/study-1m-x-20.parquet \
-  --specification /absolute/path/to/study/specification.json \
-  --manifest /absolute/path/to/study/manifest.json \
-  --preparation /absolute/path/to/study/preparation.json \
-  --cpu-list 2-5
-```
-
-Preparation rehashes every preregistered source and recipe before doing any trial work. It packages and verifies the
-neutral driver inside its own retained private directory; callers do not provide a driver directory or VSIX. It also
-inspects the candidate, CPython environment, deterministic fixtures, CPU and power state, and proves that both fixture
-paths resolve to the same exact study volume,
-storage, official editor, and disposable profiles. It creates the study kernelspec, runs each product's public
-first-use setup, and seals the resulting configured-only profiles. Separate notebook warm-ups validate the public warm
-path; the retained warm seeds are sanitized before the study. Preparation does not run the older CSV/Parquet
-feasibility diagnostic. The supplied
-fixtures must match a fresh generator run byte for byte and pass the full Polars value contract.
-
-The downloaded editor and sanitized configured/warmed profile templates are retained under the ignored
-`node_modules/.cache/openwrangler-comparison/tmp/ow/x-*` tree. This keeps the large extracted trees out of the live
-workspace watch set while preserving the existing `tmp/ow/x-*` ownership and cleanup contract. The runner rejects a
-linked, redirected, foreign-owned, or world-writable ancestor and creates every Open Wrangler-owned cache directory at
-mode `0700`. A group-writable `node_modules` is accepted only below a pinned mode-`0700` repository. Do not run
-`npm ci`, remove `node_modules`, reinstall dependencies, or retire this checkout after preparation and before the final
-result is published. If that private tree disappears, abandon the study and prepare a new one.
-
-The preregistration fixes a minimum of 256 free Linux inotify watches. Before packaging, preparation checks that
-headroom in a disposable `x-*` root under the ignored comparison cache and requires exact-receipt cleanup after either
-outcome. An identity or cleanup failure stops preparation and may retain the root rather than guessing. Checks
-immediately before editor phases continue to use their already-owned private profiles. A measured trial repeats the
-check before its ten-second quiet-system window. If the command reports `inotify-watch-headroom`, free some existing
-file watches or raise the host's inotify watch limit, then rerun the unchanged command. The probe cleans up its own
-empty directories and watchers and does not write host paths into its receipt. A watch counts only after it reports the
-harmless event created in its own sentinel directory before the one-second readiness deadline.
-
-Only after all checks pass does preparation durably publish its journal first. The journal embeds the complete
-specification and authorizes one manifest digest; preparation then publishes that exact specification and derives the
-manifest from it. The specification format is checked in as
-[`performance-comparison.spec.schema.json`](performance-comparison.spec.schema.json), includes the preregistration
-digest, and contains no pending fields. Do not hand-author dynamic receipts. If the process stops after any one of
-those three publications, rerun the same preparation command: it recovers the journal, reconstructs the missing exact
-outputs, and does not regenerate retained roots or timestamps. The planner independently requires the exact
-preregistration, journal, specification path, and manifest path before it writes anything. The private driver and
-opaque-safe profile templates remain available for inspection. The versioned retention policy admits only the
-harness-written `user/User/settings.json` and package directories derived from the exact public CLI inventory, with
-the Data Wrangler package root removed. It skips logs, caches, `globalStorage`, `workspaceStorage`, Marketplace caches,
-extension-owned state, unknown extension-directory entries, and all other user-data paths before stat, open, hash, or
-copy. The settings file must still match the harness-authored pre-launch SHA-256 before and after capture. The
-preparation receipt protocol and each template's exact inventory bind that policy to later clones.
-
-Preparation captures the untimed Polars capabilities itself. For each release fixture it reinstalls the pinned public
-Data Wrangler version into a disposable clone of the sealed, package-free profile, opens a warm Polars `study_frame`,
-and watches the actual Jupyter output through the neutral Playwright driver. The action must appear twice in a row with
-usable pointer geometry. A separate clone removes Data Wrangler and proves for thirty seconds that neither product
-action appears on the same ready Jupyter output. Each capture records the actual editor version, complete extension
-inventory, fixture verification, fixed monotonic observation trace, and source context. A missing, ambiguous,
-timed-out, obstructed, or changed result stops preparation. These three captures are outside the 96 measured trials.
-Their receipt bindings identify the exact editor distribution, configured-profile tree, fixture, and capture result in
-`preparation.json`.
-
-Each product warm-up uses the measured notebook driver's real durable request/acknowledgement bridge. Preparation
-responds to the complete warm sequence and checks that the editor receipt contains the same ordered exchanges before it
-accepts the sanitized warm seed. Every scheduled warm trial repeats that untimed public journey on its disposable
-clone, closes the warm-up editor, and starts the measured journey in a fresh editor process on the same clone. The
-driver leaves the Jupyter picker search empty until it reaches the local kernelspec
-list, so a late discovery update cannot hide the route to the pinned kernel.
-
-Use the preparation receipt for the dry run and every recorded trial. Both commands choose the next schedule entry,
-clone the matching sealed profile, reinstall the pinned public Data Wrangler version when needed, install the neutral
-driver, build all private paths, and run the same measured notebook journey. Callers do not hand-author a per-trial
-preparation file.
-
-```bash
-taskset --cpu-list <manifest-cpu-list> npm run comparison:diagnostic -- \
-  --manifest /absolute/path/to/study/manifest.json \
-  --prepared /absolute/path/to/study/preparation.json
-
-taskset --cpu-list <manifest-cpu-list> npm run comparison:study -- run-next \
-  --manifest /absolute/path/to/study/manifest.json \
-  --fragments /absolute/path/to/study/fragments \
-  --intents /absolute/path/to/study/intents \
-  --preparation /absolute/path/to/study/preparation.json
-
-npm run comparison:study -- status --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments
-npm run comparison:study -- finalize --manifest tmp/comparison-study/manifest.json --fragments tmp/comparison-study/fragments --out tmp/comparison-study/result.json
-```
-
-Run `run-next` once per scheduled entry until `status` reports zero pending trials. The command will not skip ahead or
-overwrite a fragment. Its low-level `record` subcommand remains available for importing an independently validated
-fragment, but it is not the normal measurement path.
-
-The diagnostic accepts only the manifest's first scheduled trial and always attempts its public launch action. A
-missing action or a timeout remains failed or undetermined; it is not treated as proof that a product lacks the
-feature.
-
-This diagnostic uses a private scratch ledger. It never writes to the real study ledger and deletes its scratch data
-only after the public action, 200 ms PSS sampling, source-copy removal, process-tree cleanup, and provenance recheck all
-succeed. A failed run leaves that private journal in the disposable profile for inspection. The JSON summary labels
-memory as maximum observed sampled PSS: short spikes can fall between samples, and per-process `smaps_rollup` reads are
-sequential rather than simultaneous. Before a successful run removes its journal, the summary retains the validated
-sampling status and reason, missed-sample count, process-count range, and inline, workbench, profile, and complete-trial
-baseline, maximum, delta, and per-category PSS results. For Data Wrangler, it also reports the source and workbench
-engine evidence; an engine the public UI does not identify stays `unverified`.
-
-After a successful trial, `run-next` verifies that the editor and kernel process trees are empty and removes only the
-clone it created. Safe setup and trial failures retire that clone too. The unrecorded diagnostic has one explicit
-exception: it may retain a failed Open Wrangler clone with its private failure journal. If editor or display process
-ownership is uncertain, the harness does not inspect, move, or delete any product clone, source copy, run root, or
-diagnostic scratch path. This rule is the same for Open Wrangler and Data Wrangler. If cleanup cannot prove that a
-source copy or run root was retired, it leaves the containing clone in place too; deleting the parent must not bypass
-the failed child check. Cleanup holds identity leases on the profile and parent, creates an exclusive random sibling
-quarantine, and atomically renames the profile to its `payload`. It revalidates the absent public path plus the
-quarantine, payload, profile, and parent identities immediately before recursive removal. Replacement or containment
-ambiguity fails closed without deleting the unexpected trees. The
-durable authorization journal prevents an action interrupted after dispatch from being repeated silently. A laptop
-shutdown therefore loses at most the in-flight, pre-authorization setup: rerun `status` and call `run-next` again only
-when the ledger says the entry is safe to run.
-
-`plan` opens and identifies the supplied controller and CPython executable itself. It writes those observed receipts
-into the manifest and rejects a specification that claims a different toolchain. Later cache preparation executes
-those retained files through inherited descriptors and binds the result to the private fixture copy. Other retained
-files have fixed per-kind size limits and are hashed again in the synchronous supervisor-spawn callback. Launch
-evidence then hashes the executable behind the editor process's `/proc` descriptor, so a pathname swap cannot stand in
-for the editor bytes recorded during preparation. The spawn-bound fixture hash reads the immutable preparation file,
-not the separate-inode private copy used by the measured process, so it cannot refill the copy's evicted page-cache
-entries before a cold trial.
-
-The ledger has five versioned formats: manifest, fragment, finalization intent, result, and Linux PSS observation.
-Their protocol IDs begin with `openwrangler-data-wrangler-study-` or `openwrangler-linux-pss-observation-`. Each
-validator rejects unknown fields and identities that do not match the manifest or fixed schedule.
-
-The manifest records the machine, CPU policy, AC power, fixture volume, display, extension inventory, editor templates,
-Python environment, fixture generator and contract, control profile, and untimed Data Wrangler Polars capability check.
-It also binds the ownership supervisor to that same Python executable, including its patch version and SHA-256. The
-capability and control receipts retain normalized one-second public-UI traces. Their validators rebuild the manifest
-claims from those raw records and bind the official editor digest, complete extension inventory, `--locale=en`, exact
-`study_frame` schema and sentinels, host output owner, and both launch-action names. Tests change the wrapper, receipt
-digest, context, inventory, source, trace cadence, action count, obstruction state, conclusion, and supervisor Python
-identity independently and in coordinated combinations. These records do not contain local paths.
-
-`plan` writes the manifest once. Its fixed seed creates ten paired warm blocks for each engine and format. Each product
-runs first five times. One cold AB pair and one cold BA pair follow for every cell. The manifest, fragments, and result
-are published through the durable JSON helper. Integration tests cover exact retry after a complete write and after a
-two-link crash state, rejection of a conflicting retry, private-directory enforcement, and preservation of stale
-one-link temporaries. Manifest and result writes hold one named-path-verified directory lease from recovery through
-publication. Fragment recording uses one such lease for recovery, the current ledger read, schedule validation, and
-publication. Settlement rejects a renamed or rebound parent.
-
-`record` accepts only the next scheduled fragment and never overwrites an attempt. `status` returns the missing work.
-Pre-action failures follow two rules:
-
-- If the first product fails, keep that fragment and skip the unmatched second run. Do not add a placeholder.
-- If the second product fails, keep the first result and the second failure.
-
-The next `status` call schedules both products under a new attempt. This also makes an interrupted half-pair safe to
-resume.
-
-`finalize` stops if planned work remains. It publishes a digest-named finalization intent that binds the manifest,
-ordered fragment hashes, output basename, and a real UTC timestamp. A retry accepts exactly one validated intent and
-rebuilds the result with the same timestamp. Zero intents starts a new finalization; more than one fails. It then
-requires an exact result match before writing the file. Changing an observation and its summary cannot bypass the
-fragment hashes.
-
-The durable JSON tests inject a fault after each file and directory durability boundary. Recovery may remove only the
-unique two-link temporary that shares the target inode. A one-link temporary without a target stays in place. Study
-commands therefore recover with a digest derived from the caller's validated payload or from the digest-named,
-manifest-bound finalization intent, never from an output file alone. Manifest, fragment, and finalization readers hold
-one verified parent-directory descriptor through listing, child reads, and final entry checks. Tests replace both the
-named parent and an opened child entry; neither replacement may enter the accepted ledger. The CLI reads specification
-and fragment input JSON through bounded `O_NOFOLLOW` descriptors, with metadata and named-entry checks around the read;
-symlink and entry-swap fixtures must fail before parsed data reaches a validator.
-
-The result uses Hyndman-Fan type-7 median and p95. It keeps each successful observation plus the paired difference and
-ratio used by the latency and memory checks. Correctness, cleanup, and sampling failures stay in the counts but do not
-enter those summaries.
-
-Every measured fragment identifies its exact fixture and process tree. It includes source-cache proof, source-load
-duration, visible notebook values, the observed workbench engine, and the source check after the trial. Successful
-fragments must also contain a valid resource observation and end with an empty owned process tree. A failed pre-launch
-gate has no cache, engine, process, resource, or cleanup evidence.
-
-The environment gate records complete ten-second attempts as one-second intervals. It covers the pinned CPU set, CPU
-and memory pressure, swap, thermal counters, AC power, governors, display, and machine provenance.
-
-The public UI receipt contains the source shape, a small set of expected visible values, scroll checks, and canonical
-profile columns. Profile checks require integer type, minimum, maximum, no missing values, and either an exact distinct
-value or an approximate interval containing the row count. The receipt contains no DOM, logs, selectors, paths, or
-free-form text.
-
-The deadlines are 45 seconds for inline output, 60 seconds for the workbench, and 135 seconds for complete profiling.
-The resource ledger also caps `inlineActionMs + (workbenchActionMs - inlineReadyMs) + (profileActionMs -
-workbenchReadyMs)` at three seconds. With the
-two-second quiescence, 250 ms terminal overshoot, an inclusive origin sample, and a 200 ms interval, one trial may
-retain at most 1,228 samples.
-A timeout keeps its `>= deadline` bound and failure count but never substitutes that bound into paired calculations.
-If no Data Wrangler Polars action appears during the fixed capability window, the receipt records
-`capability-timeout` and the manifest records `undetermined`. No unsupported claim or launch-free fragment is created;
-the cell stays pending and the study remains release-incomplete.
-
-On Linux, the pinned supervisor verifies child-subreaper and pidfd support before it starts one editor in a new session.
-It uses a full numeric `/proc/<pid>/stat` census, so descendants that double-fork or call `setsid` remain in the owned
-closure after the subreaper adopts them. The sampler reads `/proc/<pid>/smaps_rollup` every 200 ms, verifies PID start
-times, and assigns each owned editor process to one category. The cleanup record is the sorted union of identities seen
-by the sampler and the supervisor. A PID reused during cleanup is retained as invalid evidence, but the replacement is
-still terminated and reaped. It fails on census ambiguity or ownership drift; this is reproducible accounting for
-cooperative measured applications, not a sandbox. A valid observation needs at least five gap-free samples and a
-terminal receipt at the first sample after the two-second quiescence target. Cleanup requires three consecutive empty
-ownership censuses. Every launched trial retains the ownership launch receipt and a valid or explicitly invalid
-resource observation, including setup failures before the public product action. An undetermined capability never
-launches and therefore produces no fragment. Failed pre-launch environment gates retain neither. If cleanup cannot
-prove an empty tree, the runner publishes no fragment.
-The result keeps missed-sample and process-count ranges. PSS is the comparison measure; RSS is diagnostic. Recorded
-study evidence must pass through the packaged notebook UI driver and its parent control bridge. The implementation
-follows the Linux documentation for
-[`/proc`](https://www.kernel.org/doc/html/latest/filesystems/proc.html),
-[child subreapers](https://man7.org/linux/man-pages/man2/pr_set_child_subreaper.2const.html),
-[`pidfd_open`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html), and
-[`pidfd_send_signal`](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html); sample timestamps use
-[`process.hrtime.bigint()`](https://nodejs.org/api/process.html#processhrtimebigint).
-
-The Node supervisor client can be passed directly to `runEditorAcceptancePhase` as its `spawnProcess` function. It
-recomputes the payload argument, environment, policy, and complete invocation digests before launch. The client accepts
-exactly two bounded canonical frames on file descriptor 3, checks the live supervisor and editor identities, and waits
-for the terminal census before it reports completion. A stale receipt, third frame, changed executable, reused PID, or
-process that remains after cleanup invalidates the run.
-
-Timing coordination uses two private sibling files for requests and acknowledgements. Each canonical envelope carries
-the protocol version, run ID, phase, sequence, handshake kind, and a monotonic timestamp. The controller consumes both
-files after every acknowledgement. Unknown fields, stale sequences, replaced file identities, and acknowledgements
-whose timestamp predates the request fail the handshake.
+The independent review checklist lives in
+[`docs/performance/data-wrangler-1.2.1/review.md`](performance/data-wrangler-1.2.1/review.md). Method review must finish
+before collection. Final publication waits for all 96 outcomes and an independent recalculation of counts, type-7
+quantiles, paired differences, and PSS.
 
 ## Performance fixtures
 

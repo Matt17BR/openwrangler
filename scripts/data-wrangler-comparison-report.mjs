@@ -1,423 +1,632 @@
-import fixtureManifestContract from "../src/shared/installedPerformanceFixtureManifest.cjs";
-
-export const COMPARISON_PHASE_PROTOCOL = "openwrangler-comparison-phase-v1";
-export const DATA_WRANGLER_COMPARISON_SMOKE_PROTOCOL = "openwrangler-data-wrangler-comparison-smoke-v1";
-export const DATA_WRANGLER_COMPARISON_BOUNDARY =
-  "visible Explorer context-menu action click to a selected unobstructed target editor with a stable pointer-usable generic ARIA grid or table and matched deterministic sentinels";
-export const DATA_WRANGLER_BASELINE_VERSION = "1.24.2";
-
-const SOURCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 const SHA256 = /^[0-9a-f]{64}$/u;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const NUMERIC_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
-const PACKAGE_VERSION = /^[0-9A-Za-z](?:[0-9A-Za-z._+-]{0,126}[0-9A-Za-z])?$/u;
-const EXTENSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}\.[A-Za-z0-9][A-Za-z0-9-]{0,127}$/u;
-const INSTALLED_EXTENSION = /^([A-Za-z0-9][A-Za-z0-9-]{0,63}\.[A-Za-z0-9][A-Za-z0-9-]{0,127})@(.{1,128})$/u;
-const PYTHON_VERSION = /^3\.(?:10|11|12|13|14)(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$/u;
-const PRODUCT_ORDER = Object.freeze([
-  "open-wrangler:csv",
-  "open-wrangler:parquet",
-  "data-wrangler:csv",
-  "data-wrangler:parquet"
+const DATA_WRANGLER_BASELINE_VERSION = "1.24.2";
+
+export const DATA_WRANGLER_STUDY_TOOL_NAMES = Object.freeze([
+  "method",
+  "study",
+  "driver",
+  "installer",
+  "report",
+  "pssSampler",
+  "editorAcceptance",
+  "editorEvidence",
+  "editorOrchestration",
+  "publicMediaContract",
+  "fixtureContract",
+  "vsixArchive",
+  "vsixContents",
+  "strictJson",
+  "dependencyLock",
+  "host",
+  "hostSupport",
+  "rendererSupport",
+  "hostGridReadiness",
+  "hostFragmentPublication",
+  "hostProgress",
+  "hostIdentifiedTemporary",
+  "sharedStrictJson",
+  "sharedFixtureManifest"
 ]);
-const EXPECTED_PRODUCT = Object.freeze({
-  "open-wrangler": Object.freeze({
-    id: "Matt17BR.openwrangler",
-    installation: "candidate-vsix"
-  }),
-  "data-wrangler": Object.freeze({
-    id: "ms-toolsai.datawrangler",
-    installation: "official-vscode-marketplace"
-  })
+
+export const DATA_WRANGLER_STUDY_REPORT_PROTOCOL = "openwrangler-data-wrangler-study-report-v1";
+
+const STUDY_METRICS = Object.freeze(["inlinePreviewMs", "workbenchOpenMs", "firstProfileMs", "completeProfileMs"]);
+const STUDY_MEMORY_METRICS = Object.freeze(["baselinePssBytes", "peakPssBytes", "adjustedPeakPssBytes"]);
+const STUDY_MILESTONES = Object.freeze([
+  "run-cell-click",
+  "inline-ready",
+  "launch-click",
+  "workbench-ready",
+  "profile-click",
+  "first-profile-ready",
+  "profiles-complete"
+]);
+const STUDY_FAILURE_STAGES = new Set([
+  "run-cell",
+  "inline-preview",
+  "workbench-open",
+  "profile-first",
+  "profile-all",
+  "cleanup",
+  "harness"
+]);
+const STUDY_TRIAL_ID = /^[a-z0-9][a-z0-9.-]{0,127}$/u;
+const MAX_PSS_SAMPLES = 2_000;
+const STUDY_CELL_CONTRACT = Object.freeze({
+  "pandas-csv": Object.freeze({ engine: "pandas", format: "csv", rows: 100_000, columns: 50 }),
+  "polars-csv": Object.freeze({ engine: "polars", format: "csv", rows: 100_000, columns: 50 }),
+  "pandas-parquet": Object.freeze({ engine: "pandas", format: "parquet", rows: 1_000_000, columns: 20 }),
+  "polars-parquet": Object.freeze({ engine: "polars", format: "parquet", rows: 1_000_000, columns: 20 })
 });
 
-export function validateDataWranglerComparisonPhase(phase) {
-  exactKeys(
-    phase,
-    ["protocol", "runId", "product", "editor", "fixture", "diagnostic", "proofs", "installedExtensions"],
-    "comparison phase"
-  );
-  assertEqual(phase.protocol, COMPARISON_PHASE_PROTOCOL, "comparison phase protocol");
-  assertMatch(phase.runId, UUID, "comparison phase run ID");
-  validateProduct(phase.product);
-  validateEditor(phase.editor);
-  validateFixture(phase.fixture);
-  validateDiagnostic(phase.diagnostic);
-  validateProofs(phase.proofs);
-  validateInstalledExtensions(phase.installedExtensions, phase.product);
-  assertPublicEvidence(phase);
-  return phase;
-}
-
-export function buildDataWranglerComparisonSmokeReport({
-  generatedAtUtc,
-  configuredPythonEnvironment,
-  fixtureManifest,
-  phases
-}) {
-  canonicalUtcTimestamp(generatedAtUtc);
-  validateConfiguredPythonEnvironment(configuredPythonEnvironment);
-  const manifest = fixtureManifestContract.decodeInstalledPerformanceFixtureManifest(fixtureManifest);
-  if (manifest.smoke !== true) {
-    throw new TypeError("The comparison smoke report requires smoke-sized fixtures.");
-  }
-  if (!Array.isArray(phases)) throw new TypeError("Comparison smoke phases must be an array.");
-  const sortedPhases = phases
-    .map((phase) => structuredClone(validateDataWranglerComparisonPhase(phase)))
-    .sort((left, right) => phaseOrder(left) - phaseOrder(right));
-  const report = {
-    protocol: DATA_WRANGLER_COMPARISON_SMOKE_PROTOCOL,
-    generatedAtUtc,
-    feasibilityOnly: true,
-    publishable: false,
-    studyDesign: {
-      boundary: DATA_WRANGLER_COMPARISON_BOUNDARY,
-      executionOrder: ["open-wrangler", "data-wrangler"],
-      orderPolicy: "fixed",
-      warmupsPerProduct: 1,
-      diagnosticLaunchesPerProductFormat: 1,
-      sourceCache: "resident",
-      durationInterpretation: "diagnostic-only-non-comparative",
-      backendMatch: "not-established"
-    },
-    configuredPythonEnvironment: structuredClone(configuredPythonEnvironment),
-    fixtureManifest: structuredClone(manifest),
-    phases: sortedPhases
-  };
-  return validateDataWranglerComparisonSmokeReport(report);
-}
-
-export function validateDataWranglerComparisonSmokeReport(report) {
-  exactKeys(
-    report,
-    [
-      "protocol",
-      "generatedAtUtc",
-      "feasibilityOnly",
-      "publishable",
-      "studyDesign",
-      "configuredPythonEnvironment",
-      "fixtureManifest",
-      "phases"
-    ],
-    "comparison smoke report"
-  );
-  assertEqual(report.protocol, DATA_WRANGLER_COMPARISON_SMOKE_PROTOCOL, "comparison smoke report protocol");
-  canonicalUtcTimestamp(report.generatedAtUtc);
-  assertEqual(report.feasibilityOnly, true, "comparison smoke feasibility-only flag");
-  assertEqual(report.publishable, false, "comparison smoke publishable flag");
-  exactKeys(
-    report.studyDesign,
-    [
-      "boundary",
-      "executionOrder",
-      "orderPolicy",
-      "warmupsPerProduct",
-      "diagnosticLaunchesPerProductFormat",
-      "sourceCache",
-      "durationInterpretation",
-      "backendMatch"
-    ],
-    "comparison feasibility-study design"
-  );
-  assertEqual(report.studyDesign.boundary, DATA_WRANGLER_COMPARISON_BOUNDARY, "comparison diagnostic boundary");
-  assertExactStringArray(
-    report.studyDesign.executionOrder,
-    ["open-wrangler", "data-wrangler"],
-    "comparison fixed execution order"
-  );
-  assertEqual(report.studyDesign.orderPolicy, "fixed", "comparison execution-order policy");
-  assertEqual(report.studyDesign.warmupsPerProduct, 1, "comparison warmups per product");
-  assertEqual(
-    report.studyDesign.diagnosticLaunchesPerProductFormat,
-    1,
-    "comparison diagnostic launches per product and format"
-  );
-  assertEqual(report.studyDesign.sourceCache, "resident", "comparison source-cache state");
-  assertEqual(
-    report.studyDesign.durationInterpretation,
-    "diagnostic-only-non-comparative",
-    "comparison duration interpretation"
-  );
-  assertEqual(report.studyDesign.backendMatch, "not-established", "comparison backend-match status");
-  validateConfiguredPythonEnvironment(report.configuredPythonEnvironment);
-
-  const manifest = fixtureManifestContract.decodeInstalledPerformanceFixtureManifest(report.fixtureManifest);
-  if (manifest.smoke !== true) {
-    throw new TypeError("The comparison smoke report requires smoke-sized fixtures.");
-  }
-  if (!Array.isArray(report.phases) || report.phases.length !== PRODUCT_ORDER.length) {
-    throw new TypeError("The comparison smoke report requires exactly four product-format phases.");
-  }
-  const phaseKeys = [];
-  for (const phase of report.phases) {
-    validateDataWranglerComparisonPhase(phase);
-    const key = `${phase.product.key}:${phase.fixture.format}`;
-    phaseKeys.push(key);
-    const expectedFixture = manifest.fixtures[phase.fixture.format];
-    if (
-      phase.fixture.rows !== expectedFixture.rows ||
-      phase.fixture.columns !== expectedFixture.columns ||
-      phase.fixture.bytes !== expectedFixture.bytes ||
-      phase.fixture.sha256 !== expectedFixture.sha256
-    ) {
-      throw new TypeError(`${key} does not match the deterministic smoke fixture manifest.`);
-    }
-  }
-  if (phaseKeys.some((key, index) => key !== PRODUCT_ORDER[index])) {
-    throw new TypeError(
-      "Comparison smoke phases must contain each product and format exactly once in canonical order."
-    );
-  }
-
-  const [first, ...remaining] = report.phases;
-  for (const phase of remaining) {
-    if (JSON.stringify(phase.editor) !== JSON.stringify(first.editor)) {
-      throw new TypeError("Every comparison phase must use the same official VS Code build.");
-    }
-  }
-  for (const productKey of Object.keys(EXPECTED_PRODUCT)) {
-    const productPhases = report.phases.filter((phase) => phase.product.key === productKey);
-    if (
-      productPhases.length !== 2 ||
-      JSON.stringify(productPhases[0].product) !== JSON.stringify(productPhases[1].product) ||
-      JSON.stringify(productPhases[0].installedExtensions) !== JSON.stringify(productPhases[1].installedExtensions)
-    ) {
-      throw new TypeError(`${productKey} comparison phases must retain identical product and extension provenance.`);
-    }
-  }
-  assertPublicEvidence(report);
-  return report;
-}
-
-function validateProduct(product) {
-  exactKeys(product, ["key", "id", "version", "installation", "candidateSha256"], "comparison product");
-  if (!Object.hasOwn(EXPECTED_PRODUCT, product.key)) {
-    throw new TypeError("Comparison product key must be open-wrangler or data-wrangler.");
-  }
-  const expected = EXPECTED_PRODUCT[product.key];
-  assertEqual(product.id, expected.id, `${product.key} extension ID`);
-  assertMatch(product.version, NUMERIC_VERSION, `${product.key} extension version`);
-  assertEqual(product.installation, expected.installation, `${product.key} installation source`);
-  if (product.key === "open-wrangler") {
-    assertMatch(product.candidateSha256, SHA256, "Open Wrangler candidate SHA-256");
-  } else {
-    assertEqual(product.version, DATA_WRANGLER_BASELINE_VERSION, "Data Wrangler baseline version");
-    assertEqual(product.candidateSha256, null, "Data Wrangler proprietary candidate digest");
-  }
-}
-
-function validateEditor(editor) {
-  exactKeys(editor, ["id", "version", "officialDistribution", "displayMode"], "comparison editor");
-  assertEqual(editor.id, "microsoft.vscode", "comparison editor ID");
-  assertMatch(editor.version, NUMERIC_VERSION, "comparison editor version");
-  assertEqual(editor.officialDistribution, true, "official VS Code distribution proof");
-  assertEqual(editor.displayMode, "headless", "comparison editor display mode");
-}
-
-function validateConfiguredPythonEnvironment(environment) {
-  exactKeys(
-    environment,
-    [
-      "pythonVersion",
-      "pythonImplementation",
-      "pythonExecutableSha256",
-      "installedPandasVersion",
-      "installedPyarrowVersion",
-      "installedJupyterCoreVersion",
-      "installedIpykernelVersion"
-    ],
-    "comparison configured Python environment"
-  );
-  assertMatch(environment.pythonVersion, PYTHON_VERSION, "comparison configured Python version");
-  assertEqual(environment.pythonImplementation, "CPython", "comparison configured Python implementation");
-  assertMatch(environment.pythonExecutableSha256, SHA256, "comparison configured Python executable SHA-256");
-  for (const [key, label] of [
-    ["installedPandasVersion", "installed Pandas"],
-    ["installedPyarrowVersion", "installed PyArrow"],
-    ["installedJupyterCoreVersion", "installed Jupyter Core"],
-    ["installedIpykernelVersion", "installed ipykernel"]
-  ]) {
-    assertMatch(environment[key], PACKAGE_VERSION, `comparison ${label} version`);
-  }
-}
-
-function validateFixture(fixture) {
-  exactKeys(fixture, ["format", "rows", "columns", "bytes", "sha256"], "comparison fixture");
-  if (fixture.format !== "csv" && fixture.format !== "parquet") {
-    throw new TypeError("Comparison fixture format must be csv or parquet.");
-  }
-  assertPositiveInteger(fixture.rows, "comparison fixture rows");
-  assertPositiveInteger(fixture.columns, "comparison fixture columns");
-  assertPositiveInteger(fixture.bytes, "comparison fixture bytes");
-  assertMatch(fixture.sha256, SHA256, "comparison fixture SHA-256");
-}
-
-function validateDiagnostic(diagnostic) {
-  exactKeys(
-    diagnostic,
-    ["boundary", "warmupCompleted", "diagnosticDurationMs", "cacheProof", "readiness"],
-    "comparison launch/readiness diagnostic"
-  );
-  assertEqual(diagnostic.boundary, DATA_WRANGLER_COMPARISON_BOUNDARY, "comparison diagnostic boundary");
-  assertEqual(diagnostic.warmupCompleted, true, "comparison warm-up proof");
+export function type7Quantile(values, probability) {
   if (
-    typeof diagnostic.diagnosticDurationMs !== "number" ||
-    !Number.isFinite(diagnostic.diagnosticDurationMs) ||
-    diagnostic.diagnosticDurationMs <= 0 ||
-    diagnostic.diagnosticDurationMs > 300_000
+    !Array.isArray(values) ||
+    values.length === 0 ||
+    values.some((value) => typeof value !== "number" || !Number.isFinite(value)) ||
+    typeof probability !== "number" ||
+    probability < 0 ||
+    probability > 1
   ) {
-    throw new TypeError("Comparison diagnostic duration must be finite and between 0 and 300,000 ms.");
+    throw new TypeError("Type-7 quantiles require finite values and a probability from zero to one.");
   }
-  validateCacheProof(diagnostic.cacheProof);
-  validateReadiness(diagnostic.readiness);
+  const sorted = [...values].sort((left, right) => left - right);
+  const position = (sorted.length - 1) * probability;
+  const lower = Math.floor(position);
+  const fraction = position - lower;
+  return sorted[lower] + fraction * (sorted[Math.min(lower + 1, sorted.length - 1)] - sorted[lower]);
 }
 
-function validateCacheProof(proof) {
+export function summarizeComparisonValues(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  return Object.freeze({
+    count: values.length,
+    median: type7Quantile(values, 0.5),
+    p95: type7Quantile(values, 0.95),
+    minimum: Math.min(...values),
+    maximum: Math.max(...values)
+  });
+}
+
+export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) {
+  if (!Number.isSafeInteger(intervalMs) || intervalMs !== 200) {
+    throw new TypeError("Study PSS interval must be 200 ms.");
+  }
+  if (!Array.isArray(samples) || samples.length === 0 || samples.length > MAX_PSS_SAMPLES) {
+    throw new TypeError(`Study PSS evidence must contain between 1 and ${MAX_PSS_SAMPLES} samples.`);
+  }
+  let previous = 0n;
+  const sanitized = samples.map((sample, index) => {
+    if (!sample || typeof sample !== "object") throw new TypeError(`Study PSS sample ${index} is malformed.`);
+    const monotonicNs = sample.monotonicNs;
+    if (typeof monotonicNs !== "string" || !/^[1-9]\d{0,29}$/u.test(monotonicNs)) {
+      throw new TypeError(`Study PSS sample ${index} has an invalid timestamp.`);
+    }
+    const timestamp = BigInt(monotonicNs);
+    if (timestamp <= previous) throw new TypeError("Study PSS timestamps must increase strictly.");
+    previous = timestamp;
+    if (!Number.isSafeInteger(sample.pssBytes) || sample.pssBytes < 0) {
+      throw new TypeError(`Study PSS sample ${index} has invalid bytes.`);
+    }
+    if (!Number.isSafeInteger(sample.processCount) || sample.processCount < 1 || sample.processCount > 4_096) {
+      throw new TypeError(`Study PSS sample ${index} has an invalid process count.`);
+    }
+    return Object.freeze({ monotonicNs, pssBytes: sample.pssBytes, processCount: sample.processCount });
+  });
+  const start = milestoneTimestamp(milestones, "run-cell-click");
+  const end = milestoneTimestamp(milestones, "profiles-complete");
+  if (start === undefined || end === undefined || end <= start) {
+    throw new TypeError("Study PSS evidence requires a valid Run Cell-to-profiles measurement window.");
+  }
+  const before = sanitized.filter(({ monotonicNs }) => BigInt(monotonicNs) < start).slice(-5);
+  if (before.length === 0) throw new TypeError("Study PSS evidence requires a pre-action baseline sample.");
+  const measured = sanitized.filter(({ monotonicNs }) => {
+    const at = BigInt(monotonicNs);
+    return at >= start && at <= end;
+  });
+  if (measured.length === 0) throw new TypeError("Study PSS evidence requires a sample inside the measurement window.");
+  const baselinePssBytes = summarizeComparisonValues(before.map(({ pssBytes }) => pssBytes)).median;
+  const peakPssBytes = Math.max(...measured.map(({ pssBytes }) => pssBytes));
+  return Object.freeze({
+    baselinePssBytes,
+    peakPssBytes,
+    adjustedPeakPssBytes: Math.max(0, peakPssBytes - baselinePssBytes),
+    sampleCount: sanitized.length,
+    intervalMs,
+    samples: Object.freeze(sanitized)
+  });
+}
+
+export function validateDataWranglerComparisonStudyTrial(trial, entry, manifest) {
   exactKeys(
-    proof,
+    trial,
     [
       "protocol",
-      "requestedState",
-      "fdatasyncApplied",
-      "adviceAccepted",
-      "verification",
-      "pageSizeBytes",
-      "totalPages",
-      "residentPagesBefore",
-      "residentPagesAfter",
-      "identityStable",
-      "verified"
+      "trialId",
+      "product",
+      "engine",
+      "format",
+      "kind",
+      "order",
+      "status",
+      "failure",
+      "metrics",
+      "milestones",
+      "publicUi",
+      "memory",
+      "provenance"
     ],
-    "comparison source-cache proof"
+    "study trial"
   );
-  assertEqual(proof.protocol, SOURCE_CACHE_PROOF_PROTOCOL, "comparison source-cache protocol");
-  assertEqual(proof.requestedState, "resident", "comparison source-cache requested state");
-  assertEqual(proof.fdatasyncApplied, true, "comparison source-cache fdatasync proof");
-  assertEqual(proof.adviceAccepted, false, "comparison warm-cache advisory proof");
-  assertEqual(proof.verification, "linux-mincore", "comparison source-cache verification");
-  assertPositiveInteger(proof.pageSizeBytes, "comparison source-cache page size");
-  assertPositiveInteger(proof.totalPages, "comparison source-cache total pages");
-  assertIntegerBetween(
-    proof.residentPagesBefore,
-    0,
-    proof.totalPages,
-    "comparison source-cache resident pages before preparation"
-  );
-  assertEqual(proof.residentPagesAfter, proof.totalPages, "comparison source-cache resident pages after preparation");
-  assertEqual(proof.identityStable, true, "comparison source-cache identity proof");
-  assertEqual(proof.verified, true, "comparison source-cache verification proof");
-}
+  assertEqual(trial.protocol, "openwrangler-comparison-trial-result-v1", "study trial protocol");
+  assertMatch(trial.trialId, STUDY_TRIAL_ID, "study trial ID");
+  if (!["open-wrangler", "data-wrangler"].includes(trial.product))
+    throw new TypeError("Study trial product is invalid.");
+  if (!["pandas", "polars"].includes(trial.engine)) throw new TypeError("Study trial engine is invalid.");
+  if (!["csv", "parquet"].includes(trial.format)) throw new TypeError("Study trial format is invalid.");
+  if (!["warm", "cold"].includes(trial.kind)) throw new TypeError("Study trial kind is invalid.");
+  assertIntegerBetween(trial.order, 0, 255, "study trial order");
+  if (!["success", "failure", "timeout"].includes(trial.status)) throw new TypeError("Study trial status is invalid.");
+  if (entry) validateTrialScheduleBinding(trial, entry);
 
-function validateReadiness(readiness) {
-  exactKeys(readiness, ["grid", "workbench"], "comparison readiness boundary");
-  validateGridReadiness(readiness.grid);
-  validateWorkbenchReadiness(readiness.workbench);
-}
-
-function validateGridReadiness(readiness) {
-  exactKeys(
-    readiness,
-    [
-      "rootRole",
-      "busy",
-      "visible",
-      "pointerUsable",
-      "geometryStableFrames",
-      "headers",
-      "sentinelsMatched",
-      "ariaRowCount",
-      "ariaColumnCount"
-    ],
-    "comparison grid readiness"
-  );
-  if (readiness.rootRole !== "grid" && readiness.rootRole !== "table") {
-    throw new TypeError("Comparison readiness root role must be grid or table.");
-  }
-  if (readiness.busy !== "false" && readiness.busy !== "absent") {
-    throw new TypeError("Comparison readiness must prove aria-busy is false or absent.");
-  }
-  assertEqual(readiness.visible, true, "comparison visible-grid proof");
-  assertEqual(readiness.pointerUsable, true, "comparison pointer-usable grid proof");
-  assertEqual(readiness.geometryStableFrames, 2, "comparison stable-geometry frame count");
-  assertExactStringArray(readiness.headers, ["c00", "c01"], "comparison readiness headers");
-  assertEqual(readiness.sentinelsMatched, true, "comparison deterministic-sentinel proof");
-  validateOptionalAriaCount(readiness.ariaRowCount, "comparison readiness ARIA row count");
-  validateOptionalAriaCount(readiness.ariaColumnCount, "comparison readiness ARIA column count");
-}
-
-function validateWorkbenchReadiness(readiness) {
-  exactKeys(
-    readiness,
-    ["targetEditorSelected", "noVisibleQuickInput", "noVisibleDialog", "noVisibleModal", "rendererFramePointerUsable"],
-    "comparison workbench readiness"
-  );
-  for (const [key, label] of [
-    ["targetEditorSelected", "selected target editor"],
-    ["noVisibleQuickInput", "no-visible-Quick-Input"],
-    ["noVisibleDialog", "no-visible-dialog"],
-    ["noVisibleModal", "no-visible-modal"],
-    ["rendererFramePointerUsable", "pointer-usable renderer frame"]
-  ]) {
-    assertEqual(readiness[key], true, `comparison ${label} proof`);
-  }
-}
-
-function validateProofs(proofs) {
-  exactKeys(
-    proofs,
-    [
-      "telemetryDisabled",
-      "sourceIdentityStable",
-      "sourceUnchanged",
-      "configuredPythonProcessObservedDuringProductRun",
-      "cleanupVerified"
-    ],
-    "comparison proofs"
-  );
-  for (const [key, label] of [
-    ["telemetryDisabled", "telemetry-off"],
-    ["sourceIdentityStable", "source-identity"],
-    ["sourceUnchanged", "source-content"],
-    ["configuredPythonProcessObservedDuringProductRun", "configured-Python-process-during-product-run"],
-    ["cleanupVerified", "terminal-cleanup"]
-  ]) {
-    assertEqual(proofs[key], true, `comparison ${label} proof`);
-  }
-}
-
-function validateInstalledExtensions(installedExtensions, product) {
-  if (!Array.isArray(installedExtensions) || installedExtensions.length === 0 || installedExtensions.length > 64) {
-    throw new TypeError("Comparison installed extensions must contain between 1 and 64 entries.");
-  }
-  const normalized = [];
-  for (const entry of installedExtensions) {
-    const match = typeof entry === "string" ? INSTALLED_EXTENSION.exec(entry) : null;
-    if (!match || !EXTENSION_ID.test(match[1]) || !PACKAGE_VERSION.test(match[2])) {
-      throw new TypeError("Comparison installed extension entries must be bounded extension-id@version values.");
+  const milestones = validateStudyMilestones(trial.milestones);
+  validateStudyMetrics(trial.metrics, milestones);
+  validateStudyFailure(trial.failure, trial.status);
+  validateStudyPublicUi(trial.publicUi, trial.status, entry?.columns);
+  if (trial.status === "success") {
+    if (trial.failure !== null || milestones.length !== STUDY_MILESTONES.length) {
+      throw new TypeError("A successful study trial requires every milestone and no failure.");
     }
-    normalized.push(`${match[1].toLowerCase()}@${match[2]}`);
+    const recomputed = summarizeStudyPssSamples(trial.memory?.samples, milestones, trial.memory?.intervalMs);
+    exactKeys(trial.memory, Object.keys(recomputed), "study trial memory");
+    for (const key of ["baselinePssBytes", "peakPssBytes", "adjustedPeakPssBytes", "sampleCount", "intervalMs"]) {
+      assertEqual(trial.memory[key], recomputed[key], `study trial memory ${key}`);
+    }
+    assertEqual(
+      JSON.stringify(trial.memory.samples),
+      JSON.stringify(recomputed.samples),
+      "study trial sanitized PSS samples"
+    );
+  } else if (trial.memory !== null) {
+    throw new TypeError("An unsuccessful study trial cannot claim PSS results.");
   }
-  if (new Set(normalized).size !== normalized.length) {
-    throw new TypeError("Comparison installed extension entries must be unique.");
+  validateStudyProvenance(trial.provenance, manifest);
+  assertPublicEvidence(trial);
+  return trial;
+}
+
+export function buildDataWranglerComparisonStudyReport({ generatedAtUtc, manifest, trials }) {
+  canonicalUtcTimestamp(generatedAtUtc);
+  validateStudyManifest(manifest);
+  if (!Array.isArray(trials)) throw new TypeError("Study report trials must be an array.");
+  const schedule = new Map(manifest.schedule.map((entry) => [entry.id, entry]));
+  if (schedule.size !== manifest.schedule.length) throw new TypeError("Study manifest trial IDs must be unique.");
+  const observed = new Map();
+  for (const trial of trials) {
+    const entry = schedule.get(trial?.trialId);
+    if (!entry || observed.has(trial.trialId)) {
+      throw new TypeError("Study report contains an unknown, duplicate, or malformed trial.");
+    }
+    validateDataWranglerComparisonStudyTrial(trial, entry, manifest);
+    observed.set(trial.trialId, { entry, trial });
   }
-  if (normalized.some((entry, index) => index > 0 && entry < normalized[index - 1])) {
-    throw new TypeError("Comparison installed extension entries must use canonical sorted order.");
+
+  const summaries = [];
+  for (const kind of ["warm", "cold"]) {
+    for (const cell of manifest.method.cells) {
+      for (const product of ["open-wrangler", "data-wrangler"]) {
+        const group = [...observed.values()].filter(
+          ({ entry }) => entry.kind === kind && entry.cellId === cell.id && entry.product === product
+        );
+        const successful = group.filter(({ trial }) => trial.status === "success").map(({ trial }) => trial);
+        summaries.push({
+          kind,
+          cellId: cell.id,
+          product,
+          planned: manifest.schedule.filter(
+            (entry) => entry.kind === kind && entry.cellId === cell.id && entry.product === product
+          ).length,
+          completed: group.length,
+          successes: successful.length,
+          failures: group.filter(({ trial }) => trial.status === "failure").length,
+          timeouts: group.filter(({ trial }) => trial.status === "timeout").length,
+          metrics: Object.fromEntries(
+            STUDY_METRICS.map((name) => [
+              name,
+              summarizeComparisonValues(successful.map((trial) => trial.metrics[name]))
+            ])
+          ),
+          memory: Object.fromEntries(
+            STUDY_MEMORY_METRICS.map((name) => [
+              name,
+              summarizeComparisonValues(successful.map((trial) => trial.memory[name]))
+            ])
+          )
+        });
+      }
+    }
   }
-  const expectedProduct = `${product.id.toLowerCase()}@${product.version}`;
-  if (!normalized.includes(expectedProduct)) {
-    throw new TypeError("Comparison installed extensions do not contain the measured product version.");
+
+  const pairedWarm = [];
+  for (const cell of manifest.method.cells) {
+    const pairs = Map.groupBy(
+      [...observed.values()].filter(({ entry }) => entry.kind === "warm" && entry.cellId === cell.id),
+      ({ entry }) => entry.pairId
+    );
+    for (const name of [...STUDY_METRICS, ...STUDY_MEMORY_METRICS]) {
+      const differences = [];
+      for (const pair of pairs.values()) {
+        const open = pair.find(({ entry }) => entry.product === "open-wrangler")?.trial;
+        const baseline = pair.find(({ entry }) => entry.product === "data-wrangler")?.trial;
+        if (open?.status !== "success" || baseline?.status !== "success") continue;
+        const section = STUDY_METRICS.includes(name) ? "metrics" : "memory";
+        differences.push(open[section][name] - baseline[section][name]);
+      }
+      pairedWarm.push({
+        cellId: cell.id,
+        metric: name,
+        interpretation: "Open Wrangler minus Data Wrangler; negative is lower",
+        differences: summarizeComparisonValues(differences)
+      });
+    }
+  }
+
+  const report = {
+    protocol: DATA_WRANGLER_STUDY_REPORT_PROTOCOL,
+    generatedAtUtc,
+    plannedTrials: manifest.schedule.length,
+    completedTrials: observed.size,
+    incompleteTrialIds: manifest.schedule.filter(({ id }) => !observed.has(id)).map(({ id }) => id),
+    outcomes: {
+      success: [...observed.values()].filter(({ trial }) => trial.status === "success").length,
+      failure: [...observed.values()].filter(({ trial }) => trial.status === "failure").length,
+      timeout: [...observed.values()].filter(({ trial }) => trial.status === "timeout").length
+    },
+    method: structuredClone(manifest.method),
+    provenance: structuredClone(manifest.provenance),
+    trials: manifest.schedule
+      .filter(({ id }) => observed.has(id))
+      .map(({ id }) => structuredClone(observed.get(id).trial)),
+    summaries,
+    pairedWarm
+  };
+  assertPublicEvidence(report);
+  return Object.freeze(report);
+}
+
+function validateStudyManifest(manifest) {
+  if (
+    manifest?.protocol !== "openwrangler-data-wrangler-study-v1" ||
+    !Array.isArray(manifest.method?.cells) ||
+    !Array.isArray(manifest.schedule) ||
+    manifest.schedule.length !== 96
+  ) {
+    throw new TypeError("Study report requires the fixed 96-trial study manifest.");
+  }
+  const cells = new Map();
+  for (const cell of manifest.method.cells) {
+    exactKeys(cell, ["id", "engine", "format", "rows", "columns"], "study manifest cell");
+    assertMatch(cell.id, STUDY_TRIAL_ID, "study manifest cell ID");
+    if (!["pandas", "polars"].includes(cell.engine) || !["csv", "parquet"].includes(cell.format)) {
+      throw new TypeError("Study manifest cell engine or format is invalid.");
+    }
+    assertEqual(cell.id, `${cell.engine}-${cell.format}`, "study manifest cell identity");
+    assertPositiveInteger(cell.rows, "study manifest rows");
+    assertPositiveInteger(cell.columns, "study manifest columns");
+    const expected = STUDY_CELL_CONTRACT[cell.id];
+    if (
+      !expected ||
+      cell.engine !== expected.engine ||
+      cell.format !== expected.format ||
+      cell.rows !== expected.rows ||
+      cell.columns !== expected.columns
+    ) {
+      throw new TypeError("Study manifest cell does not match the fixed comparison workload.");
+    }
+    if (cells.has(cell.id)) throw new TypeError("Study manifest cell IDs must be unique.");
+    cells.set(cell.id, cell);
+  }
+  if (cells.size !== 4) throw new TypeError("Study manifest must contain four engine-format cells.");
+  for (const [index, entry] of manifest.schedule.entries()) {
+    exactKeys(
+      entry,
+      [
+        "id",
+        "pairId",
+        "kind",
+        "repetition",
+        "cellId",
+        "engine",
+        "format",
+        "rows",
+        "columns",
+        "product",
+        "orderInPair",
+        "order"
+      ],
+      "study schedule entry"
+    );
+    assertMatch(entry.id, STUDY_TRIAL_ID, "study schedule trial ID");
+    assertMatch(entry.pairId, STUDY_TRIAL_ID, "study schedule pair ID");
+    if (!["warm", "cold"].includes(entry.kind) || !["open-wrangler", "data-wrangler"].includes(entry.product)) {
+      throw new TypeError("Study schedule kind or product is invalid.");
+    }
+    assertIntegerBetween(entry.repetition, 1, entry.kind === "warm" ? 10 : 2, "study schedule repetition");
+    assertIntegerBetween(entry.orderInPair, 0, 1, "study schedule pair order");
+    assertEqual(entry.order, index, "study schedule order");
+    const cell = cells.get(entry.cellId);
+    if (!cell) throw new TypeError("Study schedule references an unknown cell.");
+    for (const key of ["engine", "format", "rows", "columns"]) {
+      assertEqual(entry[key], cell[key], `study schedule cell ${key}`);
+    }
+  }
+  const pairs = Map.groupBy(manifest.schedule, ({ pairId }) => pairId);
+  for (const entries of pairs.values()) {
+    if (
+      entries.length !== 2 ||
+      entries[0].orderInPair !== 0 ||
+      entries[1].orderInPair !== 1 ||
+      entries[1].order !== entries[0].order + 1 ||
+      new Set(entries.map(({ kind }) => kind)).size !== 1 ||
+      new Set(entries.map(({ repetition }) => repetition)).size !== 1 ||
+      new Set(entries.map(({ cellId }) => cellId)).size !== 1 ||
+      new Set(entries.map(({ product }) => product)).size !== 2
+    ) {
+      throw new TypeError("Every study pair must contain each product once in pair order.");
+    }
+  }
+  if (pairs.size !== 48) throw new TypeError("Study schedule must contain exactly 48 product pairs.");
+  for (const cell of cells.values()) {
+    for (const [kind, repetitions] of [
+      ["warm", 10],
+      ["cold", 2]
+    ]) {
+      const entries = manifest.schedule.filter((entry) => entry.cellId === cell.id && entry.kind === kind);
+      const byRepetition = Map.groupBy(entries, ({ repetition }) => repetition);
+      if (entries.length !== repetitions * 2 || byRepetition.size !== repetitions) {
+        throw new TypeError(`Study schedule ${kind} coverage is incomplete for ${cell.id}.`);
+      }
+      for (let repetition = 1; repetition <= repetitions; repetition += 1) {
+        const pair = byRepetition.get(repetition);
+        if (!pair || pair.length !== 2 || new Set(pair.map(({ pairId }) => pairId)).size !== 1) {
+          throw new TypeError(`Study schedule ${kind} repetition coverage is invalid for ${cell.id}.`);
+        }
+      }
+      const firstProducts = entries.filter(({ orderInPair }) => orderInPair === 0).map(({ product }) => product);
+      const expectedFirstCount = repetitions / 2;
+      if (
+        firstProducts.filter((product) => product === "open-wrangler").length !== expectedFirstCount ||
+        firstProducts.filter((product) => product === "data-wrangler").length !== expectedFirstCount
+      ) {
+        throw new TypeError(`Study schedule ${kind} product order is not counterbalanced for ${cell.id}.`);
+      }
+    }
+  }
+  const provenance = manifest.provenance;
+  assertEqual(provenance?.openWrangler?.extensionId, "Matt17BR.openwrangler", "study Open Wrangler extension ID");
+  assertMatch(provenance?.openWrangler?.version, NUMERIC_VERSION, "study Open Wrangler version");
+  assertMatch(provenance?.openWrangler?.sha256, SHA256, "study Open Wrangler SHA-256");
+  assertEqual(provenance?.dataWrangler?.extensionId, "ms-toolsai.datawrangler", "study Data Wrangler extension ID");
+  assertEqual(provenance?.dataWrangler?.version, DATA_WRANGLER_BASELINE_VERSION, "study Data Wrangler version");
+  assertMatch(provenance?.editor?.version, NUMERIC_VERSION, "study editor version");
+  assertMatch(provenance?.editor?.sha256, SHA256, "study editor SHA-256");
+  assertMatch(provenance?.editor?.cliSha256, SHA256, "study editor CLI SHA-256");
+  assertMatch(provenance?.editor?.productSha256, SHA256, "study editor product SHA-256");
+  assertEqual(provenance?.editor?.distribution, "Visual Studio Code", "study editor distribution");
+  assertMatch(provenance?.python?.version, /^3\.12\.\d+$/u, "study Python version");
+  assertMatch(provenance?.python?.sha256, SHA256, "study Python SHA-256");
+  assertEqual(provenance?.python?.implementation, "cpython", "study Python implementation");
+  for (const cell of cells.values()) {
+    const fixture = provenance?.fixtures?.[cell.format];
+    assertEqual(fixture?.rows, cell.rows, `study ${cell.format} fixture rows`);
+    assertEqual(fixture?.columns, cell.columns, `study ${cell.format} fixture columns`);
+    assertEqual(fixture?.valuesValidated, true, `study ${cell.format} fixture value validation`);
+    assertMatch(fixture?.sha256, SHA256, `study ${cell.format} fixture SHA-256`);
+  }
+  const machine = provenance?.machine;
+  exactKeys(
+    machine,
+    [
+      "os",
+      "osRelease",
+      "architecture",
+      "cpuModel",
+      "logicalCpuCount",
+      "totalMemoryBytes",
+      "powerSource",
+      "cpuGovernor"
+    ],
+    "study machine provenance"
+  );
+  for (const key of ["os", "osRelease", "architecture", "cpuModel", "cpuGovernor"]) {
+    assertBoundedString(machine[key], `study machine ${key}`);
+  }
+  assertPositiveInteger(machine.logicalCpuCount, "study machine logical CPU count");
+  assertPositiveInteger(machine.totalMemoryBytes, "study machine total memory");
+  if (!["ac", "battery", "unknown"].includes(machine.powerSource)) {
+    throw new TypeError("Study machine power source is invalid.");
+  }
+  exactKeys(provenance?.tools, DATA_WRANGLER_STUDY_TOOL_NAMES, "study tool provenance");
+  for (const name of DATA_WRANGLER_STUDY_TOOL_NAMES) {
+    assertMatch(provenance.tools[name], SHA256, `study tool ${name} SHA-256`);
   }
 }
 
-function phaseOrder(phase) {
-  const index = PRODUCT_ORDER.indexOf(`${phase.product.key}:${phase.fixture.format}`);
-  if (index < 0) throw new TypeError("Comparison phase has an unknown product-format pair.");
-  return index;
+function validateTrialScheduleBinding(trial, entry) {
+  for (const [trialKey, entryKey] of [
+    ["trialId", "id"],
+    ["product", "product"],
+    ["engine", "engine"],
+    ["format", "format"],
+    ["kind", "kind"],
+    ["order", "order"]
+  ]) {
+    assertEqual(trial[trialKey], entry[entryKey], `study trial scheduled ${trialKey}`);
+  }
 }
 
-function validateOptionalAriaCount(value, label) {
-  if (value !== null) assertPositiveInteger(value, label);
+function validateStudyMilestones(value) {
+  if (!Array.isArray(value) || value.length > STUDY_MILESTONES.length) {
+    throw new TypeError("Study trial milestones are malformed.");
+  }
+  let previous = 0n;
+  return value.map((milestone, index) => {
+    exactKeys(milestone, ["name", "monotonicNs"], `study milestone ${index}`);
+    assertEqual(milestone.name, STUDY_MILESTONES[index], `study milestone ${index} name`);
+    if (typeof milestone.monotonicNs !== "string" || !/^[1-9]\d{0,29}$/u.test(milestone.monotonicNs)) {
+      throw new TypeError(`Study milestone ${index} timestamp is invalid.`);
+    }
+    const timestamp = BigInt(milestone.monotonicNs);
+    if (timestamp <= previous) throw new TypeError("Study milestone timestamps must increase strictly.");
+    previous = timestamp;
+    return milestone;
+  });
+}
+
+function validateStudyMetrics(metrics, milestones) {
+  exactKeys(metrics, STUDY_METRICS, "study trial metrics");
+  const pairs = {
+    inlinePreviewMs: ["run-cell-click", "inline-ready"],
+    workbenchOpenMs: ["launch-click", "workbench-ready"],
+    firstProfileMs: ["profile-click", "first-profile-ready"],
+    completeProfileMs: ["profile-click", "profiles-complete"]
+  };
+  for (const [name, [start, end]] of Object.entries(pairs)) {
+    const expected = studyDuration(milestones, start, end);
+    if (metrics[name] !== expected) throw new TypeError(`Study trial ${name} does not match its milestones.`);
+  }
+}
+
+function validateStudyFailure(failure, status) {
+  if (status === "success") {
+    if (failure !== null) throw new TypeError("A successful study trial cannot contain a failure.");
+    return;
+  }
+  exactKeys(failure, ["stage", "kind", "message"], "study trial failure");
+  if (!STUDY_FAILURE_STAGES.has(failure.stage) || !["product", "timeout"].includes(failure.kind)) {
+    throw new TypeError("Study trial failure kind or stage is invalid.");
+  }
+  if ((status === "timeout") !== (failure.kind === "timeout")) {
+    throw new TypeError("Study trial timeout status and failure kind disagree.");
+  }
+  if (
+    typeof failure.message !== "string" ||
+    failure.message.length === 0 ||
+    failure.message.length > 500 ||
+    /[\0\r\n]/u.test(failure.message)
+  ) {
+    throw new TypeError("Study trial failure message is invalid.");
+  }
+}
+
+function validateStudyPublicUi(value, status, scheduledColumns) {
+  exactKeys(value, ["runCell", "inline", "workbench", "profiling"], "study trial public UI");
+  const runCell = validateStudyAction(value.runCell, "study trial Run Cell");
+  const inline = validateStudyAction(value.inline, "study trial inline action", ["tableReady"]);
+  if (inline && value.inline.tableReady !== true) throw new TypeError("Study inline preview is not ready.");
+  const workbench = value.workbench;
+  if (workbench !== null) {
+    exactKeys(
+      workbench,
+      [
+        "rootRole",
+        "fullShape",
+        "ariaRowCount",
+        "ariaColumnCount",
+        "verticalOverflow",
+        "horizontalOverflow",
+        "pointerUsable"
+      ],
+      "study trial workbench"
+    );
+    if (
+      !["grid", "table"].includes(workbench.rootRole) ||
+      !["aria-counts", "visible-label"].includes(workbench.fullShape)
+    ) {
+      throw new TypeError("Study trial workbench role or shape proof is invalid.");
+    }
+    for (const count of [workbench.ariaRowCount, workbench.ariaColumnCount]) {
+      if (count !== null && (!Number.isSafeInteger(count) || count < 1 || count > 100_000_000)) {
+        throw new TypeError("Study trial workbench ARIA count is invalid.");
+      }
+    }
+    for (const overflow of [workbench.verticalOverflow, workbench.horizontalOverflow]) {
+      if (!Number.isSafeInteger(overflow) || overflow < 1 || overflow > 1_000_000_000) {
+        throw new TypeError("Study trial workbench overflow proof is invalid.");
+      }
+    }
+    assertEqual(workbench.pointerUsable, true, "study trial workbench pointer proof");
+  }
+  const profiling = validateStudyAction(value.profiling, "study trial profiling action", [
+    "expectedColumns",
+    "completedColumns"
+  ]);
+  if (profiling) {
+    assertPositiveInteger(value.profiling.expectedColumns, "study trial expected profile columns");
+    assertIntegerBetween(
+      value.profiling.completedColumns,
+      0,
+      value.profiling.expectedColumns,
+      "study trial completed profile columns"
+    );
+    if (scheduledColumns !== undefined) {
+      assertEqual(value.profiling.expectedColumns, scheduledColumns, "study trial scheduled profile columns");
+    }
+  }
+  if (
+    status === "success" &&
+    (!runCell ||
+      !inline ||
+      !workbench ||
+      !profiling ||
+      value.profiling.completedColumns !== value.profiling.expectedColumns)
+  ) {
+    throw new TypeError("A successful study trial requires complete public UI evidence.");
+  }
+}
+
+function validateStudyAction(value, label, extraKeys = []) {
+  if (value === null) return null;
+  exactKeys(value, ["accessibleName", "unique", "pointer", ...extraKeys], label);
+  assertBoundedString(value.accessibleName, `${label} accessible name`);
+  assertEqual(value.unique, true, `${label} unique proof`);
+  assertEqual(value.pointer, true, `${label} pointer proof`);
+  return value;
+}
+
+function validateStudyProvenance(value, manifest) {
+  exactKeys(value, ["candidate", "dataWranglerVersion", "editor", "python"], "study trial provenance");
+  for (const key of ["candidate", "editor", "python"]) {
+    exactKeys(value[key], ["version", "sha256"], `study trial ${key} provenance`);
+    assertMatch(value[key].version, NUMERIC_VERSION, `study trial ${key} version`);
+    assertMatch(value[key].sha256, SHA256, `study trial ${key} SHA-256`);
+  }
+  assertEqual(value.dataWranglerVersion, DATA_WRANGLER_BASELINE_VERSION, "study trial Data Wrangler version");
+  if (!manifest) return;
+  for (const [actual, expected, label] of [
+    [value.candidate.version, manifest.provenance.openWrangler.version, "candidate version"],
+    [value.candidate.sha256, manifest.provenance.openWrangler.sha256, "candidate SHA-256"],
+    [value.editor.version, manifest.provenance.editor.version, "editor version"],
+    [value.editor.sha256, manifest.provenance.editor.sha256, "editor SHA-256"],
+    [value.python.version, manifest.provenance.python.version, "Python version"],
+    [value.python.sha256, manifest.provenance.python.sha256, "Python SHA-256"]
+  ]) {
+    assertEqual(actual, expected, `study trial ${label}`);
+  }
+}
+
+function studyDuration(milestones, startName, endName) {
+  const start = milestoneTimestamp(milestones, startName);
+  const end = milestoneTimestamp(milestones, endName);
+  return start === undefined || end === undefined
+    ? null
+    : Math.round((Number(end - start) / 1_000_000) * 1_000) / 1_000;
+}
+
+function milestoneTimestamp(milestones, name) {
+  const value = milestones?.find?.((milestone) => milestone.name === name)?.monotonicNs;
+  return value === undefined ? undefined : BigInt(value);
 }
 
 function canonicalUtcTimestamp(value) {
@@ -427,16 +636,6 @@ function canonicalUtcTimestamp(value) {
     throw new TypeError("Comparison report timestamp must be a canonical UTC ISO string.");
   }
   return value;
-}
-
-function assertExactStringArray(actual, expected, label) {
-  if (
-    !Array.isArray(actual) ||
-    actual.length !== expected.length ||
-    actual.some((value, index) => value !== expected[index])
-  ) {
-    throw new TypeError(`${label} must match the deterministic comparison contract.`);
-  }
 }
 
 function exactKeys(value, expected, label) {

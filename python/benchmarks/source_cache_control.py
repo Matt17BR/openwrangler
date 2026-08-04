@@ -4,22 +4,17 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import hashlib
 import json
 import mmap
 import os
-import platform
 import stat
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, TypedDict
 
 READ_BLOCK_BYTES = 1024 * 1024
 PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1"
-STUDY_V2_PROOF_PROTOCOL = "openwrangler-source-cache-proof-study-v2"
-STUDY_V2_TOOLCHAIN_PROTOCOL = "openwrangler-cache-toolchain-study-v2"
-MAXIMUM_AUTHORITY_BYTES = 256 * 1024 * 1024
 _MAP_PRIVATE = 0x02
 _PROT_NONE = 0x0
 
@@ -36,36 +31,6 @@ class CacheControlResult(TypedDict):
     residentPagesAfter: int | None
     identityStable: bool
     verified: bool
-
-
-class FilesystemIdentity(TypedDict):
-    device: str
-    inode: str
-    sizeBytes: int
-    mtimeNs: str
-
-
-class ImmutableFileReceipt(TypedDict):
-    sha256: str
-    filesystemIdentity: FilesystemIdentity
-
-
-class RunningInterpreterReceipt(ImmutableFileReceipt):
-    implementation: str
-    version: str
-
-
-class StudyV2CacheControlResult(CacheControlResult):
-    sourceFilesystemIdentityBefore: FilesystemIdentity
-    sourceFilesystemIdentityAfter: FilesystemIdentity
-    controller: ImmutableFileReceipt
-    pythonExecutable: RunningInterpreterReceipt
-
-
-class StudyV2ToolchainResult(TypedDict):
-    protocol: str
-    controller: ImmutableFileReceipt
-    pythonExecutable: RunningInterpreterReceipt
 
 
 def prepare_source_cache(source: Path, mode: str) -> CacheControlResult:
@@ -148,191 +113,6 @@ def prepare_source_cache(source: Path, mode: str) -> CacheControlResult:
         os.close(descriptor)
 
 
-def prepare_study_v2_source_cache(
-    source_fd: int, mode: str, controller_fd: int, python_fd: int
-) -> StudyV2CacheControlResult:
-    """Prepare one study-private copy and bind proof to the running toolchain."""
-
-    if mode not in {"cold", "warm"}:
-        raise ValueError("Source-cache mode must be cold or warm.")
-    if not _linux_cache_proof_available():
-        raise OSError("The study-v2 source-cache contract requires Linux mincore and fadvise support.")
-
-    controller_before = _controller_descriptor_receipt(controller_fd)
-    interpreter_before = _running_interpreter_receipt(python_fd)
-    _require_inherited_descriptor(source_fd, "source", minimum=5)
-    descriptor = os.dup(source_fd)
-    try:
-        opened = os.fstat(descriptor)
-        _require_regular_single_link(opened)
-        if opened.st_size <= 0:
-            raise ValueError("Source-cache preparation requires a non-empty file.")
-        source_before = _filesystem_identity(opened)
-
-        page_size = _page_size_bytes()
-        total_pages = (opened.st_size + page_size - 1) // page_size
-        requested_state: Literal["evicted", "resident"] = "evicted" if mode == "cold" else "resident"
-        _sync_file_data(descriptor)
-        resident_before = _resident_page_count(descriptor, opened.st_size, total_pages)
-        advice_accepted = False
-        if mode == "cold":
-            _advise_dont_need(descriptor)
-            advice_accepted = True
-        else:
-            total = 0
-            while True:
-                block = os.read(descriptor, READ_BLOCK_BYTES)
-                if not block:
-                    break
-                total += len(block)
-            if total != opened.st_size:
-                raise OSError("Warm-cache preparation did not read the complete source.")
-        resident_after = _resident_page_count(descriptor, opened.st_size, total_pages)
-        if not _descriptor_identity_stable(descriptor, opened):
-            raise ValueError("The source changed identity during cache preparation.")
-        source_after = _filesystem_identity(os.fstat(descriptor))
-        verified = resident_after == (0 if mode == "cold" else total_pages)
-    finally:
-        os.close(descriptor)
-
-    controller_after = _controller_descriptor_receipt(controller_fd)
-    interpreter_after = _running_interpreter_receipt(python_fd)
-    if controller_after != controller_before:
-        raise ValueError("The source-cache controller changed while study-v2 proof was collected.")
-    if interpreter_after != interpreter_before:
-        raise ValueError("The running Python executable changed while study-v2 proof was collected.")
-
-    return {
-        "protocol": STUDY_V2_PROOF_PROTOCOL,
-        "requestedState": requested_state,
-        "fdatasyncApplied": True,
-        "adviceAccepted": advice_accepted,
-        "verification": "linux-mincore",
-        "pageSizeBytes": page_size,
-        "totalPages": total_pages,
-        "residentPagesBefore": resident_before,
-        "residentPagesAfter": resident_after,
-        "identityStable": True,
-        "verified": verified,
-        "sourceFilesystemIdentityBefore": source_before,
-        "sourceFilesystemIdentityAfter": source_after,
-        "controller": controller_before,
-        "pythonExecutable": interpreter_before,
-    }
-
-
-def describe_study_v2_toolchain(controller_fd: int, python_fd: int) -> StudyV2ToolchainResult:
-    """Describe the exact controller bytes and interpreter running them."""
-
-    if not _linux_cache_proof_available():
-        raise OSError("The study-v2 toolchain contract requires Linux procfs support.")
-    controller_before = _controller_descriptor_receipt(controller_fd)
-    interpreter_before = _running_interpreter_receipt(python_fd)
-    controller_after = _controller_descriptor_receipt(controller_fd)
-    interpreter_after = _running_interpreter_receipt(python_fd)
-    if controller_before != controller_after or interpreter_before != interpreter_after:
-        raise ValueError("The study-v2 toolchain changed while its receipt was collected.")
-    return {
-        "protocol": STUDY_V2_TOOLCHAIN_PROTOCOL,
-        "controller": controller_before,
-        "pythonExecutable": interpreter_before,
-    }
-
-
-def _filesystem_identity(metadata: os.stat_result) -> FilesystemIdentity:
-    return {
-        "device": str(metadata.st_dev),
-        "inode": str(metadata.st_ino),
-        "sizeBytes": metadata.st_size,
-        "mtimeNs": str(metadata.st_mtime_ns),
-    }
-
-
-def _hash_descriptor(descriptor: int, size: int) -> str:
-    digest = hashlib.sha256()
-    position = 0
-    while position < size:
-        block = os.pread(descriptor, min(READ_BLOCK_BYTES, size - position), position)
-        if not block:
-            raise OSError("An authority file ended before its pinned byte size.")
-        digest.update(block)
-        position += len(block)
-    if os.pread(descriptor, 1, position):
-        raise OSError("An authority file exceeded its pinned byte size.")
-    return digest.hexdigest()
-
-
-def _immutable_file_receipt(path: Path, *, proc_magic_link: bool = False) -> ImmutableFileReceipt:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW") and not proc_magic_link:
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
-    try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-            raise ValueError("Study-v2 authority must be one single-link regular file.")
-        if opened.st_size <= 0 or opened.st_size > MAXIMUM_AUTHORITY_BYTES:
-            raise ValueError("Study-v2 authority exceeds its fixed byte bound.")
-        named = path.stat() if proc_magic_link else path.lstat()
-        if not _same_identity(opened, named):
-            raise ValueError("Study-v2 authority changed before it could be opened.")
-        receipt: ImmutableFileReceipt = {
-            "sha256": _hash_descriptor(descriptor, opened.st_size),
-            "filesystemIdentity": _filesystem_identity(opened),
-        }
-        completed = os.fstat(descriptor)
-        named_after = path.stat() if proc_magic_link else path.lstat()
-        if not _same_identity(opened, completed) or not _same_identity(opened, named_after):
-            raise ValueError("Study-v2 authority changed while it was hashed.")
-        return receipt
-    finally:
-        os.close(descriptor)
-
-
-def _controller_descriptor_receipt(descriptor: int) -> ImmutableFileReceipt:
-    _require_inherited_descriptor(descriptor, "controller", minimum=3)
-    opened = os.fstat(descriptor)
-    if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-        raise ValueError("The study-v2 controller descriptor must name one single-link regular file.")
-    if opened.st_size <= 0 or opened.st_size > MAXIMUM_AUTHORITY_BYTES:
-        raise ValueError("The study-v2 controller descriptor exceeds its fixed byte bound.")
-    named = Path(__file__).stat()
-    if not _same_identity(opened, named):
-        raise ValueError("The inherited controller descriptor does not match the running controller source.")
-    receipt: ImmutableFileReceipt = {
-        "sha256": _hash_descriptor(descriptor, opened.st_size),
-        "filesystemIdentity": _filesystem_identity(opened),
-    }
-    completed = os.fstat(descriptor)
-    named_after = Path(__file__).stat()
-    if not _same_identity(opened, completed) or not _same_identity(opened, named_after):
-        raise ValueError("The inherited controller descriptor changed while it was hashed.")
-    return receipt
-
-
-def _running_interpreter_receipt(descriptor: int) -> RunningInterpreterReceipt:
-    if sys.platform != "linux":
-        raise OSError("The study-v2 running-interpreter receipt requires Linux procfs.")
-    _require_inherited_descriptor(descriptor, "Python", minimum=4)
-    opened = os.fstat(descriptor)
-    running = Path("/proc/self/exe").stat()
-    if not _same_identity(opened, running):
-        raise ValueError("The inherited Python descriptor does not match the running interpreter.")
-    receipt: ImmutableFileReceipt = {
-        "sha256": _hash_descriptor(descriptor, opened.st_size),
-        "filesystemIdentity": _filesystem_identity(opened),
-    }
-    completed = os.fstat(descriptor)
-    running_after = Path("/proc/self/exe").stat()
-    if not _same_identity(opened, completed) or not _same_identity(opened, running_after):
-        raise ValueError("The inherited Python descriptor changed while it was hashed.")
-    return {
-        "implementation": platform.python_implementation(),
-        "version": platform.python_version(),
-        **receipt,
-    }
-
-
 def _linux_cache_proof_available() -> bool:
     return (
         sys.platform == "linux"
@@ -404,15 +184,6 @@ def _source_identity_stable(source: Path, descriptor: int, expected: os.stat_res
     return _same_identity(os.fstat(descriptor), expected) and _same_identity(source.lstat(), expected)
 
 
-def _descriptor_identity_stable(descriptor: int, expected: os.stat_result) -> bool:
-    return _same_identity(os.fstat(descriptor), expected)
-
-
-def _require_inherited_descriptor(descriptor: int, label: str, *, minimum: int) -> None:
-    if not isinstance(descriptor, int) or isinstance(descriptor, bool) or descriptor < minimum:
-        raise ValueError(f"The study-v2 {label} descriptor must be inherited at or above fd {minimum}.")
-
-
 def _same_identity(current: os.stat_result, expected: os.stat_result) -> bool:
     return (
         stat.S_ISREG(current.st_mode)
@@ -432,38 +203,15 @@ def _require_regular_single_link(metadata: os.stat_result) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path)
-    parser.add_argument("--source-fd", type=int)
     parser.add_argument("--mode", choices=["cold", "warm"])
-    parser.add_argument("--contract", choices=["v1", "study-v2", "toolchain-v2"], default="v1")
-    parser.add_argument("--controller-fd", type=int)
-    parser.add_argument("--python-fd", type=int)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
-    if arguments.contract in {"study-v2", "toolchain-v2"} and (
-        arguments.controller_fd is None or arguments.python_fd is None
-    ):
-        raise ValueError("The study-v2 contract requires --controller-fd and --python-fd.")
-    if arguments.contract == "v1" and (
-        arguments.controller_fd is not None or arguments.python_fd is not None or arguments.source_fd is not None
-    ):
-        raise ValueError("The v1 source-cache contract does not accept inherited study descriptors.")
-    controller_fd = cast(int, arguments.controller_fd)
-    python_fd = cast(int, arguments.python_fd)
-    if arguments.contract == "toolchain-v2":
-        if arguments.source is not None or arguments.source_fd is not None or arguments.mode is not None:
-            raise ValueError("The toolchain-v2 contract does not accept a source or mode.")
-        result = describe_study_v2_toolchain(controller_fd, python_fd)
-    elif arguments.contract == "study-v2":
-        if arguments.source is not None or arguments.source_fd is None or arguments.mode is None:
-            raise ValueError("The study-v2 contract requires --source-fd and --mode, and rejects source paths.")
-        result = prepare_study_v2_source_cache(arguments.source_fd, arguments.mode, controller_fd, python_fd)
-    else:
-        if arguments.source is None or arguments.mode is None:
-            raise ValueError("Source-cache preparation requires --source and --mode.")
-        result = prepare_source_cache(arguments.source, arguments.mode)
+    if arguments.source is None or arguments.mode is None:
+        raise ValueError("Source-cache preparation requires --source and --mode.")
+    result = prepare_source_cache(arguments.source, arguments.mode)
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
     return 0
 
