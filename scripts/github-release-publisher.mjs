@@ -13,8 +13,8 @@ const RELEASE_JSON_MAX_BYTES = 4 * 1024 * 1024;
 const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
 const RELEASES_PER_PAGE = 100;
 const MAX_RELEASE_PAGES = 100;
-const DISCOVERY_ATTEMPTS = 3;
-const DISCOVERY_RETRY_MS = 100;
+const DISCOVERY_ATTEMPTS = 21;
+const DISCOVERY_RETRY_MS = 250;
 export const CANONICAL_GITHUB_RELEASE_ASSETS = Object.freeze(
   CANONICAL_RELEASE_ASSET_SPECS.map(({ contentType, name }) => Object.freeze({ contentType, name }))
 );
@@ -295,7 +295,7 @@ function validateReleaseMetadata(
   return discovered;
 }
 
-async function discoverRelease({ apiRoot, fetchImpl, headers, releaseTag }) {
+async function discoverRelease({ apiRoot, fetchImpl, headers, releaseTag, retryAbsent = false }) {
   for (let attempt = 1; attempt <= DISCOVERY_ATTEMPTS; attempt += 1) {
     const published = await fetchPublishedRelease({ apiRoot, fetchImpl, headers, releaseTag });
     const matching = await listMatchingReleases({ apiRoot, fetchImpl, headers, releaseTag });
@@ -304,9 +304,13 @@ async function discoverRelease({ apiRoot, fetchImpl, headers, releaseTag }) {
     }
     const sole = matching[0];
     if (published === undefined) {
-      if (sole === undefined) return Object.freeze({ phase: "absent", release: undefined });
-      if (sole.draft === true) return Object.freeze({ phase: "draft", release: sole });
-      if (sole.draft !== false) {
+      if (sole === undefined) {
+        if (!retryAbsent || attempt === DISCOVERY_ATTEMPTS) {
+          return Object.freeze({ phase: "absent", release: undefined });
+        }
+      } else if (sole.draft === true) {
+        return Object.freeze({ phase: "draft", release: sole });
+      } else if (sole.draft !== false) {
         throw new Error("GitHub release inventory contains an invalid publication state.");
       }
     } else if (sole !== undefined && sole.id !== published.id) {
@@ -529,7 +533,7 @@ export async function publishGitHubRelease({
       prerelease,
       releaseTag
     });
-    state = await discoverRelease({ apiRoot, fetchImpl, headers, releaseTag });
+    state = await discoverRelease({ apiRoot, fetchImpl, headers, releaseTag, retryAbsent: true });
     if (state.phase === "absent") {
       throw new Error("GitHub draft creation conflicted without an exact release to resume.");
     }
@@ -554,7 +558,7 @@ export async function publishGitHubRelease({
   for (const expected of assets) {
     if (discovered.has(expected.name)) continue;
     await uploadAsset({ beforeMutation, expected, fetchImpl, headers, release });
-    state = await discoverRelease({ apiRoot, fetchImpl, headers, releaseTag });
+    state = await discoverRelease({ apiRoot, fetchImpl, headers, releaseTag, retryAbsent: true });
     if (state.phase === "absent") {
       throw new Error("GitHub draft release disappeared during asset publication.");
     }
@@ -618,7 +622,7 @@ export async function publishGitHubRelease({
     await verifyReleaseAssets({ assets, discovered, fetchImpl, headers, requireComplete: true });
   }
 
-  state = await discoverRelease({ apiRoot, fetchImpl, headers, releaseTag });
+  state = await discoverRelease({ apiRoot, fetchImpl, headers, releaseTag, retryAbsent: true });
   if (state.phase !== "public" || state.release.id !== draftId) {
     if (publicationError !== undefined) throw publicationError;
     throw new Error("GitHub draft publication did not produce the exact public release.");

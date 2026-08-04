@@ -9,17 +9,8 @@ updates:
       timezone: Etc/UTC
     open-pull-requests-limit: 4
     groups:
-      npm-production-minor-patch:
+      npm-minor-patch:
         applies-to: version-updates
-        dependency-type: production
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-      npm-development-minor-patch:
-        applies-to: version-updates
-        dependency-type: development
         patterns:
           - "*"
         update-types:
@@ -34,17 +25,8 @@ updates:
       timezone: Etc/UTC
     open-pull-requests-limit: 4
     groups:
-      python-production-minor-patch:
+      python-minor-patch:
         applies-to: version-updates
-        dependency-type: production
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-      python-development-minor-patch:
-        applies-to: version-updates
-        dependency-type: development
         patterns:
           - "*"
         update-types:
