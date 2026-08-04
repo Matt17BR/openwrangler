@@ -19,7 +19,6 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   DATA_WRANGLER_STUDY_TOOL_NAMES,
-  DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY,
   DATA_WRANGLER_REGRESSION_LIMITS,
   assertReleaseCompleteStudyReport,
   buildDataWranglerComparisonStudyReport,
@@ -27,17 +26,18 @@ import {
 } from "./data-wrangler-comparison-report.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 
-export const STUDY_PROTOCOL = "openwrangler-data-wrangler-study-v1";
-export const TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v1";
-export const TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v1";
+export const STUDY_PROTOCOL = "openwrangler-data-wrangler-study-v2";
+export const TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v2";
+export const TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 export const DATA_WRANGLER_VERSION = "1.24.2";
 export const WARM_REPETITIONS = 10;
+export const SMOKE_REPETITIONS = 2;
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
   workbenchOpen: 40_000,
   completeProfile: 110_000,
-  editorPhase: 300_000,
+  editorPhase: 600_000,
   neutralDriver: 2_400_000
 });
 export const STUDY_CELLS = Object.freeze([
@@ -53,59 +53,37 @@ const MAX_JSON_BYTES = 8 * 1024 * 1024;
 
 export function createDataWranglerComparisonSchedule() {
   const schedule = [];
-  for (let repetition = 1; repetition <= WARM_REPETITIONS; repetition += 1) {
-    for (let cellIndex = 0; cellIndex < STUDY_CELLS.length; cellIndex += 1) {
-      const cell = STUDY_CELLS[cellIndex];
-      const first = (repetition + cellIndex) % 2 === 0 ? PRODUCTS[0] : PRODUCTS[1];
-      const order = first === PRODUCTS[0] ? PRODUCTS : [...PRODUCTS].reverse();
-      const pairId = `warm.${cell.id}.r${String(repetition).padStart(2, "0")}`;
-      for (let orderInPair = 0; orderInPair < order.length; orderInPair += 1) {
-        schedule.push(
-          Object.freeze({
-            id: `${pairId}.${orderInPair + 1}.${order[orderInPair]}`,
-            pairId,
-            kind: "warm",
-            repetition,
-            cellId: cell.id,
-            engine: cell.engine,
-            format: cell.format,
-            rows: cell.rows,
-            columns: cell.columns,
-            product: order[orderInPair],
-            orderInPair,
-            order: schedule.length
-          })
-        );
-      }
-    }
-  }
-  for (const cell of STUDY_CELLS) {
-    for (const [block, order] of [PRODUCTS, [...PRODUCTS].reverse()].entries()) {
-      const pairId = `cold.${cell.id}.${block === 0 ? "ab" : "ba"}`;
-      for (let orderInPair = 0; orderInPair < order.length; orderInPair += 1) {
-        schedule.push(
-          Object.freeze({
-            id: `${pairId}.${orderInPair + 1}.${order[orderInPair]}`,
-            pairId,
-            kind: "cold",
-            repetition: block + 1,
-            cellId: cell.id,
-            engine: cell.engine,
-            format: cell.format,
-            rows: cell.rows,
-            columns: cell.columns,
-            product: order[orderInPair],
-            orderInPair,
-            order: schedule.length
-          })
-        );
-      }
+  const productOrders = [PRODUCTS, [...PRODUCTS].reverse(), [...PRODUCTS].reverse(), PRODUCTS];
+  for (const [cellIndex, cell] of STUDY_CELLS.entries()) {
+    for (const product of productOrders[cellIndex]) {
+      schedule.push(
+        Object.freeze({
+          id: `warm.${cell.id}.${product}`,
+          kind: "warm",
+          cellId: cell.id,
+          engine: cell.engine,
+          format: cell.format,
+          rows: cell.rows,
+          columns: cell.columns,
+          product,
+          order: schedule.length
+        })
+      );
     }
   }
   return Object.freeze(schedule);
 }
 
-export function buildStudyManifest({ createdAtUtc, candidate, editor, python, fixtures, machine, toolHashes }) {
+export function buildStudyManifest({
+  createdAtUtc,
+  candidate,
+  editor,
+  python,
+  fixtures,
+  machine,
+  toolHashes,
+  repetitionsPerSession = WARM_REPETITIONS
+}) {
   canonicalUtc(createdAtUtc);
   validateVersionedFile(candidate, "Open Wrangler candidate");
   validateVersionedFile(editor, "VS Code");
@@ -122,6 +100,9 @@ export function buildStudyManifest({ createdAtUtc, candidate, editor, python, fi
   }
   validateMachine(machine);
   validateToolHashes(toolHashes);
+  if (![SMOKE_REPETITIONS, WARM_REPETITIONS].includes(repetitionsPerSession)) {
+    throw new TypeError("A comparison session requires either two smoke samples or ten release samples.");
+  }
   if (candidate.version === DATA_WRANGLER_VERSION) {
     throw new TypeError("The candidate version must be independent from the Data Wrangler baseline version.");
   }
@@ -143,9 +124,7 @@ export function buildStudyManifest({ createdAtUtc, candidate, editor, python, fi
     createdAtUtc,
     method: {
       cells: STUDY_CELLS.map((cell) => ({ ...cell })),
-      warmPairsPerCell: WARM_REPETITIONS,
-      coldOrder: "one AB pair and one BA pair per cell",
-      preActionSettle: structuredClone(DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY),
+      repetitionsPerSession,
       regressionLimits: structuredClone(DATA_WRANGLER_REGRESSION_LIMITS),
       timingBoundaries: {
         inlinePreview: "Run Cell click to stable public inline output and a usable launch action",
@@ -153,8 +132,8 @@ export function buildStudyManifest({ createdAtUtc, candidate, editor, python, fi
         firstProfile: "public profiling action to the first completed column summary",
         completeProfile: "public profiling action to final summaries for every column"
       },
-      statistics: "successful warm trials; Hyndman-Fan type 7 median and p95; paired differences retain order",
-      memory: "highest observed absolute process-tree PSS after a fixed ten-second pre-action wait"
+      statistics: `${repetitionsPerSession === WARM_REPETITIONS ? "ten" : "two"} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
+      memory: "highest observed absolute process-tree PSS during each measured notebook workflow"
     },
     provenance: {
       openWrangler: { extensionId: "Matt17BR.openwrangler", version: candidate.version, sha256: candidate.sha256 },
@@ -176,10 +155,10 @@ export function buildStudyManifest({ createdAtUtc, candidate, editor, python, fi
   return Object.freeze(manifest);
 }
 
-export function completedTrialIds(directory, manifest) {
+export function terminalTrialIds(directory, manifest) {
   if (!existsSync(directory)) return new Set();
   const scheduled = new Map(manifest.schedule.map((entry) => [entry.id, entry]));
-  const completed = new Set();
+  const terminal = new Set();
   for (const name of readdirSync(directory).sort()) {
     if (!name.endsWith(".json")) continue;
     const result = readJson(join(directory, name));
@@ -188,10 +167,15 @@ export function completedTrialIds(directory, manifest) {
       throw new Error(`Unexpected trial result ${name}.`);
     }
     validateTrialResult(result, entry, manifest);
-    if (completed.has(result.trialId)) throw new Error(`Duplicate trial result ${result.trialId}.`);
-    completed.add(result.trialId);
+    if (terminal.has(result.trialId)) throw new Error(`Duplicate trial result ${result.trialId}.`);
+    if (!isHarnessInterrupted(result)) terminal.add(result.trialId);
   }
-  return completed;
+  return terminal;
+}
+
+function isHarnessInterrupted(result) {
+  const unsuccessful = result.samples.filter(({ status }) => status !== "success");
+  return unsuccessful.length > 0 && unsuccessful.every(({ failure }) => failure?.kind === "harness");
 }
 
 export async function runDataWranglerComparisonStudy(options, dependencies = {}) {
@@ -205,21 +189,24 @@ export async function runDataWranglerComparisonStudy(options, dependencies = {})
   removeStaleTrialDirectories(output);
   await prepareTools();
   const observed = await captureProvenance(options, dependencies);
+  const repetitionsPerSession = options.repetitionsPerSession ?? WARM_REPETITIONS;
   const manifestPath = join(output, "manifest.json");
   let manifest;
   if (existsSync(manifestPath)) {
     manifest = readJson(manifestPath);
-    const expected = buildStudyManifest({ ...observed, createdAtUtc: manifest.createdAtUtc });
+    const expected = buildStudyManifest({ ...observed, createdAtUtc: manifest.createdAtUtc, repetitionsPerSession });
     if (digest(manifest) !== digest(expected)) {
       throw new Error("Study inputs changed since manifest creation. Start a new output directory.");
     }
   } else {
-    manifest = buildStudyManifest({ ...observed, createdAtUtc: now() });
+    manifest = buildStudyManifest({ ...observed, createdAtUtc: now(), repetitionsPerSession });
     writeJsonAtomic(manifestPath, manifest);
   }
 
-  const completed = completedTrialIds(trialsDirectory, manifest);
-  const remaining = manifest.schedule.filter(({ id }) => !completed.has(id));
+  const completed = terminalTrialIds(trialsDirectory, manifest);
+  const eligibleSchedule =
+    options.scheduleLimit === undefined ? manifest.schedule : manifest.schedule.slice(0, options.scheduleLimit);
+  const remaining = eligibleSchedule.filter(({ id }) => !completed.has(id));
   const limit = options.limit === undefined ? remaining.length : options.limit;
   const selected = remaining.slice(0, limit);
   for (const entry of selected) {
@@ -251,53 +238,68 @@ export async function runDataWranglerComparisonStudy(options, dependencies = {})
       }
       rmSync(trialRoot, { force: true, recursive: true });
     }
-    if (trialError) result = failedResult(entry, trialError, "harness", trialProvenance(manifest));
+    if (trialError) {
+      result = failedResult(
+        entry,
+        trialError,
+        "harness",
+        trialProvenance(manifest),
+        manifest.method.repetitionsPerSession
+      );
+    }
     const machineAfter = (dependencies.inspectMachine ?? inspectMachineEnvironment)();
     if (digest(machineAfter) !== digest(manifest.provenance.machine)) {
       result = failedResult(
         entry,
         new Error("Machine or power provenance changed during the trial."),
         "harness",
-        trialProvenance(manifest)
+        trialProvenance(manifest),
+        manifest.method.repetitionsPerSession
       );
     }
     validateTrialResult(result, entry, manifest);
     writeJsonAtomic(join(trialsDirectory, `${entry.id}.json`), result);
+    if (!isHarnessInterrupted(result)) completed.add(entry.id);
   }
-  const remainingCount = remaining.length - selected.length;
+  const remainingCount = manifest.schedule.length - completed.size;
   if (remainingCount === 0) removePreparedExtensionDirectories(output);
   return Object.freeze({
     manifest,
-    completed: completed.size + selected.length,
+    completed: completed.size,
     remaining: remainingCount
   });
 }
 
 export async function runDataWranglerComparisonSmoke(options, dependencies = {}) {
   const output = resolve(options.output);
-  if (existsSync(output)) {
-    throw new Error("Comparison smoke requires a new output path so it always runs one complete pair.");
-  }
   try {
-    const result = await runDataWranglerComparisonStudy({ ...options, output, limit: 2 }, dependencies);
+    const result = await runDataWranglerComparisonStudy(
+      { ...options, output, limit: 2, scheduleLimit: 2, repetitionsPerSession: SMOKE_REPETITIONS },
+      dependencies
+    );
     const pair = result.manifest.schedule.slice(0, 2);
     if (
       pair.length !== 2 ||
-      pair[0].pairId !== pair[1].pairId ||
-      pair[0].orderInPair !== 0 ||
-      pair[1].orderInPair !== 1 ||
+      pair[0].cellId !== pair[1].cellId ||
       new Set(pair.map(({ product }) => product)).size !== 2
     ) {
       throw new Error("Comparison smoke did not select one complete product pair.");
     }
     const pairIds = new Set(pair.map(({ id }) => id));
-    const failures = loadStudyResults(output).trials.filter(
-      ({ trialId, status }) => pairIds.has(trialId) && status !== "success"
+    const failures = loadStudyResults(output).trials.flatMap((trial) =>
+      pairIds.has(trial.trialId)
+        ? trial.samples
+            .filter(({ status }) => status !== "success")
+            .map((sample) => ({ trialId: trial.trialId, ...sample }))
+        : []
     );
     if (failures.length > 0) {
       throw new Error(
         `Comparison smoke failed: ${failures
-          .map(({ trialId, status, failure }) => `${trialId} (${status}, ${failure?.stage ?? "unknown"})`)
+          .map(
+            ({ trialId, index, status, failure }) =>
+              `${trialId} sample ${index} (${status}, ${failure?.stage ?? "unknown"})`
+          )
           .join(", ")}.`
       );
     }
@@ -343,7 +345,13 @@ export async function runOneTrial({ entry, request, runTrial, timeoutMs }) {
         timer = setTimeout(
           () =>
             resolve(
-              failedResult(entry, new Error("Trial deadline exceeded."), "timeout", trialProvenanceFromRequest(request))
+              failedResult(
+                entry,
+                new Error("Trial deadline exceeded."),
+                "timeout",
+                trialProvenanceFromRequest(request),
+                request.repetitions
+              )
             ),
           timeoutMs
         );
@@ -377,6 +385,7 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
     product: entry.product,
     kind: entry.kind,
     order: entry.order,
+    repetitions: manifest.method.repetitionsPerSession,
     cell: {
       id: entry.cellId,
       engine: entry.engine,
@@ -394,7 +403,6 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
       sha256: manifest.provenance.openWrangler.sha256
     },
     dataWranglerVersion: DATA_WRANGLER_VERSION,
-    preActionSettleMs: manifest.method.preActionSettle.fixedWaitMs,
     editor: {
       path: resolve(options.editor),
       cliPath: resolve(options.editorCli),
@@ -411,7 +419,8 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
       preAction: STUDY_TIMEOUTS_MS.preAction,
       inlinePreview: STUDY_TIMEOUTS_MS.inlinePreview,
       workbenchOpen: STUDY_TIMEOUTS_MS.workbenchOpen,
-      completeProfile: STUDY_TIMEOUTS_MS.completeProfile
+      completeProfile: STUDY_TIMEOUTS_MS.completeProfile,
+      editorPhase: STUDY_TIMEOUTS_MS.editorPhase
     },
     isolatedRoot: trialRoot
   };
@@ -444,7 +453,7 @@ export function validateTrialResult(result, entry, manifest) {
 export function loadStudyResults(output) {
   const manifest = readJson(join(resolve(output), "manifest.json"));
   const trialsDirectory = join(resolve(output), "trials");
-  completedTrialIds(trialsDirectory, manifest);
+  terminalTrialIds(trialsDirectory, manifest);
   const trials = readdirSync(trialsDirectory)
     .filter((name) => name.endsWith(".json"))
     .sort()
@@ -658,10 +667,8 @@ function studyNotebook(entry, source) {
   const importLine = entry.engine === "pandas" ? "import pandas as pd" : "import polars as pl";
   const bootstrap =
     entry.engine === "pandas" ? 'pd.DataFrame({"c00": [0], "c01": [1]})' : 'pl.DataFrame({"c00": [0], "c01": [1]})';
-  const setup =
-    `${importLine}\naaa_comparison_bootstrap = ${bootstrap}` +
-    (entry.kind === "warm" ? `\nstudy_frame = ${reader}` : "");
-  const measured = entry.kind === "warm" ? "study_frame" : `${importLine}\nstudy_frame = ${reader}\nstudy_frame`;
+  const setup = `${importLine}\naaa_comparison_bootstrap = ${bootstrap}\nstudy_frame = ${reader}`;
+  const measured = "study_frame";
   const cells = [codeCell(setup, [`ow-comparison-setup:${entry.cellId}`])];
   cells.push(codeCell(measured, [`ow-comparison-cell:${entry.cellId}`]));
   return {
@@ -688,7 +695,13 @@ function codeCell(source, tags = []) {
   };
 }
 
-function failedResult(entry, error, status, provenance) {
+function failedResult(entry, error, status, provenance, repetitions) {
+  const failureStatus = status === "timeout" ? "timeout" : "failure";
+  const failure = {
+    stage: "harness",
+    kind: status === "timeout" ? "timeout" : "harness",
+    message: sanitizeError(error)
+  };
   return {
     protocol: TRIAL_RESULT_PROTOCOL,
     trialId: entry.id,
@@ -697,12 +710,15 @@ function failedResult(entry, error, status, provenance) {
     format: entry.format,
     kind: entry.kind,
     order: entry.order,
-    status: status === "timeout" ? "timeout" : "failure",
-    failure: { stage: "harness", kind: status === "timeout" ? "timeout" : "harness", message: sanitizeError(error) },
-    metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
-    milestones: [],
-    publicUi: { runCell: null, inline: null, workbench: null, profiling: null },
-    memory: null,
+    samples: Array.from({ length: repetitions }, (_unused, index) => ({
+      index: index + 1,
+      status: failureStatus,
+      failure,
+      metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
+      milestones: [],
+      publicUi: { runCell: null, inline: null, workbench: null, profiling: null },
+      memory: null
+    })),
     provenance
   };
 }
@@ -894,8 +910,8 @@ function parseArguments(arguments_) {
   }
   const limit = values.has("--limit") ? Number(values.get("--limit")) : undefined;
   if (command === "smoke" && limit !== undefined) throw new Error("Smoke always runs exactly one complete pair.");
-  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 96)) {
-    throw new Error("--limit must be between 1 and 96.");
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 8)) {
+    throw new Error("--limit must be between 1 and 8.");
   }
   return {
     command,
@@ -920,12 +936,12 @@ async function main() {
   const options = parseArguments(process.argv.slice(2));
   if (options.command === "run") {
     const status = await runDataWranglerComparisonStudy(options);
-    console.log(`${status.completed} of ${status.manifest.schedule.length} study trials complete.`);
+    console.log(`${status.completed} of ${status.manifest.schedule.length} study sessions complete.`);
     return;
   }
   if (options.command === "smoke") {
     const status = await runDataWranglerComparisonSmoke(options);
-    console.log(`${status.completed} paired smoke trials complete.`);
+    console.log(`${status.completed} paired smoke sessions complete.`);
     return;
   }
   const { manifest, trials } = loadStudyResults(options.study);

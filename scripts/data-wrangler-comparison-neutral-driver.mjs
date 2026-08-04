@@ -36,8 +36,8 @@ import {
 } from "./data-wrangler-comparison-install.mjs";
 import { summarizeStudyPssSamples } from "./data-wrangler-comparison-report.mjs";
 
-const REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v1";
-const RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v1";
+const REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v2";
+const RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const SHA256 = /^[0-9a-f]{64}$/u;
 
@@ -152,6 +152,7 @@ export async function runDataWranglerComparisonNeutralDriver({ requestPath, outp
       },
       {
         environment,
+        phaseTimeoutMs: request.timeoutsMs.editorPhase,
         spawnProcess: (...arguments_) => {
           const child = spawnOwnedEditorProcess(...arguments_);
           sampler = startLinuxPssSampler(child.pid, { intervalMs: 200 });
@@ -181,20 +182,31 @@ export async function runDataWranglerComparisonNeutralDriver({ requestPath, outp
   if (phaseError) throw phaseError;
 
   const host = readJson(hostResult);
+  const expectedHostKeys = ["protocol", "trialId", "product", "engine", "format", "kind", "order", "samples"];
   if (
+    JSON.stringify(Object.keys(host).sort()) !== JSON.stringify(expectedHostKeys.sort()) ||
     host.protocol !== RESULT_PROTOCOL ||
     host.trialId !== request.trialId ||
     host.product !== request.product ||
     host.engine !== request.cell.engine ||
     host.format !== request.cell.format ||
     host.kind !== request.kind ||
-    host.order !== request.order
+    host.order !== request.order ||
+    !Array.isArray(host.samples) ||
+    host.samples.length !== request.repetitions ||
+    host.samples.some((sample, index) => sample?.index !== index + 1)
   ) {
     throw new Error("The neutral host returned a mismatched result.");
   }
   const result = {
-    ...host,
-    memory: host.status === "success" ? summarizePss(samples, host.milestones) : null,
+    protocol: host.protocol,
+    trialId: host.trialId,
+    product: host.product,
+    engine: host.engine,
+    format: host.format,
+    kind: host.kind,
+    order: host.order,
+    samples: attachComparisonSampleMemory(host.samples, samples),
     provenance: {
       candidate: { version: request.candidate.version, sha256: request.candidate.sha256 },
       dataWranglerVersion: request.dataWranglerVersion,
@@ -241,6 +253,12 @@ export function comparisonHostRequest(request) {
       path: request.editor.path,
       version: request.editor.version,
       sha256: request.editor.sha256
+    },
+    timeoutsMs: {
+      preAction: request.timeoutsMs.preAction,
+      inlinePreview: request.timeoutsMs.inlinePreview,
+      workbenchOpen: request.timeoutsMs.workbenchOpen,
+      completeProfile: request.timeoutsMs.completeProfile
     }
   };
 }
@@ -322,16 +340,49 @@ export function summarizePss(samples, milestones) {
   return summarizeStudyPssSamples(samples, milestones);
 }
 
+export function attachComparisonSampleMemory(hostSamples, pssSamples) {
+  if (!Array.isArray(hostSamples) || !Array.isArray(pssSamples)) {
+    throw new TypeError("Comparison samples and PSS samples must be arrays.");
+  }
+  return hostSamples.map((sample, offset) => {
+    if (!sample || typeof sample !== "object" || sample.index !== offset + 1) {
+      throw new TypeError("Comparison sample indices must be consecutive and one-based.");
+    }
+    return {
+      ...sample,
+      memory:
+        sample.status === "success"
+          ? summarizePss(comparisonSamplePssWindow(pssSamples, sample.milestones), sample.milestones)
+          : null
+    };
+  });
+}
+
+function comparisonSamplePssWindow(samples, milestones) {
+  const timestamp = (name) => {
+    const value = milestones?.find((milestone) => milestone?.name === name)?.monotonicNs;
+    return typeof value === "string" && /^[1-9]\d{0,29}$/u.test(value) ? BigInt(value) : undefined;
+  };
+  const start = timestamp("run-cell-click");
+  const end = timestamp("profiles-complete");
+  if (start === undefined || end === undefined || end <= start) return [];
+  return samples.filter((sample) => {
+    if (typeof sample?.monotonicNs !== "string" || !/^[1-9]\d{0,29}$/u.test(sample.monotonicNs)) return false;
+    const at = BigInt(sample.monotonicNs);
+    return at >= start && at <= end;
+  });
+}
+
 function validateRequest(request) {
   if (
     !request ||
     request.protocol !== REQUEST_PROTOCOL ||
     !["open-wrangler", "data-wrangler"].includes(request.product) ||
-    !["warm", "cold"].includes(request.kind) ||
+    request.kind !== "warm" ||
     !Number.isSafeInteger(request.order) ||
     request.order < 0 ||
     request.order > 255 ||
-    request.preActionSettleMs !== 10_000 ||
+    ![2, 10].includes(request.repetitions) ||
     !isAbsolute(request.isolatedRoot) ||
     !isAbsolute(request.notebookPath) ||
     !isAbsolute(request.cell?.source) ||
@@ -343,7 +394,8 @@ function validateRequest(request) {
     !SHA256.test(request.editor?.sha256 ?? "") ||
     !SHA256.test(request.editor?.cliSha256 ?? "") ||
     !isAbsolute(request.python?.path) ||
-    !SHA256.test(request.python?.sha256 ?? "")
+    !SHA256.test(request.python?.sha256 ?? "") ||
+    request.timeoutsMs?.editorPhase !== 600_000
   ) {
     throw new TypeError("Neutral comparison request is malformed.");
   }

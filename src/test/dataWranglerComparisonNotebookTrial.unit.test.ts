@@ -14,7 +14,8 @@ import {
   validateComparisonTrialRequest,
   validateComparisonTrialResult,
   type ComparisonTrialRequest,
-  type ComparisonTrialResult
+  type ComparisonTrialResult,
+  type ComparisonTrialSample
 } from "./extensionHost/dataWranglerComparisonNotebookTrial";
 
 const SHA = "a".repeat(64);
@@ -32,6 +33,7 @@ function request(overrides: Partial<ComparisonTrialRequest> = {}): ComparisonTri
     product: "open-wrangler",
     kind: "warm",
     order: 0,
+    repetitions: 10,
     isolatedRoot: "/tmp/openwrangler-comparison",
     notebookPath: "/tmp/openwrangler-comparison/study.ipynb",
     cell: {
@@ -45,7 +47,6 @@ function request(overrides: Partial<ComparisonTrialRequest> = {}): ComparisonTri
     },
     candidate: { path: "/tmp/openwrangler.vsix", version: "1.2.1", sha256: SHA },
     dataWranglerVersion: "1.24.2",
-    preActionSettleMs: 10_000,
     editor: { path: "/opt/code/code", version: "1.105.0", sha256: SHA },
     python: { path: "/opt/python/bin/python", version: "3.12.11", sha256: SHA },
     timeoutsMs: { preAction: 75_000, inlinePreview: 30_000, workbenchOpen: 40_000, completeProfile: 110_000 },
@@ -55,15 +56,9 @@ function request(overrides: Partial<ComparisonTrialRequest> = {}): ComparisonTri
 
 const action = { accessibleName: "Open in Open Wrangler", unique: true, pointer: true } as const;
 
-function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrialResult {
+function sample(index: number, overrides: Partial<ComparisonTrialSample> = {}): ComparisonTrialSample {
   return {
-    protocol: COMPARISON_TRIAL_RESULT_PROTOCOL,
-    trialId: "pandas-csv-warm-00",
-    product: "open-wrangler",
-    engine: "pandas",
-    format: "csv",
-    kind: "warm",
-    order: 0,
+    index,
     status: "success",
     failure: null,
     metrics: {
@@ -73,14 +68,13 @@ function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrial
       completeProfileMs: 4
     },
     milestones: [
-      { name: "memory-settle-start", monotonicNs: "1" },
-      { name: "run-cell-click", monotonicNs: "2" },
-      { name: "inline-ready", monotonicNs: "3" },
-      { name: "launch-click", monotonicNs: "4" },
-      { name: "workbench-ready", monotonicNs: "5" },
-      { name: "profile-click", monotonicNs: "6" },
-      { name: "first-profile-ready", monotonicNs: "7" },
-      { name: "profiles-complete", monotonicNs: "8" }
+      { name: "run-cell-click", monotonicNs: "1" },
+      { name: "inline-ready", monotonicNs: "2" },
+      { name: "launch-click", monotonicNs: "3" },
+      { name: "workbench-ready", monotonicNs: "4" },
+      { name: "profile-click", monotonicNs: "5" },
+      { name: "first-profile-ready", monotonicNs: "6" },
+      { name: "profiles-complete", monotonicNs: "7" }
     ],
     publicUi: {
       runCell: action,
@@ -100,9 +94,24 @@ function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrial
   };
 }
 
+function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrialResult {
+  return {
+    protocol: COMPARISON_TRIAL_RESULT_PROTOCOL,
+    trialId: "pandas-csv-warm-00",
+    product: "open-wrangler",
+    engine: "pandas",
+    format: "csv",
+    kind: "warm",
+    order: 0,
+    samples: Array.from({ length: 10 }, (_unused, index) => sample(index + 1)),
+    ...overrides
+  };
+}
+
 describe("neutral comparison request", () => {
   it("accepts the exact Pandas/CSV smoke contract", () => {
     expect(validateComparisonTrialRequest(request())).toEqual(request());
+    expect(validateComparisonTrialRequest(request({ repetitions: 2 }))).toEqual(request({ repetitions: 2 }));
   });
 
   it("rejects mismatched cell identities and paths outside the isolated root", () => {
@@ -119,9 +128,8 @@ describe("neutral comparison request", () => {
     expect(() =>
       validateComparisonTrialRequest(request({ timeoutsMs: { ...request().timeoutsMs, completeProfile: 1 } }))
     ).toThrow(/completeProfile timeout/u);
-    expect(() => validateComparisonTrialRequest(request({ preActionSettleMs: 9_999 as 10_000 }))).toThrow(
-      /preActionSettleMs/u
-    );
+    expect(() => validateComparisonTrialRequest(request({ repetitions: 3 as 10 }))).toThrow(/repetitions/u);
+    expect(() => validateComparisonTrialRequest(request({ kind: "cold" as "warm" }))).toThrow(/kind/u);
   });
 });
 
@@ -158,33 +166,6 @@ describe("prepared notebook layout", () => {
         cells: [{ ...setup, tags: [] }, measured]
       })
     ).toThrow(/exactly one ow-comparison-setup/u);
-  });
-
-  it("keeps the cold source out of its untimed bootstrap cell", () => {
-    const coldSetup = {
-      ...setup,
-      source: 'import pandas as pd\naaa_comparison_bootstrap = pd.DataFrame({"c00": [0], "c01": [1]})'
-    };
-    const cold = {
-      ...measured,
-      source: "import pandas as pd\nstudy_frame = pd.read_csv(source)\nstudy_frame"
-    };
-    expect(
-      validateComparisonNotebookLayout({
-        kind: "cold",
-        cellId: "pandas-csv",
-        variableName: "study_frame",
-        cells: [coldSetup, cold]
-      })
-    ).toEqual({ setupIndex: 0, measuredIndex: 1 });
-    expect(() =>
-      validateComparisonNotebookLayout({
-        kind: "cold",
-        cellId: "pandas-csv",
-        variableName: "study_frame",
-        cells: [setup, cold]
-      })
-    ).toThrow(/assign the measured variable only for a warm trial/u);
   });
 
   it("rejects stale output and an extra comparison-tagged cell", () => {
@@ -235,36 +216,60 @@ describe("private comparison kernel label", () => {
 describe("neutral comparison result", () => {
   it("accepts a complete, strictly ordered public-UI result", () => {
     expect(validateComparisonTrialResult(result())).toEqual(result());
+    const smoke = result({ samples: result().samples.slice(0, 2) });
+    expect(validateComparisonTrialResult(smoke)).toEqual(smoke);
   });
 
   it("accepts one ordered failure prefix without inventing later timings", () => {
-    const failed = result({
+    const failedSample = sample(4, {
       status: "timeout",
       failure: { stage: "inline-preview", kind: "timeout", message: "Inline preview timed out." },
       metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
-      milestones: [
-        { name: "memory-settle-start", monotonicNs: "1" },
-        { name: "run-cell-click", monotonicNs: "2" }
-      ],
+      milestones: [{ name: "run-cell-click", monotonicNs: "1" }],
       publicUi: { runCell: action, inline: null, workbench: null, profiling: null }
     });
+    const complete = result();
+    const failed = result({ samples: complete.samples.map((item, index) => (index === 3 ? failedSample : item)) });
     expect(validateComparisonTrialResult(failed)).toEqual(failed);
   });
 
   it("rejects reordered clocks and incomplete success evidence", () => {
+    const complete = result();
     expect(() =>
       validateComparisonTrialResult(
         result({
-          milestones: [
-            { name: "memory-settle-start", monotonicNs: "2" },
-            { name: "run-cell-click", monotonicNs: "1" }
-          ]
+          samples: complete.samples.map((item, index) =>
+            index === 0
+              ? sample(1, {
+                  milestones: [
+                    { name: "run-cell-click", monotonicNs: "2" },
+                    { name: "inline-ready", monotonicNs: "1" }
+                  ]
+                })
+              : item
+          )
         })
       )
     ).toThrow(/increase strictly/u);
     expect(() =>
-      validateComparisonTrialResult(result({ publicUi: { ...result().publicUi, workbench: null } }))
+      validateComparisonTrialResult(
+        result({
+          samples: complete.samples.map((item, index) =>
+            index === 0 ? sample(1, { publicUi: { ...sample(1).publicUi, workbench: null } }) : item
+          )
+        })
+      )
     ).toThrow(/all metrics and public UI evidence/u);
+  });
+
+  it("requires two or ten one-based samples and rejects the legacy top-level sample shape", () => {
+    expect(() => validateComparisonTrialResult(result({ samples: result().samples.slice(0, 9) }))).toThrow(
+      /two smoke samples or ten release samples/u
+    );
+    expect(() =>
+      validateComparisonTrialResult(result({ samples: result().samples.map((item) => ({ ...item, index: 1 })) }))
+    ).toThrow(/consecutive and one-based/u);
+    expect(() => validateComparisonTrialResult({ ...result(), status: "success" })).toThrow(/unknown fields/u);
   });
 });
 

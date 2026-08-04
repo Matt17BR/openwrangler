@@ -29,15 +29,7 @@ export const DATA_WRANGLER_STUDY_TOOL_NAMES = Object.freeze([
   "sharedFixtureManifest"
 ]);
 
-export const DATA_WRANGLER_STUDY_REPORT_PROTOCOL = "openwrangler-data-wrangler-study-report-v1";
-export const DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY = Object.freeze({
-  fixedWaitMs: 10_000,
-  sampleIntervalMs: 200,
-  windowSamples: 20,
-  minimumSpanMs: 3_400,
-  maximumGapMs: 500,
-  latestSampleMaximumAgeMs: 400
-});
+export const DATA_WRANGLER_STUDY_REPORT_PROTOCOL = "openwrangler-data-wrangler-study-report-v2";
 export const DATA_WRANGLER_REGRESSION_LIMITS = Object.freeze({
   inlinePreviewMs: Object.freeze({ relative: 0.2, absolute: 250 }),
   workbenchOpenMs: Object.freeze({ relative: 0.2, absolute: 250 }),
@@ -49,7 +41,6 @@ export const DATA_WRANGLER_REGRESSION_LIMITS = Object.freeze({
 const STUDY_METRICS = Object.freeze(["inlinePreviewMs", "workbenchOpenMs", "firstProfileMs", "completeProfileMs"]);
 const STUDY_MEMORY_METRICS = Object.freeze(["peakPssBytes"]);
 const STUDY_MILESTONES = Object.freeze([
-  "memory-settle-start",
   "run-cell-click",
   "inline-ready",
   "launch-click",
@@ -69,6 +60,7 @@ const STUDY_FAILURE_STAGES = new Set([
 ]);
 const STUDY_TRIAL_ID = /^[a-z0-9][a-z0-9.-]{0,127}$/u;
 const MAX_PSS_SAMPLES = 2_000;
+const PSS_SAMPLE_INTERVAL_MS = 200;
 const STUDY_CELL_CONTRACT = Object.freeze({
   "pandas-csv": Object.freeze({ engine: "pandas", format: "csv", rows: 100_000, columns: 50 }),
   "polars-csv": Object.freeze({ engine: "polars", format: "csv", rows: 100_000, columns: 50 }),
@@ -106,7 +98,7 @@ export function summarizeComparisonValues(values) {
 }
 
 export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) {
-  if (!Number.isSafeInteger(intervalMs) || intervalMs !== DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY.sampleIntervalMs) {
+  if (!Number.isSafeInteger(intervalMs) || intervalMs !== PSS_SAMPLE_INTERVAL_MS) {
     throw new TypeError("Study PSS interval must be 200 ms.");
   }
   if (!Array.isArray(samples) || samples.length === 0 || samples.length > MAX_PSS_SAMPLES) {
@@ -132,55 +124,22 @@ export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) 
   });
   const start = milestoneTimestamp(milestones, "run-cell-click");
   const end = milestoneTimestamp(milestones, "profiles-complete");
-  const settleStart = milestoneTimestamp(milestones, "memory-settle-start");
-  if (settleStart === undefined || start === undefined || end === undefined || end <= start) {
+  if (start === undefined || end === undefined || end <= start) {
     throw new TypeError("Study PSS evidence requires a valid Run Cell-to-profiles measurement window.");
-  }
-  const settle = DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY;
-  if (start - settleStart < BigInt(settle.fixedWaitMs) * 1_000_000n) {
-    throw new TypeError("Study PSS evidence requires the fixed pre-action wait.");
-  }
-  const before = sanitized
-    .filter(({ monotonicNs }) => {
-      const at = BigInt(monotonicNs);
-      return at >= settleStart && at < start;
-    })
-    .slice(-settle.windowSamples);
-  if (before.length !== settle.windowSamples) {
-    throw new TypeError("Study PSS evidence requires twenty pre-action wait samples.");
-  }
-  const firstPreAction = BigInt(before[0].monotonicNs);
-  const lastPreAction = BigInt(before.at(-1).monotonicNs);
-  if (
-    start - lastPreAction > BigInt(settle.latestSampleMaximumAgeMs) * 1_000_000n ||
-    lastPreAction - firstPreAction < BigInt(settle.minimumSpanMs) * 1_000_000n
-  ) {
-    throw new TypeError("Study PSS pre-action samples do not cover the fixed wait window.");
-  }
-  const maximumGap = before.slice(1).reduce((maximum, sample, index) => {
-    const gap = BigInt(sample.monotonicNs) - BigInt(before[index].monotonicNs);
-    return gap > maximum ? gap : maximum;
-  }, 0n);
-  if (maximumGap > BigInt(settle.maximumGapMs) * 1_000_000n) {
-    throw new TypeError("Study PSS pre-action samples contain a gap larger than the wait policy allows.");
   }
   const measured = sanitized.filter(({ monotonicNs }) => {
     const at = BigInt(monotonicNs);
     return at >= start && at <= end;
   });
-  if (measured.length === 0) throw new TypeError("Study PSS evidence requires a sample inside the measurement window.");
-  const firstMeasured = BigInt(measured[0].monotonicNs);
-  const lastMeasured = BigInt(measured.at(-1).monotonicNs);
-  const maximumMeasuredGap = measured.slice(1).reduce((maximum, sample, index) => {
-    const gap = BigInt(sample.monotonicNs) - BigInt(measured[index].monotonicNs);
-    return gap > maximum ? gap : maximum;
-  }, 0n);
+  if (measured.length < 2) throw new TypeError("Study PSS evidence requires continuous measurement-window coverage.");
+  const maximumGap = BigInt(intervalMs * 5) * 1_000_000n;
+  const measuredTimes = measured.map(({ monotonicNs }) => BigInt(monotonicNs));
   if (
-    firstMeasured - start > BigInt(settle.latestSampleMaximumAgeMs) * 1_000_000n ||
-    end - lastMeasured > BigInt(settle.latestSampleMaximumAgeMs) * 1_000_000n ||
-    maximumMeasuredGap > BigInt(settle.maximumGapMs) * 1_000_000n
+    measuredTimes[0] - start > maximumGap ||
+    end - measuredTimes.at(-1) > maximumGap ||
+    measuredTimes.some((timestamp, index) => index > 0 && timestamp - measuredTimes[index - 1] > maximumGap)
   ) {
-    throw new TypeError("Study PSS samples do not continuously cover the measured action.");
+    throw new TypeError("Study PSS evidence has a gap longer than one second.");
   }
   const peakPssBytes = Math.max(...measured.map(({ pssBytes }) => pssBytes));
   return Object.freeze({
@@ -194,59 +153,61 @@ export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) 
 export function validateDataWranglerComparisonStudyTrial(trial, entry, manifest) {
   exactKeys(
     trial,
-    [
-      "protocol",
-      "trialId",
-      "product",
-      "engine",
-      "format",
-      "kind",
-      "order",
-      "status",
-      "failure",
-      "metrics",
-      "milestones",
-      "publicUi",
-      "memory",
-      "provenance"
-    ],
+    ["protocol", "trialId", "product", "engine", "format", "kind", "order", "samples", "provenance"],
     "study trial"
   );
-  assertEqual(trial.protocol, "openwrangler-comparison-trial-result-v1", "study trial protocol");
+  assertEqual(trial.protocol, "openwrangler-comparison-trial-result-v2", "study trial protocol");
   assertMatch(trial.trialId, STUDY_TRIAL_ID, "study trial ID");
   if (!["open-wrangler", "data-wrangler"].includes(trial.product))
     throw new TypeError("Study trial product is invalid.");
   if (!["pandas", "polars"].includes(trial.engine)) throw new TypeError("Study trial engine is invalid.");
   if (!["csv", "parquet"].includes(trial.format)) throw new TypeError("Study trial format is invalid.");
-  if (!["warm", "cold"].includes(trial.kind)) throw new TypeError("Study trial kind is invalid.");
-  assertIntegerBetween(trial.order, 0, 255, "study trial order");
-  if (!["success", "failure", "timeout"].includes(trial.status)) throw new TypeError("Study trial status is invalid.");
+  assertEqual(trial.kind, "warm", "study trial kind");
+  assertIntegerBetween(trial.order, 0, 7, "study trial order");
   if (entry) validateTrialScheduleBinding(trial, entry);
-
-  const milestones = validateStudyMilestones(trial.milestones);
-  validateStudyMetrics(trial.metrics, milestones);
-  validateStudyFailure(trial.failure, trial.status);
-  validateStudyPublicUi(trial.publicUi, trial.status, entry);
-  if (trial.status === "success") {
-    if (trial.failure !== null || milestones.length !== STUDY_MILESTONES.length) {
-      throw new TypeError("A successful study trial requires every milestone and no failure.");
-    }
-    const recomputed = summarizeStudyPssSamples(trial.memory?.samples, milestones, trial.memory?.intervalMs);
-    exactKeys(trial.memory, Object.keys(recomputed), "study trial memory");
-    for (const key of ["peakPssBytes", "sampleCount", "intervalMs"]) {
-      assertEqual(trial.memory[key], recomputed[key], `study trial memory ${key}`);
-    }
-    assertEqual(
-      JSON.stringify(trial.memory.samples),
-      JSON.stringify(recomputed.samples),
-      "study trial sanitized PSS samples"
-    );
-  } else if (trial.memory !== null) {
-    throw new TypeError("An unsuccessful study trial cannot claim PSS results.");
+  const repetitions = manifest?.method?.repetitionsPerSession;
+  if (![2, 10].includes(repetitions) || !Array.isArray(trial.samples) || trial.samples.length !== repetitions) {
+    throw new TypeError(`A study session requires exactly ${repetitions === 2 ? "two" : "ten"} measured samples.`);
+  }
+  for (const [offset, sample] of trial.samples.entries()) {
+    validateStudySample(sample, offset + 1, entry);
   }
   validateStudyProvenance(trial.provenance, manifest);
   assertPublicEvidence(trial);
   return trial;
+}
+
+function validateStudySample(sample, expectedIndex, entry) {
+  exactKeys(
+    sample,
+    ["index", "status", "failure", "metrics", "milestones", "publicUi", "memory"],
+    `study sample ${expectedIndex}`
+  );
+  assertEqual(sample.index, expectedIndex, `study sample ${expectedIndex} index`);
+  if (!["success", "failure", "timeout"].includes(sample.status)) {
+    throw new TypeError(`Study sample ${expectedIndex} status is invalid.`);
+  }
+  const milestones = validateStudyMilestones(sample.milestones);
+  validateStudyMetrics(sample.metrics, milestones);
+  validateStudyFailure(sample.failure, sample.status);
+  validateStudyPublicUi(sample.publicUi, sample.status, entry);
+  if (sample.status === "success") {
+    if (sample.failure !== null || milestones.length !== STUDY_MILESTONES.length) {
+      throw new TypeError("A successful study sample requires every milestone and no failure.");
+    }
+    const recomputed = summarizeStudyPssSamples(sample.memory?.samples, milestones, sample.memory?.intervalMs);
+    exactKeys(sample.memory, Object.keys(recomputed), "study sample memory");
+    for (const key of ["peakPssBytes", "sampleCount", "intervalMs"]) {
+      assertEqual(sample.memory[key], recomputed[key], `study sample memory ${key}`);
+    }
+    assertEqual(
+      JSON.stringify(sample.memory.samples),
+      JSON.stringify(recomputed.samples),
+      "study sample sanitized PSS samples"
+    );
+  } else if (sample.memory !== null) {
+    throw new TypeError("An unsuccessful study sample cannot claim PSS results.");
+  }
 }
 
 export function buildDataWranglerComparisonStudyReport({ generatedAtUtc, manifest, trials }) {
@@ -265,62 +226,47 @@ export function buildDataWranglerComparisonStudyReport({ generatedAtUtc, manifes
     observed.set(trial.trialId, { entry, trial });
   }
 
+  const samples = manifest.schedule.flatMap((entry) => {
+    const trial = observed.get(entry.id)?.trial;
+    return trial
+      ? trial.samples.map((sample) => ({
+          sessionId: trial.trialId,
+          product: trial.product,
+          engine: trial.engine,
+          format: trial.format,
+          order: trial.order,
+          ...structuredClone(sample)
+        }))
+      : [];
+  });
   const summaries = [];
-  for (const kind of ["warm", "cold"]) {
-    for (const cell of manifest.method.cells) {
-      for (const product of ["open-wrangler", "data-wrangler"]) {
-        const group = [...observed.values()].filter(
-          ({ entry }) => entry.kind === kind && entry.cellId === cell.id && entry.product === product
-        );
-        const successful = group.filter(({ trial }) => trial.status === "success").map(({ trial }) => trial);
-        summaries.push({
-          kind,
-          cellId: cell.id,
-          product,
-          planned: manifest.schedule.filter(
-            (entry) => entry.kind === kind && entry.cellId === cell.id && entry.product === product
-          ).length,
-          completed: group.length,
-          successes: successful.length,
-          failures: group.filter(({ trial }) => trial.status === "failure").length,
-          timeouts: group.filter(({ trial }) => trial.status === "timeout").length,
-          metrics: Object.fromEntries(
-            STUDY_METRICS.map((name) => [
-              name,
-              summarizeComparisonValues(successful.map((trial) => trial.metrics[name]))
-            ])
-          ),
-          memory: Object.fromEntries(
-            STUDY_MEMORY_METRICS.map((name) => [
-              name,
-              summarizeComparisonValues(successful.map((trial) => trial.memory[name]))
-            ])
-          )
-        });
-      }
-    }
-  }
-
-  const pairedWarm = [];
+  const repetitions = manifest.method.repetitionsPerSession;
   for (const cell of manifest.method.cells) {
-    const pairs = Map.groupBy(
-      [...observed.values()].filter(({ entry }) => entry.kind === "warm" && entry.cellId === cell.id),
-      ({ entry }) => entry.pairId
-    );
-    for (const name of [...STUDY_METRICS, ...STUDY_MEMORY_METRICS]) {
-      const differences = [];
-      for (const pair of pairs.values()) {
-        const open = pair.find(({ entry }) => entry.product === "open-wrangler")?.trial;
-        const baseline = pair.find(({ entry }) => entry.product === "data-wrangler")?.trial;
-        if (open?.status !== "success" || baseline?.status !== "success") continue;
-        const section = STUDY_METRICS.includes(name) ? "metrics" : "memory";
-        differences.push(open[section][name] - baseline[section][name]);
-      }
-      pairedWarm.push({
+    for (const product of ["open-wrangler", "data-wrangler"]) {
+      const group = samples.filter(
+        (sample) => sample.engine === cell.engine && sample.format === cell.format && sample.product === product
+      );
+      const successful = group.filter(({ status }) => status === "success");
+      summaries.push({
         cellId: cell.id,
-        metric: name,
-        interpretation: "Open Wrangler minus Data Wrangler; negative is lower",
-        differences: summarizeComparisonValues(differences)
+        product,
+        planned: repetitions,
+        completed: group.length,
+        successes: successful.length,
+        failures: group.filter(({ status }) => status === "failure").length,
+        timeouts: group.filter(({ status }) => status === "timeout").length,
+        metrics: Object.fromEntries(
+          STUDY_METRICS.map((name) => [
+            name,
+            summarizeComparisonValues(successful.map((sample) => sample.metrics[name]))
+          ])
+        ),
+        memory: Object.fromEntries(
+          STUDY_MEMORY_METRICS.map((name) => [
+            name,
+            summarizeComparisonValues(successful.map((sample) => sample.memory[name]))
+          ])
+        )
       });
     }
   }
@@ -328,21 +274,20 @@ export function buildDataWranglerComparisonStudyReport({ generatedAtUtc, manifes
   const report = {
     protocol: DATA_WRANGLER_STUDY_REPORT_PROTOCOL,
     generatedAtUtc,
-    plannedTrials: manifest.schedule.length,
-    completedTrials: observed.size,
-    incompleteTrialIds: manifest.schedule.filter(({ id }) => !observed.has(id)).map(({ id }) => id),
+    plannedSessions: manifest.schedule.length,
+    completedSessions: observed.size,
+    incompleteSessionIds: manifest.schedule.filter(({ id }) => !observed.has(id)).map(({ id }) => id),
+    plannedSamples: manifest.schedule.length * repetitions,
+    completedSamples: samples.length,
     outcomes: {
-      success: [...observed.values()].filter(({ trial }) => trial.status === "success").length,
-      failure: [...observed.values()].filter(({ trial }) => trial.status === "failure").length,
-      timeout: [...observed.values()].filter(({ trial }) => trial.status === "timeout").length
+      success: samples.filter(({ status }) => status === "success").length,
+      failure: samples.filter(({ status }) => status === "failure").length,
+      timeout: samples.filter(({ status }) => status === "timeout").length
     },
     method: structuredClone(manifest.method),
     provenance: structuredClone(manifest.provenance),
-    trials: manifest.schedule
-      .filter(({ id }) => observed.has(id))
-      .map(({ id }) => structuredClone(observed.get(id).trial)),
-    summaries,
-    pairedWarm
+    samples,
+    summaries
   };
   assertPublicEvidence(report);
   return Object.freeze(report);
@@ -351,37 +296,35 @@ export function buildDataWranglerComparisonStudyReport({ generatedAtUtc, manifes
 export function assertReleaseCompleteStudyReport(report) {
   if (
     report?.protocol !== DATA_WRANGLER_STUDY_REPORT_PROTOCOL ||
-    report.plannedTrials !== 96 ||
-    report.completedTrials !== 96 ||
-    report.trials?.length !== 96 ||
-    report.incompleteTrialIds?.length !== 0 ||
-    report.outcomes?.success !== 96 ||
+    report.plannedSessions !== 8 ||
+    report.completedSessions !== 8 ||
+    report.incompleteSessionIds?.length !== 0 ||
+    report.plannedSamples !== 80 ||
+    report.completedSamples !== 80 ||
+    report.samples?.length !== 80 ||
+    report.outcomes?.success !== 80 ||
     report.outcomes?.failure !== 0 ||
     report.outcomes?.timeout !== 0
   ) {
-    throw new TypeError("A release comparison report requires 96 successful scheduled trials.");
+    throw new TypeError("A release comparison report requires eight complete sessions and eighty successful samples.");
   }
   for (const summary of report.summaries ?? []) {
-    const expected = summary.kind === "warm" ? 10 : 2;
     if (
-      summary.planned !== expected ||
-      summary.completed !== expected ||
-      summary.successes !== expected ||
+      summary.planned !== 10 ||
+      summary.completed !== 10 ||
+      summary.successes !== 10 ||
       summary.failures !== 0 ||
       summary.timeouts !== 0 ||
       [...STUDY_METRICS, ...STUDY_MEMORY_METRICS].some((name) => {
         const section = STUDY_METRICS.includes(name) ? summary.metrics : summary.memory;
-        return section?.[name]?.count !== expected;
+        return section?.[name]?.count !== 10;
       })
     ) {
       throw new TypeError("A release comparison report requires every scheduled product sample.");
     }
   }
-  if (report.summaries?.length !== 16) {
+  if (report.summaries?.length !== 8) {
     throw new TypeError("A release comparison report requires every study summary.");
-  }
-  if (report.pairedWarm?.length !== 20 || report.pairedWarm.some(({ differences }) => differences?.count !== 10)) {
-    throw new TypeError("A release comparison report requires ten complete warm pairs per workload.");
   }
   const regressions = materialRegressionBreaches(report);
   if (regressions.length > 0) {
@@ -411,20 +354,24 @@ export function exceedsMaterialRegressionLimit(openWrangler, dataWrangler, limit
 export function materialRegressionBreaches(report) {
   const breaches = [];
   for (const cell of report?.method?.cells ?? []) {
-    const warm = (report.summaries ?? []).filter(({ kind, cellId }) => kind === "warm" && cellId === cell.id);
-    const open = warm.find(({ product }) => product === "open-wrangler");
-    const baseline = warm.find(({ product }) => product === "data-wrangler");
+    const summaries = (report.summaries ?? []).filter(({ cellId }) => cellId === cell.id);
+    const open = summaries.find(({ product }) => product === "open-wrangler");
+    const baseline = summaries.find(({ product }) => product === "data-wrangler");
     if (!open || !baseline) continue;
     for (const [metric, limit] of Object.entries(DATA_WRANGLER_REGRESSION_LIMITS)) {
       const section = metric === "peakPssBytes" ? "memory" : "metrics";
-      for (const statistic of ["median", "p95"]) {
-        const openValue = open[section]?.[metric]?.[statistic];
-        const baselineValue = baseline[section]?.[metric]?.[statistic];
-        if (exceedsMaterialRegressionLimit(openValue, baselineValue, limit)) {
-          breaches.push(
-            Object.freeze({ cellId: cell.id, metric, statistic, openWrangler: openValue, dataWrangler: baselineValue })
-          );
-        }
+      const openValue = open[section]?.[metric]?.median;
+      const baselineValue = baseline[section]?.[metric]?.median;
+      if (exceedsMaterialRegressionLimit(openValue, baselineValue, limit)) {
+        breaches.push(
+          Object.freeze({
+            cellId: cell.id,
+            metric,
+            statistic: "median",
+            openWrangler: openValue,
+            dataWrangler: baselineValue
+          })
+        );
       }
     }
   }
@@ -433,35 +380,24 @@ export function materialRegressionBreaches(report) {
 
 function validateStudyManifest(manifest) {
   if (
-    manifest?.protocol !== "openwrangler-data-wrangler-study-v1" ||
+    manifest?.protocol !== "openwrangler-data-wrangler-study-v2" ||
     !Array.isArray(manifest.method?.cells) ||
     !Array.isArray(manifest.schedule) ||
-    manifest.schedule.length !== 96
+    manifest.schedule.length !== 8
   ) {
-    throw new TypeError("Study report requires the fixed 96-trial study manifest.");
+    throw new TypeError("Study report requires the fixed eight-session study manifest.");
   }
   exactKeys(
     manifest.method,
-    [
-      "cells",
-      "warmPairsPerCell",
-      "coldOrder",
-      "preActionSettle",
-      "regressionLimits",
-      "timingBoundaries",
-      "statistics",
-      "memory"
-    ],
+    ["cells", "repetitionsPerSession", "regressionLimits", "timingBoundaries", "statistics", "memory"],
     "study manifest method"
   );
-  if (
-    JSON.stringify(manifest.method.preActionSettle) !== JSON.stringify(DATA_WRANGLER_PRE_ACTION_SETTLE_POLICY) ||
-    JSON.stringify(manifest.method.regressionLimits) !== JSON.stringify(DATA_WRANGLER_REGRESSION_LIMITS)
-  ) {
+  if (JSON.stringify(manifest.method.regressionLimits) !== JSON.stringify(DATA_WRANGLER_REGRESSION_LIMITS)) {
     throw new TypeError("Study report method policies do not match the predeclared release contract.");
   }
-  assertEqual(manifest.method.warmPairsPerCell, 10, "study manifest warm pairs per cell");
-  assertEqual(manifest.method.coldOrder, "one AB pair and one BA pair per cell", "study manifest cold order");
+  if (![2, 10].includes(manifest.method.repetitionsPerSession)) {
+    throw new TypeError("Study manifest repetitions per session must be two for smoke or ten for release.");
+  }
   exactKeys(
     manifest.method.timingBoundaries,
     ["inlinePreview", "workbenchOpen", "firstProfile", "completeProfile"],
@@ -477,12 +413,12 @@ function validateStudyManifest(manifest) {
   }
   assertEqual(
     manifest.method.statistics,
-    "successful warm trials; Hyndman-Fan type 7 median and p95; paired differences retain order",
+    `${manifest.method.repetitionsPerSession === 10 ? "ten" : "two"} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
     "study manifest statistics"
   );
   assertEqual(
     manifest.method.memory,
-    "highest observed absolute process-tree PSS after a fixed ten-second pre-action wait",
+    "highest observed absolute process-tree PSS during each measured notebook workflow",
     "study manifest memory method"
   );
   const cells = new Map();
@@ -512,29 +448,13 @@ function validateStudyManifest(manifest) {
   for (const [index, entry] of manifest.schedule.entries()) {
     exactKeys(
       entry,
-      [
-        "id",
-        "pairId",
-        "kind",
-        "repetition",
-        "cellId",
-        "engine",
-        "format",
-        "rows",
-        "columns",
-        "product",
-        "orderInPair",
-        "order"
-      ],
+      ["id", "kind", "cellId", "engine", "format", "rows", "columns", "product", "order"],
       "study schedule entry"
     );
     assertMatch(entry.id, STUDY_TRIAL_ID, "study schedule trial ID");
-    assertMatch(entry.pairId, STUDY_TRIAL_ID, "study schedule pair ID");
-    if (!["warm", "cold"].includes(entry.kind) || !["open-wrangler", "data-wrangler"].includes(entry.product)) {
+    if (entry.kind !== "warm" || !["open-wrangler", "data-wrangler"].includes(entry.product)) {
       throw new TypeError("Study schedule kind or product is invalid.");
     }
-    assertIntegerBetween(entry.repetition, 1, entry.kind === "warm" ? 10 : 2, "study schedule repetition");
-    assertIntegerBetween(entry.orderInPair, 0, 1, "study schedule pair order");
     assertEqual(entry.order, index, "study schedule order");
     const cell = cells.get(entry.cellId);
     if (!cell) throw new TypeError("Study schedule references an unknown cell.");
@@ -542,46 +462,10 @@ function validateStudyManifest(manifest) {
       assertEqual(entry[key], cell[key], `study schedule cell ${key}`);
     }
   }
-  const pairs = Map.groupBy(manifest.schedule, ({ pairId }) => pairId);
-  for (const entries of pairs.values()) {
-    if (
-      entries.length !== 2 ||
-      entries[0].orderInPair !== 0 ||
-      entries[1].orderInPair !== 1 ||
-      entries[1].order !== entries[0].order + 1 ||
-      new Set(entries.map(({ kind }) => kind)).size !== 1 ||
-      new Set(entries.map(({ repetition }) => repetition)).size !== 1 ||
-      new Set(entries.map(({ cellId }) => cellId)).size !== 1 ||
-      new Set(entries.map(({ product }) => product)).size !== 2
-    ) {
-      throw new TypeError("Every study pair must contain each product once in pair order.");
-    }
-  }
-  if (pairs.size !== 48) throw new TypeError("Study schedule must contain exactly 48 product pairs.");
   for (const cell of cells.values()) {
-    for (const [kind, repetitions] of [
-      ["warm", 10],
-      ["cold", 2]
-    ]) {
-      const entries = manifest.schedule.filter((entry) => entry.cellId === cell.id && entry.kind === kind);
-      const byRepetition = Map.groupBy(entries, ({ repetition }) => repetition);
-      if (entries.length !== repetitions * 2 || byRepetition.size !== repetitions) {
-        throw new TypeError(`Study schedule ${kind} coverage is incomplete for ${cell.id}.`);
-      }
-      for (let repetition = 1; repetition <= repetitions; repetition += 1) {
-        const pair = byRepetition.get(repetition);
-        if (!pair || pair.length !== 2 || new Set(pair.map(({ pairId }) => pairId)).size !== 1) {
-          throw new TypeError(`Study schedule ${kind} repetition coverage is invalid for ${cell.id}.`);
-        }
-      }
-      const firstProducts = entries.filter(({ orderInPair }) => orderInPair === 0).map(({ product }) => product);
-      const expectedFirstCount = repetitions / 2;
-      if (
-        firstProducts.filter((product) => product === "open-wrangler").length !== expectedFirstCount ||
-        firstProducts.filter((product) => product === "data-wrangler").length !== expectedFirstCount
-      ) {
-        throw new TypeError(`Study schedule ${kind} product order is not counterbalanced for ${cell.id}.`);
-      }
+    const entries = manifest.schedule.filter((entry) => entry.cellId === cell.id);
+    if (entries.length !== 2 || new Set(entries.map(({ product }) => product)).size !== 2) {
+      throw new TypeError(`Study schedule coverage is incomplete for ${cell.id}.`);
     }
   }
   const provenance = manifest.provenance;

@@ -20,12 +20,11 @@ import {
   observeInlinePreviewReady
 } from "./notebookRendererFrame";
 
-export const COMPARISON_TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v1";
-export const COMPARISON_TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v1";
+export const COMPARISON_TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v2";
+export const COMPARISON_TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 
 const CELL_IDS = ["pandas-csv", "pandas-parquet", "polars-csv", "polars-parquet"] as const;
 const MILESTONE_NAMES = [
-  "memory-settle-start",
   "run-cell-click",
   "inline-ready",
   "launch-click",
@@ -70,7 +69,7 @@ export function isComparisonKernelLabel(value: string): boolean {
 type Product = "open-wrangler" | "data-wrangler";
 type Engine = "pandas" | "polars";
 type Format = "csv" | "parquet";
-type TrialKind = "warm" | "cold";
+type TrialKind = "warm";
 type FailureStage = (typeof FAILURE_STAGES)[number];
 type MilestoneName = (typeof MILESTONE_NAMES)[number];
 type PromiseOutcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
@@ -87,6 +86,7 @@ export interface ComparisonTrialRequest {
   readonly product: Product;
   readonly kind: TrialKind;
   readonly order: number;
+  readonly repetitions: 2 | 10;
   readonly isolatedRoot: string;
   readonly notebookPath: string;
   readonly cell: {
@@ -100,7 +100,6 @@ export interface ComparisonTrialRequest {
   };
   readonly candidate: ArtifactIdentity;
   readonly dataWranglerVersion: "1.24.2";
-  readonly preActionSettleMs: 10_000;
   readonly editor: ArtifactIdentity;
   readonly python: ArtifactIdentity;
   readonly timeoutsMs: {
@@ -122,14 +121,8 @@ interface ActionEvidence {
   readonly pointer: true;
 }
 
-export interface ComparisonTrialResult {
-  readonly protocol: typeof COMPARISON_TRIAL_RESULT_PROTOCOL;
-  readonly trialId: string;
-  readonly product: Product;
-  readonly engine: Engine;
-  readonly format: Format;
-  readonly kind: TrialKind;
-  readonly order: number;
+export interface ComparisonTrialSample {
+  readonly index: number;
   readonly status: "success" | "failure" | "timeout";
   readonly failure: {
     readonly stage: FailureStage;
@@ -164,17 +157,28 @@ export interface ComparisonTrialResult {
   };
 }
 
+export interface ComparisonTrialResult {
+  readonly protocol: typeof COMPARISON_TRIAL_RESULT_PROTOCOL;
+  readonly trialId: string;
+  readonly product: Product;
+  readonly engine: Engine;
+  readonly format: Format;
+  readonly kind: TrialKind;
+  readonly order: number;
+  readonly samples: readonly ComparisonTrialSample[];
+}
+
 interface MutableEvidence {
   runCell: ActionEvidence | null;
   inline: (ActionEvidence & { readonly tableReady: true }) | null;
-  workbench: ComparisonTrialResult["publicUi"]["workbench"];
+  workbench: ComparisonTrialSample["publicUi"]["workbench"];
   profiling: (ActionEvidence & { readonly expectedColumns: number; readonly completedColumns: number }) | null;
 }
 
 interface CapturedNotebook {
   readonly notebook: vscode.NotebookDocument;
   readonly editor: vscode.NotebookEditor;
-  readonly setupCell: vscode.NotebookCell | null;
+  readonly setupCell: vscode.NotebookCell;
   readonly cell: vscode.NotebookCell;
   readonly sourceTab: vscode.Tab;
 }
@@ -187,7 +191,7 @@ export interface ComparisonNotebookCellContract {
 }
 
 export interface ComparisonNotebookLayout {
-  readonly setupIndex: number | null;
+  readonly setupIndex: number;
   readonly measuredIndex: number;
 }
 
@@ -310,12 +314,12 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
       "product",
       "kind",
       "order",
+      "repetitions",
       "isolatedRoot",
       "notebookPath",
       "cell",
       "candidate",
       "dataWranglerVersion",
-      "preActionSettleMs",
       "editor",
       "python",
       "timeoutsMs"
@@ -337,12 +341,15 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
     "Comparison request timeoutsMs"
   );
   if (request.dataWranglerVersion !== "1.24.2") fail("The comparison baseline must be Data Wrangler 1.24.2.");
+  const repetitions = boundedInteger(request.repetitions, 2, 10, "Comparison request repetitions");
+  if (repetitions !== 2 && repetitions !== 10) fail("Comparison request repetitions is invalid.");
   return Object.freeze({
     protocol: COMPARISON_TRIAL_REQUEST_PROTOCOL,
     trialId: matchingString(request.trialId, ID, "Comparison request trialId"),
     product: oneOf(request.product, ["open-wrangler", "data-wrangler"] as const, "Comparison request product"),
-    kind: oneOf(request.kind, ["warm", "cold"] as const, "Comparison request kind"),
+    kind: oneOf(request.kind, ["warm"] as const, "Comparison request kind"),
     order: boundedInteger(request.order, 0, 255, "Comparison request order"),
+    repetitions,
     isolatedRoot: root,
     notebookPath: containedPath(root, request.notebookPath, "Comparison request notebookPath"),
     cell: Object.freeze({
@@ -356,12 +363,6 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
     }),
     candidate: artifact(request.candidate, "Comparison request candidate"),
     dataWranglerVersion: "1.24.2",
-    preActionSettleMs: boundedInteger(
-      request.preActionSettleMs,
-      10_000,
-      10_000,
-      "Comparison request preActionSettleMs"
-    ) as 10_000,
     editor: artifact(request.editor, "Comparison request editor"),
     python: artifact(request.python, "Comparison request python"),
     timeoutsMs: Object.freeze({
@@ -385,30 +386,38 @@ export function validateComparisonTrialResult(value: unknown): ComparisonTrialRe
   const result = record(value, "Comparison result");
   exactKeys(
     result,
-    [
-      "protocol",
-      "trialId",
-      "product",
-      "engine",
-      "format",
-      "kind",
-      "order",
-      "status",
-      "failure",
-      "metrics",
-      "milestones",
-      "publicUi"
-    ],
+    ["protocol", "trialId", "product", "engine", "format", "kind", "order", "samples"],
     "Comparison result"
   );
   if (result.protocol !== COMPARISON_TRIAL_RESULT_PROTOCOL) fail("Comparison result protocol is invalid.");
-  const status = oneOf(result.status, ["success", "failure", "timeout"] as const, "Comparison result status");
-  const milestones = validateMilestones(result.milestones);
-  const metrics = record(result.metrics, "Comparison result metrics");
+  matchingString(result.trialId, ID, "Comparison result trialId");
+  oneOf(result.product, ["open-wrangler", "data-wrangler"] as const, "Comparison result product");
+  oneOf(result.engine, ["pandas", "polars"] as const, "Comparison result engine");
+  oneOf(result.format, ["csv", "parquet"] as const, "Comparison result format");
+  oneOf(result.kind, ["warm"] as const, "Comparison result kind");
+  boundedInteger(result.order, 0, 255, "Comparison result order");
+  if (!Array.isArray(result.samples) || ![2, 10].includes(result.samples.length)) {
+    fail("Comparison result must contain exactly two smoke samples or ten release samples.");
+  }
+  result.samples.forEach((sample, index) => validateComparisonSample(sample, index + 1));
+  return value as ComparisonTrialResult;
+}
+
+function validateComparisonSample(value: unknown, expectedIndex: number): ComparisonTrialSample {
+  const sample = record(value, `Comparison sample ${expectedIndex}`);
+  exactKeys(
+    sample,
+    ["index", "status", "failure", "metrics", "milestones", "publicUi"],
+    `Comparison sample ${expectedIndex}`
+  );
+  if (sample.index !== expectedIndex) fail("Comparison sample indices must be consecutive and one-based.");
+  const status = oneOf(sample.status, ["success", "failure", "timeout"] as const, "Comparison sample status");
+  const milestones = validateMilestones(sample.milestones);
+  const metrics = record(sample.metrics, "Comparison sample metrics");
   exactKeys(
     metrics,
     ["inlinePreviewMs", "workbenchOpenMs", "firstProfileMs", "completeProfileMs"],
-    "Comparison result metrics"
+    "Comparison sample metrics"
   );
   const metricValues = [
     optionalNumber(metrics.inlinePreviewMs, "inlinePreviewMs"),
@@ -416,14 +425,14 @@ export function validateComparisonTrialResult(value: unknown): ComparisonTrialRe
     optionalNumber(metrics.firstProfileMs, "firstProfileMs"),
     optionalNumber(metrics.completeProfileMs, "completeProfileMs")
   ];
-  const publicUi = record(result.publicUi, "Comparison result publicUi");
-  exactKeys(publicUi, ["runCell", "inline", "workbench", "profiling"], "Comparison result publicUi");
-  const runCell = validateAction(publicUi.runCell, "Comparison result runCell");
-  const inline = validateAction(publicUi.inline, "Comparison result inline", ["tableReady"]);
-  if (inline && record(publicUi.inline, "Comparison result inline").tableReady !== true) {
-    fail("Comparison result inline preview is not ready.");
+  const publicUi = record(sample.publicUi, "Comparison sample publicUi");
+  exactKeys(publicUi, ["runCell", "inline", "workbench", "profiling"], "Comparison sample publicUi");
+  const runCell = validateAction(publicUi.runCell, "Comparison sample runCell");
+  const inline = validateAction(publicUi.inline, "Comparison sample inline", ["tableReady"]);
+  if (inline && record(publicUi.inline, "Comparison sample inline").tableReady !== true) {
+    fail("Comparison sample inline preview is not ready.");
   }
-  const workbench = publicUi.workbench === null ? null : record(publicUi.workbench, "Comparison result workbench");
+  const workbench = publicUi.workbench === null ? null : record(publicUi.workbench, "Comparison sample workbench");
   if (workbench) {
     exactKeys(
       workbench,
@@ -436,50 +445,44 @@ export function validateComparisonTrialResult(value: unknown): ComparisonTrialRe
         "horizontalOverflow",
         "pointerUsable"
       ],
-      "Comparison result workbench"
+      "Comparison sample workbench"
     );
-    oneOf(workbench.rootRole, ["grid", "table"] as const, "Comparison result workbench rootRole");
-    oneOf(workbench.fullShape, ["aria-counts", "visible-label"] as const, "Comparison result workbench fullShape");
+    oneOf(workbench.rootRole, ["grid", "table"] as const, "Comparison sample workbench rootRole");
+    oneOf(workbench.fullShape, ["aria-counts", "visible-label"] as const, "Comparison sample workbench fullShape");
     for (const [count, label] of [
       [workbench.ariaRowCount, "ariaRowCount"],
       [workbench.ariaColumnCount, "ariaColumnCount"]
     ] as const) {
-      if (count !== null) boundedInteger(count, 1, 100_000_000, `Comparison result ${label}`);
+      if (count !== null) boundedInteger(count, 1, 100_000_000, `Comparison sample ${label}`);
     }
-    boundedInteger(workbench.verticalOverflow, 1, 1_000_000_000, "Comparison result verticalOverflow");
-    boundedInteger(workbench.horizontalOverflow, 1, 1_000_000_000, "Comparison result horizontalOverflow");
-    if (workbench.pointerUsable !== true) fail("Comparison result workbench must be pointer-usable.");
+    boundedInteger(workbench.verticalOverflow, 1, 1_000_000_000, "Comparison sample verticalOverflow");
+    boundedInteger(workbench.horizontalOverflow, 1, 1_000_000_000, "Comparison sample horizontalOverflow");
+    if (workbench.pointerUsable !== true) fail("Comparison sample workbench must be pointer-usable.");
   }
-  const profiling = validateAction(publicUi.profiling, "Comparison result profiling", [
+  const profiling = validateAction(publicUi.profiling, "Comparison sample profiling", [
     "expectedColumns",
     "completedColumns"
   ]);
   if (profiling) {
-    const profile = record(publicUi.profiling, "Comparison result profiling");
-    const expected = boundedInteger(profile.expectedColumns, 2, 2_048, "Comparison result expectedColumns");
-    const completed = boundedInteger(profile.completedColumns, 0, expected, "Comparison result completedColumns");
+    const profile = record(publicUi.profiling, "Comparison sample profiling");
+    const expected = boundedInteger(profile.expectedColumns, 2, 2_048, "Comparison sample expectedColumns");
+    const completed = boundedInteger(profile.completedColumns, 0, expected, "Comparison sample completedColumns");
     if (status === "success" && completed !== expected) fail("A successful result must complete every profile.");
   }
-  const failure = validateFailure(result.failure);
-  if (status === "success" && (result.failure !== null || milestones.length !== MILESTONE_NAMES.length)) {
-    fail("A successful comparison result must contain every milestone and no failure.");
+  const failure = validateFailure(sample.failure);
+  if (status === "success" && (sample.failure !== null || milestones.length !== MILESTONE_NAMES.length)) {
+    fail("A successful comparison sample must contain every milestone and no failure.");
   }
   if (
     status === "success" &&
     (metricValues.some((metric) => metric === null) || !runCell || !inline || !workbench || !profiling)
   ) {
-    fail("A successful comparison result must contain all metrics and public UI evidence.");
+    fail("A successful comparison sample must contain all metrics and public UI evidence.");
   }
-  if (status !== "success" && failure === null) fail("A failed comparison result must identify its failure.");
+  if (status !== "success" && failure === null) fail("A failed comparison sample must identify its failure.");
   if ((status === "timeout") !== (failure?.kind === "timeout"))
     fail("Comparison timeout status and failure kind disagree.");
-  matchingString(result.trialId, ID, "Comparison result trialId");
-  oneOf(result.product, ["open-wrangler", "data-wrangler"] as const, "Comparison result product");
-  oneOf(result.engine, ["pandas", "polars"] as const, "Comparison result engine");
-  oneOf(result.format, ["csv", "parquet"] as const, "Comparison result format");
-  oneOf(result.kind, ["warm", "cold"] as const, "Comparison result kind");
-  boundedInteger(result.order, 0, 255, "Comparison result order");
-  return value as ComparisonTrialResult;
+  return value as ComparisonTrialSample;
 }
 
 function validateAction(value: unknown, label: string, extraKeys: readonly string[] = []): ActionEvidence | null {
@@ -498,7 +501,7 @@ function validateAction(value: unknown, label: string, extraKeys: readonly strin
   return action as unknown as ActionEvidence;
 }
 
-function validateFailure(value: unknown): ComparisonTrialResult["failure"] {
+function validateFailure(value: unknown): ComparisonTrialSample["failure"] {
   if (value === null) return null;
   const failure = record(value, "Comparison result failure");
   exactKeys(failure, ["stage", "kind", "message"], "Comparison result failure");
@@ -633,12 +636,7 @@ export function validateComparisonNotebookLayout(input: {
   }
   const measuredIndex = measured[0]!;
   const measuredSource = input.cells[measuredIndex]!.source.trim();
-  if (
-    (input.kind === "warm" && measuredSource !== input.variableName) ||
-    (input.kind === "cold" && measuredSource.split(/\r?\n/u).at(-1)?.trim() !== input.variableName)
-  ) {
-    fail("The measured comparison cell must end by displaying its exact variable.");
-  }
+  if (measuredSource !== input.variableName) fail("The measured comparison cell must display its exact variable.");
   const setupIndex = setup[0]!;
   const setupSource = input.cells[setupIndex]!.source;
   const assignsMeasuredVariable = setupSource.includes(`${input.variableName} =`);
@@ -646,11 +644,9 @@ export function validateComparisonNotebookLayout(input: {
     setupIndex !== 0 ||
     measuredIndex !== 1 ||
     !setupSource.includes(`${COMPARISON_BOOTSTRAP_VARIABLE} =`) ||
-    assignsMeasuredVariable !== (input.kind === "warm")
+    !assignsMeasuredVariable
   ) {
-    fail(
-      "The untimed setup must be first, create the bootstrap variable, and assign the measured variable only for a warm trial."
-    );
+    fail("The untimed setup must be first, create the bootstrap variable, and assign the measured variable.");
   }
   return Object.freeze({ setupIndex, measuredIndex });
 }
@@ -677,7 +673,7 @@ async function captureNotebook(request: ComparisonTrialRequest): Promise<Capture
       outputCount: cell.outputs.length
     }))
   });
-  const setupCell = layout.setupIndex === null ? null : cells[layout.setupIndex]!;
+  const setupCell = cells[layout.setupIndex]!;
   const cell = cells[layout.measuredIndex]!;
   const selection = new vscode.NotebookRange(cell.index, cell.index + 1);
   editor.selection = selection;
@@ -1763,7 +1759,12 @@ async function clickColumnForProfile(
   return Object.freeze({ ...evidence, accessibleName: column });
 }
 
-async function selectOpenWranglerProfileColumn(frame: Frame, column: string, deadline: number): Promise<void> {
+async function selectOpenWranglerProfileColumn(
+  frame: Frame,
+  column: string,
+  deadline: number,
+  stage: FailureStage = "profile-all"
+): Promise<void> {
   const search = frame.getByRole("combobox", { name: "Column", exact: true });
   const optionName = new RegExp(`^${escapeRegex(column)}, [^,]{1,40} column$`, "u");
   do {
@@ -1777,7 +1778,7 @@ async function selectOpenWranglerProfileColumn(frame: Frame, column: string, dea
     }
     await frame.page().waitForTimeout(POLL_MS);
   } while (Date.now() < deadline);
-  throw new JourneyTimeout("profile-all", `Timed out selecting Open Wrangler profile column ${column}.`);
+  throw new JourneyTimeout(stage, `Timed out selecting Open Wrangler profile column ${column}.`);
 }
 
 async function waitForProfile(
@@ -1849,20 +1850,14 @@ export function boundedFailureMessage(error: unknown, request: ComparisonTrialRe
 }
 
 function resultFromState(
-  request: ComparisonTrialRequest,
+  index: number,
   milestones: Milestones,
   evidence: MutableEvidence,
-  failure: ComparisonTrialResult["failure"]
-): ComparisonTrialResult {
+  failure: ComparisonTrialSample["failure"]
+): ComparisonTrialSample {
   const status = failure === null ? "success" : failure.kind === "timeout" ? "timeout" : "failure";
   return Object.freeze({
-    protocol: COMPARISON_TRIAL_RESULT_PROTOCOL,
-    trialId: request.trialId,
-    product: request.product,
-    engine: request.cell.engine,
-    format: request.cell.format,
-    kind: request.kind,
-    order: request.order,
+    index,
     status,
     failure,
     metrics: Object.freeze({
@@ -1876,9 +1871,63 @@ function resultFromState(
   });
 }
 
-async function closeNewTabs(baselineTabs: readonly vscode.Tab[]): Promise<void> {
+async function restoreNotebookAfterSample(
+  page: Page,
+  captured: CapturedNotebook,
+  baselineTabs: readonly vscode.Tab[]
+): Promise<void> {
   const opened = comparisonTabsOpenedAfter(baselineTabs, allEditorTabs());
-  if (opened.length > 0) await vscode.window.tabGroups.close([...opened], true);
+  if (opened.length > 0) {
+    assert.equal(await vscode.window.tabGroups.close([...opened], true), true, "The product viewer did not close.");
+  }
+  const editor = await vscode.window.showNotebookDocument(captured.notebook, {
+    preserveFocus: false,
+    viewColumn: captured.editor.viewColumn
+  });
+  assert.equal(editor, captured.editor, "The benchmark did not return to its original notebook editor.");
+  selectNotebookCell(captured, captured.cell);
+  const deadline = Date.now() + 5_000;
+  do {
+    const extras = comparisonTabsOpenedAfter(baselineTabs, allEditorTabs());
+    if (
+      extras.length === 0 &&
+      vscode.window.activeNotebookEditor === captured.editor &&
+      vscode.window.tabGroups.activeTabGroup.activeTab === captured.sourceTab
+    ) {
+      return;
+    }
+    await page.waitForTimeout(POLL_MS);
+  } while (Date.now() < deadline);
+  throw new Error("The product viewer remained open after the measured sample.");
+}
+
+async function normalizeNotebookBaseline(page: Page, captured: CapturedNotebook): Promise<readonly vscode.Tab[]> {
+  const otherTabs = allEditorTabs().filter((tab) => tab !== captured.sourceTab);
+  if (otherTabs.length > 0) {
+    assert.equal(await vscode.window.tabGroups.close(otherTabs, true), true, "Setup left an editor tab open.");
+  }
+  const editor = await vscode.window.showNotebookDocument(captured.notebook, {
+    preserveFocus: false,
+    viewColumn: captured.editor.viewColumn
+  });
+  assert.equal(editor, captured.editor, "Setup replaced the captured notebook editor.");
+  selectNotebookCell(captured, captured.cell);
+  const deadline = Date.now() + 5_000;
+  do {
+    const quickInput = await visibleQuickInput(page);
+    const tabs = allEditorTabs();
+    if (
+      quickInput === undefined &&
+      tabs.length === 1 &&
+      tabs[0] === captured.sourceTab &&
+      vscode.window.activeNotebookEditor === captured.editor &&
+      vscode.window.tabGroups.activeTabGroup.activeTab === captured.sourceTab
+    ) {
+      return Object.freeze([captured.sourceTab]);
+    }
+    await page.waitForTimeout(POLL_MS);
+  } while (Date.now() < deadline);
+  throw new Error("Setup did not return to one unobstructed notebook tab.");
 }
 
 async function executeWarmSetup(
@@ -1964,46 +2013,82 @@ async function executeWarmSetup(
   }
 }
 
-async function executeJourney(
+async function prepareComparisonSession(
   request: ComparisonTrialRequest,
   page: Page,
   captured: CapturedNotebook,
+  deadline: number
+): Promise<void> {
+  const accessController = new AbortController();
+  const access = settlePromise(allowComparisonKernelAccess(page, request.product, accessController.signal, deadline));
+  let setupError: unknown;
+  try {
+    await executeWarmSetup(request, page, captured, deadline);
+    await activateComparisonProduct(request.product, deadline);
+    if (request.product === "data-wrangler") {
+      await authorizeDataWranglerFromNotebookToolbar(page, captured, access, deadline);
+    } else {
+      assert.equal(
+        outcomeValue(
+          await beforePreActionDeadline(access, deadline, "Timed out granting Open Wrangler kernel access.")
+        ),
+        true,
+        "Open Wrangler did not receive first-use Jupyter kernel access."
+      );
+    }
+  } catch (error) {
+    setupError = error;
+  }
+  accessController.abort();
+  const accessOutcome = await access;
+  if (setupError !== undefined) {
+    if (setupError instanceof JourneyTimeout && !accessOutcome.ok) throw accessOutcome.error;
+    throw setupError;
+  }
+  if (!accessOutcome.ok) throw accessOutcome.error;
+  selectNotebookCell(captured, captured.cell);
+}
+
+async function waitForUnobstructedWorkbench(
+  page: Page,
+  sourceTab: vscode.Tab,
+  rendererFramePointerUsable: boolean,
+  deadline: number
+): Promise<void> {
+  let consecutiveReadyChecks = 0;
+  let lastError: unknown;
+  do {
+    try {
+      await comparisonWorkbenchReadiness(page, sourceTab, rendererFramePointerUsable);
+      consecutiveReadyChecks += 1;
+      if (consecutiveReadyChecks === 2) return;
+    } catch (error) {
+      consecutiveReadyChecks = 0;
+      lastError = error;
+    }
+    await page.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new JourneyTimeout("workbench-open", "The product workbench did not become unobstructed.", {
+    cause: lastError
+  });
+}
+
+async function executeMeasuredIteration(
+  request: ComparisonTrialRequest,
+  page: Page,
+  captured: CapturedNotebook,
+  sampleIndex: number,
+  baselineTabs: readonly vscode.Tab[],
   milestones: Milestones,
   evidence: MutableEvidence,
   preActionDeadline: number
 ): Promise<void> {
-  const accessController = new AbortController();
-  const access = settlePromise(
-    allowComparisonKernelAccess(page, request.product, accessController.signal, preActionDeadline)
-  );
   let runTarget: PointerTarget | undefined;
   let listener: vscode.Disposable | undefined;
   let inlineTarget: PointerTarget | undefined;
   let journeyError: unknown;
   let journeyFailed = false;
   try {
-    await executeWarmSetup(request, page, captured, preActionDeadline);
-    await activateComparisonProduct(request.product, preActionDeadline);
-    if (request.product === "data-wrangler") {
-      await authorizeDataWranglerFromNotebookToolbar(page, captured, access, preActionDeadline);
-    } else {
-      assert.equal(
-        outcomeValue(
-          await beforePreActionDeadline(access, preActionDeadline, "Timed out granting Open Wrangler kernel access.")
-        ),
-        true,
-        "Open Wrangler did not receive first-use Jupyter kernel access."
-      );
-    }
-    if (
-      remainingPreActionMs(preActionDeadline, "Timed out before the memory settle window.") < request.preActionSettleMs
-    ) {
-      throw new JourneyTimeout("run-cell", "The shared pre-action budget cannot fit the memory settle window.");
-    }
-    milestones.mark("memory-settle-start");
-    recordProgress(`comparison:${request.trialId}:memory-settle-start`);
-    await page.waitForTimeout(request.preActionSettleMs);
-    recordProgress(`comparison:${request.trialId}:memory-settle-complete`);
     const measuredCell = captured.notebook.cellAt(captured.cell.index);
     runTarget = await findRunCellTarget(page, captured, measuredCell, preActionDeadline);
     const summaryBeforeClick = executionSummaryFingerprint(measuredCell);
@@ -2019,7 +2104,7 @@ async function executeJourney(
       preActionDeadline,
       "Timed out clicking Run Cell after setup."
     );
-    recordProgress(`comparison:${request.trialId}:run-cell-click`);
+    recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:run-cell-click`);
     const inlineDeadline = Date.now() + request.timeoutsMs.inlinePreview;
     inlineTarget = await waitForInlineTarget(
       page,
@@ -2028,8 +2113,6 @@ async function executeJourney(
       () => freshExecution || executionSummaryFingerprint(measuredCell) !== summaryBeforeClick,
       inlineDeadline
     );
-    accessController.abort();
-    outcomeValue(await access);
     milestones.mark("inline-ready");
     evidence.inline = Object.freeze({
       accessibleName: inlineTarget.accessibleName,
@@ -2037,13 +2120,10 @@ async function executeJourney(
       pointer: true,
       tableReady: true
     });
-    recordProgress(`comparison:${request.trialId}:inline-ready`);
+    recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:inline-ready`);
 
-    const baselineTabs = Object.freeze([...allEditorTabs()]);
-    const baselineFrames = new Set(comparisonFrames(page));
-    const baselinePages = new Set([...baselineFrames].map((frame) => frame.page()));
     await clickTarget(inlineTarget, () => milestones.mark("launch-click"));
-    recordProgress(`comparison:${request.trialId}:launch-click`);
+    recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:launch-click`);
     const workbenchDeadline = Date.now() + request.timeoutsMs.workbenchOpen;
     let targetSelected = false;
     do {
@@ -2075,12 +2155,10 @@ async function executeJourney(
     }
     let readiness;
     try {
-      const discoveryBaselineFrames = request.product === "data-wrangler" ? new Set<Frame>() : baselineFrames;
-      const discoveryBaselinePages = request.product === "data-wrangler" ? new Set<Page>() : baselinePages;
       readiness = await waitForGenericGridReadiness(
         page,
-        discoveryBaselineFrames,
-        discoveryBaselinePages,
+        new Set<Frame>(),
+        new Set<Page>(),
         Math.max(1, workbenchDeadline - Date.now())
       );
     } catch (error) {
@@ -2089,7 +2167,12 @@ async function executeJourney(
         cause: error
       });
     }
-    await comparisonWorkbenchReadiness(page, captured.sourceTab, readiness.rendererFramePointerUsable);
+    await waitForUnobstructedWorkbench(
+      page,
+      captured.sourceTab,
+      readiness.rendererFramePointerUsable,
+      workbenchDeadline
+    );
     const opened = comparisonTabsOpenedAfter(baselineTabs, allEditorTabs());
     assert.equal(opened.length, 1, "The public launch action must open exactly one product editor.");
     const fullShape = comparisonAriaCountsMatch({
@@ -2119,7 +2202,7 @@ async function executeJourney(
       ariaColumnCount: readiness.grid.ariaColumnCount,
       ...scrollability
     });
-    recordProgress(`comparison:${request.trialId}:workbench-ready`);
+    recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:workbench-ready`);
 
     const profileDeadline = Date.now() + request.timeoutsMs.completeProfile;
     let profileFrame = readiness.frame;
@@ -2137,7 +2220,7 @@ async function executeJourney(
       expectedColumns: request.cell.columns,
       completedColumns: 0
     });
-    recordProgress(`comparison:${request.trialId}:profile-click`);
+    recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:profile-click`);
 
     for (let index = 0; index < request.cell.columns; index += 1) {
       const column = `c${String(index).padStart(2, "0")}`;
@@ -2167,12 +2250,28 @@ async function executeJourney(
       });
     }
     milestones.mark("profiles-complete");
-    recordProgress(`comparison:${request.trialId}:profiles-complete`);
+    recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:profiles-complete`);
+    if (request.product === "open-wrangler") {
+      const resetDeadline = Date.now() + 10_000;
+      try {
+        await selectOpenWranglerProfileColumn(profileFrame, "c00", resetDeadline, "harness");
+        await waitForGenericGridReadiness(
+          page,
+          new Set<Frame>(),
+          new Set<Page>(),
+          Math.max(1, resetDeadline - Date.now())
+        );
+        await page.waitForTimeout(250);
+      } catch (error) {
+        throw new JourneyTimeout("harness", "Could not restore the first-column viewport after profiling.", {
+          cause: error
+        });
+      }
+    }
   } catch (error) {
     journeyFailed = true;
     journeyError = error;
   }
-  accessController.abort();
   let cleanupError: unknown;
   try {
     listener?.dispose();
@@ -2186,14 +2285,7 @@ async function executeJourney(
       cleanupError ??= error;
     }
   }
-  const accessOutcome = await access;
-  if (journeyFailed) {
-    const preMeasurementTimeout =
-      journeyError instanceof JourneyTimeout && !milestones.snapshot().some((item) => item.name === "run-cell-click");
-    if (preMeasurementTimeout && !accessOutcome.ok) throw accessOutcome.error;
-    throw journeyError;
-  }
-  if (!accessOutcome.ok) throw accessOutcome.error;
+  if (journeyFailed) throw journeyError;
   if (cleanupError !== undefined) throw cleanupError;
 }
 
@@ -2204,49 +2296,67 @@ export async function run(): Promise<void> {
   containedPath(request.isolatedRoot, requestPath, "Comparison request path");
   containedPath(request.isolatedRoot, resultPath, "Comparison result path");
   assert.equal(vscode.env.language, "en", "The comparison journey requires VS Code launched with --locale=en.");
-  const preActionDeadline = Date.now() + request.timeoutsMs.preAction;
+  const setupDeadline = Date.now() + request.timeoutsMs.preAction;
   recordProgress(`comparison:${request.trialId}:connect`);
   const { page } = await beforePreActionDeadline(
     connectToEditorWorkbench(),
-    preActionDeadline,
+    setupDeadline,
     "Timed out connecting to the comparison workbench."
   );
   const captured = await beforePreActionDeadline(
     captureNotebook(request),
-    preActionDeadline,
+    setupDeadline,
     "Timed out capturing the comparison notebook."
   );
-  await selectComparisonKernel(page, captured, preActionDeadline);
-  const baselineTabs = Object.freeze([...allEditorTabs()]);
-  const milestones = new Milestones();
-  const evidence: MutableEvidence = { runCell: null, inline: null, workbench: null, profiling: null };
-  let failure: ComparisonTrialResult["failure"] = null;
-  let stage: FailureStage = "run-cell";
-  try {
-    await executeJourney(request, page, captured, milestones, evidence, preActionDeadline);
-  } catch (error) {
-    const observedMilestones = milestones.snapshot();
-    const measuredActionStarted = observedMilestones.some((item) => item.name === "run-cell-click");
-    if (!measuredActionStarted) stage = "harness";
-    else if (error instanceof JourneyTimeout) stage = error.stage;
-    else if (observedMilestones.some((item) => item.name === "profile-click")) {
-      stage = evidence.profiling?.completedColumns === 0 ? "profile-first" : "profile-all";
-    } else if (observedMilestones.some((item) => item.name === "launch-click")) stage = "workbench-open";
-    else stage = "inline-preview";
-    failure = Object.freeze({
-      stage,
-      kind: !measuredActionStarted ? "harness" : error instanceof JourneyTimeout ? "timeout" : "product",
-      message: boundedFailureMessage(error, request)
-    });
-  }
-  try {
-    await closeNewTabs(baselineTabs);
-  } catch (error) {
-    if (failure === null) {
-      failure = Object.freeze({ stage: "cleanup", kind: "harness", message: boundedFailureMessage(error, request) });
+  await selectComparisonKernel(page, captured, setupDeadline);
+  await prepareComparisonSession(request, page, captured, setupDeadline);
+  const baselineTabs = await normalizeNotebookBaseline(page, captured);
+  const samples: ComparisonTrialSample[] = [];
+  for (let index = 1; index <= request.repetitions; index += 1) {
+    const milestones = new Milestones();
+    const evidence: MutableEvidence = { runCell: null, inline: null, workbench: null, profiling: null };
+    let failure: ComparisonTrialSample["failure"] = null;
+    try {
+      await executeMeasuredIteration(
+        request,
+        page,
+        captured,
+        index,
+        baselineTabs,
+        milestones,
+        evidence,
+        Date.now() + request.timeoutsMs.preAction
+      );
+    } catch (error) {
+      const observedMilestones = milestones.snapshot();
+      const measuredActionStarted = observedMilestones.some((item) => item.name === "run-cell-click");
+      let stage: FailureStage;
+      if (!measuredActionStarted) stage = "harness";
+      else if (error instanceof JourneyTimeout) stage = error.stage;
+      else if (observedMilestones.some((item) => item.name === "profile-click")) {
+        stage = evidence.profiling?.completedColumns === 0 ? "profile-first" : "profile-all";
+      } else if (observedMilestones.some((item) => item.name === "launch-click")) stage = "workbench-open";
+      else stage = "inline-preview";
+      failure = Object.freeze({
+        stage,
+        kind: !measuredActionStarted ? "harness" : error instanceof JourneyTimeout ? "timeout" : "product",
+        message: boundedFailureMessage(error, request)
+      });
     }
+    await restoreNotebookAfterSample(page, captured, baselineTabs);
+    samples.push(resultFromState(index, milestones, evidence, failure));
   }
-  const result = resultFromState(request, milestones, evidence, failure);
+
+  const result: ComparisonTrialResult = Object.freeze({
+    protocol: COMPARISON_TRIAL_RESULT_PROTOCOL,
+    trialId: request.trialId,
+    product: request.product,
+    engine: request.cell.engine,
+    format: request.cell.format,
+    kind: request.kind,
+    order: request.order,
+    samples: Object.freeze(samples)
+  });
   writeResult(resultPath, request.isolatedRoot, result);
   recordProgress(`comparison:${request.trialId}:result`);
 }

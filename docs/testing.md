@@ -486,26 +486,29 @@ Guarded installed-performance packaging tests require every VSCE source to be tr
 
 ## Clean-room Data Wrangler comparison
 
-The v1.2.1 study method is in [`docs/performance-comparison.md`](performance-comparison.md). Its public commands are:
+The v1.2.1 method is in [`docs/performance-comparison.md`](performance-comparison.md). Its commands are:
 
-- `npm run comparison:smoke` for the first complete paired trial;
-- `npm run comparison:study` for the fixed 96-trial collection; and
+- `npm run comparison:smoke` for both products on one Pandas/CSV workload;
+- `npm run comparison:study` for the eight-session benchmark; and
 - `npm run comparison:report` for the path-free summary.
 
-The report command requires a new output path. It writes the diagnostic aggregate first, then exits nonzero unless all
-96 trials succeeded and the median and p95 results stay within the predeclared limits.
+The benchmark covers Pandas and Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. A session is one isolated
+headless VS Code window for one product and workload; a sample is one measured notebook journey inside it. The full
+study has eight sessions and 80 samples. Each sample uses the public Run Cell, launch, usable-grid, and
+all-column-profile controls. Linux PSS sampling covers the same measured window, requires at least two observations,
+and rejects a gap longer than one second.
 
-The full study covers Pandas/Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. It retains ten paired,
-counterbalanced warm samples per cell and one AB plus one BA cold pair. Timings use the public Run Cell, launch, usable
-grid, and all-column-profile boundaries. After a fixed ten-second wait with continuous sampling, Linux PSS records the
-highest observed absolute value for the owned editor tree during the measured action. Median and p95 use type 7. Failures and timeouts
-stay in the result set, but release evidence requires all 96 trials to succeed and stay within the predeclared limits.
+Ordinary pull-request CI runs the focused harness contracts, not the real-product smoke or study. The two-session,
+two-sample-per-product
+smoke and eight-session study run against the release candidate and produce release-only evidence.
 
-Each trial owns a fresh mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
-extension directories are prepared once per arm and reused only to avoid 96 repeated Marketplace downloads. The study
-runner writes a manifest and one plain JSON file per completed trial ID. Re-running the same command resumes at the
-first missing ID; it does not retry or replace a completed outcome. The runner removes the temporary extension
-directories after the final retained outcome.
+The report includes all ten values, failures, minimum, maximum, median, and type-7 p95. Only a material median
+regression blocks release; p95 is review context. Release evidence still requires ten successful samples in all eight
+sessions.
+
+Every session owns a mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
+extension directories are prepared once per arm to avoid repeated Marketplace downloads. One JSON result is written
+per completed session, so collection can resume without discarding completed sessions.
 
 Run the focused pure checks while changing the harness:
 
@@ -518,16 +521,17 @@ node --test \
   scripts/linux-pss-sampler.test.mjs
 ```
 
-Before the full collection, build the real candidate and run `npm run comparison:smoke` in a separate output
-directory. This complete two-arm `pandas-csv` pair must prove
-headless isolation, public actions, a scrollable sentinel-matched grid, final profile milestones, PSS samples, and
-terminal cleanup. Delete its output afterward; it is not performance evidence. The full run then uses the same
-candidate, editor, Python environment, machine policy, and fixed fixtures without concurrent build/test work.
+Before collection, build the real candidate and run `npm run comparison:smoke` in a separate output directory. Both
+product sessions must prove headless isolation, public actions, a scrollable sentinel-matched grid, two completed
+samples each,
+PSS coverage, and terminal cleanup. Delete its output afterward; it is not performance evidence. Use the
+same candidate, editor, Python environment, machine policy, and fixtures for the full run, with no concurrent build or
+editor work.
 
 The independent review checklist lives in
 [`docs/performance/data-wrangler-1.2.1/review.md`](performance/data-wrangler-1.2.1/review.md). Method review must finish
-before collection. Final publication waits for all 96 outcomes and an independent recalculation of counts, type-7
-quantiles, paired differences, and PSS.
+before collection. Final publication waits for all eight session results and an independent recalculation of counts,
+summaries, median regression decisions, and PSS.
 
 ## Performance fixtures
 
