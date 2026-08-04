@@ -1910,10 +1910,9 @@ async function executeWarmSetup(
     return cell;
   };
   const setupCellBeforeDispatch = currentSetupCell();
-  selectNotebookCell(captured, setupCellBeforeDispatch);
   const summaryBeforeDispatch = executionSummaryFingerprint(setupCellBeforeDispatch);
   let freshExecution = false;
-  let commandError: unknown;
+  let setupTarget: PointerTarget | undefined;
   const listener = vscode.workspace.onDidChangeNotebookDocument((event) => {
     if (event.notebook !== captured.notebook) return;
     if (event.cellChanges.some((change) => change.cell.index === setupIndex && change.executionSummary !== undefined)) {
@@ -1921,22 +1920,17 @@ async function executeWarmSetup(
     }
   });
   try {
-    const command = Promise.resolve(
-      vscode.commands.executeCommand("notebook.cell.execute", {
-        ranges: [{ start: setupIndex, end: setupIndex + 1 }],
-        document: captured.notebook.uri
-      })
-    ).catch((error: unknown) => {
-      commandError = error;
-    });
-    recordProgress(`comparison:${request.trialId}:warm-setup-dispatch`);
+    setupTarget = await findRunCellTarget(page, captured, setupCellBeforeDispatch, deadline);
+    await beforePreActionDeadline(
+      clickTarget(setupTarget, () => recordProgress(`comparison:${request.trialId}:warm-setup-dispatch`)),
+      deadline,
+      "Timed out clicking the untimed setup cell."
+    );
     do {
-      if (commandError) throw commandError;
       const setupCell = currentSetupCell();
       const executionChanged = freshExecution || executionSummaryFingerprint(setupCell) !== summaryBeforeDispatch;
       const outcome = comparisonSetupExecutionOutcome(setupCell.executionSummary, executionChanged);
       if (outcome === "success") {
-        await beforePreActionDeadline(command, deadline, "Timed out completing the untimed setup cell.");
         assert.equal(setupCell.outputs.length, 0, "The untimed setup cell must not publish dataframe output.");
         selectNotebookCell(captured, captured.notebook.cellAt(measuredIndex));
         recordProgress(`comparison:${request.trialId}:warm-setup-complete`);
@@ -1950,6 +1944,7 @@ async function executeWarmSetup(
     throw new JourneyTimeout("run-cell", "Timed out waiting for the untimed setup cell.");
   } finally {
     listener.dispose();
+    await setupTarget?.dispose();
   }
 }
 
