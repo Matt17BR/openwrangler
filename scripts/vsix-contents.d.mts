@@ -1,7 +1,13 @@
 export const allowedVsixEntryPatterns: readonly RegExp[];
 export const requiredVsixEntries: readonly string[];
+export function requiredVsixEntriesForRelease(
+  options?: Readonly<{ requireRFrameContract?: boolean }>
+): readonly string[];
 export const packagedSourceDocumentEntries: readonly Readonly<{ source: string; archive: string }>[];
-export function inspectVsixEntries(entries: readonly string[]): {
+export function inspectVsixEntries(
+  entries: readonly string[],
+  options?: Readonly<{ requireRFrameContract?: boolean }>
+): {
   forbidden: string[];
   missing: string[];
   duplicates: string[];

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { fromBuffer as openZipBuffer } from "yauzl";
 import { parseStrictJson } from "./strict-json.mjs";
-import { inspectVsixEntries, requiredVsixEntries } from "./vsix-contents.mjs";
+import { inspectVsixEntries, requiredVsixEntriesForRelease } from "./vsix-contents.mjs";
 
 export const MAX_VSIX_BYTES = 128 * 1024 * 1024;
 export const MAX_VSIX_ENTRIES = 4096;
@@ -311,10 +311,11 @@ function decodeUtf8(contents, name) {
   }
 }
 
-export async function inspectVsixArchive(bytes) {
+export async function inspectVsixArchive(bytes, { requireRFrameContract = true } = {}) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_VSIX_BYTES) {
     throw new Error(`VSIX input must be one non-empty Buffer no larger than ${MAX_VSIX_BYTES} bytes.`);
   }
+  const requiredEntries = requiredVsixEntriesForRelease({ requireRFrameContract });
   const archive = await openArchive(bytes);
   const entries = [];
   const entryKinds = new Map();
@@ -378,7 +379,7 @@ export async function inspectVsixArchive(bytes) {
     archive.readEntry();
   });
 
-  const inventory = inspectVsixEntries(entries);
+  const inventory = inspectVsixEntries(entries, { requireRFrameContract });
   if (inventory.forbidden.length > 0 || inventory.missing.length > 0 || inventory.duplicates.length > 0) {
     throw new Error(
       [
@@ -391,7 +392,7 @@ export async function inspectVsixArchive(bytes) {
         .join(" ")
     );
   }
-  for (const required of requiredVsixEntries) {
+  for (const required of requiredEntries) {
     if (entryKinds.get(required) !== "file") {
       throw new Error(`VSIX required entry ${required} must be a regular file.`);
     }

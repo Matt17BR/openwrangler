@@ -23,6 +23,7 @@ async function runCli() {
     candidateBytes: readFileSync(receipt.candidatePath),
     candidateSha256: receipt.candidateSha256,
     channel: receipt.prerelease ? "preview" : "stable",
+    requireRFrameContract: receipt.requireRFrameContract,
     version: receipt.version
   };
   const channel = receipt.prerelease ? "preview" : "stable";
