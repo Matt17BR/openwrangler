@@ -510,7 +510,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels"/u
   );
-  assert.match(readme, /Open Wrangler can open larger datasets; usable size depends/u);
+  assert.match(readme, /Larger datasets can work, but the\s+practical limit depends on the engine and machine/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.doesNotMatch(
@@ -530,26 +530,37 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /\| Other VS Code desktop forks \| Experimental/u);
   assert.match(readme, /\| DuckDB, experimental\s+\|/u);
   assert.doesNotMatch(readme, /\| DuckDB, preview/u);
-  assert.match(readme, /Pickle files are not supported because opening one can run arbitrary code/u);
   assert.match(
     readme,
-    /first page loads\s+without counting or caching the entire dataframe[\s\S]{0,120}exact row total appears after the last page/u
+    /Pickle files aren't supported\. Convert only files you trust to Parquet before opening them\./u
   );
-  assert.match(readme, /Pages must be\s+visited in order because Spark does not guarantee a global row order/u);
-  assert.match(readme, /does not install PySpark, manage cluster\s+authentication, or stop the Spark session/u);
-  assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
-  assert.match(readme, /v1\.2\.1 clean-room comparison/u);
-  assert.match(readme, /Microsoft Data\s+Wrangler 1\.24\.2/u);
-  assert.match(readme, /three Data Wrangler profiling journeys that did not complete/u);
   assert.match(
     readme,
-    /\[review and full results\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
+    /does not count or cache the whole dataframe before showing the first page; the row total appears after\s+the final page/u
+  );
+  assert.match(readme, /PySpark uses the notebook's existing Spark session and reads pages\s+in order/u);
+  assert.match(readme, /does\s+not install PySpark, handle cluster authentication, or stop your Spark session/u);
+  assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
+  assert.match(readme, /Microsoft Data\s+Wrangler 1\.24\.2/u);
+  assert.match(readme, /Data Wrangler converts Polars data to Pandas/u);
+  assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
+  assert.match(
+    readme,
+    /\[full results\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
   );
   for (const row of [
-    /\| Pandas CSV\s+\|\s+10 \/ 9\s+\|\s+0\.34 \/ 1\.49 s \|\s+0\.60 \/ 1\.01 s \|\s+5\.58 \/ 18\.80 s \|/u,
-    /\| Polars CSV\s+\|\s+10 \/ 9\s+\|\s+0\.32 \/ 1\.50 s \|\s+0\.53 \/ 0\.99 s \|\s+5\.54 \/ 18\.81 s \|/u,
-    /\| Pandas Parquet \|\s+10 \/ 10\s+\|\s+0\.24 \/ 1\.53 s \|\s+0\.67 \/ 0\.69 s \|\s+7\.64 \/ 7\.95 s \|/u,
-    /\| Polars Parquet \|\s+10 \/ 9\s+\|\s+0\.20 \/ 1\.49 s \|\s+0\.48 \/ 0\.69 s \|\s+7\.20 \/ 8\.23 s \|/u
+    /\| Pandas CSV\s+\| Show notebook preview \|\s+\*\*0\.34 s\*\* \|\s+1\.49 s \|/u,
+    /\| Pandas CSV\s+\| Open workbench\s+\|\s+\*\*0\.60 s\*\* \|\s+1\.01 s \|/u,
+    /\| Pandas CSV\s+\| Profile every column\s+\|\s+\*\*5\.58 s\*\* \|\s+18\.80 s \|/u,
+    /\| Polars CSV\s+\| Show notebook preview \|\s+\*\*0\.32 s\*\* \|\s+1\.50 s \|/u,
+    /\| Polars CSV\s+\| Open workbench\s+\|\s+\*\*0\.53 s\*\* \|\s+0\.99 s \|/u,
+    /\| Polars CSV\s+\| Profile every column\s+\|\s+\*\*5\.54 s\*\* \|\s+18\.81 s \|/u,
+    /\| Pandas Parquet \| Show notebook preview \|\s+\*\*0\.24 s\*\* \|\s+1\.53 s \|/u,
+    /\| Pandas Parquet \| Open workbench\s+\|\s+\*\*0\.67 s\*\* \|\s+0\.69 s \|/u,
+    /\| Pandas Parquet \| Profile every column\s+\|\s+\*\*7\.64 s\*\* \|\s+7\.95 s \|/u,
+    /\| Polars Parquet \| Show notebook preview \|\s+\*\*0\.20 s\*\* \|\s+1\.49 s \|/u,
+    /\| Polars Parquet \| Open workbench\s+\|\s+\*\*0\.48 s\*\* \|\s+0\.69 s \|/u,
+    /\| Polars Parquet \| Profile every column\s+\|\s+\*\*7\.20 s\*\* \|\s+8\.23 s \|/u
   ]) {
     assert.match(readme, row);
   }
@@ -558,7 +569,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(comparisonReview, /e45eb499fed50febb61fb0d32cfa9a20800d59b04c67edd20d2568e39aa34ff3/u);
   assert.match(comparisonReview, /56b933c6db09255d3f3b8338830613950e604094fefc1d3a1db691017f1f7b4b/u);
   assert.doesNotMatch(readme, /tracks a planned comparison with Microsoft Data Wrangler/u);
-  assert.match(readme, /\*\*Next in v1:\*\*[\s\S]{0,220}#36[\s\S]{0,180}experimental/u);
+  assert.match(readme, /\*\*Next in v1:\*\*[\s\S]{0,180}#36/u);
+  assert.match(readme, /#263[\s\S]{0,220}currently experimental/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   assert.match(readme, /\*\*v2:\*\* add native R data frames[\s\S]{0,200}#87/u);
 
