@@ -16,6 +16,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    SessionDataShape,
     SummaryColumnProjection,
     boolean_visualization,
     bound_column_name,
@@ -173,7 +174,7 @@ class PolarsEngine(DataFrameEngine):
                 return
         raise EngineError(f"Unsupported Polars export format: {format_name}")
 
-    def shape(self, frame: Any) -> dict[str, int]:
+    def shape(self, frame: Any) -> SessionDataShape:
         import polars as pl
 
         if isinstance(frame, pl.LazyFrame):

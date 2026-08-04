@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ._column_binding import ColumnBindingError, bind_step
-from .engines import DataFrameEngine, EngineError, EngineRegistry, default_engine_registry
+from .engines import DataFrameEngine, EngineError, EngineRegistry, SessionDataShape, default_engine_registry
 from .engines.base import PageColumnProjection, SummaryColumnProjection, reconcile_view_filter_model
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
@@ -88,12 +88,12 @@ class Session:
     committed: Any
     filtered: Any
     filter_model: dict[str, Any]
-    filtered_shape: dict[str, int]
+    filtered_shape: SessionDataShape
     plan: list[dict[str, Any]]
     bound_plan: list[dict[str, Any]]
     plan_input_schemas: list[list[dict[str, Any]]]
     committed_lineage: list[dict[str, str]]
-    committed_shape: dict[str, int]
+    committed_shape: SessionDataShape
     committed_schema: list[dict[str, Any]]
     draft_step: dict[str, Any] | None
     draft_bound_step: dict[str, Any] | None
@@ -103,10 +103,10 @@ class Session:
     draft_base_lineage: list[dict[str, str]] | None
     draft_base_schema: list[dict[str, Any]] | None
     draft_lineage: list[dict[str, str]] | None
-    draft_shape: dict[str, int] | None
+    draft_shape: SessionDataShape | None
     draft_schema: list[dict[str, Any]] | None
     replace_step_id: str | None
-    source_shape: dict[str, int]
+    source_shape: SessionDataShape
     source_schema: list[dict[str, Any]]
     source_fingerprint: _SourceFingerprint | None
     live_source_value: Any | None
@@ -129,7 +129,7 @@ class Session:
         return self.draft_frame if self.draft_frame is not None else self.committed
 
     @property
-    def display_shape(self) -> dict[str, int]:
+    def display_shape(self) -> SessionDataShape:
         if self.draft_frame is None:
             return self.committed_shape
         if self.draft_shape is None:
@@ -169,12 +169,12 @@ class _SessionMutationSnapshot:
     committed: Any
     filtered: Any
     filter_model: dict[str, Any]
-    filtered_shape: dict[str, int]
+    filtered_shape: SessionDataShape
     plan: list[dict[str, Any]]
     bound_plan: list[dict[str, Any]]
     plan_input_schemas: list[list[dict[str, Any]]]
     committed_lineage: list[dict[str, str]]
-    committed_shape: dict[str, int]
+    committed_shape: SessionDataShape
     committed_schema: list[dict[str, Any]]
     draft_step: dict[str, Any] | None
     draft_bound_step: dict[str, Any] | None
@@ -184,7 +184,7 @@ class _SessionMutationSnapshot:
     draft_base_lineage: list[dict[str, str]] | None
     draft_base_schema: list[dict[str, Any]] | None
     draft_lineage: list[dict[str, str]] | None
-    draft_shape: dict[str, int] | None
+    draft_shape: SessionDataShape | None
     draft_schema: list[dict[str, Any]] | None
     replace_step_id: str | None
     page_cache: OrderedDict[tuple[int, int, int, int, tuple[str, ...]], _CachedPage]
@@ -1083,6 +1083,18 @@ class SessionManager:
             column_projection=projection,
         )
         cls._validate_page_projection(page, projection)
+        reported_total = page.get("totalRows")
+        if session.filtered_shape["rows"] is None and type(reported_total) is int and reported_total >= 0:
+            session.filtered_shape = {**session.filtered_shape, "rows": reported_total}
+            if not session.filter_model.get("filters"):
+                session.committed_shape = {**session.committed_shape, "rows": reported_total}
+                if not session.plan:
+                    session.source_shape = {**session.source_shape, "rows": reported_total}
+            # Earlier cached pages described the same logical view with an
+            # unknown total. Drop them atomically before publishing exact
+            # metadata so a later cache hit cannot regress that count.
+            cls._invalidate_page_cache(session)
+            key = (session.view_generation, session.revision, offset, limit, column_ids)
         page_size = len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
         if page_size > PAGE_CACHE_BYTE_LIMIT:
             return page
@@ -1255,7 +1267,7 @@ class SessionManager:
         self,
         session: Session,
         bound_plan: list[dict[str, Any]],
-    ) -> tuple[Any, list[dict[str, str]], dict[str, int], list[dict[str, Any]]]:
+    ) -> tuple[Any, list[dict[str, str]], SessionDataShape, list[dict[str, Any]]]:
         frame = session.original
         lineage = source_lineage(session.source_schema)
         schema = session.source_schema
@@ -1296,8 +1308,8 @@ class SessionManager:
         after: Any,
         before_lineage: list[dict[str, str]],
         after_lineage: list[dict[str, str]],
-        before_shape: dict[str, int],
-        after_shape: dict[str, int],
+        before_shape: SessionDataShape,
+        after_shape: SessionDataShape,
         before_raw_schema: list[dict[str, Any]],
         after_raw_schema: list[dict[str, Any]],
         step: Mapping[str, Any],
@@ -1367,11 +1379,11 @@ class SessionManager:
         replaces_rows = step["kind"] in {"groupBy", "customCode"} and not set(before_rows).intersection(
             row["id"] for row in after_page["rows"]
         )
+        before_row_count = self._exact_shape_rows(before_shape)
+        after_row_count = self._exact_shape_rows(after_shape)
         return {
-            "addedRows": after_shape["rows"] if replaces_rows else max(0, after_shape["rows"] - before_shape["rows"]),
-            "removedRows": before_shape["rows"]
-            if replaces_rows
-            else max(0, before_shape["rows"] - after_shape["rows"]),
+            "addedRows": after_row_count if replaces_rows else max(0, after_row_count - before_row_count),
+            "removedRows": before_row_count if replaces_rows else max(0, before_row_count - after_row_count),
             "addedColumns": [column["name"] for column in after_schema if column["id"] not in before_ids],
             "removedColumns": [column["name"] for column in before_schema if column["id"] not in after_ids],
             "changedCells": changed_cells,
@@ -1381,6 +1393,13 @@ class SessionManager:
             or before_page["totalRows"] > len(before_page["rows"])
             or after_page["totalRows"] > len(after_page["rows"]),
         }
+
+    @staticmethod
+    def _exact_shape_rows(shape: SessionDataShape) -> int:
+        rows = shape["rows"]
+        if rows is None:
+            raise EngineError("Editing operations require an exact dataframe row count.")
+        return rows
 
     @staticmethod
     def _lineage_from_schema(schema: list[dict[str, Any]]) -> list[dict[str, str]]:

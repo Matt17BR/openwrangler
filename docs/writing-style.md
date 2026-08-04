@@ -39,9 +39,9 @@ a precise contract. Their introductions and summaries should still be direct.
 - Use “X, not Y” only when the contrast answers a real question. Repeating that construction makes ordinary copy
   sound defensive.
 
-Some terms are precise and should stay in technical documents. “Clean-room” describes the implementation boundary;
-“black-box” describes the Data Wrangler test method; “atomic” and “correlated” describe specific runtime guarantees.
-Define those terms where needed. Do not stack them into a tagline or use them as decoration.
+Use “built independently” in user-facing copy instead of “clean-room.” Describe the Data Wrangler comparison by what
+it does through the public UI instead of calling it a “black-box” test. Terms such as “atomic” and “correlated” are
+useful in a technical contract when they name a specific guarantee; define them there and do not use them as decoration.
 
 Examples:
 
@@ -78,6 +78,6 @@ Before publishing text:
 4. Ask whether a reader without issue or prompt context will understand the sentence.
 5. Run `npm run docs:check`.
 
-Automated checks can make sure this guide stays connected to agent, contributor, and pull request instructions. They
+Automated checks can make sure this guide stays connected to contributor and pull request instructions. They
 cannot decide whether prose sounds human. Do not add AI detectors, word bans, or sentence-style scoring as a merge
 gate; public copy still needs an editorial read.

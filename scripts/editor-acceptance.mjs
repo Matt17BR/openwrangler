@@ -712,7 +712,11 @@ const INHERITED_EDITOR_ENVIRONMENT_KEYS = new Set([
 // These values are never copied implicitly. The runner must deliberately pass
 // each one from its phase inputs or explicit capture configuration.
 const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
+  DISPLAY_MODE_ENV,
+  TEMP_ROOT_ENV,
   "OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS",
+  "OPEN_WRANGLER_COMPARISON_REQUEST_PATH",
+  "OPEN_WRANGLER_COMPARISON_RESULT_PATH",
   "OPEN_WRANGLER_EDITOR_CDP_PORT",
   "OPEN_WRANGLER_EXTENSION_TESTS",
   "OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO",
@@ -1849,7 +1853,7 @@ async function compileWindowsEditorProcessSupervisor(buildRoot, environment, spa
   });
 }
 
-export function assertWindowsEditorProcessSupervisorReceipt(receipt) {
+function assertWindowsEditorProcessSupervisorReceipt(receipt) {
   if (!receipt || typeof receipt !== "object") {
     throw new Error("The Windows editor Job Object supervisor has no immutable preparation receipt.");
   }
@@ -3307,6 +3311,8 @@ export async function runEditorAcceptancePhase(
       environment,
       {
         OPEN_WRANGLER_EXTENSION_TESTS: "1",
+        OPEN_WRANGLER_COMPARISON_REQUEST_PATH: environment.OPEN_WRANGLER_COMPARISON_REQUEST_PATH,
+        OPEN_WRANGLER_COMPARISON_RESULT_PATH: environment.OPEN_WRANGLER_COMPARISON_RESULT_PATH,
         OPEN_WRANGLER_TEST_PHASE: phase,
         OPEN_WRANGLER_TEST_EDITOR: editor.key ?? editor.name.toLowerCase().replaceAll(" ", "-"),
         OPEN_WRANGLER_TEST_EDITOR_PRODUCT_VERSION: editorProductVersion,

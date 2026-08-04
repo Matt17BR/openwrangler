@@ -39,13 +39,29 @@ export interface AtomicExportFileSystem {
   remove(target: string): Promise<void>;
 }
 
-export interface SafeFileExportOptions {
+export interface AtomicFileTransactionOptions {
   destination: vscode.Uri;
   protectedSources?: readonly vscode.Uri[];
-  contents: Uint8Array;
   remoteAuthority?: string;
   fileSystem?: AtomicExportFileSystem;
   createTemporaryId?: () => string;
+}
+
+export interface AtomicFileTransaction {
+  readonly temporaryPath: string;
+  prepareExternalWriter(): Promise<AtomicExternalWriterTarget>;
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
+  abandon(): Promise<void>;
+}
+
+export interface AtomicExternalWriterTarget {
+  readonly path: string;
+  readonly identity: FileIdentity;
+}
+
+export interface SafeFileExportOptions extends AtomicFileTransactionOptions {
+  contents: Uint8Array;
 }
 
 export function createNodeAtomicExportFileSystem(openFile: typeof open = open): AtomicExportFileSystem {
@@ -83,24 +99,39 @@ export function createNodeAtomicExportFileSystem(openFile: typeof open = open): 
 
 const nodeFileSystem = createNodeAtomicExportFileSystem();
 
-export async function exportFileSafely({
+export async function beginAtomicFileTransaction(
+  options: AtomicFileTransactionOptions
+): Promise<AtomicFileTransaction> {
+  return createAtomicFileTransaction(options);
+}
+
+export async function exportFileSafely(options: SafeFileExportOptions): Promise<void> {
+  const transaction = await createAtomicFileTransaction(options);
+  try {
+    await transaction.write(options.contents);
+    await transaction.commit();
+  } catch (error) {
+    await transaction.rollbackAfterFailure(error);
+  }
+}
+
+async function createAtomicFileTransaction({
   destination,
   protectedSources = [],
-  contents,
   remoteAuthority,
   fileSystem = nodeFileSystem,
   createTemporaryId = randomUUID
-}: SafeFileExportOptions): Promise<void> {
+}: AtomicFileTransactionOptions): Promise<AtomicFileTransactionImplementation> {
   if (!supportedSchemes.has(destination.scheme)) {
-    throw new Error("Python-script export supports local and VS Code remote file-system destinations only.");
+    throw new Error("File export supports local and VS Code remote file-system destinations only.");
   }
   if (
     (destination.scheme === "vscode-remote" && (!remoteAuthority || destination.authority !== remoteAuthority)) ||
     (destination.scheme === "file" && remoteAuthority)
   ) {
-    throw new Error("Choose a Python-script destination on the current local host or VS Code remote authority.");
+    throw new Error("Choose an export destination on the current local host or VS Code remote authority.");
   }
-  if (!destination.fsPath) throw new Error("Choose a concrete file-system destination for the Python script.");
+  if (!destination.fsPath) throw new Error("Choose a concrete file-system destination for the export.");
 
   const protectedSourceAnchors = await captureProtectedSourceAnchors(fileSystem, protectedSources);
   const destinationAnchor = await captureDestinationAnchor(fileSystem, destination.fsPath, protectedSourceAnchors);
@@ -108,71 +139,215 @@ export async function exportFileSafely({
   await assertDestinationUnchanged(fileSystem, destinationAnchor);
   const resolvedDestination = destinationAnchor.canonicalPath;
 
-  let temporaryPath: string | undefined;
-  let temporaryIdentity: AtomicExportHandle["identity"] | undefined;
-  let handle: AtomicExportHandle | undefined;
-  try {
-    for (let attempt = 0; attempt < TEMPORARY_FILE_ATTEMPTS; attempt += 1) {
-      const candidate = path.join(
-        path.dirname(resolvedDestination),
-        `.openwrangler-${createTemporaryId()}-${attempt}.tmp`
+  for (let attempt = 0; attempt < TEMPORARY_FILE_ATTEMPTS; attempt += 1) {
+    const temporaryPath = path.join(
+      path.dirname(resolvedDestination),
+      `.openwrangler-${createTemporaryId()}-${attempt}.tmp`
+    );
+    let handle: AtomicExportHandle;
+    try {
+      handle = await fileSystem.openExclusive(temporaryPath);
+    } catch (error) {
+      if (isFileSystemError(error, "EEXIST")) continue;
+      throw error;
+    }
+    if (!isUsableIdentity(handle.identity)) {
+      const identityError = new Error(
+        "The filesystem did not provide a usable identity for Open Wrangler's temporary export file; it was not published or removed."
       );
       try {
-        handle = await fileSystem.openExclusive(candidate);
-        if (!isUsableIdentity(handle.identity)) {
-          throw new Error(
-            "The filesystem did not provide a usable identity for Open Wrangler's temporary export file; it was not published or removed."
-          );
-        }
-        temporaryPath = candidate;
-        temporaryIdentity = handle.identity;
-        break;
-      } catch (error) {
-        if (!isFileSystemError(error, "EEXIST")) throw error;
-      }
-    }
-    if (!handle || !temporaryPath || !temporaryIdentity) {
-      throw new Error("Could not reserve a unique sibling temporary file for the Python script.");
-    }
-
-    await handle.write(contents);
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    await assertKnownTemporary(fileSystem, temporaryPath, temporaryIdentity);
-    await assertProtectedSourcesUnchanged(fileSystem, protectedSourceAnchors);
-    await assertDestinationUnchanged(fileSystem, destinationAnchor);
-    await assertKnownTemporary(fileSystem, temporaryPath, temporaryIdentity);
-    await replaceAfterFinalValidation(fileSystem, temporaryPath, resolvedDestination, destinationAnchor);
-    temporaryPath = undefined;
-    temporaryIdentity = undefined;
-  } catch (error) {
-    const cleanupErrors: unknown[] = [];
-    if (handle) {
-      try {
         await handle.close();
-      } catch (cleanupError) {
-        cleanupErrors.push(cleanupError);
+      } catch (closeError) {
+        throw new AggregateError(
+          [identityError, closeError],
+          "File export failed and its temporary file could not be cleaned up completely."
+        );
       }
+      throw identityError;
     }
-    if (temporaryPath) {
-      try {
-        if (!temporaryIdentity) {
-          throw new Error("Open Wrangler could not verify ownership of its temporary export file.");
-        }
-        await assertKnownTemporary(fileSystem, temporaryPath, temporaryIdentity);
-        await fileSystem.remove(temporaryPath);
-      } catch (cleanupError) {
-        if (!isFileSystemError(cleanupError, "ENOENT")) cleanupErrors.push(cleanupError);
+    return new AtomicFileTransactionImplementation({
+      destinationAnchor,
+      fileSystem,
+      handle,
+      protectedSourceAnchors,
+      resolvedDestination,
+      temporaryIdentity: { dev: handle.identity.dev, ino: handle.identity.ino },
+      temporaryPath
+    });
+  }
+  throw new Error("Could not reserve a unique sibling temporary file for the export.");
+}
+
+class AtomicFileTransactionImplementation implements AtomicFileTransaction {
+  readonly temporaryPath: string;
+  private readonly destinationAnchor: DestinationAnchor;
+  private readonly fileSystem: AtomicExportFileSystem;
+  private readonly protectedSourceAnchors: readonly ProtectedSourceAnchor[];
+  private readonly resolvedDestination: string;
+  private readonly temporaryIdentity: FileIdentity;
+  private handle: AtomicExportHandle | undefined;
+  private externalWriterPrepared = false;
+  private settling = false;
+  private state: "active" | "committed" | "rolledBack" | "abandoned" = "active";
+
+  constructor({
+    destinationAnchor,
+    fileSystem,
+    handle,
+    protectedSourceAnchors,
+    resolvedDestination,
+    temporaryIdentity,
+    temporaryPath
+  }: {
+    destinationAnchor: DestinationAnchor;
+    fileSystem: AtomicExportFileSystem;
+    handle: AtomicExportHandle;
+    protectedSourceAnchors: readonly ProtectedSourceAnchor[];
+    resolvedDestination: string;
+    temporaryIdentity: FileIdentity;
+    temporaryPath: string;
+  }) {
+    this.destinationAnchor = destinationAnchor;
+    this.fileSystem = fileSystem;
+    this.handle = handle;
+    this.protectedSourceAnchors = protectedSourceAnchors;
+    this.resolvedDestination = resolvedDestination;
+    this.temporaryIdentity = temporaryIdentity;
+    this.temporaryPath = temporaryPath;
+  }
+
+  async write(contents: Uint8Array): Promise<void> {
+    this.assertActive();
+    if (!this.handle) throw new Error("Open Wrangler's temporary export file is already closed.");
+    await this.handle.write(contents);
+  }
+
+  async prepareExternalWriter(): Promise<AtomicExternalWriterTarget> {
+    this.assertActive();
+    if (this.externalWriterPrepared) {
+      throw new Error("Open Wrangler's temporary export file is already prepared for an external writer.");
+    }
+    this.beginSettlement();
+    try {
+      if (!this.handle) throw new Error("Open Wrangler's temporary export file is already closed.");
+      await this.handle.sync();
+      await this.handle.close();
+      this.handle = undefined;
+      await assertKnownTemporary(this.fileSystem, this.temporaryPath, this.temporaryIdentity);
+      this.externalWriterPrepared = true;
+      return Object.freeze({
+        path: this.temporaryPath,
+        identity: Object.freeze({ ...this.temporaryIdentity })
+      });
+    } finally {
+      this.settling = false;
+    }
+  }
+
+  async commit(): Promise<void> {
+    if (this.state === "committed") return;
+    this.assertActive();
+    this.beginSettlement();
+    try {
+      if (this.handle) {
+        await this.handle.sync();
+        await this.handle.close();
+        this.handle = undefined;
+      } else if (!this.externalWriterPrepared) {
+        throw new Error("Open Wrangler's temporary export file is already closed.");
       }
+      await assertKnownTemporary(this.fileSystem, this.temporaryPath, this.temporaryIdentity);
+      await assertProtectedSourcesUnchanged(this.fileSystem, this.protectedSourceAnchors);
+      await assertDestinationUnchanged(this.fileSystem, this.destinationAnchor);
+      await assertKnownTemporary(this.fileSystem, this.temporaryPath, this.temporaryIdentity);
+      await replaceAfterFinalValidation(
+        this.fileSystem,
+        this.temporaryPath,
+        this.resolvedDestination,
+        this.destinationAnchor
+      );
+      this.state = "committed";
+    } finally {
+      this.settling = false;
     }
+  }
+
+  async rollback(): Promise<void> {
+    const cleanupErrors = await this.collectRollbackErrors();
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, "The atomic file transaction could not be rolled back completely.");
+    }
+  }
+
+  async abandon(): Promise<void> {
+    if (this.state === "abandoned") return;
+    this.assertActive();
+    this.beginSettlement();
+    try {
+      if (this.handle) {
+        await this.handle.close();
+        this.handle = undefined;
+      }
+      this.state = "abandoned";
+    } finally {
+      this.settling = false;
+    }
+  }
+
+  async rollbackAfterFailure(error: unknown): Promise<never> {
+    const cleanupErrors = await this.collectRollbackErrors();
     if (cleanupErrors.length > 0) {
       throw new AggregateError(
         [error, ...cleanupErrors],
-        "Python-script export failed and its temporary file could not be cleaned up completely."
+        "File export failed and its temporary file could not be cleaned up completely."
       );
     }
     throw error;
+  }
+
+  private async collectRollbackErrors(): Promise<unknown[]> {
+    if (this.state !== "active") return [];
+    this.beginSettlement();
+    const cleanupErrors: unknown[] = [];
+    let handleClosed = !this.handle;
+    let temporaryRemoved = false;
+    try {
+      if (this.handle) {
+        try {
+          await this.handle.close();
+          this.handle = undefined;
+          handleClosed = true;
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      try {
+        await assertKnownTemporary(this.fileSystem, this.temporaryPath, this.temporaryIdentity);
+        await this.fileSystem.remove(this.temporaryPath);
+        temporaryRemoved = true;
+      } catch (error) {
+        if (isFileSystemError(error, "ENOENT")) {
+          temporaryRemoved = true;
+        } else {
+          cleanupErrors.push(error);
+        }
+      }
+      if (handleClosed && temporaryRemoved) this.state = "rolledBack";
+      return cleanupErrors;
+    } finally {
+      this.settling = false;
+    }
+  }
+
+  private assertActive(): void {
+    if (this.state === "rolledBack") throw new Error("The atomic file transaction was already rolled back.");
+    if (this.state === "committed") throw new Error("The atomic file transaction was already committed.");
+    if (this.state === "abandoned") throw new Error("The atomic file transaction was already abandoned.");
+  }
+
+  private beginSettlement(): void {
+    if (this.settling) throw new Error("The atomic file transaction is already being settled.");
+    this.settling = true;
   }
 }
 
@@ -211,7 +386,7 @@ async function assertProtectedSourcesUnchanged(
       !isUsableIdentity(identity) ||
       !sameIdentity(identity, anchor.identity)
     ) {
-      throw new Error("A protected source changed while the Python script was being exported; nothing was published.");
+      throw new Error("A protected source changed while the file was being exported; nothing was published.");
     }
   }
 }
@@ -228,7 +403,7 @@ async function captureDestinationAnchor(
   }
   if (identity && !isUsableIdentity(identity)) {
     throw new Error(
-      "Open Wrangler could not establish a stable filesystem identity for the existing Python-script destination."
+      "Open Wrangler could not establish a stable filesystem identity for the existing export destination."
     );
   }
 
@@ -236,7 +411,7 @@ async function captureDestinationAnchor(
   const parentIdentity = await optionalStat(fileSystem, parentPath);
   if (!parentIdentity || !isUsableIdentity(parentIdentity)) {
     throw new Error(
-      "Open Wrangler could not establish a stable filesystem identity for the Python-script destination folder."
+      "Open Wrangler could not establish a stable filesystem identity for the export destination folder."
     );
   }
   const anchor: DestinationAnchor = {
@@ -250,7 +425,7 @@ async function captureDestinationAnchor(
 
   assertDestinationDiffersFromSources(anchor, protectedSources);
   if (entry && (!entry.isFile || entry.isSymbolicLink)) {
-    throw new Error("Choose a new or regular-file destination for the exported Python script.");
+    throw new Error("Choose a new or regular-file destination for the export.");
   }
   return anchor;
 }
@@ -371,7 +546,7 @@ function comparablePath(target: string): string {
 }
 
 function sourceCollisionError(): Error {
-  return new Error("Choose a separate Python-script destination; Open Wrangler never overwrites the active source.");
+  return new Error("Choose a separate export destination; Open Wrangler never overwrites the active source.");
 }
 
 function destinationChangedError(): Error {
@@ -381,7 +556,7 @@ function destinationChangedError(): Error {
 class DestinationChangedError extends Error {
   constructor(cause?: unknown) {
     super(
-      "The selected Python-script destination changed before it could be replaced safely.",
+      "The selected export destination changed before it could be replaced safely.",
       cause === undefined ? undefined : { cause }
     );
     this.name = "DestinationChangedError";
@@ -405,7 +580,7 @@ async function replaceAfterFinalValidation(
       }
       throw new AggregateError(
         [replaceError, validationError],
-        "Python-script replacement failed and the destination state could not be verified."
+        "File replacement failed and the destination state could not be verified."
       );
     }
     throw replaceError;

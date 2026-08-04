@@ -196,7 +196,34 @@ describe("file launch contributions", () => {
     const fileTypes = manifest.contributes?.configuration?.properties?.["openWrangler.enabledFileTypes"];
     expect(fileTypes?.items?.enum).toContain("jsonl");
     expect(fileTypes?.items?.enum).not.toContain("ndjson");
+    expect(fileTypes?.items?.enum).not.toContain("pkl");
+    expect(fileTypes?.items?.enum).not.toContain("pickle");
     expect(fileTypes?.description).toMatch(/JSONL option includes both \.jsonl and \.ndjson/u);
+  });
+
+  it("offers trusted pickle conversion as a separate local-only action", () => {
+    const picklePredicate = "resourceScheme == file && resourceExtname =~ /\\.(pkl|pickle)$/i";
+    expect(manifest.activationEvents).toContain("onCommand:openWrangler.convertTrustedPickle");
+    expect(manifest.contributes?.commands).toContainEqual({
+      command: "openWrangler.convertTrustedPickle",
+      title: "Convert Trusted Pickle to Parquet…",
+      category: "Open Wrangler"
+    });
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual({
+      command: "openWrangler.convertTrustedPickle",
+      when: `!explorerResourceIsFolder && ${picklePredicate}`,
+      group: "navigation@51"
+    });
+    expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
+      command: "openWrangler.convertTrustedPickle",
+      when: picklePredicate,
+      group: "navigation@51"
+    });
+    expect(
+      manifest.contributes?.customEditors
+        ?.flatMap((editor) => editor.selector ?? [])
+        .map((selector) => selector.filenamePattern)
+    ).not.toEqual(expect.arrayContaining(["*.pkl", "*.pickle"]));
   });
 });
 

@@ -1912,7 +1912,7 @@ function openedFor(request: OpenSessionRequest, metadata: SessionMetadata): Sess
     page: {
       offset: 0,
       limit: request.pageSize,
-      totalRows: metadata.filteredShape.rows,
+      totalRows: exactRows(metadata),
       columnIds: schema.map((column) => column.id),
       rows: []
     },
@@ -1932,7 +1932,7 @@ function pageFor(
     page: {
       offset: request.offset,
       limit: request.limit,
-      totalRows: metadata.filteredShape.rows,
+      totalRows: exactRows(metadata),
       columnIds: metadata.schema
         .slice(request.columnOffset, request.columnOffset + request.columnLimit)
         .map((column) => column.id),
@@ -1953,7 +1953,7 @@ function previewFor(
     page: {
       offset: request.offset,
       limit: request.limit,
-      totalRows: metadata.filteredShape.rows,
+      totalRows: exactRows(metadata),
       columnIds: metadata.schema
         .slice(request.columnOffset, request.columnOffset + request.columnLimit)
         .map((column) => column.id),
@@ -1985,7 +1985,7 @@ function appliedFor(
     page: {
       offset: request.offset,
       limit: request.limit,
-      totalRows: metadata.filteredShape.rows,
+      totalRows: exactRows(metadata),
       columnIds: metadata.schema
         .slice(request.columnOffset, request.columnOffset + request.columnLimit)
         .map((column) => column.id),
@@ -1993,6 +1993,12 @@ function appliedFor(
     },
     code
   };
+}
+
+function exactRows(metadata: SessionMetadata): number {
+  const rows = metadata.filteredShape.rows;
+  if (rows === null) throw new Error("This exact-page test fixture requires a known row count.");
+  return rows;
 }
 
 function simpleReconfiguringDelegate(initialRuntimeId: string): {

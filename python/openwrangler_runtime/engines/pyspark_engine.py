@@ -8,7 +8,6 @@ from decimal import Decimal, InvalidOperation
 from importlib import import_module
 from math import isfinite
 from typing import Any, Literal
-from weakref import WeakSet
 
 from .base import (
     INTERNAL_ROW_ID_PREFIX,
@@ -17,6 +16,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    SessionDataShape,
     SummaryColumnProjection,
     categorical_visualization,
     coerce_typed_view_value,
@@ -51,6 +51,7 @@ PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT = 8 * 1024 * 1024
 PYSPARK_PAGE_PROTOCOL_BYTE_LIMIT = 16 * 1024 * 1024
 PYSPARK_PAGE_COMPLEX_NODE_LIMIT = 100_000
 PYSPARK_PAGE_COMPLEX_DEPTH_LIMIT = 64
+PYSPARK_PAGE_ANCHOR_LIMIT = 4_096
 PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT = 8 * 1024 * 1024
 PYSPARK_PROFILE_PROTOCOL_BYTE_LIMIT = 16 * 1024 * 1024
 _JSON_UTF8_VALIDATION_CHUNK_CHARACTERS = 16 * 1024
@@ -71,9 +72,9 @@ class PySparkEngine(DataFrameEngine):
     )
 
     def __init__(self) -> None:
-        self._owned_frame: Any | None = None
-        self._owned_row_count: int | None = None
-        self._ordered_frames: WeakSet[Any] = WeakSet()
+        self._indexed_frame: Any | None = None
+        self._paging_frame: Any | None = None
+        self._paging_anchors: dict[int, Any] = {}
         self._closed = False
 
     def detect(self, value: Any) -> bool:
@@ -103,13 +104,10 @@ class PySparkEngine(DataFrameEngine):
                 )
             folded[normalized] = name
 
-    def shape(self, frame: Any) -> dict[str, int]:
-        rows = (
-            self._owned_row_count
-            if frame is self._owned_frame and self._owned_row_count is not None
-            else int(frame.count())
-        )
-        return {"rows": int(rows), "columns": len(self._visible_columns(frame))}
+    def shape(self, frame: Any) -> SessionDataShape:
+        # Spark has no metadata-only exact row count. Keep it honestly unknown
+        # until a bounded page reaches the end of the logical view.
+        return {"rows": None, "columns": len(self._visible_columns(frame))}
 
     def ensure_row_ids(self, frame: Any, token: str) -> Any:
         self.validate_internal_row_id_namespace(frame)
@@ -117,20 +115,18 @@ class PySparkEngine(DataFrameEngine):
         row_id = self._row_id_column(frame)
         if row_id is not None:
             return frame
-        if self._owned_frame is not None:
+        if self._indexed_frame is not None:
             raise EngineError("A PySpark engine instance may own only one indexed dataframe.")
 
+        functions = import_module("pyspark.sql.functions")
         row_id = f"{INTERNAL_ROW_ID_PREFIX}{token}"
-        indexed = frame.zipWithIndex(row_id)
-        persisted = indexed.persist()
-        self._owned_frame = persisted
-        try:
-            self._owned_row_count = int(persisted.count())
-        except Exception:
-            # The session open-failure path calls close(), which owns the one
-            # corresponding unpersist attempt even when materialization fails.
-            raise
-        return persisted
+        indexed = frame.withColumn(row_id, functions.monotonically_increasing_id())
+        # Persisting this relation before the first bounded read makes Spark
+        # populate every cache partition, which is exactly the full-job open
+        # penalty this backend must avoid. Keep one immutable logical plan and
+        # let the runtime's bounded page cache retain only transported blocks.
+        self._indexed_frame = indexed
+        return indexed
 
     def schema(self, frame: Any) -> list[dict[str, Any]]:
         visible = set(self._visible_columns(frame))
@@ -217,7 +213,6 @@ class PySparkEngine(DataFrameEngine):
             if row_id is not None:
                 sort_expressions.append(_spark_column(functions, row_id).asc())
             result = result.orderBy(*sort_expressions)
-            self._ordered_frames.add(result)
         return result
 
     def page(
@@ -236,28 +231,31 @@ class PySparkEngine(DataFrameEngine):
         projection = normalize_page_projection(len(visible), column_projection)
         selected_columns = [visible[position] for position, _identifier in projection]
         column_ids = [identifier for _position, identifier in projection]
-        maximum_cells = int(limit) * len(selected_columns)
+        row_id = self._row_id_column(frame)
+        if total_rows is None and row_id is None:
+            raise EngineError("Progressive PySpark pages require a session row identity.")
+
+        if self._paging_frame is not frame:
+            self._paging_frame = frame
+            self._paging_anchors.clear()
+        expected_anchor = self._paging_anchors.get(offset - 1) if offset > 0 else None
+        expected_page_boundary = self._paging_anchors.get(offset + limit - 1)
+        if offset > 0 and expected_anchor is None and expected_page_boundary is None:
+            raise EngineError("Progressive PySpark pages must be requested contiguously from the first block.")
+        include_overlap = expected_anchor is not None
+        fetch_offset = offset - 1 if include_overlap else offset
+        requested_rows = int(limit) + (1 if total_rows is None else 0) + (1 if include_overlap else 0)
+        maximum_cells = requested_rows * len(selected_columns)
         if maximum_cells > PYSPARK_PAGE_CELL_LIMIT:
             raise EngineError(
                 f"PySpark pages may contain at most {PYSPARK_PAGE_CELL_LIMIT:,} cells; "
                 f"this window could contain {maximum_cells:,}. Request fewer rows or columns."
             )
-        row_id = self._row_id_column(frame)
-
-        if frame is self._owned_frame and row_id is not None:
-            row_identity = _spark_column(functions, row_id)
-            windowed = (
-                frame.where(
-                    (row_identity >= functions.lit(int(offset))) & (row_identity < functions.lit(int(offset + limit)))
-                )
-                .orderBy(row_identity.asc())
-                .limit(int(limit))
-            )
-        else:
-            ordered = frame
-            if frame not in self._ordered_frames and row_id is not None:
-                ordered = frame.orderBy(_spark_column(functions, row_id).asc())
-            windowed = ordered.offset(int(offset)).limit(int(limit))
+        # Unknown totals expose a forward-only continuation contract. Each
+        # block after the first refetches one retained boundary row and rejects
+        # a changed traversal instead of silently duplicating or skipping rows.
+        # Explicit user sorts include the private row identity as a tie-breaker.
+        windowed = frame.offset(int(fetch_offset)).limit(requested_rows)
         field_by_column = self._field_by_column(frame)
         transports = [
             (
@@ -270,26 +268,66 @@ class PySparkEngine(DataFrameEngine):
             )
             for name in selected_columns
         ]
-        self._validate_page_transport_size(
-            functions,
-            windowed,
-            [expression for expression, _kind, _data_type in transports],
-        )
-
         terminal_expressions = []
         if row_id is not None:
             terminal_expressions.append(_spark_column(functions, row_id).alias("__ow_page_row_id"))
-        terminal_expressions.extend(
-            expression.alias(f"__ow_page_value_{index}")
-            for index, (expression, _kind, _data_type) in enumerate(transports)
+        byte_expression = self._page_transport_byte_expression(
+            functions,
+            [expression for expression, _kind, _data_type in transports],
         )
+        per_row_transport_limit: int | None = None
+        if byte_expression is not None:
+            # A second byte-count action can evaluate a different unordered
+            # traversal from the value action and makes the first page schedule
+            # more Spark work. Carry the exact row length in the same bounded
+            # terminal projection instead. Dividing the page budget across the
+            # bounded rows is intentionally conservative: Spark replaces an
+            # over-share value with null before transport, then the driver uses
+            # the colocated length to reject the page and ask for fewer rows.
+            per_row_transport_limit = max(1, PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT // max(1, requested_rows))
+            terminal_expressions.append(byte_expression.alias("__ow_page_value_bytes"))
+            row_is_transportable = byte_expression <= functions.lit(per_row_transport_limit)
+            terminal_expressions.extend(
+                functions.when(row_is_transportable, expression).alias(f"__ow_page_value_{index}")
+                for index, (expression, _kind, _data_type) in enumerate(transports)
+            )
+        else:
+            terminal_expressions.extend(
+                expression.alias(f"__ow_page_value_{index}")
+                for index, (expression, _kind, _data_type) in enumerate(transports)
+            )
         terminal = windowed.select(*terminal_expressions)
         records = terminal.collect()
+        byte_offset = 1 if row_id is not None else 0
+        if byte_expression is not None:
+            assert per_row_transport_limit is not None
+            row_byte_counts = [int(record[byte_offset] or 0) for record in records]
+            oversized_row = next((count for count in row_byte_counts if count > per_row_transport_limit), None)
+            if oversized_row is not None:
+                raise EngineError(
+                    f"PySpark page values may contain at most {PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT:,} UTF-8 bytes; "
+                    f"one bounded row contains {oversized_row:,} bytes while this request reserves "
+                    f"{per_row_transport_limit:,} per row. Request fewer rows or columns, or shorten large values."
+                )
+            byte_count = sum(row_byte_counts)
+            if byte_count > PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT:
+                raise EngineError(
+                    f"PySpark page values may contain at most {PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT:,} UTF-8 bytes; "
+                    f"this window contains {byte_count:,}. Request fewer rows or columns, or shorten large values."
+                )
+        if include_overlap:
+            if not records or records[0][0] != expected_anchor:
+                raise EngineError(
+                    "The PySpark dataframe traversal changed while paging. Reopen the live variable to continue."
+                )
+            records = records[1:]
+        has_more = total_rows is None and len(records) > limit
+        page_records = records[:limit]
 
         rows = []
         remaining_complex_nodes = PYSPARK_PAGE_COMPLEX_NODE_LIMIT
-        value_offset = 1 if row_id is not None else 0
-        for row_number, record in enumerate(records, start=offset):
+        value_offset = byte_offset + (1 if byte_expression is not None else 0)
+        for row_number, record in enumerate(page_records, start=offset):
             identity = record[0] if row_id is not None else row_number
             values = []
             for index, (_expression, transport_kind, data_type) in enumerate(transports):
@@ -308,13 +346,30 @@ class PySparkEngine(DataFrameEngine):
                     "values": values,
                 }
             )
+        if page_records:
+            boundary_row_number = offset + len(page_records) - 1
+            boundary_identity = page_records[-1][0] if row_id is not None else boundary_row_number
+            retained_identity = self._paging_anchors.get(boundary_row_number)
+            if retained_identity is not None and retained_identity != boundary_identity:
+                raise EngineError(
+                    "The PySpark dataframe traversal changed while paging. Reopen the live variable to continue."
+                )
+            # Retain only published block boundaries. The next contiguous block
+            # can verify its overlap without retaining every transported row,
+            # so this bound covers thousands of blocks rather than a few pages.
+            self._paging_anchors[boundary_row_number] = boundary_identity
+        while len(self._paging_anchors) > PYSPARK_PAGE_ANCHOR_LIMIT:
+            self._paging_anchors.pop(next(iter(self._paging_anchors)))
+        resolved_total = int(total_rows) if total_rows is not None else None if has_more else offset + len(page_records)
         page = {
             "offset": offset,
             "limit": limit,
-            "totalRows": self.shape(frame)["rows"] if total_rows is None else int(total_rows),
+            "totalRows": resolved_total,
             "columnIds": column_ids,
             "rows": rows,
         }
+        if has_more:
+            page["hasMore"] = True
         _validate_page_protocol_size(page)
         return page
 
@@ -502,7 +557,7 @@ class PySparkEngine(DataFrameEngine):
         functions = import_module("pyspark.sql.functions")
         visible = self._visible_columns(frame)
         if not visible:
-            row_count = self.shape(frame)["rows"]
+            row_count = int(frame.count())
             return {
                 "missingCells": 0,
                 "missingRows": 0,
@@ -635,12 +690,9 @@ class PySparkEngine(DataFrameEngine):
         if self._closed:
             return
         self._closed = True
-        owned = self._owned_frame
-        self._owned_frame = None
-        self._owned_row_count = None
-        self._ordered_frames.clear()
-        if owned is not None:
-            owned.unpersist(blocking=False)
+        self._indexed_frame = None
+        self._paging_frame = None
+        self._paging_anchors.clear()
 
     @staticmethod
     def live_source_is_stopped(frame: Any) -> bool:
@@ -764,9 +816,9 @@ class PySparkEngine(DataFrameEngine):
         return int(result["__ow_profile_value_bytes"] or 0)
 
     @staticmethod
-    def _validate_page_transport_size(functions: Any, frame: Any, expressions: list[Any]) -> None:
+    def _page_transport_byte_expression(functions: Any, expressions: list[Any]) -> Any | None:
         if not expressions:
-            return
+            return None
         byte_terms = [
             functions.coalesce(
                 functions.length(functions.encode(expression.cast("string"), "UTF-8")).cast("long"),
@@ -777,13 +829,7 @@ class PySparkEngine(DataFrameEngine):
         row_bytes = byte_terms[0]
         for term in byte_terms[1:]:
             row_bytes = row_bytes + term
-        result = frame.agg(functions.sum(row_bytes).alias("__ow_page_value_bytes")).collect()[0]
-        byte_count = int(result["__ow_page_value_bytes"] or 0)
-        if byte_count > PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT:
-            raise EngineError(
-                f"PySpark page values may contain at most {PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT:,} UTF-8 bytes; "
-                f"this window contains {byte_count:,}. Request fewer rows or columns, or shorten large values."
-            )
+        return row_bytes
 
     def _type_by_column(self, frame: Any) -> dict[str, tuple[str, str]]:
         visible = set(self._visible_columns(frame))
@@ -814,8 +860,8 @@ class PySparkEngine(DataFrameEngine):
         version = raw_version if isinstance(raw_version, str) else ""
         if not _is_supported_pyspark_version(version):
             raise EngineError(f"The experimental PySpark backend requires PySpark 4.2.x, not {version or 'unknown'}.")
-        if not callable(getattr(frame, "zipWithIndex", None)):
-            raise EngineError("This PySpark dataframe does not provide the required native zipWithIndex operation.")
+        if not callable(getattr(frame, "withColumn", None)):
+            raise EngineError("This PySpark dataframe does not provide the required native projection API.")
         unsupported: list[tuple[str, str]] = []
         ambiguous_nested: list[tuple[str, str, str, str]] = []
         for field in frame.schema.fields:

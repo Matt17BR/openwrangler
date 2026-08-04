@@ -1,4 +1,4 @@
-import type { ColumnSummary, GridPage, SessionMetadata } from "./protocol";
+import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata } from "./protocol";
 import { isOpenWranglerResponse } from "./protocolValidation";
 
 export const OPEN_WRANGLER_MIME_V2 = "application/vnd.openwrangler.viewer.v2+json";
@@ -24,17 +24,15 @@ export interface NotebookOutputPayload {
 
 export function normalizeNotebookOutputPayload(value: unknown): NotebookOutputPayload | undefined {
   if (!isRecord(value) || value.mimeVersion !== 2) return undefined;
-  if (!hasBoundedSavedOutputContainers(value.metadata, value.page, value.summaries, true)) return undefined;
-  const page = migrateLegacyFullWidthPage(value.metadata, value.page);
-  if (!hasBoundedSavedOutputContainers(value.metadata, page, value.summaries)) return undefined;
+  if (!hasBoundedSavedOutputContainers(value.metadata, value.page, value.summaries)) return undefined;
+  const page = value.page;
   const candidate = { mimeVersion: 2, metadata: value.metadata, page, summaries: value.summaries };
   if (!isWithinPayloadBudget(candidate)) return undefined;
   const opened = {
     kind: "sessionOpened",
     metadata: value.metadata,
     page,
-    // Saved profiles are never trusted. SnapshotBridge recomputes every
-    // summary from the captured typed rows under the active view.
+    // Saved profiles are never trusted by the inline renderer.
     summaries: []
   };
   if (!isOpenWranglerResponse(opened) || opened.kind !== "sessionOpened") return undefined;
@@ -115,7 +113,7 @@ function hasCanonicalCapturedRows(page: GridPage): boolean {
   });
 }
 
-function isCanonicalSavedOutput(metadata: SessionMetadata, page: GridPage): boolean {
+function isCanonicalSavedOutput(metadata: SessionMetadata, page: LiveGridPage): page is GridPage {
   const source = metadata.source;
   const capabilities = metadata.capabilities;
   return (
@@ -139,6 +137,9 @@ function isCanonicalSavedOutput(metadata: SessionMetadata, page: GridPage): bool
     metadata.latestStepInputSchema === undefined &&
     metadata.filterModel.filters.length === 0 &&
     metadata.filterModel.sort.length === 0 &&
+    metadata.shape.rows !== null &&
+    metadata.filteredShape.rows !== null &&
+    page.totalRows !== null &&
     metadata.shape.rows === metadata.filteredShape.rows &&
     metadata.filteredShape.rows === page.totalRows &&
     metadata.shape.columns === metadata.schema.length &&
@@ -197,19 +198,13 @@ function hasBoundedSavedOutputFields(metadata: SessionMetadata, page: GridPage, 
   return true;
 }
 
-function hasBoundedSavedOutputContainers(
-  metadata: unknown,
-  page: unknown,
-  summaries: unknown,
-  allowLegacyColumnIds = false
-): boolean {
+function hasBoundedSavedOutputContainers(metadata: unknown, page: unknown, summaries: unknown): boolean {
   if (!isRecord(metadata) || !Array.isArray(metadata.schema) || !isRecord(page)) return false;
   if (!Array.isArray(page.rows) || !Array.isArray(summaries)) return false;
-  if (!Array.isArray(page.columnIds) && !(allowLegacyColumnIds && page.columnIds === undefined)) return false;
-  const columnIdCount = Array.isArray(page.columnIds) ? page.columnIds.length : metadata.schema.length;
+  if (!Array.isArray(page.columnIds)) return false;
   if (
     metadata.schema.length > NOTEBOOK_OUTPUT_LIMITS.columns ||
-    columnIdCount > NOTEBOOK_OUTPUT_LIMITS.columns ||
+    page.columnIds.length > NOTEBOOK_OUTPUT_LIMITS.columns ||
     page.rows.length > NOTEBOOK_OUTPUT_LIMITS.rows ||
     typeof page.limit !== "number" ||
     page.limit > NOTEBOOK_OUTPUT_LIMITS.rows ||
@@ -294,21 +289,6 @@ function exceedsCodePointLimit(value: string, maximum: number): boolean {
     if (count > maximum) return true;
   }
   return false;
-}
-
-function migrateLegacyFullWidthPage(metadata: unknown, page: unknown): unknown {
-  if (!isRecord(metadata) || !isRecord(page) || Object.prototype.hasOwnProperty.call(page, "columnIds")) {
-    return page;
-  }
-  if (!Array.isArray(metadata.schema) || !Array.isArray(page.rows)) return page;
-  const columnIds = metadata.schema.map((column) => (isRecord(column) ? column.id : undefined));
-  if (!columnIds.every((columnId): columnId is string => typeof columnId === "string" && columnId.length > 0)) {
-    return page;
-  }
-  const isFullWidth = page.rows.every(
-    (row) => isRecord(row) && Array.isArray(row.values) && row.values.length === columnIds.length
-  );
-  return isFullWidth ? { ...page, columnIds } : page;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

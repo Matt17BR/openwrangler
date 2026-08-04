@@ -328,6 +328,7 @@ export type OpenWranglerResponse =
 export type RetainedTransformStep = TransformStep & {
   [k: string]: unknown;
 };
+export type LiveGridPage = GridPage | UnknownTotalGridPage;
 export type TypedCellKind =
   | "null"
   | "nan"
@@ -974,7 +975,7 @@ export interface SourceCapabilities {
 export interface SessionOpenedResponse {
   kind: "sessionOpened";
   metadata: SessionMetadata;
-  page: GridPage;
+  page: LiveGridPage;
   summaries: ColumnSummary[];
 }
 export interface SessionMetadata {
@@ -985,8 +986,8 @@ export interface SessionMetadata {
   mode: SessionMode;
   source: SessionSource;
   capabilities: SourceCapabilities;
-  shape: DataShape;
-  filteredShape: DataShape;
+  shape: SessionDataShape;
+  filteredShape: SessionDataShape;
   schema: ColumnSchema[];
   filterModel: FilterModel;
   steps: RetainedTransformStep[];
@@ -995,8 +996,11 @@ export interface SessionMetadata {
   draftReplacesStepId?: string;
   stats?: DatasetStats;
 }
-export interface DataShape {
-  rows: number;
+/**
+ * Live-session shape. A null row count means the backend deliberately has not run a full count.
+ */
+export interface SessionDataShape {
+  rows: number | null;
   columns: number;
 }
 export interface ColumnSchema {
@@ -1038,6 +1042,20 @@ export interface CellValue {
   isNull: boolean;
   isNaN: boolean;
   sign?: -1 | 1;
+}
+/**
+ * A bounded live page whose distributed backend has not run a full count.
+ */
+export interface UnknownTotalGridPage {
+  offset: number;
+  limit: number;
+  totalRows: null;
+  hasMore: true;
+  /**
+   * Ordered stable identities for projected row values.
+   */
+  columnIds: string[];
+  rows: DataRow[];
 }
 export interface ColumnSummary {
   columnId: string;
@@ -1091,7 +1109,7 @@ export interface PageResponse {
   kind: "page";
   revision: number;
   viewRequestId: string;
-  page: GridPage;
+  page: LiveGridPage;
   metadata: SessionMetadata;
 }
 export interface SummaryResponse {
@@ -1165,6 +1183,10 @@ export interface DataExportedResponse {
   path: string;
   format: "csv" | "parquet";
   shape: DataShape;
+}
+export interface DataShape {
+  rows: number;
+  columns: number;
 }
 export interface SessionClosedResponse {
   kind: "sessionClosed";

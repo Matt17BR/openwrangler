@@ -7,7 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
-from time import monotonic, sleep
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -297,7 +297,7 @@ def test_rejects_nested_non_profileable_types_before_indexing(
         del self, value, token
         nonlocal indexing_calls
         indexing_calls += 1
-        raise AssertionError("Unsupported nested types must fail before Spark indexing.")
+        raise AssertionError("Unsupported nested types must fail before Spark row-identity projection.")
 
     monkeypatch.setattr(PySparkEngine, "ensure_row_ids", fail_if_indexed)
     manager = SessionManager()
@@ -338,7 +338,7 @@ def test_rejects_ambiguous_nested_struct_fields_before_indexing(
         del self, value, token
         nonlocal indexing_calls
         indexing_calls += 1
-        raise AssertionError("Ambiguous nested fields must fail before Spark indexing.")
+        raise AssertionError("Ambiguous nested fields must fail before Spark row-identity projection.")
 
     monkeypatch.setattr(PySparkEngine, "ensure_row_ids", fail_if_indexed)
     manager = SessionManager()
@@ -361,30 +361,13 @@ def test_rejects_ambiguous_nested_struct_fields_before_indexing(
     assert manager.sessions == {}
 
 
-def test_index_materializes_once_and_close_unpersists_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_index_is_lazy_and_close_releases_without_an_action(monkeypatch: pytest.MonkeyPatch) -> None:
     class IndexedFrame:
         columns = [f"{INTERNAL_ROW_ID_PREFIX}unit"]
         isStreaming = False
 
         def __init__(self) -> None:
-            self.persist_calls = 0
-            self.count_calls = 0
-            self.unpersist_calls = 0
-
-        def zipWithIndex(self, _name: str) -> None:
-            raise AssertionError("already indexed")
-
-        def persist(self) -> IndexedFrame:
-            self.persist_calls += 1
-            return self
-
-        def count(self) -> int:
-            self.count_calls += 1
-            return 7
-
-        def unpersist(self, *, blocking: bool) -> None:
-            assert blocking is False
-            self.unpersist_calls += 1
+            self.action_calls = 0
 
     class SourceFrame:
         columns = ["value"]
@@ -392,10 +375,10 @@ def test_index_materializes_once_and_close_unpersists_once(monkeypatch: pytest.M
 
         def __init__(self, indexed: IndexedFrame) -> None:
             self.indexed = indexed
-            self.zip_calls = 0
+            self.with_column_calls = 0
 
-        def zipWithIndex(self, name: str) -> IndexedFrame:
-            self.zip_calls += 1
+        def withColumn(self, name: str, _expression: object) -> IndexedFrame:
+            self.with_column_calls += 1
             self.indexed.columns = ["value", name]
             return self.indexed
 
@@ -406,50 +389,108 @@ def test_index_materializes_once_and_close_unpersists_once(monkeypatch: pytest.M
         "_require_supported_frame",
         staticmethod(lambda _frame: None),
     )
+    real_import_module = pyspark_engine_module.import_module
+    monkeypatch.setattr(
+        pyspark_engine_module,
+        "import_module",
+        lambda name: (
+            SimpleNamespace(monotonically_increasing_id=lambda: object())
+            if name == "pyspark.sql.functions"
+            else real_import_module(name)
+        ),
+    )
     engine = PySparkEngine()
 
     result = engine.ensure_row_ids(source, "unit")
     assert result is indexed
-    assert source.zip_calls == 1
-    assert indexed.persist_calls == 1
-    assert indexed.count_calls == 1
-    assert engine.shape(indexed) == {"rows": 7, "columns": 1}
-    assert indexed.count_calls == 1
+    assert source.with_column_calls == 1
+    assert engine.shape(indexed) == {"rows": None, "columns": 1}
 
     engine.close()
     engine.close()
-    assert indexed.unpersist_calls == 1
+    assert indexed.action_calls == 0
 
 
-def test_close_unregisters_the_real_owned_cache_without_stopping_spark(
+def test_first_page_does_not_cache_the_complete_relation_or_stop_spark(
     spark_session: Any,
     sample_frame: Any,
 ) -> None:
     storage_level = import_module("pyspark").StorageLevel
-    engine, indexed = _open_engine(sample_frame, "cache-release")
-    assert indexed.storageLevel != storage_level.NONE
+    engine, indexed = _open_engine(sample_frame, "bounded-open")
+    assert indexed.storageLevel == storage_level.NONE
+
+    page = engine.page(indexed, 0, 2, total_rows=None, column_projection=[(0, "name-id")])
+    assert len(page["rows"]) == 2
+    assert page["totalRows"] is None
+    assert page["hasMore"] is True
+    assert indexed.storageLevel == storage_level.NONE
 
     engine.close()
-    deadline = monotonic() + 10
-    while indexed.storageLevel != storage_level.NONE and monotonic() < deadline:
-        sleep(0.05)
-
     assert indexed.storageLevel == storage_level.NONE
     assert spark_session.range(1).count() == 1
 
 
-def test_sorted_state_uses_live_frame_identity_not_reusable_numeric_ids(
-    spark_session: Any,
+def test_classic_first_page_schedules_only_bounded_partition_work(spark_session: Any) -> None:
+    if ".connect." in type(spark_session).__module__:
+        pytest.skip("Spark Connect uses the same local server plan, but does not expose its status tracker.")
+    partition_count = 32
+    source = spark_session.range(1_000_000, numPartitions=partition_count).selectExpr("id", "id * 2 AS value")
+    engine, indexed = _open_engine(source, "bounded-stage")
+    tracker = spark_session.sparkContext.statusTracker()
+    jobs_before = set(tracker.getJobIdsForGroup(None))
+    try:
+        page = engine.page(indexed, 0, 50, total_rows=None, column_projection=[(0, "id")])
+        assert len(page["rows"]) == 50
+        jobs_after = set(tracker.getJobIdsForGroup(None))
+        stage_task_counts: list[int] = []
+        for job_id in jobs_after - jobs_before:
+            job = tracker.getJobInfo(job_id)
+            if job is None:
+                continue
+            for stage_id in job.stageIds:
+                stage = tracker.getStageInfo(stage_id)
+                if stage is not None:
+                    stage_task_counts.append(stage.numTasks)
+        assert stage_task_counts
+        assert max(stage_task_counts) < partition_count
+        assert len(spark_session.sparkContext._jsc.sc().getRDDStorageInfo()) == 0
+    finally:
+        engine.close()
+
+
+def test_progressive_page_rejects_a_changed_partition_traversal(
     sample_frame: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     functions = import_module("pyspark.sql.functions")
+    engine, indexed = _open_engine(sample_frame, "changed-traversal")
+    dataframe_type = type(indexed)
+    original_offset = dataframe_type.offset
+    row_id = engine.internal_row_id_column(indexed)
+    assert isinstance(row_id, str)
+    try:
+        first = engine.page(indexed, 0, 2, total_rows=None, column_projection=[(0, "name-id")])
+        assert first["hasMore"] is True
+
+        def reordered_offset(frame: Any, value: int) -> Any:
+            reordered = frame.orderBy(functions.col(f"`{row_id.replace('`', '``')}`").desc())
+            return original_offset(reordered, value)
+
+        with monkeypatch.context() as page_patch:
+            page_patch.setattr(dataframe_type, "offset", reordered_offset)
+            with pytest.raises(EngineError, match="traversal changed"):
+                engine.page(indexed, 2, 2, total_rows=None, column_projection=[(0, "name-id")])
+    finally:
+        engine.close()
+
+
+def test_explicit_sort_page_preserves_sort_order_and_stable_row_identity(
+    spark_session: Any,
+    sample_frame: Any,
+) -> None:
     engine, indexed = _open_engine(sample_frame, "identity")
     try:
-        # This simulates the CPython object-ID reuse that made the previous
-        # integer-ID side table misclassify an unrelated frame as ordered.
-        monkeypatch.setattr(pyspark_engine_module, "id", lambda _value: 1, raising=False)
-        engine.apply_filter_model(
+        ascending = engine.apply_filter_model(
             indexed,
             {
                 "logic": "and",
@@ -460,47 +501,69 @@ def test_sorted_state_uses_live_frame_identity_not_reusable_numeric_ids(
 
         row_id = engine.internal_row_id_column(indexed)
         assert isinstance(row_id, str)
-        unrelated_descending = indexed.orderBy(functions.col(f"`{row_id.replace('`', '``')}`").desc())
         page = engine.page(
-            unrelated_descending,
+            ascending,
             0,
             10,
-            total_rows=5,
+            total_rows=None,
             column_projection=[(0, "name-id")],
         )
-        identities = [int(row["id"].rsplit(":", 1)[1]) for row in page["rows"]]
-        assert identities == [0, 1, 2, 3, 4]
+        assert [row["values"][0]["display"] for row in page["rows"]] == [
+            "ALPHA",
+            "Beta",
+            "Beta",
+            "alpha",
+            "ÄLPHA",
+        ]
+        identities = [row["id"] for row in page["rows"]]
+        assert len(identities) == len(set(identities)) == 5
+        assert page["totalRows"] == 5
     finally:
         engine.close()
 
 
-def test_owned_source_pages_use_the_dense_row_identity_range_instead_of_global_offset(
+def test_owned_source_pages_use_progressive_offset_without_inventing_a_total(
     sample_frame: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine, indexed = _open_engine(sample_frame, "bounded-source-page")
     dataframe_type = type(indexed)
 
-    def forbidden_global_offset(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("The owned source page must not globally sort and offset the complete dataframe.")
+    original_offset = dataframe_type.offset
+    offsets: list[int] = []
+
+    def observed_offset(frame: Any, value: int) -> Any:
+        offsets.append(value)
+        return original_offset(frame, value)
 
     try:
         with monkeypatch.context() as page_patch:
-            page_patch.setattr(dataframe_type, "offset", forbidden_global_offset)
+            page_patch.setattr(dataframe_type, "offset", observed_offset)
+            first_page = engine.page(
+                indexed,
+                0,
+                2,
+                total_rows=None,
+                column_projection=[(0, "name-id")],
+            )
             page = engine.page(
                 indexed,
                 2,
                 2,
-                total_rows=5,
+                total_rows=None,
                 column_projection=[(0, "name-id")],
             )
+        assert offsets == [0, 1]
+        assert [row["rowNumber"] for row in first_page["rows"]] == [0, 1]
         assert [row["rowNumber"] for row in page["rows"]] == [2, 3]
-        assert [int(row["id"].rsplit(":", 1)[1]) for row in page["rows"]] == [2, 3]
+        assert page["totalRows"] is None
+        assert page["hasMore"] is True
+        assert len({row["id"] for row in page["rows"]}) == 2
     finally:
         engine.close()
 
 
-def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
+def test_projected_progressive_paging_filters_sorts_and_profiles_are_native_and_bounded(
     spark_session: Any,
     sample_frame: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -524,7 +587,7 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
 
     try:
         shape = engine.shape(indexed)
-        assert shape == {"rows": 5, "columns": 5}
+        assert shape == {"rows": None, "columns": 5}
         schema = engine.schema(indexed)
         assert [column["name"] for column in schema] == [
             "name",
@@ -541,6 +604,25 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
             "datetime",
         ]
 
+        first_page = engine.page(
+            indexed,
+            0,
+            2,
+            total_rows=shape["rows"],
+            column_projection=[(1, "amount-id"), (0, "name-id")],
+        )
+        page = engine.page(
+            indexed,
+            2,
+            2,
+            total_rows=shape["rows"],
+            column_projection=[(1, "amount-id"), (0, "name-id")],
+        )
+        assert page["totalRows"] is None
+        assert page["hasMore"] is True
+        assert page["columnIds"] == ["amount-id", "name-id"]
+        assert [row["rowNumber"] for row in first_page["rows"]] == [0, 1]
+        assert [row["rowNumber"] for row in page["rows"]] == [2, 3]
         full_page = engine.page(
             indexed,
             0,
@@ -548,17 +630,11 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
             total_rows=shape["rows"],
             column_projection=[(1, "amount-id"), (0, "name-id")],
         )
-        page = engine.page(
-            indexed,
-            1,
-            2,
-            total_rows=shape["rows"],
-            column_projection=[(1, "amount-id"), (0, "name-id")],
-        )
-        assert page["columnIds"] == ["amount-id", "name-id"]
-        assert [row["rowNumber"] for row in page["rows"]] == [1, 2]
+        assert full_page["totalRows"] == 5
+        assert "hasMore" not in full_page
+        assert first_page["rows"] == full_page["rows"][:2]
         assert page["rows"] == [
-            {**row, "rowNumber": position} for position, row in enumerate(full_page["rows"][1:3], start=1)
+            {**row, "rowNumber": position} for position, row in enumerate(full_page["rows"][2:4], start=2)
         ]
         amount_by_name = {row["values"][1]["display"]: row["values"][0] for row in full_page["rows"]}
         assert amount_by_name["alpha"]["isNull"]
@@ -578,7 +654,7 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
         }
         text_view = engine.apply_filter_model(indexed, text_filter)
         text_shape = engine.shape(text_view)
-        assert text_shape["rows"] == 2
+        assert text_shape["rows"] is None
         text_page = engine.page(
             text_view,
             0,
@@ -586,6 +662,7 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
             total_rows=text_shape["rows"],
             column_projection=[(0, "name-id")],
         )
+        assert text_page["totalRows"] == 2
         assert [row["values"][0]["display"] for row in text_page["rows"]] == ["alpha", "ALPHA"]
 
         sorted_model = {
@@ -618,6 +695,7 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
             total_rows=sorted_shape["rows"],
             column_projection=[(1, "amount-id"), (0, "name-id")],
         )
+        assert sorted_page["totalRows"] == 3
         assert [row["values"][0]["raw"] for row in sorted_page["rows"]] == [-1.0, 2.0, 2.0]
         assert [row["values"][1]["display"] for row in sorted_page["rows"]] == ["ÄLPHA", "Beta", "Beta"]
 
@@ -665,7 +743,7 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
     assert spark_session.range(1).count() == 1
 
 
-def test_partitioned_skewed_frame_keeps_native_far_paging_multi_sort_and_cleanup(
+def test_partitioned_skewed_frame_keeps_native_progressive_paging_multi_sort_and_cleanup(
     spark_session: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -702,17 +780,43 @@ def test_partitioned_skewed_frame_keeps_native_far_paging_multi_sort_and_cleanup
 
     engine, indexed = _open_engine(source, "partitioned-skew")
     try:
-        assert engine.shape(indexed) == {"rows": row_count, "columns": 3}
-        far_page = engine.page(
+        assert engine.shape(indexed) == {"rows": None, "columns": 3}
+        with pytest.raises(EngineError, match="requested contiguously"):
+            engine.page(
+                indexed,
+                row_count - 12,
+                20,
+                total_rows=None,
+                column_projection=[(0, "record-id"), (1, "segment-id")],
+            )
+        with pytest.raises(EngineError, match="requested contiguously"):
+            engine.page(
+                indexed,
+                row_count - 12,
+                20,
+                total_rows=row_count,
+                column_projection=[(0, "record-id"), (1, "segment-id")],
+            )
+        first_source_page = engine.page(
             indexed,
-            row_count - 12,
+            0,
             20,
-            total_rows=row_count,
+            total_rows=None,
             column_projection=[(0, "record-id"), (1, "segment-id")],
         )
-        assert far_page["columnIds"] == ["record-id", "segment-id"]
-        assert [row["rowNumber"] for row in far_page["rows"]] == list(range(row_count - 12, row_count))
-        assert [int(row["id"].rsplit(":", 1)[1]) for row in far_page["rows"]] == list(range(row_count - 12, row_count))
+        second_source_page = engine.page(
+            indexed,
+            20,
+            20,
+            total_rows=None,
+            column_projection=[(0, "record-id"), (1, "segment-id")],
+        )
+        assert first_source_page["columnIds"] == ["record-id", "segment-id"]
+        assert [row["rowNumber"] for row in first_source_page["rows"]] == list(range(20))
+        assert [row["rowNumber"] for row in second_source_page["rows"]] == list(range(20, 40))
+        assert len({row["id"] for row in [*first_source_page["rows"], *second_source_page["rows"]]}) == 40
+        assert first_source_page["totalRows"] is None
+        assert second_source_page["totalRows"] is None
 
         model = {
             "logic": "and",
@@ -730,7 +834,7 @@ def test_partitioned_skewed_frame_keeps_native_far_paging_multi_sort_and_cleanup
             ],
         }
         view = engine.apply_filter_model(indexed, model)
-        assert engine.shape(view) == {"rows": hot_row_count, "columns": 3}
+        assert engine.shape(view) == {"rows": None, "columns": 3}
 
         expected_ids = sorted(
             range(hot_row_count),
@@ -744,18 +848,22 @@ def test_partitioned_skewed_frame_keeps_native_far_paging_multi_sort_and_cleanup
             view,
             0,
             5,
-            total_rows=hot_row_count,
+            total_rows=None,
             column_projection=[(0, "record-id")],
         )
-        last_page = engine.page(
+        second_page = engine.page(
             view,
-            hot_row_count - 5,
             5,
-            total_rows=hot_row_count,
+            5,
+            total_rows=None,
             column_projection=[(0, "record-id")],
         )
         assert [row["values"][0]["raw"] for row in first_page["rows"]] == expected_ids[:5]
-        assert [row["values"][0]["raw"] for row in last_page["rows"]] == expected_ids[-5:]
+        assert [row["values"][0]["raw"] for row in second_page["rows"]] == expected_ids[5:10]
+        assert first_page["totalRows"] is None
+        assert first_page["hasMore"] is True
+        assert second_page["totalRows"] is None
+        assert second_page["hasMore"] is True
 
         score_summary = engine.summaries(view, [(2, "score-id")])[0]
         assert score_summary["totalCount"] == hot_row_count
@@ -765,7 +873,7 @@ def test_partitioned_skewed_frame_keeps_native_far_paging_multi_sort_and_cleanup
     finally:
         engine.close()
 
-    # Closing Open Wrangler releases only its indexed child, not the user's
+    # Closing Open Wrangler releases only its logical child, not the user's
     # Classic or Connect Spark session.
     assert spark_session.range(1).count() == 1
 
@@ -1050,7 +1158,7 @@ def test_nested_negative_zero_uses_native_profile_equality(spark_session: Any) -
         "named_struct('payload', repeat('x', 128))",
     ],
 )
-def test_large_variable_width_page_values_fail_before_terminal_collection(
+def test_large_variable_width_page_values_use_one_guarded_terminal_collection(
     spark_session: Any,
     monkeypatch: pytest.MonkeyPatch,
     expression: str,
@@ -1061,12 +1169,16 @@ def test_large_variable_width_page_values_fail_before_terminal_collection(
     original_collect = dataframe_type.collect
     collected_projections: list[tuple[str, ...]] = []
 
+    transported_payloads: list[Any] = []
+
     def guarded_collect(value: Any) -> Any:
         projection = tuple(value.columns)
         collected_projections.append(projection)
-        if any(name.startswith("__ow_page_value_") and name != "__ow_page_value_bytes" for name in projection):
-            raise AssertionError("Oversized page values must not cross into the notebook process.")
-        return original_collect(value)
+        rows = original_collect(value)
+        if "__ow_page_value_bytes" in projection:
+            payload_index = projection.index("__ow_page_value_0")
+            transported_payloads.extend(row[payload_index] for row in rows)
+        return rows
 
     try:
         with monkeypatch.context() as page_patch:
@@ -1080,7 +1192,8 @@ def test_large_variable_width_page_values_fail_before_terminal_collection(
                     total_rows=1,
                     column_projection=[(0, "payload-id")],
                 )
-        assert collected_projections == [("__ow_page_value_bytes",)]
+        assert collected_projections == [("__ow_page_row_id", "__ow_page_value_bytes", "__ow_page_value_0")]
+        assert transported_payloads == [None]
     finally:
         engine.close()
 
@@ -1257,6 +1370,56 @@ def test_session_manager_detects_live_variable_and_disables_mutation_capabilitie
     }
     assert opened["page"]["columnIds"] == ["c:source:0", "c:source:1"]
     assert len(opened["page"]["rows"]) == 2
+    assert metadata["shape"] == {"rows": None, "columns": 5}
+    assert metadata["filteredShape"] == {"rows": None, "columns": 5}
+    assert opened["page"]["totalRows"] is None
+    assert opened["page"]["hasMore"] is True
+
+    middle = manager.get_page(
+        metadata["sessionId"],
+        metadata["revision"],
+        2,
+        2,
+        _empty_view(),
+        column_limit=2,
+    )
+    assert middle["page"]["totalRows"] is None
+    assert middle["page"]["hasMore"] is True
+
+    terminal = manager.get_page(
+        metadata["sessionId"],
+        metadata["revision"],
+        4,
+        2,
+        _empty_view(),
+        column_limit=2,
+    )
+    assert terminal["page"]["totalRows"] == 5
+    assert "hasMore" not in terminal["page"]
+    assert terminal["metadata"]["shape"] == {"rows": 5, "columns": 5}
+    assert terminal["metadata"]["filteredShape"] == {"rows": 5, "columns": 5}
+
+    first_again = manager.get_page(
+        metadata["sessionId"],
+        metadata["revision"],
+        0,
+        2,
+        _empty_view(),
+        column_limit=2,
+    )
+    assert first_again["page"]["totalRows"] == 5
+    assert "hasMore" not in first_again["page"]
+
+    middle_again = manager.get_page(
+        metadata["sessionId"],
+        metadata["revision"],
+        2,
+        2,
+        _empty_view(),
+        column_limit=2,
+    )
+    assert middle_again["page"]["totalRows"] == 5
+    assert [row["rowNumber"] for row in middle_again["page"]["rows"]] == [2, 3]
 
     with pytest.raises(EngineError, match="viewing mode"):
         manager.preview_step(

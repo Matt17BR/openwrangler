@@ -224,6 +224,16 @@
         "columns": { "type": "integer", "minimum": 0 }
       }
     },
+    "SessionDataShape": {
+      "description": "Live-session shape. A null row count means the backend deliberately has not run a full count.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rows", "columns"],
+      "properties": {
+        "rows": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "columns": { "type": "integer", "minimum": 0 }
+      }
+    },
     "TypedCellKind": {
       "type": "string",
       "enum": [
@@ -283,6 +293,28 @@
         },
         "rows": { "type": "array", "items": { "$ref": "#/definitions/DataRow" } }
       }
+    },
+    "UnknownTotalGridPage": {
+      "description": "A bounded live page whose distributed backend has not run a full count.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["offset", "limit", "totalRows", "hasMore", "columnIds", "rows"],
+      "properties": {
+        "offset": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1 },
+        "totalRows": { "type": "null" },
+        "hasMore": { "const": true },
+        "columnIds": {
+          "description": "Ordered stable identities for projected row values.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "rows": { "type": "array", "items": { "$ref": "#/definitions/DataRow" } }
+      }
+    },
+    "LiveGridPage": {
+      "oneOf": [{ "$ref": "#/definitions/GridPage" }, { "$ref": "#/definitions/UnknownTotalGridPage" }]
     },
     "TypedSelectionToken": {
       "description": "Typed representative for a distinct-value group whose display text alone is ambiguous.",
@@ -1383,8 +1415,8 @@
         "mode": { "$ref": "#/definitions/SessionMode" },
         "source": { "$ref": "#/definitions/SessionSource" },
         "capabilities": { "$ref": "#/definitions/SourceCapabilities" },
-        "shape": { "$ref": "#/definitions/DataShape" },
-        "filteredShape": { "$ref": "#/definitions/DataShape" },
+        "shape": { "$ref": "#/definitions/SessionDataShape" },
+        "filteredShape": { "$ref": "#/definitions/SessionDataShape" },
         "schema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
         "filterModel": { "$ref": "#/definitions/FilterModel" },
         "steps": { "type": "array", "items": { "$ref": "#/definitions/RetainedTransformStep" } },
@@ -1688,7 +1720,7 @@
       "properties": {
         "kind": { "const": "sessionOpened" },
         "metadata": { "$ref": "#/definitions/SessionMetadata" },
-        "page": { "$ref": "#/definitions/GridPage" },
+        "page": { "$ref": "#/definitions/LiveGridPage" },
         "summaries": { "type": "array", "items": { "$ref": "#/definitions/ColumnSummary" } }
       }
     },
@@ -1700,7 +1732,7 @@
         "kind": { "const": "page" },
         "revision": { "type": "integer", "minimum": 0 },
         "viewRequestId": { "type": "string", "minLength": 1 },
-        "page": { "$ref": "#/definitions/GridPage" },
+        "page": { "$ref": "#/definitions/LiveGridPage" },
         "metadata": { "$ref": "#/definitions/SessionMetadata" }
       }
     },

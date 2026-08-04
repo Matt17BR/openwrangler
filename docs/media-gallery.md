@@ -124,7 +124,7 @@ Select any applied step to inspect that point in history, then return to confirm
 <table>
   <tr>
     <td width="51%"><a href="images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling DuckDB, Pandas, and Polars variables by engine and dataframe type" src="images/readme/v1.2/gallery/notebook-variable-picker-detail.png" width="602" height="380"></a></td>
-    <td width="49%"><a href="images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating notebook" src="images/readme/v1.2/gallery/notebook-code-insertion-detail.png" width="1000" height="288"></a></td>
+    <td width="49%"><a href="images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating notebook" src="images/readme/v1.2/gallery/notebook-code-insertion.png" width="1000" height="288"></a></td>
   </tr>
   <tr>
     <td>The notebook picker labels each live variable by engine and dataframe type.</td>
@@ -151,8 +151,9 @@ Select any applied step to inspect that point in history, then return to confirm
   </tr>
 </table>
 
-DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's Spark session and may scan and index
-data for paging, so large or remote dataframes can be expensive to open.
+DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's Spark session. The first page loads
+without counting or caching the entire dataframe, and the exact row total appears after the last page. Pages must be
+visited in order because Spark does not guarantee a global row order for an unordered dataframe.
 
 ## DuckDB nested and temporal values
 

@@ -18,8 +18,6 @@ interface NotebookVariableArgument {
   title?: unknown;
   type?: unknown;
   fileName?: unknown;
-  notebookUri?: unknown;
-  uri?: unknown;
   variable?: {
     name?: unknown;
     variableName?: unknown;
@@ -140,7 +138,7 @@ function notebookVariableQuickPickItem(variable: NotebookVariableDescriptor): No
   const presentation = notebookVariablePresentation(variable.type);
   const detail =
     variable.backend === "pyspark"
-      ? "Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x"
+      ? "Viewing only · First page loads without counting rows · PySpark 4.2.x required"
       : variable.backend === "duckdb"
         ? `${variable.type} · Live viewing-only session`
         : `${variable.type} · Live notebook session`;
@@ -243,6 +241,9 @@ function explicitNotebookOriginsFromArgs(args: unknown[]): ExplicitNotebookOrigi
       if (hasOwnPropertySafely(arg, "$mid")) {
         return { kind: "invalid" };
       }
+      if (hasOwnPropertySafely(arg, "notebookUri") || hasOwnPropertySafely(arg, "uri")) {
+        return { kind: "invalid" };
+      }
       const candidate = arg as NotebookVariableArgument;
       if (candidate.fileName !== undefined) {
         const fileName = releasedJupyterFileNameUri(candidate.fileName);
@@ -250,15 +251,6 @@ function explicitNotebookOriginsFromArgs(args: unknown[]): ExplicitNotebookOrigi
           return { kind: "invalid" };
         }
         uris.push(fileName);
-      }
-      for (const value of [candidate.notebookUri, candidate.uri]) {
-        if (value === undefined) {
-          continue;
-        }
-        if (!(value instanceof vscode.Uri)) {
-          return { kind: "invalid" };
-        }
-        uris.push(value);
       }
     } catch {
       return { kind: "invalid" };

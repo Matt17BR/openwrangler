@@ -20,7 +20,7 @@ test("packaged editor Python preflight checks the exact ordinary acceptance depe
       windowsHide: true
     }
   });
-  for (const moduleName of ["pandas", "polars", "duckdb", "openpyxl"]) {
+  for (const moduleName of ["pandas", "polars", "duckdb", "openpyxl", "pyarrow"]) {
     assert.match(packagedEditorPythonProbeSourceForTesting, new RegExp(`'${moduleName}'`, "u"));
   }
   assert.match(packagedEditorPythonProbeSourceForTesting, /\(3, 10\).*\(3, 14\)/u);
@@ -34,7 +34,7 @@ test("packaged editor Python preflight fails before editor launch with actionabl
       }),
     {
       message:
-        "Packaged editor acceptance needs Python 3.10-3.14 with pandas, polars, duckdb, and openpyxl. " +
+        "Packaged editor acceptance needs Python 3.10-3.14 with pandas, polars, duckdb, openpyxl, and pyarrow. " +
         "Set OPEN_WRANGLER_TEST_PYTHON to an absolute prepared interpreter before launching an editor."
     }
   );

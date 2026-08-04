@@ -121,17 +121,22 @@ export function activateReplaceableAcceptanceLocator(
 
 export function activateAcceptancePointerTargetAtCurrentCenter(
   target: AcceptancePointerTarget,
-  timeoutMs: number
+  timeoutMs: number,
+  immediatelyBeforePointerClick?: () => void
 ): Promise<void> {
+  if (immediatelyBeforePointerClick !== undefined && typeof immediatelyBeforePointerClick !== "function") {
+    return Promise.reject(new TypeError("An acceptance pointer boundary callback must be a function."));
+  }
   return withAcceptanceOperationDeadline(
-    activateAcceptancePointerTargetAtCurrentCenterWithoutDeadline(target),
+    activateAcceptancePointerTargetAtCurrentCenterWithoutDeadline(target, immediatelyBeforePointerClick),
     timeoutMs,
     "the exact acceptance pointer target to receive one physical click"
   );
 }
 
 async function activateAcceptancePointerTargetAtCurrentCenterWithoutDeadline(
-  target: AcceptancePointerTarget
+  target: AcceptancePointerTarget,
+  immediatelyBeforePointerClick?: () => void
 ): Promise<void> {
   const [box, ownsCenter] = await Promise.all([
     target.boundingBox(),
@@ -163,6 +168,7 @@ async function activateAcceptancePointerTargetAtCurrentCenterWithoutDeadline(
   if (!ownsCenter) {
     throw new Error("The exact acceptance pointer target does not own its current center point.");
   }
+  immediatelyBeforePointerClick?.();
   await target.pointer.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 

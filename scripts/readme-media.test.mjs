@@ -75,12 +75,6 @@ const nativeAssets = [
     width: 448,
     height: 440
   }),
-  nativeCrop("gallery/notebook-code-insertion-detail.png", "vscode-notebook-code-insertion-dark.png", 1_440, 900, {
-    x: 45,
-    y: 29,
-    width: 1_000,
-    height: 288
-  }),
   nativeCrop("gallery/operation-configuration-detail.png", "vscode-operation-configuration-dark.png", 1_280, 874, {
     x: 744,
     y: 170,
@@ -234,7 +228,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const buildWebviews = readFileSync(resolve(root, "scripts", "build-webviews.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
   const gallery = readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8");
-  const legacyMediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.1.md"), "utf8");
   const mediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.2.md"), "utf8");
   const testing = readFileSync(resolve(root, "docs", "testing.md"), "utf8");
   const extensionHost = readFileSync(resolve(root, "src", "test", "extensionHost", "index.ts"), "utf8");
@@ -243,29 +236,14 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "utf8"
   );
 
-  assert.equal(
-    packageJson.scripts?.["compose:readme-media"],
-    "node scripts/run-heavy-local-command.mjs compose:readme-media -- node scripts/compose-readme-media.mjs"
-  );
-  assert.equal(
-    packageJson.scripts?.["verify:readme-media"],
-    "node scripts/run-heavy-local-command.mjs verify:readme-media -- node scripts/compose-readme-media.mjs --verify"
-  );
-  assert.equal(
-    packageJson.scripts?.["verify:public-media-surfaces"],
-    "node scripts/run-heavy-local-command.mjs verify:public-media-surfaces -- node scripts/verify-public-media-surfaces.mjs"
-  );
-  assert.equal(
-    packageJson.scripts?.["test:webview-acceptance"],
-    "node scripts/run-heavy-local-command.mjs test:webview-acceptance -- npm run test:webview-acceptance:run"
-  );
+  assert.equal(packageJson.scripts?.["compose:readme-media"], "node scripts/compose-readme-media.mjs");
+  assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
+  assert.equal(packageJson.scripts?.["verify:public-media-surfaces"], "node scripts/verify-public-media-surfaces.mjs");
+  assert.equal(packageJson.scripts?.["test:webview-acceptance"], "npm run test:webview-acceptance:run");
   assert.match(packageJson.scripts?.["test:webview-acceptance:run"] ?? "", /npm run verify:readme-media/u);
   assert.doesNotMatch(packageJson.scripts?.["test:scripts:portable:run"] ?? "", /scripts\/readme-media\.test\.mjs/u);
   assert.match(packageJson.scripts?.["test:scripts:portable:run"] ?? "", /&& npm run test:scripts:media$/u);
-  assert.equal(
-    packageJson.scripts?.["test:scripts:media"],
-    "node scripts/run-heavy-local-command.mjs test:scripts:media -- npm run test:scripts:media:run"
-  );
+  assert.equal(packageJson.scripts?.["test:scripts:media"], "npm run test:scripts:media:run");
   assert.equal(
     packageJson.scripts?.["test:scripts:media:run"],
     "node --max-old-space-size=1024 --test --test-concurrency=1 scripts/public-media-surfaces.test.mjs scripts/readme-media.test.mjs"
@@ -476,7 +454,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "gallery/notebook-variable-picker.png",
     "gallery/notebook-variable-picker-detail.png",
     "gallery/notebook-code-insertion.png",
-    "gallery/notebook-code-insertion-detail.png",
     "notebook-pandas.png",
     "gallery/notebook-pandas-detail.png",
     "gallery/notebook-polars.png",
@@ -533,7 +510,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels"/u
   );
-  assert.match(readme, /Open Wrangler can open larger datasets; usable size depends/u);
+  assert.match(readme, /Larger datasets can work, but the\s+practical limit depends on the engine and machine/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.doesNotMatch(
@@ -553,17 +530,46 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /\| Other VS Code desktop forks \| Experimental/u);
   assert.match(readme, /\| DuckDB, experimental\s+\|/u);
   assert.doesNotMatch(readme, /\| DuckDB, preview/u);
-  assert.match(readme, /Pickle files are not supported because opening one can run arbitrary code/u);
-  assert.match(readme, /large or remote dataframes can be expensive to open/u);
-  assert.match(readme, /does not install PySpark or\s+manage cluster authentication/u);
+  assert.match(readme, /For a trusted Pandas pickle[\s\S]{0,220}Convert Trusted Pickle to Parquet/u);
+  assert.match(readme, /Open Wrangler never overwrites the pickle/u);
+  assert.doesNotMatch(readme, /safe (?:pickle|unpickling|deserialization)/iu);
   assert.match(
     readme,
-    /Issue \[#91\][\s\S]{0,120}tracks a planned comparison with Microsoft Data\s+Wrangler using the same files, editor, Python environment, and actions\./u
+    /does not count or cache the whole dataframe before showing the first page; the row total appears after\s+the final page/u
   );
+  assert.match(readme, /PySpark uses the notebook's existing Spark session and reads pages\s+in order/u);
+  assert.match(readme, /does\s+not install PySpark, handle cluster authentication, or stop your Spark session/u);
+  assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
+  assert.match(readme, /Microsoft Data\s+Wrangler 1\.24\.2/u);
+  assert.match(readme, /Data Wrangler converts Polars data to Pandas/u);
+  assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
   assert.match(
     readme,
-    /\*\*Next in v1:\*\*[\s\S]{0,220}#36[\s\S]{0,220}#86[\s\S]{0,220}#91[\s\S]{0,180}currently\s+experimental/u
+    /\[full results\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
   );
+  for (const row of [
+    /\| Pandas CSV\s+\| Show notebook preview \|\s+\*\*0\.34 s\*\* \|\s+1\.49 s \|/u,
+    /\| Pandas CSV\s+\| Open workbench\s+\|\s+\*\*0\.60 s\*\* \|\s+1\.01 s \|/u,
+    /\| Pandas CSV\s+\| Profile every column\s+\|\s+\*\*5\.58 s\*\* \|\s+18\.80 s \|/u,
+    /\| Polars CSV\s+\| Show notebook preview \|\s+\*\*0\.32 s\*\* \|\s+1\.50 s \|/u,
+    /\| Polars CSV\s+\| Open workbench\s+\|\s+\*\*0\.53 s\*\* \|\s+0\.99 s \|/u,
+    /\| Polars CSV\s+\| Profile every column\s+\|\s+\*\*5\.54 s\*\* \|\s+18\.81 s \|/u,
+    /\| Pandas Parquet \| Show notebook preview \|\s+\*\*0\.24 s\*\* \|\s+1\.53 s \|/u,
+    /\| Pandas Parquet \| Open workbench\s+\|\s+\*\*0\.67 s\*\* \|\s+0\.69 s \|/u,
+    /\| Pandas Parquet \| Profile every column\s+\|\s+\*\*7\.64 s\*\* \|\s+7\.95 s \|/u,
+    /\| Polars Parquet \| Show notebook preview \|\s+\*\*0\.20 s\*\* \|\s+1\.49 s \|/u,
+    /\| Polars Parquet \| Open workbench\s+\|\s+\*\*0\.48 s\*\* \|\s+0\.69 s \|/u,
+    /\| Polars Parquet \| Profile every column\s+\|\s+\*\*7\.20 s\*\* \|\s+8\.23 s \|/u
+  ]) {
+    assert.match(readme, row);
+  }
+  const comparisonReview = readFileSync(resolve(root, "docs/performance/data-wrangler-1.2.1/review.md"), "utf8");
+  assert.match(comparisonReview, /Open Wrangler completed 40\/40\. Data Wrangler\s+completed 37\/40/u);
+  assert.match(comparisonReview, /e45eb499fed50febb61fb0d32cfa9a20800d59b04c67edd20d2568e39aa34ff3/u);
+  assert.match(comparisonReview, /56b933c6db09255d3f3b8338830613950e604094fefc1d3a1db691017f1f7b4b/u);
+  assert.doesNotMatch(readme, /tracks a planned comparison with Microsoft Data Wrangler/u);
+  assert.match(readme, /\*\*Next in v1:\*\*[\s\S]{0,180}#36/u);
+  assert.doesNotMatch(readme, /#263/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   const v2Roadmap = readme.slice(readme.indexOf("- **v2:**"), readme.indexOf("## Contributing and support"));
   assert.match(v2Roadmap, /add native R data frames, tibbles, and `data\.table`, then add Quarto and R Markdown/u);
@@ -640,7 +646,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     gallery,
     /alt="Open Wrangler in a high-contrast theme with the operations sidebar, orders grid, and revenue profile outlined in cyan"/u
   );
-  assert.match(gallery, /large or remote dataframes can be expensive to open/u);
+  assert.match(
+    gallery,
+    /first page loads\s+without counting or caching the entire dataframe[\s\S]{0,120}exact row total appears after the last page/u
+  );
+  assert.doesNotMatch(gallery, /expensive to open|scan and index|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   assert.doesNotMatch(
     gallery,
     /production webview|packaged extension|current grid-block|bounded, read-only projection/u
@@ -674,9 +684,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(mediaSpec, /2 MiB per PNG and 32 MiB for the complete inventory/u);
   assert.match(mediaSpec, /Private setup, restart-probe, and runtime-transfer cells are collapsed/u);
   assert.match(mediaSpec, /raw PySpark variable-picker capture is acceptance evidence, not public product media/u);
-  assert.match(legacyMediaSpec, /\*\*Historical record\.\*\*/u);
-  assert.match(legacyMediaSpec, /canonical v1\.2 media specification\]\(media-spec-v1\.2\.md\)/u);
-  assert.doesNotMatch(legacyMediaSpec, /^## v1\.2 native notebook capture refresh$/mu);
   assert.match(testing, /compose:readme-media[\s\S]{0,160}accepted packaged-editor and\s+production-webview sources/u);
   assert.match(testing, /pixel-exact decoded output/u);
   assert.match(testing, /Generated-code insertion is proven through the exact `NotebookDocument`/u);

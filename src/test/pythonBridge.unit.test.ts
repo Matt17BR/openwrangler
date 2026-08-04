@@ -1394,6 +1394,98 @@ describe("PythonBridge process lifecycle", () => {
   });
 });
 
+describe("PythonBridge trusted pickle preflight", () => {
+  afterEach(() => {
+    setWorkspaceTrust(true);
+    vi.restoreAllMocks();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
+    vi.mocked(pythonEnvironment.probeDependencies).mockReset();
+  });
+
+  it("probes the conversion dependencies and re-resolves only immediately before execution", async () => {
+    setWorkspaceTrust(true);
+    const source = vscode.Uri.file("/workspace/orders.pkl");
+    const environment: pythonEnvironment.PythonEnvironment = {
+      executable: testPythonExecutablePath("/env/bin/python"),
+      executableIdentity: TEST_EXECUTABLE_IDENTITY,
+      packageRoot: "/env",
+      packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
+      version: "3.12.4",
+      source: "configuration"
+    };
+    const context = testExtensionContext();
+    const bridge = new PythonBridge(context);
+    const raw = bridge as unknown as RawBridgeInternals;
+    const ensureProcess = vi.spyOn(raw, "ensureProcess");
+    const spawnProcess = vi.fn();
+    const unrelatedTarget = missingDependencies();
+    raw.lastMissingDependencies = unrelatedTarget;
+    Object.assign(bridge as object, { spawnProcess });
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
+      missing: ["pandas", "pyarrow"],
+      available: []
+    });
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
+
+    try {
+      const preflight = await bridge.preflightTrustedPickleConversion(source);
+
+      expect(preflight).toEqual({
+        executable: environment.executable,
+        version: environment.version,
+        source: environment.source,
+        missing: ["pandas", "pyarrow"]
+      });
+      expect(pythonEnvironment.probeDependencies).toHaveBeenCalledWith(environment.executable, [
+        { importModule: "pandas", distribution: "pandas", installSpec: "pandas" },
+        { importModule: "pyarrow", distribution: "pyarrow", installSpec: "pyarrow" }
+      ]);
+      expect(raw.lastMissingDependencies).toBe(unrelatedTarget);
+
+      const leaseGate = deferred<void>();
+      const leasedConversion = bridge.withTrustedPicklePreflightLease(preflight, () => leaseGate.promise);
+      await expect(bridge.installTrustedPickleDependencies(preflight)).resolves.toBe(false);
+      expect(warning).not.toHaveBeenCalled();
+      leaseGate.resolve();
+      await expect(leasedConversion).resolves.toBeUndefined();
+
+      await expect(bridge.installTrustedPickleDependencies(preflight)).resolves.toBe(false);
+      expect(warning).toHaveBeenCalledWith(
+        `Install pandas, pyarrow into ${environment.executable}?`,
+        { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
+        "Install"
+      );
+      expect(raw.lastMissingDependencies).toBe(unrelatedTarget);
+
+      vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockClear();
+      expect(bridge.isTrustedPicklePreflightCurrent(preflight)).toBe(true);
+      expect(bridge.isTrustedPicklePreflightCurrent(preflight)).toBe(true);
+      expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+
+      await expect(bridge.revalidateTrustedPicklePreflight(preflight)).resolves.toBe(true);
+      expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce();
+      expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(
+        context,
+        source,
+        expect.anything(),
+        expect.objectContaining({ isCurrent: expect.any(Function), isTrusted: expect.any(Function) })
+      );
+
+      bridge.clearRuntimeSelection();
+      vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockClear();
+      expect(bridge.isTrustedPicklePreflightCurrent(preflight)).toBe(false);
+      await expect(bridge.revalidateTrustedPicklePreflight(preflight)).resolves.toBe(false);
+      expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+      expect(ensureProcess).not.toHaveBeenCalled();
+      expect(spawnProcess).not.toHaveBeenCalled();
+      expect(bridge.runtimeRunning).toBe(false);
+    } finally {
+      await bridge.shutdown();
+    }
+  });
+});
+
 describe("PythonBridge dependency installation", () => {
   const originalExtensionTests = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
 

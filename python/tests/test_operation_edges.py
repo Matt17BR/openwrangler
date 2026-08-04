@@ -77,10 +77,12 @@ def assert_records_equal(left: Any, right: Any) -> None:
 
 def typed_records(engine: PandasEngine | PolarsEngine, frame: Any) -> list[dict[str, dict[str, Any]]]:
     schema = engine.schema(frame)
+    row_count = engine.shape(frame)["rows"]
+    assert row_count is not None
     page = engine.page(
         frame,
         0,
-        engine.shape(frame)["rows"],
+        row_count,
         column_projection=[(column["position"], column["id"]) for column in schema],
     )
     return [{column["name"]: cell for column, cell in zip(schema, row["values"], strict=True)} for row in page["rows"]]

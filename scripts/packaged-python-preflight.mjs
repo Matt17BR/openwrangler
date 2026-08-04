@@ -4,7 +4,7 @@ const PROBE_SOURCE = [
   "import importlib",
   "import sys",
   "supported = (3, 10) <= sys.version_info[:2] <= (3, 14)",
-  "modules = ('pandas', 'polars', 'duckdb', 'openpyxl')",
+  "modules = ('pandas', 'polars', 'duckdb', 'openpyxl', 'pyarrow')",
   "raise SystemExit(0 if supported and all(importlib.import_module(name) for name in modules) else 1)"
 ].join("\n");
 
@@ -17,7 +17,7 @@ export function preflightPackagedEditorPython(python, execute = execFileSync) {
     });
   } catch {
     throw new Error(
-      "Packaged editor acceptance needs Python 3.10-3.14 with pandas, polars, duckdb, and openpyxl. " +
+      "Packaged editor acceptance needs Python 3.10-3.14 with pandas, polars, duckdb, openpyxl, and pyarrow. " +
         "Set OPEN_WRANGLER_TEST_PYTHON to an absolute prepared interpreter before launching an editor."
     );
   }

@@ -11,7 +11,13 @@ import pytest
 
 import __main__
 import openwrangler_runtime.notebook as notebook
-from openwrangler_runtime.engines import EngineCapabilities, EngineError, EngineRegistry, PandasEngine
+from openwrangler_runtime.engines import (
+    EngineCapabilities,
+    EngineError,
+    EngineRegistry,
+    PandasEngine,
+    SessionDataShape,
+)
 from openwrangler_runtime.engines.base import SummaryColumnProjection
 from openwrangler_runtime.session import SessionCleanupError, SessionManager, UnknownSessionError
 
@@ -44,7 +50,7 @@ class TrackingPandasEngine(PandasEngine):
         self._fail("schema")
         return super().schema(frame)
 
-    def shape(self, frame: Any) -> dict[str, int]:
+    def shape(self, frame: Any) -> SessionDataShape:
         self.shape_calls += 1
         self._fail("shape")
         return super().shape(frame)
@@ -157,7 +163,7 @@ class PageAndCloseFailingPandasEngine(CloseFailingPandasEngine):
 
 
 class InterruptingOpenPandasEngine(TrackingPandasEngine):
-    def shape(self, frame: Any) -> dict[str, int]:
+    def shape(self, frame: Any) -> SessionDataShape:
         del frame
         self.shape_calls += 1
         raise KeyboardInterrupt

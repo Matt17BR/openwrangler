@@ -7,7 +7,6 @@ import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
 import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
-import { repositoryPythonEnvironment } from "./repository-python-environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmpDir = resolve(root, "tmp", "screenshots");
@@ -450,7 +449,7 @@ print(json.dumps({
     {
       cwd: root,
       encoding: "utf8",
-      env: repositoryPythonEnvironment(resolve(root, "python")),
+      env: { ...process.env, PYTHONPATH: resolve(root, "python") },
       maxBuffer: 32 * 1024 * 1024
     }
   )

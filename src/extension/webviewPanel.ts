@@ -47,11 +47,13 @@ export class OpenWranglerPanel {
         syncId: string;
         sessionId: string;
         revision: number;
+        layoutTransitionPending: boolean;
       }
     | {
         syncId: string;
         sessionId: null;
         revision: null;
+        layoutTransitionPending: false;
       }
     | undefined;
   private rendererHydratedSyncId: string | undefined;
@@ -382,7 +384,7 @@ export class OpenWranglerPanel {
         this.pendingPreReadyImportResponse = undefined;
         this.clearRendererStartupRecoveryTimer();
         this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
-        this.revealCodePreviewAfterRendererSynchronization();
+        this.revealCodePreviewAfterRendererSynchronization(synchronization);
       }
       return;
     }
@@ -1054,27 +1056,45 @@ export class OpenWranglerPanel {
     this.rendererStartupRecoveryTimer = undefined;
   }
 
-  private revealCodePreviewAfterRendererSynchronization(): void {
+  private codePreviewLayoutTransitionPending(): boolean {
     const snapshot = this.snapshot;
-    if (!snapshot || !this.hasHydratedRenderer() || !this.panel.active || OpenWranglerPanel.activePanel !== this) {
-      return;
-    }
+    if (!snapshot || !this.panel.active || OpenWranglerPanel.activePanel !== this) return false;
     const behavior = getSetting<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
     const draftStepId = snapshot.metadata.draftStep?.id;
     const changedSession = this.codePreviewRevealedSessionId !== snapshot.metadata.sessionId;
-    if (behavior === "never") return;
+    if (behavior === "never") return false;
 
-    const shouldReveal = changedSession && (behavior === "always" || draftStepId !== undefined);
-    if (!shouldReveal) return;
+    return changedSession && (behavior === "always" || draftStepId !== undefined);
+  }
+
+  private revealCodePreviewAfterRendererSynchronization(
+    synchronization: NonNullable<OpenWranglerPanel["rendererSynchronizationIdentity"]>
+  ): void {
+    if (!synchronization.layoutTransitionPending) return;
+    const snapshot = this.snapshot;
+    const canReveal =
+      snapshot !== undefined &&
+      synchronization.sessionId === snapshot.metadata.sessionId &&
+      synchronization.revision === snapshot.metadata.revision &&
+      this.hasHydratedRenderer() &&
+      this.codePreviewLayoutTransitionPending();
+    if (!canReveal || !snapshot) {
+      this.scheduleRendererSynchronization(false);
+      return;
+    }
 
     this.codePreviewRevealedSessionId = snapshot.metadata.sessionId;
-    void vscode.commands
-      .executeCommand("openWrangler.codePreview.focus", { preserveFocus: true })
-      .then(undefined, (error: unknown) => {
+    void vscode.commands.executeCommand("openWrangler.codePreview.focus", { preserveFocus: true }).then(
+      () => {
+        if (!this.disposed) this.scheduleRendererSynchronization(false);
+      },
+      (error: unknown) => {
         this.bridge.reportDiagnostic?.(
           `Open Wrangler could not reveal Code Preview: ${error instanceof Error ? error.message : String(error)}`
         );
-      });
+        if (!this.disposed) this.scheduleRendererSynchronization(false);
+      }
+    );
   }
 
   private requestRendererImportOptionsChange(): Promise<RendererImportPreparation | undefined> {
@@ -1146,12 +1166,14 @@ export class OpenWranglerPanel {
       ? {
           syncId: randomNonce(),
           sessionId: this.snapshot.metadata.sessionId,
-          revision: this.snapshot.metadata.revision
+          revision: this.snapshot.metadata.revision,
+          layoutTransitionPending: this.codePreviewLayoutTransitionPending()
         }
       : {
           syncId: randomNonce(),
           sessionId: null,
-          revision: null
+          revision: null,
+          layoutTransitionPending: false as const
         };
     this.settleRendererImportAction(undefined, undefined);
     this.settleRendererSynchronizationAcknowledgement(undefined, false);
