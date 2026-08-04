@@ -4,6 +4,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Changed
+
+- After a pull request is merged, pushes to `main` and `release/1.x` now run just `Fast feedback` instead of repeating
+  the full matrix. Ready pull requests still run every required check, and release candidates run the complete matrix
+  again against the package that may be published.
+- Replaced a 1.5-second timer in the Windows dependency-lock test with a signal from the parent test process. Slow
+  process startup can no longer make the validation subprocess miss the lock.
+
 ## [1.2.1] - 2026-08-04
 
 ### Changed
