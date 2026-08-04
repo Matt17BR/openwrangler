@@ -2,11 +2,15 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
+  constants,
   copyFileSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -858,9 +862,21 @@ function digest(value) {
 }
 
 function readJson(path) {
-  const size = statSync(path).size;
-  if (size <= 0 || size > MAX_JSON_BYTES) throw new Error(`${basename(path)} is empty or too large.`);
-  return JSON.parse(readFileSync(path, "utf8"));
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size <= 0 || before.size > MAX_JSON_BYTES) {
+      throw new Error(`${basename(path)} is empty, too large, or not a regular file.`);
+    }
+    const source = readFileSync(descriptor, "utf8");
+    const after = fstatSync(descriptor);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
+      throw new Error(`${basename(path)} changed while it was being read.`);
+    }
+    return JSON.parse(source);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function writeJsonAtomic(path, value) {
