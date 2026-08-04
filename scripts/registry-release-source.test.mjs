@@ -32,8 +32,7 @@ function repository(context, packageJson = manifest()) {
   git(root, ["commit", "--quiet", "-m", "release"]);
   const version = JSON.parse(packageJson).version;
   git(root, ["tag", `v${version}`]);
-  const branch = version.startsWith("1.") && !version.startsWith("1.99.") ? "release/1.x" : "main";
-  git(root, ["update-ref", `refs/remotes/origin/${branch}`, "HEAD"]);
+  git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
   return root;
 }
 
@@ -52,7 +51,7 @@ test("binds a clean canonical tag checkout to its immutable package bytes", (con
   const root = repository(context);
   const receipt = readRegistryReleaseSource({ releaseTag: "v1.0.1", sourceRoot: root });
   assert.equal(receipt.channel, "stable");
-  assert.equal(receipt.branch, "release/1.x");
+  assert.equal(receipt.branch, "main");
   assert.equal(receipt.commit, git(root, ["rev-parse", "HEAD"]));
   assert.equal(receipt.version, "1.0.1");
 
@@ -97,7 +96,7 @@ test("rejects wrong identities, moved tags, dirty sources, and noncanonical orig
   );
 });
 
-test("rejects annotated tags and commits outside the version-owned protected branch", (context) => {
+test("rejects annotated tags and current releases outside protected main", (context) => {
   const annotated = repository(context);
   git(annotated, ["tag", "--delete", "v1.0.1"]);
   git(annotated, ["tag", "--annotate", "v1.0.1", "--message", "annotated"]);
@@ -106,18 +105,26 @@ test("rejects annotated tags and commits outside the version-owned protected bra
     /exact lightweight ref/u
   );
 
-  const offBranch = repository(context);
+  const offBranch = repository(context, manifest({ version: "1.2.3" }));
   const releaseCommit = git(offBranch, ["rev-parse", "HEAD"]);
   git(offBranch, ["checkout", "--quiet", "--orphan", "unrelated"]);
   git(offBranch, ["rm", "--quiet", "--cached", "package.json"]);
-  writeFileSync(join(offBranch, "package.json"), manifest(), "utf8");
+  writeFileSync(join(offBranch, "package.json"), manifest({ version: "1.2.3" }), "utf8");
   git(offBranch, ["add", "package.json"]);
   git(offBranch, ["commit", "--quiet", "-m", "unrelated"]);
   const unrelatedCommit = git(offBranch, ["rev-parse", "HEAD"]);
   git(offBranch, ["checkout", "--quiet", "--detach", releaseCommit]);
-  git(offBranch, ["update-ref", "refs/remotes/origin/release/1.x", unrelatedCommit]);
+  git(offBranch, ["update-ref", "refs/remotes/origin/main", unrelatedCommit]);
   assert.throws(
-    () => readRegistryReleaseSource({ releaseTag: "v1.0.1", sourceRoot: offBranch }),
-    /version-owned protected release\/1\.x branch/u
+    () => readRegistryReleaseSource({ releaseTag: "v1.2.3", sourceRoot: offBranch }),
+    /protected main branch/u
   );
+});
+
+test("allows immutable releases through v1.2.2 to be recovered from their tag", (context) => {
+  const root = repository(context, manifest({ version: "1.2.2" }));
+  git(root, ["update-ref", "-d", "refs/remotes/origin/main"]);
+  const receipt = readRegistryReleaseSource({ releaseTag: "v1.2.2", sourceRoot: root });
+  assert.equal(receipt.branch, "main");
+  assert.equal(receipt.version, "1.2.2");
 });

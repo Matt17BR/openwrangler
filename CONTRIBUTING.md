@@ -23,9 +23,9 @@ editorial read; do not rely on an AI detector or a word list.
 
 ## Pull requests
 
-- Target `release/1.x` only for v1 maintenance fixes. Target `main` for v2 work and shared development. After a v1
-  fix merges, forward-port its exact squash commit to `main` through a separate reviewed pull request; do not merge
-  `main` back into the maintenance branch.
+- Target `main` for every change intended for a future release. Open Wrangler 2 work stays on its feature branch
+  until it is ready for a preview pull request; do not create a maintenance branch before parallel maintenance is
+  actually needed.
 - Keep a pull request limited to one documented milestone or issue.
 - Add or update tests with every behavior change.
 - Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable generated-code coverage for every editing-capable engine.

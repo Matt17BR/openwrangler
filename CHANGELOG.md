@@ -4,6 +4,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Changed
+
+- Future stable and preview releases now ship from `main`. Releases through v1.2.2 can still be recovered from their
+  immutable tags, but the old v1 maintenance branch is no longer part of normal development or publishing.
+
 ## [1.2.2] - 2026-08-04
 
 ### Added

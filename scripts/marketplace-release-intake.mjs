@@ -4,10 +4,10 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   inspectReleaseMetadata,
+  isHistoricalTagRecoveryVersion,
   MAIN_RELEASE_BRANCH,
   NUMERIC_RELEASE_VERSION,
-  releaseSourcePolicyForVersion,
-  V1_MAINTENANCE_BRANCH
+  releaseSourcePolicyForVersion
 } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
@@ -15,8 +15,7 @@ const FULL_COMMIT = /^[0-9a-f]{40}$/u;
 const TAG_REF = /^refs\/tags\/(?<tag>v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/u;
 const RELEASE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const MAIN_REF = `refs/heads/${MAIN_RELEASE_BRANCH}`;
-const V1_MAINTENANCE_REF = `refs/heads/${V1_MAINTENANCE_BRANCH}`;
-const PROTECTED_RELEASE_REFS = new Set([MAIN_REF, V1_MAINTENANCE_REF]);
+const PROTECTED_RELEASE_REFS = new Set([MAIN_REF]);
 const CANONICAL_REPOSITORY = "https://github.com/Matt17BR/openwrangler.git";
 const AUTOMATIC_BRANCH_REASONS = new Set(["BatchedCI", "IndividualCI"]);
 const MAX_RECOVERY_CHANGED_PATHS = 4096;
@@ -406,7 +405,7 @@ export function inspectMarketplaceReleaseIntake({
       resolvedProtectedBranchCommit !== sourceCommit
     ) {
       problems.push(
-        "An existing release may be promoted only by a manual run from its protected release branch with one canonical numeric tag parameter."
+        "An existing release may be promoted only by a manual run from protected main with one canonical numeric tag parameter."
       );
     } else {
       releaseTag = existingReleaseTag;
@@ -432,22 +431,9 @@ export function inspectMarketplaceReleaseIntake({
     const recovery = inspectMarketplaceRecoverySource(currentPackageJson);
     problems.push(...recovery.problems);
     releaseTag = recovery.releaseTag;
-    const recoveryPolicy = releaseSourcePolicyForVersion(recovery.version);
-    if (problems.length === 0 && recoveryPolicy?.ref !== sourceBranch) {
-      return Object.freeze({
-        eligible: false,
-        noOpReason: "inactive-branch",
-        prerelease: undefined,
-        problems: Object.freeze([]),
-        promote: false,
-        releaseCommit: undefined,
-        releaseTag,
-        version: recovery.version
-      });
-    }
     releaseMayPrecedeAutomation = true;
     if (resolvedProtectedBranchCommit !== sourceCommit) {
-      problems.push("Automatic Marketplace recovery must run from the current public protected release-branch commit.");
+      problems.push("Automatic Marketplace recovery must run from the current public main commit.");
     }
     if (resolvedTagCommit === undefined && remoteTagCommit === undefined && problems.length === 0) {
       return Object.freeze({
@@ -463,7 +449,7 @@ export function inspectMarketplaceReleaseIntake({
     }
   } else if (tagMatch === null) {
     problems.push(
-      "Automatic Marketplace promotion accepts only a canonical numeric Git tag ref or reviewed protected release-branch recovery."
+      "Automatic Marketplace promotion accepts only a canonical numeric Git tag ref or reviewed main-branch recovery."
     );
   } else {
     releaseTag = tagMatch.groups?.tag;
@@ -500,16 +486,19 @@ export function inspectMarketplaceReleaseIntake({
   problems.push(...metadata.problems);
   const sourcePolicy = releaseSourcePolicyForVersion(metadata.version);
   if (historical && sourcePolicy?.ref !== sourceBranch) {
-    problems.push("Manual Marketplace recovery must run from the protected branch that owns the selected version.");
+    problems.push("Manual Marketplace recovery must run from protected main.");
   }
+  const requireMainContainment =
+    typeof metadata.version === "string" && !isHistoricalTagRecoveryVersion(metadata.version);
   if (
     typeof resolvedTagCommit === "string" &&
+    requireMainContainment &&
     (releaseContainedInProtectedBranch !== true ||
       releaseProtectedBranchRef !== sourcePolicy?.ref ||
       typeof resolvedProtectedBranchCommit !== "string" ||
       !FULL_COMMIT.test(resolvedProtectedBranchCommit))
   ) {
-    problems.push("The selected release commit must be contained in its current version-owned protected branch.");
+    problems.push("The selected release commit must be contained in protected main.");
   }
   const eligible =
     problems.length === 0 &&
@@ -535,25 +524,19 @@ export function marketplaceReleaseIntakeOutput(result) {
     if (result.noOpReason === "missing-tag" && result.releaseTag !== undefined) {
       return Object.freeze([
         "##vso[task.setvariable variable=promote;isOutput=true]false",
-        `No immutable release tag ${result.releaseTag} exists for the current package version; protected release-branch recovery completed without Marketplace promotion.`
+        `No immutable release tag ${result.releaseTag} exists for the current package version; main-branch recovery completed without Marketplace promotion.`
       ]);
     }
     if (result.noOpReason === "irrelevant-paths") {
       return Object.freeze([
         "##vso[task.setvariable variable=promote;isOutput=true]false",
-        "The protected release-branch commit changed no reviewed Marketplace recovery path; promotion was not queued."
+        "The main commit changed no reviewed Marketplace recovery path; promotion was not queued."
       ]);
     }
     if (result.noOpReason === "ambiguous-history") {
       return Object.freeze([
         "##vso[task.setvariable variable=promote;isOutput=true]false",
-        "The protected release-branch commit was not a single-parent change; automatic recovery safely completed without promotion."
-      ]);
-    }
-    if (result.noOpReason === "inactive-branch") {
-      return Object.freeze([
-        "##vso[task.setvariable variable=promote;isOutput=true]false",
-        "This protected branch does not own the current package version; Marketplace recovery was not queued."
+        "The main commit was not a single-parent change; automatic recovery completed without promotion."
       ]);
     }
     return Object.freeze([
@@ -599,12 +582,10 @@ function runCli() {
   const recovery = relevantAutomaticProtectedBranch
     ? inspectMarketplaceRecoverySource(currentPackageJson)
     : { releaseTag: undefined };
-  const activeAutomaticProtectedBranch =
-    relevantAutomaticProtectedBranch && releaseSourcePolicyForVersion(recovery.version)?.ref === sourceBranch;
-  const inactiveAutomaticProtectedBranch = relevantAutomaticProtectedBranch && !activeAutomaticProtectedBranch;
+  const activeAutomaticProtectedBranch = relevantAutomaticProtectedBranch;
   const releaseTag = existingReleaseTag !== "" ? existingReleaseTag : (tagMatch?.groups?.tag ?? recovery.releaseTag);
   const releaseCommit =
-    !inactiveAutomaticProtectedBranch && typeof releaseTag === "string" && RELEASE_TAG.test(releaseTag)
+    typeof releaseTag === "string" && RELEASE_TAG.test(releaseTag)
       ? resolveTagCommit(root, releaseTag, { optional: activeAutomaticProtectedBranch })
       : undefined;
   const releasePackageJson =
@@ -615,8 +596,10 @@ function runCli() {
       : undefined;
   const selectedPolicy =
     selectedMetadata?.problems.length === 0 ? releaseSourcePolicyForVersion(selectedMetadata.version) : undefined;
+  const requireMainContainment =
+    selectedMetadata?.version !== undefined && !isHistoricalTagRecoveryVersion(selectedMetadata.version);
   const branchEvidence =
-    releaseCommit !== undefined && selectedPolicy !== undefined
+    releaseCommit !== undefined && selectedPolicy !== undefined && requireMainContainment
       ? releaseBranchEvidence(root, selectedPolicy.ref, releaseCommit)
       : undefined;
   const result = inspectMarketplaceReleaseIntake({
@@ -624,7 +607,7 @@ function runCli() {
     checkedOutCommit,
     currentProtectedBranchCommit:
       branchEvidence?.branchCommit ??
-      (activeAutomaticProtectedBranch ? currentProtectedBranchCommit(sourceBranch) : undefined),
+      (PROTECTED_RELEASE_REFS.has(sourceBranch) ? currentProtectedBranchCommit(sourceBranch) : undefined),
     currentPackageJson,
     existingReleaseTag,
     recoveryChange,

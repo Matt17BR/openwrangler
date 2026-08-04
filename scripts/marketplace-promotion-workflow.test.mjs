@@ -16,7 +16,7 @@ test("Marketplace promotion inspector rejects credentials, rebuilding, and promo
     source.replace('      - "v*"', '      - "main"'),
     source.replace("  batch: false", "  batch: true"),
     source.replace("      - main", '      - "*"'),
-    source.replace("      - release/1.x\n", ""),
+    source.replace("      - main\n", ""),
     source.replace(
       '  tags:\n    include:\n      - "v*"',
       '  tags:\n    include:\n      - "v*"\n  paths:\n    include:\n      - scripts/marketplace-release-intake.mjs'

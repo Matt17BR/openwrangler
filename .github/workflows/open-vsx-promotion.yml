@@ -95,7 +95,7 @@ jobs:
           EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
           RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
         run: node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight
-      - name: Rebind the lightweight tag to its protected source branch before publication
+      - name: Revalidate the lightweight tag source before publication
         run: node scripts/registry-release-source.mjs release-source
       - name: Reverify the release before Open VSX publication
         env:
