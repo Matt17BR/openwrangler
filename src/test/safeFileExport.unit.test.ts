@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { Uri } from "vscode";
 import {
+  beginAtomicFileTransaction,
   createNodeAtomicExportFileSystem,
   exportFileSafely,
   type AtomicExportFileSystem,
@@ -28,7 +29,7 @@ import {
 const SOURCE_CONTENTS = "value\n1\n";
 const DESTINATION_CONTENTS = "# generated\ndef clean_data(df):\n    return df\n";
 
-describe("safe Python-script file export", () => {
+describe("safe file export transactions", () => {
   let directory: string;
 
   beforeEach(async () => {
@@ -53,6 +54,179 @@ describe("safe Python-script file export", () => {
     expect(await readFile(destination, "utf8")).toBe(DESTINATION_CONTENTS);
     expect(await readFile(source, "utf8")).toBe(SOURCE_CONTENTS);
     expect(await temporaryFiles(directory)).toEqual([]);
+  });
+
+  it("commits a worker-written transaction without routing its payload through the caller", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const transaction = await beginAtomicFileTransaction({
+      destination: fileUri(fixture.destination),
+      protectedSources: [fileUri(fixture.source)],
+      createTemporaryId: () => "worker-success"
+    });
+
+    expect(path.dirname(transaction.temporaryPath)).toBe(directory);
+    expect(await readFile(transaction.temporaryPath)).toHaveLength(0);
+    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
+    await transaction.commit();
+
+    expect(await readFile(fixture.destination, "utf8")).toBe(DESTINATION_CONTENTS);
+    expect(await readFile(fixture.source, "utf8")).toBe(SOURCE_CONTENTS);
+    expect(await temporaryFiles(directory)).toEqual([]);
+  });
+
+  it("rolls back an unused reservation without changing the source or destination", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const transaction = await beginAtomicFileTransaction({
+      destination: fileUri(fixture.destination),
+      protectedSources: [fileUri(fixture.source)],
+      createTemporaryId: () => "explicit-rollback"
+    });
+
+    await transaction.rollback();
+    await transaction.rollback();
+
+    await expectFixturePreserved(fixture);
+  });
+
+  it("closes but leaves an abandoned reservation path untouched", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const transaction = await beginAtomicFileTransaction({
+      destination: fileUri(fixture.destination),
+      protectedSources: [fileUri(fixture.source)],
+      createTemporaryId: () => "explicit-abandon"
+    });
+
+    await writeFile(transaction.temporaryPath, "worker may still own this path");
+    await transaction.abandon();
+    await transaction.abandon();
+
+    expect(await readFile(transaction.temporaryPath, "utf8")).toBe("worker may still own this path");
+    await expect(transaction.commit()).rejects.toThrow(/already abandoned/u);
+    expect(await readFile(fixture.source, "utf8")).toBe(SOURCE_CONTENTS);
+    expect(await readFile(fixture.destination, "utf8")).toBe("old destination");
+  });
+
+  it("rolls back a partial worker output while preserving the worker's primary failure", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const workerFailure = new Error("injected external worker failure");
+
+    const error = await captureFailure(async () => {
+      const transaction = await beginAtomicFileTransaction({
+        destination: fileUri(fixture.destination),
+        protectedSources: [fileUri(fixture.source)],
+        createTemporaryId: () => "worker-failure"
+      });
+      try {
+        await writeFile(transaction.temporaryPath, "partial parquet bytes");
+        throw workerFailure;
+      } catch (failure) {
+        await transaction.rollback();
+        throw failure;
+      }
+    });
+
+    expect(error).toBe(workerFailure);
+    await expectFixturePreserved(fixture);
+  });
+
+  it("refuses to commit after the protected source is replaced during worker execution", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const originalSource = path.join(directory, "original-source.csv");
+    const transaction = await beginAtomicFileTransaction({
+      destination: fileUri(fixture.destination),
+      protectedSources: [fileUri(fixture.source)],
+      createTemporaryId: () => "source-replacement"
+    });
+    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
+    await rename(fixture.source, originalSource);
+    await writeFile(fixture.source, "replacement source");
+
+    await expect(transaction.commit()).rejects.toThrow(/protected source changed/u);
+    await transaction.rollback();
+
+    expect(await readFile(originalSource, "utf8")).toBe(SOURCE_CONTENTS);
+    expect(await readFile(fixture.source, "utf8")).toBe("replacement source");
+    expect(await readFile(fixture.destination, "utf8")).toBe("old destination");
+    expect(await temporaryFiles(directory)).toEqual([]);
+  });
+
+  it("refuses to commit after the destination is replaced during worker execution", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const originalDestination = path.join(directory, "original-destination.py");
+    const transaction = await beginAtomicFileTransaction({
+      destination: fileUri(fixture.destination),
+      protectedSources: [fileUri(fixture.source)],
+      createTemporaryId: () => "destination-replacement"
+    });
+    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
+    await rename(fixture.destination, originalDestination);
+    await writeFile(fixture.destination, "replacement destination");
+
+    await expect(transaction.commit()).rejects.toThrow(/destination changed/u);
+    await transaction.rollback();
+
+    expect(await readFile(fixture.source, "utf8")).toBe(SOURCE_CONTENTS);
+    expect(await readFile(originalDestination, "utf8")).toBe("old destination");
+    expect(await readFile(fixture.destination, "utf8")).toBe("replacement destination");
+    expect(await temporaryFiles(directory)).toEqual([]);
+  });
+
+  it("refuses to commit after the destination parent identity is replaced during worker execution", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const base = actualFileSystem();
+    let parentReplaced = false;
+    const fileSystem = actualFileSystem({
+      stat: async (target) => {
+        const identity = await base.stat(target);
+        return parentReplaced && target === directory ? { dev: identity.dev, ino: identity.ino + 1n } : identity;
+      }
+    });
+    const transaction = await beginAtomicFileTransaction({
+      destination: fileUri(fixture.destination),
+      protectedSources: [fileUri(fixture.source)],
+      fileSystem,
+      createTemporaryId: () => "parent-replacement"
+    });
+    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
+    parentReplaced = true;
+
+    await expect(transaction.commit()).rejects.toThrow(/destination changed/u);
+    await transaction.rollback();
+
+    await expectFixturePreserved(fixture);
+  });
+
+  it("refuses to commit or roll back a substituted worker temporary path", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const displacedTemporary = path.join(directory, "displaced-worker-temporary");
+    const base = actualFileSystem();
+    const fileSystem = actualFileSystem({
+      openExclusive: async (target) => {
+        const handle = await base.openExclusive(target);
+        return {
+          ...handle,
+          close: async () => {
+            await handle.close();
+            await rename(target, displacedTemporary);
+            await writeFile(target, "foreign replacement");
+          }
+        };
+      }
+    });
+    const transaction = await beginAtomicFileTransaction({
+      destination: fileUri(fixture.destination),
+      protectedSources: [fileUri(fixture.source)],
+      fileSystem,
+      createTemporaryId: () => "temporary-replacement"
+    });
+    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
+
+    await expect(transaction.commit()).rejects.toThrow(/temporary export file changed unexpectedly/u);
+    await expect(transaction.rollback()).rejects.toThrow(/could not be rolled back completely/u);
+
+    expect(await readFile(transaction.temporaryPath, "utf8")).toBe("foreign replacement");
+    expect(await readFile(displacedTemporary, "utf8")).toBe(DESTINATION_CONTENTS);
+    await expectFixturePreserved(fixture, { expectedTemporaryCount: 1 });
   });
 
   it("atomically replaces an existing regular destination only after the complete temporary file exists", async () => {
@@ -201,7 +375,7 @@ describe("safe Python-script file export", () => {
         contents: Buffer.from(DESTINATION_CONTENTS),
         fileSystem
       })
-    ).rejects.toThrow(/stable filesystem identity for the existing Python-script destination/u);
+    ).rejects.toThrow(/stable filesystem identity for the existing export destination/u);
 
     expect(await readFile(source, "utf8")).toBe(SOURCE_CONTENTS);
     expect(await readFile(destination, "utf8")).toBe("old destination");

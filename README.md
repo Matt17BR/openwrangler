@@ -187,7 +187,9 @@ To keep a notebook result native to DuckDB, open the relation itself. For exampl
 `orders = duckdb.read_csv("orders.csv")`. Calling `orders.df()` explicitly creates a Pandas DataFrame, so Open
 Wrangler correctly opens that resulting object with Pandas.
 
-Pickle files aren't supported. Convert only files you trust to Parquet before opening them.
+For a trusted Pandas pickle, right-click the file and choose **Convert Trusted Pickle to Parquet…**. Open Wrangler
+asks where to save the Parquet file and asks again before Python loads the pickle. The conversion is saved separately;
+Open Wrangler never overwrites the pickle.
 
 See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md)
 for the complete surface.
@@ -225,9 +227,7 @@ cover first-grid and scrolling performance in VS Code and Cursor.
 ## Roadmap
 
 - **Next in v1:** continue the distributed Spark work in [#36](https://github.com/Matt17BR/openwrangler/issues/36).
-  Add guided Parquet conversion for trusted Pandas pickle files in
-  [#263](https://github.com/Matt17BR/openwrangler/issues/263). Support for other VS Code-based desktop editors is
-  currently experimental.
+  Support for other VS Code-based desktop editors is currently experimental.
 - **v2:** add native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 

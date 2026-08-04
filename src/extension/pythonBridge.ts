@@ -44,7 +44,12 @@ import {
   type PythonEnvironment,
   type PythonEnvironmentSelectionChangeEvent
 } from "./pythonEnvironment";
-import { backendImportCapabilityFailure, isFileDataBackend, type PythonDependency } from "./pythonEnvironmentModel";
+import {
+  backendImportCapabilityFailure,
+  isFileDataBackend,
+  trustedPickleConversionDependencies,
+  type PythonDependency
+} from "./pythonEnvironmentModel";
 import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 import { stopChildProcessGracefully } from "./processShutdown";
@@ -80,6 +85,19 @@ interface EnvironmentSelection {
   readonly resolutionController: AbortController;
   readonly dependencyKeys: Set<string>;
   resolvedEnvironment?: PythonEnvironment;
+}
+
+export interface TrustedPicklePythonPreflight {
+  readonly executable: string;
+  readonly version: string;
+  readonly source: PythonEnvironment["source"];
+  readonly missing: readonly string[];
+}
+
+interface TrustedPicklePreflightOwner {
+  readonly selection: EnvironmentSelection;
+  readonly environment: PythonEnvironment;
+  readonly missingTarget?: MissingDependencies;
 }
 
 interface ProcessSelection {
@@ -135,6 +153,8 @@ interface DependencyInstallOperation {
   process?: OwnedDependencyInstall;
   quiescence?: Promise<void>;
   uncertainty?: unknown;
+  boundPicklePreflight?: TrustedPicklePythonPreflight;
+  target?: MissingDependencies;
 }
 
 interface DependencyProbeFlight {
@@ -253,6 +273,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly selectionEpochs = new Map<string, number>();
   private disposed = false;
   private readonly environmentSelections = new Map<string, EnvironmentSelection>();
+  private readonly trustedPicklePreflights = new WeakMap<TrustedPicklePythonPreflight, TrustedPicklePreflightOwner>();
   private readonly dependencyCache = new Map<string, string[]>();
   private readonly dependencyProbes = new Map<string, DependencyProbeFlight>();
   private readonly dependencyProbeOwners = new Map<string, DependencyProbeFlight>();
@@ -264,6 +285,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private dependencyInstallOperation: DependencyInstallOperation | undefined;
   private dependencyRecoveryOperation: DependencyRecoveryOperation | undefined;
   private readonly dependencyMutations = new Map<string, DependencyInstallOperation>();
+  private readonly trustedPickleEnvironmentLeases = new Map<string, number>();
   private readonly excelSheetReads = new Set<AbortController>();
 
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -816,6 +838,146 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     return this.beginDependencyInstallation();
   }
 
+  async installTrustedPickleDependencies(preflight: TrustedPicklePythonPreflight): Promise<boolean> {
+    const owner = this.trustedPicklePreflights.get(preflight);
+    if (!owner?.missingTarget || !this.isTrustedPicklePreflightOwnerCurrent(owner)) return false;
+    return this.beginDependencyInstallation({ preflight, target: owner.missingTarget });
+  }
+
+  async preflightTrustedPickleConversion(
+    resource: vscode.Uri,
+    expected?: TrustedPicklePythonPreflight
+  ): Promise<TrustedPicklePythonPreflight> {
+    if (this.disposed) throw new Error("Open Wrangler cannot convert a pickle after its Python bridge disposed.");
+    if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before converting a pickle.");
+    const expectedOwner = expected ? this.trustedPicklePreflights.get(expected) : undefined;
+    if (expected && (!expectedOwner || expectedOwner.selection.key !== pythonSelectionScope(resource).key)) {
+      throw new Error("The trusted pickle conversion target is no longer available.");
+    }
+
+    const runtime = this.runtimeSlot(pythonSelectionScope(resource).key);
+    const release = this.retainRuntime(runtime);
+    try {
+      const selection = this.environmentSelection(resource);
+      const environment = await selection.promise;
+      if (!this.isCurrentEnvironmentSelection(selection)) throw new PythonEnvironmentResolutionSupersededError();
+      if (
+        expectedOwner &&
+        pythonEnvironmentIdentityKey(environment) !== pythonEnvironmentIdentityKey(expectedOwner.environment)
+      ) {
+        throw new PythonEnvironmentResolutionSupersededError();
+      }
+      if (this.dependencyMutations.has(pythonPackageEnvironmentKey(environment))) {
+        throw new Error(`Open Wrangler is changing Python dependencies in ${environment.executable}.`);
+      }
+      const guardError = await this.dependencyGuardErrorForEnvironment(environment, selection);
+      if (guardError) throw new Error([guardError.message, guardError.detail].filter(Boolean).join(" "));
+      if (!this.isCurrentEnvironmentSelection(selection)) throw new PythonEnvironmentResolutionSupersededError();
+
+      const dependencies = trustedPickleConversionDependencies();
+      const dependencyKey = dependencyProbeKey(environment, dependencies);
+      selection.dependencyKeys.add(dependencyKey);
+      const completedOrProbe = this.probeDependenciesForEnvironment(environment, dependencies);
+      const outcome = completedOrProbe instanceof Promise ? await completedOrProbe : completedOrProbe;
+      if (outcome.flight?.detached || !this.isCurrentEnvironmentSelection(selection)) {
+        throw new PythonEnvironmentResolutionSupersededError();
+      }
+      if (this.dependencyMutations.has(pythonPackageEnvironmentKey(environment))) {
+        throw new PythonEnvironmentResolutionSupersededError();
+      }
+
+      const missing = [...outcome.missing];
+      let missingTarget: MissingDependencies | undefined;
+      if (missing.length > 0) {
+        const missingSet = new Set(missing);
+        missingTarget = {
+          environment,
+          dependencies: dependencies
+            .filter((dependency) => missingSet.has(dependency.installSpec))
+            .map((dependency) => ({ ...dependency })),
+          requirements: missing,
+          selection,
+          selectionEpoch: selection.epoch
+        };
+      }
+
+      const preflight = Object.freeze({
+        executable: environment.executable,
+        version: environment.version,
+        source: environment.source,
+        missing: Object.freeze(missing)
+      });
+      this.trustedPicklePreflights.set(preflight, { selection, environment, missingTarget });
+      return preflight;
+    } catch (error) {
+      if (error instanceof DetachedDependencyProbeError) throw new PythonEnvironmentResolutionSupersededError();
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  isTrustedPicklePreflightCurrent(preflight: TrustedPicklePythonPreflight): boolean {
+    const owner = this.trustedPicklePreflights.get(preflight);
+    return Boolean(owner && this.isTrustedPicklePreflightOwnerCurrent(owner));
+  }
+
+  async revalidateTrustedPicklePreflight(preflight: TrustedPicklePythonPreflight): Promise<boolean> {
+    const owner = this.trustedPicklePreflights.get(preflight);
+    if (!owner || !this.isTrustedPicklePreflightOwnerCurrent(owner)) return false;
+    let current: PythonEnvironment;
+    try {
+      current = await resolvePythonEnvironment(this.context, owner.selection.resource, this.environmentApiBroker, {
+        isCurrent: () => this.isTrustedPicklePreflightOwnerCurrent(owner),
+        isTrusted: () => vscode.workspace.isTrusted
+      });
+    } catch {
+      return false;
+    }
+    return (
+      this.isTrustedPicklePreflightOwnerCurrent(owner) &&
+      pythonEnvironmentIdentityKey(current) === pythonEnvironmentIdentityKey(owner.environment)
+    );
+  }
+
+  withTrustedPicklePreflightLease<T>(preflight: TrustedPicklePythonPreflight, run: () => Promise<T>): Promise<T> {
+    const owner = this.trustedPicklePreflights.get(preflight);
+    if (!owner || !this.isTrustedPicklePreflightOwnerCurrent(owner)) {
+      return Promise.reject(new Error("The selected Python runtime changed before pickle conversion started."));
+    }
+    const key = pythonPackageEnvironmentKey(owner.environment);
+    if (this.dependencyMutations.has(key)) {
+      return Promise.reject(
+        new Error(`Open Wrangler is changing Python dependencies in ${owner.environment.executable}.`)
+      );
+    }
+    this.trustedPickleEnvironmentLeases.set(key, (this.trustedPickleEnvironmentLeases.get(key) ?? 0) + 1);
+    let task: Promise<T>;
+    try {
+      task = run();
+    } catch (error) {
+      this.releaseTrustedPickleEnvironmentLease(key);
+      return Promise.reject(error);
+    }
+    return task.finally(() => this.releaseTrustedPickleEnvironmentLease(key));
+  }
+
+  private releaseTrustedPickleEnvironmentLease(key: string): void {
+    const remaining = (this.trustedPickleEnvironmentLeases.get(key) ?? 1) - 1;
+    if (remaining > 0) this.trustedPickleEnvironmentLeases.set(key, remaining);
+    else this.trustedPickleEnvironmentLeases.delete(key);
+  }
+
+  private isTrustedPicklePreflightOwnerCurrent(owner: TrustedPicklePreflightOwner): boolean {
+    return (
+      !this.disposed &&
+      vscode.workspace.isTrusted &&
+      this.isCurrentEnvironmentSelection(owner.selection) &&
+      owner.selection.resolvedEnvironment === owner.environment &&
+      !this.dependencyMutations.has(pythonPackageEnvironmentKey(owner.environment))
+    );
+  }
+
   revalidateRuntimeDependencies(): Promise<boolean> {
     if (this.disposed) {
       return Promise.reject(
@@ -1158,7 +1320,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     release();
   }
 
-  private beginDependencyInstallation(): Promise<boolean> {
+  private beginDependencyInstallation(bound?: {
+    preflight: TrustedPicklePythonPreflight;
+    target: MissingDependencies;
+  }): Promise<boolean> {
     if (this.disposed) {
       return Promise.reject(new Error("Open Wrangler cannot install dependencies after its runtime bridge disposed."));
     }
@@ -1166,8 +1331,14 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       return Promise.resolve(false);
     }
     const existing = this.dependencyInstallOperation;
-    if (existing?.promise) return existing.promise;
-    const operation: DependencyInstallOperation = { phase: "confirming" };
+    if (existing?.promise) {
+      return !bound || existing.boundPicklePreflight === bound.preflight ? existing.promise : Promise.resolve(false);
+    }
+    const operation: DependencyInstallOperation = {
+      phase: "confirming",
+      boundPicklePreflight: bound?.preflight,
+      target: bound?.target
+    };
     this.dependencyInstallOperation = operation;
     const installation = this.installMissingDependenciesWithDecision(operation);
     operation.promise = installation;
@@ -1177,7 +1348,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   private async installMissingDependenciesWithDecision(operation: DependencyInstallOperation): Promise<boolean> {
-    const missing = this.lastMissingDependencies;
+    const missing = operation.target ?? this.lastMissingDependencies;
     if (!missing || missing.requirements.length === 0) {
       if (!this.disposed) {
         void vscode.window.showInformationMessage("Open Wrangler has no unresolved runtime dependencies.");
@@ -1199,7 +1370,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     operation.executable = executable;
     operation.dependencies = dependencies;
     operation.requirements = requirements;
-    if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) {
+    if (!this.isCurrentDependencyInstallTarget(operation, missing, executable, requirements)) {
       this.reportInvalidDependencyInstallTarget();
       return false;
     }
@@ -1209,7 +1380,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       "Install"
     );
     if (choice !== "Install") return false;
-    if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) {
+    if (!this.isCurrentDependencyInstallTarget(operation, missing, executable, requirements)) {
       this.reportInvalidDependencyInstallTarget();
       return false;
     }
@@ -1218,7 +1389,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     const completed = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Installing Open Wrangler dependencies" },
       async () => {
-        if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) return false;
+        if (!this.isCurrentDependencyInstallTarget(operation, missing, executable, requirements)) return false;
         operation.authorizationEpoch = this.dependencyAuthorizationEpoch;
         operation.authorizationSelection = missing.selection;
         try {
@@ -1327,7 +1498,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     if (!completed || this.disposed) return false;
 
-    const currentTarget = this.lastMissingDependencies;
+    const currentTarget = operation.boundPicklePreflight ? undefined : this.lastMissingDependencies;
     this.releaseDependencyInstallOperation(operation);
     if (!currentTarget) {
       void vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
@@ -1344,6 +1515,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     environment: PythonEnvironment
   ): Promise<void> {
     const mutationKey = pythonPackageEnvironmentKey(environment);
+    if ((this.trustedPickleEnvironmentLeases?.get(mutationKey) ?? 0) > 0) {
+      throw new Error(`Open Wrangler cannot change Python dependencies while converting a trusted pickle.`);
+    }
     const existing = this.dependencyMutations.get(mutationKey);
     if (existing && existing !== operation) {
       throw new Error(`Open Wrangler is already changing Python dependencies in ${environment.executable}.`);
@@ -1428,16 +1602,26 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   private isCurrentDependencyInstallTarget(
+    operation: DependencyInstallOperation,
     missing: MissingDependencies,
     executable: string,
     requirements: readonly string[]
   ): boolean {
+    const boundOwner = operation.boundPicklePreflight
+      ? this.trustedPicklePreflights.get(operation.boundPicklePreflight)
+      : undefined;
+    const ownsTarget = operation.boundPicklePreflight
+      ? Boolean(
+          boundOwner && boundOwner.missingTarget === missing && this.isTrustedPicklePreflightOwnerCurrent(boundOwner)
+        )
+      : this.lastMissingDependencies === missing;
     return (
       !this.disposed &&
       vscode.workspace.isTrusted &&
       this.isCurrentEnvironmentSelection(missing.selection) &&
       missing.selectionEpoch === missing.selection.epoch &&
-      this.lastMissingDependencies === missing &&
+      ownsTarget &&
+      (this.trustedPickleEnvironmentLeases?.get(pythonPackageEnvironmentKey(missing.environment)) ?? 0) === 0 &&
       missing.environment.executable === executable &&
       missing.dependencies.length === requirements.length &&
       missing.dependencies.every((dependency, index) => dependency.installSpec === requirements[index]) &&

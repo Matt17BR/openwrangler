@@ -4,6 +4,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- Added **Convert Trusted Pickle to Parquet…** to the file menu for local `.pkl` and `.pickle` files. The command
+  names the selected Python interpreter, requires confirmation before loading the pickle, accepts Pandas DataFrames,
+  and saves the result as a separate Parquet file instead of overwriting the pickle.
+
 ### Changed
 
 - After a pull request is merged, pushes to `main` and `release/1.x` now run just `Fast feedback` instead of repeating

@@ -1,7 +1,7 @@
 # Open Wrangler and Data Wrangler benchmark
 
 This benchmark compares Open Wrangler with Microsoft Data Wrangler 1.24.2 through the controls a notebook user
-actually clicks. Data Wrangler is installed from the Marketplace and treated as a black box.
+actually clicks. Data Wrangler is installed from the Marketplace; the test does not inspect its package.
 
 ## Workloads
 
@@ -113,7 +113,7 @@ directory; only an interrupted session is repeated.
 ## Review
 
 Before publication, a second reviewer checks the eight session IDs, ten samples per session, versions and hashes,
-timing boundaries, recalculated summaries, median regression decisions, memory coverage, and failure counts. The
+the recorded start and end events, recalculated summaries, median regression decisions, memory coverage, and failures. The
 report must contain no private paths, source values, screenshots, logs, or proprietary package contents.
 
 Record the method and calculation review in

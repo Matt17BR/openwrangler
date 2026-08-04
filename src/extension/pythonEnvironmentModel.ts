@@ -109,6 +109,13 @@ export function requiredDependencies(backend: FileDataBackend, source: SessionSo
   return [...dependencies.values()];
 }
 
+export function trustedPickleConversionDependencies(): PythonDependency[] {
+  return [
+    { importModule: "pandas", distribution: "pandas", installSpec: "pandas" },
+    { importModule: "pyarrow", distribution: "pyarrow", installSpec: "pyarrow" }
+  ];
+}
+
 export function isSupportedPythonVersion(major: number, minor: number): boolean {
   return major === 3 && minor >= 10 && minor <= 14;
 }
