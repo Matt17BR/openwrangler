@@ -24,18 +24,18 @@ Open Wrangler keeps correctness, security, packaging, accessibility, and native-
 | `Remote SSH acceptance`             | remote workspace             | opt-in, label-gated packaged Remote SSH journey                                                                              | canonical VSIX                   |
 | `validate`                          | required aggregate           | blocking jobs must succeed; conditional Jupyter/Remote SSH results must match their classifiers                              | all of the above                 |
 
-The `validate` job retains the existing protected check name. It uses `!cancelled()` so its result step executes after failed or skipped dependencies while a superseded pull-request head can stop without running an obsolete aggregate. `scripts/require-ci-results.mjs` requires classification and `Fast feedback` to succeed on every pull request. Documentation-only changes skip every product lane. A ready package-only change must pass `canonical-vsix` while runtime, editor, and Jupyter evidence stays skipped. The directly protected CodeQL and cross-platform names still succeed through small carrier cells when the full matrix is not required. A draft keeps its action tier skipped and `validate` deliberately fails with a deferred-until-ready diagnostic. This prevents a successful draft check at one commit from satisfying merge protection during the short interval after that same commit is marked ready. The `ready_for_review` event reruns all three pull-request workflows at that exact SHA, and every ready substantive pull request plus every protected-branch push requires the complete product matrix to succeed. Missing, malformed, contradictory, cancelled, or unexpectedly successful/skipped results fail the aggregate. Released-Jupyter acceptance must succeed for every affected ready substantive pull request and must be skipped for documentation-only, package-only, draft, and protected-branch push runs. Remote SSH follows the same rule when `acceptance:remote-ssh` is present.
+The `validate` job retains the existing protected check name. It uses `!cancelled()` so its result step executes after failed or skipped dependencies while a superseded pull-request head can stop without running an obsolete aggregate. `scripts/require-ci-results.mjs` requires classification and `Fast feedback` to succeed on every pull request. Documentation-only changes skip every product lane. A ready package-only change must pass `canonical-vsix` while runtime, editor, and Jupyter evidence stays skipped. The directly protected CodeQL and cross-platform names still succeed through small carrier cells when the full matrix is not required. A draft keeps its action tier skipped and `validate` deliberately fails with a deferred-until-ready diagnostic. This prevents a successful draft check at one commit from satisfying merge protection during the short interval after that same commit is marked ready. The `ready_for_review` event reruns all three pull-request workflows at that exact SHA, and every ready substantive pull request requires the complete product matrix. Missing, malformed, contradictory, cancelled, or unexpectedly successful/skipped results fail the aggregate. Released-Jupyter acceptance must succeed for every affected ready substantive pull request. Remote SSH follows the same rule when `acceptance:remote-ssh` is present.
 
-The shared classifier compares exact lowercase pull-request base and head commits using a NUL-delimited, rename-disabled Git diff and fatal UTF-8 decoding, and accepts the event's draft field only as the exact string `true` or `false`. The documentation fast path remains limited to non-packaged `docs/**`, root contributor/security/agent guides already excluded by `.vscodeignore`, and issue or pull-request templates. `docs/images/**`, `docs/media-gallery.md`, and every `docs/media-spec-*` contract are excluded because they own public or accepted visual evidence. A package-only change may contain only `README.md`, `CHANGELOG.md`, `LICENSE`, and/or `THIRD_PARTY_NOTICES.md`; it builds the real VSIX, verifies all four archive documents against the source bytes, and runs the README/public-media contracts. Draft state takes precedence over each ready tier. An empty diff, mixed tiers, an unknown path, or any package manifest, build, workflow, asset, runtime, or other test change selects the full matrix as soon as the pull request is ready. Pushes, schedules, and manual runs always select the full workflow. Missing or non-boolean draft state fails classification rather than assuming draft or ready.
+The shared classifier compares exact lowercase pull-request base and head commits using a NUL-delimited, rename-disabled Git diff and fatal UTF-8 decoding, and accepts the event's draft field only as the exact string `true` or `false`. The documentation fast path remains limited to non-packaged `docs/**`, root contributor/security/agent guides already excluded by `.vscodeignore`, and issue or pull-request templates. `docs/images/**`, `docs/media-gallery.md`, and every `docs/media-spec-*` contract are excluded because they own public or accepted visual evidence. A package-only change may contain only `README.md`, `CHANGELOG.md`, `LICENSE`, and/or `THIRD_PARTY_NOTICES.md`; it builds the real VSIX, verifies all four archive documents against the source bytes, and runs the README/public-media contracts. Draft state takes precedence over each ready tier. An empty diff, mixed tiers, an unknown path, or any package manifest, build, workflow, asset, runtime, or other test change selects the full matrix as soon as the pull request is ready. Missing or non-boolean draft state fails classification rather than assuming draft or ready.
 
 Only `Fast feedback` does substantive work on a documentation-only or draft pull request. A ready package-only pull request runs `canonical-vsix`, including focused media contracts after `verify:vsix`. Runtime/coverage, visual, native editor, Cursor, and Jupyter lanes use one job-level full-matrix condition and report explicit skipped results to `validate`. Expanded names from internal matrices are not protected contexts; the aggregate consumes stable job IDs. The fail-closed aggregate accepts only the exact result set for documentation, package, full-matrix, or draft state. On missing, malformed, or contradictory classification the product conditions default to running and the aggregate still fails the classifier.
 
 Affected released-Jupyter acceptance downloads and revalidates the same run-scoped `openwrangler-vsix` artifact used by the other packaged PR consumers. The separate weekly/manual workflow remains an ecosystem-drift lane and self-packages only because it has no caller artifact.
 
-Cross-platform runtime matrices and CodeQL remain separate workflows with directly protected expanded contexts. A hosted documentation-only probe proved that skipping a matrix at job level emits only a generic, unexpanded check name, which cannot satisfy protection configured for its cells. These matrices therefore always expand with their existing names. In documentation-only, package-only, or draft mode each cell runs a fail-closed consistency gate and a small context carrier, then succeeds without checkout, toolchain setup, analysis, or tests; the deliberately failing `validate` context is the draft merge blocker. Full-matrix PRs and all non-PR events run every complete cell. A failed, non-boolean, or contradictory classification also expands every cell, fails its first gate, and keeps expensive steps dormant. The CI aggregate does not claim to summarize a workflow it cannot depend on.
+Cross-platform runtime matrices and CodeQL remain separate workflows with directly protected expanded contexts. A hosted documentation-only probe proved that skipping a matrix at job level emits only a generic, unexpanded check name, which cannot satisfy protection configured for its cells. These matrices therefore always expand with their existing names. In documentation-only, package-only, or draft mode each cell runs a fail-closed consistency gate and a small context carrier, then succeeds without checkout, toolchain setup, analysis, or tests; the deliberately failing `validate` context is the draft merge blocker. Ready full-matrix pull requests, schedules, and manual runs execute the complete cells. A failed, non-boolean, or contradictory classification also expands every cell, fails its first gate, and keeps expensive steps dormant. The CI aggregate does not claim to summarize a workflow it cannot depend on.
 
-Superseded pull-request runs are cancelled within the same ref-scoped concurrency group. Pushes to protected
-`main`, scheduled ecosystem checks, manual release validation, and publication are never cancelled by that policy.
+Superseded pull-request runs are cancelled within the same ref-scoped concurrency group. Protected-branch feedback,
+scheduled ecosystem checks, manual release validation, and publication are never cancelled by that policy.
 This avoids spending hosted-editor time on a commit that can no longer merge while preserving every durable evidence
 run.
 
@@ -64,8 +64,9 @@ Cursor; production promotion sends those exact accepted bytes to GitHub, Open VS
 without rebuilding them. The only additional long-lived line is the narrowly scoped v1 maintenance branch below.
 
 The source policy reserves a protected `release/1.x` maintenance branch for stable v1 versions and `main` for the
-`1.99.x` v2 preview line and later v2 releases. CI, CodeQL, and native cross-platform checks run for pull requests and
-pushes on both protected branches. Stable metadata, tag publication, and Marketplace recovery derive their permitted
+`1.99.x` v2 preview line and later v2 releases. Ready pull requests run CI, CodeQL, and native cross-platform checks on
+both protected branches. A protected-branch push repeats only `Fast feedback`; the release-candidate workflow owns the
+next complete matrix. Stable metadata, tag publication, and Marketplace recovery derive their permitted
 branch from the numeric version rather than trusting a caller-supplied ref. The live `release/1.x` branch was cut from
 the reviewed CI migration on 2026-08-01. Its active ruleset requires pull requests, squash-only linear history,
 resolved review threads, strict `validate`, cross-platform runtime, Windows dependency guards, and both CodeQL
@@ -106,13 +107,17 @@ every broad compatibility matrix. Exact non-packaged documentation changes can p
 shipped-document changes must build and verify the canonical package without repeating unrelated engine/editor
 matrices. Draft pull requests keep `validate` deliberately failed until the exact commit is marked ready.
 
-The model follows proven upstream patterns rather than inventing a three-branch ceremony: VS Code Python keeps a
-main development line plus release branches and separates stable from prerelease publication; VS Code Jupyter
-cancels superseded work, schedules broader compatibility, and retains failure artifacts; GitLens keeps focused PR
-quality and integration gates while running broader editor coverage separately; and pandas reserves expensive wheel
-matrices for labels, schedules, manual dispatch, and releases. Open Wrangler remains stricter where its product needs
-it: one checksum-bound VSIX must pass real VS Code, Cursor, notebook, performance, and registry gates before
-publication.
+The v1.2.1 review found a larger duplication outside the pull request: a normal released change used about 82.5
+runner-minutes before merge, another 70.2 after the protected push, and roughly 73.3 for the release candidate. The
+post-merge matrix did not protect a merge or a publication and tested the same tree that had just passed the strict,
+up-to-date pull-request ruleset. Protected pushes now run only `Fast feedback`; cross-platform and CodeQL no longer
+start on push. The ready pull request and the exact release candidate still run their complete matrices.
+
+Several large open-source projects use a similar split. VS Code Python works from `main` plus release branches. VS Code
+Jupyter cancels outdated pull-request runs and schedules broader compatibility checks. GitLens separates quick PR
+checks from editor integration tests, and pandas reserves expensive wheel builds for selected pull requests,
+schedules, and releases. Open Wrangler still tests one checksum-bound VSIX in VS Code, Cursor, notebooks, and the
+release checks before publishing it.
 
 ### Post-v1.2 decision
 
@@ -149,12 +154,10 @@ The development loop should therefore optimize _when_ the complete matrix is req
 4. Run the broader scheduled ecosystem/performance checks and the complete candidate matrix again at the immutable VSIX
    promotion boundary. Publication always consumes those accepted bytes; it never rebuilds them.
 
-This policy will be revisited after at least 20 post-consolidation substantive pull requests. A further split should be
-evidence-led, for example a repeated external-service failure rate above 5 percent or a normally queued aggregate p95
-above 12 minutes, rather than a reaction to a legitimate test exposing unfinished code. Documentation-only and
-package-only changes plus draft feedback now have bounded fail-closed paths. Extracting the shared stable/preview acceptance
-fan-out into a reusable workflow remains a possible future saving, but it should not be introduced without proving
-that artifact identity and every release fan-in still fail closed.
+Track the next 20 substantive pull requests before splitting the ready-PR matrix further. Useful reasons would be a
+repeated external-service failure rate above 5 percent or a normally queued aggregate p95 above 12 minutes. A single
+legitimate failure is not a reason to weaken a gate. Extracting the shared stable/preview acceptance fan-out remains a
+possible later saving, but only if artifact identity and both release fan-ins stay fail closed.
 
 - [VS Code Python pull-request and build workflows](https://github.com/microsoft/vscode-python/tree/82940c942228f819121302657375c81b5d42d36a/.github/workflows)
 - [VS Code Jupyter build and test workflow](https://github.com/microsoft/vscode-jupyter/blob/eb3597ff0739386d99382c2f68aa6c9c15041ed1/.github/workflows/build-test.yml)
