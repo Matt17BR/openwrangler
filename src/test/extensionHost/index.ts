@@ -14199,7 +14199,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:pandas-basic:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "pandas_frame",
-      notebookUri: notebook.uri
+      fileName: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "pandas_frame",
@@ -14282,7 +14282,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:pandas-duplicates:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "duplicate_frame",
-      notebookUri: notebook.uri
+      fileName: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "duplicate_frame",
@@ -14674,7 +14674,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:pandas-structural:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "structural_frame",
-      notebookUri: notebook.uri
+      fileName: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "structural_frame",
@@ -15049,7 +15049,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:pandas-by-example-group:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "identity_frame",
-      notebookUri: notebook.uri
+      fileName: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "identity_frame",
@@ -15290,7 +15290,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:polars:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "polars_frame",
-      notebookUri: notebook.uri
+      fileName: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "polars_frame",
@@ -15335,7 +15335,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     jupyter.testing.setDenied(true);
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "pandas_frame",
-      notebookUri: notebook.uri
+      fileName: notebook.uri
     });
     await waitFor(() => jupyter.testing.denialCalls() > denialCalls, 10_000, "the packaged Jupyter permission denial");
     assert.equal(testing.diagnostics().sessionCount, 0);
