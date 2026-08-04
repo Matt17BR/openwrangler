@@ -1913,7 +1913,9 @@ async function executeWarmSetup(
   selectNotebookCell(captured, setupCellBeforeDispatch);
   const summaryBeforeDispatch = executionSummaryFingerprint(setupCellBeforeDispatch);
   let freshExecution = false;
-  let commandError: unknown;
+  type SetupCommandState = { kind: "pending" } | { kind: "fulfilled" } | { kind: "rejected"; error: unknown };
+  let commandState: SetupCommandState = { kind: "pending" };
+  const readCommandState = (): SetupCommandState => commandState;
   const listener = vscode.workspace.onDidChangeNotebookDocument((event) => {
     if (event.notebook !== captured.notebook) return;
     if (event.cellChanges.some((change) => change.cell.index === setupIndex && change.executionSummary !== undefined)) {
@@ -1926,12 +1928,18 @@ async function executeWarmSetup(
         ranges: [{ start: setupIndex, end: setupIndex + 1 }],
         document: captured.notebook.uri
       })
-    ).catch((error: unknown) => {
-      commandError = error;
-    });
+    ).then(
+      () => {
+        commandState = { kind: "fulfilled" };
+      },
+      (error: unknown) => {
+        commandState = { kind: "rejected", error };
+      }
+    );
     recordProgress(`comparison:${request.trialId}:warm-setup-dispatch`);
     do {
-      if (commandError) throw commandError;
+      const currentCommandState = readCommandState();
+      if (currentCommandState.kind === "rejected") throw currentCommandState.error;
       const setupCell = currentSetupCell();
       const executionChanged = freshExecution || executionSummaryFingerprint(setupCell) !== summaryBeforeDispatch;
       const outcome = comparisonSetupExecutionOutcome(setupCell.executionSummary, executionChanged);
@@ -1947,7 +1955,10 @@ async function executeWarmSetup(
       }
       await page.waitForTimeout(POLL_MS);
     } while (Date.now() < deadline);
-    throw new JourneyTimeout("run-cell", "Timed out waiting for the untimed setup cell.");
+    if (readCommandState().kind === "fulfilled") {
+      throw new Error("The untimed setup command completed without a fresh cell execution.");
+    }
+    throw new JourneyTimeout("run-cell", "Timed out while the untimed setup command was still pending.");
   } finally {
     listener.dispose();
   }
