@@ -4,14 +4,27 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-04
+
 ### Changed
 
+- Pandas column profiles no longer scan native integer, float, boolean, date, and duration columns in Python just to
+  count missing values. On the 1M × 20 Parquet comparison fixture, all 20 profiles fell from about 21 seconds to
+  about 6.5 seconds in the focused runtime check.
+- Reworked the Data Wrangler benchmark around eight isolated editor sessions—one per product and workload—with ten
+  warm notebook samples in each session. Median performance can
+  block a release; p95 is reported for context. Its separate harness smoke now runs two samples per product instead
+  of repeating the full benchmark. Resume keeps genuine product failures and timeouts, reruns only harness-aborted
+  sessions, and rejects memory samples with a gap longer than one second. In the primary study Open Wrangler completed
+  40/40 journeys and stayed within every median limit; Data Wrangler completed 37/40 because three full-profile
+  journeys failed or timed out, so the comparison is reported as descriptive evidence rather than an 80/80 pass.
 - Removed the completed v1.0 performance-evidence workflow and its dedicated maintenance checks. Stable performance
   acceptance now has one documented path through the canonical stable-release artifact.
 - GitHub releases now use the versioned notes stored in the tagged commit instead of generated pull-request summaries.
   Missing, malformed, invalid UTF-8, oversized, or conflicting notes stop publication before the release is changed.
-- Generated columns now scroll into view even when Cursor finishes laying out Code Preview without sending a resize
-  event. The retry stops after a fixed number of frames and cancels immediately when you scroll or click the grid.
+- Generated columns now scroll into view even when Cursor finishes laying out Code Preview after the first retry has
+  gone quiet. A later renderer synchronization wakes any reveal that is still pending; the retry remains bounded and
+  cancels immediately when you scroll or click the grid.
 - Added bounded draft-pull-request feedback without weakening ready-PR evidence. Draft updates run the existing static
   source lane plus bounded carriers for directly protected matrix names, while the protected `validate` context
   deliberately remains failed until `ready_for_review` reruns the required tier at the same commit. Missing,

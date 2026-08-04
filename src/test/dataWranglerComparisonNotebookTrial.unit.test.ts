@@ -3,6 +3,9 @@ import {
   COMPARISON_TRIAL_REQUEST_PROTOCOL,
   COMPARISON_TRIAL_RESULT_PROTOCOL,
   boundedFailureMessage,
+  comparisonAriaCountsMatch,
+  clickComparisonPointerTarget,
+  comparisonSetupExecutionOutcome,
   integerProfileTextReady,
   isComparisonKernelLabel,
   observePointerReady,
@@ -11,7 +14,8 @@ import {
   validateComparisonTrialRequest,
   validateComparisonTrialResult,
   type ComparisonTrialRequest,
-  type ComparisonTrialResult
+  type ComparisonTrialResult,
+  type ComparisonTrialSample
 } from "./extensionHost/dataWranglerComparisonNotebookTrial";
 
 const SHA = "a".repeat(64);
@@ -29,6 +33,7 @@ function request(overrides: Partial<ComparisonTrialRequest> = {}): ComparisonTri
     product: "open-wrangler",
     kind: "warm",
     order: 0,
+    repetitions: 10,
     isolatedRoot: "/tmp/openwrangler-comparison",
     notebookPath: "/tmp/openwrangler-comparison/study.ipynb",
     cell: {
@@ -44,22 +49,16 @@ function request(overrides: Partial<ComparisonTrialRequest> = {}): ComparisonTri
     dataWranglerVersion: "1.24.2",
     editor: { path: "/opt/code/code", version: "1.105.0", sha256: SHA },
     python: { path: "/opt/python/bin/python", version: "3.12.11", sha256: SHA },
-    timeoutsMs: { inlinePreview: 45_000, workbenchOpen: 60_000, completeProfile: 135_000 },
+    timeoutsMs: { preAction: 75_000, inlinePreview: 30_000, workbenchOpen: 40_000, completeProfile: 110_000 },
     ...overrides
   };
 }
 
 const action = { accessibleName: "Open in Open Wrangler", unique: true, pointer: true } as const;
 
-function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrialResult {
+function sample(index: number, overrides: Partial<ComparisonTrialSample> = {}): ComparisonTrialSample {
   return {
-    protocol: COMPARISON_TRIAL_RESULT_PROTOCOL,
-    trialId: "pandas-csv-warm-00",
-    product: "open-wrangler",
-    engine: "pandas",
-    format: "csv",
-    kind: "warm",
-    order: 0,
+    index,
     status: "success",
     failure: null,
     metrics: {
@@ -95,9 +94,24 @@ function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrial
   };
 }
 
+function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrialResult {
+  return {
+    protocol: COMPARISON_TRIAL_RESULT_PROTOCOL,
+    trialId: "pandas-csv-warm-00",
+    product: "open-wrangler",
+    engine: "pandas",
+    format: "csv",
+    kind: "warm",
+    order: 0,
+    samples: Array.from({ length: 10 }, (_unused, index) => sample(index + 1)),
+    ...overrides
+  };
+}
+
 describe("neutral comparison request", () => {
   it("accepts the exact Pandas/CSV smoke contract", () => {
     expect(validateComparisonTrialRequest(request())).toEqual(request());
+    expect(validateComparisonTrialRequest(request({ repetitions: 2 }))).toEqual(request({ repetitions: 2 }));
   });
 
   it("rejects mismatched cell identities and paths outside the isolated root", () => {
@@ -114,6 +128,8 @@ describe("neutral comparison request", () => {
     expect(() =>
       validateComparisonTrialRequest(request({ timeoutsMs: { ...request().timeoutsMs, completeProfile: 1 } }))
     ).toThrow(/completeProfile timeout/u);
+    expect(() => validateComparisonTrialRequest(request({ repetitions: 3 as 10 }))).toThrow(/repetitions/u);
+    expect(() => validateComparisonTrialRequest(request({ kind: "cold" as "warm" }))).toThrow(/kind/u);
   });
 });
 
@@ -152,33 +168,6 @@ describe("prepared notebook layout", () => {
     ).toThrow(/exactly one ow-comparison-setup/u);
   });
 
-  it("keeps the cold source out of its untimed bootstrap cell", () => {
-    const coldSetup = {
-      ...setup,
-      source: 'import pandas as pd\naaa_comparison_bootstrap = pd.DataFrame({"c00": [0], "c01": [1]})'
-    };
-    const cold = {
-      ...measured,
-      source: "import pandas as pd\nstudy_frame = pd.read_csv(source)\nstudy_frame"
-    };
-    expect(
-      validateComparisonNotebookLayout({
-        kind: "cold",
-        cellId: "pandas-csv",
-        variableName: "study_frame",
-        cells: [coldSetup, cold]
-      })
-    ).toEqual({ setupIndex: 0, measuredIndex: 1 });
-    expect(() =>
-      validateComparisonNotebookLayout({
-        kind: "cold",
-        cellId: "pandas-csv",
-        variableName: "study_frame",
-        cells: [setup, cold]
-      })
-    ).toThrow(/assign the measured variable only for a warm trial/u);
-  });
-
   it("rejects stale output and an extra comparison-tagged cell", () => {
     expect(() =>
       validateComparisonNotebookLayout({
@@ -199,6 +188,22 @@ describe("prepared notebook layout", () => {
   });
 });
 
+describe("untimed setup completion", () => {
+  it("accepts VS Code's completed timing when success is omitted", () => {
+    expect(comparisonSetupExecutionOutcome({ timing: { startTime: 1, endTime: 2 } }, true)).toBe("success");
+  });
+
+  it("fails an explicit unsuccessful execution and ignores stale summaries", () => {
+    expect(comparisonSetupExecutionOutcome({ success: false, timing: { startTime: 1, endTime: 2 } }, true)).toBe(
+      "failure"
+    );
+    expect(comparisonSetupExecutionOutcome({ success: true, timing: { startTime: 1, endTime: 2 } }, false)).toBe(
+      "pending"
+    );
+    expect(comparisonSetupExecutionOutcome({ success: undefined, timing: undefined }, true)).toBe("pending");
+  });
+});
+
 describe("private comparison kernel label", () => {
   it("accepts the display name with or without VS Code's interpreter suffix", () => {
     expect(isComparisonKernelLabel("Python 3.12 (Comparison)")).toBe(true);
@@ -211,33 +216,60 @@ describe("private comparison kernel label", () => {
 describe("neutral comparison result", () => {
   it("accepts a complete, strictly ordered public-UI result", () => {
     expect(validateComparisonTrialResult(result())).toEqual(result());
+    const smoke = result({ samples: result().samples.slice(0, 2) });
+    expect(validateComparisonTrialResult(smoke)).toEqual(smoke);
   });
 
   it("accepts one ordered failure prefix without inventing later timings", () => {
-    const failed = result({
+    const failedSample = sample(4, {
       status: "timeout",
       failure: { stage: "inline-preview", kind: "timeout", message: "Inline preview timed out." },
       metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
       milestones: [{ name: "run-cell-click", monotonicNs: "1" }],
       publicUi: { runCell: action, inline: null, workbench: null, profiling: null }
     });
+    const complete = result();
+    const failed = result({ samples: complete.samples.map((item, index) => (index === 3 ? failedSample : item)) });
     expect(validateComparisonTrialResult(failed)).toEqual(failed);
   });
 
   it("rejects reordered clocks and incomplete success evidence", () => {
+    const complete = result();
     expect(() =>
       validateComparisonTrialResult(
         result({
-          milestones: [
-            { name: "run-cell-click", monotonicNs: "2" },
-            { name: "inline-ready", monotonicNs: "1" }
-          ]
+          samples: complete.samples.map((item, index) =>
+            index === 0
+              ? sample(1, {
+                  milestones: [
+                    { name: "run-cell-click", monotonicNs: "2" },
+                    { name: "inline-ready", monotonicNs: "1" }
+                  ]
+                })
+              : item
+          )
         })
       )
     ).toThrow(/increase strictly/u);
     expect(() =>
-      validateComparisonTrialResult(result({ publicUi: { ...result().publicUi, workbench: null } }))
+      validateComparisonTrialResult(
+        result({
+          samples: complete.samples.map((item, index) =>
+            index === 0 ? sample(1, { publicUi: { ...sample(1).publicUi, workbench: null } }) : item
+          )
+        })
+      )
     ).toThrow(/all metrics and public UI evidence/u);
+  });
+
+  it("requires two or ten one-based samples and rejects the legacy top-level sample shape", () => {
+    expect(() => validateComparisonTrialResult(result({ samples: result().samples.slice(0, 9) }))).toThrow(
+      /two smoke samples or ten release samples/u
+    );
+    expect(() =>
+      validateComparisonTrialResult(result({ samples: result().samples.map((item) => ({ ...item, index: 1 })) }))
+    ).toThrow(/consecutive and one-based/u);
+    expect(() => validateComparisonTrialResult({ ...result(), status: "success" })).toThrow(/unknown fields/u);
   });
 });
 
@@ -290,6 +322,15 @@ describe("public readiness oracles", () => {
     expect(observeVisibleFullShape({ rows: 100_000, columns: 50 })).toBe(true);
   });
 
+  it("accepts ARIA counts with grid headers without treating a renderer window as the full shape", () => {
+    expect(comparisonAriaCountsMatch({ rows: 100_000, columns: 50, ariaRowCount: 100_001, ariaColumnCount: 51 })).toBe(
+      true
+    );
+    expect(comparisonAriaCountsMatch({ rows: 100_000, columns: 50, ariaRowCount: 1006, ariaColumnCount: 51 })).toBe(
+      false
+    );
+  });
+
   it("requires a stable unobstructed exact pointer target", async () => {
     const element = {
       isConnected: true,
@@ -315,5 +356,26 @@ describe("public readiness oracles", () => {
     };
     await expect(observePointerReady(element, "Run")).resolves.toBe(true);
     await expect(observePointerReady(element, "Different")).resolves.toBe(false);
+  });
+
+  it("performs one real click after pointer readiness without an intermediate geometry read", async () => {
+    let beforeClicks = 0;
+    let clicks = 0;
+    const evidence = await clickComparisonPointerTarget(
+      {
+        accessibleName: "Run",
+        pointerReady: async () => true,
+        click: async () => {
+          clicks += 1;
+        }
+      },
+      () => {
+        beforeClicks += 1;
+      }
+    );
+
+    expect(evidence).toEqual({ accessibleName: "Run", unique: true, pointer: true });
+    expect(beforeClicks).toBe(1);
+    expect(clicks).toBe(1);
   });
 });

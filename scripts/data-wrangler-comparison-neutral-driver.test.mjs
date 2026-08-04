@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  attachComparisonSampleMemory,
   comparisonProductSettings,
   comparisonHostRequest,
   summarizePss,
@@ -27,7 +28,15 @@ test("enables each product's public notebook renderer for Pandas and Polars", ()
 
 test("host request omits the launcher-only VS Code CLI path", () => {
   const request = {
-    protocol: "openwrangler-comparison-trial-request-v1",
+    protocol: "openwrangler-comparison-trial-request-v2",
+    repetitions: 10,
+    timeoutsMs: {
+      preAction: 75_000,
+      inlinePreview: 30_000,
+      workbenchOpen: 40_000,
+      completeProfile: 110_000,
+      editorPhase: 600_000
+    },
     editor: {
       path: "/code",
       cliPath: "/code-cli",
@@ -53,6 +62,8 @@ test("host request omits the launcher-only VS Code CLI path", () => {
     sha256: "a".repeat(64)
   });
   assert.equal(request.editor.cliPath, "/code-cli");
+  assert.equal(host.repetitions, 10);
+  assert.equal(Object.hasOwn(host.timeoutsMs, "editorPhase"), false);
   assert.equal(Object.hasOwn(host.cell, "sourceSha256"), false);
 });
 
@@ -70,33 +81,22 @@ test("private trial sources are checked before and after editor use", () => {
   }
 });
 
-test("PSS summary uses the pre-action median and measured-window peak", () => {
+test("PSS summary uses measured-action samples and excludes later peaks", () => {
   const samples = [
-    sample(100, 100),
-    sample(200, 120),
-    sample(300, 110),
-    sample(400, 180),
-    sample(500, 160),
-    sample(600, 999)
+    sample(10_800_000_000, 100),
+    sample(11_000_000_000, 180),
+    sample(11_200_000_000, 160),
+    sample(11_400_000_000, 999)
   ];
   const summary = summarizePss(samples, [
-    { name: "run-cell-click", monotonicNs: "350" },
-    { name: "profiles-complete", monotonicNs: "550" }
+    { name: "run-cell-click", monotonicNs: "11000000000" },
+    { name: "profiles-complete", monotonicNs: "11300000000" }
   ]);
   assert.deepEqual(summary, {
-    baselinePssBytes: 110,
     peakPssBytes: 180,
-    adjustedPeakPssBytes: 70,
-    sampleCount: 6,
+    sampleCount: 4,
     intervalMs: 200,
-    samples: [
-      sanitizedSample(100, 100),
-      sanitizedSample(200, 120),
-      sanitizedSample(300, 110),
-      sanitizedSample(400, 180),
-      sanitizedSample(500, 160),
-      sanitizedSample(600, 999)
-    ]
+    samples: samples.map(({ monotonicNs, pssBytes }) => sanitizedSample(monotonicNs, pssBytes))
   });
   assert.equal(JSON.stringify(summary).includes("rootPid"), false);
   assert.equal(JSON.stringify(summary).includes("processes"), false);
@@ -106,10 +106,52 @@ test("PSS evidence rejects an out-of-order raw series", () => {
   assert.throws(() => summarizePss([sample(200, 100), sample(100, 200)], []), /increase strictly/u);
 });
 
-function sample(monotonicNs, pssBytes) {
-  return { monotonicNs: String(monotonicNs), rootPid: 10, processCount: 1, pssBytes, processes: [] };
+test("PSS evidence retains a rising process tree during the measured action", () => {
+  const samples = [
+    sample(11_000_000_000, 100_000_000, 1),
+    sample(11_200_000_000, 200_000_000, 2),
+    sample(11_400_000_000, 300_000_000, 3)
+  ];
+  assert.equal(
+    summarizePss(samples, [
+      { name: "run-cell-click", monotonicNs: "11000000000" },
+      { name: "profiles-complete", monotonicNs: "11400000000" }
+    ]).peakPssBytes,
+    300_000_000
+  );
+});
+
+test("session PSS is split into one bounded memory record per measured sample", () => {
+  const firstPss = [sample(11_000_000_000, 180), sample(11_200_000_000, 160), sample(11_400_000_000, 150)];
+  const secondPss = [sample(30_000_000_000, 280), sample(30_200_000_000, 260), sample(30_400_000_000, 250)];
+  const milestones = (run, complete) => [
+    { name: "run-cell-click", monotonicNs: String(run) },
+    { name: "profiles-complete", monotonicNs: String(complete) }
+  ];
+  const samples = attachComparisonSampleMemory(
+    [
+      { index: 1, status: "success", milestones: milestones(11_000_000_000, 11_400_000_000) },
+      { index: 2, status: "success", milestones: milestones(30_000_000_000, 30_400_000_000) },
+      { index: 3, status: "failure", milestones: [] }
+    ],
+    [...firstPss, sample(20_000_000_000, 999), ...secondPss]
+  );
+
+  assert.equal(samples[0].memory.peakPssBytes, 180);
+  assert.deepEqual(samples[0].memory.samples, firstPss.map(toSanitizedSample));
+  assert.equal(samples[1].memory.peakPssBytes, 280);
+  assert.deepEqual(samples[1].memory.samples, secondPss.map(toSanitizedSample));
+  assert.equal(samples[2].memory, null);
+});
+
+function sample(monotonicNs, pssBytes, processCount = 1) {
+  return { monotonicNs: String(monotonicNs), rootPid: 10, processCount, pssBytes, processes: [] };
 }
 
 function sanitizedSample(monotonicNs, pssBytes) {
   return { monotonicNs: String(monotonicNs), pssBytes, processCount: 1 };
+}
+
+function toSanitizedSample({ monotonicNs, pssBytes, processCount }) {
+  return { monotonicNs, pssBytes, processCount };
 }

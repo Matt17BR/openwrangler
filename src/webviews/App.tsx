@@ -863,10 +863,7 @@ export function App() {
             : current?.sessionId === response.sessionId && current.revision === response.revision;
         if (matchesSession) {
           const reveal = goToColumnRequestRef.current;
-          if (
-            reveal?.retainUntilSynchronization?.sessionId === response.sessionId &&
-            reveal.retainUntilSynchronization.revision === response.revision
-          ) {
+          if (reveal) {
             // The synchronization barrier can follow a Code Preview layout
             // transition that left the first reveal attempt dormant. Always
             // issue a fresh identity so DataGrid retries against the final

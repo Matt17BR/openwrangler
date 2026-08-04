@@ -1,15 +1,9 @@
-# Open Wrangler and Data Wrangler performance comparison
+# Open Wrangler and Data Wrangler benchmark
 
-This is the method for the v1.2.1 comparison with Microsoft Data Wrangler 1.24.2. The study uses public product
-surfaces and treats Data Wrangler as an opaque Marketplace extension. We do not inspect or retain its package.
+This benchmark compares Open Wrangler with Microsoft Data Wrangler 1.24.2 through the controls a notebook user
+actually clicks. Data Wrangler is installed from the Marketplace and treated as a black box.
 
-The full report is not complete until all planned trials have run and the calculation review in
-[`docs/performance/data-wrangler-1.2.1/review.md`](performance/data-wrangler-1.2.1/review.md) is signed off. A smoke run
-only proves that the journey works; it is not performance evidence.
-
-## What we measure
-
-The study has four cells:
+## Workloads
 
 | Dataframe | Source  |          Shape |
 | --------- | ------- | -------------: |
@@ -18,143 +12,76 @@ The study has four cells:
 | Pandas    | Parquet | 1,000,000 × 20 |
 | Polars    | Parquet | 1,000,000 × 20 |
 
-Both products receive the same Pandas object in the Pandas cells. Open Wrangler receives the real Polars dataframe in
-the Polars cells. Data Wrangler receives that same variable through its public notebook action. We report only what
-the UI proves about Data Wrangler's backend; we do not infer its implementation from timing.
+The fixtures are deterministic integer tables generated for the benchmark. They contain no user data. Both products
+receive the same Pandas object in the Pandas runs and the same Polars object in the Polars runs.
 
-Each trial follows one notebook journey:
+One **session** is one isolated VS Code window for one product and workload. One **sample** is one pass through the
+measured notebook workflow. The full benchmark uses eight sessions and records 80 samples.
 
-1. run the tagged cell and wait for a stable inline preview with a usable launch action;
-2. click **Open in Open Wrangler** or **Open in Data Wrangler** and wait for an unobstructed, scrollable grid;
-3. open the public profiling surface and wait for the first useful profile;
-4. visit columns in schema order and wait until all column summaries are final.
+## Measurements
 
-The recorded timings are:
+The benchmark starts eight isolated, headless VS Code sessions: one for each product and workload. It selects the
+pinned Python 3.12 kernel, loads the dataframe, and handles first-use permission. Setup is not timed.
 
-- `inlinePreviewMs`: **Run Cell** click to the stable inline result;
-- `workbenchOpenMs`: public launch-action click to the usable grid;
-- `firstProfileMs`: profiling click to the first final column profile; and
-- `completeProfileMs`: profiling click to final profiles for every column.
+Each session records the same visible workflow ten times:
 
-The driver checks public text, roles, geometry, busy state, deterministic headers and sentinel values. A loading shell,
-hidden grid, blocked pointer, open Quick Input, or one-column profile does not satisfy the boundary.
+1. Run the dataframe cell and wait for a usable inline preview.
+2. Click **Open in Open Wrangler** or **Open in Data Wrangler** and wait for a usable, scrollable grid.
+3. Open column profiling and wait until every column has a completed profile.
+4. Close the viewer before the next sample.
 
-## Data and notebook setup
+The dataframe and kernel stay resident for all ten samples. The benchmark measures a ready kernel and resident
+dataframe; it does not measure editor startup or disk reads. A session has a ten-minute hard limit and a separate
+three-minute no-progress limit. After timing stops, the harness returns Open Wrangler to the first column so the next
+sample starts from the same viewport.
 
-Fixtures are synthetic integer tables with columns `c00` through `cNN`. Row zero contains `0, 1, 2, ...`; row one
-contains `1, 2, 3, ...`. The CSV and Parquet files are hashed before the study and each trial receives a read-only copy
-inside its private root. Before collection, the existing benchmark fixture contract scans the full schema, row count,
-types, and value formula. The runner checks the original and copied hashes again for every trial. No user data is used.
+For every sample the runner records:
 
-Every trial first runs an untimed setup cell that creates a one-row dataframe. The host uses it to start the kernel,
-activate the selected product, and settle first-use permission before timing. Open Wrangler requests permission while
-it prepares notebook previews. For Data Wrangler, the host clicks the notebook toolbar's documented **View data**
-action, waits for the bootstrap variable to appear, then closes the picker without opening a viewer. Warm trials also
-load `study_frame` in the setup cell, so the measured cell only renders the resident variable. Cold trials leave the
-source unopened until the measured cell loads and renders it. Setup and measured cells have separate exact tags:
+- cell click to usable inline preview;
+- launch click to usable full grid;
+- profiling click to the first completed column;
+- profiling click to completed profiles for every column; and
+- highest sampled proportional set size (PSS) for the editor-owned process tree during that workflow.
 
-```text
-ow-comparison-setup:<cell-id>
-ow-comparison-cell:<cell-id>
-```
+The UI checks the full dataframe shape, expected columns, scrollability, completed profiles, and pointer-ready public
+actions. A loading shell or a partial profile does not count as ready. PSS is sampled every 200 ms; a gap longer than
+one second invalidates the session instead of understating memory use.
 
-The neutral host uses that tag and the requested variable name. It does not use whichever notebook or editor happens
-to be active.
+## Results and release decision
 
-Here, "cold" means the dataframe is not resident in the kernel before timing. The study does not flush the operating
-system's filesystem cache, so cold results must not be presented as uncached-storage measurements.
+For each product and workload, report the ten raw values, failures, minimum, maximum, median, and type-7 p95. With ten
+observations, p95 is close to the slowest run, so it is useful context rather than a release gate.
 
-## Schedule
+Open Wrangler blocks the release only when its median exceeds both parts of a limit below. Small timing differences
+are treated as noise.
 
-For each cell, run ten warm pairs. Product order alternates so each product runs first five times. Cells are
-interleaved by repetition rather than completing one workload before starting the next.
+| Measure           | Relative allowance | Absolute allowance |
+| ----------------- | -----------------: | -----------------: |
+| Inline preview    |                20% |             250 ms |
+| Workbench open    |                20% |             250 ms |
+| First profile     |                20% |             500 ms |
+| All profiles      |                20% |           2,000 ms |
+| Observed peak PSS |                10% |            256 MiB |
 
-Then run two descriptive cold pairs per cell: one Open Wrangler/Data Wrangler order and one reversed order. Cold
-results remain separate from the ten-sample warm distribution.
-
-This produces 96 planned trials:
-
-- 4 cells × 10 warm pairs × 2 products = 80 warm trials;
-- 4 cells × 2 cold orders × 2 products = 16 cold trials.
-
-The schedule is deterministic and every trial has a stable ID. The runner writes one result file per completed ID.
-Restarting the same command skips those IDs and continues with the first missing trial; it never replaces a completed
-failure, timeout, or slow sample.
+A publishable report needs ten successful samples for every product and workload. A measured product error stays
+in the results. A setup or harness error invalidates only that session. Re-running the same output directory replaces
+that interrupted session, while successful sessions remain untouched. Measured actions are not retried inside a
+session and slow values are not removed.
 
 ## Environment
 
-Use one official Microsoft VS Code build, one Open Wrangler v1.2.1 candidate VSIX, and CPython 3.12 with pinned
-Pandas, Polars, PyArrow, Jupyter Core, and ipykernel versions. The manifest records the exact versions and SHA-256
-digests for the editor executable and CLI, VS Code product metadata, Python executable, candidate, fixtures, method,
-runner modules, dependency lock, fixture contract, and compiled host journey. Candidate and editor versions are read
-from the VSIX and executables; they are not supplied as labels on the command line.
+Use one official VS Code build, one packaged Open Wrangler candidate, Data Wrangler 1.24.2, and CPython 3.12 with
+pinned Pandas, Polars, PyArrow, Jupyter Core, and ipykernel versions. Run on a quiet machine connected to the same power
+source for the full collection.
 
-Data Wrangler is installed from the public Marketplace as `ms-toolsai.datawrangler@1.24.2`. Its ID and public version
-are recorded. Its package bytes are neither hashed nor opened.
+Every session gets a private user-data directory, extensions directory, notebook, and read-only fixture copy. The
+runner records versions, fixture hashes, the candidate hash, editor identity, Python identity, machine details, and
+the benchmark-tool hashes. It does not use the normal editor profile or desktop, retain Data Wrangler package bytes,
+or record dataframe values.
 
-Every trial uses a new user-data directory, notebook, source copy, kernel, and headless zero-window workbench. The two
-products have separate prepared extension directories, reused only to avoid reinstalling the same pinned extensions
-96 times. The runner deletes those directories after the final trial. No trial uses the user's desktop, editor
-profile, workspace, or credentials.
+## Running it
 
-Use the same machine, power source, CPU policy, editor geometry, theme, zoom, and Python environment for the full run.
-The manifest records OS, architecture, CPU model/count, RAM, power source, and CPU governor. Do not run other build,
-editor, or benchmark jobs during collection.
-
-## Timeouts and failures
-
-The fixed UI deadlines are:
-
-| Boundary           | Deadline |
-| ------------------ | -------: |
-| Inline preview     |     45 s |
-| Workbench open     |     60 s |
-| Complete profile   |    135 s |
-| Whole driver phase |    300 s |
-
-A product error or UI deadline is a trial outcome. Keep it in the report. Harness/setup failures are also recorded,
-but they must be fixed before the study can support a release claim. There is no outlier trimming, automatic retry,
-or replacement run after a product action.
-
-## Memory
-
-On Linux, the parent launcher samples proportional set size (PSS) for the owned editor process and its descendants at
-200 ms intervals. `/proc/<pid>/stat` start times guard against PID reuse. The sampler reads `smaps_rollup` only for
-the root and descendants it has identified.
-
-For each successful trial, report:
-
-- median PSS immediately before the **Run Cell** action;
-- peak absolute PSS between **Run Cell** and final profiling; and
-- baseline-adjusted peak PSS (`peak - baseline`, floored at zero).
-
-The result must contain at least one sample before **Run Cell** and one sample inside the measured window. A missing
-sample fails the trial; startup or post-profile samples are never substituted for the stated boundaries.
-
-PSS is a process-tree measure and includes the editor, extension host, renderer, kernel, and Open Wrangler runtime when
-present. It is not an allocation profile of either extension. Each result retains only the bounded, path-free
-timestamp/PSS/process-count series needed to recalculate the summary; it never retains PIDs or process arguments.
-
-## Statistics
-
-Warm results are the primary comparison. For every cell, product, timing, and memory measure, report:
-
-- successful sample count;
-- failures and timeouts;
-- minimum and maximum;
-- median; and
-- p95.
-
-Median and p95 use Hyndman-Fan type 7 interpolation, the default in R and NumPy. Paired summaries use Open Wrangler
-minus Data Wrangler within each completed warm pair. Negative time or memory differences mean Open Wrangler used less.
-Pairs with a failed or timed-out arm remain in the outcome table but do not enter the paired numeric distribution.
-
-Ten samples are enough for a release comparison, not a universal performance claim. The report must name the machine,
-versions, data shapes, success counts, and boundaries next to any headline result.
-
-## Running the study
-
-Build/package the candidate and generate the fixed fixtures first. Then run:
+Build the candidate and fixed fixtures, then run:
 
 ```bash
 npm run comparison:study -- \
@@ -162,50 +89,32 @@ npm run comparison:study -- \
   --python /absolute/path/python3.12 \
   --editor /absolute/path/code \
   --editor-cli /absolute/path/code-cli \
-  --csv /absolute/path/study-100k-x-50.csv \
-  --parquet /absolute/path/study-1m-x-20.parquet \
-  --out /absolute/path/study-output
+  --csv /absolute/path/100000-50.csv \
+  --parquet /absolute/path/1000000-20.parquet \
+  --out /absolute/path/benchmark-output
 ```
 
-The command builds only the neutral extension-host test module, creates `manifest.json`, and appends results under
-`trials/`. Re-run the same command after an interruption. The inputs must still match the manifest.
+The command writes one atomic result per session. Re-running it resumes at the first missing or interrupted session.
+It does not replace a successful session.
 
-Generate the report after all 96 trials finish:
+Generate the checked report after all eight sessions finish:
 
 ```bash
 npm run comparison:report -- \
-  --study /absolute/path/study-output \
+  --study /absolute/path/benchmark-output \
   --out /absolute/path/openwrangler-data-wrangler-report.json
 ```
 
-Before the full collection, run the first complete Pandas/CSV pair in a separate output directory:
+Use `npm run comparison:smoke` with the same arguments before a full collection. The
+smoke runs two sessions—one per product—against the Pandas/CSV workload, with two samples in each. It catches broken selectors or permissions;
+its timings are not release results. If the machine sleeps or the command stops, run it again with the same output
+directory; only an interrupted session is repeated.
 
-```bash
-npm run comparison:smoke -- \
-  --candidate /absolute/path/openwrangler.vsix \
-  --python /absolute/path/python3.12 \
-  --editor /absolute/path/code \
-  --editor-cli /absolute/path/code-cli \
-  --csv /absolute/path/study-100k-x-50.csv \
-  --parquet /absolute/path/study-1m-x-20.parquet \
-  --out /absolute/path/smoke-output
-```
+## Review
 
-This is two arms of one paired trial, not performance evidence. Delete its output after review and use a fresh
-directory for the 96-trial collection.
+Before publication, a second reviewer checks the eight session IDs, ten samples per session, versions and hashes,
+timing boundaries, recalculated summaries, median regression decisions, memory coverage, and failure counts. The
+report must contain no private paths, source values, screenshots, logs, or proprietary package contents.
 
-## Review and publication
-
-Before publishing results, a reviewer who did not write the runner checks:
-
-- the four cells, schedule, boundaries, and timeouts against this document;
-- exact versions and hashes in the manifest;
-- 96 unique planned IDs and one retained outcome for every ID;
-- type-7 median/p95 recalculation from raw trial files;
-- paired differences and failure/timeout counts;
-- absolute and adjusted PSS calculations;
-- the absence of private paths, source values, screenshots, logs, or proprietary package contents; and
-- the wording of any performance claim against what the public UI evidence actually proves.
-
-Record both the method review and final calculation review in
+Record the method and calculation review in
 [`docs/performance/data-wrangler-1.2.1/review.md`](performance/data-wrangler-1.2.1/review.md).

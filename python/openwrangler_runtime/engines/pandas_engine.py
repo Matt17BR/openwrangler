@@ -2256,6 +2256,19 @@ def _maybe_float(value: Any) -> float | None:
 
 def _missing_value_counts(series: Any, raw_type: str) -> tuple[int, int]:
     del raw_type
+    # NumPy-backed Pandas dtypes have unambiguous missing-value storage. Avoid
+    # boxing every scalar twice for the common numeric and temporal cases;
+    # extension and object dtypes still need the exact scalar fallback below.
+    import numpy as np
+
+    dtype = series.dtype
+    if isinstance(dtype, np.dtype):
+        if dtype.kind in {"i", "u", "b"}:
+            return 0, 0
+        if dtype.kind == "f":
+            return 0, int(series.isna().sum())
+        if dtype.kind in {"M", "m"}:
+            return int(series.isna().sum()), 0
     return int(_null_mask(series).sum()), int(_nan_mask(series).sum())
 
 

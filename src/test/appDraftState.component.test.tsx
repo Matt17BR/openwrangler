@@ -345,7 +345,7 @@ describe("App draft state boundaries", () => {
     await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
   });
 
-  it("reissues a pending generated-column reveal after the renderer synchronization barrier", async () => {
+  it("reissues a pending generated-column reveal across renderer synchronization barriers", async () => {
     const addedColumn: ColumnSchema = {
       id: "c:upper-pending",
       name: "c_upper_pending",
@@ -405,7 +405,21 @@ describe("App draft state boundaries", () => {
       expect(latestGridProps().goToColumnRequestId).toBe(2);
     });
 
-    act(() => latestGridProps().onGoToColumnHandled?.(2));
+    // Cursor can finish the Code Preview layout after the first synchronized
+    // retry has gone dormant. A later barrier must rearm the still-pending
+    // navigation instead of treating it as completed.
+    dispatch({
+      kind: "rendererSynchronization",
+      syncId: "X".repeat(32),
+      sessionId: metadata.sessionId,
+      revision: 3
+    });
+    await waitFor(() => {
+      expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
+      expect(latestGridProps().goToColumnRequestId).toBe(3);
+    });
+
+    act(() => latestGridProps().onGoToColumnHandled?.(3));
     await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
   });
 

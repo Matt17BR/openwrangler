@@ -208,14 +208,23 @@ and machine.
 The [performance test documentation](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md#performance-fixtures)
 contains the method, raw samples, and cleanup checks.
 
-Issue [#91](https://github.com/Matt17BR/openwrangler/issues/91) tracks a planned comparison with Microsoft Data
-Wrangler using the same files, editor, Python environment, and actions.
+The v1.2.1 clean-room comparison also ran ten warm notebook journeys per product and workload against Microsoft Data
+Wrangler 1.24.2. These are successful-journey medians from one machine; the linked review includes p95, raw outcome
+counts, memory, exact versions, and the three Data Wrangler profiling journeys that did not complete.
+
+| Workload       | Successful journeys (Open / Data) | Inline preview (Open / Data) | Full workbench (Open / Data) | All profiles (Open / Data) |
+| -------------- | --------------------------------: | ---------------------------: | ---------------------------: | -------------------------: |
+| Pandas CSV     |                            10 / 9 |                0.34 / 1.49 s |                0.60 / 1.01 s |             5.58 / 18.80 s |
+| Polars CSV     |                            10 / 9 |                0.32 / 1.50 s |                0.53 / 0.99 s |             5.54 / 18.81 s |
+| Pandas Parquet |                           10 / 10 |                0.24 / 1.53 s |                0.67 / 0.69 s |              7.64 / 7.95 s |
+| Polars Parquet |                            10 / 9 |                0.20 / 1.49 s |                0.48 / 0.69 s |              7.20 / 8.23 s |
+
+See the [review and full results](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md).
 
 ## Roadmap
 
-- **Next in v1:** complete the Data Wrangler comparison in
-  [#91](https://github.com/Matt17BR/openwrangler/issues/91), then continue the distributed Spark work in
-  [#36](https://github.com/Matt17BR/openwrangler/issues/36). Support for other desktop forks is experimental.
+- **Next in v1:** continue the distributed Spark work in [#36](https://github.com/Matt17BR/openwrangler/issues/36).
+  Support for other desktop forks is experimental.
 - **v2:** add native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 

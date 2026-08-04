@@ -2,383 +2,273 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
-import { DATA_WRANGLER_STUDY_TOOL_NAMES } from "./data-wrangler-comparison-report.mjs";
+import { DATA_WRANGLER_STUDY_TOOL_NAMES, summarizeStudyPssSamples } from "./data-wrangler-comparison-report.mjs";
 import {
   DATA_WRANGLER_VERSION,
+  SMOKE_REPETITIONS,
   STUDY_CELLS,
   STUDY_PROTOCOL,
   TRIAL_REQUEST_PROTOCOL,
   TRIAL_RESULT_PROTOCOL,
   WARM_REPETITIONS,
   buildStudyManifest,
-  completedTrialIds,
   createDataWranglerComparisonSchedule,
+  loadStudyResults,
   prepareTrial,
   removeStaleTrialDirectories,
-  runDataWranglerComparisonStudy,
   runDataWranglerComparisonSmoke,
+  runDataWranglerComparisonStudy,
   runOneTrial,
-  validateTrialResult
+  terminalTrialIds,
+  writeDataWranglerComparisonStudyReport
 } from "./data-wrangler-comparison-study.mjs";
 
-const hash = (character) => character.repeat(64);
+const SHA = "a".repeat(64);
 
-test("schedule contains ten counterbalanced warm pairs and AB/BA cold pairs for all four cells", () => {
-  const schedule = createDataWranglerComparisonSchedule();
-  assert.equal(schedule.length, 96);
-  assert.deepEqual(
-    schedule.map(({ order }) => order),
-    [...Array(96).keys()]
-  );
-  assert.equal(new Set(schedule.map(({ id }) => id)).size, 96);
-  for (const cell of STUDY_CELLS) {
-    const warm = schedule.filter((entry) => entry.cellId === cell.id && entry.kind === "warm");
-    assert.equal(warm.length, WARM_REPETITIONS * 2);
-    const firstProducts = warm.filter(({ orderInPair }) => orderInPair === 0).map(({ product }) => product);
-    assert.equal(firstProducts.filter((product) => product === "open-wrangler").length, 5);
-    assert.equal(firstProducts.filter((product) => product === "data-wrangler").length, 5);
-    const cold = schedule.filter((entry) => entry.cellId === cell.id && entry.kind === "cold");
-    assert.deepEqual(
-      [...Map.groupBy(cold, ({ pairId }) => pairId).values()].map((entries) => entries.map(({ product }) => product)),
-      [
-        ["open-wrangler", "data-wrangler"],
-        ["data-wrangler", "open-wrangler"]
-      ]
-    );
+test("writes diagnostic report bytes before enforcing release completeness", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-comparison-report-"));
+  const output = join(root, "report.json");
+  const report = { protocol: "openwrangler-data-wrangler-study-report-v2", completedSessions: 1 };
+  try {
+    assert.throws(() => writeDataWranglerComparisonStudyReport(output, report), /eight complete sessions/u);
+    assert.deepEqual(JSON.parse(readFileSync(output, "utf8")), report);
+    assert.throws(() => writeDataWranglerComparisonStudyReport(output, report), /new output path/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("manifest records public boundaries, exact provenance, and no Microsoft package hash", () => {
+test("schedule has one ten-sample session per product and workload and no cold launches", () => {
+  const schedule = createDataWranglerComparisonSchedule();
+  assert.equal(schedule.length, 8);
+  assert.deepEqual(
+    schedule.map(({ order }) => order),
+    [...Array(8).keys()]
+  );
+  assert.equal(new Set(schedule.map(({ id }) => id)).size, 8);
+  assert.equal(
+    schedule.every(({ kind }) => kind === "warm"),
+    true
+  );
+  for (const cell of STUDY_CELLS) {
+    const sessions = schedule.filter(({ cellId }) => cellId === cell.id);
+    assert.equal(sessions.length, 2);
+    assert.deepEqual(new Set(sessions.map(({ product }) => product)), new Set(["open-wrangler", "data-wrangler"]));
+  }
+  assert.deepEqual(
+    schedule.filter(({ order }) => order % 2 === 0).map(({ product }) => product),
+    ["open-wrangler", "data-wrangler", "data-wrangler", "open-wrangler"]
+  );
+});
+
+test("manifest records eight sessions, ten repetitions, fixed workloads, and public provenance", () => {
   const manifest = manifestFixture();
   assert.equal(manifest.protocol, STUDY_PROTOCOL);
-  assert.equal(manifest.schedule.length, 96);
+  assert.equal(manifest.schedule.length, 8);
+  assert.equal(manifest.method.repetitionsPerSession, 10);
+  assert.equal(Object.hasOwn(manifest.method, "coldOrder"), false);
   assert.equal(manifest.provenance.dataWrangler.version, DATA_WRANGLER_VERSION);
   assert.equal(manifest.provenance.dataWrangler.implementationInspection, "none");
   assert.equal(Object.hasOwn(manifest.provenance.dataWrangler, "sha256"), false);
-  assert.equal(manifest.provenance.editor.distribution, "Visual Studio Code");
-  assert.equal(manifest.provenance.python.implementation, "cpython");
-  assert.equal(manifest.provenance.machine.powerSource, "ac");
-  assert.match(manifest.method.timingBoundaries.inlinePreview, /Run Cell click/u);
-  assert.match(manifest.method.timingBoundaries.workbenchOpen, /public launch-action click/u);
-  assert.match(manifest.method.timingBoundaries.completeProfile, /every column/u);
 });
 
-test("study resumes from completed trial IDs without repeating an earlier trial", async () => {
-  const root = mkdtempSync(join(tmpdir(), "ow-simple-study-"));
+test("study resumes at session granularity without replacing completed samples", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-batched-study-"));
   const calls = [];
   try {
     const dependencies = fakeDependencies(calls);
     const options = studyOptions(root);
     const first = await runDataWranglerComparisonStudy({ ...options, limit: 2 }, dependencies);
     assert.equal(first.completed, 2);
-    assert.equal(first.remaining, 94);
+    assert.equal(first.remaining, 6);
     const second = await runDataWranglerComparisonStudy({ ...options, limit: 1 }, dependencies);
     assert.equal(second.completed, 3);
-    assert.equal(second.remaining, 93);
+    assert.equal(second.remaining, 5);
     assert.deepEqual(
       calls,
       first.manifest.schedule.slice(0, 3).map(({ id }) => id)
     );
     assert.deepEqual(
-      [...completedTrialIds(join(root, "trials"), first.manifest)].sort(),
+      [...terminalTrialIds(join(root, "trials"), first.manifest)].sort(),
       first.manifest.schedule
         .slice(0, 3)
         .map(({ id }) => id)
         .sort()
     );
+    assert.equal(loadStudyResults(root).trials[0].samples.length, 10);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("paired smoke requires a fresh output and runs both products in one pair", async () => {
-  const root = join(tmpdir(), `ow-simple-smoke-${process.pid}-${Date.now()}`);
+test("smoke runs the two product sessions for one workload", async () => {
+  const root = join(tmpdir(), `ow-batched-smoke-${process.pid}-${Date.now()}`);
   const calls = [];
   try {
-    const dependencies = fakeDependencies(calls);
-    dependencies.prepareTools = async () => {
-      for (const product of ["open-wrangler", "data-wrangler"]) {
-        mkdirSync(join(root, `prepared-extensions-${product}`), { recursive: true });
-      }
-    };
-    const result = await runDataWranglerComparisonSmoke(studyOptions(root), dependencies);
+    const result = await runDataWranglerComparisonSmoke(studyOptions(root), fakeDependencies(calls));
     assert.equal(result.completed, 2);
-    assert.equal(result.remaining, 94);
-    assert.equal(result.manifest.schedule[0].pairId, result.manifest.schedule[1].pairId);
-    assert.deepEqual(new Set(calls), new Set([result.manifest.schedule[0].id, result.manifest.schedule[1].id]));
-    assert.equal(existsSync(join(root, "prepared-extensions-open-wrangler")), false);
-    assert.equal(existsSync(join(root, "prepared-extensions-data-wrangler")), false);
-    await assert.rejects(
-      runDataWranglerComparisonSmoke(studyOptions(root), fakeDependencies([])),
-      /requires a new output path/u
+    assert.equal(result.remaining, 6);
+    assert.equal(new Set(calls).size, 2);
+    assert.equal(result.manifest.method.repetitionsPerSession, SMOKE_REPETITIONS);
+    assert.equal(
+      loadStudyResults(root).trials.every(({ samples }) => samples.length === SMOKE_REPETITIONS),
+      true
+    );
+    assert.deepEqual(
+      new Set(result.manifest.schedule.slice(0, 2).map(({ product }) => product)),
+      new Set(["open-wrangler", "data-wrangler"])
+    );
+    const resumedCalls = [];
+    const resumed = await runDataWranglerComparisonSmoke(studyOptions(root), fakeDependencies(resumedCalls));
+    assert.equal(resumed.completed, 2);
+    assert.deepEqual(resumedCalls, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an interrupted session is recorded and rerun without replacing successful sessions", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-batched-failure-"));
+  try {
+    const dependencies = fakeDependencies([]);
+    dependencies.runTrial = async () => {
+      throw new Error("file:///private/source.csv $HOME /home/alice/source.csv");
+    };
+    const status = await runDataWranglerComparisonStudy({ ...studyOptions(root), limit: 1 }, dependencies);
+    assert.equal(status.completed, 0);
+    assert.equal(status.remaining, 8);
+    const [trial] = loadStudyResults(root).trials;
+    assert.equal(trial.samples.length, 10);
+    assert.equal(
+      trial.samples.every(({ status: sampleStatus }) => sampleStatus === "failure"),
+      true
+    );
+    assert.equal(JSON.stringify(trial).includes("/private"), false);
+    assert.equal(JSON.stringify(trial).includes("$HOME"), false);
+
+    const calls = [];
+    const resumed = await runDataWranglerComparisonStudy({ ...studyOptions(root), limit: 1 }, fakeDependencies(calls));
+    assert.equal(resumed.completed, 1);
+    assert.equal(resumed.remaining, 7);
+    assert.deepEqual(calls, [resumed.manifest.schedule[0].id]);
+    assert.equal(
+      loadStudyResults(root).trials[0].samples.every(({ status: sampleStatus }) => sampleStatus === "success"),
+      true
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("paired smoke fails when either product journey is unsuccessful", async () => {
-  const root = join(tmpdir(), `ow-simple-smoke-failure-${process.pid}-${Date.now()}`);
-  const dependencies = fakeDependencies([]);
-  dependencies.runTrial = async ({ entry, manifest }) => ({
-    protocol: TRIAL_RESULT_PROTOCOL,
-    trialId: entry.id,
-    product: entry.product,
-    engine: entry.engine,
-    format: entry.format,
-    kind: entry.kind,
-    order: entry.order,
-    status: "failure",
-    failure: { stage: "harness", kind: "product", message: "Synthetic journey failure." },
-    metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
-    milestones: [],
-    publicUi: { runCell: null, inline: null, workbench: null, profiling: null },
-    memory: null,
-    provenance: trialRequestProvenance(manifest)
-  });
+test("a measured product failure remains in the study instead of being retried", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-batched-product-failure-"));
   try {
-    await assert.rejects(runDataWranglerComparisonSmoke(studyOptions(root), dependencies), /smoke failed.*harness/u);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("source verification still runs when the trial driver throws", async () => {
-  const container = mkdtempSync(join(tmpdir(), "ow-simple-source-failure-"));
-  const output = join(container, "study");
-  const source = join(container, "source.csv");
-  writeFileSync(source, "value\n1\n");
-  try {
-    const dependencies = fakeDependencies([]);
-    dependencies.prepareTrial = ({ entry, manifest, trialRoot }) => ({
-      request: { entry, manifest, isolatedRoot: trialRoot },
-      verifySources: () => {
-        if (readFileSync(source, "utf8") !== "value\n1\n") throw new Error("original fixture changed");
-      }
-    });
-    dependencies.runTrial = async () => {
-      writeFileSync(source, "value\n2\n");
-      throw new Error("driver failed");
-    };
-    const result = await runDataWranglerComparisonStudy(
-      { ...studyOptions(output), csv: source, limit: 1 },
-      dependencies
-    );
-    const entry = result.manifest.schedule[0];
-    const trial = JSON.parse(readFileSync(join(output, "trials", `${entry.id}.json`), "utf8"));
-    assert.equal(trial.status, "failure");
-    assert.match(trial.failure.message, /driver failed; original fixture changed/u);
-  } finally {
-    rmSync(container, { recursive: true, force: true });
-  }
-});
-
-test("failed trial evidence redacts file URIs, paths, and environment references", async () => {
-  const root = mkdtempSync(join(tmpdir(), "ow-simple-private-error-"));
-  try {
-    const dependencies = fakeDependencies([]);
-    dependencies.runTrial = async () => {
-      throw new Error(
-        "failed file:///home/example/private.json from /tmp/private and $HOME ../relative ~/user C:\\private %2Fsecret"
-      );
-    };
-    const result = await runDataWranglerComparisonStudy({ ...studyOptions(root), limit: 1 }, dependencies);
-    const entry = result.manifest.schedule[0];
-    const trial = JSON.parse(readFileSync(join(root, "trials", `${entry.id}.json`), "utf8"));
-    assert.equal(trial.status, "failure");
-    assert.equal(trial.failure.message, "failed path from path and environment path path path encoded-path");
-    assert.doesNotMatch(trial.failure.message, /private|secret|home|tmp/iu);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("study refuses to resume when a candidate or tool hash changes", async () => {
-  const root = mkdtempSync(join(tmpdir(), "ow-simple-study-change-"));
-  try {
-    const options = studyOptions(root);
-    await runDataWranglerComparisonStudy({ ...options, limit: 1 }, fakeDependencies([]));
-    const changed = fakeDependencies([]);
-    changed.hashFile = (path) => (path.endsWith("data-wrangler-comparison-study.mjs") ? hash("9") : hash("a"));
-    await assert.rejects(runDataWranglerComparisonStudy({ ...options, limit: 1 }, changed), /Study inputs changed/u);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("a complete study removes its temporary product extension directories", async () => {
-  const root = mkdtempSync(join(tmpdir(), "ow-simple-study-complete-"));
-  try {
-    for (const product of ["open-wrangler", "data-wrangler"]) {
-      mkdirSync(join(root, `prepared-extensions-${product}`));
-    }
-    const result = await runDataWranglerComparisonStudy(studyOptions(root), fakeDependencies([]));
-    assert.equal(result.remaining, 0);
-    assert.equal(existsSync(join(root, "prepared-extensions-open-wrangler")), false);
-    assert.equal(existsSync(join(root, "prepared-extensions-data-wrangler")), false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("trial deadline is retained as a timeout result", async () => {
-  const entry = createDataWranglerComparisonSchedule()[0];
-  const manifest = manifestFixture();
-  const result = await runOneTrial({
-    entry,
-    request: trialRequestProvenance(manifest),
-    runTrial: () => new Promise(() => undefined),
-    timeoutMs: 5
-  });
-  assert.equal(result.status, "timeout");
-  assert.equal(result.failure.stage, "harness");
-  assert.equal(validateTrialResult(result, entry, manifest), result);
-});
-
-test("warm trial preparation tags one untimed setup cell before one measured cell", () => {
-  const root = mkdtempSync(join(tmpdir(), "ow-simple-trial-"));
-  try {
-    const csv = join(root, "source.csv");
-    writeFileSync(csv, "c00,c01\n0,1\n1,2\n");
-    const trialRoot = join(root, "isolated");
-    const entry = createDataWranglerComparisonSchedule()[0];
     const manifest = manifestFixture();
-    manifest.provenance.fixtures.csv.sha256 = sha256(csv);
+    const dependencies = fakeDependencies([]);
+    dependencies.runTrial = async (request) => {
+      const entry = manifest.schedule.find(({ id }) => id === request.trialId);
+      const result = sessionResult(entry, manifest, request.repetitions);
+      result.samples[0] = failedProductSample(1);
+      return result;
+    };
+    const first = await runDataWranglerComparisonStudy({ ...studyOptions(root), limit: 1 }, dependencies);
+    assert.equal(first.completed, 1);
+    assert.equal(first.remaining, 7);
+
+    const calls = [];
+    const resumed = await runDataWranglerComparisonStudy({ ...studyOptions(root), limit: 1 }, fakeDependencies(calls));
+    assert.equal(resumed.completed, 2);
+    assert.deepEqual(calls, [resumed.manifest.schedule[1].id]);
+    const retained = loadStudyResults(root).trials.find(({ trialId }) => trialId === resumed.manifest.schedule[0].id);
+    assert.equal(retained.samples[0].failure.kind, "product");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("session deadline yields ten timeout samples", async () => {
+  const manifest = manifestFixture();
+  const entry = manifest.schedule[0];
+  const request = requestForEntry(entry, manifest);
+  const result = await runOneTrial({ entry, request, runTrial: () => new Promise(() => {}), timeoutMs: 5 });
+  assert.equal(result.protocol, TRIAL_RESULT_PROTOCOL);
+  assert.equal(result.samples.length, 10);
+  assert.equal(
+    result.samples.every(({ status }) => status === "timeout"),
+    true
+  );
+});
+
+test("prepared request loads one resident dataframe and asks the host for ten measured journeys", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-batched-prepare-"));
+  const csv = join(root, "fixture.csv");
+  const parquet = join(root, "fixture.parquet");
+  writeFileSync(csv, "c00\n0\n");
+  writeFileSync(parquet, "parquet fixture");
+  const manifest = manifestFixture({ csvHash: hashFile(csv), parquetHash: hashFile(parquet) });
+  const trialRoot = join(root, "session");
+  try {
     const prepared = prepareTrial({
-      entry,
+      entry: manifest.schedule[0],
       manifest,
-      options: { ...studyOptions(join(root, "study")), csv },
+      options: { ...studyOptions(root), csv, parquet },
       trialRoot
     });
     assert.equal(prepared.request.protocol, TRIAL_REQUEST_PROTOCOL);
-    assert.equal(prepared.request.cell.variableName, "study_frame");
-    assert.ok(prepared.request.cell.source.startsWith(`${resolve(trialRoot)}/`));
-    assert.ok(prepared.request.notebookPath.startsWith(`${resolve(trialRoot)}/`));
+    assert.equal(prepared.request.kind, "warm");
+    assert.equal(prepared.request.repetitions, WARM_REPETITIONS);
     const notebook = JSON.parse(readFileSync(prepared.request.notebookPath, "utf8"));
-    const setup = notebook.cells.filter((cell) => cell.metadata.tags.includes(`ow-comparison-setup:${entry.cellId}`));
-    const measured = notebook.cells.filter((cell) => cell.metadata.tags.includes(`ow-comparison-cell:${entry.cellId}`));
-    assert.equal(setup.length, 1);
-    assert.equal(measured.length, 1);
-    assert.equal(notebook.cells.indexOf(setup[0]), 0);
-    assert.equal(notebook.cells.indexOf(measured[0]), 1);
-    assert.match(setup[0].source.join(""), /aaa_comparison_bootstrap =/u);
-    assert.match(setup[0].source.join(""), /study_frame =/u);
-    assert.match(measured[0].source.join(""), /study_frame/u);
+    assert.equal(notebook.cells.length, 2);
+    assert.match(notebook.cells[0].source.join(""), /study_frame = pd\.read_csv/u);
+    assert.equal(notebook.cells[1].source.join(""), "study_frame");
+    assert.doesNotThrow(prepared.verifySources);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("cold trial preparation keeps the source load in the measured cell", () => {
-  const root = mkdtempSync(join(tmpdir(), "ow-simple-cold-trial-"));
+test("stale temporary session roots are removed without touching unrelated entries", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-batched-stale-"));
   try {
-    const csv = join(root, "source.csv");
-    writeFileSync(csv, "c00,c01\n0,1\n1,2\n");
-    const trialRoot = join(root, "isolated");
-    const entry = createDataWranglerComparisonSchedule().find(
-      ({ kind, cellId, product }) => kind === "cold" && cellId === "pandas-csv" && product === "open-wrangler"
-    );
-    assert.ok(entry);
-    const manifest = manifestFixture();
-    manifest.provenance.fixtures.csv.sha256 = sha256(csv);
-    const prepared = prepareTrial({
-      entry,
-      manifest,
-      options: { ...studyOptions(join(root, "study")), csv },
-      trialRoot
-    });
-    const notebook = JSON.parse(readFileSync(prepared.request.notebookPath, "utf8"));
-    const [setup, measured] = notebook.cells;
-    assert.match(setup.source.join(""), /aaa_comparison_bootstrap =/u);
-    assert.doesNotMatch(setup.source.join(""), /study_frame =/u);
-    assert.match(measured.source.join(""), /study_frame = .*read_csv/u);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("trial preparation rejects source drift and resume removes only stale trial roots", () => {
-  const root = mkdtempSync(join(tmpdir(), "ow-simple-drift-"));
-  try {
-    const csv = join(root, "source.csv");
-    writeFileSync(csv, "c00,c01\n0,1\n1,2\n");
-    const manifest = manifestFixture();
-    manifest.provenance.fixtures.csv.sha256 = hash("f");
-    assert.throws(
-      () =>
-        prepareTrial({
-          entry: createDataWranglerComparisonSchedule()[0],
-          manifest,
-          options: { ...studyOptions(join(root, "study")), csv },
-          trialRoot: join(root, "trial")
-        }),
-      /fixture changed/u
-    );
-
-    mkdirSync(join(root, "trial-001-AbC123"));
+    mkdirSync(join(root, "trial-001-AbCd12"));
     mkdirSync(join(root, "keep-me"));
     removeStaleTrialDirectories(root);
-    assert.equal(existsSync(join(root, "trial-001-AbC123")), false);
+    assert.equal(existsSync(join(root, "trial-001-AbCd12")), false);
     assert.equal(existsSync(join(root, "keep-me")), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("successful trial validation requires every timing and both absolute and adjusted PSS", () => {
+function fakeDependencies(calls) {
   const manifest = manifestFixture();
-  const entry = manifest.schedule[0];
-  const result = successResult(entry, manifest);
-  assert.equal(validateTrialResult(result, entry, manifest), result);
-  assert.throws(
-    () => validateTrialResult({ ...result, memory: { ...result.memory, peakPssBytes: -1 } }, entry, manifest),
-    /peakPssBytes/u
-  );
-});
-
-function manifestFixture() {
-  return buildStudyManifest({
-    createdAtUtc: "2026-08-04T10:00:00.000Z",
-    candidate: { version: "1.2.1", sha256: hash("a") },
-    editor: {
-      version: "1.110.0",
-      sha256: hash("b"),
-      cliSha256: hash("4"),
-      productSha256: hash("5"),
-      distribution: "Visual Studio Code"
-    },
-    python: {
-      version: "3.12.12",
-      sha256: hash("c"),
-      implementation: "cpython",
-      packages: { pandas: "2.3.3", polars: "1.34.0", pyarrow: "22.0.0", jupyter_core: "5.9.1", ipykernel: "7.1.0" }
-    },
-    fixtures: {
-      csv: { rows: 100_000, columns: 50, valuesValidated: true, sha256: hash("d") },
-      parquet: { rows: 1_000_000, columns: 20, valuesValidated: true, sha256: hash("e") }
-    },
-    machine: {
-      os: "linux",
-      osRelease: "6.14.0",
-      architecture: "x64",
-      cpuModel: "Example CPU",
-      logicalCpuCount: 16,
-      totalMemoryBytes: 64 * 1024 ** 3,
-      powerSource: "ac",
-      cpuGovernor: "performance"
-    },
-    toolHashes: Object.fromEntries(
-      DATA_WRANGLER_STUDY_TOOL_NAMES.map((name, index) => [name, hash("abcdef0123456789"[index % 16])])
-    )
-  });
+  return {
+    now: () => manifest.createdAtUtc,
+    prepareTools: async () => {},
+    inspectCandidate: async () => manifest.provenance.openWrangler,
+    inspectEditor: async () => manifest.provenance.editor,
+    inspectPython: async () => manifest.provenance.python,
+    inspectMachine: () => manifest.provenance.machine,
+    validateFixtures: async () => manifest.provenance.fixtures,
+    hashFile: () => SHA,
+    prepareTrial: ({ entry, manifest: activeManifest, trialRoot }) => ({
+      request: requestForEntry(entry, activeManifest, trialRoot),
+      verifySources() {}
+    }),
+    runTrial: async (request) => {
+      calls.push(request.trialId);
+      const entry = manifest.schedule.find(({ id }) => id === request.trialId);
+      return sessionResult(entry, manifest, request.repetitions);
+    }
+  };
 }
 
 function studyOptions(output) {
   return {
     candidate: "/tmp/openwrangler.vsix",
-    python: "/tmp/python",
+    python: "/tmp/python3.12",
     editor: "/tmp/code",
     editorCli: "/tmp/code-cli",
     csv: "/tmp/study.csv",
@@ -387,118 +277,119 @@ function studyOptions(output) {
   };
 }
 
-function fakeDependencies(calls) {
-  return {
-    now: () => "2026-08-04T10:00:00.000Z",
-    prepareTools: async () => undefined,
-    hashFile: () => hash("a"),
-    inspectCandidate: async () => ({ version: "1.2.1", sha256: hash("a") }),
-    inspectEditor: async () => ({
-      version: "1.110.0",
-      sha256: hash("b"),
-      cliSha256: hash("4"),
-      productSha256: hash("5"),
+function manifestFixture({ csvHash = SHA, parquetHash = SHA } = {}) {
+  return buildStudyManifest({
+    createdAtUtc: "2026-08-04T10:00:00.000Z",
+    candidate: { version: "1.2.1", sha256: SHA },
+    editor: {
+      version: "1.131.0",
+      sha256: SHA,
+      cliSha256: SHA,
+      productSha256: SHA,
       distribution: "Visual Studio Code"
-    }),
-    inspectPython: async () => ({
-      version: "3.12.12",
-      implementation: "cpython",
-      packages: { pandas: "2.3.3", polars: "1.34.0", pyarrow: "22.0.0", jupyter_core: "5.9.1", ipykernel: "7.1.0" }
-    }),
-    inspectMachine: () => ({
+    },
+    python: { version: "3.12.11", sha256: SHA, implementation: "cpython", packages: {} },
+    fixtures: {
+      csv: { rows: 100_000, columns: 50, valuesValidated: true, sha256: csvHash },
+      parquet: { rows: 1_000_000, columns: 20, valuesValidated: true, sha256: parquetHash }
+    },
+    machine: {
       os: "linux",
-      osRelease: "6.14.0",
+      osRelease: "6.8",
       architecture: "x64",
       cpuModel: "Example CPU",
-      logicalCpuCount: 16,
-      totalMemoryBytes: 64 * 1024 ** 3,
+      logicalCpuCount: 8,
+      totalMemoryBytes: 16_000_000_000,
       powerSource: "ac",
       cpuGovernor: "performance"
-    }),
-    validateFixtures: async () => ({
-      csv: { rows: 100_000, columns: 50, valuesValidated: true },
-      parquet: { rows: 1_000_000, columns: 20, valuesValidated: true }
-    }),
-    prepareTrial: ({ entry, manifest, trialRoot }) => ({ request: { entry, manifest, isolatedRoot: trialRoot } }),
-    runTrial: async ({ entry, manifest }) => {
-      calls.push(entry.id);
-      return successResult(entry, manifest);
-    }
+    },
+    toolHashes: Object.fromEntries(DATA_WRANGLER_STUDY_TOOL_NAMES.map((name) => [name, SHA]))
+  });
+}
+
+function requestForEntry(entry, manifest, isolatedRoot = "/tmp/ow-comparison-session") {
+  return {
+    protocol: TRIAL_REQUEST_PROTOCOL,
+    trialId: entry.id,
+    product: entry.product,
+    kind: "warm",
+    order: entry.order,
+    repetitions: manifest.method.repetitionsPerSession,
+    isolatedRoot,
+    candidate: { path: "/tmp/openwrangler.vsix", ...manifest.provenance.openWrangler },
+    dataWranglerVersion: manifest.provenance.dataWrangler.version,
+    editor: { path: "/tmp/code", cliPath: "/tmp/code-cli", ...manifest.provenance.editor },
+    python: { path: "/tmp/python", ...manifest.provenance.python }
   };
 }
 
-function sha256(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
-function successResult(entry, manifest) {
+function sessionResult(entry, manifest, repetitions = manifest.method.repetitionsPerSession) {
   return {
     protocol: TRIAL_RESULT_PROTOCOL,
     trialId: entry.id,
     product: entry.product,
     engine: entry.engine,
     format: entry.format,
-    kind: entry.kind,
+    kind: "warm",
     order: entry.order,
+    samples: Array.from({ length: repetitions }, (_unused, index) => successfulSample(index + 1, entry.columns)),
+    provenance: {
+      candidate: { version: manifest.provenance.openWrangler.version, sha256: manifest.provenance.openWrangler.sha256 },
+      dataWranglerVersion: manifest.provenance.dataWrangler.version,
+      editor: { version: manifest.provenance.editor.version, sha256: manifest.provenance.editor.sha256 },
+      python: { version: manifest.provenance.python.version, sha256: manifest.provenance.python.sha256 }
+    }
+  };
+}
+
+function successfulSample(index, columns) {
+  const milestones = [
+    mark("run-cell-click", 11_000_000_000),
+    mark("inline-ready", 11_010_000_000),
+    mark("launch-click", 11_011_000_000),
+    mark("workbench-ready", 11_031_000_000),
+    mark("profile-click", 11_032_000_000),
+    mark("first-profile-ready", 11_037_000_000),
+    mark("profiles-complete", 11_062_000_000)
+  ];
+  const memory = summarizeStudyPssSamples([pss(11_000_000_000, 150), pss(11_062_000_000, 149)], milestones);
+  return {
+    index,
     status: "success",
     failure: null,
     metrics: { inlinePreviewMs: 10, workbenchOpenMs: 20, firstProfileMs: 5, completeProfileMs: 30 },
-    milestones: [
-      milestone("run-cell-click", 100_000_000),
-      milestone("inline-ready", 110_000_000),
-      milestone("launch-click", 120_000_000),
-      milestone("workbench-ready", 140_000_000),
-      milestone("profile-click", 150_000_000),
-      milestone("first-profile-ready", 155_000_000),
-      milestone("profiles-complete", 180_000_000)
-    ],
-    publicUi: publicUi(entry.columns),
-    memory: {
-      baselinePssBytes: 100,
-      peakPssBytes: 160,
-      adjustedPeakPssBytes: 60,
-      sampleCount: 3,
-      intervalMs: 200,
-      samples: [pss(50_000_000, 100), pss(90_000_000, 100), pss(160_000_000, 160)]
+    milestones,
+    publicUi: {
+      runCell: action("Run Cell"),
+      inline: { ...action("Open in viewer"), tableReady: true },
+      workbench: {
+        rootRole: "grid",
+        fullShape: "visible-label",
+        ariaRowCount: null,
+        ariaColumnCount: null,
+        verticalOverflow: 100,
+        horizontalOverflow: 100,
+        pointerUsable: true
+      },
+      profiling: { ...action("Column profiles"), expectedColumns: columns, completedColumns: columns }
     },
-    provenance: trialRequestProvenance(manifest)
+    memory
   };
 }
 
-function trialRequestProvenance(manifest) {
+function failedProductSample(index) {
   return {
-    candidate: {
-      version: manifest.provenance.openWrangler.version,
-      sha256: manifest.provenance.openWrangler.sha256
-    },
-    dataWranglerVersion: DATA_WRANGLER_VERSION,
-    editor: { version: manifest.provenance.editor.version, sha256: manifest.provenance.editor.sha256 },
-    python: { version: manifest.provenance.python.version, sha256: manifest.provenance.python.sha256 }
+    index,
+    status: "failure",
+    failure: { stage: "inline-preview", kind: "product", message: "The inline preview failed." },
+    metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
+    milestones: [mark("run-cell-click", 11_000_000_000)],
+    publicUi: { runCell: action("Run Cell"), inline: null, workbench: null, profiling: null },
+    memory: null
   };
 }
 
-function milestone(name, monotonicNs) {
-  return { name, monotonicNs: String(monotonicNs) };
-}
-
-function pss(monotonicNs, pssBytes) {
-  return { monotonicNs: String(monotonicNs), pssBytes, processCount: 3 };
-}
-
-function publicUi(columns) {
-  const action = { accessibleName: "Open in product", unique: true, pointer: true };
-  return {
-    runCell: { ...action, accessibleName: "Run Cell" },
-    inline: { ...action, tableReady: true },
-    workbench: {
-      rootRole: "grid",
-      fullShape: "aria-counts",
-      ariaRowCount: 100_000,
-      ariaColumnCount: columns,
-      verticalOverflow: 100,
-      horizontalOverflow: 100,
-      pointerUsable: true
-    },
-    profiling: { ...action, accessibleName: "Profile columns", expectedColumns: columns, completedColumns: columns }
-  };
-}
+const action = (accessibleName) => ({ accessibleName, unique: true, pointer: true });
+const mark = (name, monotonicNs) => ({ name, monotonicNs: String(monotonicNs) });
+const pss = (monotonicNs, pssBytes) => ({ monotonicNs: String(monotonicNs), pssBytes, processCount: 4 });
+const hashFile = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
