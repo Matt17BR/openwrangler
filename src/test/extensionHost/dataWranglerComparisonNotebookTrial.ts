@@ -1909,7 +1909,9 @@ async function executeWarmSetup(
     );
     return cell;
   };
-  const summaryBeforeDispatch = executionSummaryFingerprint(currentSetupCell());
+  const setupCellBeforeDispatch = currentSetupCell();
+  selectNotebookCell(captured, setupCellBeforeDispatch);
+  const summaryBeforeDispatch = executionSummaryFingerprint(setupCellBeforeDispatch);
   let freshExecution = false;
   let commandError: unknown;
   const listener = vscode.workspace.onDidChangeNotebookDocument((event) => {
