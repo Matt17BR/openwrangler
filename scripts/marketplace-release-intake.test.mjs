@@ -30,7 +30,7 @@ function automatic(overrides = {}) {
     existingReleaseTag: "",
     releaseContainedInProtectedBranch: true,
     releasePackageJson: manifest(),
-    releaseProtectedBranchRef: "refs/heads/release/1.x",
+    releaseProtectedBranchRef: "refs/heads/main",
     remoteTagCommit: commit,
     resolvedTagCommit: commit,
     sourceBranch: "refs/tags/v1.0.2",
@@ -41,18 +41,19 @@ function automatic(overrides = {}) {
 
 function protectedReleaseBranch(overrides = {}) {
   const releaseCommit = "b".repeat(40);
+  const currentManifest = manifest({ version: "1.2.3" });
   return automatic({
     buildReason: "IndividualCI",
     currentProtectedBranchCommit: commit,
-    currentPackageJson: manifest(),
+    currentPackageJson: currentManifest,
     recoveryChange: {
       changedPaths: ["scripts/marketplace-release-intake.mjs"],
       parentCommits: ["d".repeat(40)]
     },
-    releasePackageJson: manifest(),
+    releasePackageJson: currentManifest,
     remoteTagCommit: releaseCommit,
     resolvedTagCommit: releaseCommit,
-    sourceBranch: "refs/heads/release/1.x",
+    sourceBranch: "refs/heads/main",
     ...overrides
   });
 }
@@ -224,18 +225,20 @@ test("Marketplace intake accepts exact automatic stable and pre-release tag chec
   );
 });
 
-test("Marketplace intake keeps a historical v1.2 ancestor valid on a later maintenance-branch head", () => {
+test("Marketplace intake manually recovers v1.2.2 directly from its immutable tag", () => {
   const historicalCommit = "b".repeat(40);
   assert.deepEqual(
     inspectMarketplaceReleaseIntake(
       automatic({
         buildReason: "Manual",
         currentProtectedBranchCommit: commit,
-        existingReleaseTag: "v1.2.0",
-        releasePackageJson: manifest({ version: "1.2.0" }),
+        existingReleaseTag: "v1.2.2",
+        releasePackageJson: manifest({ version: "1.2.2" }),
         remoteTagCommit: historicalCommit,
         resolvedTagCommit: historicalCommit,
-        sourceBranch: "refs/heads/release/1.x"
+        releaseContainedInProtectedBranch: false,
+        releaseProtectedBranchRef: undefined,
+        sourceBranch: "refs/heads/main"
       })
     ),
     {
@@ -244,32 +247,68 @@ test("Marketplace intake keeps a historical v1.2 ancestor valid on a later maint
       problems: [],
       promote: true,
       releaseCommit: historicalCommit,
-      releaseTag: "v1.2.0",
-      version: "1.2.0"
+      releaseTag: "v1.2.2",
+      version: "1.2.2"
     }
   );
 });
 
-test("Marketplace intake rejects matching-metadata commits outside the version-owned branch", () => {
+test("Marketplace intake does not automatically republish v1.2.2 after a main change", () => {
+  const v122 = manifest({ version: "1.2.2" });
+  const result = inspectMarketplaceReleaseIntake(
+    protectedReleaseBranch({
+      currentPackageJson: v122,
+      releasePackageJson: v122
+    })
+  );
+  assert.deepEqual(result, {
+    eligible: false,
+    noOpReason: "historical-release",
+    prerelease: undefined,
+    problems: [],
+    promote: false,
+    releaseCommit: undefined,
+    releaseTag: "v1.2.2",
+    version: "1.2.2"
+  });
+  assert.deepEqual(marketplaceReleaseIntakeOutput(result), [
+    "##vso[task.setvariable variable=promote;isOutput=true]false",
+    "Version 1.2.2 was released before releases had to come from main. Automatic recovery skipped it; recover it manually by selecting its existing release tag."
+  ]);
+});
+
+test("Marketplace intake requires releases after v1.2.2 to be contained in main", () => {
   const historicalCommit = "b".repeat(40);
   for (const candidate of [
-    automatic({ releaseContainedInProtectedBranch: false }),
-    automatic({ releaseContainedInProtectedBranch: undefined }),
-    automatic({ releaseProtectedBranchRef: "refs/heads/main" }),
+    automatic({
+      releaseContainedInProtectedBranch: false,
+      releasePackageJson: manifest({ version: "1.2.3" }),
+      sourceBranch: "refs/tags/v1.2.3"
+    }),
+    automatic({
+      releaseContainedInProtectedBranch: undefined,
+      releasePackageJson: manifest({ version: "1.2.3" }),
+      sourceBranch: "refs/tags/v1.2.3"
+    }),
+    automatic({
+      releasePackageJson: manifest({ version: "1.2.3" }),
+      releaseProtectedBranchRef: undefined,
+      sourceBranch: "refs/tags/v1.2.3"
+    }),
     automatic({
       buildReason: "Manual",
       currentProtectedBranchCommit: commit,
-      existingReleaseTag: "v1.2.0",
+      existingReleaseTag: "v1.2.3",
       releaseContainedInProtectedBranch: false,
-      releasePackageJson: manifest({ version: "1.2.0" }),
+      releasePackageJson: manifest({ version: "1.2.3" }),
       remoteTagCommit: historicalCommit,
       resolvedTagCommit: historicalCommit,
-      sourceBranch: "refs/heads/release/1.x"
+      sourceBranch: "refs/heads/main"
     })
   ]) {
     const rejected = inspectMarketplaceReleaseIntake(candidate);
     assert.equal(rejected.eligible, false);
-    assert.match(rejected.problems.join("\n"), /contained in its current version-owned protected branch/u);
+    assert.match(rejected.problems.join("\n"), /contained in protected main/u);
   }
 });
 
@@ -281,7 +320,7 @@ test("Marketplace intake rejects annotated and conflicting automatic public tags
   }
 });
 
-test("Marketplace intake automatically recovers the current tagged package from its protected branch", () => {
+test("Marketplace intake automatically recovers the current tagged package from main", () => {
   for (const buildReason of ["IndividualCI", "BatchedCI"]) {
     assert.deepEqual(inspectMarketplaceReleaseIntake(protectedReleaseBranch({ buildReason })), {
       eligible: true,
@@ -289,36 +328,14 @@ test("Marketplace intake automatically recovers the current tagged package from 
       problems: [],
       promote: true,
       releaseCommit: "b".repeat(40),
-      releaseTag: "v1.0.2",
-      version: "1.0.2"
+      releaseTag: "v1.2.3",
+      version: "1.2.3"
     });
   }
 });
 
-test("Marketplace recovery is branch-owned across the v1 and v2 boundary", () => {
-  const inactive = inspectMarketplaceReleaseIntake(
-    protectedReleaseBranch({
-      currentProtectedBranchCommit: undefined,
-      remoteTagCommit: undefined,
-      resolvedTagCommit: undefined,
-      sourceBranch: "refs/heads/main"
-    })
-  );
-  assert.deepEqual(inactive, {
-    eligible: false,
-    noOpReason: "inactive-branch",
-    prerelease: undefined,
-    problems: [],
-    promote: false,
-    releaseCommit: undefined,
-    releaseTag: "v1.0.2",
-    version: "1.0.2"
-  });
-  assert.deepEqual(marketplaceReleaseIntakeOutput(inactive), [
-    "##vso[task.setvariable variable=promote;isOutput=true]false",
-    "This protected branch does not own the current package version; Marketplace recovery was not queued."
-  ]);
-
+test("Marketplace recovery uses main for current v1 and v2 releases", () => {
+  assert.equal(inspectMarketplaceReleaseIntake(protectedReleaseBranch()).eligible, true);
   const v2 = manifest({ version: "2.0.0" });
   assert.deepEqual(
     inspectMarketplaceReleaseIntake(
@@ -341,10 +358,9 @@ test("Marketplace recovery is branch-owned across the v1 and v2 boundary", () =>
   );
 });
 
-test("Marketplace protected release-branch recovery is a clean no-op when the current version has no tag", () => {
+test("Marketplace main-branch recovery is a clean no-op when the current version has no tag", () => {
   const result = inspectMarketplaceReleaseIntake(
     protectedReleaseBranch({
-      releasePackageJson: manifest(),
       remoteTagCommit: undefined,
       resolvedTagCommit: undefined
     })
@@ -356,21 +372,21 @@ test("Marketplace protected release-branch recovery is a clean no-op when the cu
     problems: [],
     promote: false,
     releaseCommit: undefined,
-    releaseTag: "v1.0.2",
-    version: "1.0.2"
+    releaseTag: "v1.2.3",
+    version: "1.2.3"
   });
   assert.deepEqual(marketplaceReleaseIntakeOutput(result), [
     "##vso[task.setvariable variable=promote;isOutput=true]false",
-    "No immutable release tag v1.0.2 exists for the current package version; protected release-branch recovery completed without Marketplace promotion."
+    "No immutable release tag v1.2.3 exists for the current package version; main-branch recovery completed without Marketplace promotion."
   ]);
 });
 
-test("Marketplace protected release-branch recovery ignores ordinary and ambiguous changes", () => {
+test("Marketplace main-branch recovery ignores ordinary and ambiguous changes", () => {
   for (const [recoveryChange, noOpReason, message] of [
     [
       { changedPaths: ["README.md", "src/webviews/App.tsx"], parentCommits: ["d".repeat(40)] },
       "irrelevant-paths",
-      "The protected release-branch commit changed no reviewed Marketplace recovery path; promotion was not queued."
+      "The main commit changed no reviewed Marketplace recovery path; promotion was not queued."
     ],
     [
       {
@@ -378,7 +394,7 @@ test("Marketplace protected release-branch recovery ignores ordinary and ambiguo
         parentCommits: ["d".repeat(40), "e".repeat(40)]
       },
       "ambiguous-history",
-      "The protected release-branch commit was not a single-parent change; automatic recovery safely completed without promotion."
+      "The main commit was not a single-parent change; automatic recovery completed without promotion."
     ]
   ]) {
     const result = inspectMarketplaceReleaseIntake(
@@ -429,7 +445,7 @@ test("Marketplace intake makes only an empty default protected-branch run a succ
   });
   assert.deepEqual(marketplaceReleaseIntakeOutput(result), [
     "##vso[task.setvariable variable=promote;isOutput=true]false",
-    "No release tag was selected; the default manual protected-branch run completed without Marketplace promotion."
+    "No release tag was selected; the default manual main-branch run completed without Marketplace promotion."
   ]);
 
   for (const candidate of [
@@ -495,7 +511,7 @@ test("Marketplace intake rejects unsafe historical source selection and tag drif
   }
 });
 
-test("Marketplace protected release-branch recovery rejects stale automation, unsafe reasons, and tag drift", () => {
+test("Marketplace main-branch recovery rejects stale automation, unsafe reasons, and tag drift", () => {
   const releaseCommit = "b".repeat(40);
   for (const candidate of [
     protectedReleaseBranch({ currentProtectedBranchCommit: "c".repeat(40) }),
@@ -505,12 +521,12 @@ test("Marketplace protected release-branch recovery rejects stale automation, un
     protectedReleaseBranch({ remoteTagCommit: undefined }),
     protectedReleaseBranch({ resolvedTagCommit: undefined }),
     protectedReleaseBranch({
-      currentPackageJson: manifest({ version: "1.0.3" }),
-      releasePackageJson: manifest({ version: "1.0.2" })
+      currentPackageJson: manifest({ version: "1.2.4" }),
+      releasePackageJson: manifest({ version: "1.2.3" })
     }),
     protectedReleaseBranch({
-      currentPackageJson: manifest({ version: "1.0.2" }),
-      releasePackageJson: manifest({ version: "1.0.1" }),
+      currentPackageJson: manifest({ version: "1.2.3" }),
+      releasePackageJson: manifest({ version: "1.2.4" }),
       remoteTagCommit: releaseCommit,
       resolvedTagCommit: releaseCommit
     })

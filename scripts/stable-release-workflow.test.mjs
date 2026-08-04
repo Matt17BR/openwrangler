@@ -96,8 +96,8 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "  promote-open-vsx:\n    needs: acceptance-gate\n    uses: attacker/workflow.yml@main"
     ),
     source.replace(
-      '          test "$EVENT_REF_TYPE" = "branch"\n          case "$EVENT_REF" in\n            refs/heads/main|refs/heads/release/1.x) ;;',
-      '          true\n          case "$EVENT_REF" in\n            refs/heads/main|refs/heads/release/1.x) ;;'
+      '          test "$EVENT_REF_TYPE" = "branch"\n          test "$EVENT_REF" = "refs/heads/main"',
+      '          true\n          test "$EVENT_REF" = "refs/heads/main"'
     ),
     source.replace(
       '          test "$EXPECTED_SOURCE_REF" = "refs/heads/$EXPECTED_SOURCE_BRANCH"\n          test "$EVENT_REF" = "$EXPECTED_SOURCE_REF"',

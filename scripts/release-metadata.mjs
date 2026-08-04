@@ -5,18 +5,37 @@ import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 
 export const NUMERIC_RELEASE_VERSION = /^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)$/u;
 export const MAIN_RELEASE_BRANCH = "main";
-export const V1_MAINTENANCE_BRANCH = "release/1.x";
+const LAST_HISTORICAL_TAG_RECOVERY = Object.freeze([1n, 2n, 2n]);
 
-export function releaseSourcePolicyForVersion(version) {
+function numericVersionParts(version) {
   const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
   if (match === null) {
     return undefined;
   }
-  const major = BigInt(match.groups?.major ?? "");
-  const minor = BigInt(match.groups?.minor ?? "");
-  const v1Preview = major === 1n && minor === 99n;
-  const branch = major === 1n && !v1Preview ? V1_MAINTENANCE_BRANCH : MAIN_RELEASE_BRANCH;
-  return Object.freeze({ branch, ref: `refs/heads/${branch}`, version });
+  return Object.freeze([
+    BigInt(match.groups?.major ?? ""),
+    BigInt(match.groups?.minor ?? ""),
+    BigInt(match.groups?.patch ?? "")
+  ]);
+}
+
+export function isHistoricalTagRecoveryVersion(version) {
+  const parts = numericVersionParts(version);
+  if (parts === undefined) {
+    return false;
+  }
+  for (let index = 0; index < parts.length; index += 1) {
+    if (parts[index] < LAST_HISTORICAL_TAG_RECOVERY[index]) return true;
+    if (parts[index] > LAST_HISTORICAL_TAG_RECOVERY[index]) return false;
+  }
+  return true;
+}
+
+export function releaseSourcePolicyForVersion(version) {
+  if (numericVersionParts(version) === undefined) {
+    return undefined;
+  }
+  return Object.freeze({ branch: MAIN_RELEASE_BRANCH, ref: `refs/heads/${MAIN_RELEASE_BRANCH}`, version });
 }
 
 export function classifyNumericReleaseVersion(version) {

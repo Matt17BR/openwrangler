@@ -2,7 +2,11 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { inspectReleaseMetadata, releaseSourcePolicyForVersion } from "./release-metadata.mjs";
+import {
+  inspectReleaseMetadata,
+  isHistoricalTagRecoveryVersion,
+  releaseSourcePolicyForVersion
+} from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
@@ -106,15 +110,17 @@ export function readRegistryReleaseSource({ releaseTag, sourceRoot }) {
   if (sourcePolicy === undefined) {
     throw new Error("The release source version does not have a protected source-branch policy.");
   }
-  const remoteSourceRef = `refs/remotes/origin/${sourcePolicy.branch}`;
-  const remoteSourceCommit = git(root, ["rev-parse", "--verify", `${remoteSourceRef}^{commit}`]).trim();
-  if (!FULL_COMMIT.test(remoteSourceCommit)) {
-    throw new Error("The protected release source did not resolve to one full lowercase Git commit.");
-  }
-  try {
-    git(root, ["merge-base", "--is-ancestor", commit, remoteSourceRef]);
-  } catch {
-    throw new Error(`The release commit is not on its version-owned protected ${sourcePolicy.branch} branch.`);
+  if (!isHistoricalTagRecoveryVersion(inspected.version)) {
+    const remoteSourceRef = `refs/remotes/origin/${sourcePolicy.branch}`;
+    const remoteSourceCommit = git(root, ["rev-parse", "--verify", `${remoteSourceRef}^{commit}`]).trim();
+    if (!FULL_COMMIT.test(remoteSourceCommit)) {
+      throw new Error("The protected release source did not resolve to one full lowercase Git commit.");
+    }
+    try {
+      git(root, ["merge-base", "--is-ancestor", commit, remoteSourceRef]);
+    } catch {
+      throw new Error(`The release commit is not on the protected ${sourcePolicy.branch} branch.`);
+    }
   }
   return Object.freeze({
     branch: sourcePolicy.branch,

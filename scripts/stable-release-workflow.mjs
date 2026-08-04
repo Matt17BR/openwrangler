@@ -66,16 +66,10 @@ const CANONICAL_PATHS = [
   "canonical-release/openwrangler.vsix.provenance.json"
 ];
 const RECOGNIZED_RELEASE_SOURCE_RUN = `test "$EVENT_REF_TYPE" = "branch"
-case "$EVENT_REF" in
-  refs/heads/main|refs/heads/release/1.x) ;;
-  *) exit 1 ;;
-esac
+test "$EVENT_REF" = "refs/heads/main"
 case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
 test "\${#EXPECTED_SHA}" -eq 40`;
-const EXACT_VERSION_SOURCE_RUN = `case "$EXPECTED_SOURCE_BRANCH" in
-  main|release/1.x) ;;
-  *) exit 1 ;;
-esac
+const EXACT_VERSION_SOURCE_RUN = `test "$EXPECTED_SOURCE_BRANCH" = "main"
 test "$EXPECTED_SOURCE_REF" = "refs/heads/$EXPECTED_SOURCE_BRANCH"
 test "$EVENT_REF" = "$EXPECTED_SOURCE_REF"
 test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
@@ -224,7 +218,7 @@ function inspectPackageSourceBinding(job, problems) {
     metadata.env.RELEASE_TAG !== RELEASE_TAG ||
     command(metadata.run) !== "node scripts/release-metadata.mjs"
   ) {
-    problems.push("package must derive the release channel and version-owned source from reviewed metadata.");
+    problems.push("package must derive the release channel and protected main source from reviewed metadata.");
   }
 
   const rejectSteps = jobSteps.filter((step) => step?.name === "Reject preview metadata");
@@ -238,9 +232,7 @@ function inspectPackageSourceBinding(job, problems) {
     problems.push("package must reject preview metadata in the stable workflow.");
   }
 
-  const exactSteps = jobSteps.filter(
-    (step) => step?.name === "Require the exact version-owned protected branch commit"
-  );
+  const exactSteps = jobSteps.filter((step) => step?.name === "Require the exact protected main commit");
   const exact = exactSteps[0];
   if (
     exactSteps.length !== 1 ||
@@ -252,7 +244,7 @@ function inspectPackageSourceBinding(job, problems) {
     exact.env.EXPECTED_SOURCE_REF !== RELEASE_SOURCE_REF ||
     command(exact.run) !== command(EXACT_VERSION_SOURCE_RUN)
   ) {
-    problems.push("package must bind the event commit to the exact protected branch owned by its numeric version.");
+    problems.push("package must bind the event commit to the exact protected main branch.");
   }
 
   const remotePreflights = jobSteps.filter(

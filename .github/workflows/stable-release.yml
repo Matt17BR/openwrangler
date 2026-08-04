@@ -34,10 +34,7 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: |
           test "$EVENT_REF_TYPE" = "branch"
-          case "$EVENT_REF" in
-            refs/heads/main|refs/heads/release/1.x) ;;
-            *) exit 1 ;;
-          esac
+          test "$EVENT_REF" = "refs/heads/main"
           case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
           test "${#EXPECTED_SHA}" -eq 40
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -57,17 +54,14 @@ jobs:
       - name: Reject preview metadata
         if: ${{ steps.release_metadata.outputs.prerelease != 'false' }}
         run: exit 1
-      - name: Require the exact version-owned protected branch commit
+      - name: Require the exact protected main commit
         env:
           EVENT_REF: ${{ github.ref }}
           EXPECTED_SHA: ${{ github.sha }}
           EXPECTED_SOURCE_BRANCH: ${{ steps.release_metadata.outputs.source_branch }}
           EXPECTED_SOURCE_REF: ${{ steps.release_metadata.outputs.source_ref }}
         run: |
-          case "$EXPECTED_SOURCE_BRANCH" in
-            main|release/1.x) ;;
-            *) exit 1 ;;
-          esac
+          test "$EXPECTED_SOURCE_BRANCH" = "main"
           test "$EXPECTED_SOURCE_REF" = "refs/heads/$EXPECTED_SOURCE_BRANCH"
           test "$EVENT_REF" = "$EXPECTED_SOURCE_REF"
           test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"

@@ -62,7 +62,7 @@ function createRepository(context) {
   git(root, ["add", "package.json", "tracked.txt"]);
   git(root, ["commit", "--quiet", "-m", "release"]);
   const head = git(root, ["rev-parse", "HEAD"]);
-  git(root, ["update-ref", "refs/remotes/origin/release/1.x", head]);
+  git(root, ["update-ref", "refs/remotes/origin/main", head]);
   return { head, root };
 }
 
@@ -199,7 +199,7 @@ function publish(repository, runner, overrides = {}) {
 
 test("keeps the exact-tag transaction independent from the wrapper's source branch policy", (context) => {
   const repository = createRepository(context);
-  git(repository.root, ["update-ref", "refs/remotes/origin/release/1.x", repository.head]);
+  git(repository.root, ["update-ref", "refs/remotes/origin/synthetic-source", repository.head]);
   const fake = createRunner({ expectedCommit: repository.head });
   assert.deepEqual(
     pushExactReleaseTag({
@@ -208,7 +208,7 @@ test("keeps the exact-tag transaction independent from the wrapper's source bran
       releaseTag,
       repository: repositoryName,
       root: repository.root,
-      sourceRef: "refs/remotes/origin/release/1.x",
+      sourceRef: "refs/remotes/origin/synthetic-source",
       token
     }),
     { created: true, releaseTag, sourceCommit: repository.head }
@@ -464,21 +464,22 @@ test("requires exact repository, version, protected source branch, token, and cl
     "-m",
     "other"
   ]);
-  git(repository.root, ["update-ref", "refs/remotes/origin/release/1.x", otherCommit]);
+  git(repository.root, ["update-ref", "refs/remotes/origin/main", otherCommit]);
   assert.throws(() => publish(repository, fake.runner), /equal the configured source ref/u);
-  git(repository.root, ["update-ref", "refs/remotes/origin/release/1.x", repository.head]);
+  git(repository.root, ["update-ref", "refs/remotes/origin/main", repository.head]);
 
   writeFileSync(join(repository.root, "tracked.txt"), "dirty\n", "utf8");
   assert.throws(() => publish(repository, fake.runner), /clean tracked worktree/u);
 });
 
-test("uses main for post-v1 stable tags and rejects a v1 tag sourced from main", (context) => {
+test("uses main for current v1 and later stable tags", (context) => {
   const repository = createRepository(context);
   const fake = createRunner({ expectedCommit: repository.head });
-  git(repository.root, ["update-ref", "-d", "refs/remotes/origin/release/1.x"]);
-  git(repository.root, ["update-ref", "refs/remotes/origin/main", repository.head]);
-
-  assert.throws(() => publish(repository, fake.runner), /configured release source/u);
+  assert.deepEqual(publish(repository, fake.runner), {
+    created: true,
+    releaseTag,
+    sourceCommit: repository.head
+  });
 
   writeFileSync(join(repository.root, "package.json"), '{"name":"openwrangler","version":"2.0.0"}\n', "utf8");
   git(repository.root, ["add", "package.json"]);

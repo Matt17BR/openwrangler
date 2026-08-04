@@ -44,7 +44,10 @@ The Jupyter, cross-platform, CodeQL, and performance workflows also run on sched
 
 ## Branches
 
-The repository does not need permanent `develop` and `staging` branches. `main` is the v2 integration line, while `release/1.x` receives stable v1 maintenance. Feature branches use draft pull requests while they are in progress. A release candidate VSIX is the staging artifact.
+The repository does not need permanent `develop`, `staging`, or maintenance branches. Reviewed changes merge to
+`main`, and the release candidate VSIX is the staging artifact. Open Wrangler 2 stays on its feature branch until it
+is ready for a preview pull request. A maintenance branch can be cut later if two supported release lines genuinely
+need work at the same time.
 
 This keeps promotion simple:
 

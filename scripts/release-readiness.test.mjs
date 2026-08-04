@@ -25,6 +25,7 @@ import {
   inspectPreviewReleaseMetadata,
   inspectReleaseMetadata,
   inspectWorkflowReleaseMetadata,
+  isHistoricalTagRecoveryVersion,
   releaseSourcePolicyForVersion
 } from "./release-metadata.mjs";
 import { inspectPreviewReleaseWorkflow as inspectReleaseWorkflow } from "./preview-release-workflow.mjs";
@@ -412,23 +413,23 @@ test("binds numeric release versions to their channel before workflow branching"
   }
 });
 
-test("binds v1 maintenance and v2 development to distinct protected branches", () => {
-  for (const version of ["1.0.0", "1.2.1", "1.98.999", "1.100.0"]) {
-    assert.deepEqual(releaseSourcePolicyForVersion(version), {
-      branch: "release/1.x",
-      ref: "refs/heads/release/1.x",
-      version
-    });
-  }
-  for (const version of ["0.3.0", "0.4.0", "1.99.0", "1.99.999", "2.0.0", "3.4.5"]) {
+test("binds every future release to protected main and recognizes the historical cutoff", () => {
+  for (const version of ["0.3.0", "0.4.0", "1.0.0", "1.2.1", "1.2.3", "1.99.0", "2.0.0", "3.4.5"]) {
     assert.deepEqual(releaseSourcePolicyForVersion(version), {
       branch: "main",
       ref: "refs/heads/main",
       version
     });
   }
+  for (const version of ["0.3.0", "1.0.0", "1.2.1", "1.2.2"]) {
+    assert.equal(isHistoricalTagRecoveryVersion(version), true);
+  }
+  for (const version of ["1.2.3", "1.3.0", "1.99.0", "2.0.0"]) {
+    assert.equal(isHistoricalTagRecoveryVersion(version), false);
+  }
   for (const version of [undefined, "1", "01.2.3", "1.2.3-beta.1"]) {
     assert.equal(releaseSourcePolicyForVersion(version), undefined);
+    assert.equal(isHistoricalTagRecoveryVersion(version), false);
   }
 });
 

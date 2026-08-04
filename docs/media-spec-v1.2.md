@@ -150,8 +150,8 @@ undeclared media series; pre-stats a bounded inventory before any full file read
 ordered structure, complete decode, exact 2× dimensions, standard sRGB, per-file and total budgets, and immutable
 remote bytes; and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. Every one of the 18 rendered README
 images must retain its exact reviewed `src`/`currentSrc`, natural dimensions, and at least two natural pixels per
-rendered CSS pixel. A promotion with the contract on its version-owned caller branch runs this after registry
+rendered CSS pixel. A promotion with the contract on protected `main` runs this after registry
 verification, with forty fresh-context attempts at thirty-second intervals inside a thirty-minute public-propagation
 window. Only typed stale/unavailable registry observations retry; deterministic contract failures stop immediately.
-The check can fail workflow success but cannot undo the public writes it observes. `main` covers previews; stable
-coverage additionally requires an explicit reviewed backport to `release/1.x`.
+The check can fail workflow success but cannot undo the public writes it observes. The same reviewed `main` contract
+covers stable and preview releases.
