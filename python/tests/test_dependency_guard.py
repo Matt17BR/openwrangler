@@ -32,6 +32,7 @@ class GuardFixture:
     environment: dict[str, Any]
     dependency: dict[str, Any]
     pip_sentinel: Path
+    pip_release: Path
 
     @property
     def journal(self) -> Path:
@@ -59,6 +60,7 @@ def guard_fixture(tmp_path: Path) -> GuardFixture:
             "maximumVersionExclusive": "2.0",
         },
         pip_sentinel=tmp_path / "pip-started.json",
+        pip_release=tmp_path / "pip-release",
     )
 
 
@@ -157,7 +159,13 @@ def _write_fake_pip(site_packages: Path) -> None:
                 "secret = os.environ.get('OW_GUARD_TEST_SECRET', 'package-output-must-not-escape')",
                 "os.write(1, secret.encode('utf-8'))",
                 "os.write(2, secret.encode('utf-8'))",
-                "time.sleep(float(os.environ.get('OW_GUARD_TEST_PIP_SLEEP', '0')))",
+                "release = os.environ.get('OW_GUARD_TEST_PIP_RELEASE')",
+                "if release:",
+                "    release_path = pathlib.Path(release)",
+                "    while not release_path.exists():",
+                "        time.sleep(0.01)",
+                "else:",
+                "    time.sleep(float(os.environ.get('OW_GUARD_TEST_PIP_SLEEP', '0')))",
                 "raise SystemExit(int(os.environ.get('OW_GUARD_TEST_PIP_EXIT', '0')))",
             ]
         )
@@ -1421,21 +1429,27 @@ def test_status_and_validation_fail_busy_while_pip_holds_lock(guard_fixture: Gua
     process = _arm(
         guard_fixture,
         token,
-        environment=_process_environment(guard_fixture, OW_GUARD_TEST_PIP_SLEEP="1.5"),
+        environment=_process_environment(guard_fixture, OW_GUARD_TEST_PIP_RELEASE=str(guard_fixture.pip_release)),
     )
-    _write_frame(process, _go_frame(token))
-    deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS
-    while not guard_fixture.pip_sentinel.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert guard_fixture.pip_sentinel.exists()
+    try:
+        _write_frame(process, _go_frame(token))
+        deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS
+        while not guard_fixture.pip_sentinel.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert guard_fixture.pip_sentinel.exists()
 
-    status_code, status_frames, _stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
-    validate_code, validate_frames, _stderr = _run(guard_fixture, "validate", _validate_request(guard_fixture, token))
+        status_code, status_frames, _stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+        validate_code, validate_frames, _stderr = _run(
+            guard_fixture, "validate", _validate_request(guard_fixture, token)
+        )
+    finally:
+        guard_fixture.pip_release.touch()
+        pip_code = _finish(process)[0]
     assert status_code == 11
     assert status_frames == [{"code": "busy", "kind": "error", "protocol": PROTOCOL}]
     assert validate_code == 11
     assert validate_frames == [{"code": "busy", "kind": "error", "protocol": PROTOCOL}]
-    assert _finish(process)[0] == 0
+    assert pip_code == 0
 
 
 def test_concurrent_install_is_busy_and_cannot_replace_first_marker(guard_fixture: GuardFixture) -> None:
