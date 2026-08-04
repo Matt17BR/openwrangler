@@ -2187,7 +2187,12 @@ async function executeJourney(
     }
   }
   const accessOutcome = await access;
-  if (journeyFailed) throw journeyError;
+  if (journeyFailed) {
+    const preMeasurementTimeout =
+      journeyError instanceof JourneyTimeout && !milestones.snapshot().some((item) => item.name === "run-cell-click");
+    if (preMeasurementTimeout && !accessOutcome.ok) throw accessOutcome.error;
+    throw journeyError;
+  }
   if (!accessOutcome.ok) throw accessOutcome.error;
   if (cleanupError !== undefined) throw cleanupError;
 }
