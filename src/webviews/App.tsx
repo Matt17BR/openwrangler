@@ -864,11 +864,18 @@ export function App() {
         if (matchesSession) {
           const reveal = goToColumnRequestRef.current;
           if (reveal) {
-            // The synchronization barrier can follow a Code Preview layout
-            // transition that left the first reveal attempt dormant. Always
-            // issue a fresh identity so DataGrid retries against the final
-            // committed geometry whether the earlier attempt completed or not.
-            requestColumnReveal(reveal.columnId);
+            const retainUntilSynchronization = reveal.retainUntilSynchronization;
+            const retainedRevealMatches =
+              retainUntilSynchronization?.sessionId === response.sessionId &&
+              retainUntilSynchronization.revision === response.revision;
+            // Cursor can report the target as visible before revealing Code
+            // Preview narrows the editor. Keep the logical reveal alive while
+            // the host says that layout transition is pending, then give the
+            // settled layout a fresh request that DataGrid may complete.
+            requestColumnReveal(
+              reveal.columnId,
+              retainedRevealMatches && response.layoutTransitionPending ? retainUntilSynchronization : undefined
+            );
           }
           // This marker is the host's publication barrier. Commit every
           // authoritative message that preceded it before allowing recovery
@@ -2510,6 +2517,7 @@ interface RendererSynchronizationMessage {
   syncId: string;
   sessionId: string | null;
   revision: number | null;
+  layoutTransitionPending: boolean;
 }
 
 interface ImportOptionsStateMessage {

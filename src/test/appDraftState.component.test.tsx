@@ -297,7 +297,8 @@ describe("App draft state boundaries", () => {
       kind: "rendererSynchronization",
       syncId: "R".repeat(32),
       sessionId: metadata.sessionId,
-      revision: 3
+      revision: 3,
+      layoutTransitionPending: false
     });
     await waitFor(() => {
       expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
@@ -340,7 +341,8 @@ describe("App draft state boundaries", () => {
       kind: "rendererSynchronization",
       syncId: "S".repeat(32),
       sessionId: metadata.sessionId,
-      revision: 5
+      revision: 5,
+      layoutTransitionPending: false
     });
     await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
   });
@@ -398,12 +400,19 @@ describe("App draft state boundaries", () => {
       kind: "rendererSynchronization",
       syncId: "W".repeat(32),
       sessionId: metadata.sessionId,
-      revision: 3
+      revision: 3,
+      layoutTransitionPending: true
     });
     await waitFor(() => {
       expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
       expect(latestGridProps().goToColumnRequestId).toBe(2);
     });
+
+    // Cursor may claim the target is visible before Code Preview has changed
+    // the workbench geometry. The pending transition keeps the logical reveal
+    // alive despite that premature completion.
+    act(() => latestGridProps().onGoToColumnHandled?.(2));
+    expect(latestGridProps().goToColumnRequestId).toBe(2);
 
     // Cursor can finish the Code Preview layout after the first synchronized
     // retry has gone dormant. A later barrier must rearm the still-pending
@@ -412,7 +421,8 @@ describe("App draft state boundaries", () => {
       kind: "rendererSynchronization",
       syncId: "X".repeat(32),
       sessionId: metadata.sessionId,
-      revision: 3
+      revision: 3,
+      layoutTransitionPending: false
     });
     await waitFor(() => {
       expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
@@ -448,7 +458,8 @@ describe("App draft state boundaries", () => {
       kind: "rendererSynchronization",
       syncId: "T".repeat(32),
       sessionId: metadata.sessionId,
-      revision: metadata.revision
+      revision: metadata.revision,
+      layoutTransitionPending: false
     });
 
     expect(within(screen.getByRole("region", { name: "Draft review" })).getByText("Uppercase")).toBeVisible();
@@ -461,7 +472,8 @@ describe("App draft state boundaries", () => {
       kind: "rendererSynchronization",
       syncId: "U".repeat(32),
       sessionId: metadata.sessionId,
-      revision: 3
+      revision: 3,
+      layoutTransitionPending: false
     });
     await waitFor(() =>
       expect(postMessage).toHaveBeenCalledWith({
@@ -516,7 +528,8 @@ describe("App draft state boundaries", () => {
               kind: "rendererSynchronization",
               syncId: "V".repeat(32),
               sessionId: metadata.sessionId,
-              revision: 3
+              revision: 3,
+              layoutTransitionPending: false
             },
             origin: window.location.origin
           })
