@@ -1,10 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
+  constants,
   copyFileSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -345,18 +349,57 @@ function requireContained(root, path, label) {
 }
 
 function verifyFileHash(path, expected, label) {
-  const metadata = lstatSync(path);
-  if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error(`${label} must be a regular file.`);
-  const actual = createHash("sha256").update(readFileSync(path)).digest("hex");
+  const actual = createHash("sha256").update(readPinnedRegularFile(path, label)).digest("hex");
   if (actual !== expected) throw new Error(`${label} SHA-256 changed.`);
 }
 
 function readJson(path) {
-  const metadata = lstatSync(path);
-  if (!metadata.isFile() || metadata.size <= 0 || metadata.size > MAX_JSON_BYTES) {
-    throw new Error("Comparison JSON is missing or too large.");
+  return JSON.parse(readPinnedRegularFile(path, "Comparison JSON", MAX_JSON_BYTES).toString("utf8"));
+}
+
+function readPinnedRegularFile(path, label, maxBytes) {
+  const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | noFollow);
+    const descriptorBefore = fstatSync(descriptor, { bigint: true });
+    const pathBefore = lstatSync(path, { bigint: true });
+    if (
+      !descriptorBefore.isFile() ||
+      !pathBefore.isFile() ||
+      pathBefore.isSymbolicLink() ||
+      !sameFileSnapshot(descriptorBefore, pathBefore) ||
+      descriptorBefore.size <= 0n ||
+      (maxBytes !== undefined && descriptorBefore.size > BigInt(maxBytes))
+    ) {
+      throw new Error(`${label} is missing, unsafe, or too large.`);
+    }
+    const content = readFileSync(descriptor);
+    const descriptorAfter = fstatSync(descriptor, { bigint: true });
+    const pathAfter = lstatSync(path, { bigint: true });
+    if (
+      BigInt(content.byteLength) !== descriptorBefore.size ||
+      !sameFileSnapshot(descriptorBefore, descriptorAfter) ||
+      !sameFileSnapshot(descriptorBefore, pathAfter)
+    ) {
+      throw new Error(`${label} changed while it was read.`);
+    }
+    return content;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
-  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function sameFileSnapshot(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
 }
 
 function writeJsonAtomic(path, value) {
