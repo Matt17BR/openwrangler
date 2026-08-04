@@ -193,8 +193,9 @@ Both release workflows call this workflow directly after their GitHub release jo
 
 The called promotion job declares `environment: publishing`; therefore its two secret-bearing steps receive that environment's `OVSX_PAT` without granting the caller blanket secret inheritance. This follows GitHub's [reusable-workflow environment-secret behavior](https://docs.github.com/en/actions/how-tos/sharing-automations/reusing-workflows#using-inputs-and-secrets-in-a-reusable-workflow). Only `ovsx verify-pat` and `ovsx publish` receive the token. The workflow revalidates the release before each publisher boundary, rejects a conflicting existing version, publishes the downloaded VSIX with lockfile-pinned `ovsx --skip-duplicate`, and then polls for up to fifteen minutes for Open VSX to expose matching channel metadata, `Matt17BR` publisher identity, checksum, downloadable bytes, and the exact packaged gallery icon.
 
-For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the reusable promotion job installs the
-lockfile-pinned Chromium and verifies the exact release checkout's complete public-media inventory. All 46 declared
+For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the reusable promotion job installs
+Chromium from the automation checkout's lockfile and runs the media verifier from the exact release tag. This keeps
+a v1 release tied to its own reviewed screenshot inventory when `main` has moved on. All declared
 PNGs must retain their exact 2× dimensions, standard sRGB declaration, file and aggregate budgets, valid chunk/decode
 structure, and immutable remote bytes. Every one of the 18 README images must then render from its exact reviewed URL
 without DPR-2 upscaling on GitHub, Visual Studio Marketplace, and Open VSX. Registry observations receive at most
@@ -218,8 +219,8 @@ provenance format remains compatible with the current registry verifier; incompa
 validation. The verifier reads the exact release tag before checking the package inventory. A historical v1 tag from
 before `r/openwrangler_runtime/frame_contract.R` was added may omit its packaged copy. If the tagged source includes
 that file, the VSIX must include it too; every `1.99.x` or v2 release must include both. Verification of current
-packages still requires the R file. The public-media contract is independently skipped below `1.2.1`, so a later
-screenshot inventory cannot break an otherwise valid historical recovery. Repeating the dispatch is safe only when
+packages still requires the R file. The public-media contract is skipped below `1.2.1`; newer releases use the
+verifier and inventory in their exact tag. Repeating the dispatch is safe only when
 the registry already serves identical bytes; a conflict fails without replacement. Do not dispatch from an old
 release tag, because historical releases intentionally do not contain the reviewed automation.
 

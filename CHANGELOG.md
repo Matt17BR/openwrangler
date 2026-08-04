@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Open VSX recovery now checks public screenshots with the verifier from the exact release tag, so a v1 release is
+  not compared with a different media inventory from `main`.
 - Registry recovery now checks a historical v1 package against the files in its exact release tag. Packages from
   before the R runtime may omit its frame-contract file; current packages and every Open Wrangler 2 release must
   still include it.

@@ -47,7 +47,7 @@ fi
 printf 'required=%s\\n' "$required" >> "$GITHUB_OUTPUT"
 `,
   "npx playwright-core install --with-deps chromium",
-  'node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --source-root release-source --wait-for-propagation'
+  'node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --wait-for-propagation'
 ]);
 
 function exactKeys(value, keys) {

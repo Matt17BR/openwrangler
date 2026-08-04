@@ -369,7 +369,8 @@ surfaces. The hero and histogram remain explicitly named representative requirem
 18-image contract.
 
 The versioned gate begins with `1.2.1`; older recovery runs skip browser installation and public-media verification.
-For protected versions, the workflow invocation adds `--source-root release-source` and `--wait-for-propagation`.
+For protected versions, the workflow runs the verifier from the exact release checkout with
+`--wait-for-propagation`, so each release uses its own reviewed media inventory.
 The retry controller is injected and directly tested: a deterministic error stops after one attempt, typed stale or
 unavailable registry observations exhaust the exact attempt/delay count, and every retry owns and closes a distinct
 context. At most forty attempts are separated by thirty seconds inside a thirty-minute total deadline. Each fetch is
