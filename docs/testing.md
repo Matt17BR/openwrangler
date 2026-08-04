@@ -54,8 +54,9 @@ matrix for release candidates or changes that cross all of its boundaries.
   protected environment, and reject PATs, rebuilds, mutable artifact paths, channel omissions, and intervening
   commands. The trigger accepts path-independent `v*` tags and unbatched `main` events with no YAML path filter.
   Intake tests cover automatic stable and preview tags, exact single-parent recovery changes, absent-tag no-ops,
-  immutable recovery through v1.2.2, `main` ancestry for later releases, exact tag and manifest identity, and checkout
-  drift. Download and public-registry tests require the GitHub inventory, checksum, channel, metadata, and normalized
+  manual immutable-tag recovery through v1.2.2, an automatic no-op for those versions, `main` ancestry for later
+  releases, exact tag and manifest identity, and checkout drift. Download and public-registry tests require the
+  GitHub inventory, checksum, channel, metadata, and normalized
   VSIX entries to match.
 - `npm run test:coverage` enforces TypeScript/webview and Python regression floors and produces HTML/JSON/XML reports.
 - `npm run license:check` verifies every bundled production dependency against the approved SPDX policy and third-party notice groups.

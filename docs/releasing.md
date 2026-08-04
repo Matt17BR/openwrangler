@@ -16,8 +16,9 @@ Wrangler 2 previews. Both require `package.json.preview` to be `true`; other num
 `false`. The workflows use the same rule, so stable and preview metadata cannot be mixed.
 
 Every future release starts from the exact protected `main` head. The stable and preview workflows each build one
-candidate and publish those tested bytes. Releases through v1.2.2 predate this branch policy; recovery may read their
-immutable tags, but it never rebuilds or retags them. Update `package.json`,
+candidate and publish those tested bytes. Releases through v1.2.2 predate this branch policy. Automatic `main`
+recovery ignores them; an operator may recover one explicitly from its immutable tag, but never rebuild or retag it.
+Update `package.json`,
 `python/openwrangler_runtime/version.py`, `CHANGELOG.md`, and parity evidence in the release pull request. Do not put
 the release channel in a hyphenated manifest version.
 

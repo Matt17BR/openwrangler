@@ -435,6 +435,18 @@ export function inspectMarketplaceReleaseIntake({
     if (resolvedProtectedBranchCommit !== sourceCommit) {
       problems.push("Automatic Marketplace recovery must run from the current public main commit.");
     }
+    if (isHistoricalTagRecoveryVersion(recovery.version) && problems.length === 0) {
+      return Object.freeze({
+        eligible: false,
+        noOpReason: "historical-release",
+        prerelease: undefined,
+        problems: Object.freeze([]),
+        promote: false,
+        releaseCommit: undefined,
+        releaseTag,
+        version: recovery.version
+      });
+    }
     if (resolvedTagCommit === undefined && remoteTagCommit === undefined && problems.length === 0) {
       return Object.freeze({
         eligible: false,
@@ -539,6 +551,12 @@ export function marketplaceReleaseIntakeOutput(result) {
         "The main commit was not a single-parent change; automatic recovery completed without promotion."
       ]);
     }
+    if (result.noOpReason === "historical-release" && result.version !== undefined) {
+      return Object.freeze([
+        "##vso[task.setvariable variable=promote;isOutput=true]false",
+        `Version ${result.version} was released before releases had to come from main. Automatic recovery skipped it; recover it manually by selecting its existing release tag.`
+      ]);
+    }
     return Object.freeze([
       "##vso[task.setvariable variable=promote;isOutput=true]false",
       "No release tag was selected; the default manual protected-branch run completed without Marketplace promotion."
@@ -583,9 +601,10 @@ function runCli() {
     ? inspectMarketplaceRecoverySource(currentPackageJson)
     : { releaseTag: undefined };
   const activeAutomaticProtectedBranch = relevantAutomaticProtectedBranch;
+  const automaticHistoricalRelease = activeAutomaticProtectedBranch && isHistoricalTagRecoveryVersion(recovery.version);
   const releaseTag = existingReleaseTag !== "" ? existingReleaseTag : (tagMatch?.groups?.tag ?? recovery.releaseTag);
   const releaseCommit =
-    typeof releaseTag === "string" && RELEASE_TAG.test(releaseTag)
+    !automaticHistoricalRelease && typeof releaseTag === "string" && RELEASE_TAG.test(releaseTag)
       ? resolveTagCommit(root, releaseTag, { optional: activeAutomaticProtectedBranch })
       : undefined;
   const releasePackageJson =
@@ -615,6 +634,7 @@ function runCli() {
     releasePackageJson,
     releaseProtectedBranchRef: branchEvidence?.sourceRef,
     remoteTagCommit:
+      !automaticHistoricalRelease &&
       (releaseCommit !== undefined || existingReleaseTag !== "" || activeAutomaticProtectedBranch) &&
       releaseTag !== undefined
         ? currentTagCommit(releaseTag)
