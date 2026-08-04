@@ -146,7 +146,7 @@ worse simply because its startup baseline was lower.
 
 PSS includes the editor, extension host, renderer, kernel, and Open Wrangler runtime when present. It is not an
 allocation profile of either extension. Each result retains only the bounded, path-free timestamp/PSS/process-count
-series needed to recalculate the peak and settle check; it never retains PIDs or process arguments.
+series needed to recalculate the peak and verify sampling coverage; it never retains PIDs or process arguments.
 
 ## Statistics
 
