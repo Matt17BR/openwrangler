@@ -21,13 +21,30 @@ def source_fingerprint(path: Path) -> conversion.SourceFingerprint:
     return conversion._confirmed_source_path_fingerprint(path)
 
 
-def cli_arguments(source: Path, destination: Path) -> list[str]:
-    fingerprint = source_fingerprint(source)
-    return [str(source), str(destination), *(str(value) for value in fingerprint)]
+def file_identity(path: Path) -> tuple[int, int]:
+    details = path.lstat()
+    return details.st_dev, details.st_ino
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows ChangeTime is Windows-specific.")
-def test_windows_change_time_matches_node_ctime(tmp_path: Path) -> None:
+def cli_arguments(
+    source: Path,
+    destination: Path,
+    *,
+    expected_source_fingerprint: conversion.SourceFingerprint | None = None,
+    expected_destination_identity: tuple[int, int] | None = None,
+) -> list[str]:
+    destination_identity = expected_destination_identity or file_identity(destination)
+    fingerprint = expected_source_fingerprint or source_fingerprint(source)
+    return [
+        str(source),
+        str(destination),
+        *(str(value) for value in destination_identity),
+        *(str(value) for value in fingerprint),
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows file identities are Windows-specific.")
+def test_windows_source_fingerprint_matches_node_lstat(tmp_path: Path) -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is unavailable")
@@ -39,7 +56,8 @@ def test_windows_change_time_matches_node_ctime(tmp_path: Path) -> None:
             node,
             "-e",
             "const fs=require('node:fs'); "
-            "process.stdout.write(fs.lstatSync(process.argv[1], {bigint:true}).ctimeNs.toString())",
+            "const s=fs.lstatSync(process.argv[1], {bigint:true}); "
+            "process.stdout.write([s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs].join('\\n'))",
             str(source),
         ],
         check=True,
@@ -48,7 +66,8 @@ def test_windows_change_time_matches_node_ctime(tmp_path: Path) -> None:
         timeout=30,
     )
 
-    assert source_fingerprint(source).changed_time_ns == int(result.stdout, 10)
+    node_fingerprint = conversion.SourceFingerprint(*(int(value, 10) for value in result.stdout.splitlines()))
+    assert source_fingerprint(source) == node_fingerprint
 
 
 def windows_process_is_running(process_id: int) -> bool:
@@ -110,7 +129,12 @@ def test_converts_one_dataframe_with_pyarrow_and_preserves_the_source(tmp_path: 
     destination.touch(mode=0o600)
     source_before = source.read_bytes()
 
-    conversion.convert_trusted_pickle_to_parquet(source, destination, source_fingerprint(source))
+    conversion.convert_trusted_pickle_to_parquet(
+        source,
+        destination,
+        file_identity(destination),
+        source_fingerprint(source),
+    )
 
     pd.testing.assert_frame_equal(pd.read_parquet(destination, engine="pyarrow"), frame)
     assert source.read_bytes() == source_before
@@ -142,7 +166,12 @@ def test_reads_the_pickle_exactly_once_and_requests_pyarrow(tmp_path: Path, monk
     monkeypatch.setattr(pd.DataFrame, "to_parquet", to_parquet)
 
     expected_source_fingerprint = source_fingerprint(source)
-    conversion.convert_trusted_pickle_to_parquet(source, destination, expected_source_fingerprint)
+    conversion.convert_trusted_pickle_to_parquet(
+        source,
+        destination,
+        file_identity(destination),
+        expected_source_fingerprint,
+    )
 
     assert reads == [(b"fixture", expected_source_fingerprint[:2])]
     details = destination.stat()
@@ -157,7 +186,12 @@ def test_rejects_a_non_dataframe_without_touching_the_reserved_destination(tmp_p
     source_before = source.read_bytes()
 
     with pytest.raises(conversion.NonDataFramePickleError):
-        conversion.convert_trusted_pickle_to_parquet(source, destination, source_fingerprint(source))
+        conversion.convert_trusted_pickle_to_parquet(
+            source,
+            destination,
+            file_identity(destination),
+            source_fingerprint(source),
+        )
 
     assert source.read_bytes() == source_before
     assert destination.read_bytes() == b"reserved"
@@ -276,7 +310,13 @@ def test_rejects_a_stale_host_fingerprint_before_unpickling(
 
     monkeypatch.setattr(pd, "read_pickle", read_pickle)
 
-    result = conversion.main([str(source), str(destination), *(str(value) for value in stale_fingerprint)])
+    result = conversion.main(
+        cli_arguments(
+            source,
+            destination,
+            expected_source_fingerprint=stale_fingerprint,
+        )
+    )
     output = capsys.readouterr()
 
     assert result == conversion.EXIT_CONVERSION_FAILED
@@ -285,6 +325,45 @@ def test_rejects_a_stale_host_fingerprint_before_unpickling(
     assert source.name not in output.err
     assert "private-replacement" not in output.err
     assert destination.read_bytes() == b"reserved"
+    assert read_calls == 0
+
+
+def test_rejects_a_replaced_reserved_destination_before_unpickling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "trusted.pkl"
+    source.write_bytes(b"fixture")
+    destination = tmp_path / "reserved.tmp"
+    destination.write_bytes(b"reserved")
+    expected_destination_identity = file_identity(destination)
+    original_reservation = tmp_path / "original-reservation.tmp"
+    destination.rename(original_reservation)
+    destination.write_bytes(b"replacement")
+    read_calls = 0
+
+    def read_pickle(_input_file: BinaryIO) -> pd.DataFrame:
+        nonlocal read_calls
+        read_calls += 1
+        return pd.DataFrame()
+
+    monkeypatch.setattr(pd, "read_pickle", read_pickle)
+
+    result = conversion.main(
+        cli_arguments(
+            source,
+            destination,
+            expected_destination_identity=expected_destination_identity,
+        )
+    )
+    output = capsys.readouterr()
+
+    assert result == conversion.EXIT_CONVERSION_FAILED
+    assert output.out == ""
+    assert output.err == f"{conversion.CONVERSION_FAILED_MESSAGE}\n"
+    assert destination.read_bytes() == b"replacement"
+    assert original_reservation.read_bytes() == b"reserved"
     assert read_calls == 0
 
 
@@ -316,7 +395,13 @@ def test_rejects_same_size_rewrite_with_restored_mtime_before_unpickling(
 
     monkeypatch.setattr(pd, "read_pickle", read_pickle)
 
-    result = conversion.main([str(source), str(destination), *(str(value) for value in stale_fingerprint)])
+    result = conversion.main(
+        cli_arguments(
+            source,
+            destination,
+            expected_source_fingerprint=stale_fingerprint,
+        )
+    )
     output = capsys.readouterr()
 
     assert result == conversion.EXIT_CONVERSION_FAILED
@@ -332,7 +417,9 @@ def test_invalid_invocation_has_a_fixed_nonzero_result(capsys: pytest.CaptureFix
     assert output.out == ""
     assert output.err == f"{conversion.INVALID_INVOCATION_MESSAGE}\n"
 
-    assert conversion.main(["source", "destination", "dev", "1", "2", "3", "4"]) == (conversion.EXIT_INVALID_INVOCATION)
+    assert conversion.main(["source", "destination", "destination-dev", "1", "source-dev", "2", "3", "4", "5"]) == (
+        conversion.EXIT_INVALID_INVOCATION
+    )
     output = capsys.readouterr()
     assert output.out == ""
     assert output.err == f"{conversion.INVALID_INVOCATION_MESSAGE}\n"
@@ -356,7 +443,12 @@ def test_rejects_symlinks_before_loading_the_pickle(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(pd, "read_pickle", read_pickle)
 
     with pytest.raises(ValueError, match="regular files only"):
-        conversion.convert_trusted_pickle_to_parquet(source, destination, source_fingerprint(source_target))
+        conversion.convert_trusted_pickle_to_parquet(
+            source,
+            destination,
+            file_identity(destination),
+            source_fingerprint(source_target),
+        )
 
     assert read_calls == 0
 
@@ -386,7 +478,12 @@ def test_destination_path_replacement_during_unpickle_never_redirects_output(
     monkeypatch.setattr(pd, "read_pickle", read_pickle)
 
     with pytest.raises((RuntimeError, ValueError)):
-        conversion.convert_trusted_pickle_to_parquet(source, destination, expected_source_fingerprint)
+        conversion.convert_trusted_pickle_to_parquet(
+            source,
+            destination,
+            file_identity(destination),
+            expected_source_fingerprint,
+        )
 
     assert redirect_target.read_bytes() == b"untouched"
     if replacement_kind == "regular":
@@ -429,7 +526,13 @@ def test_source_path_replacement_during_unpickle_fails_without_writing_or_leakin
     monkeypatch.setattr(pd, "read_pickle", read_pickle)
     monkeypatch.setattr(pd.DataFrame, "to_parquet", to_parquet)
 
-    result = conversion.main([str(source), str(destination), *(str(value) for value in expected_source_fingerprint)])
+    result = conversion.main(
+        cli_arguments(
+            source,
+            destination,
+            expected_source_fingerprint=expected_source_fingerprint,
+        )
+    )
     output = capsys.readouterr()
 
     assert result == conversion.EXIT_CONVERSION_FAILED
@@ -471,7 +574,13 @@ def test_source_in_place_rewrite_during_unpickle_fails_without_writing_or_leakin
     monkeypatch.setattr(pd, "read_pickle", read_pickle)
     monkeypatch.setattr(pd.DataFrame, "to_parquet", to_parquet)
 
-    result = conversion.main([str(source), str(destination), *(str(value) for value in expected_source_fingerprint)])
+    result = conversion.main(
+        cli_arguments(
+            source,
+            destination,
+            expected_source_fingerprint=expected_source_fingerprint,
+        )
+    )
     output = capsys.readouterr()
 
     assert result == conversion.EXIT_CONVERSION_FAILED
@@ -498,6 +607,11 @@ def test_fsyncs_the_exact_reserved_file(tmp_path: Path, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(conversion.os, "fsync", fsync)
 
-    conversion.convert_trusted_pickle_to_parquet(source, destination, source_fingerprint(source))
+    conversion.convert_trusted_pickle_to_parquet(
+        source,
+        destination,
+        file_identity(destination),
+        source_fingerprint(source),
+    )
 
     assert len(fsync_calls) == 1

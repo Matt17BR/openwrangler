@@ -39,6 +39,7 @@ class FakeChildProcess extends EventEmitter {
 }
 
 const sourceFingerprint = Object.freeze({ dev: 11n, ino: 22n, size: 33n, mtimeNs: 44n, ctimeNs: 55n });
+const destinationIdentity = Object.freeze({ dev: 66n, ino: 77n });
 
 function options(child: FakeChildProcess, overrides: Record<string, unknown> = {}) {
   return {
@@ -46,6 +47,7 @@ function options(child: FakeChildProcess, overrides: Record<string, unknown> = {
     helperPath: "/extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py",
     sourcePath: "/workspace/orders.pkl",
     destinationPath: "/workspace/.openwrangler-temp.parquet",
+    destinationIdentity,
     sourceFingerprint,
     platform: "win32" as const,
     spawnProcess: (() => child as unknown as ChildProcessWithoutNullStreams) as unknown as typeof spawn,
@@ -84,6 +86,8 @@ describe("trusted pickle worker", () => {
         "/extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py",
         "/workspace/orders.pkl",
         "/workspace/.openwrangler-temp.parquet",
+        "66",
+        "77",
         "11",
         "22",
         "33",

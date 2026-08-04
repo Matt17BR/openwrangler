@@ -66,7 +66,11 @@ describe("safe file export transactions", () => {
 
     expect(path.dirname(transaction.temporaryPath)).toBe(directory);
     expect(await readFile(transaction.temporaryPath)).toHaveLength(0);
-    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
+    const workerTarget = await transaction.prepareExternalWriter();
+    expect(workerTarget.path).toBe(transaction.temporaryPath);
+    const workerTargetDetails = await stat(workerTarget.path, { bigint: true });
+    expect(workerTarget.identity).toEqual({ dev: workerTargetDetails.dev, ino: workerTargetDetails.ino });
+    await writeFile(workerTarget.path, DESTINATION_CONTENTS);
     await transaction.commit();
 
     expect(await readFile(fixture.destination, "utf8")).toBe(DESTINATION_CONTENTS);
@@ -96,7 +100,8 @@ describe("safe file export transactions", () => {
       createTemporaryId: () => "explicit-abandon"
     });
 
-    await writeFile(transaction.temporaryPath, "worker may still own this path");
+    const workerTarget = await transaction.prepareExternalWriter();
+    await writeFile(workerTarget.path, "worker may still own this path");
     await transaction.abandon();
     await transaction.abandon();
 
@@ -117,7 +122,8 @@ describe("safe file export transactions", () => {
         createTemporaryId: () => "worker-failure"
       });
       try {
-        await writeFile(transaction.temporaryPath, "partial parquet bytes");
+        const workerTarget = await transaction.prepareExternalWriter();
+        await writeFile(workerTarget.path, "partial parquet bytes");
         throw workerFailure;
       } catch (failure) {
         await transaction.rollback();
@@ -137,7 +143,8 @@ describe("safe file export transactions", () => {
       protectedSources: [fileUri(fixture.source)],
       createTemporaryId: () => "source-replacement"
     });
-    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
+    const workerTarget = await transaction.prepareExternalWriter();
+    await writeFile(workerTarget.path, DESTINATION_CONTENTS);
     await rename(fixture.source, originalSource);
     await writeFile(fixture.source, "replacement source");
 
@@ -158,7 +165,8 @@ describe("safe file export transactions", () => {
       protectedSources: [fileUri(fixture.source)],
       createTemporaryId: () => "destination-replacement"
     });
-    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
+    const workerTarget = await transaction.prepareExternalWriter();
+    await writeFile(workerTarget.path, DESTINATION_CONTENTS);
     await rename(fixture.destination, originalDestination);
     await writeFile(fixture.destination, "replacement destination");
 
@@ -187,7 +195,8 @@ describe("safe file export transactions", () => {
       fileSystem,
       createTemporaryId: () => "parent-replacement"
     });
-    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
+    const workerTarget = await transaction.prepareExternalWriter();
+    await writeFile(workerTarget.path, DESTINATION_CONTENTS);
     parentReplaced = true;
 
     await expect(transaction.commit()).rejects.toThrow(/destination changed/u);
@@ -196,7 +205,7 @@ describe("safe file export transactions", () => {
     await expectFixturePreserved(fixture);
   });
 
-  it("refuses to commit or roll back a substituted worker temporary path", async () => {
+  it("refuses to prepare or roll back a substituted worker temporary path", async () => {
     const fixture = await sourceAndDestination(directory);
     const displacedTemporary = path.join(directory, "displaced-worker-temporary");
     const base = actualFileSystem();
@@ -219,13 +228,11 @@ describe("safe file export transactions", () => {
       fileSystem,
       createTemporaryId: () => "temporary-replacement"
     });
-    await writeFile(transaction.temporaryPath, DESTINATION_CONTENTS);
-
-    await expect(transaction.commit()).rejects.toThrow(/temporary export file changed unexpectedly/u);
+    await expect(transaction.prepareExternalWriter()).rejects.toThrow(/temporary export file changed unexpectedly/u);
     await expect(transaction.rollback()).rejects.toThrow(/could not be rolled back completely/u);
 
     expect(await readFile(transaction.temporaryPath, "utf8")).toBe("foreign replacement");
-    expect(await readFile(displacedTemporary, "utf8")).toBe(DESTINATION_CONTENTS);
+    expect(await readFile(displacedTemporary, "utf8")).toBe("");
     await expectFixturePreserved(fixture, { expectedTemporaryCount: 1 });
   });
 

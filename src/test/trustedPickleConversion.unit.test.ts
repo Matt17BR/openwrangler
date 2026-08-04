@@ -410,9 +410,11 @@ describe("trusted pickle conversion command", () => {
         executable: "/venv/bin/python",
         sourcePath: "/workspace/orders.pkl",
         destinationPath: "/workspace/.openwrangler-temp.parquet",
+        destinationIdentity: { dev: 5n, ino: 6n },
         sourceFingerprint: { dev: 1n, ino: 2n, size: 100n, mtimeNs: 3n, ctimeNs: 4n }
       })
     );
+    expect(transaction.prepareExternalWriter).toHaveBeenCalledOnce();
     expect(transaction.commit).toHaveBeenCalledOnce();
     expect(transaction.rollback).not.toHaveBeenCalled();
     expect(conversionMocks.executeCommand).toHaveBeenCalledWith("openWrangler.openFile", destination);
@@ -543,15 +545,27 @@ function bridge(
 function atomicTransaction(): {
   value: AtomicFileTransaction;
   commit: ReturnType<typeof vi.fn>;
+  prepareExternalWriter: ReturnType<typeof vi.fn>;
   rollback: ReturnType<typeof vi.fn>;
   abandon: ReturnType<typeof vi.fn>;
 } {
   const commit = vi.fn(async () => undefined);
+  const prepareExternalWriter = vi.fn(async () => ({
+    path: "/workspace/.openwrangler-temp.parquet",
+    identity: { dev: 5n, ino: 6n }
+  }));
   const rollback = vi.fn(async () => undefined);
   const abandon = vi.fn(async () => undefined);
   return {
-    value: { temporaryPath: "/workspace/.openwrangler-temp.parquet", commit, rollback, abandon },
+    value: {
+      temporaryPath: "/workspace/.openwrangler-temp.parquet",
+      prepareExternalWriter,
+      commit,
+      rollback,
+      abandon
+    },
     commit,
+    prepareExternalWriter,
     rollback,
     abandon
   };

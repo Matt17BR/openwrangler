@@ -128,6 +128,7 @@ export async function convertTrustedPickle(
       protectedSources: [source]
     });
     if (!(await operationStillCurrent(bridge, preflight, anchor))) return false;
+    const workerTarget = await transaction.prepareExternalWriter();
 
     await vscode.window.withProgress(
       {
@@ -153,7 +154,8 @@ export async function convertTrustedPickle(
                 path.join("python", "openwrangler_runtime", "trusted_pickle_to_parquet.py")
               ),
               sourcePath: source.fsPath,
-              destinationPath: transaction!.temporaryPath,
+              destinationPath: workerTarget.path,
+              destinationIdentity: workerTarget.identity,
               sourceFingerprint: anchor.identity,
               signal: controller.signal
             })

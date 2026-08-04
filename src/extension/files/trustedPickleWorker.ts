@@ -76,6 +76,7 @@ export interface TrustedPickleWorkerOptions {
   readonly helperPath: string;
   readonly sourcePath: string;
   readonly destinationPath: string;
+  readonly destinationIdentity: TrustedPickleFileIdentity;
   readonly sourceFingerprint: TrustedPickleSourceFingerprint;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
@@ -96,6 +97,11 @@ export interface TrustedPickleSourceFingerprint {
   readonly ctimeNs: bigint;
 }
 
+export interface TrustedPickleFileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
 export interface TrustedPickleWorkingDirectory {
   readonly path: string;
   cleanup(): Error | undefined;
@@ -106,7 +112,10 @@ export async function runTrustedPickleWorker(options: TrustedPickleWorkerOptions
   assertAbsolutePath(options.helperPath, "Pickle converter helper");
   assertAbsolutePath(options.sourcePath, "Pickle source");
   assertAbsolutePath(options.destinationPath, "Parquet destination");
-  const fingerprintArguments = fingerprintArgs(options.sourceFingerprint);
+  const workerArguments = [
+    ...fileIdentityArgs(options.destinationIdentity),
+    ...fingerprintArgs(options.sourceFingerprint)
+  ];
   if (options.sourcePath.includes("\0") || options.destinationPath.includes("\0")) {
     throw new Error("Pickle conversion paths cannot contain NUL bytes.");
   }
@@ -123,7 +132,7 @@ export async function runTrustedPickleWorker(options: TrustedPickleWorkerOptions
   const workingDirectory = (options.createWorkingDirectory ?? createTrustedPickleWorkingDirectory)();
   let failure: Error | undefined;
   try {
-    await runOwnedWorker(options, workingDirectory.path, timeoutMs, outputLimitBytes, fingerprintArguments);
+    await runOwnedWorker(options, workingDirectory.path, timeoutMs, outputLimitBytes, workerArguments);
   } catch (error) {
     if (error instanceof TrustedPickleProcessTreeUnconfirmedError) throw error;
     failure = asError(error);
@@ -144,13 +153,13 @@ async function runOwnedWorker(
   cwd: string,
   timeoutMs: number,
   outputLimitBytes: number,
-  fingerprintArguments: readonly string[]
+  workerArguments: readonly string[]
 ): Promise<void> {
   const platform = options.platform ?? process.platform;
   const spawnProcess = options.spawnProcess ?? spawn;
   const proc = spawnProcess(
     options.executable,
-    ["-I", "-B", "-S", options.helperPath, options.sourcePath, options.destinationPath, ...fingerprintArguments],
+    ["-I", "-B", "-S", options.helperPath, options.sourcePath, options.destinationPath, ...workerArguments],
     {
       cwd,
       env: trustedPickleWorkerEnvironment(cwd, process.env, platform),
@@ -415,6 +424,10 @@ function fingerprintArgs(fingerprint: TrustedPickleSourceFingerprint): string[] 
   return [fingerprint.dev, fingerprint.ino, fingerprint.size, fingerprint.mtimeNs, fingerprint.ctimeNs].map((value) =>
     value.toString(10)
   );
+}
+
+function fileIdentityArgs(identity: TrustedPickleFileIdentity): string[] {
+  return [identity.dev, identity.ino].map((value) => value.toString(10));
 }
 
 function assertAbsolutePath(value: string, label: string): void {

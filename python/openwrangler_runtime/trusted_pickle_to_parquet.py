@@ -33,6 +33,7 @@ class SourceFingerprint(NamedTuple):
 def convert_trusted_pickle_to_parquet(
     source: str | Path,
     destination: str | Path,
+    expected_destination_identity: tuple[int, int],
     expected_source_fingerprint: SourceFingerprint,
 ) -> None:
     """Load one trusted Pandas pickle and write it to a reserved Parquet file."""
@@ -41,15 +42,18 @@ def convert_trusted_pickle_to_parquet(
     destination_path = Path(destination)
     source_descriptor = _open_confirmed_source(source_path, expected_source_fingerprint)
     try:
-        destination_identity = _regular_file_identity(destination_path)
+        if expected_destination_identity == (0, 0):
+            raise ValueError("The filesystem did not provide a usable file identity.")
+        if _regular_file_identity(destination_path) != expected_destination_identity:
+            raise RuntimeError("The Parquet destination changed before conversion.")
     except BaseException:
         os.close(source_descriptor)
         raise
-    if expected_source_fingerprint[:2] == destination_identity:
+    if expected_source_fingerprint[:2] == expected_destination_identity:
         os.close(source_descriptor)
         raise ValueError("The trusted pickle source and Parquet destination must be different files.")
     try:
-        destination_descriptor = _open_reserved_destination(destination_path, destination_identity)
+        destination_descriptor = _open_reserved_destination(destination_path, expected_destination_identity)
     except BaseException:
         os.close(source_descriptor)
         raise
@@ -65,6 +69,11 @@ def convert_trusted_pickle_to_parquet(
             if not isinstance(value, pd.DataFrame):
                 raise NonDataFramePickleError
 
+            _recheck_destination(
+                destination_path,
+                destination_descriptor,
+                expected_destination_identity,
+            )
             os.ftruncate(destination_descriptor, 0)
             os.lseek(destination_descriptor, 0, os.SEEK_SET)
             output = os.fdopen(destination_descriptor, "wb", closefd=True)
@@ -81,18 +90,19 @@ def convert_trusted_pickle_to_parquet(
         if destination_descriptor >= 0:
             os.close(destination_descriptor)
 
-    if _regular_file_identity(destination_path) != destination_identity:
+    if _regular_file_identity(destination_path) != expected_destination_identity:
         raise RuntimeError("The Parquet destination changed during conversion.")
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if arguments is None else arguments)
-    if len(values) != 7:
+    if len(values) != 9:
         print(INVALID_INVOCATION_MESSAGE, file=sys.stderr)
         return EXIT_INVALID_INVOCATION
 
     try:
-        expected_source_fingerprint = SourceFingerprint(*(int(value, 10) for value in values[2:]))
+        expected_destination_identity = (int(values[2], 10), int(values[3], 10))
+        expected_source_fingerprint = SourceFingerprint(*(int(value, 10) for value in values[4:]))
     except (TypeError, ValueError):
         print(INVALID_INVOCATION_MESSAGE, file=sys.stderr)
         return EXIT_INVALID_INVOCATION
@@ -100,7 +110,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         _ensure_windows_descendant_containment()
         _enable_selected_environment_packages()
-        convert_trusted_pickle_to_parquet(values[0], values[1], expected_source_fingerprint)
+        convert_trusted_pickle_to_parquet(
+            values[0],
+            values[1],
+            expected_destination_identity,
+            expected_source_fingerprint,
+        )
     except NonDataFramePickleError:
         print(NON_DATAFRAME_MESSAGE, file=sys.stderr)
         return EXIT_NON_DATAFRAME
@@ -342,6 +357,16 @@ def _open_reserved_destination(path: Path, expected_identity: tuple[int, int]) -
     except BaseException:
         os.close(descriptor)
         raise
+
+
+def _recheck_destination(path: Path, descriptor: int, expected_identity: tuple[int, int]) -> None:
+    details = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or (details.st_dev, details.st_ino) != expected_identity
+        or _regular_file_identity(path) != expected_identity
+    ):
+        raise RuntimeError("The Parquet destination changed during conversion.")
 
 
 if __name__ == "__main__":

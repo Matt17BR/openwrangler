@@ -49,9 +49,15 @@ export interface AtomicFileTransactionOptions {
 
 export interface AtomicFileTransaction {
   readonly temporaryPath: string;
+  prepareExternalWriter(): Promise<AtomicExternalWriterTarget>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
   abandon(): Promise<void>;
+}
+
+export interface AtomicExternalWriterTarget {
+  readonly path: string;
+  readonly identity: FileIdentity;
 }
 
 export interface SafeFileExportOptions extends AtomicFileTransactionOptions {
@@ -180,6 +186,7 @@ class AtomicFileTransactionImplementation implements AtomicFileTransaction {
   private readonly resolvedDestination: string;
   private readonly temporaryIdentity: FileIdentity;
   private handle: AtomicExportHandle | undefined;
+  private externalWriterPrepared = false;
   private settling = false;
   private state: "active" | "committed" | "rolledBack" | "abandoned" = "active";
 
@@ -215,15 +222,40 @@ class AtomicFileTransactionImplementation implements AtomicFileTransaction {
     await this.handle.write(contents);
   }
 
-  async commit(): Promise<void> {
-    if (this.state === "committed") return;
+  async prepareExternalWriter(): Promise<AtomicExternalWriterTarget> {
     this.assertActive();
+    if (this.externalWriterPrepared) {
+      throw new Error("Open Wrangler's temporary export file is already prepared for an external writer.");
+    }
     this.beginSettlement();
     try {
       if (!this.handle) throw new Error("Open Wrangler's temporary export file is already closed.");
       await this.handle.sync();
       await this.handle.close();
       this.handle = undefined;
+      await assertKnownTemporary(this.fileSystem, this.temporaryPath, this.temporaryIdentity);
+      this.externalWriterPrepared = true;
+      return Object.freeze({
+        path: this.temporaryPath,
+        identity: Object.freeze({ ...this.temporaryIdentity })
+      });
+    } finally {
+      this.settling = false;
+    }
+  }
+
+  async commit(): Promise<void> {
+    if (this.state === "committed") return;
+    this.assertActive();
+    this.beginSettlement();
+    try {
+      if (this.handle) {
+        await this.handle.sync();
+        await this.handle.close();
+        this.handle = undefined;
+      } else if (!this.externalWriterPrepared) {
+        throw new Error("Open Wrangler's temporary export file is already closed.");
+      }
       await assertKnownTemporary(this.fileSystem, this.temporaryPath, this.temporaryIdentity);
       await assertProtectedSourcesUnchanged(this.fileSystem, this.protectedSourceAnchors);
       await assertDestinationUnchanged(this.fileSystem, this.destinationAnchor);
