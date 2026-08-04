@@ -82,20 +82,20 @@ test("Marketplace promotion uses one exact integrity-pinned VSCE package", () =>
 test("Marketplace VSCE lock inspector rejects dependency range, tarball, and integrity drift", () => {
   const mutations = [
     {
-      packageJson: packageJson.replace('"@vscode/vsce": "^3.9.1"', '"@vscode/vsce": "^4.0.0"'),
+      packageJson: packageJson.replace('"@vscode/vsce": "^3.9.2"', '"@vscode/vsce": "^4.0.0"'),
       packageLock
     },
     {
       packageJson,
       packageLock: packageLock.replace(
-        "https://registry.npmjs.org/@vscode/vsce/-/vsce-3.9.1.tgz",
-        "https://example.com/vsce-3.9.1.tgz"
+        "https://registry.npmjs.org/@vscode/vsce/-/vsce-3.9.2.tgz",
+        "https://example.com/vsce-3.9.2.tgz"
       )
     },
     {
       packageJson,
       packageLock: packageLock.replace(
-        "sha512-MPn5p+DoudI+3GfJSpAZZraE1lgLv0LcwbH3+xy7RgEhty3UIkmUMUA+5jPTDaxXae00AnX5u77FxGM8FhfKKA==",
+        "sha512-XSxMosEEDO6vLxELAHVkwmhC0qe0ijZni2jB9Rcs8kQsW4lhTDQ/wMzmwFs/buotAWSnpmUp/dRWD2ufG3UYKA==",
         "sha512-invalid"
       )
     }
