@@ -1,6 +1,6 @@
 # Feature parity matrix
 
-Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15. This is a clean-room behavior matrix, not an implementation reference.
+Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15. This table records behavior, not implementation details.
 
 Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Open Wrangler 1.0 requires every in-scope row to be **Done**.
 
@@ -46,6 +46,14 @@ Post-1.0 viewing-filter hardening keeps the completed filter surface usable as w
 Cleaning-step preview, apply, latest-step edit, discard, and undo now preserve the independent viewing query instead of resetting it. Parameterized Pandas, Polars, and DuckDB runtime coverage keeps compatible selected values, searches, predicates, and ordered multi-sorts; prunes missing, ambiguous, or semantic-type-changed references; restores the exact pre-draft query on discard when the view was untouched; and keeps an explicit in-draft edit authoritative through Discard or Apply. Immediate undo restores the pre-first-apply query only when no later view edit occurred, including across latest-step replacement. Coordinator persistence restores the validated draft-base receipt before replaying a draft and then restores the independent current view; malformed or stale receipt/view sections fall back independently. React coverage verifies that confirmed Discard retains the runtime-published filters and sort priority.
 
 Post-1.0 column navigation replaces the browser-native suggestion list with an accessible VS Code-native combobox. It exposes Codicon-based datatype symbols and text labels, searches names plus semantic and native types, disambiguates duplicate labels by position, and targets stable column IDs. Focused React coverage proves keyboard selection and duplicate-name navigation, while the packaged README capture requires the real typed popup to fit inside the workbench.
+
+Pickle files do not open directly in Open Wrangler. A separate **Convert Trusted Pickle to Parquet…** file-menu action
+is available for Pandas DataFrames in trusted workspaces. The user chooses a new destination and sees the exact Python
+interpreter before any pickle code runs. Cancelling writes nothing, and Open Wrangler never overwrites the pickle. The
+Parquet output uses the same symlink and atomic-write checks as data export and can be opened when conversion finishes.
+Focused command, environment, worker, filesystem, Python, and manifest tests cover the failure paths. The packaged VS
+Code and Cursor journey rejects an ordinary pickle open, declines once, converts a generated three-column fixture, and
+opens the Parquet result. It also checks that no worker directory or transaction temp remains.
 
 The released v1.1.1 notebook UX prepares automatic Pandas/Polars MIME formatters when a trusted, visible Jupyter notebook has a user-started kernel, rather than waiting for the first Open Wrangler command. Stable Jupyter lookup never creates a kernel, API-opened background notebooks remain untouched, and a visible notebook change bypasses retry backoff so a newly available kernel is handled promptly. If Microsoft Data Wrangler is installed, the default `ask` preference requires the user to choose which extension owns automatic dataframe previews before Open Wrangler registers a formatter; the provider remains changeable and a switch applies to new or restarted kernels. The notebook-toolbar action uses a bounded, kernel-backed QuickPick populated from canonical runtime types instead of asking users to type a variable name. Every discovery and launch retains the exact originating `NotebookDocument`, rejects duplicate same-URI document objects, and never retargets after focus changes.
 

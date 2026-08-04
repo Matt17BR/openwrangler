@@ -530,10 +530,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /\| Other VS Code desktop forks \| Experimental/u);
   assert.match(readme, /\| DuckDB, experimental\s+\|/u);
   assert.doesNotMatch(readme, /\| DuckDB, preview/u);
-  assert.match(
-    readme,
-    /Pickle files aren't supported\. Convert only files you trust to Parquet before opening them\./u
-  );
+  assert.match(readme, /For a trusted Pandas pickle[\s\S]{0,220}Convert Trusted Pickle to Parquet/u);
+  assert.match(readme, /Open Wrangler never overwrites the pickle/u);
+  assert.doesNotMatch(readme, /safe (?:pickle|unpickling|deserialization)/iu);
   assert.match(
     readme,
     /does not count or cache the whole dataframe before showing the first page; the row total appears after\s+the final page/u
@@ -570,7 +569,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(comparisonReview, /56b933c6db09255d3f3b8338830613950e604094fefc1d3a1db691017f1f7b4b/u);
   assert.doesNotMatch(readme, /tracks a planned comparison with Microsoft Data Wrangler/u);
   assert.match(readme, /\*\*Next in v1:\*\*[\s\S]{0,180}#36/u);
-  assert.match(readme, /#263[\s\S]{0,220}currently experimental/u);
+  assert.doesNotMatch(readme, /#263/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   assert.match(readme, /\*\*v2:\*\* add native R data frames[\s\S]{0,200}#87/u);
 

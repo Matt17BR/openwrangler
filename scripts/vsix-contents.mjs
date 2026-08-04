@@ -47,6 +47,7 @@ export const requiredVsixEntries = [
   "extension/media/icon.png",
   "extension/media/icon-128.png",
   "extension/python/openwrangler_runtime/dependency_guard.py",
+  "extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py",
   "extension/python/openwrangler_runtime/server.py",
   "extension/python/openwrangler_runtime/version.py"
 ];

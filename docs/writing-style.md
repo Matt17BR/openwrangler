@@ -39,9 +39,9 @@ a precise contract. Their introductions and summaries should still be direct.
 - Use “X, not Y” only when the contrast answers a real question. Repeating that construction makes ordinary copy
   sound defensive.
 
-Some terms are precise and should stay in technical documents. “Clean-room” describes the implementation boundary;
-“black-box” describes the Data Wrangler test method; “atomic” and “correlated” describe specific runtime guarantees.
-Define those terms where needed. Do not stack them into a tagline or use them as decoration.
+Use “built independently” in user-facing copy instead of “clean-room.” Describe the Data Wrangler comparison by what
+it does through the public UI instead of calling it a “black-box” test. Terms such as “atomic” and “correlated” are
+useful in a technical contract when they name a specific guarantee; define them there and do not use them as decoration.
 
 Examples:
 
