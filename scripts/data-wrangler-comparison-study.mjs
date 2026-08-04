@@ -15,7 +15,6 @@ import {
   readdirSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync
 } from "node:fs";
 import { arch, cpus, platform, release, totalmem } from "node:os";
