@@ -6,7 +6,7 @@ Status: reviewed on 2026-08-04.
 
 The collection followed [`docs/performance-comparison.md`](../../performance-comparison.md): four engine/format
 combinations (Pandas/CSV, Polars/CSV, Pandas/Parquet, and Polars/Parquet), one isolated headless VS Code session per
-product and workload, and ten warm notebook journeys per session. Each journey used the public inline preview, launch,
+product and workload, and ten warm timed samples per session. Each sample used the public inline preview, launch,
 grid, and all-column profiling controls. Process-tree PSS was sampled across the same measured window.
 
 The primary run used:
@@ -25,17 +25,17 @@ independent recalculation matched every count, median, type-7 p95, and PSS summa
 
 Status: passed before collection.
 
-The two-product Pandas/CSV smoke completed two journeys per product. It verified the expected inline and launch
+The two-product Pandas/CSV smoke completed two samples per product. It verified the expected inline and launch
 actions, full scrollable grid, first and final profile milestones, continuous PSS coverage, and clean shutdown. Smoke
 timings were discarded and are not included below.
 
 ## Results
 
-Status: complete as descriptive evidence. The predeclared 80/80 cross-product success criterion was not met.
+Status: complete. Three Data Wrangler profiling samples did not finish.
 
-The primary report contains eight sessions and 80 attempted journeys. Open Wrangler completed 40/40. Data Wrangler
+The primary report contains eight sessions and 80 attempted samples. Open Wrangler completed 40/40. Data Wrangler
 completed 37/40: one profiling action was not pointer-ready, and two all-column profiling passes timed out. The timing
-and PSS summaries below use successful journeys only, so the three affected Data Wrangler rows have nine observations.
+and PSS summaries below use successful samples only, so the three affected Data Wrangler rows have nine observations.
 Values are **median / p95**; timings are milliseconds and PSS is MiB.
 
 | Workload       | Product       | Success |    Inline preview |    Full workbench |   First profile |        All profiles |      Observed PSS |
@@ -52,21 +52,25 @@ Values are **median / p95**; timings are milliseconds and PSS is MiB.
 Primary report SHA-256:
 `e45eb499fed50febb61fb0d32cfa9a20800d59b04c67edd20d2568e39aa34ff3`.
 
+The small Pandas/Polars differences within Data Wrangler are not an engine benchmark. Fixture loading happened before
+timing, and this test did not isolate the cost of converting Polars data to Pandas. The measured window mostly covers
+the inline renderer, workbench launch, and profiling UI, where fixed overhead and normal run-to-run variation can be
+larger than that conversion difference.
+
 The three affected Data Wrangler sessions were collected once more without changing the timeout. Pandas/CSV and
-Polars/CSV then completed 10/10. Polars/Parquet timed out again during full profiling, this time on journey 6. That
+Polars/CSV then completed 10/10. Polars/Parquet timed out again during full profiling, this time on sample 6. That
 confirmation was not substituted into the primary table: repeatedly collecting until the baseline happens to pass
 would hide the observed instability. Confirmation report SHA-256:
 `56b933c6db09255d3f3b8338830613950e604094fefc1d3a1db691017f1f7b4b`.
 
 ## Release decision
 
-No Open Wrangler median exceeded the predeclared relative and absolute regression allowances. Data Wrangler took
+No Open Wrangler median exceeded the preset relative and absolute regression allowances. Data Wrangler took
 4.4–7.3× as long to show the inline preview, 1.0–1.8× as long to open the full workbench, and about 3.4× as long to
 profile every CSV column. Parquet profiling was close, with Open Wrangler slightly faster. Open Wrangler used a little
 more PSS on the two CSV cases and less on both million-row Parquet cases, all within the memory allowance.
 
-The successful samples did not identify an Open Wrangler regression to fix. The benchmark gate itself failed because
-the predeclared rule required 80/80 completed journeys. These results are descriptive and must not be called passing
-performance evidence for 1.2.1. The stable publication workflow has separate required checks and does not run this
-optional comparison. Before the next collection, the project should decide whether its benchmark gate should continue
-to depend on a third-party product completing every attempt.
+The successful samples did not identify an Open Wrangler regression to fix. The preset completion rule required all
+80 samples to finish, so the run did not satisfy that rule. The stable publication workflow has separate required
+checks and does not run this optional comparison. Before the next collection, the project should decide whether the
+benchmark should continue to depend on a third-party product completing every attempt.

@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-08-04
+
 ### Added
 
 - Added **Convert Trusted Pickle to Parquet…** to the file menu for local `.pkl` and `.pickle` files. The command
@@ -17,6 +19,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   again against the package that may be published.
 - Replaced a 1.5-second timer in the Windows dependency-lock test with a signal from the parent test process. Slow
   process startup can no longer make the validation subprocess miss the lock.
+- Benchmark result validation now checks the bytes it actually read instead of checking the path first, closing a
+  file-replacement race.
 
 ## [1.2.1] - 2026-08-04
 
@@ -28,7 +32,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Open Wrangler was faster than Data Wrangler 1.24.2 in the median notebook-preview, workbench-open, and full-profile
   measurements across Pandas, Polars, CSV, and Parquet. The
   [full report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
-  includes p95, memory, raw outcomes, and exact versions.
+  includes p95, memory, outcome counts, and exact versions.
 - PySpark notebook sessions now show the first page without indexing, counting, and caching the entire DataFrame. The
   total appears after the final page, and a changed page boundary asks the user to reopen the variable.
 - Generated columns stay in view when Cursor opens Code Preview and resizes the grid.
