@@ -78,6 +78,6 @@ Before publishing text:
 4. Ask whether a reader without issue or prompt context will understand the sentence.
 5. Run `npm run docs:check`.
 
-Automated checks can make sure this guide stays connected to agent, contributor, and pull request instructions. They
+Automated checks can make sure this guide stays connected to contributor and pull request instructions. They
 cannot decide whether prose sounds human. Do not add AI detectors, word bans, or sentence-style scoring as a merge
 gate; public copy still needs an editorial read.
