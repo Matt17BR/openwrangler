@@ -44,13 +44,11 @@ fixtures. This is intentional: the accepted scenes exercise native Pandas, Polar
 static hand-authored JSON. Missing an engine dependency is therefore a visual-fixture setup failure, not permission
 to fall back to reconstructed UI.
 
-The workflow-structure contract has exactly one pull-request owner, `Fast feedback`. All other general or Linux-owned
-`scripts/*.test.mjs` contracts run under `Contract tests`.
-The compiled Job Object supervisor smoke runs under `Native script contracts (Windows)`. macOS no longer repeats the
-general corpus; its native extension-host and packaged VS Code/Cursor jobs remain unchanged. The local
-`npm run test:scripts` command remains the complete superset of all four groups. Its filesystem-derived regression
-requires the workflow, portable, media, and native file sets to be pairwise disjoint and their union to equal the actual
-`scripts/*.test.mjs` inventory, while the parsed workflow rejects a second CI owner for any group.
+The workflow-structure contract has exactly one pull-request owner, `Fast feedback`. `Contract tests` owns four
+portable groups: product/package, editor harness, release/registry, and benchmarks. It also runs the PNG-heavy media
+group with a lower concurrency limit. `Native script contracts (Windows)` owns the compiled Job Object supervisor
+smoke. `npm run test:scripts` remains the complete local command. A filesystem-derived test keeps every
+`scripts/*.test.mjs` file in exactly one named group.
 
 The coverage lane is the single authoritative owner of the complete TypeScript and Python suites. It installs and
 verifies Java 17, PySpark 4.2, and compatible Pandas before running the full Python corpus, including the native
