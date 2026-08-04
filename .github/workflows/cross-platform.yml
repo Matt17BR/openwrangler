@@ -44,6 +44,7 @@ jobs:
   runtime:
     needs: classify
     if: ${{ !cancelled() }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -111,6 +112,17 @@ jobs:
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
       - run: python -m pytest python/tests -q
         if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+      - run: npm run test:extension-host
+        if: ${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}
+        env:
+          VSCODE_TEST_VERSION: stable
+      - run: npm run test:scripts:native
+        if: >-
+          ${{
+            needs.classify.result == 'success' &&
+            needs.classify.outputs.full_matrix_required == 'true' &&
+            runner.os == 'Windows'
+          }}
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
