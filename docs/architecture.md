@@ -54,8 +54,23 @@ class/type combinations, contiguous positional column IDs, unique in-range sourc
 windows, and values valid for their R column. The current limits are 2,048 source columns, 64 sort rules, 100,000
 factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per text value, and 16 MiB per encoded
 page. A running metadata-and-cell budget stops an oversized page before the complete object or JSON string is built.
-This boundary is not part of Python protocol v2 and is not wired to commands, sessions, or webviews yet. The IRkernel
-transport will consume it in a later Open Wrangler 2 slice.
+This boundary is not part of Python protocol v2.
+
+`r/openwrangler_runtime/kernel_agent.R` owns the first read-only R sessions. The host creates a UUID before an open,
+the agent captures the named object from the kernel's global environment, and later page and sort requests use that
+capture rather than reading the live variable again. Open, page, and close messages have a separate versioned schema;
+both R and TypeScript reject extra fields, bad ranges, repeated sort identities, stale request IDs, and oversized
+responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote IRkernel does not need access
+to the extension filesystem.
+
+`RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
+session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
+again before dispatch. Host cancellation and timeouts do not interrupt the user's R kernel. If an open has already
+started, its candidate ID stays mapped to that kernel and one close is sent there after the original execution
+settles. Kernel restart ends the mappings. Terminal close uses the mapped kernel and never looks one up by URI. This
+transport keeps late correlated closes authoritative, bounds retired-session bookkeeping, and makes disposal a
+single terminal operation even when kernel cleanup reports an error. It is still internal: variable discovery, the
+coordinator, the workbench, and packaged-editor IRkernel acceptance are not wired yet.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 

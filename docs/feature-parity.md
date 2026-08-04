@@ -71,18 +71,19 @@ Inline MIME v2 output shows every captured column and pages the captured rows at
 
 ## Native R groundwork for Open Wrangler 2
 
-R support is not available in the extension yet. The first implementation is an internal, native-R frame contract for
-base `data.frame`, tibble, and `data.table`. It produces bounded typed pages and has a strict TypeScript decoder. It
-does not use Python or change the current Python support matrix.
+R support is not available in the extension yet. The internal implementation can snapshot and page base
+`data.frame`, tibble, and `data.table` objects in R. A read-only IRkernel transport now owns those captures on the
+exact notebook kernel. Nothing is converted through Python, and the current Python support matrix is unchanged.
 
-| Surface                                      | Availability | Status  | Recorded evidence                           | Remaining acceptance gate                          |
-| -------------------------------------------- | ------------ | ------- | ------------------------------------------- | -------------------------------------------------- |
-| Native R frame snapshot and typed page       | Internal     | Partial | Focused producer and decoder contract suite | Hosted R 4.4/4.5 and IRkernel lifecycle gates      |
-| Native R ordered viewing sorts               | Internal     | Partial | Stable pure-R sorts and decoder fixtures    | Live-session filtering, sorting, and UI acceptance |
-| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Real cross-language fixtures for all three  | Real notebook discovery, paging, and profiling     |
-| Notebook workbench                           | No           | Planned | No command or coordinator wiring            | Packaged VS Code/Cursor IRkernel acceptance        |
-| R cleaning operations and generated code     | No           | Planned | Frame semantics only                        | Native R IR, adapters, code generation, and tests  |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR       | Stable broker or Open Wrangler-owned helper        |
+| Surface                                      | Availability | Status  | Recorded evidence                            | Remaining acceptance gate                         |
+| -------------------------------------------- | ------------ | ------- | -------------------------------------------- | ------------------------------------------------- |
+| Native R frame snapshot and typed page       | Internal     | Partial | Focused producer and decoder contract suite  | Hosted R 4.4/4.5 and packaged-editor gates        |
+| Native R ordered viewing sorts               | Internal     | Partial | Stable pure-R sorts and decoder fixtures     | Live filtering, profiling, and UI acceptance      |
+| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native capture plus read-only session agent  | Real notebook discovery, paging, and profiling    |
+| Exact IRkernel session transport             | Internal     | Partial | Mock-kernel lifecycle and native agent tests | Real local/remote IRkernel and restart acceptance |
+| Notebook workbench                           | No           | Planned | No command or coordinator wiring             | Packaged VS Code/Cursor IRkernel acceptance       |
+| R cleaning operations and generated code     | No           | Planned | Frame semantics only                         | Native R IR, adapters, code generation, and tests |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR        | Stable broker or Open Wrangler-owned helper       |
 
 ## DuckDB file-backed preview matrix
 

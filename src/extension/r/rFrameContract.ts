@@ -193,7 +193,7 @@ export function decodeRFramePageJson(payload: string): RFramePageContract {
   return decodeRFramePage(decoded);
 }
 
-function decodeRFramePage(value: unknown): RFramePageContract {
+export function decodeRFramePage(value: unknown): RFramePageContract {
   const record = exactRecord(value, [
     "contractVersion",
     "dataframeFlavor",
