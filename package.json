@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "Open files and notebook variables, then clean and export data in VS Code and Cursor. Pandas and Polars are native. DuckDB and PySpark are experimental; their notebook sessions are viewing-only.",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": false,
