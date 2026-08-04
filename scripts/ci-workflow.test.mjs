@@ -122,23 +122,14 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
     ])
   );
 
-  assert.equal(
-    manifest?.scripts?.["test:scripts"],
-    "node scripts/run-heavy-local-command.mjs test:scripts -- npm run test:scripts:run"
-  );
+  assert.equal(manifest?.scripts?.["test:scripts"], "npm run test:scripts:run");
   assert.equal(
     manifest?.scripts?.["test:scripts:run"],
     "npm run test:scripts:workflow && npm run test:scripts:portable && npm run test:scripts:native"
   );
-  assert.equal(
-    manifest?.scripts?.["test:scripts:portable"],
-    "node scripts/run-heavy-local-command.mjs test:scripts:portable -- npm run test:scripts:portable:run"
-  );
-  assert.equal(
-    manifest?.scripts?.["test:scripts:media"],
-    "node scripts/run-heavy-local-command.mjs test:scripts:media -- npm run test:scripts:media:run"
-  );
-  assert.equal(manifest?.scripts?.test, "node scripts/run-heavy-local-command.mjs test -- npm run test:run");
+  assert.equal(manifest?.scripts?.["test:scripts:portable"], "npm run test:scripts:portable:run");
+  assert.equal(manifest?.scripts?.["test:scripts:media"], "npm run test:scripts:media:run");
+  assert.equal(manifest?.scripts?.test, "npm run test:run");
   assert.equal(manifest?.scripts?.["test:run"], "npm run test:scripts && npm run test:ts && npm run test:python");
   assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs"]);
   assert.deepEqual(groups.media, ["scripts/public-media-surfaces.test.mjs", "scripts/readme-media.test.mjs"]);
@@ -1394,11 +1385,7 @@ test("coverage provisions the exact PySpark runtime before enforcing the unchang
   assert.ok(steps.indexOf(java) < steps.indexOf(coverage));
   assert.ok(steps.indexOf(install) < steps.indexOf(coverage));
   assert.ok(steps.indexOf(verification) < steps.indexOf(coverage));
-  assert.equal(
-    manifest?.scripts?.["test:coverage"],
-    "node scripts/run-heavy-local-command.mjs test:coverage -- npm run test:coverage:run",
-    "Coverage must acquire the shared local heavy-command lease."
-  );
+  assert.equal(manifest?.scripts?.["test:coverage"], "npm run test:coverage:run");
   assert.equal(
     manifest?.scripts?.["test:coverage:run"],
     "npm run test:coverage:ts && npm run test:coverage:python",

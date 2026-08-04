@@ -1,358 +1,256 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  COMPARISON_PHASE_PROTOCOL,
-  DATA_WRANGLER_COMPARISON_BOUNDARY,
-  DATA_WRANGLER_COMPARISON_SMOKE_PROTOCOL,
-  buildDataWranglerComparisonSmokeReport,
-  validateDataWranglerComparisonPhase,
-  validateDataWranglerComparisonSmokeReport
+  DATA_WRANGLER_STUDY_REPORT_PROTOCOL,
+  DATA_WRANGLER_STUDY_TOOL_NAMES,
+  buildDataWranglerComparisonStudyReport,
+  summarizeComparisonValues,
+  summarizeStudyPssSamples,
+  type7Quantile,
+  validateDataWranglerComparisonStudyTrial
 } from "./data-wrangler-comparison-report.mjs";
 
 const digest = (value) => value.repeat(64);
 
-test("builds one explicitly non-publishable smoke report with four matched phases", () => {
-  const report = passingReport();
-
-  assert.equal(report.protocol, DATA_WRANGLER_COMPARISON_SMOKE_PROTOCOL);
-  assert.equal(report.feasibilityOnly, true);
-  assert.equal(report.publishable, false);
-  assert.deepEqual(report.studyDesign.executionOrder, ["open-wrangler", "data-wrangler"]);
-  assert.equal(report.studyDesign.orderPolicy, "fixed");
-  assert.equal(report.studyDesign.diagnosticLaunchesPerProductFormat, 1);
-  assert.equal(report.studyDesign.durationInterpretation, "diagnostic-only-non-comparative");
-  assert.equal(report.studyDesign.backendMatch, "not-established");
-  assert.deepEqual(
-    report.phases.map((phase) => `${phase.product.key}:${phase.fixture.format}`),
-    ["open-wrangler:csv", "open-wrangler:parquet", "data-wrangler:csv", "data-wrangler:parquet"]
-  );
-  assert.equal(validateDataWranglerComparisonSmokeReport(report), report);
-  assert.equal(report.phases[2].product.candidateSha256, null);
+test("uses type-7 statistics and recomputes retained PSS evidence", () => {
+  assert.equal(type7Quantile([1, 2, 3, 4], 0.5), 2.5);
+  assert.equal(type7Quantile([1, 2, 3, 4], 0.95), 3.8499999999999996);
+  assert.deepEqual(summarizeComparisonValues([4, 1, 3, 2]), {
+    count: 4,
+    median: 2.5,
+    p95: 3.8499999999999996,
+    minimum: 1,
+    maximum: 4
+  });
+  assert.deepEqual(summarizeStudyPssSamples(pssSamples(), milestones()), {
+    baselinePssBytes: 110,
+    peakPssBytes: 150,
+    adjustedPeakPssBytes: 40,
+    sampleCount: 3,
+    intervalMs: 200,
+    samples: pssSamples()
+  });
+  assert.throws(() => summarizeStudyPssSamples([pss("90", 100), pss("50", 120)], milestones()), /increase strictly/u);
 });
 
-test("phase validation requires official VS Code, diagnostic readiness, source, process, and cleanup proofs", () => {
-  const phase = comparisonPhase("open-wrangler", "csv");
-  assert.equal(validateDataWranglerComparisonPhase(phase), phase);
-
-  const mutations = [
-    [{ ...phase, editor: { ...phase.editor, id: "cursor.cursor" } }, /editor ID/u],
-    [{ ...phase, editor: { ...phase.editor, displayMode: "xvfb" } }, /editor display mode/u],
-    [{ ...phase, editor: { ...phase.editor, displayMode: "current" } }, /editor display mode/u],
-    [{ ...phase, diagnostic: { ...phase.diagnostic, warmupCompleted: false } }, /warm-up proof/u],
+test("binds trials to the exact schedule and provenance and rejects rewritten PSS", () => {
+  const manifest = studyManifest();
+  const entry = manifest.schedule[0];
+  const trial = studyTrial(entry, manifest);
+  assert.equal(validateDataWranglerComparisonStudyTrial(trial, entry, manifest), trial);
+  for (const [mutated, expected] of [
+    [{ ...trial, product: "data-wrangler" }, /scheduled product/u],
+    [{ ...trial, order: 42 }, /scheduled order/u],
+    [
+      { ...trial, provenance: { ...trial.provenance, editor: { ...trial.provenance.editor, sha256: digest("9") } } },
+      /editor SHA-256/u
+    ],
+    [{ ...trial, memory: { ...trial.memory, peakPssBytes: 151 } }, /memory peakPssBytes/u],
     [
       {
-        ...phase,
-        diagnostic: {
-          ...phase.diagnostic,
-          cacheProof: { ...phase.diagnostic.cacheProof, residentPagesAfter: 2 }
-        }
+        ...trial,
+        memory: { ...trial.memory, samples: trial.memory.samples.map((sample, index) => ({ ...sample, index })) }
       },
-      /resident pages after/u
-    ],
-    [{ ...phase, proofs: { ...phase.proofs, sourceUnchanged: false } }, /source-content proof/u],
-    [
-      {
-        ...phase,
-        proofs: { ...phase.proofs, configuredPythonProcessObservedDuringProductRun: false }
-      },
-      /configured-Python-process/u
-    ],
-    [{ ...phase, proofs: { ...phase.proofs, cleanupVerified: false } }, /terminal-cleanup proof/u]
-  ];
-  for (const [value, expected] of mutations) {
-    assert.throws(() => validateDataWranglerComparisonPhase(value), expected);
-  }
-});
-
-test("Data Wrangler provenance can identify only the Marketplace version, never proprietary bytes", () => {
-  const phase = comparisonPhase("data-wrangler", "csv");
-  assert.equal(validateDataWranglerComparisonPhase(phase), phase);
-  assert.throws(
-    () =>
-      validateDataWranglerComparisonPhase({
-        ...phase,
-        product: { ...phase.product, candidateSha256: digest("9") }
-      }),
-    /proprietary candidate digest/u
-  );
-  assert.throws(
-    () =>
-      validateDataWranglerComparisonPhase({
-        ...phase,
-        product: { ...phase.product, version: "1.25.0" },
-        installedExtensions: phase.installedExtensions.map((entry) =>
-          entry === "ms-toolsai.datawrangler@1.24.2" ? "ms-toolsai.datawrangler@1.25.0" : entry
-        )
-      }),
-    /baseline version/u
-  );
-});
-
-test("comparison evidence rejects paths, raw logs, screenshots, DOM dumps, and unknown marketing fields", () => {
-  const phase = comparisonPhase("open-wrangler", "csv");
-  for (const extra of [
-    { sourcePath: "/home/alice/private.csv" },
-    { rawLog: "extension output" },
-    { screenshot: "capture.png" },
-    { dom: "<table></table>" },
-    { winner: "Open Wrangler" },
-    { speedup: 2 }
+      /sanitized PSS samples/u
+    ]
   ]) {
-    assert.throws(() => validateDataWranglerComparisonPhase({ ...phase, ...extra }), /missing or unknown fields/u);
+    assert.throws(() => validateDataWranglerComparisonStudyTrial(mutated, entry, manifest), expected);
   }
-  assert.throws(
-    () =>
-      validateDataWranglerComparisonPhase({
-        ...phase,
-        installedExtensions: [...phase.installedExtensions, "/home/alice/extension.vsix"]
-      }),
-    /extension-id@version/u
-  );
 });
 
-test("readiness evidence stays product-neutral and requires stable visible deterministic cells", () => {
-  const phase = comparisonPhase("open-wrangler", "csv");
-  const grid = phase.diagnostic.readiness.grid;
-  const invalidReadiness = [
-    [{ ...grid, rootRole: "treegrid" }, /root role/u],
-    [{ ...grid, busy: "true" }, /aria-busy/u],
-    [{ ...grid, visible: false }, /visible-grid proof/u],
-    [{ ...grid, pointerUsable: false }, /pointer-usable grid proof/u],
-    [{ ...grid, geometryStableFrames: 1 }, /stable-geometry/u],
-    [{ ...grid, headers: ["c00", "sales"] }, /headers/u],
-    [{ ...grid, sentinelsMatched: false }, /deterministic-sentinel proof/u]
-  ];
-  for (const [invalidGrid, expected] of invalidReadiness) {
+test("retains raw trials in the report and derives paired summaries", () => {
+  const manifest = studyManifest();
+  const open = studyTrial(manifest.schedule[0], manifest);
+  const baseline = studyTrial(manifest.schedule[1], manifest, 15, 200);
+  const report = buildDataWranglerComparisonStudyReport({
+    generatedAtUtc: "2026-08-04T12:00:00.000Z",
+    manifest,
+    trials: [open, baseline]
+  });
+  assert.equal(report.protocol, DATA_WRANGLER_STUDY_REPORT_PROTOCOL);
+  assert.deepEqual(report.trials, [open, baseline]);
+  assert.deepEqual(report.trials[0].memory.samples, open.memory.samples);
+  assert.equal(report.incompleteTrialIds.length, 94);
+  const paired = report.pairedWarm.find(
+    ({ cellId, metric }) => cellId === "pandas-csv" && metric === "inlinePreviewMs"
+  );
+  assert.equal(paired.differences.median, -5);
+});
+
+test("requires complete editor, Python, fixture, and machine provenance", () => {
+  const manifest = studyManifest();
+  const trial = studyTrial(manifest.schedule[0], manifest);
+  for (const [change, expected] of [
+    [(copy) => (copy.provenance.editor.cliSha256 = "bad"), /editor CLI SHA-256/u],
+    [(copy) => (copy.provenance.editor.distribution = "Code - OSS"), /editor distribution/u],
+    [(copy) => (copy.provenance.python.implementation = "pypy"), /Python implementation/u],
+    [(copy) => (copy.provenance.fixtures.csv.valuesValidated = false), /fixture value validation/u],
+    [(copy) => delete copy.provenance.machine.cpuModel, /machine provenance/u]
+  ]) {
+    const invalid = structuredClone(manifest);
+    change(invalid);
     assert.throws(
       () =>
-        validateDataWranglerComparisonPhase({
-          ...phase,
-          diagnostic: {
-            ...phase.diagnostic,
-            readiness: { ...phase.diagnostic.readiness, grid: invalidGrid }
-          }
+        buildDataWranglerComparisonStudyReport({
+          generatedAtUtc: "2026-08-04T12:00:00.000Z",
+          manifest: invalid,
+          trials: [trial]
         }),
       expected
     );
   }
+});
 
-  for (const key of [
-    "targetEditorSelected",
-    "noVisibleQuickInput",
-    "noVisibleDialog",
-    "noVisibleModal",
-    "rendererFramePointerUsable"
-  ]) {
-    assert.throws(
-      () =>
-        validateDataWranglerComparisonPhase({
-          ...phase,
-          diagnostic: {
-            ...phase.diagnostic,
-            readiness: {
-              ...phase.diagnostic.readiness,
-              workbench: { ...phase.diagnostic.readiness.workbench, [key]: false }
-            }
-          }
-        }),
-      /proof/u
-    );
+function studyManifest() {
+  const cells = [
+    { id: "pandas-csv", engine: "pandas", format: "csv", rows: 100_000, columns: 50 },
+    { id: "polars-csv", engine: "polars", format: "csv", rows: 100_000, columns: 50 },
+    { id: "pandas-parquet", engine: "pandas", format: "parquet", rows: 1_000_000, columns: 20 },
+    { id: "polars-parquet", engine: "polars", format: "parquet", rows: 1_000_000, columns: 20 }
+  ];
+  const schedule = [];
+  for (let repetition = 1; repetition <= 10; repetition += 1) {
+    for (const cell of cells) addPair(schedule, `warm.${cell.id}.r${repetition}`, "warm", repetition, cell);
   }
-  assert.equal(JSON.stringify(phase).includes("topLeftValues"), false);
-  assert.equal(JSON.stringify(phase).includes('"0","1"'), false);
-});
-
-test("report validation requires exactly one phase per product and format with one configured environment", () => {
-  const report = passingReport();
-  const duplicate = structuredClone(report);
-  duplicate.phases[3] = structuredClone(duplicate.phases[2]);
-  assert.throws(() => validateDataWranglerComparisonSmokeReport(duplicate), /each product and format exactly once/u);
-
-  const environmentDrift = structuredClone(report);
-  environmentDrift.configuredPythonEnvironment.installedPandasVersion = "";
-  assert.throws(() => validateDataWranglerComparisonSmokeReport(environmentDrift), /installed Pandas version/u);
-
-  const fixtureDrift = structuredClone(report);
-  fixtureDrift.phases[1].fixture.sha256 = digest("9");
-  assert.throws(() => validateDataWranglerComparisonSmokeReport(fixtureDrift), /deterministic smoke fixture manifest/u);
-});
-
-test("smoke reports cannot be relabeled as publishable, statistical, or release-sized evidence", () => {
-  const report = passingReport();
-  assert.throws(() => validateDataWranglerComparisonSmokeReport({ ...report, publishable: true }), /publishable flag/u);
-  assert.throws(
-    () =>
-      validateDataWranglerComparisonSmokeReport({
-        ...report,
-        studyDesign: { ...report.studyDesign, diagnosticLaunchesPerProductFormat: 10 }
-      }),
-    /diagnostic launches/u
-  );
-  assert.throws(
-    () =>
-      buildDataWranglerComparisonSmokeReport({
-        generatedAtUtc: report.generatedAtUtc,
-        configuredPythonEnvironment: report.configuredPythonEnvironment,
-        fixtureManifest: { ...fixtureManifest(), smoke: false },
-        phases: report.phases
-      }),
-    /fixture|smoke-sized/u
-  );
-});
-
-function passingReport() {
-  return buildDataWranglerComparisonSmokeReport({
-    generatedAtUtc: "2026-07-28T00:00:00.000Z",
-    configuredPythonEnvironment: comparisonConfiguredPythonEnvironment(),
-    fixtureManifest: fixtureManifest(),
-    phases: [
-      comparisonPhase("data-wrangler", "parquet"),
-      comparisonPhase("open-wrangler", "csv"),
-      comparisonPhase("data-wrangler", "csv"),
-      comparisonPhase("open-wrangler", "parquet")
-    ]
-  });
-}
-
-function comparisonPhase(productKey, format) {
-  const product =
-    productKey === "open-wrangler"
-      ? {
-          key: "open-wrangler",
-          id: "Matt17BR.openwrangler",
-          version: "1.0.0",
-          installation: "candidate-vsix",
-          candidateSha256: digest("a")
-        }
-      : {
-          key: "data-wrangler",
-          id: "ms-toolsai.datawrangler",
-          version: "1.24.2",
-          installation: "official-vscode-marketplace",
-          candidateSha256: null
-        };
-  const entry = fixtureManifest().fixtures[format];
+  for (const cell of cells) {
+    addPair(schedule, `cold.${cell.id}.ab`, "cold", 1, cell);
+    addPair(schedule, `cold.${cell.id}.ba`, "cold", 2, cell, true);
+  }
   return {
-    protocol: COMPARISON_PHASE_PROTOCOL,
-    runId:
-      productKey === "open-wrangler"
-        ? format === "csv"
-          ? "11111111-1111-4111-8111-111111111111"
-          : "22222222-2222-4222-8222-222222222222"
-        : format === "csv"
-          ? "33333333-3333-4333-8333-333333333333"
-          : "44444444-4444-4444-8444-444444444444",
-    product,
-    editor: {
-      id: "microsoft.vscode",
-      version: "1.130.0",
-      officialDistribution: true,
-      displayMode: "headless"
-    },
-    fixture: {
-      format,
-      rows: entry.rows,
-      columns: entry.columns,
-      bytes: entry.bytes,
-      sha256: entry.sha256
-    },
-    diagnostic: {
-      boundary: DATA_WRANGLER_COMPARISON_BOUNDARY,
-      warmupCompleted: true,
-      diagnosticDurationMs: format === "csv" ? 750.25 : 1_250.5,
-      cacheProof: {
-        protocol: "openwrangler-source-cache-proof-v1",
-        requestedState: "resident",
-        fdatasyncApplied: true,
-        adviceAccepted: false,
-        verification: "linux-mincore",
-        pageSizeBytes: 4_096,
-        totalPages: 10,
-        residentPagesBefore: 3,
-        residentPagesAfter: 10,
-        identityStable: true,
-        verified: true
+    protocol: "openwrangler-data-wrangler-study-v1",
+    method: { cells },
+    provenance: {
+      openWrangler: { extensionId: "Matt17BR.openwrangler", version: "1.2.1", sha256: digest("a") },
+      dataWrangler: { extensionId: "ms-toolsai.datawrangler", version: "1.24.2" },
+      editor: {
+        version: "1.131.0",
+        sha256: digest("b"),
+        cliSha256: digest("c"),
+        productSha256: digest("d"),
+        distribution: "Visual Studio Code"
       },
-      readiness: {
-        grid: {
-          rootRole: "grid",
-          busy: "false",
-          visible: true,
-          pointerUsable: true,
-          geometryStableFrames: 2,
-          headers: ["c00", "c01"],
-          sentinelsMatched: true,
-          ariaRowCount: entry.rows + 1,
-          ariaColumnCount: entry.columns + 1
-        },
-        workbench: {
-          targetEditorSelected: true,
-          noVisibleQuickInput: true,
-          noVisibleDialog: true,
-          noVisibleModal: true,
-          rendererFramePointerUsable: true
-        }
-      }
+      python: { version: "3.12.13", sha256: digest("e"), implementation: "cpython", packages: {} },
+      fixtures: {
+        csv: { rows: 100_000, columns: 50, valuesValidated: true, sha256: digest("f") },
+        parquet: { rows: 1_000_000, columns: 20, valuesValidated: true, sha256: digest("1") }
+      },
+      machine: {
+        os: "linux",
+        osRelease: "6.8.0",
+        architecture: "x64",
+        cpuModel: "Test CPU",
+        logicalCpuCount: 8,
+        totalMemoryBytes: 16_000_000_000,
+        powerSource: "ac",
+        cpuGovernor: "performance"
+      },
+      tools: Object.fromEntries(
+        DATA_WRANGLER_STUDY_TOOL_NAMES.map((name, index) => [name, digest("abcdef0123456789"[index % 16])])
+      )
     },
-    proofs: {
-      telemetryDisabled: true,
-      sourceIdentityStable: true,
-      sourceUnchanged: true,
-      configuredPythonProcessObservedDuringProductRun: true,
-      cleanupVerified: true
-    },
-    installedExtensions:
-      productKey === "open-wrangler"
-        ? ["matt17br.openwrangler@1.0.0", "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0"]
-        : [
-            "ms-python.python@2026.10.0",
-            "ms-toolsai.datawrangler@1.24.2",
-            "ms-toolsai.jupyter@2026.7.0",
-            "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0"
-          ]
+    schedule
   };
 }
 
-function comparisonConfiguredPythonEnvironment() {
-  return {
-    pythonVersion: "3.12.12",
-    pythonImplementation: "CPython",
-    pythonExecutableSha256: digest("b"),
-    installedPandasVersion: "2.3.3",
-    installedPyarrowVersion: "22.0.0",
-    installedJupyterCoreVersion: "5.9.1",
-    installedIpykernelVersion: "7.1.0"
-  };
+function addPair(schedule, pairId, kind, repetition, cell, reverse = false) {
+  const products = reverse ? ["data-wrangler", "open-wrangler"] : ["open-wrangler", "data-wrangler"];
+  for (const [orderInPair, product] of products.entries()) {
+    schedule.push({
+      id: `${pairId}.${orderInPair + 1}.${product}`,
+      pairId,
+      kind,
+      repetition,
+      cellId: cell.id,
+      engine: cell.engine,
+      format: cell.format,
+      rows: cell.rows,
+      columns: cell.columns,
+      product,
+      orderInPair,
+      order: schedule.length
+    });
+  }
 }
 
-function fixtureManifest() {
+function studyTrial(entry, manifest, inlinePreviewMs = 10, peakPssBytes = 150) {
+  const marks = milestones(inlinePreviewMs);
+  const samples = pssSamples(peakPssBytes);
   return {
-    protocol: "openwrangler-installed-performance-fixtures-v1",
-    smoke: true,
-    generator: {
-      contractVersion: 1,
-      implementation: "polars",
-      implementationVersion: "1.34.0"
+    protocol: "openwrangler-comparison-trial-result-v1",
+    trialId: entry.id,
+    product: entry.product,
+    engine: entry.engine,
+    format: entry.format,
+    kind: entry.kind,
+    order: entry.order,
+    status: "success",
+    failure: null,
+    metrics: { inlinePreviewMs, workbenchOpenMs: 20, firstProfileMs: 5, completeProfileMs: 30 },
+    milestones: marks,
+    publicUi: publicUi(entry),
+    memory: {
+      baselinePssBytes: 110,
+      peakPssBytes,
+      adjustedPeakPssBytes: peakPssBytes - 110,
+      sampleCount: samples.length,
+      intervalMs: 200,
+      samples
     },
-    license: "CC0-1.0",
-    redistribution: "Deterministic synthetic integer fixtures generated by Open Wrangler.",
-    fixtures: {
-      csv: fixture("csv", 2_000, 8, "c"),
-      parquet: fixture("parquet", 5_000, 8, "d")
+    provenance: {
+      candidate: {
+        version: manifest.provenance.openWrangler.version,
+        sha256: manifest.provenance.openWrangler.sha256
+      },
+      dataWranglerVersion: "1.24.2",
+      editor: { version: manifest.provenance.editor.version, sha256: manifest.provenance.editor.sha256 },
+      python: { version: manifest.provenance.python.version, sha256: manifest.provenance.python.sha256 }
     }
   };
 }
 
-function fixture(format, rows, columns, digestValue) {
+function milestones(inlinePreviewMs = 10) {
+  return [
+    mark("run-cell-click", 100_000_000),
+    mark("inline-ready", 100_000_000 + inlinePreviewMs * 1_000_000),
+    mark("launch-click", 120_000_000),
+    mark("workbench-ready", 140_000_000),
+    mark("profile-click", 150_000_000),
+    mark("first-profile-ready", 155_000_000),
+    mark("profiles-complete", 180_000_000)
+  ];
+}
+
+function mark(name, monotonicNs) {
+  return { name, monotonicNs: String(monotonicNs) };
+}
+
+function pssSamples(peak = 150) {
+  return [pss("50000000", 100), pss("90000000", 120), pss("160000000", peak)];
+}
+
+function pss(monotonicNs, pssBytes) {
+  return { monotonicNs, pssBytes, processCount: 3 };
+}
+
+function publicUi(entry) {
+  const action = { accessibleName: "Open in product", unique: true, pointer: true };
   return {
-    fileName: `${rows}-${columns}.${format}`,
-    format,
-    rows,
-    columns,
-    columnType: "Int64",
-    columnNamePattern: "c followed by a zero-padded zero-based integer",
-    sentinelRows: [0, Math.floor(rows / 2), rows - 1],
-    sha256: digest(digestValue),
-    bytes: format === "csv" ? 100_000 : 50_000
+    runCell: { ...action, accessibleName: "Run Cell" },
+    inline: { ...action, tableReady: true },
+    workbench: {
+      rootRole: "grid",
+      fullShape: "aria-counts",
+      ariaRowCount: entry.rows,
+      ariaColumnCount: entry.columns,
+      verticalOverflow: 100,
+      horizontalOverflow: 100,
+      pointerUsable: true
+    },
+    profiling: {
+      ...action,
+      accessibleName: "Profile columns",
+      expectedColumns: entry.columns,
+      completedColumns: entry.columns
+    }
   };
 }

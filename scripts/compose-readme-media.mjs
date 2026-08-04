@@ -84,12 +84,6 @@ const assets = [
     width: 448,
     height: 440
   }),
-  nativeCrop("gallery/notebook-code-insertion-detail.png", "vscode-notebook-code-insertion-dark.png", 1_440, 900, {
-    x: 45,
-    y: 29,
-    width: 1_000,
-    height: 288
-  }),
   nativeCrop("gallery/operation-configuration-detail.png", "vscode-operation-configuration-dark.png", 1_280, 874, {
     x: 744,
     y: 170,

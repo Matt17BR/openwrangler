@@ -33,9 +33,6 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   shape even when no filter, revision, or plan changed. User copy simply explains that the first page loads without
   counting every row and that the total appears after the last page. This does not claim that Spark gives an unordered
   dataframe a deterministic global order; PySpark remains experimental and viewing-only.
-- Made the desktop OOM guard portable on Windows by replacing its deterministic TCP endpoint with a deterministic
-  kernel-owned named pipe, avoiding reserved/excluded hosted-runner port ranges while preserving cross-clone
-  serialization, nested lease inheritance, and automatic crash release.
 - Made packaged Cursor/VS Code interaction barriers follow an authoritative renderer generation when recovery
   supersedes the test's acknowledgement marker. Exact-session hydration remains deadline-bound; the harness neither
   sleeps nor retries a failed editor phase.
@@ -81,9 +78,6 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Bounded failure-evidence credential matching to 8 KiB logical lines, with conservative fail-closed handling for
   longer credential-shaped diagnostics. Maximum-size hostile inputs now run in a dedicated 64 MiB child heap with
   a hard deadline, preventing malformed editor output from exhausting the developer desktop during local tests.
-- Serialized public memory-intensive local commands through one crash-released repository lease shared across clones
-  and worktrees. Overlapping tests, packaging, editor runs, media capture, and benchmarks now fail before allocating
-  substantial memory; packaging retains that lease across clean, build, checks, tests, and the final VSIX writer.
 - Added a fail-closed pull-request fast path for non-packaged documentation. Exact `docs/**`, contributor/security
   guides, and contribution-template changes still run formatting, lint, strict types, generated-document freshness,
   licenses, and workflow contracts, while checksum packaging and main-CI product/editor job IDs report explicit

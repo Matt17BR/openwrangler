@@ -33,7 +33,6 @@ const definitions = [
   ["gallery/latest-step-edited.png", 1_440, 860],
   ["gallery/latest-step-undone-detail.png", 448, 440],
   ["gallery/latest-step-undone.png", 1_440, 860],
-  ["gallery/notebook-code-insertion-detail.png", 1_000, 288],
   ["gallery/notebook-code-insertion.png", 1_000, 288],
   ["gallery/notebook-duckdb-detail.png", 872, 700],
   ["gallery/notebook-duckdb.png", 1_440, 900],

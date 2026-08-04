@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { inspectPreviewReadme } from "./release-documents.mjs";
 import { inspectStableSourceReadiness } from "./release-readiness.mjs";
-import { inspectReleaseWorkflow } from "./release-workflow.mjs";
+import { inspectPreviewReleaseWorkflow as inspectReleaseWorkflow } from "./preview-release-workflow.mjs";
 import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";

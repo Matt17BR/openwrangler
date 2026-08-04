@@ -125,7 +125,7 @@ Choose Notebook Preview Provider**.
 <table>
   <tr>
     <td width="44%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling Pandas, Polars, and DuckDB variables by engine and dataframe type" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-variable-picker-detail.png" width="602" height="380"></a></td>
-    <td width="56%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-code-insertion-detail.png" width="1000" height="288"></a></td>
+    <td width="56%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-code-insertion.png" width="1000" height="288"></a></td>
   </tr>
   <tr>
     <td>The notebook picker labels each live variable by engine and dataframe type.</td>

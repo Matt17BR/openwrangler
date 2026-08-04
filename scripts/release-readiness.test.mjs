@@ -27,7 +27,7 @@ import {
   inspectWorkflowReleaseMetadata,
   releaseSourcePolicyForVersion
 } from "./release-metadata.mjs";
-import { inspectReleaseWorkflow } from "./release-workflow.mjs";
+import { inspectPreviewReleaseWorkflow as inspectReleaseWorkflow } from "./preview-release-workflow.mjs";
 import {
   inspectPerformanceEvidenceReadme,
   inspectPreviewReadme,
