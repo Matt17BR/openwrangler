@@ -1982,8 +1982,8 @@ async function executeJourney(
   let journeyError: unknown;
   let journeyFailed = false;
   try {
-    await activateComparisonProduct(request.product, preActionDeadline);
     await executeWarmSetup(request, page, captured, preActionDeadline);
+    await activateComparisonProduct(request.product, preActionDeadline);
     if (request.product === "data-wrangler") {
       await authorizeDataWranglerFromNotebookToolbar(page, captured, access, preActionDeadline);
     } else {
