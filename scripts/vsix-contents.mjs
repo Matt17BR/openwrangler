@@ -29,7 +29,9 @@ export const allowedVsixEntryPatterns = [
   /^extension\/r\/openwrangler_runtime\/frame_contract\.R$/u
 ];
 
-export const requiredVsixEntries = [
+const rFrameContractEntry = "extension/r/openwrangler_runtime/frame_contract.R";
+
+const requiredVsixEntriesBeforeR = Object.freeze([
   "[Content_Types].xml",
   "extension.vsixmanifest",
   "extension/package.json",
@@ -49,11 +51,19 @@ export const requiredVsixEntries = [
   "extension/media/activity-icon.svg",
   "extension/media/icon.png",
   "extension/media/icon-128.png",
-  "extension/r/openwrangler_runtime/frame_contract.R",
   "extension/python/openwrangler_runtime/dependency_guard.py",
   "extension/python/openwrangler_runtime/server.py",
   "extension/python/openwrangler_runtime/version.py"
-];
+]);
+
+export const requiredVsixEntries = Object.freeze([...requiredVsixEntriesBeforeR, rFrameContractEntry]);
+
+export function requiredVsixEntriesForRelease({ requireRFrameContract = true } = {}) {
+  if (typeof requireRFrameContract !== "boolean") {
+    throw new TypeError("VSIX R frame-contract requirement must be boolean.");
+  }
+  return requireRFrameContract ? requiredVsixEntries : requiredVsixEntriesBeforeR;
+}
 
 const windowsReservedBasename = /^(?:aux|com[1-9¹²³]|con|lpt[1-9¹²³]|nul|prn)$/iu;
 const windowsInvalidCharacters = new Set('<>:"|?*');
@@ -112,7 +122,8 @@ function portableVsixEntryIdentity(entry) {
   return path.toUpperCase().toLowerCase().normalize("NFC");
 }
 
-export function inspectVsixEntries(entries) {
+export function inspectVsixEntries(entries, { requireRFrameContract = true } = {}) {
+  const requiredEntries = requiredVsixEntriesForRelease({ requireRFrameContract });
   const seen = new Map();
   const duplicates = [];
   const inspectedEntries = entries.map((entry) => ({
@@ -145,7 +156,7 @@ export function inspectVsixEntries(entries) {
           identity === undefined || !allowedVsixEntryPatterns.some((pattern) => pattern.test(entry))
       )
       .map(({ entry }) => entry),
-    missing: requiredVsixEntries.filter((entry) => !entries.includes(entry)),
+    missing: requiredEntries.filter((entry) => !entries.includes(entry)),
     duplicates
   };
 }

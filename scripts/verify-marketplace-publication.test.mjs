@@ -44,8 +44,13 @@ function png(width, height, red = 0) {
 const galleryIcon = png(512, 512, 33);
 const smallGalleryIcon = png(72, 72, 33);
 
-function releaseEntries(readme = "# Open Wrangler\n", manifest = packageJson, preReleaseProperty = "") {
-  return new Map([
+function releaseEntries(
+  readme = "# Open Wrangler\n",
+  manifest = packageJson,
+  preReleaseProperty = "",
+  { includeRFrameContract = true } = {}
+) {
+  const entries = new Map([
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
     [
       "extension.vsixmanifest",
@@ -73,6 +78,10 @@ function releaseEntries(readme = "# Open Wrangler\n", manifest = packageJson, pr
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
     ["extension/python/openwrangler_runtime/version.py", `__version__ = "${version}"\n`]
   ]);
+  if (!includeRFrameContract) {
+    entries.delete("extension/r/openwrangler_runtime/frame_contract.R");
+  }
+  return entries;
 }
 
 function createVsix(entries, reverse = false) {
@@ -180,6 +189,28 @@ async function fixture(context, manifest = packageJson, preReleaseProperty = "")
     candidateSha256: createHash("sha256").update(candidate).digest("hex")
   };
 }
+
+test("verifies historical v1 Marketplace packages without the later R runtime", async (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-marketplace-historical-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const entries = releaseEntries("# Open Wrangler\n", packageJson, "", { includeRFrameContract: false });
+  const candidate = await createVsix(entries);
+  const publicVsix = await createVsix(entries, true);
+  const candidatePath = join(root, "openwrangler.vsix");
+  const candidateSha256 = createHash("sha256").update(candidate).digest("hex");
+  writeFileSync(candidatePath, candidate, { flag: "wx", mode: 0o600 });
+
+  const receipt = await verifyMarketplacePublication({
+    attempts: 1,
+    candidatePath,
+    candidateSha256,
+    fetchImpl: fetchFixture(gallery(candidateSha256), publicVsix),
+    prerelease: false,
+    requireRFrameContract: false,
+    version
+  });
+  assert.equal(receipt.candidateSha256, candidateSha256);
+});
 
 test("verifies upload SHA metadata and exact public VSIX semantics across ZIP reserialization", async (context) => {
   const candidate = await fixture(context);

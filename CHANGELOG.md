@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Registry recovery now checks a historical v1 package against the files in its exact release tag. Packages from
+  before the R runtime may omit its frame-contract file; current packages and every Open Wrangler 2 release must
+  still include it.
 - Removed the completed v1.0 performance-evidence workflow and its dedicated maintenance checks. Stable performance
   acceptance now has one documented path through the canonical stable-release artifact.
 - GitHub releases now use the versioned notes stored in the tagged commit instead of generated pull-request summaries.

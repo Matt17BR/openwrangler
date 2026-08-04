@@ -423,6 +423,7 @@ export async function verifyMarketplacePublication({
   delayMs = 15_000,
   fetchImpl = fetch,
   prerelease,
+  requireRFrameContract = true,
   sleep = delay,
   version
 }) {
@@ -446,7 +447,7 @@ export async function verifyMarketplacePublication({
   if (actualCandidateSha256 !== candidateSha256) {
     throw new Error("Canonical Marketplace candidate changed before public verification.");
   }
-  const canonicalArchive = await inspectVsixArchive(candidate.bytes);
+  const canonicalArchive = await inspectVsixArchive(candidate.bytes, { requireRFrameContract });
   const candidateIconSize = new Map(canonicalArchive.entrySizes).get("extension/media/icon.png");
   const candidateIconSha256 = new Map(canonicalArchive.entryDigests).get("extension/media/icon.png");
   if (
@@ -484,7 +485,7 @@ export async function verifyMarketplacePublication({
         prerelease,
         version
       });
-      const publishedArchive = await inspectVsixArchive(publishedBytes);
+      const publishedArchive = await inspectVsixArchive(publishedBytes, { requireRFrameContract });
       assertSameVsixSemantics(canonicalArchive, publishedArchive);
       const finalCandidate = readBoundedVsixFileSnapshot(candidatePath, { requireOwner: true });
       if (
@@ -530,6 +531,7 @@ async function runCli() {
     candidatePath: canonical.candidatePath,
     candidateSha256: canonical.candidateSha256,
     prerelease: canonical.prerelease,
+    requireRFrameContract: canonical.requireRFrameContract,
     version: canonical.version
   });
   console.log(

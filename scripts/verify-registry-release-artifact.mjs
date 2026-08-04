@@ -63,6 +63,34 @@ function sourcePackageJson(root, commit) {
   });
 }
 
+const R_FRAME_CONTRACT_SOURCE = "r/openwrangler_runtime/frame_contract.R";
+
+function releaseTreeHasRFrameContract(root, commit) {
+  const output = execFileSync("git", ["ls-tree", "-z", "--full-tree", commit, "--", R_FRAME_CONTRACT_SOURCE], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 4096,
+    timeout: 10_000,
+    windowsHide: true
+  });
+  if (output.length === 0) {
+    return false;
+  }
+  const expected = new RegExp(
+    `^100(?:644|755) blob [0-9a-f]{40}\\t${R_FRAME_CONTRACT_SOURCE.replaceAll(".", "\\.")}\\0$`,
+    "u"
+  );
+  if (!expected.test(output)) {
+    throw new Error("The selected release has an invalid R frame-contract source entry.");
+  }
+  return true;
+}
+
+function releaseVersionRequiresRFrameContract(version) {
+  const [major, minor] = version.split(".").map(Number);
+  return major >= 2 || (major === 1 && minor === 99);
+}
+
 function releaseSource(packageJson, releaseTag, prerelease) {
   const metadata = inspectReleaseMetadata({ packageJson, releaseTag });
   let manifest;
@@ -119,6 +147,7 @@ export async function verifyPinnedPreviewReleaseArtifact({
   directory,
   expectedCommit,
   pinned,
+  requireRFrameContract = true,
   releaseTag,
   sourcePackageJson
 }) {
@@ -157,7 +186,7 @@ export async function verifyPinnedPreviewReleaseArtifact({
   ) {
     throw new Error("The canonical pre-release files do not describe one exact preview artifact.");
   }
-  const archive = await inspectVsixArchive(candidateAsset.bytes);
+  const archive = await inspectVsixArchive(candidateAsset.bytes, { requireRFrameContract });
   const packaged = releaseSource(archive.packagedPackageJson, releaseTag, true);
   const preReleaseProblems = inspectVsixPreReleaseMetadata(archive.packagedPackageJson, archive.vsixManifest);
   if (
@@ -194,6 +223,7 @@ export async function verifyRegistryReleaseArtifact({
   directory,
   expectedCommit,
   prerelease,
+  requireRFrameContract = true,
   releaseTag,
   sourcePackageJson
 }) {
@@ -207,12 +237,19 @@ export async function verifyRegistryReleaseArtifact({
     throw new Error("Registry release verification requires an explicit pre-release boolean.");
   }
   if (prerelease) {
-    return verifyPreviewReleaseArtifact({ directory, expectedCommit, releaseTag, sourcePackageJson });
+    return verifyPreviewReleaseArtifact({
+      directory,
+      expectedCommit,
+      releaseTag,
+      requireRFrameContract,
+      sourcePackageJson
+    });
   }
   const stable = await verifyCanonicalReleaseArtifact({
     directory,
     expectedCommit,
     releaseTag,
+    requireRFrameContract,
     sourceCommit: expectedCommit,
     sourcePackageJson
   });
@@ -242,13 +279,21 @@ export async function verifyRegistryReleaseArtifactFromCheckout({
   if (tagCommit !== expectedCommit) {
     throw new Error("The selected release tag no longer resolves to its intake commit.");
   }
-  return verifyRegistryReleaseArtifact({
+  const packageJson = sourcePackageJson(canonicalRoot, tagCommit);
+  const source = releaseSource(packageJson, releaseTag, prerelease);
+  const requireRFrameContract = releaseTreeHasRFrameContract(canonicalRoot, tagCommit);
+  if (releaseVersionRequiresRFrameContract(source.version) && !requireRFrameContract) {
+    throw new Error("Open Wrangler 2 release sources must include the native R frame contract.");
+  }
+  const receipt = await verifyRegistryReleaseArtifact({
     directory,
     expectedCommit: tagCommit,
     prerelease,
+    requireRFrameContract,
     releaseTag,
-    sourcePackageJson: sourcePackageJson(canonicalRoot, tagCommit)
+    sourcePackageJson: packageJson
   });
+  return Object.freeze({ ...receipt, requireRFrameContract });
 }
 
 async function runCli() {

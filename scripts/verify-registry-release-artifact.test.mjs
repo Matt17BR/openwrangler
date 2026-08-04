@@ -7,7 +7,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { ZipFile } from "yazl";
 import { publishVerifiedGitHubPreviewRelease } from "./publish-github-preview-release.mjs";
-import { CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL } from "./run-installed-performance.mjs";
+import {
+  CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
+  CANONICAL_RELEASE_ARTIFACT_PROTOCOL
+} from "./run-installed-performance.mjs";
 import { verifyPreviewReleaseArtifactFromCheckout } from "./verify-preview-release-artifact.mjs";
 import {
   verifyRegistryReleaseArtifact,
@@ -24,13 +27,13 @@ const sourceManifest = Object.freeze({
 });
 const previewProperty = '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />';
 
-function createVsix(packageJson = sourceManifest, property = previewProperty) {
+function createVsix(packageJson = sourceManifest, property = previewProperty, { includeRFrameContract = true } = {}) {
   const zip = new ZipFile();
-  for (const [name, value] of [
+  const entries = [
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
     [
       "extension.vsixmanifest",
-      `<?xml version="1.0" encoding="utf-8"?><PackageManifest xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"><Metadata><Identity Id="openwrangler" Publisher="Matt17BR" Version="0.3.0" /><Properties>${property}</Properties></Metadata></PackageManifest>`
+      `<?xml version="1.0" encoding="utf-8"?><PackageManifest xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"><Metadata><Identity Id="openwrangler" Publisher="Matt17BR" Version="${packageJson.version}" /><Properties>${property}</Properties></Metadata></PackageManifest>`
     ],
     ["extension/package.json", JSON.stringify(packageJson)],
     ["extension/LICENSE.txt", "MIT License\n"],
@@ -52,8 +55,11 @@ function createVsix(packageJson = sourceManifest, property = previewProperty) {
     ["extension/r/openwrangler_runtime/frame_contract.R", "openwrangler_frame_contract <- function(frame) frame\n"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
-    ["extension/python/openwrangler_runtime/version.py", '__version__ = "0.3.0"\n']
-  ]) {
+    ["extension/python/openwrangler_runtime/version.py", `__version__ = "${packageJson.version}"\n`]
+  ];
+  for (const [name, value] of entries.filter(
+    ([name]) => includeRFrameContract || name !== "extension/r/openwrangler_runtime/frame_contract.R"
+  )) {
     zip.addBuffer(Buffer.from(value), name);
   }
   return new Promise((resolveBytes, rejectBytes) => {
@@ -74,11 +80,12 @@ async function fixture(
   packageJson = sourceManifest,
   property = previewProperty,
   sourceCommit = expectedCommit,
-  provenanceOverrides = {}
+  provenanceOverrides = {},
+  vsixOptions = {}
 ) {
   const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-preview-")));
   context.after(() => rmSync(directory, { force: true, recursive: true }));
-  const vsix = await createVsix(packageJson, property);
+  const vsix = await createVsix(packageJson, property, vsixOptions);
   const digest = createHash("sha256").update(vsix).digest("hex");
   writeFileSync(join(directory, "openwrangler.vsix"), vsix);
   writeFileSync(join(directory, "openwrangler.vsix.sha256"), `${digest}  openwrangler.vsix\n`);
@@ -86,11 +93,13 @@ async function fixture(
     join(directory, "openwrangler.vsix.provenance.json"),
     `${JSON.stringify(
       {
-        protocol: CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
+        protocol: packageJson.preview
+          ? CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL
+          : CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
         extensionId: "Matt17BR.openwrangler",
-        extensionVersion: "0.3.0",
-        preview: true,
-        releaseTag,
+        extensionVersion: packageJson.version,
+        preview: packageJson.preview,
+        releaseTag: `v${packageJson.version}`,
         sourceCommit,
         vsixSha256: digest,
         vsixBytes: vsix.length,
@@ -136,7 +145,7 @@ test("preview registry consumer rejects stable flags, source drift, extra files,
       releaseTag,
       sourcePackageJson: JSON.stringify(sourceManifest)
     }),
-    /invalid|does not match/u
+    /invalid|does not match|canonical preview artifact/u
   );
 
   const sourceDrift = await fixture(context);
@@ -369,15 +378,28 @@ test("historical verification keeps current automation HEAD separate from the im
   git("init", "--initial-branch=main");
   git("config", "user.email", "tests@openwrangler.invalid");
   git("config", "user.name", "Open Wrangler tests");
-  writeFileSync(join(root, "package.json"), `${JSON.stringify(sourceManifest)}\n`);
+  const stableManifest = { ...sourceManifest, preview: false, version: "1.2.1" };
+  const stableTag = "v1.2.1";
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(stableManifest)}\n`);
   git("add", "package.json");
   git("commit", "-m", "release source");
   const taggedCommit = git("rev-parse", "HEAD");
-  const release = await fixture(context, sourceManifest, previewProperty, taggedCommit);
-  git("tag", releaseTag);
+  const release = await fixture(
+    context,
+    stableManifest,
+    "",
+    taggedCommit,
+    {},
+    {
+      includeRFrameContract: false
+    }
+  );
+  git("tag", stableTag);
   mkdirSync(join(root, "scripts"));
+  mkdirSync(join(root, "r", "openwrangler_runtime"), { recursive: true });
   writeFileSync(join(root, "scripts", "promotion.mjs"), "export {};\n");
-  git("add", "scripts/promotion.mjs");
+  writeFileSync(join(root, "r", "openwrangler_runtime", "frame_contract.R"), "frame_contract <- function(x) x\n");
+  git("add", "scripts/promotion.mjs", "r/openwrangler_runtime/frame_contract.R");
   git("commit", "-m", "add later automation");
   const automationCommit = git("rev-parse", "HEAD");
 
@@ -385,11 +407,12 @@ test("historical verification keeps current automation HEAD separate from the im
     automationCommit,
     directory: release.directory,
     expectedCommit: taggedCommit,
-    prerelease: true,
-    releaseTag,
+    prerelease: false,
+    releaseTag: stableTag,
     root
   });
   assert.equal(receipt.sourceCommit, taggedCommit);
+  assert.equal(receipt.requireRFrameContract, false);
   assert.notEqual(automationCommit, taggedCommit);
 
   await assert.rejects(
@@ -397,10 +420,46 @@ test("historical verification keeps current automation HEAD separate from the im
       automationCommit,
       directory: release.directory,
       expectedCommit: automationCommit,
-      prerelease: true,
-      releaseTag,
+      prerelease: false,
+      releaseTag: stableTag,
       root
     }),
     /no longer resolves/u
+  );
+});
+
+test("Open Wrangler 2 release sources cannot omit the R frame contract", async (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-r-required-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
+  const manifest = { ...sourceManifest, version: "1.99.0" };
+  const tag = "v1.99.0";
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "tests@openwrangler.invalid");
+  git("config", "user.name", "Open Wrangler tests");
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(manifest)}\n`);
+  git("add", "package.json");
+  git("commit", "-m", "preview source without R");
+  const commit = git("rev-parse", "HEAD");
+  git("tag", tag);
+  const release = await fixture(context, manifest, previewProperty, commit, {}, { includeRFrameContract: false });
+
+  await assert.rejects(
+    verifyRegistryReleaseArtifactFromCheckout({
+      automationCommit: commit,
+      directory: release.directory,
+      expectedCommit: commit,
+      prerelease: true,
+      releaseTag: tag,
+      root
+    }),
+    /must include the native R frame contract/u
   );
 });

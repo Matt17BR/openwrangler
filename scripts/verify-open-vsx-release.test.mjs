@@ -78,6 +78,25 @@ test("verifies exact stable Open VSX metadata, checksum, publisher, and VSIX byt
   });
 });
 
+test("forwards the release's R inventory requirement to archive inspection", async () => {
+  const received = [];
+  const result = await verifyOpenVsxReleaseOnce({
+    candidateBytes,
+    candidateSha256,
+    fetchImpl: exactFetch(),
+    inspectCandidate: async (_bytes, options) => {
+      received.push(options);
+      return inspectCandidate();
+    },
+    requireRFrameContract: false,
+    root,
+    version
+  });
+
+  assert.equal(result.status, "exact");
+  assert.deepEqual(received, [{ requireRFrameContract: false }]);
+});
+
 test("verifies preview metadata only for an explicitly preview candidate", async () => {
   const preview = metadata({ preRelease: true, preview: true });
   assert.equal(

@@ -109,6 +109,7 @@ export async function verifyOpenVsxReleaseOnce({
   channel = "stable",
   fetchImpl = fetch,
   inspectCandidate = inspectVsixArchive,
+  requireRFrameContract = true,
   root = OPEN_VSX_ROOT,
   version
 }) {
@@ -144,7 +145,7 @@ export async function verifyOpenVsxReleaseOnce({
   const metadataBytes = await readBoundedResponse(response, METADATA_MAX_BYTES, "Open VSX metadata");
   const metadata = parseStrictJson(metadataBytes.toString("utf8"), { maxBytes: METADATA_MAX_BYTES });
   validateMetadata(metadata, { channel, urls, version });
-  const candidateArchive = await inspectCandidate(candidateBytes);
+  const candidateArchive = await inspectCandidate(candidateBytes, { requireRFrameContract });
   const candidateIconSize = new Map(candidateArchive.entrySizes).get("extension/media/icon.png");
   const candidateIconSha256 = new Map(candidateArchive.entryDigests).get("extension/media/icon.png");
   if (
@@ -239,6 +240,7 @@ export async function waitForOpenVsxRelease({
   delayMs = POST_PUBLISH_DELAY_MS,
   fetchImpl = fetch,
   inspectCandidate = inspectVsixArchive,
+  requireRFrameContract = true,
   root = OPEN_VSX_ROOT,
   version
 }) {
@@ -254,6 +256,7 @@ export async function waitForOpenVsxRelease({
         channel,
         fetchImpl,
         inspectCandidate,
+        requireRFrameContract,
         root,
         version
       });

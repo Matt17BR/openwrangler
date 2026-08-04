@@ -28,8 +28,8 @@ function vsixManifest() {
 </PackageManifest>`;
 }
 
-function releaseEntries() {
-  return new Map([
+function releaseEntries({ includeRFrameContract = true } = {}) {
+  const entries = new Map([
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
     ["extension.vsixmanifest", vsixManifest()],
     ["extension/package.json", JSON.stringify(sourceManifest)],
@@ -54,11 +54,15 @@ function releaseEntries() {
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
     ["extension/python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n']
   ]);
+  if (!includeRFrameContract) {
+    entries.delete("extension/r/openwrangler_runtime/frame_contract.R");
+  }
+  return entries;
 }
 
-function createVsix() {
+function createVsix(options) {
   const zip = new ZipFile();
-  for (const [name, value] of releaseEntries()) {
+  for (const [name, value] of releaseEntries(options)) {
     zip.addBuffer(Buffer.from(value), name);
   }
   return new Promise((resolveBytes, rejectBytes) => {
@@ -74,10 +78,10 @@ function createVsix() {
   });
 }
 
-async function createFixture(context) {
+async function createFixture(context, options) {
   const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "openwrangler-canonical-consumer-")));
   context.after(() => rmSync(directory, { force: true, recursive: true }));
-  const vsix = await createVsix();
+  const vsix = await createVsix(options);
   const digest = createHash("sha256").update(vsix).digest("hex");
   const checksumPath = join(directory, "openwrangler.vsix.sha256");
   const provenancePath = join(directory, "openwrangler.vsix.provenance.json");
@@ -121,6 +125,21 @@ test("canonical consumer binds source, stable provenance, checksum, identity, ve
     sourceCommit: expectedCommit,
     version: "1.0.0"
   });
+});
+
+test("canonical consumer accepts a historical v1 package without the later R runtime", async (context) => {
+  const fixture = await createFixture(context, { includeRFrameContract: false });
+  const options = {
+    directory: fixture.directory,
+    expectedCommit,
+    releaseTag: "v1.0.0",
+    sourceCommit: expectedCommit,
+    sourcePackageJson: JSON.stringify(sourceManifest)
+  };
+
+  await assert.rejects(verifyCanonicalReleaseArtifact(options), /Missing: extension\/r\/openwrangler_runtime/u);
+  const receipt = await verifyCanonicalReleaseArtifact({ ...options, requireRFrameContract: false });
+  assert.equal(receipt.candidateSha256, fixture.digest);
 });
 
 test("canonical consumer rejects evidence-only provenance and unexpected inventory", async (context) => {

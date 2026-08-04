@@ -215,10 +215,13 @@ final job reserve explicit timeout room for both public checks.
 To recover an existing exact GitHub Release, dispatch **Promote GitHub release to Open VSX** from protected `main`
 with `release_tag=v<version>`. Historical backfill is supported only when that release's canonical artifact and
 provenance format remains compatible with the current registry verifier; incompatibility fails rather than weakening
-validation. The public-media contract is independently skipped below `1.2.1`, so a later screenshot inventory cannot
-break an otherwise valid historical recovery. Repeating the dispatch is safe only when the registry already serves
-identical bytes; a conflict fails without replacement. Do not dispatch from an old release tag, because historical
-releases intentionally do not contain the reviewed automation.
+validation. The verifier reads the exact release tag before checking the package inventory. A historical v1 tag from
+before `r/openwrangler_runtime/frame_contract.R` was added may omit its packaged copy. If the tagged source includes
+that file, the VSIX must include it too; every `1.99.x` or v2 release must include both. Verification of current
+packages still requires the R file. The public-media contract is independently skipped below `1.2.1`, so a later
+screenshot inventory cannot break an otherwise valid historical recovery. Repeating the dispatch is safe only when
+the registry already serves identical bytes; a conflict fails without replacement. Do not dispatch from an old
+release tag, because historical releases intentionally do not contain the reviewed automation.
 
 ### Automatic Microsoft Marketplace promotion
 
