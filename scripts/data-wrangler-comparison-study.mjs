@@ -393,7 +393,8 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
       columns: entry.columns,
       source,
       sourceSha256: expectedSourceHash,
-      variableName: "study_frame"
+      variableName: "study_frame",
+      profileContract: "integer-sentinel"
     },
     notebookPath,
     candidate: {
@@ -484,7 +485,7 @@ async function captureProvenance(options, dependencies) {
   };
 }
 
-async function inspectCandidateVsix(path) {
+export async function inspectCandidateVsix(path) {
   const snapshot = readBoundedVsixFileSnapshot(path);
   const archive = await inspectVsixArchive(snapshot.bytes);
   const packageJson = JSON.parse(archive.packagedPackageJson);
@@ -501,7 +502,7 @@ async function inspectCandidateVsix(path) {
   };
 }
 
-async function inspectEditorEnvironment(editor, editorCli) {
+export async function inspectEditorEnvironment(editor, editorCli) {
   const productPath = join(dirname(editor), "resources", "app", "product.json");
   const product = JSON.parse(readFileSync(productPath, "utf8"));
   if (
@@ -540,7 +541,7 @@ async function reportedEditorIdentity(executable) {
   return { version: lines[0], commit: lines[1], architecture: lines[2] };
 }
 
-async function inspectPythonEnvironment(python) {
+export async function inspectPythonEnvironment(python) {
   const script = [
     "import importlib.metadata as m, json, platform, sys",
     "print(json.dumps({'version': platform.python_version(), 'implementation': sys.implementation.name, 'packages': {n: m.version(n) for n in ['pandas','polars','pyarrow','jupyter_core','ipykernel']}}))"
@@ -581,7 +582,7 @@ async function validateFixtureInputs(python, csv, parquet) {
   return value;
 }
 
-function inspectMachineEnvironment() {
+export function inspectMachineEnvironment() {
   const cpuList = cpus();
   if (cpuList.length === 0 || totalmem() <= 0) throw new Error("Machine provenance is unavailable.");
   return {
@@ -647,7 +648,7 @@ function comparisonToolFiles() {
   };
 }
 
-async function buildComparisonTestExtension() {
+export async function buildComparisonTestExtension() {
   await spawnCommand("npm", ["run", "build:test-extension"], {
     cwd: resolve(import.meta.dirname, ".."),
     timeoutMs: 180_000
@@ -743,7 +744,7 @@ function trialProvenanceFromRequest(request) {
   };
 }
 
-async function spawnCommand(command, arguments_, { cwd, timeoutMs }) {
+export async function spawnCommand(command, arguments_, { cwd, timeoutMs }) {
   return await new Promise((resolvePromise, reject) => {
     const child = spawn(command, arguments_, {
       cwd,
@@ -848,7 +849,7 @@ function canonicalUtc(value) {
   }
 }
 
-function sha256File(path) {
+export function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 

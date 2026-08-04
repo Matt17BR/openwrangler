@@ -8,8 +8,10 @@ import {
   comparisonSetupExecutionOutcome,
   integerProfileTextReady,
   isComparisonKernelLabel,
+  mixedProfileTextReady,
   observePointerReady,
   observeVisibleFullShape,
+  openWranglerProfileTextReady,
   validateComparisonNotebookLayout,
   validateComparisonTrialRequest,
   validateComparisonTrialResult,
@@ -43,7 +45,8 @@ function request(overrides: Partial<ComparisonTrialRequest> = {}): ComparisonTri
       rows: 100_000,
       columns: 50,
       source: "/tmp/openwrangler-comparison/fixtures/source.csv",
-      variableName: "study_frame"
+      variableName: "study_frame",
+      profileContract: "integer-sentinel"
     },
     candidate: { path: "/tmp/openwrangler.vsix", version: "1.2.1", sha256: SHA },
     dataWranglerVersion: "1.24.2",
@@ -111,7 +114,11 @@ function result(overrides: Partial<ComparisonTrialResult> = {}): ComparisonTrial
 describe("neutral comparison request", () => {
   it("accepts the exact Pandas/CSV smoke contract", () => {
     expect(validateComparisonTrialRequest(request())).toEqual(request());
+    expect(validateComparisonTrialRequest(request({ repetitions: 1 }))).toEqual(request({ repetitions: 1 }));
     expect(validateComparisonTrialRequest(request({ repetitions: 2 }))).toEqual(request({ repetitions: 2 }));
+    expect(
+      validateComparisonTrialRequest(request({ cell: { ...request().cell, profileContract: "mixed-completion" } }))
+    ).toEqual(request({ cell: { ...request().cell, profileContract: "mixed-completion" } }));
   });
 
   it("rejects mismatched cell identities and paths outside the isolated root", () => {
@@ -129,6 +136,11 @@ describe("neutral comparison request", () => {
       validateComparisonTrialRequest(request({ timeoutsMs: { ...request().timeoutsMs, completeProfile: 1 } }))
     ).toThrow(/completeProfile timeout/u);
     expect(() => validateComparisonTrialRequest(request({ repetitions: 3 as 10 }))).toThrow(/repetitions/u);
+    expect(() =>
+      validateComparisonTrialRequest(
+        request({ cell: { ...request().cell, profileContract: "unknown" as "integer-sentinel" } })
+      )
+    ).toThrow(/profileContract/u);
     expect(() => validateComparisonTrialRequest(request({ kind: "cold" as "warm" }))).toThrow(/kind/u);
   });
 });
@@ -262,9 +274,9 @@ describe("neutral comparison result", () => {
     ).toThrow(/all metrics and public UI evidence/u);
   });
 
-  it("requires two or ten one-based samples and rejects the legacy top-level sample shape", () => {
+  it("requires one, two, or ten one-based samples and rejects the legacy top-level sample shape", () => {
     expect(() => validateComparisonTrialResult(result({ samples: result().samples.slice(0, 9) }))).toThrow(
-      /two smoke samples or ten release samples/u
+      /one fresh sample, two smoke samples, or ten historical warm samples/u
     );
     expect(() =>
       validateComparisonTrialResult(result({ samples: result().samples.map((item) => ({ ...item, index: 1 })) }))
@@ -301,6 +313,36 @@ describe("public readiness oracles", () => {
         minimum: 1_000,
         maximum: 1_999,
         text: "c00 Float64 Missing 0 Distinct 10 Min 2k Max 2k"
+      })
+    ).toBe(false);
+  });
+
+  it("recognizes completed mixed-type profiles without assuming numeric extrema", () => {
+    expect(
+      mixedProfileTextReady({
+        column: "c42",
+        text: "c42 String Missing 2% Distinct 98% top values alpha beta"
+      })
+    ).toBe(true);
+    expect(
+      mixedProfileTextReady({
+        column: "c42",
+        text: "c42 String Profiling Missing 2% Distinct 98%"
+      })
+    ).toBe(false);
+  });
+
+  it("accepts type-specific Open Wrangler statistics in the mixed fixture", () => {
+    expect(
+      openWranglerProfileTextReady({
+        contract: "mixed-completion",
+        text: "Exact statistics Rows 10000000 Null 0 Distinct 2 True 5000000 False 5000000"
+      })
+    ).toBe(true);
+    expect(
+      openWranglerProfileTextReady({
+        contract: "integer-sentinel",
+        text: "Exact statistics Rows 100000 Null 0 Distinct 100000"
       })
     ).toBe(false);
   });

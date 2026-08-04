@@ -1,120 +1,98 @@
-# Open Wrangler and Data Wrangler benchmark
+# Open Wrangler and Data Wrangler performance test
 
-This benchmark compares Open Wrangler with Microsoft Data Wrangler 1.24.2 through the controls a notebook user
-actually clicks. Data Wrangler is installed from the Marketplace; the test does not inspect its package.
+This is a manual test of the notebook workflow in Open Wrangler and Microsoft Data Wrangler 1.24.2. It uses public
+buttons and controls in a packaged VS Code installation. The test does not inspect or redistribute Data Wrangler.
 
-## Workloads
+The v1.2.1 test was useful for measuring a warm UI, but it was too small to say much about Pandas versus Polars. It
+loaded the dataframe before timing and then reused the same window and kernel ten times. Small Pandas/Polars
+differences in that report are normal run-to-run variation, not evidence that converting Polars to Pandas is free.
+The [v1.2.1 review](performance/data-wrangler-1.2.1/review.md) remains available with the old method and raw outcome
+counts.
 
-| Dataframe | Source  |          Shape |
-| --------- | ------- | -------------: |
-| Pandas    | CSV     |   100,000 × 50 |
-| Polars    | CSV     |   100,000 × 50 |
-| Pandas    | Parquet | 1,000,000 × 20 |
-| Polars    | Parquet | 1,000,000 × 20 |
+## v1.2.3 study
 
-The fixtures are deterministic integer tables generated for the benchmark. They contain no user data. Both products
-receive the same Pandas object in the Pandas runs and the same Polars object in the Polars runs.
+The new test uses one synthetic 10,000,000 × 100 Parquet file. Its columns are split across floating-point and integer
+data, low-cardinality categories, high-cardinality text, timestamps, dates, durations, and booleans. The generator
+adds nulls and occasional numeric outliers. It writes 100,000-row groups with PyArrow and Zstandard compression, so
+it never holds the complete fixture in memory.
 
-One **session** is one isolated VS Code window for one product and workload. One **sample** is one pass through the
-measured notebook workflow. The full benchmark uses eight sessions and records 80 samples.
+The column names stay `c00` through `c99` because both products must receive the same simple schema. The fixture
+manifest records the role and Arrow type of every column, plus its seed, file hash, size, compression settings, and
+row-group layout. No user data is read.
 
-## Measurements
+Generation stops before writing if Linux reports less than 40 GiB of available memory or the output filesystem has
+less than 15 GiB free. Those checks are intentionally conservative: the file is several gigabytes and a Pandas load
+can require much more memory than the compressed source. The generator refuses to replace an existing file.
 
-The benchmark starts eight isolated, headless VS Code sessions: one for each product and workload. It selects the
-pinned Python 3.12 kernel, loads the dataframe, and handles first-use permission. Setup is not timed.
+## What is measured
 
-Each session records the same visible workflow ten times:
+There are four groups: Pandas and Polars inputs in Open Wrangler and Data Wrangler. Each group has five repetitions.
+Every repetition gets a new headless VS Code window, private profile, notebook, Python process, and Jupyter kernel.
+That is 20 editor runs in total. A failed run is kept in the raw report and is not silently retried.
 
-1. Run the dataframe cell and wait for a usable inline preview.
-2. Click **Open in Open Wrangler** or **Open in Data Wrangler** and wait for a usable, scrollable grid.
-3. Open column profiling and wait until every column has a completed profile.
-4. Close the viewer before the next sample.
+Each run records:
 
-The dataframe and kernel stay resident for all ten samples. The benchmark measures a ready kernel and resident
-dataframe; it does not measure editor startup or disk reads. A session has a ten-minute hard limit and a separate
-three-minute no-progress limit. After timing stops, the harness returns Open Wrangler to the first column so the next
-sample starts from the same viewport.
+1. a native `read_parquet` in a separate new Python process;
+2. Run Cell to a usable inline preview;
+3. the viewer button to a usable, scrollable grid;
+4. the profiling action to completed summaries for all 100 columns; and
+5. the first, highest, and increase in process-tree PSS during the UI part of the run.
 
-For every sample the runner records:
+The native read is timed separately so disk and decoder work are not mixed into renderer time. The notebook kernel
+then loads the same dataframe before the UI measurement. This matches the common case where a dataframe already
+exists in a notebook and the user evaluates its name. Data Wrangler accepts a Polars input through its Pandas
+conversion path; the report keeps that input labelled Polars so the conversion cost stays visible. Each load uses a
+new Python process, but the test does not flush the operating-system file cache, so these are warm-source loads rather
+than cold-disk timings.
 
-- cell click to usable inline preview;
-- launch click to usable full grid;
-- profiling click to the first completed column;
-- profiling click to completed profiles for every column; and
-- highest sampled proportional set size (PSS) for the editor-owned process tree during that workflow.
+The report gives the minimum, median, and maximum for each measurement. Five values are enough for a practical
+manual comparison, but not for a useful p95, so the new report does not calculate one. It is a release review, not a
+job in normal pull-request CI and not a scheduled task on a developer laptop.
 
-The UI checks the full dataframe shape, expected columns, scrollability, completed profiles, and pointer-ready public
-actions. A loading shell or a partial profile does not count as ready. PSS is sampled every 200 ms; a gap longer than
-one second invalidates the session instead of understating memory use.
+## Run the study
 
-## Results and release decision
-
-For each product and workload, report the ten raw values, failures, minimum, maximum, median, and type-7 p95. With ten
-observations, p95 is close to the slowest run, so it is useful context rather than a release gate.
-
-Open Wrangler blocks the release only when its median exceeds both parts of a limit below. Small timing differences
-are treated as noise.
-
-| Measure           | Relative allowance | Absolute allowance |
-| ----------------- | -----------------: | -----------------: |
-| Inline preview    |                20% |             250 ms |
-| Workbench open    |                20% |             250 ms |
-| First profile     |                20% |             500 ms |
-| All profiles      |                20% |           2,000 ms |
-| Observed peak PSS |                10% |            256 MiB |
-
-A publishable report needs ten successful samples for every product and workload. A measured product error stays
-in the results. A setup or harness error invalidates only that session. Re-running the same output directory replaces
-that interrupted session, while successful sessions remain untouched. Measured actions are not retried inside a
-session and slow values are not removed.
-
-## Environment
-
-Use one official VS Code build, one packaged Open Wrangler candidate, Data Wrangler 1.24.2, and CPython 3.12 with
-pinned Pandas, Polars, PyArrow, Jupyter Core, and ipykernel versions. Run on a quiet machine connected to the same power
-source for the full collection.
-
-Every session gets a private user-data directory, extensions directory, notebook, and read-only fixture copy. The
-runner records versions, fixture hashes, the candidate hash, editor identity, Python identity, machine details, and
-the benchmark-tool hashes. It does not use the normal editor profile or desktop, retain Data Wrangler package bytes,
-or record dataframe values.
-
-## Running it
-
-Build the candidate and fixed fixtures, then run:
+Create an empty directory on a filesystem with enough free space. Generate the fixture only when the machine is idle
+and connected to power:
 
 ```bash
-npm run comparison:study -- \
+npm run comparison:large:fixture -- \
+  --out /absolute/path/openwrangler-10m-100.parquet \
+  --confirm-large-study
+```
+
+Build the candidate VSIX, then start the editor runs. The fixture and output directory must be on the same filesystem;
+the runner uses read-only hard links instead of making twenty multi-gigabyte copies.
+
+```bash
+npm run comparison:large:study -- \
   --candidate /absolute/path/openwrangler.vsix \
   --python /absolute/path/python3.12 \
   --editor /absolute/path/code \
   --editor-cli /absolute/path/code-cli \
-  --csv /absolute/path/100000-50.csv \
-  --parquet /absolute/path/1000000-20.parquet \
-  --out /absolute/path/benchmark-output
+  --parquet /absolute/path/openwrangler-10m-100.parquet \
+  --out /absolute/path/benchmark-output \
+  --confirm-large-study
 ```
 
-The command writes one atomic result per session. Re-running it resumes at the first missing or interrupted session.
-It does not replace a successful session.
+The command writes one result after each editor closes. If the machine sleeps or the command is stopped, run it again
+with the same arguments. It resumes at the first missing result. Use `--limit 1` for a single-run check before the
+full study; that result belongs in a separate output directory and is not part of the final comparison.
 
-Generate the checked report after all eight sessions finish:
+Generate the final report after all 20 runs finish:
 
 ```bash
-npm run comparison:report -- \
+npm run comparison:large:report -- \
   --study /absolute/path/benchmark-output \
-  --out /absolute/path/openwrangler-data-wrangler-report.json
+  --out /absolute/path/openwrangler-data-wrangler-large-report.json
 ```
 
-Use `npm run comparison:smoke` with the same arguments before a full collection. The
-smoke runs two sessions—one per product—against the Pandas/CSV workload, with two samples in each. It catches broken selectors or permissions;
-its timings are not release results. If the machine sleeps or the command stops, run it again with the same output
-directory; only an interrupted session is repeated.
+The report command writes the diagnostic result and then fails if any product/engine group lacks five successful
+runs. Before publishing numbers, a second person should check the exact product, editor, Python, package, fixture,
+and tool hashes and recalculate the four groups from the raw trials.
 
-## Review
+## Fast regression tests
 
-Before publication, a second reviewer checks the eight session IDs, ten samples per session, versions and hashes,
-the recorded start and end events, recalculated summaries, median regression decisions, memory coverage, and failures. The
-report must contain no private paths, source values, screenshots, logs, or proprietary package contents.
-
-Record the method and calculation review in
-[`docs/performance/data-wrangler-1.2.1/review.md`](performance/data-wrangler-1.2.1/review.md).
+`npm run benchmark:runtime` remains the regular performance gate. It uses the existing 100k × 50 CSV and 1M × 20
+Parquet fixtures to catch runtime and paging regressions without generating the large comparison file. Pull requests
+also run the small unit tests for the generator, schedule, result validation, and report calculations. They never
+create the 10-million-row fixture or start the 20 editor runs.

@@ -65,7 +65,7 @@ export async function runDataWranglerComparisonNeutralDriver({ requestPath, outp
   verifyFileHash(request.editor.path, request.editor.sha256, "VS Code executable");
   verifyFileHash(request.editor.cliPath, request.editor.cliSha256, "VS Code CLI");
   verifyFileHash(request.python.path, request.python.sha256, "Python executable");
-  verifyComparisonSource(request.cell.source, request.cell.sourceSha256);
+  verifyComparisonRequestSource(request.cell);
 
   const environment = { ...process.env, OPEN_WRANGLER_EDITOR_DISPLAY: "headless" };
   configureEditorAcceptanceTempRoot(request.isolatedRoot, environment);
@@ -174,7 +174,7 @@ export async function runDataWranglerComparisonNeutralDriver({ requestPath, outp
       phaseError = phaseError ? new AggregateError([phaseError, error]) : error;
     }
     try {
-      verifyComparisonSource(request.cell.source, request.cell.sourceSha256);
+      verifyComparisonRequestSource(request.cell);
     } catch (error) {
       phaseError = phaseError ? new AggregateError([phaseError, error]) : error;
     }
@@ -247,7 +247,8 @@ export function comparisonHostRequest(request) {
       rows: request.cell.rows,
       columns: request.cell.columns,
       source: request.cell.source,
-      variableName: request.cell.variableName
+      variableName: request.cell.variableName,
+      profileContract: request.cell.profileContract
     },
     editor: {
       path: request.editor.path,
@@ -382,11 +383,12 @@ function validateRequest(request) {
     !Number.isSafeInteger(request.order) ||
     request.order < 0 ||
     request.order > 255 ||
-    ![2, 10].includes(request.repetitions) ||
+    ![1, 2, 10].includes(request.repetitions) ||
     !isAbsolute(request.isolatedRoot) ||
     !isAbsolute(request.notebookPath) ||
     !isAbsolute(request.cell?.source) ||
     !SHA256.test(request.cell?.sourceSha256 ?? "") ||
+    !["integer-sentinel", "mixed-completion"].includes(request.cell?.profileContract) ||
     !isAbsolute(request.candidate?.path) ||
     !SHA256.test(request.candidate?.sha256 ?? "") ||
     !isAbsolute(request.editor?.path) ||
@@ -398,6 +400,34 @@ function validateRequest(request) {
     request.timeoutsMs?.editorPhase !== 600_000
   ) {
     throw new TypeError("Neutral comparison request is malformed.");
+  }
+}
+
+export function verifyComparisonRequestSource(cell) {
+  if (cell.sourceIdentity === undefined) {
+    verifyComparisonSource(cell.source, cell.sourceSha256);
+    return;
+  }
+  const identity = cell.sourceIdentity;
+  if (
+    !identity ||
+    typeof identity !== "object" ||
+    Array.isArray(identity) ||
+    JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(["device", "inode", "mtimeNs", "size"]) ||
+    Object.values(identity).some((value) => typeof value !== "string" || !/^(?:0|[1-9]\d*)$/u.test(value))
+  ) {
+    throw new TypeError("Neutral comparison source identity is malformed.");
+  }
+  const metadata = lstatSync(cell.source, { bigint: true });
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.dev.toString() !== identity.device ||
+    metadata.ino.toString() !== identity.inode ||
+    metadata.size.toString() !== identity.size ||
+    metadata.mtimeNs.toString() !== identity.mtimeNs
+  ) {
+    throw new Error("private comparison source identity changed.");
   }
 }
 

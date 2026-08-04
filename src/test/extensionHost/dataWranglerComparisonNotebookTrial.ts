@@ -70,6 +70,7 @@ type Product = "open-wrangler" | "data-wrangler";
 type Engine = "pandas" | "polars";
 type Format = "csv" | "parquet";
 type TrialKind = "warm";
+type ProfileContract = "integer-sentinel" | "mixed-completion";
 type FailureStage = (typeof FAILURE_STAGES)[number];
 type MilestoneName = (typeof MILESTONE_NAMES)[number];
 type PromiseOutcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
@@ -86,7 +87,7 @@ export interface ComparisonTrialRequest {
   readonly product: Product;
   readonly kind: TrialKind;
   readonly order: number;
-  readonly repetitions: 2 | 10;
+  readonly repetitions: 1 | 2 | 10;
   readonly isolatedRoot: string;
   readonly notebookPath: string;
   readonly cell: {
@@ -97,6 +98,7 @@ export interface ComparisonTrialRequest {
     readonly columns: number;
     readonly source: string;
     readonly variableName: string;
+    readonly profileContract: ProfileContract;
   };
   readonly candidate: ArtifactIdentity;
   readonly dataWranglerVersion: "1.24.2";
@@ -329,7 +331,11 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
   if (request.protocol !== COMPARISON_TRIAL_REQUEST_PROTOCOL) fail("Comparison request protocol is invalid.");
   const root = absolutePath(request.isolatedRoot, "Comparison request isolatedRoot");
   const cell = record(request.cell, "Comparison request cell");
-  exactKeys(cell, ["id", "engine", "format", "rows", "columns", "source", "variableName"], "Comparison request cell");
+  exactKeys(
+    cell,
+    ["id", "engine", "format", "rows", "columns", "source", "variableName", "profileContract"],
+    "Comparison request cell"
+  );
   const id = oneOf(cell.id, CELL_IDS, "Comparison request cell.id");
   const engine = oneOf(cell.engine, ["pandas", "polars"] as const, "Comparison request cell.engine");
   const format = oneOf(cell.format, ["csv", "parquet"] as const, "Comparison request cell.format");
@@ -341,8 +347,8 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
     "Comparison request timeoutsMs"
   );
   if (request.dataWranglerVersion !== "1.24.2") fail("The comparison baseline must be Data Wrangler 1.24.2.");
-  const repetitions = boundedInteger(request.repetitions, 2, 10, "Comparison request repetitions");
-  if (repetitions !== 2 && repetitions !== 10) fail("Comparison request repetitions is invalid.");
+  const repetitions = boundedInteger(request.repetitions, 1, 10, "Comparison request repetitions");
+  if (repetitions !== 1 && repetitions !== 2 && repetitions !== 10) fail("Comparison request repetitions is invalid.");
   return Object.freeze({
     protocol: COMPARISON_TRIAL_REQUEST_PROTOCOL,
     trialId: matchingString(request.trialId, ID, "Comparison request trialId"),
@@ -359,7 +365,12 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
       rows: boundedInteger(cell.rows, 2, 100_000_000, "Comparison request cell.rows"),
       columns: boundedInteger(cell.columns, 2, 2_048, "Comparison request cell.columns"),
       source: containedPath(root, cell.source, "Comparison request cell.source"),
-      variableName: matchingString(cell.variableName, VARIABLE, "Comparison request cell.variableName")
+      variableName: matchingString(cell.variableName, VARIABLE, "Comparison request cell.variableName"),
+      profileContract: oneOf(
+        cell.profileContract,
+        ["integer-sentinel", "mixed-completion"] as const,
+        "Comparison request cell.profileContract"
+      )
     }),
     candidate: artifact(request.candidate, "Comparison request candidate"),
     dataWranglerVersion: "1.24.2",
@@ -396,8 +407,8 @@ export function validateComparisonTrialResult(value: unknown): ComparisonTrialRe
   oneOf(result.format, ["csv", "parquet"] as const, "Comparison result format");
   oneOf(result.kind, ["warm"] as const, "Comparison result kind");
   boundedInteger(result.order, 0, 255, "Comparison result order");
-  if (!Array.isArray(result.samples) || ![2, 10].includes(result.samples.length)) {
-    fail("Comparison result must contain exactly two smoke samples or ten release samples.");
+  if (!Array.isArray(result.samples) || ![1, 2, 10].includes(result.samples.length)) {
+    fail("Comparison result must contain one fresh sample, two smoke samples, or ten historical warm samples.");
   }
   result.samples.forEach((sample, index) => validateComparisonSample(sample, index + 1));
   return value as ComparisonTrialResult;
@@ -1408,6 +1419,31 @@ export function integerProfileTextReady(input: {
   );
 }
 
+export function mixedProfileTextReady(input: { readonly column: string; readonly text: string }): boolean {
+  if (!/^c\d{2}$/u.test(input.column)) return false;
+  const text = input.text.replace(/\s+/gu, " ").trim();
+  return (
+    new RegExp(`(?:^|\\b)${input.column}(?:\\b|[,;:()\\[\\]{}-])`, "u").test(text) &&
+    !/\b(?:loading|profiling|calculating|pending|preparing)\b/iu.test(text) &&
+    /\b(?:missing|null(?:s| values?)?)\s*[:=]?\s*\d/iu.test(text) &&
+    /\b(?:distinct|unique)\s*[:=]?\s*\d/iu.test(text)
+  );
+}
+
+export function openWranglerProfileTextReady(input: {
+  readonly contract: ProfileContract;
+  readonly text: string;
+}): boolean {
+  const text = input.text.replace(/\s+/gu, " ");
+  const labels =
+    input.contract === "integer-sentinel"
+      ? ["Exact statistics", "Rows", "Null", "Distinct", "Min", "Max"]
+      : ["Exact statistics", "Rows", "Null", "Distinct"];
+  return (
+    !/Preparing column summary|Profiling selected column/iu.test(text) && labels.every((label) => text.includes(label))
+  );
+}
+
 async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest): Promise<PointerTarget | undefined> {
   const matches: PointerTarget[] = [];
   if (request.product === "open-wrangler") {
@@ -1784,6 +1820,7 @@ async function selectOpenWranglerProfileColumn(
 async function waitForProfile(
   page: Page,
   column: string,
+  contract: ProfileContract,
   minimum: number,
   maximum: number,
   deadline: number,
@@ -1794,7 +1831,12 @@ async function waitForProfile(
       const header = await visibleColumnHeader(frame, column).catch(() => undefined);
       if (!header) continue;
       const [name, text] = await Promise.all([locatorName(header).catch(() => ""), header.innerText().catch(() => "")]);
-      if (integerProfileTextReady({ column, minimum, maximum, text: `${name} ${text}` })) {
+      const profileText = `${name} ${text}`;
+      const ready =
+        contract === "integer-sentinel"
+          ? integerProfileTextReady({ column, minimum, maximum, text: profileText })
+          : mixedProfileTextReady({ column, text: profileText });
+      if (ready) {
         return frame;
       }
     }
@@ -1806,6 +1848,7 @@ async function waitForProfile(
 async function waitForOpenWranglerProfile(
   frame: Frame,
   column: string,
+  contract: ProfileContract,
   deadline: number,
   stage: FailureStage
 ): Promise<void> {
@@ -1813,15 +1856,10 @@ async function waitForOpenWranglerProfile(
   do {
     if ((await drawer.count().catch(() => 0)) === 1 && (await drawer.isVisible().catch(() => false))) {
       const heading = drawer.getByRole("heading", { name: column, exact: true });
-      const complete = await drawer
-        .evaluate((element) => {
-          const text = (element.textContent ?? "").replace(/\s+/gu, " ");
-          return (
-            !/Preparing column summary|Profiling selected column/iu.test(text) &&
-            ["Exact statistics", "Rows", "Null", "Distinct", "Min", "Max"].every((label) => text.includes(label))
-          );
-        })
-        .catch(() => false);
+      const complete = openWranglerProfileTextReady({
+        contract,
+        text: (await drawer.textContent().catch(() => "")) ?? ""
+      });
       if ((await heading.count().catch(() => 0)) === 1 && (await heading.isVisible().catch(() => false)) && complete) {
         return;
       }
@@ -2231,11 +2269,18 @@ async function executeMeasuredIteration(
       }
       const profileStage = index === 0 ? "profile-first" : "profile-all";
       if (request.product === "open-wrangler") {
-        await waitForOpenWranglerProfile(profileFrame, column, profileDeadline, profileStage);
+        await waitForOpenWranglerProfile(
+          profileFrame,
+          column,
+          request.cell.profileContract,
+          profileDeadline,
+          profileStage
+        );
       } else {
         profileFrame = await waitForProfile(
           page,
           column,
+          request.cell.profileContract,
           index,
           request.cell.rows - 1 + index,
           profileDeadline,

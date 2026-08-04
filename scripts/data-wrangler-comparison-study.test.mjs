@@ -219,6 +219,7 @@ test("prepared request loads one resident dataframe and asks the host for ten me
     assert.equal(prepared.request.protocol, TRIAL_REQUEST_PROTOCOL);
     assert.equal(prepared.request.kind, "warm");
     assert.equal(prepared.request.repetitions, WARM_REPETITIONS);
+    assert.equal(prepared.request.cell.profileContract, "integer-sentinel");
     const notebook = JSON.parse(readFileSync(prepared.request.notebookPath, "utf8"));
     assert.equal(notebook.cells.length, 2);
     assert.match(notebook.cells[0].source.join(""), /study_frame = pd\.read_csv/u);

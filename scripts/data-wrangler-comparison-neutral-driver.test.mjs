@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   comparisonProductSettings,
   comparisonHostRequest,
   summarizePss,
+  verifyComparisonRequestSource,
   verifyComparisonSource
 } from "./data-wrangler-comparison-neutral-driver.mjs";
 
@@ -52,7 +53,8 @@ test("host request omits the launcher-only VS Code CLI path", () => {
       columns: 50,
       source: "/source.csv",
       sourceSha256: "c".repeat(64),
-      variableName: "study_frame"
+      variableName: "study_frame",
+      profileContract: "integer-sentinel"
     }
   };
   const host = comparisonHostRequest(request);
@@ -65,6 +67,7 @@ test("host request omits the launcher-only VS Code CLI path", () => {
   assert.equal(host.repetitions, 10);
   assert.equal(Object.hasOwn(host.timeoutsMs, "editorPhase"), false);
   assert.equal(Object.hasOwn(host.cell, "sourceSha256"), false);
+  assert.equal(host.cell.profileContract, "integer-sentinel");
 });
 
 test("private trial sources are checked before and after editor use", () => {
@@ -76,6 +79,32 @@ test("private trial sources are checked before and after editor use", () => {
     assert.doesNotThrow(() => verifyComparisonSource(source, expected));
     writeFileSync(source, "value\n2\n");
     assert.throws(() => verifyComparisonSource(source, expected), /SHA-256 changed/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("large synthetic fixtures can use a pinned hard-link identity instead of hashing gigabytes per session", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-comparison-source-identity-"));
+  const fixture = join(root, "fixture.parquet");
+  const source = join(root, "source.parquet");
+  try {
+    writeFileSync(fixture, "generated fixture");
+    linkSync(fixture, source);
+    const metadata = lstatSync(source, { bigint: true });
+    const cell = {
+      source,
+      sourceSha256: "0".repeat(64),
+      sourceIdentity: {
+        device: metadata.dev.toString(),
+        inode: metadata.ino.toString(),
+        size: metadata.size.toString(),
+        mtimeNs: metadata.mtimeNs.toString()
+      }
+    };
+    assert.doesNotThrow(() => verifyComparisonRequestSource(cell));
+    writeFileSync(fixture, "changed fixture");
+    assert.throws(() => verifyComparisonRequestSource(cell), /identity changed/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

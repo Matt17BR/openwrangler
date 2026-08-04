@@ -562,52 +562,43 @@ Guarded installed-performance packaging tests require every VSCE source to be tr
 
 ## Data Wrangler comparison
 
-The v1.2.1 method is in [`docs/performance-comparison.md`](performance-comparison.md). Its commands are:
+The current manual method is in [`docs/performance-comparison.md`](performance-comparison.md). It uses a generated
+10M × 100 mixed-type Parquet file and five new editor/kernel sessions for every product/engine pair. The commands are:
+
+- `npm run comparison:large:fixture` to stream the opt-in fixture after memory and disk checks;
+- `npm run comparison:large:study` to run the 20 independent notebook sessions; and
+- `npm run comparison:large:report` to calculate minimum, median, and maximum values.
+
+The large commands require the literal `--confirm-large-study` flag. They are not called by a pull-request, release,
+scheduled, or local default workflow. Tests use small row counts through the Python API and fake editor runners; they
+never generate the full fixture.
+
+The study times native file loading separately from the resident-dataframe notebook UI. Each editor run measures
+inline preview, usable workbench grid, all-column profiling, and process-tree PSS. The fixture contains numeric,
+categorical, high-cardinality text, timestamp, date, duration, and boolean columns with nulls and outliers. It is
+written in bounded 100,000-row groups. The fixture and output must share a filesystem so the session runner can use
+read-only hard links rather than copy several gigabytes per trial.
+
+Run these focused checks while changing the new method:
+
+```bash
+node --test \
+  scripts/data-wrangler-large-comparison-study.test.mjs \
+  scripts/data-wrangler-comparison-neutral-driver.test.mjs
+node scripts/run-python.mjs -m pytest \
+  python/tests/test_large_mixed_parquet.py \
+  python/tests/test_measure_large_parquet_load.py -q
+```
+
+The v1.2.1 comparison is historical. Its commands remain available for reproducing that exact warm-session method:
 
 - `npm run comparison:smoke` for both products on one Pandas/CSV workload;
 - `npm run comparison:study` for the eight-session benchmark; and
 - `npm run comparison:report` for the path-free summary.
 
-The benchmark covers Pandas and Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. A session is one isolated
-headless VS Code window for one product and workload; a sample is one timed pass through the notebook workflow. The full
-study has eight sessions and 80 samples. Each sample uses the public Run Cell, launch, usable-grid, and
-all-column-profile controls. Linux PSS sampling covers the same measured window, requires at least two observations,
-and rejects a gap longer than one second.
-
-Ordinary pull-request CI runs the focused harness contracts, not the real-product smoke or study. The two-session,
-two-sample-per-product
-smoke and eight-session study run against the release candidate and produce release-only evidence.
-
-The report includes all ten values, failures, minimum, maximum, median, and type-7 p95. Only a material median
-regression blocks release; p95 is review context. Release evidence still requires ten successful samples in all eight
-sessions.
-
-Every session owns a mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
-extension directories are prepared once per arm to avoid repeated Marketplace downloads. One JSON result is written
-per completed session, so collection can resume without discarding completed sessions.
-
-Run the focused pure checks while changing the harness:
-
-```bash
-node --test \
-  scripts/data-wrangler-comparison-study.test.mjs \
-  scripts/data-wrangler-comparison-install.test.mjs \
-  scripts/data-wrangler-comparison-neutral-driver.test.mjs \
-  scripts/data-wrangler-comparison-report.test.mjs \
-  scripts/linux-pss-sampler.test.mjs
-```
-
-Before collection, build the real candidate and run `npm run comparison:smoke` in a separate output directory. Both
-product sessions must prove headless isolation, public actions, a scrollable sentinel-matched grid, two completed
-samples each,
-PSS coverage, and terminal cleanup. Delete its output afterward; it is not performance evidence. Use the
-same candidate, editor, Python environment, machine policy, and fixtures for the full run, with no concurrent build or
-editor work.
-
-The independent review checklist lives in
-[`docs/performance/data-wrangler-1.2.1/review.md`](performance/data-wrangler-1.2.1/review.md). Method review must finish
-before collection. Final publication waits for all eight session results and an independent recalculation of counts,
-summaries, median regression decisions, and PSS.
+The [v1.2.1 review](performance/data-wrangler-1.2.1/review.md) records that method, its eight warm sessions, raw
+outcomes, versions, and calculation review. Those commands are kept for reproduction; they are not the current
+release comparison.
 
 ## Performance fixtures
 

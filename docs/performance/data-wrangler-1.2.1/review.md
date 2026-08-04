@@ -4,10 +4,11 @@
 
 Status: reviewed on 2026-08-04.
 
-The collection followed [`docs/performance-comparison.md`](../../performance-comparison.md): four engine/format
-combinations (Pandas/CSV, Polars/CSV, Pandas/Parquet, and Polars/Parquet), one isolated headless VS Code session per
-product and workload, and ten warm timed samples per session. Each sample used the public inline preview, launch,
-grid, and all-column profiling controls. Process-tree PSS was sampled across the same measured window.
+The collection used the earlier warm-session method now summarized in
+[`docs/performance-comparison.md`](../../performance-comparison.md): four engine/format combinations (Pandas/CSV,
+Polars/CSV, Pandas/Parquet, and Polars/Parquet), one isolated headless VS Code session per product and workload, and
+ten timed samples per session. Each sample used the public inline preview, launch, grid, and all-column profiling
+controls. Process-tree PSS was sampled across the same measured window.
 
 The primary run used:
 
