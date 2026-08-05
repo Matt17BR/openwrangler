@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from importlib import import_module
@@ -38,6 +40,15 @@ _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
 _SUPPORTED_PYSPARK_VERSION = re.compile(
     r"^4\.2\.[0-9]+(?:(?:a|b|rc)[0-9]+|\.dev[0-9]+)?(?:\+[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?$"
+)
+_ACTIVE_PYSPARK_REQUEST_ID: ContextVar[str | None] = ContextVar(
+    "openwrangler_active_pyspark_request_id",
+    default=None,
+)
+_SPARK_JOB_PROPERTIES = (
+    "spark.job.description",
+    "spark.jobGroup.id",
+    "spark.job.interruptOnCancel",
 )
 
 
@@ -76,6 +87,42 @@ class PySparkEngine(DataFrameEngine):
         self._paging_frame: Any | None = None
         self._paging_anchors: dict[int, Any] = {}
         self._closed = False
+
+    @contextmanager
+    def request_scope(self, request_id: str) -> Iterator[None]:
+        """Give Classic Spark jobs a request-owned group without changing caller state."""
+
+        if not request_id:
+            raise EngineError("PySpark request ownership requires a non-empty request ID.")
+        request_token = _ACTIVE_PYSPARK_REQUEST_ID.set(request_id)
+        spark_context: Any | None = None
+        previous_properties: dict[str, str | None] | None = None
+        try:
+            frame = self._indexed_frame
+            if frame is not None and not _is_connect_frame(frame):
+                try:
+                    spark_context = frame.sparkSession.sparkContext
+                    if spark_context is None:
+                        raise EngineError("Classic PySpark did not provide a Spark context.")
+                    previous_properties = {key: spark_context.getLocalProperty(key) for key in _SPARK_JOB_PROPERTIES}
+                    spark_context.setJobGroup(
+                        f"open-wrangler:{request_id}",
+                        "Open Wrangler request",
+                        interruptOnCancel=False,
+                    )
+                except Exception as error:
+                    raise EngineError(f"Could not establish PySpark request ownership: {error}") from error
+            # Spark Connect already assigns one unique operation ID to each
+            # action and interrupts only that operation on KeyboardInterrupt.
+            # Its public API has no request-ID override, so the protocol ID
+            # remains local state until a safe transport hook exists.
+            yield
+        finally:
+            try:
+                if spark_context is not None and previous_properties is not None:
+                    _restore_spark_job_properties(spark_context, previous_properties)
+            finally:
+                _ACTIVE_PYSPARK_REQUEST_ID.reset(request_token)
 
     def detect(self, value: Any) -> bool:
         try:
@@ -892,6 +939,31 @@ class PySparkEngine(DataFrameEngine):
 def _spark_column(functions: Any, name: str) -> Any:
     escaped = name.replace("`", "``")
     return functions.col(f"`{escaped}`")
+
+
+def _is_connect_frame(frame: Any) -> bool:
+    return type(frame).__module__.startswith("pyspark.sql.connect.")
+
+
+def _restore_spark_job_properties(
+    spark_context: Any,
+    previous_properties: Mapping[str, str | None],
+) -> None:
+    first_error: Exception | None = None
+    for key in _SPARK_JOB_PROPERTIES:
+        try:
+            spark_context.setLocalProperty(key, previous_properties[key])
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise EngineError("Could not restore the caller's Spark job properties.") from first_error
+
+
+def _current_pyspark_request_id() -> str | None:
+    """Return the request bound to this execution context for focused tests."""
+
+    return _ACTIVE_PYSPARK_REQUEST_ID.get()
 
 
 def _is_unsupported_profile_type(raw_type: str) -> bool:

@@ -86,7 +86,8 @@ def test_unknown_session_close_preserves_the_exact_candidate_identity(monkeypatc
 
 
 def test_live_source_invalidation_is_a_correlated_recoverable_response(monkeypatch) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any]) -> dict[str, Any]:
+    def fail(_manager: SessionManager, _request: dict[str, Any], request_id: str) -> dict[str, Any]:
+        assert request_id == "live-source-request"
         raise LiveSourceInvalidatedError("spark-session", "The live PySpark dataframe was replaced.")
 
     monkeypatch.setattr(kernel_agent, "dispatch", fail)
@@ -124,7 +125,7 @@ def test_live_source_invalidation_is_a_correlated_recoverable_response(monkeypat
 
 
 def test_terminal_cleanup_failure_preserves_the_exact_candidate_identity(monkeypatch) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any]) -> dict[str, Any]:
+    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
         raise SessionCleanupError("cleanup-session", "Could not release the Spark cache.")
 
     monkeypatch.setattr(kernel_agent, "dispatch", fail)
@@ -217,7 +218,7 @@ def test_malformed_envelope_preserves_its_available_request_id() -> None:
 
 
 def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch) -> None:
-    def cancel(_manager: SessionManager, _request: dict[str, Any]) -> dict[str, Any]:
+    def cancel(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
         raise CancelledError
 
     monkeypatch.setattr(kernel_agent, "dispatch", cancel)
@@ -252,7 +253,7 @@ def test_cancelled_dispatch_is_returned_as_a_correlated_response(monkeypatch) ->
 
 
 def test_unexpected_dispatch_error_is_returned_as_a_correlated_response(monkeypatch) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any]) -> dict[str, Any]:
+    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
         raise RuntimeError("unexpected failure")
 
     monkeypatch.setattr(kernel_agent, "dispatch", fail)
@@ -284,7 +285,7 @@ def test_unexpected_dispatch_error_is_returned_as_a_correlated_response(monkeypa
 
 
 def test_ambiguous_view_column_is_returned_as_a_correlated_structured_diagnostic(monkeypatch) -> None:
-    def fail(_manager: SessionManager, _request: dict[str, Any]) -> dict[str, Any]:
+    def fail(_manager: SessionManager, _request: dict[str, Any], _request_id: str) -> dict[str, Any]:
         raise AmbiguousViewColumnError("two Pandas columns share the displayed name '7'")
 
     monkeypatch.setattr(kernel_agent, "dispatch", fail)

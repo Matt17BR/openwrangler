@@ -20,6 +20,8 @@ The notebook launch command uses the same **Open in Open Wrangler** primary and 
 
 ## Runtime and engines
 
+Every request against an open PySpark session carries its protocol request ID into the adapter. Classic Spark uses that ID for a unique job group and restores the caller's prior job description, group, and interrupt-on-cancel properties afterward, including after an error. It does not change job tags, scheduler pools, or signal handlers. Spark Connect already gives each action its own operation ID and handles `KeyboardInterrupt` against that operation. Its public action API does not accept a caller-supplied operation ID, so Open Wrangler keeps the protocol ID in local request state and does not patch the Connect client or add tags.
+
 The first native R boundary is deliberately smaller than a session transport. The bundled
 `r/openwrangler_runtime/frame_contract.R` module snapshots a base `data.frame`, tibble, or `data.table` without
 calling Python and returns one bounded projected page. Base frames and tibbles use an R serialization copy;

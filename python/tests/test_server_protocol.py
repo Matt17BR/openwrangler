@@ -6,7 +6,7 @@ import sys
 import threading
 from codecs import getincrementaldecoder
 from concurrent.futures import Future
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from importlib.util import find_spec
 from io import StringIO, TextIOWrapper
 from pathlib import Path
@@ -16,6 +16,12 @@ from typing import Any
 import pytest
 
 import openwrangler_runtime.server as server
+
+
+class _PassthroughRequestScope:
+    @contextmanager
+    def request_scope(self, _request_id: str, _request: dict[str, Any]):
+        yield
 
 
 class _ServerOutputPumps:
@@ -377,7 +383,7 @@ def test_stdio_server_prepares_backend_on_reader_thread_before_dispatch(monkeypa
     reader_thread = threading.current_thread()
     dispatched = threading.Event()
 
-    class TrackingManager:
+    class TrackingManager(_PassthroughRequestScope):
         def __init__(self) -> None:
             self.prepare_thread: threading.Thread | None = None
             self.dispatch_thread: threading.Thread | None = None
@@ -430,7 +436,7 @@ def test_stdio_server_prepares_backend_on_reader_thread_before_dispatch(monkeypa
 
 
 def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
-    class FailingManager:
+    class FailingManager(_PassthroughRequestScope):
         def prepare_backend(self, _source: dict[str, Any], _backend: str | None) -> None:
             raise server.EngineError("native import failed")
 
@@ -465,7 +471,7 @@ def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
 
 
 def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monkeypatch) -> None:
-    class AmbiguousManager:
+    class AmbiguousManager(_PassthroughRequestScope):
         def get_page(self, *_args: Any) -> dict[str, Any]:
             raise server.AmbiguousViewColumnError("two Pandas columns share the displayed name '7'")
 
@@ -568,7 +574,7 @@ def test_stdio_server_preserves_correlated_live_session_errors(
     error: Exception,
     expected_response: dict[str, Any],
 ) -> None:
-    class FailingManager:
+    class FailingManager(_PassthroughRequestScope):
         def get_page(self, *_args: Any) -> dict[str, Any]:
             raise error
 
@@ -613,7 +619,7 @@ def test_stdio_server_preserves_correlated_live_session_errors(
 
 
 def test_stdio_server_closes_all_sessions_when_input_ends(monkeypatch) -> None:
-    class TrackingManager:
+    class TrackingManager(_PassthroughRequestScope):
         def __init__(self) -> None:
             self.closed = False
 
@@ -650,6 +656,68 @@ def test_dispatch_echoes_view_request_id() -> None:
     )
 
     assert response["viewRequestId"] == "view-page"
+
+
+def test_dispatch_binds_the_protocol_request_id_during_session_work() -> None:
+    events: list[tuple[str, str]] = []
+
+    class PagingManager:
+        @contextmanager
+        def request_scope(self, request_id: str, request: dict[str, Any]):
+            assert request["sessionId"] == "session"
+            events.append(("enter", request_id))
+            try:
+                yield
+            finally:
+                events.append(("exit", request_id))
+
+        def get_page(self, *_args: Any) -> dict[str, Any]:
+            assert events == [("enter", "d88bc868-b427-4656-923e-849ad39b2768")]
+            return {"kind": "page", "revision": 0, "page": {}, "metadata": {}}
+
+    response = server.dispatch(
+        PagingManager(),  # type: ignore[arg-type]
+        {
+            "kind": "getPage",
+            "sessionId": "session",
+            "revision": 0,
+            "viewRequestId": "view-page",
+            "offset": 0,
+            "limit": 20,
+            "columnOffset": 0,
+            "columnLimit": 7,
+            "filterModel": {"logic": "and", "filters": [], "sort": []},
+        },
+        "d88bc868-b427-4656-923e-849ad39b2768",
+    )
+
+    assert response["kind"] == "page"
+    assert events == [
+        ("enter", "d88bc868-b427-4656-923e-849ad39b2768"),
+        ("exit", "d88bc868-b427-4656-923e-849ad39b2768"),
+    ]
+
+
+def test_dispatch_passes_the_protocol_request_id_into_session_open() -> None:
+    class OpeningManager(_PassthroughRequestScope):
+        def open_session(self, *args: Any) -> dict[str, Any]:
+            assert args[-1] == "bb624815-906d-4f14-8dc4-9fd7546dd07d"
+            return {"kind": "sessionOpened"}
+
+    response = server.dispatch(
+        OpeningManager(),  # type: ignore[arg-type]
+        {
+            "kind": "openSession",
+            "source": {"kind": "notebookVariable", "variableName": "orders"},
+            "backend": "pyspark",
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 8,
+        },
+        "bb624815-906d-4f14-8dc4-9fd7546dd07d",
+    )
+
+    assert response == {"kind": "sessionOpened"}
 
 
 def test_dispatch_routes_applied_step_inspection_without_view_correlation() -> None:
@@ -695,7 +763,7 @@ def test_cancel_pending_future_only_cancels_work_that_has_not_started() -> None:
 
 
 def test_cancel_request_does_not_suppress_an_already_running_result(monkeypatch) -> None:
-    class RunningManager:
+    class RunningManager(_PassthroughRequestScope):
         def __init__(self) -> None:
             self.started = threading.Event()
             self.release = threading.Event()
@@ -755,7 +823,7 @@ def test_cancel_request_does_not_suppress_an_already_running_result(monkeypatch)
 
 
 def test_interactive_executor_is_not_starved_by_background_profiles(monkeypatch) -> None:
-    class BlockingManager:
+    class BlockingManager(_PassthroughRequestScope):
         def __init__(self) -> None:
             self.release = threading.Event()
             self.interactive_started = threading.Event()
@@ -814,7 +882,7 @@ def test_interactive_executor_is_not_starved_by_background_profiles(monkeypatch)
 
 
 def test_eof_starts_cleanup_before_active_profiles_finish_and_cancels_queued_profiles(monkeypatch) -> None:
-    class BlockingManager:
+    class BlockingManager(_PassthroughRequestScope):
         def __init__(self) -> None:
             self.lock = threading.Lock()
             self.started = 0
@@ -881,7 +949,7 @@ def test_eof_starts_cleanup_before_active_profiles_finish_and_cancels_queued_pro
 
 
 def test_eof_wait_for_blocked_cleanup_is_bounded(monkeypatch) -> None:
-    class StuckManager:
+    class StuckManager(_PassthroughRequestScope):
         def __init__(self) -> None:
             self.work_started = threading.Event()
             self.release_work = threading.Event()

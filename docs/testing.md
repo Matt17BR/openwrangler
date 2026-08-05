@@ -159,6 +159,8 @@ By-example tests must exercise every candidate family, deterministic tie orderin
 
 ## PySpark live-notebook viewing preview acceptance
 
+The request-ownership cases check that Classic jobs receive different groups for different protocol request IDs, nested and failed scopes restore all caller job properties, unrelated tags and scheduler pools are untouched, and Connect actions keep their existing tags and operation-specific interrupt behavior. Neither path changes the process signal handler.
+
 The CI coverage lane installs exact `pyspark[connect]==4.2.0`, Pandas `>=2.2,<3.0`, and Temurin Java 17, verifies those runtimes, and then runs the complete instrumented Python suite. That full-suite coverage is the authoritative pull-request PySpark runtime evidence. Use the following two-file command only for focused local iteration:
 
 ```bash

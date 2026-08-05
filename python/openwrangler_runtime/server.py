@@ -15,7 +15,22 @@ from .session import LiveSourceInvalidatedError, SessionCleanupError, SessionMan
 SHUTDOWN_GRACE_SECONDS = 1.5
 
 
-def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]:
+def dispatch(
+    manager: SessionManager,
+    request: dict[str, Any],
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    if request_id is not None:
+        with manager.request_scope(request_id, request):
+            return _dispatch(manager, request, request_id)
+    return _dispatch(manager, request, None)
+
+
+def _dispatch(
+    manager: SessionManager,
+    request: dict[str, Any],
+    request_id: str | None,
+) -> dict[str, Any]:
     kind = request.get("kind")
     if kind == "initialize":
         return manager.initialize()
@@ -28,6 +43,7 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             request.get("requestedSessionId"),
             int(request["columnOffset"]),
             int(request["columnLimit"]),
+            request_id,
         )
     if kind == "getPage":
         return _with_view_request_id(
@@ -214,7 +230,7 @@ def main() -> None:
                     # Pandas after Polars from a Windows worker can deadlock.
                     manager.prepare_backend(request["source"], request.get("backend"))
                 executor = background_executor if priority == "background" else interactive_executor
-                future = executor.submit(dispatch, manager, request)
+                future = executor.submit(dispatch, manager, request, request_id)
                 with pending_lock:
                     pending[request_id] = future
                 future.add_done_callback(
