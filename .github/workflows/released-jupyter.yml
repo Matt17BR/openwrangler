@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   vscode:
-    name: VS Code with released Jupyter
+    name: VS Code and Cursor with released Jupyter
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -66,10 +66,10 @@ jobs:
           accessSync(executable, X_OK);
           appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
       - id: packaged_editor
-        name: Test released Jupyter in packaged VS Code
-        run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+        name: Test released Jupyter in packaged VS Code and Cursor
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -79,7 +79,7 @@ jobs:
         if: ${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: released-jupyter-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
+          name: released-jupyter-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7

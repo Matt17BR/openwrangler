@@ -18,6 +18,7 @@ from python.benchmarks.pyspark_profile import PROFILE_COLUMN_NAMES, build_mixed_
 
 import __main__
 import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
+import openwrangler_runtime.kernel_agent as kernel_agent
 import openwrangler_runtime.server as server
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
@@ -767,23 +768,65 @@ def test_does_not_blanket_reject_unknown_or_supported_interval_types(raw_type: s
     assert not pyspark_engine_module._is_unsupported_profile_type(raw_type)
 
 
-def test_rejects_streaming_duplicate_casefold_and_private_schemas(spark_session: Any) -> None:
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        (
+            "duplicate",
+            "The PySpark dataframe has conflicting columns 'value' and 'value'. Rename them in Spark with toDF() "
+            "so every column name is unique when case is ignored.",
+        ),
+        (
+            "casefold",
+            "The PySpark dataframe has conflicting columns 'Value' and 'value'. Rename them in Spark with toDF() "
+            "so every column name is unique when case is ignored.",
+        ),
+        (
+            "private",
+            f"The PySpark dataframe has a reserved Open Wrangler column name: "
+            f"'{INTERNAL_ROW_ID_PREFIX.upper()}user'. Rename it in Spark with withColumnRenamed() before opening "
+            "the dataframe.",
+        ),
+        (
+            "streaming",
+            "This PySpark dataframe is streaming. Write the stream to a table or files, then open a static "
+            "dataframe read from that output.",
+        ),
+        (
+            "missing-projection",
+            "PySpark value type MissingProjectionFrame does not support Spark's withColumn() operation. Assign "
+            "frame.select('*') to a new variable in Spark and open that variable.",
+        ),
+    ],
+)
+def test_rejects_unsupported_open_shapes_with_actionable_messages(
+    spark_session: Any,
+    case: str,
+    message: str,
+) -> None:
+    class MissingProjectionFrame:
+        isStreaming = False
+
     engine = PySparkEngine()
-    duplicate = spark_session.createDataFrame([(1, 2)], ["value", "value"])
-    with pytest.raises(EngineError, match="unique without relying on case"):
-        engine.validate_column_addressability(duplicate)
+    if case == "duplicate":
+        frame = spark_session.createDataFrame([(1, 2)], ["value", "value"])
+        validate = engine.validate_column_addressability
+    elif case == "casefold":
+        frame = spark_session.createDataFrame([(1, 2)], ["Value", "value"])
+        validate = engine.validate_column_addressability
+    elif case == "private":
+        frame = spark_session.createDataFrame([(1,)], [f"{INTERNAL_ROW_ID_PREFIX.upper()}user"])
+        validate = engine.validate_internal_row_id_namespace
+    elif case == "streaming":
+        frame = spark_session.readStream.format("rate").load()
+        validate = engine.validate_column_addressability
+    else:
+        frame = MissingProjectionFrame()
+        validate = engine.validate_column_addressability
 
-    casefold = spark_session.createDataFrame([(1, 2)], ["Value", "value"])
-    with pytest.raises(EngineError, match="unique without relying on case"):
-        engine.validate_column_addressability(casefold)
-
-    private = spark_session.createDataFrame([(1,)], [f"{INTERNAL_ROW_ID_PREFIX.upper()}user"])
-    with pytest.raises(EngineError, match="reserved"):
-        engine.validate_internal_row_id_namespace(private)
-
-    streaming = spark_session.readStream.format("rate").load()
-    with pytest.raises(EngineError, match="Streaming"):
-        engine.validate_column_addressability(streaming)
+    with pytest.raises(EngineError) as captured:
+        validate(frame)
+    assert str(captured.value) == message
 
 
 def test_rejects_variant_before_open_without_blanket_rejecting_unknown_types(
@@ -806,6 +849,45 @@ def test_rejects_variant_before_open_without_blanket_rejecting_unknown_types(
             },
             backend="pyspark",
         )
+    assert manager.sessions == {}
+
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    envelope = json.dumps(
+        {
+            "protocolVersion": 2,
+            "requestId": "unsupported-variant-open",
+            "priority": "interactive",
+            "request": {
+                "kind": "openSession",
+                "source": {
+                    "kind": "notebookVariable",
+                    "variableName": "open_wrangler_variant_frame",
+                    "label": "open_wrangler_variant_frame",
+                },
+                "requestedSessionId": "unsupported-variant-candidate",
+                "backend": "pyspark",
+                "mode": "viewing",
+                "pageSize": 20,
+                "columnOffset": 0,
+                "columnLimit": 16,
+            },
+        }
+    )
+    response = json.loads(kernel_agent.dispatch_json(envelope))
+    assert response == {
+        "protocolVersion": 2,
+        "requestId": "unsupported-variant-open",
+        "response": {
+            "kind": "error",
+            "code": "engine_error",
+            "message": (
+                "The experimental PySpark backend cannot open this dataframe because required viewing profiles "
+                "are unavailable for 'payload' (variant). Convert these columns in Spark to strings or another "
+                "orderable Spark SQL type before opening them in Open Wrangler."
+            ),
+            "recoverable": True,
+        },
+    }
     assert manager.sessions == {}
 
     # Spark's void type is also semantically unknown to the shared type

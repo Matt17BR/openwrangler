@@ -1340,23 +1340,45 @@ test("standalone released-Jupyter acceptance is schedule/manual-only and self-pa
     group: "released-jupyter-${{ github.ref }}",
     "cancel-in-progress": false
   });
+  const job = workflow?.jobs?.vscode;
+  assert.equal(job?.name, "VS Code and Cursor with released Jupyter");
+  assert.equal(job?.["timeout-minutes"], 90);
   assert.equal(
-    workflow?.jobs?.vscode?.steps?.some((step) => step?.run === "npm run package -- --out openwrangler.vsix"),
+    job?.steps?.some((step) => step?.run === "npm run package -- --out openwrangler.vsix"),
     true,
     "Standalone released-Jupyter acceptance must let package.json select its VSIX channel."
   );
   assert.doesNotMatch(source, /npm run package -- --pre-release/u);
   assert.equal(
-    workflow?.jobs?.vscode?.steps?.some((step) => step?.run === 'python -m pip install -e "python[dev]"'),
+    job?.steps?.some((step) => step?.run === 'python -m pip install -e "python[dev]"'),
     true
   );
   assert.deepEqual(
-    workflow?.jobs?.vscode?.steps?.find(
-      (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@")
-    )?.with,
+    job?.steps?.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@"))?.with,
     {
       distribution: "temurin",
       "java-version": "17"
     }
+  );
+  const packaged = job?.steps?.find((step) => step?.id === "packaged_editor");
+  assert.equal(packaged?.name, "Test released Jupyter in packaged VS Code and Cursor");
+  assert.equal(
+    packaged?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
+  );
+  assert.deepEqual(packaged?.env, {
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const diagnostics = job?.steps?.find(
+    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@")
+  );
+  assert.equal(
+    diagnostics?.with?.name,
+    "released-jupyter-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
   );
 });
