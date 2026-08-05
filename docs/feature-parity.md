@@ -46,8 +46,8 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 Post-1.0 viewing-filter hardening keeps the completed filter surface usable as well as semantically correct. Focused React coverage proves that removing a final selected value removes the column filter itself, changing per-column logic cannot create an empty filter, and **Filter rows** stays disabled for an effective-empty query. A two-column interaction keeps every active filter visible, removes one value or predicate without disturbing siblings, and preserves sorts on the same or another column. The native Filters tree exercises the same whole-column removal through the host/webview action boundary.
 
 **Fill missing values** works on one stable column at a time. Numeric columns can use the median of their present
-values; supported scalar columns can use an explicit value of the matching type. Both null and floating-point NaN
-are treated as missing. The fill keeps the native column type. Integer and decimal medians must fit that type exactly;
+values; supported scalar columns can use an explicit value of the matching type. Both null and NaN are treated as
+missing. The fill keeps the native column type. Integer and decimal medians must fit that type exactly;
 decimal values must also fit its scale, and datetime values must match its timezone awareness. Applying the draft adds
 the step to Open Wrangler's cleaning plan. It never changes the original dataframe. Generated Pandas, Polars, and
 DuckDB code uses the same rules. Focused tests cover the dialog and the preview, apply, edit, discard, and undo

@@ -42,6 +42,7 @@ from .base import (
     numeric_visualization,
     require_datetime_fill_awareness,
     resolve_excel_sheet_selector,
+    safe_float_midpoint,
     typed_selection_value,
     validate_view_predicate_operator,
 )
@@ -768,6 +769,8 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "",
                     "def _open_wrangler_is_nan(value):",
+                    "    if isinstance(value, Decimal):",
+                    "        return value.is_nan()",
                     "    try:",
                     "        return (",
                     "            isinstance(value, Real)",
@@ -2340,7 +2343,7 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
             fill_value = exact_decimal_median(lower, upper, precision, scale)
         else:
             try:
-                fill_value = (float(lower) + float(upper)) / 2.0
+                fill_value = safe_float_midpoint(lower, upper)
             except (TypeError, ValueError, OverflowError) as error:
                 raise EngineError(f"Cannot calculate a numeric median for the selected column: {error}") from error
             if isnan(fill_value):
@@ -2475,6 +2478,18 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    return awareness.pop()",
         "",
         "",
+        "def _open_wrangler_float_midpoint(lower, upper):",
+        "    left = float(lower)",
+        "    right = float(upper)",
+        "    if left == right:",
+        "        return left",
+        "    if np.isfinite(left) and np.isfinite(right):",
+        "        if (left < 0) == (right < 0):",
+        "            return left + ((right - left) / 2.0)",
+        "        return (left / 2.0) + (right / 2.0)",
+        "    return (left + right) / 2.0",
+        "",
+        "",
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",
         "    semantic_type = _open_wrangler_fill_semantic_type(series)",
         "    present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
@@ -2507,7 +2522,7 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "                fill_value = (lower + upper) / Decimal(2)",
         "            fill_value = _open_wrangler_decimal_at_scale(fill_value, precision, scale)",
         "        else:",
-        "            fill_value = (float(lower) + float(upper)) / 2.0",
+        "            fill_value = _open_wrangler_float_midpoint(lower, upper)",
         "            if np.isnan(fill_value):",
         (
             "                raise ValueError('Cannot fill with the median because the selected column has no "
@@ -2540,6 +2555,8 @@ def _is_null_value(value: Any) -> bool:
 
 
 def _is_nan_value(value: Any) -> bool:
+    if isinstance(value, Decimal):
+        return value.is_nan()
     if not isinstance(value, Real) or isinstance(value, bool):
         return False
     try:

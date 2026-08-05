@@ -340,6 +340,64 @@ def test_integer_median_preserves_values_above_javascript_safe_integer(backend: 
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_float_median_avoids_overflow(backend: str) -> None:
+    value = 1e308
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame({"value": pd.Series([value, None, value], dtype="Float64")})
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame({"value": pl.Series([value, None, value], dtype=pl.Float64)})
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql(
+            f"SELECT * FROM (VALUES ({value!r}::DOUBLE), (NULL::DOUBLE), ({value!r}::DOUBLE)) AS source(value)"
+        )
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "median"})
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert rows(live) == [(value,), (value,), (value,)]
+        assert rows(generated) == rows(live)
+        assert normalized_rows(source) == [(value,), (None,), (value,)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected"),
+    [
+        ({"kind": "median"}, Decimal("2.00")),
+        ({"kind": "decimal", "value": "2.50"}, Decimal("2.50")),
+    ],
+)
+def test_pandas_decimal_nan_is_filled_without_changing_present_values(
+    replacement: dict[str, Any], expected: Decimal
+) -> None:
+    engine = PandasEngine()
+    source_nan = Decimal("NaN")
+    source = pd.DataFrame({"value": pd.Series([Decimal("1.00"), source_nan, None, Decimal("3.00")], dtype=object)})
+    operation = fill_step(bound_ref("c:source:0", "value", 0), replacement)
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        expected_rows = [(Decimal("1.00"),), (expected,), (expected,), (Decimal("3.00"),)]
+        assert rows(live) == expected_rows
+        assert rows(generated) == expected_rows
+        source_rows = rows(source)
+        assert source_rows[0] == (Decimal("1.00"),)
+        assert isinstance(source_rows[1][0], Decimal) and source_rows[1][0].is_nan()
+        assert source_rows[2] == (None,)
+        assert source_rows[3] == (Decimal("3.00"),)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 def test_decimal_median_preserves_38_digit_values(backend: str) -> None:
     lower = Decimal("99999999999999999999999999999999999997")
     median = Decimal("99999999999999999999999999999999999998")

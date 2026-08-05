@@ -380,6 +380,18 @@ def exact_decimal_median(lower: Any, upper: Any, precision: int, scale: int) -> 
     return decimal_at_scale(median, precision, scale)
 
 
+def safe_float_midpoint(lower: Any, upper: Any) -> float:
+    left = float(lower)
+    right = float(upper)
+    if left == right:
+        return left
+    if isfinite(left) and isfinite(right):
+        if (left < 0) == (right < 0):
+            return left + ((right - left) / 2.0)
+        return (left / 2.0) + (right / 2.0)
+    return (left + right) / 2.0
+
+
 def typed_selection_value(value: Any, column_type: str) -> dict[str, Any] | None:
     """Return the portable selection token for one non-missing scalar value."""
 
