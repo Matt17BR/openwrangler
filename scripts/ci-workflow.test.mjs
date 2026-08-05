@@ -67,7 +67,8 @@ const SUBSTANTIVE_MATRIX_STEP_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}";
 const CLASSIFICATION_GATE_IF =
   "${{ needs.classify.result != 'success' || (needs.classify.outputs.benchmark_harness_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'false') || (needs.classify.outputs.dependency_lock_only != 'true' && needs.classify.outputs.dependency_lock_only != 'false') || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') || (needs.classify.outputs.draft_pull_request != 'true' && needs.classify.outputs.draft_pull_request != 'false') || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.lightweight_only != 'false') || (needs.classify.outputs.package_only != 'true' && needs.classify.outputs.package_only != 'false') || (needs.classify.outputs.full_matrix_required != 'true' && needs.classify.outputs.full_matrix_required != 'false') || (needs.classify.outputs.lightweight_only == 'true' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') || (needs.classify.outputs.lightweight_only == 'false' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.documentation_only == 'true' && needs.classify.outputs.package_only == 'true') || (needs.classify.outputs.benchmark_harness_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.dependency_lock_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true')) || (needs.classify.outputs.full_matrix_required == 'true' && (needs.classify.outputs.benchmark_harness_only == 'true' || needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'false' && needs.classify.outputs.benchmark_harness_only == 'false' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.package_only == 'false' && needs.classify.outputs.dependency_lock_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') }}";
-const PROTECTED_PRODUCT_BRANCHES = ["main"];
+const PRODUCT_PUSH_BRANCHES = ["main"];
+const PROTECTED_PULL_REQUEST_BRANCHES = ["main", "v2"];
 const PULL_REQUEST_ACTIVITY_TYPES = ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"];
 
 function normalizedCommand(value) {
@@ -96,14 +97,14 @@ function nodeTestFiles(command, group) {
   return files;
 }
 
-test("product CI covers protected main", () => {
+test("product CI covers protected product branches", () => {
   const ci = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
-  assert.deepEqual(ci?.on?.push?.branches, PROTECTED_PRODUCT_BRANCHES);
+  assert.deepEqual(ci?.on?.push?.branches, PRODUCT_PUSH_BRANCHES);
   assert.deepEqual(ci?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
 
   for (const path of ["codeql.yml", "cross-platform.yml"]) {
     const workflow = parseYaml(readFileSync(new URL(`../.github/workflows/${path}`, import.meta.url), "utf8"));
-    assert.deepEqual(workflow?.on?.pull_request?.branches, PROTECTED_PRODUCT_BRANCHES);
+    assert.deepEqual(workflow?.on?.pull_request?.branches, PROTECTED_PULL_REQUEST_BRANCHES);
     assert.deepEqual(workflow?.on?.pull_request?.types, PULL_REQUEST_ACTIVITY_TYPES);
     assert.equal(workflow?.on?.push, undefined, `${path} must not repeat the ready-PR matrix after merge.`);
   }

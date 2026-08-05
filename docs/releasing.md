@@ -127,10 +127,10 @@ The same installed-editor report must prove that the production renderer and for
 
 Each coherent change uses a feature branch and pull request. Drafts run `Fast feedback` and report a separate `Draft
 feedback` check; the protected `validate` context appears only when the pull request is marked ready. Ready code
-changes run source, runtime, UI, accessibility, packaging, Linux packaged-editor, native extension-host, platform,
-and security checks. The slower native editor, Jupyter, Remote SSH, and installed-performance checks run against the
-exact release candidate before publication. Pushes to `main` repeat fast feedback only. [CI and release
-checks](ci.md) has the current map.
+changes targeting `main` or `v2` run source, runtime, UI, accessibility, packaging, Linux packaged-editor, native
+extension-host, platform, and security checks. The slower native editor, Jupyter, Remote SSH, and
+installed-performance checks run against the exact release candidate before publication. Pushes to `main` repeat
+fast feedback only; publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
 
 For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR artifact and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. A failed candidate is recorded and is not automatically retried.
 
