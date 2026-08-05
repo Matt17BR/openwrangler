@@ -2014,6 +2014,34 @@ describe("DataGrid", () => {
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
   });
 
+  it("keeps R header profiles explicit even when insights-on-open is configured", async () => {
+    const onVisibleSummaryColumnsChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={{ ...metadata, backend: "r", mode: "viewing", rDataframeFlavor: "r.data.frame" }}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
+      />
+    );
+
+    const headerProfiles = screen.getByRole("button", { name: "Header profiles" });
+    expect(headerProfiles).toBeEnabled();
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
+    expect(headerProfiles).toHaveAttribute("title", "Runs R profiling queries for the visible columns.");
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
+
+    fireEvent.click(headerProfiles);
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
+  });
+
   it("maps a projected page by stable column ID while preserving full-schema grid coordinates", async () => {
     const projectedPage: GridPage = {
       offset: 0,

@@ -21,8 +21,8 @@ layer.
 
 The host exposes a `RuntimeIdentity` derived from confirmed session metadata. The protocol keeps `backend` as its
 engine discriminator. R sessions add an explicit dataframe flavor (`data.frame`, tibble, or `data.table`) so the UI
-can describe the object without guessing from `backend`. They have no code dialect yet; that field stays absent until
-generated R code exists.
+can describe the object without guessing from `backend`. Their `RuntimeIdentity.codeDialect` is `null` until generated
+R code exists.
 
 The first implementation slice is a transport-neutral frame/page contract. It has these invariants:
 

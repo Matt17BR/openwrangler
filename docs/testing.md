@@ -472,8 +472,9 @@ Generated-code insertion tests cover the 10-second observation bound, event-driv
 
 R notebook acceptance is an opt-in local check. It opens real `data.frame`, tibble, and data.table variables through
 IRkernel in isolated, zero-window VS Code and Cursor profiles. The journey covers projected paging, explicit row
-labels, compound sorts, and native column and dataset profiles. Missing test packages are installed only in a
-temporary R library that is removed with the run. This mode is not part of routine CI and does not use a cloud runner.
+labels, compound sorts, header profiles starting off, and explicit native column and dataset profiles. Missing test
+packages are installed only in a temporary R library that is removed with the run. This mode is not part of routine
+CI and does not use a cloud runner.
 
 ```bash
 OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \

@@ -747,8 +747,8 @@ Grid status and profile vocabulary, 2026-07-31:
   **Column profiles and filters**. Its established region and tab IDs, deterministic Close focus, Escape handling,
   exact opener restoration, and Column / Dataset / Filters ownership remain unchanged.
 - Grid-header summaries remain an independent **Header profiles** toggle with a constant name and `aria-pressed`.
-  `openWrangler.insightsOnOpen` keeps its public key and behavior; PySpark still starts this toggle off and retains
-  its Spark-query cost tooltip.
+  `openWrangler.insightsOnOpen` keeps its public key and behavior. R and PySpark start this toggle off, with a tooltip
+  explaining the profiling work that an explicit click starts.
 - React, production-bundle screenshot, axe, forced-colors, narrow-width, 200%-zoom, packaged-layout, and PySpark
   media assertions cover direct status-bar placement, exact range text, Codicon presence, pressed state, and
   unclipped controls. Dedicated 100,000,000-row terminal fixtures prove the exact

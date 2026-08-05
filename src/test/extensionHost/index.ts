@@ -1683,6 +1683,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   const profiles = app.getByRole("button", { name: "Header profiles", exact: true });
   await profiles.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await profiles.isEnabled(), true);
+  assert.equal(await profiles.getAttribute("aria-pressed"), "false", "R header profiles must start off.");
   const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill("score");
   await app

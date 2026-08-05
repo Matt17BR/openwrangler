@@ -707,7 +707,7 @@
         "openWrangler.insightsOnOpen": {
           "type": "boolean",
           "default": true,
-          "description": "Show progressive profiles in visible grid headers when a grid opens. PySpark always starts with header profiles off because each profile runs Spark work."
+          "description": "Show profiles in visible column headers when a grid opens. R and PySpark start with this off; enable it from the grid when needed."
         },
         "openWrangler.filterMode": {
           "type": "string",

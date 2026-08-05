@@ -223,8 +223,9 @@ export function DataGrid({
   useLayoutEffect(() => {
     restorationRef.current = { viewState, metadata, page, pageSize };
   }, [metadata, page, pageSize, viewState]);
+  const startsWithHeaderProfilesOff = metadata.backend === "pyspark" || metadata.backend === "r";
   const [showInsights, setShowInsights] = useState(
-    metadata.backend === "pyspark" || profilesDisabled ? false : insightsOnOpen
+    startsWithHeaderProfilesOff || profilesDisabled ? false : insightsOnOpen
   );
   const [viewport, setViewport] = useState({
     firstVisibleRow: viewState.viewport.firstVisibleRow,
@@ -1264,7 +1265,9 @@ export function DataGrid({
               ? profilesDisabledReason
               : metadata.backend === "pyspark"
                 ? "Runs Spark profiling queries for the visible columns."
-                : undefined
+                : metadata.backend === "r"
+                  ? "Runs R profiling queries for the visible columns."
+                  : undefined
           }
           onClick={() => {
             if (!profilesDisabled) setShowInsights((current) => !current);

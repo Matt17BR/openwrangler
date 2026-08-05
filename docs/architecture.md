@@ -98,7 +98,9 @@ missing variables or sessions, and unexpected runtime failures also use a fixed 
 selected kernel. It recognizes exact base `data.frame`, tibble, and `data.table` class vectors without evaluating
 active or delayed bindings. The notebook command routes those variables through a read-only coordinator session and
 enables native column and dataset profiles. Filters, value search, cleaning, exports, and generated code stay disabled
-until their R implementations exist. The packaged VS Code/Cursor journey now selects a real R column and checks its
+until their R implementations exist. R sessions open with header profiles off so opening a frame does not immediately
+scan every visible column. Users can enable them, and the profile drawer still loads the selected column or dataset on
+request. The packaged VS Code/Cursor journey now selects a real R column and checks its
 rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
 duplicate-row statistics. Green local runs on R 4.4 and 4.5 plus remote IRkernel remain preview gates.
 
