@@ -569,8 +569,9 @@ The current manual method is in [`docs/performance-comparison.md`](performance-c
 - `npm run comparison:large:study` to run the 20 independent notebook sessions; and
 - `npm run comparison:large:report` to calculate minimum, median, and maximum values.
 
-The large commands require the literal `--confirm-large-study` flag. Fixture generation needs 25 GiB free and keeps
-the file only when at least 15 GiB remains for the study. They are not called by a pull-request, release, scheduled,
+The large commands require the literal `--confirm-large-study` flag. They require at least 96 GiB of available
+memory, so a 64 GiB machine cannot start them. Fixture generation needs 25 GiB free and keeps the file only when at
+least 15 GiB remains for the study. They are not called by a pull-request, release, scheduled,
 or local default workflow. Tests use small row counts through the Python API and fake editor runners; they never
 generate the full fixture.
 
@@ -592,8 +593,9 @@ the session runner can use read-only hard links rather than copy several gigabyt
 Before checking fixture provenance, the runner removes a private trial directory left by an interrupted process. It
 then resumes at the first missing result. A failed editor run uses its fixed slot, stays in the raw report, and does
 not stop or get retried. The report needs all 20 slots, at least four successes in each five-run product/engine group,
-and at least four of five native-load successes per engine. Headline measurements use only fully completed journeys;
-the raw report keeps earlier endpoints from failed runs. Start with `--limit 4`, review one journey from every
+and at least four of five native-load successes per engine. A four-out-of-five group is marked inconclusive. Headline
+measurements are calculated only for five-out-of-five groups; the raw report keeps earlier endpoints from failed
+runs. Start with `--limit 4`, review one journey from every
 product/engine group, then resume the same output without a limit. Every failure must be explained and checked before
 publication. The review records the commit used to build the candidate beside the candidate SHA-256 already stored
 in the manifest. The candidate must be built from the current protected `main` commit.

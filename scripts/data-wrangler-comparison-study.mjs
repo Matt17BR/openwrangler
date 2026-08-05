@@ -38,6 +38,7 @@ export const LARGE_ROWS = 10_000_000;
 export const LARGE_COLUMNS = 100;
 export const LARGE_REPETITIONS = 5;
 export const LARGE_MIN_SUCCESSFUL_REPETITIONS = 4;
+export const LARGE_MIN_AVAILABLE_MEMORY_BYTES = 96 * 1024 ** 3;
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
@@ -729,13 +730,17 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, l
   const observedLoads = new Map(loads.map((load) => [load.trialId, load]));
   const summarize = (items, selectors) => {
     const successful = items.filter((item) => item.status === undefined || item.status === "success");
+    const headlineComplete = successful.length === LARGE_REPETITIONS;
     return {
       planned: LARGE_REPETITIONS,
       completed: items.length,
       successful: successful.length,
-      metrics: Object.fromEntries(
-        Object.entries(selectors).map(([name, select]) => [name, summarizeLargeValues(successful.map(select))])
-      )
+      headlineStatus: headlineComplete ? "complete" : "inconclusive",
+      metrics: headlineComplete
+        ? Object.fromEntries(
+            Object.entries(selectors).map(([name, select]) => [name, summarizeLargeValues(successful.map(select))])
+          )
+        : null
     };
   };
   const uiMetrics = {
@@ -806,6 +811,22 @@ export function validateLargeLoadResult(load, entry) {
 }
 
 export function assertCompleteLargeReport(report) {
+  const invalidSummary = ({ completed, successful, headlineStatus, metrics } = {}) => {
+    if (
+      completed !== LARGE_REPETITIONS ||
+      !Number.isSafeInteger(successful) ||
+      successful < LARGE_MIN_SUCCESSFUL_REPETITIONS ||
+      successful > LARGE_REPETITIONS
+    ) {
+      return true;
+    }
+    if (successful < LARGE_REPETITIONS) return headlineStatus !== "inconclusive" || metrics !== null;
+    return (
+      headlineStatus !== "complete" ||
+      !metrics ||
+      Object.values(metrics).some((summary) => summary?.count !== LARGE_REPETITIONS)
+    );
+  };
   if (
     report?.plannedTrials !== 20 ||
     report.completedTrials !== 20 ||
@@ -815,13 +836,9 @@ export function assertCompleteLargeReport(report) {
     report.method?.minimumComplete !== LARGE_MIN_SUCCESSFUL_REPETITIONS ||
     report.method?.retries !== 0 ||
     report.summaries?.length !== 4 ||
-    report.summaries?.some(
-      ({ completed, successful }) => completed !== LARGE_REPETITIONS || successful < LARGE_MIN_SUCCESSFUL_REPETITIONS
-    ) ||
+    report.summaries?.some(invalidSummary) ||
     report.loadSummaries?.length !== 2 ||
-    report.loadSummaries.some(
-      ({ completed, successful }) => completed !== LARGE_REPETITIONS || successful < LARGE_MIN_SUCCESSFUL_REPETITIONS
-    )
+    report.loadSummaries.some(invalidSummary)
   ) {
     throw new Error("The large comparison needs all 20 attempts and at least four complete runs per group.");
   }
@@ -895,7 +912,7 @@ export function assertLargeRunEnvironment(environment, expectedMachine) {
     throw new Error("The large study could not determine whether the CPU governor is exposed.");
   }
   if (
-    environment.capacity?.availableMemoryBytes < 40 * 1024 ** 3 ||
+    environment.capacity?.availableMemoryBytes < LARGE_MIN_AVAILABLE_MEMORY_BYTES ||
     environment.capacity?.freeDiskBytes < 15 * 1024 ** 3
   ) {
     throw new Error("Available memory or disk space fell below the large-study minimum.");

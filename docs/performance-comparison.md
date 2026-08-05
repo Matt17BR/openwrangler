@@ -24,13 +24,13 @@ duration bounds stay in the fixture but are not used for readiness, because both
 rather than duration Min/Max statistics. The fixture manifest records the names and markers along with every column
 type, the seed, file hash, size, compression settings, and row-group layout. No user data is read.
 
-Generation stops before writing if Linux reports less than 40 GiB of available memory or the output filesystem has
-less than 25 GiB free. It also checks that at least 15 GiB remains before keeping the finished fixture. The study
-checks for that 15 GiB reserve immediately before every editor run. A machine with a battery must be on AC; a
-battery-less host records `not-applicable`. A host without a cpufreq governor records `not-exposed`. The recorded
-machine, power, and governor values must remain unchanged throughout the study. These checks are conservative because
-a Pandas load can require much more memory than the compressed source. The generator refuses to replace an existing
-file.
+Generation and every editor run require at least 96 GiB of available memory. A 64 GiB machine cannot start this
+study. Generation also requires 25 GiB of free disk space, and it keeps the finished fixture only if at least 15 GiB
+remains. The study checks that disk reserve immediately before every editor run. A machine with a battery must be on
+AC power. A battery-less host records `not-applicable`. A host without a cpufreq governor records `not-exposed`. The
+recorded machine, power, and governor values must remain unchanged throughout the study. These checks are conservative
+because a Pandas load can require much more memory than the compressed source. The generator refuses to replace an
+existing file.
 
 ## What is measured
 
@@ -56,11 +56,12 @@ launch milestones, so the Run Cell-to-grid measurement keeps the complete cost v
 cannot localize it. The native-load processes do not flush the operating-system file cache, so they measure a warm
 source rather than cold-disk I/O.
 
-The report gives the minimum, median, and maximum for runs that finish. A usable comparison requires all 20 assigned
-runs to have been attempted, at least four complete runs in each five-run UI group, and at least four of the five
-native loads for each engine. There are no replacement runs. Any failure needs a written explanation and a second
-person's review before numbers are published. The detailed report keeps failures and any timings recorded before a
-failure. A short README table may show the completed-run summaries without repeating the diagnostics.
+The report gives the minimum, median, and maximum only when all five runs in a group finish. A group with four
+successful runs is marked inconclusive, while its raw runs and any timings recorded before a failure stay in the
+detailed report. The report still requires all 20 assigned runs to have been attempted, at least four complete runs
+in each five-run UI group, and at least four of the five native loads for each engine. There are no replacement runs.
+Any failure needs a written explanation and a second person's review before results are published. A short README
+table may show figures only for groups that finished five out of five runs.
 
 Five values are enough for a practical manual comparison but not for a useful p95, so the report does not calculate
 one. It is a release review, not a job in normal pull-request CI and not a scheduled task on a developer laptop.
@@ -110,10 +111,10 @@ npm run comparison:large:report -- \
 
 The report command first rejects results that do not match their scheduled product, engine, order, shape, timings, or
 memory samples. It writes the detailed result and then checks the minimum counts above. Before publishing numbers, a
-second person should explain every failed run and recalculate the four UI groups and two native-load groups from the
-raw results. Record the commit used to build the candidate beside its SHA-256; it must be the current protected
-`main` commit. The reviewer also checks the product, editor, Python, package, fixture, and tool hashes and confirms that
-product order alternates within each engine.
+second person should explain every failed run and recalculate each five-out-of-five UI or native-load group from the
+raw results. Four successful runs leave that group inconclusive. Record the commit used to build the candidate beside
+its SHA-256; it must be the current protected `main` commit. The reviewer also checks the product, editor, Python,
+package, fixture, and tool hashes and confirms that product order alternates within each engine.
 
 ## Fast regression tests
 

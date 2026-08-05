@@ -17,7 +17,7 @@ import pyarrow.parquet as pq
 
 FIXTURE_PROTOCOL = "openwrangler-large-parquet-fixture-v1"
 DEFAULT_ROWS, DEFAULT_COLUMNS, DEFAULT_ROW_GROUP_ROWS, DEFAULT_SEED = 10_000_000, 100, 100_000, 17_031
-MIN_AVAILABLE_MEMORY_BYTES = 40 * 1024**3
+MIN_AVAILABLE_MEMORY_BYTES = 96 * 1024**3
 MIN_GENERATION_FREE_DISK_BYTES = 25 * 1024**3
 MIN_STUDY_FREE_DISK_BYTES = 15 * 1024**3
 NUMERIC_MIN, NUMERIC_MAX = -900_000_000, 900_000_000
@@ -128,7 +128,7 @@ def assert_large_study_capacity(output: Path, *, generating: bool = False) -> di
         raise RuntimeError("Create a real output directory before generating the large fixture.")
     memory, disk = available_memory_bytes(), disk_usage(parent).free
     if memory < MIN_AVAILABLE_MEMORY_BYTES:
-        raise RuntimeError("The large comparison needs at least 40 GiB of available memory.")
+        raise RuntimeError("The large comparison needs at least 96 GiB of available memory.")
     required_disk = MIN_GENERATION_FREE_DISK_BYTES if generating else MIN_STUDY_FREE_DISK_BYTES
     if disk < required_disk:
         required_gib = required_disk // 1024**3

@@ -13,6 +13,7 @@ import {
   DATA_WRANGLER_VERSION,
   LARGE_COLUMNS,
   LARGE_FIXTURE_PROTOCOL,
+  LARGE_MIN_AVAILABLE_MEMORY_BYTES,
   LARGE_ROWS,
   LARGE_TIMEOUTS_MS,
   SMOKE_REPETITIONS,
@@ -70,7 +71,7 @@ test("large runs accept stable VM states but still require AC on battery hosts",
     powerSource: "not-applicable",
     cpuGovernor: "not-exposed"
   };
-  const capacity = { availableMemoryBytes: 48 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 };
+  const capacity = { availableMemoryBytes: 104 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 };
   assert.doesNotThrow(() => assertLargeRunEnvironment({ machine, capacity }, machine));
 
   const acMachine = { ...machine, powerSource: "ac" };
@@ -83,9 +84,10 @@ test("large runs accept stable VM states but still require AC on battery hosts",
   );
   assert.throws(
     () =>
-      assertLargeRunEnvironment({ machine, capacity: { ...capacity, availableMemoryBytes: 39 * 1024 ** 3 } }, machine),
+      assertLargeRunEnvironment({ machine, capacity: { ...capacity, availableMemoryBytes: 64 * 1024 ** 3 } }, machine),
     /memory or disk space/u
   );
+  assert.equal(LARGE_MIN_AVAILABLE_MEMORY_BYTES, 96 * 1024 ** 3);
   assert.throws(
     () => assertLargeRunEnvironment({ machine, capacity: { ...capacity, freeDiskBytes: 14 * 1024 ** 3 } }, machine),
     /memory or disk space/u
@@ -309,7 +311,7 @@ test("stale temporary session roots are removed without touching unrelated entri
   }
 });
 
-test("large schedule covers every group in its four-run pilot and summarizes complete journeys", () => {
+test("large schedule covers its pilot and marks a four-run group inconclusive", () => {
   const manifest = largeManifestFixture();
   assert.equal(manifest.schedule.length, 20);
   assert.deepEqual(
@@ -341,13 +343,19 @@ test("large schedule covers every group in its four-run pilot and summarizes com
   });
   const summary = report.summaries.find(({ engine, product }) => engine === "pandas" && product === "open-wrangler");
   assert.deepEqual(
-    [summary.completed, summary.successful, summary.metrics.inlinePreviewMs.count, summary.metrics.allProfilesMs.count],
-    [5, 4, 4, 4]
+    [summary.completed, summary.successful, summary.headlineStatus, summary.metrics],
+    [5, 4, "inconclusive", null]
   );
   const retained = report.trials.find(({ trialId }) => trialId === partialTrial.trialId)?.samples[0];
   assert.deepEqual([retained.status, retained.metrics.inlinePreviewMs], ["timeout", 10]);
-  assert.equal(summary.metrics.runCellToWorkbenchMs.median, 31);
-  assert.equal(Object.hasOwn(summary.metrics.inlinePreviewMs, "p95"), false);
+  const completeSummary = report.summaries.find(
+    ({ engine, product }) => engine === "polars" && product === "open-wrangler"
+  );
+  assert.deepEqual(
+    [completeSummary.headlineStatus, completeSummary.metrics.runCellToWorkbenchMs.median],
+    ["complete", 31]
+  );
+  assert.equal(Object.hasOwn(completeSummary.metrics.inlinePreviewMs, "p95"), false);
   assert.doesNotThrow(() => assertCompleteLargeReport(report));
 });
 
@@ -411,7 +419,7 @@ test("large study records 20 fixed attempts, five native loads per engine, and r
       checks += 1;
       return {
         machine: manifest.provenance.machine,
-        capacity: { availableMemoryBytes: 48 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 }
+        capacity: { availableMemoryBytes: 104 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 }
       };
     },
     prepareTrial: ({ entry, trialRoot }) => ({
