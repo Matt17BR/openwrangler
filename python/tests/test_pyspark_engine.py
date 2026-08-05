@@ -1386,7 +1386,8 @@ def test_projected_progressive_paging_filters_sorts_and_profiles_are_native_and_
         assert not has_more
         assert [(item["value"], item["count"]) for item in values] == [("ALPHA", 1), ("alpha", 1)]
         assert all("selectionValue" in item for item in values)
-        assert collected_projections.count(("count", "__ow_value")) >= 2
+        assert collected_projections.count(("count", "__ow_value")) == 1
+        assert collected_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 1
         assert all("__ow_group_key" not in projection for projection in collected_projections)
     finally:
         engine.close()
@@ -1537,6 +1538,8 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
     frame = build_mixed_profile_frame(spark_session, rows=96, partitions=4)
     engine, indexed = _open_engine(frame, "mixed-profile")
     dataframe_type = type(indexed)
+    original_collect = dataframe_type.collect
+    collected_projections: list[tuple[str, ...]] = []
 
     def forbidden(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("The shared PySpark profile fixture must never use a dataframe conversion path.")
@@ -1544,6 +1547,12 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
     for method_name in ("toPandas", "toArrow", "mapInPandas", "mapInArrow"):
         if hasattr(dataframe_type, method_name):
             monkeypatch.setattr(dataframe_type, method_name, forbidden)
+
+    def observed_collect(value: Any) -> Any:
+        collected_projections.append(tuple(value.columns))
+        return original_collect(value)
+
+    monkeypatch.setattr(dataframe_type, "collect", observed_collect)
 
     try:
         schema = engine.schema(indexed)
@@ -1570,6 +1579,9 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
         assert summaries[8]["rawType"] == "map<string,string>"
         assert summaries[9]["rawType"] == "struct<region:string,priority:int>"
         assert all(summaries[position]["topValues"] for position in (6, 7, 8, 9))
+        guarded_top_value_projection = ("count", "__ow_value", "__ow_profile_total_bytes")
+        assert collected_projections.count(guarded_top_value_projection) == len(projection) + 1
+        assert ("__ow_profile_value_bytes",) not in collected_projections
 
         ordered = engine.apply_filter_model(
             indexed,
@@ -1920,7 +1932,7 @@ def test_large_variable_width_page_values_use_one_guarded_terminal_collection(
     assert spark_session.range(1).count() == 1
 
 
-def test_large_profile_values_fail_before_terminal_collection(
+def test_large_profile_values_fail_without_transporting_terminal_values(
     spark_session: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1938,13 +1950,16 @@ def test_large_profile_values_fail_before_terminal_collection(
     dataframe_type = type(indexed)
     original_collect = dataframe_type.collect
     collected_projections: list[tuple[str, ...]] = []
+    transported_profile_values: list[Any] = []
 
     def guarded_collect(value: Any) -> Any:
         projection = tuple(value.columns)
         collected_projections.append(projection)
-        if "__ow_value" in projection:
-            raise AssertionError("Oversized profile values must not cross into the notebook process.")
-        return original_collect(value)
+        rows = original_collect(value)
+        if "__ow_profile_total_bytes" in projection:
+            value_index = projection.index("__ow_value")
+            transported_profile_values.extend(row[value_index] for row in rows)
+        return rows
 
     try:
         with monkeypatch.context() as profile_patch:
@@ -1957,8 +1972,9 @@ def test_large_profile_values_fail_before_terminal_collection(
                     engine.summaries(indexed, [(position, f"{column_name}-id")])
                 with pytest.raises(EngineError, match=r"at most 32 UTF-8 bytes"):
                     engine.column_values(indexed, column_name, limit=10)
-        assert collected_projections.count(("__ow_profile_value_bytes",)) == 10
-        assert all("__ow_value" not in projection for projection in collected_projections)
+        assert collected_projections.count(("__ow_profile_value_bytes",)) == 5
+        assert collected_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 5
+        assert transported_profile_values == [None] * 5
         assert all("__ow_group_key" not in projection for projection in collected_projections)
     finally:
         engine.close()

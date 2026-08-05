@@ -570,10 +570,11 @@ class PySparkEngine(DataFrameEngine):
                 .limit(10)
                 .select("count", "__ow_value")
             )
-            consumed_transport_bytes = self._profile_transport_size(
+            top_rows, consumed_transport_bytes = self._guarded_profile_rows(
                 functions,
                 top_frame,
                 functions.col("__ow_value"),
+                remaining_transport_bytes,
             )
             if consumed_transport_bytes > remaining_transport_bytes:
                 encountered = (
@@ -585,7 +586,6 @@ class PySparkEngine(DataFrameEngine):
                     f"{encountered:,}. Profile fewer columns or shorten large values."
                 )
             remaining_transport_bytes -= consumed_transport_bytes
-            top_rows = top_frame.collect()
             top_values = [
                 {
                     "value": normalize_cell(_spark_python_value(row["__ow_value"]))["display"],
@@ -914,6 +914,41 @@ class PySparkEngine(DataFrameEngine):
         )
         result = frame.agg(functions.sum(byte_count).alias("__ow_profile_value_bytes")).collect()[0]
         return int(result["__ow_profile_value_bytes"] or 0)
+
+    @staticmethod
+    def _guarded_profile_rows(
+        functions: Any,
+        frame: Any,
+        expression: Any,
+        byte_limit: int,
+    ) -> tuple[list[Any], int]:
+        """Collect bounded profile rows without evaluating their plan twice."""
+
+        Window = import_module("pyspark.sql.window").Window
+        byte_count = functions.coalesce(
+            functions.length(functions.encode(expression.cast("string"), "UTF-8")).cast("long"),
+            functions.lit(0).cast("long"),
+        )
+        measured = frame.withColumn("__ow_profile_value_bytes", byte_count)
+        whole_result = Window.partitionBy(functions.lit(1)).rowsBetween(
+            Window.unboundedPreceding,
+            Window.unboundedFollowing,
+        )
+        measured = measured.withColumn(
+            "__ow_profile_total_bytes",
+            functions.sum(functions.col("__ow_profile_value_bytes")).over(whole_result),
+        )
+        guarded = measured.select(
+            "count",
+            functions.when(
+                functions.col("__ow_profile_total_bytes") <= functions.lit(int(byte_limit)),
+                expression,
+            ).alias("__ow_value"),
+            "__ow_profile_total_bytes",
+        ).orderBy(functions.desc("count"), functions.asc(functions.col("__ow_value").cast("string")))
+        rows = guarded.collect()
+        total_bytes = int(rows[0]["__ow_profile_total_bytes"] or 0) if rows else 0
+        return rows, total_bytes
 
     @staticmethod
     def _page_transport_byte_expression(functions: Any, expressions: list[Any]) -> Any | None:
