@@ -98,9 +98,20 @@ built independently instead of describing it as a “clean-room implementation.�
 or `fail closed` only when they name a real method or invariant. Commit subjects and PR titles should name the
 observable result rather than “harden,” “improve,” or “stabilize” without saying what changed.
 
+Prefer short sentences, concrete claims, and a clear explanation of why a change matters to users. Avoid stacked
+buzzwords, slogan-like parallel headings, internal prompt context, and long defensive disclaimers. Legal and clean-room
+constraints belong in internal guidance; they are not marketing copy.
+
 Every release adds `docs/release-notes/<version>.md` in the release change. Publication reads that exact blob from the
 tagged commit and must not substitute GitHub-generated notes. Automation proves which text will be published; it does
 not prove that a person reviewed the prose. Give public copy an editorial read before approving the release change.
+
+## Disposable checkouts
+
+Use one temporary clone or worktree outside this repository for each bounded task. Record its absolute path in the
+active task notes, remove it immediately after the branch is pushed or the task is aborted, and verify that it is gone
+before handoff. Never add checkout-manager or worktree-lifecycle code to the extension repository. Never remove an
+unknown or user-owned directory; leave it alone when ownership is uncertain.
 
 ## Required checks
 
