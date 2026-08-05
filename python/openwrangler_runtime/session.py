@@ -324,6 +324,10 @@ class SessionManager:
             yield
             return
         session = self._session(session_id)
+        # A notebook may stop its old Classic SparkSession before rebinding the
+        # variable. Check that binding before the adapter touches the old Spark
+        # context to establish request ownership.
+        self._assert_live_source_unchanged(session)
         try:
             with session.engine.request_scope(request_id):
                 yield
