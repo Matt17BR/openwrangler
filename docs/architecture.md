@@ -135,6 +135,8 @@ Scope eviction has no awaited boundary. It revalidates the exact slot and every 
 
 `python/benchmarks/runtime_performance.py` measures deterministic synthetic CSV/Parquet work at two Python boundaries: direct `SessionManager` calls and canonical protocol-v2 round trips through a standalone runtime process. `--backend` labels native Polars, DuckDB, or Pandas runs; the default and strict release thresholds remain Polars-only. Package/runtime/machine provenance and best-effort process RSS evidence make results reproducible, but they exclude the extension host, VS Code/Cursor, webview layout, and paint. They must not be reported as editor first-paint timings; packaged-editor interaction and visual acceptance are separate evidence.
 
+PySpark summaries check and collect their ten displayed values in one Spark job. When their combined size exceeds the remaining allowance, Spark sends the lengths but substitutes null for the values. Oversized data stays out of Python, and an ordinary profile does not run the same grouped query twice.
+
 ## UI composition
 
 The operation builder is an application-modal dialog: while it is open, the surrounding workbench subtree is inert and hidden from assistive technology, Tab and Shift+Tab wrap within the dialog, and closing restores focus to the exact opener when possible or to a stable operation/grid fallback. This applies equally to toolbar, native-view, command, and latest-step edit entry points. Every focus restoration that survives a render, animation frame, page request, or virtualized-scroll commit proves that the webview document still owns host focus immediately before focusing; a workbench QuickInput or another editor surface therefore cannot be displaced by stale iframe state.
