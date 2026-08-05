@@ -52,7 +52,6 @@ const POLL_MS = 25;
 const COMPARISON_KERNEL_LABEL = "Python 3.12 (Comparison)";
 const COMPARISON_BOOTSTRAP_VARIABLE = "aaa_comparison_bootstrap";
 const DATA_WRANGLER_VIEW_DATA_ACTION = "View data";
-const FORMATTER_REGISTRATION_SETTLE_MS = 5_000;
 const KERNEL_ACCESS_DETAIL = "This allows the extension to execute code against Jupyter Kernels.";
 const PRODUCT_EXTENSION_IDS = {
   "open-wrangler": "Matt17BR.openwrangler",
@@ -2148,11 +2147,6 @@ async function prepareComparisonSession(
     throw setupError;
   }
   if (!accessOutcome.ok) throw accessOutcome.error;
-  // The permission dialog closes before either extension's hidden formatter
-  // registration has necessarily finished. Keep this untimed and equal for
-  // both products so the measured cell cannot race first-use setup.
-  await page.waitForTimeout(FORMATTER_REGISTRATION_SETTLE_MS);
-  recordProgress(`comparison:formatter-settled:${request.product}`);
   selectNotebookCell(captured, captured.cell);
 }
 
