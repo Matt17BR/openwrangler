@@ -2230,15 +2230,6 @@ export function App() {
                 onSelect={requestColumnReveal}
               />
               {metadata.backend === "pyspark" && (
-                <span
-                  className="sessionBadge experimentalBadge"
-                  data-session-badge="experimental"
-                  title="PySpark support is experimental."
-                >
-                  Experimental
-                </span>
-              )}
-              {metadata.backend === "pyspark" && (
                 <details className="orderingHelp">
                   <summary
                     aria-describedby="pyspark-ordering-help"
@@ -2250,8 +2241,8 @@ export function App() {
                   </summary>
                   <span id="pyspark-ordering-help" className="orderingHelpText" role="note">
                     {filterModel.sort.length === 0
-                      ? "Spark does not guarantee source order. Add a sort to define the order you need."
-                      : "Rows tied across every sort key may move when Spark reruns this dataframe. Add another sort key to break the tie."}
+                      ? "Spark does not guarantee source order. Add a sort with a unique final key when you need repeatable rows."
+                      : "Rows tied across every sort key may move when Spark reruns this dataframe. Add a unique final sort key for repeatable rows."}
                   </span>
                 </details>
               )}

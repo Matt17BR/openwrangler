@@ -2125,18 +2125,20 @@ describe("App file import options", () => {
       summaries: []
     });
 
-    expect(await screen.findByText("Experimental")).toHaveAttribute("title", "PySpark support is experimental.");
+    expect(await screen.findByText("PySpark")).toBeVisible();
+    expect(screen.queryByText("Experimental")).not.toBeInTheDocument();
     const orderingBadge = screen.getByText("Source order").closest("summary");
     expect(orderingBadge).toHaveAttribute("data-session-badge", "ordering");
     expect(orderingBadge).toHaveAttribute("aria-describedby", "pyspark-ordering-help");
-    const help = screen.getByText("Spark does not guarantee source order. Add a sort to define the order you need.");
+    const help = screen.getByText(
+      "Spark does not guarantee source order. Add a sort with a unique final key when you need repeatable rows."
+    );
     expect(help).not.toBeVisible();
     fireEvent.click(orderingBadge!);
     expect(help).toBeVisible();
     orderingBadge?.focus();
     expect(orderingBadge).toHaveFocus();
     expect(screen.getByText("Viewing only")).toBeVisible();
-    expect(screen.getByText("PySpark")).toBeVisible();
     expect(screen.queryByText(/^viewing$/iu)).not.toBeInTheDocument();
   });
 
@@ -2163,7 +2165,7 @@ describe("App file import options", () => {
     const orderingBadge = screen.getByText("Sorted").closest("summary");
     expect(orderingBadge).toHaveAttribute("data-session-badge", "ordering");
     const help = screen.getByText(
-      "Rows tied across every sort key may move when Spark reruns this dataframe. Add another sort key to break the tie."
+      "Rows tied across every sort key may move when Spark reruns this dataframe. Add a unique final sort key for repeatable rows."
     );
     expect(help).not.toBeVisible();
     fireEvent.click(orderingBadge!);

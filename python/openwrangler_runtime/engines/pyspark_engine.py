@@ -169,7 +169,7 @@ class PySparkEngine(DataFrameEngine):
 
     def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         del path, options
-        raise EngineError("The experimental PySpark backend supports live notebook variables only.")
+        raise EngineError("PySpark supports live notebook variables only.")
 
     def validate_internal_row_id_namespace(self, frame: Any, allowed_internal: Any | None = None) -> None:
         matches = [label for label in self._raw_column_labels(frame) if is_internal_row_id_label(label)]
@@ -776,15 +776,15 @@ class PySparkEngine(DataFrameEngine):
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
         del frame, step
-        raise EngineError("The experimental PySpark backend is read-only.")
+        raise EngineError("PySpark notebook sessions are viewing-only.")
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         del steps
-        raise EngineError("The experimental PySpark backend does not generate cleaning code.")
+        raise EngineError("PySpark notebook sessions do not generate cleaning code.")
 
     def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
         del frame, path, format_name
-        raise EngineError("The experimental PySpark backend does not export data.")
+        raise EngineError("PySpark notebook sessions do not export data.")
 
     def close(self) -> None:
         if self._closed:
@@ -997,7 +997,7 @@ class PySparkEngine(DataFrameEngine):
         raw_version = pyspark_module.__dict__.get("__version__")
         version = raw_version if isinstance(raw_version, str) else ""
         if not _is_supported_pyspark_version(version):
-            raise EngineError(f"The experimental PySpark backend requires PySpark 4.2.x, not {version or 'unknown'}.")
+            raise EngineError(f"Open Wrangler requires PySpark 4.2.x for notebook viewing, not {version or 'unknown'}.")
         if not callable(getattr(frame, "withColumn", None)):
             raise EngineError(
                 f"PySpark value type {type(frame).__name__} does not support Spark's withColumn() operation. "
@@ -1018,13 +1018,13 @@ class PySparkEngine(DataFrameEngine):
                 for column, raw_type, first, second in ambiguous_nested
             )
             raise EngineError(
-                "The experimental PySpark backend cannot open nested struct fields that are not unique "
+                "Open Wrangler cannot open PySpark nested struct fields that are not unique "
                 f"without relying on case: {details}. Rename the conflicting nested fields in Spark first."
             )
         if unsupported:
             details = ", ".join(f"{name!r} ({raw_type})" for name, raw_type in unsupported)
             raise EngineError(
-                "The experimental PySpark backend cannot open this dataframe because required viewing profiles "
+                "Open Wrangler cannot open this PySpark dataframe because required viewing profiles "
                 f"are unavailable for {details}. Convert these columns in Spark to strings or another orderable "
                 "Spark SQL type before opening them in Open Wrangler."
             )

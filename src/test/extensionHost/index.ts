@@ -437,9 +437,10 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
-  assert.match(extension.packageJSON.description, /Open files and notebook variables/u);
-  assert.match(extension.packageJSON.description, /Pandas and Polars are native/u);
-  assert.match(extension.packageJSON.description, /DuckDB and PySpark are experimental/u);
+  assert.match(extension.packageJSON.description, /Explore files and notebook data in VS Code and Cursor/u);
+  assert.match(extension.packageJSON.description, /Clean and export with Pandas or Polars/u);
+  assert.match(extension.packageJSON.description, /DuckDB viewing is experimental/u);
+  assert.match(extension.packageJSON.description, /local PySpark 4\.2 Classic\/Connect batch viewing is supported/u);
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
@@ -10397,10 +10398,9 @@ async function captureReleasedJupyterPySparkLive(
     const backendBadge = app.locator('[data-session-badge="backend"]');
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "PYSPARK");
-    const experimentalBadge = app.locator('[data-session-badge="experimental"]');
     const orderingBadge = app.locator('[data-session-badge="ordering"]');
     const modeBadge = app.locator('[data-session-badge="mode"]');
-    assert.equal((await experimentalBadge.innerText()).trim(), "EXPERIMENTAL");
+    assert.equal(await app.locator('[data-session-badge="experimental"]').count(), 0);
     assert.equal((await orderingBadge.innerText()).trim(), "SOURCE ORDER");
     assert.equal((await modeBadge.innerText()).trim(), "VIEWING ONLY");
     await orderingBadge.focus();
@@ -10409,7 +10409,7 @@ async function captureReleasedJupyterPySparkLive(
     await orderingHelp.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal(
       (await orderingHelp.innerText()).trim(),
-      "Spark does not guarantee source order. Add a sort to define the order you need."
+      "Spark does not guarantee source order. Add a sort with a unique final key when you need repeatable rows."
     );
     await orderingBadge.press("Enter");
     await orderingHelp.waitFor({ state: "hidden", timeout: 10_000 });
@@ -10417,8 +10417,8 @@ async function captureReleasedJupyterPySparkLive(
     const allBadges = app.locator("[data-session-badge]");
     assert.equal(
       await allBadges.count(),
-      4,
-      "The PySpark notebook scene must expose maturity, ordering, mode, and backend badges."
+      3,
+      "The PySpark notebook scene must expose ordering, mode, and backend badges."
     );
     const badgeBoxes = await Promise.all((await allBadges.all()).map((badge) => badge.boundingBox()));
     assert.ok(toolbarBox, "The PySpark media scene requires a measurable workbench toolbar.");

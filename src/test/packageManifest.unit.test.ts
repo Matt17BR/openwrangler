@@ -65,17 +65,17 @@ interface PackageManifest {
 const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8")) as PackageManifest;
 
 describe("Marketplace and walkthrough copy", () => {
-  it("states the native engines and experimental notebook boundaries directly", () => {
+  it("states the native engines and notebook support boundaries directly", () => {
     expect(manifest.description).toBe(
-      "Open files and notebook variables, then clean and export data in VS Code and Cursor. " +
-        "Pandas and Polars are native. " +
-        "DuckDB and PySpark are experimental; their notebook sessions are viewing-only."
+      "Explore files and notebook data in VS Code and Cursor. " +
+        "Clean and export with Pandas or Polars. " +
+        "DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch viewing is supported."
     );
 
     const walkthrough = manifest.contributes?.walkthroughs?.find((candidate) => candidate.id === "gettingStarted");
     expect(walkthrough?.description).toContain("Filters and cleaning steps do not overwrite the source.");
     expect(walkthrough?.description).toContain(
-      "DuckDB and PySpark are experimental; their notebook sessions are viewing-only."
+      "DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only."
     );
     expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
       "Pandas, Polars, DuckDB, or PySpark"

@@ -4,7 +4,8 @@ Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15.
 
 Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Open Wrangler 1.0 requires every in-scope row to be **Done**.
 
-The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview, and PySpark 4.2 is a separate experimental live-notebook viewing preview. Their evidence does not retroactively broaden a two-engine **Done** row or replace either parity engine's release gates.
+The parity table covers Pandas and Polars. DuckDB file support is experimental. Local PySpark 4.2 Classic/Connect
+notebook viewing has its own acceptance table below; neither changes what counts as Done for Pandas or Polars.
 
 VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google says [Antigravity is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open Wrangler 1.2.0 passed one bounded Antigravity Linux x64 install, activation, file-open, source-immutability, and cleanup smoke through Open VSX; the exact non-release-blocking record and its limitations are in [testing](testing.md#experimental-antigravity-smoke). Browser-hosted `vscode.dev` remains outside the local-runtime scope.
 
@@ -115,23 +116,52 @@ The real packaged-Jupyter allow path records the following behavior:
   mapped kernel generations; the isolated denial phase retries a DuckDB-typed open after persisted permission
   denial.
 
-## PySpark live-notebook viewing preview matrix
+## PySpark live-notebook viewer
 
-PySpark stays distributed and read-only in this preview. The user's Jupyter kernel and Spark session own the cluster; Open Wrangler neither installs/starts Spark nor stops that session. Pinned and auto-detected PySpark opens run a bounded type-and-version check in the bridge's exact selected generation immediately before runtime open dispatch and reject missing or unsupported PySpark before session publication. Streaming frames, conflicting column names, reserved names, incomplete DataFrame implementations, and unsupported profile types now report the offending detail and a Spark-side fix. The packaged Jupyter check opens a real Variant frame from the Variables view and confirms that the error leaves no Open Wrangler session behind. Its weekly and manual workflow runs the same packaged Jupyter phase in both VS Code and Cursor. Opening publishes the schema and one bounded grid block without counting, globally indexing, or caching the complete dataframe. The UI reports that the total is not counted until a short terminal block establishes it exactly. Blocks remain contiguous after that promotion: a new forward block refetches its retained predecessor boundary, a recently visited backward block must retain its own or predecessor boundary, and recovery walks from zero for at most 16 page requests to reconstruct a nonzero viewport, then resets only an over-cap viewport while preserving its confirmed filter/sort and other presentation state. The same rule applies when a replacement's first page already knows the exact total. Scrollbar jumps become adjacent demand. A changed checked boundary fails with reopen guidance, but unchanged boundary checks do not prove that every interior row remained stable. The toolbar labels unsorted views **Source order** and explicitly sorted views **Sorted**. Its accessible help explains that source order may change and that rows tied across every requested sort key may move when Spark reruns the dataframe. Explicit user sorts still append the private row identity only as a tie-breaker for the current traversal; this is not a repeatability guarantee across reruns. Silent kernel switches and observed restarts invalidate and reprobe the replacement generation. A temporary Connect outage allows the failed page to be retried. If the server has discarded the session or dataframe, ordinary retry is disabled until the user reruns the defining cell and chooses **Reconnect**. That action accepts only the same variable, notebook object, kernel, and schema; a failed candidate leaves the confirmed view untouched. Focused runtime and host tests cover the bounded first block, terminal total promotion without random-offset promotion, traversal-change rejection, contiguous recovery, and a same-kernel Classic or Connect stop/rebind. The checked-in packaged Classic phase also replaces the user Spark session with a renamed-column schema, requires recoverable reopen guidance and unchanged public state, proves the rejected candidate alone is cleaned up while the replacement session remains usable, and then requires the original schema to recover after a full kernel restart. Exact-head execution of that packaged phase remains a release gate. **Partial** combines the unconditional PySpark 4.2 and Java 17 engine contract with prior real packaged VS Code and Cursor released-Jupyter runs for local Classic and Connect. A Classic 1,000,000-row, 32-partition regression proves the first block does not schedule every source partition or create a persistent RDD; focused Classic and Connect fixtures prove native projection, progressive paging, filtering, multi-key sorting, summaries, and cleanup. Every live-notebook `executeCode` call deliberately uses a fresh never-cancel token: PySpark's default SIGINT handler can call `SparkContext.cancelAllJobs()` and affect unrelated user work, even when Open Wrangler is opening or paging another dataframe engine. Closing the view detaches the UI; a late successful candidate is closed once on the exact originating kernel. This is correctness evidence, not a claim about external clusters, running-request cancellation, deterministic unordered Spark paging, large-partition performance, or a broader cross-platform support matrix.
+Open Wrangler supports viewing local PySpark 4.2.x Classic and Connect batch DataFrames from live Jupyter notebooks
+in VS Code and Cursor. PySpark support is notebook-only and view-only. Open Wrangler uses the notebook's existing
+Spark session and does not install or configure Spark. Streaming DataFrames, files, cleaning, exports, saved output,
+remote or authenticated clusters, and Spark provisioning are not supported.
 
-| Surface                                        | Availability          | Status  | Recorded evidence                                            | Remaining acceptance gate                                   |
-| ---------------------------------------------- | --------------------- | ------- | ------------------------------------------------------------ | ----------------------------------------------------------- |
-| Classic PySpark DataFrame detection            | Live notebook only    | Partial | Exact bridge-generation 4.2 probe plus packaged launch       | External-cluster and broader cross-platform evidence        |
-| Local Spark Connect DataFrame viewing          | Live notebook only    | Partial | Local Connect plus packaged VS Code/Cursor launch            | External or authenticated Connect server execution          |
-| Progressive projected grid pages               | Read-only             | Partial | Bounded first block, lookahead, boundary check, exact end    | Repeated performance and external-cluster evidence          |
-| Basic/advanced filters and multi-column sorts  | Read-only             | Partial | Native expressions plus packaged filtered/sorted pages       | Full literal edge matrix and external-cluster evidence      |
-| Summaries, statistics, and distinct values     | Read-only             | Partial | Native aggregates and canonical nested-map profile keys      | Repeated resource and performance evidence                  |
-| Session recovery and non-interrupting disposal | Logical session view  | Partial | Kernel restart and explicit same-kernel reconnect tests pass | Exact-head packaged reconnect and external-cluster recovery |
-| Cleaning operations and history                | No                    | Planned | Capabilities reject editing                                  | Distributed transformation IR and native code generation    |
-| Script/notebook/data export                    | No                    | Planned | Capabilities reject export                                   | Source-safe Spark-native export design                      |
-| Saved-output MIME formatter                    | No                    | Planned | `notebookOutput` is not advertised                           | Bounded distributed snapshot policy                         |
-| File sessions and automatic backend selection  | No                    | Planned | `file` is not advertised                                     | Explicit Spark source/session configuration design          |
-| VS Code/Cursor packaged and release acceptance | Both editors accepted | Partial | Released Jupyter in both editors, restart, cleanup green     | Broader OS matrix and external-cluster execution            |
+Every open checks the value and PySpark version in the exact selected kernel before creating a session. The first
+grid block loads without counting, globally indexing, or caching the whole dataframe. Pages advance sequentially,
+and a short final page establishes the exact total. A changed page boundary asks the user to reopen the variable.
+Spark does not guarantee source order, and rows tied across every sort key may move on rerun. Users who need
+repeatable rows must end the sort list with a unique key.
+
+Kernel restarts and replacement Classic or Connect DataFrames with the same schema restore the current view. A
+temporary Connect outage leaves the grid available for retry. If the server loses the session or DataFrame, rerun
+the defining cell and choose **Reconnect**. Work that has not started is dropped when the view changes; late results
+from running work are ignored rather than interrupting the kernel, because a PySpark interrupt can cancel unrelated
+notebook jobs.
+
+Focused Classic and Connect tests cover projection, progressive paging, filters, ordered multi-column sorts,
+profiles, restart/rebind, reconnect, and cleanup without conversion through Pandas or Arrow. A 1,000,000-row,
+32-partition Classic regression proves the first page neither schedules every source partition nor creates a
+persistent RDD. The released-Jupyter package phase has also passed local Classic and Connect in VS Code and Cursor.
+Each release still reruns the package phase against the exact candidate VSIX.
+
+Run [30975727813](https://github.com/Matt17BR/openwrangler/actions/runs/30975727813) tested commit
+`2f2c3545ef049a2ddf23e338451bef0e91834316`. For its three
+warm 1,000,000-row, 10-column, 32-partition samples, the median selected-column profile took 3.33 seconds in Classic
+and 2.97 seconds in Connect; all-column profiling took 34.68 and 33.29 seconds. The all-column results were 8.1% and
+13.0% lower than the preceding exact-main baseline. The selected-column differences were small enough to treat as
+run-to-run variation. These measurements are used to spot regressions; they are not a pass/fail speed target.
+
+| Surface                                        | v1.2 support       | Status       | Recorded evidence                                     | Boundary                                     |
+| ---------------------------------------------- | ------------------ | ------------ | ----------------------------------------------------- | -------------------------------------------- |
+| Local Classic DataFrame viewing                | Live notebook only | Done         | Version probe plus packaged VS Code/Cursor launch     | PySpark 4.2.x                                |
+| Local Spark Connect DataFrame viewing          | Live notebook only | Done         | Packaged VS Code/Cursor launch and page queries       | Local Connect only                           |
+| Progressive projected grid pages               | Viewing only       | Done         | Bounded blocks, lookahead, boundary checks, exact end | Sequential traversal                         |
+| Basic/advanced filters and multi-column sorts  | Viewing only       | Done         | Native expressions and packaged filtered/sorted pages | Unique final key needed for repeatable ties  |
+| Summaries, statistics, and distinct values     | Viewing only       | Done         | Native fixed-size aggregates and conversion guards    | Header profiles start off                    |
+| Session recovery and non-interrupting disposal | Viewing only       | Done         | Classic/Connect rebind, restart, reconnect, cleanup   | Running Spark jobs are not interrupted       |
+| VS Code/Cursor packaged acceptance             | Both editors       | Done         | Released Jupyter, restart, and cleanup phases         | Exact candidate rerun remains a release gate |
+| Cleaning operations and history                | No                 | Out of scope | Capabilities reject editing                           | No distributed transformation plan in v1.2   |
+| Script/notebook/data export                    | No                 | Out of scope | Capabilities reject export                            | No Spark export contract in v1.2             |
+| Saved-output MIME formatter                    | No                 | Out of scope | `notebookOutput` is not advertised                    | Live variables only                          |
+| File sessions and automatic backend selection  | No                 | Out of scope | `file` is not advertised                              | Notebook variables only                      |
+| External or authenticated clusters             | No                 | Out of scope | Local endpoints are the tested contract               | No authentication or provisioning in v1.2    |
 
 ## Recorded acceptance evidence
 
@@ -677,7 +707,7 @@ This advances the chosen selected-column direction in [issue #88](https://github
 Exact text-column Insights, 2026-07-30:
 
 - Protocol-v2 summaries may now carry an optional, backward-compatible `text` block for semantic string columns. Empty strings are counted exactly without trimming; nulls are excluded; and minimum, maximum, and mean lengths count Unicode code points rather than UTF-8 bytes or UTF-16 code units. An all-null text column reports zero empty strings without inventing length bounds.
-- Pandas and eager Polars compute the metrics within their native frames; lazy Polars, DuckDB, and experimental PySpark return only fixed-size native aggregate results. Pandas mixed-object and non-string categorical values measure the exact normalized text shown by grid cells, and conversion guards reject any detour through another dataframe engine. Saved notebook snapshots apply the same semantics to their bounded captured truth.
+- Pandas and eager Polars compute the metrics within their native frames; lazy Polars, DuckDB, and PySpark return only fixed-size native aggregate results. Pandas mixed-object and non-string categorical values measure the exact normalized text shown by grid cells, and conversion guards reject any detour through another dataframe engine. Saved notebook snapshots apply the same semantics to their bounded captured truth.
 - Selected-column Insights exposes **Empty**, **Min length**, **Max length**, and **Mean length** beside the existing null, distinct, and top-value evidence. It omits an irrelevant zero-valued NaN row for text but preserves a positive Pandas NaN count. The deterministic text fixture `[null, "", "A", "é", "e\u0301", "😀"]` produces null `1`, empty `1`, minimum `0`, maximum `2`, and mean `1`.
 - Contract, React, and all-engine regressions live in `src/test/protocolValidation.unit.test.ts`, `src/test/filterSummary.component.test.tsx`, and the four engine test modules. `scripts/capture-screenshots.mjs` and `scripts/test-webview-accessibility.mjs` exercise the real Pandas-produced metrics in an 800px selected-column drawer with keyboard focus restoration and axe coverage.
 
@@ -696,7 +726,7 @@ Grid status and profile vocabulary, 2026-07-31:
 
 - Row-block navigation now follows the scrolling table in a slim, non-sticky status bar. Transparent Previous and
   Next Codicon buttons retain their exact accessible names and native disabled behavior, while a separate polite,
-  atomic **Visible rows** status announces only `Rows 1\u2013200 of 100,000` or `No rows`; experimental PySpark
+  atomic **Visible rows** status announces only `Rows 1\u2013200 of 100,000` or `No rows`; PySpark
   instead says that the total appears after the last page until terminal promotion. Exact ranges use the same plain
   `Rows … of …` copy for every engine. The escape denotes the rendered U+2013 en dash.
 - The selected-column surface is now visibly **Column profiles** and exposes the encompassing accessible name
@@ -719,7 +749,7 @@ Lossless integer and decimal extrema, 2026-07-31:
 - Protocol-v2 numeric summaries may carry a backward-compatible, paired `exactMin` / `exactMax` typed-cell
   encoding for integer and decimal columns. Existing JSON-number fields remain available for older consumers and
   approximate mean, median, standard deviation, and histogram math.
-- Pandas, eager and lazy Polars, DuckDB, and experimental PySpark reuse their already-computed native aggregate
+- Pandas, eager and lazy Polars, DuckDB, and PySpark reuse their already-computed native aggregate
   extrema; saved notebook previews compare the bounded captured typed cells directly. Conversion-trap tests
   prohibit Polars, DuckDB, and PySpark from detouring through another dataframe engine.
 - Column headers and **Column profiles** prefer the lossless value while bounding the visible extrema so unusually
@@ -730,8 +760,8 @@ Lossless integer and decimal extrema, 2026-07-31:
   non-canonical encodings, unsafe integers transported as numbers, and reversed extrema.
 
 This strengthens the existing **Done** dataset-summary row and advances the column-profile polish tracked in
-[issue #88](https://github.com/Matt17BR/openwrangler/issues/88). It does not change the experimental status or
-supported surface of PySpark.
+[issue #88](https://github.com/Matt17BR/openwrangler/issues/88). It does not change the viewing-only PySpark
+surface defined above.
 
 Released-Jupyter argument provenance slice, 2026-07-26:
 
@@ -828,7 +858,7 @@ Complete-schema and native live-notebook UX slice, 2026-07-30:
   reuse all stayed native. Conversion traps made any Pandas, Polars, or Arrow route fail the phase.
 - At this 2026-07-30 checkpoint, the independent PySpark phase failed after its cleanup path and was deliberately
   excluded from the slice's evidence. That historical failure is superseded by the later never-cancel/detach
-  correction and green packaged PySpark evidence recorded in the current experimental-backend matrix above; it is
+  correction and green packaged PySpark evidence recorded in the current viewer matrix above; it is
   not a current release blocker.
 
 Primary cleaning-plan command row, 2026-07-31:
@@ -863,7 +893,7 @@ readiness.
 
 ## Explicitly deferred from 1.0
 
-Copilot operations, DuckDB Excel and `.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. DuckDB notebook relations remain intentionally limited to native viewing plus their portable inline preview; cleaning, generated-code insertion, and data export are unavailable. PySpark's tracked post-parity expansion in [issue #36](https://github.com/Matt17BR/openwrangler/issues/36) is limited to the experimental read-only live-notebook matrix above. Editing, exports, saved output, cancellation, external Spark Connect execution, and large-partition performance claims remain unavailable until their distributed gates are green. Packaged VS Code/Cursor and local kernel-recovery evidence is recorded above; broader OS, external-cluster, recovery, cancellation, and performance evidence remains required before broadening that claim. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.
+Copilot operations, DuckDB Excel and `.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. DuckDB notebook relations remain intentionally limited to native viewing plus their portable inline preview; cleaning, generated-code insertion, and data export are unavailable. PySpark's supported v1.2 surface is the local, viewing-only live-notebook matrix above. Editing, exports, saved output, running-request cancellation, external or authenticated Spark Connect execution, and provisioning are not supported. Packaged VS Code/Cursor and local kernel-recovery evidence is recorded above; any future expansion needs its own acceptance evidence rather than broadening the current claim by implication. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.
 
 R support belongs to Open Wrangler 2 and does not change the v1 matrix. Its runtime and release boundary is recorded in
 [`docs/decisions/0001-native-r-runtime.md`](decisions/0001-native-r-runtime.md).

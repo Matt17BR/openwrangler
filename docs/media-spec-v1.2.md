@@ -82,14 +82,14 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
   columns, and complete visible native Polars function.
 - `gallery/notebook-duckdb.png`: complete source; its 872 × 700 detail keeps complete native column boundaries and
   focuses the Viewing / DuckDB badges, active filter, and editable two-key sort order.
-- `gallery/notebook-pyspark.png`: complete source; its 820 × 610 detail focuses the Source order / Experimental /
-  Viewing only / PySpark badges, representative native rows, exact statistics, and distribution.
+- `gallery/notebook-pyspark.png`: complete source; its 820 × 610 detail focuses the Source order / Viewing only /
+  PySpark badges, representative native rows, exact statistics, and distribution.
 
 These four README derivatives are exact source-pixel crops, not resized workbenches. Each keeps the distinguishing
 engine behavior legible at half width and links to its complete accepted source scene.
 
-The raw PySpark variable-picker capture is acceptance evidence, not public product media, because its notebook
-setup cell is intentionally implementation-oriented. The native PySpark workbench is the truthful public scene.
+The setup cell is too implementation-focused for product documentation, so the public gallery uses the PySpark
+workbench screenshot instead.
 
 ### Results, rich types, and editors
 
@@ -124,8 +124,8 @@ setup cell is intentionally implementation-oriented. The native PySpark workbenc
 - Polars shows Editing and Polars badges, one draft, changed values, and executable Polars code.
 - DuckDB shows Viewing and DuckDB badges, native relation shape, filter, paging, profiles, and ordered sorts without
   conversion.
-- PySpark shows Source order, Experimental, Viewing only, and PySpark badges, exact profiles, accessible ordering
-  help, and no cleaning/export controls.
+- PySpark shows Source order, Viewing only, and PySpark badges, exact profiles, accessible ordering help, and no
+  cleaning/export controls.
 - Generated-code insertion is verified through the public `NotebookDocument`: one uniquely marked cell is added to
   the exact origin, surrounding cells remain unchanged, and that cell is visibly revealed before capture.
 - Private setup, restart-probe, and runtime-transfer cells are collapsed before public notebook screenshots.
