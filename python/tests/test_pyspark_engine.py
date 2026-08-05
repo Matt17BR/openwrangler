@@ -84,12 +84,6 @@ def _open_engine(frame: Any, token: str = "test") -> tuple[PySparkEngine, Any]:
     return engine, engine.ensure_row_ids(frame, token)
 
 
-def _current_task_job_group(_value: int) -> str | None:
-    task_context = import_module("pyspark").TaskContext.get()
-    assert task_context is not None
-    return task_context.getLocalProperty("spark.jobGroup.id")
-
-
 def _empty_view() -> dict[str, Any]:
     return {"logic": "and", "filters": [], "sort": []}
 
@@ -443,6 +437,16 @@ def test_real_local_request_scope_isolated_by_classic_job_group_or_connect_opera
             "spark.scheduler.pool": "user-pool",
         }
         try:
+
+            def current_task_job_group(_value: int) -> str | None:
+                # Spark workers cannot import pytest's top-level test module.
+                # Keep the probe local so cloudpickle sends its small body.
+                from pyspark import TaskContext
+
+                task_context = TaskContext.get()
+                assert task_context is not None
+                return task_context.getLocalProperty("spark.jobGroup.id")
+
             for key, value in caller.items():
                 spark_context.setLocalProperty(key, value)
             observed_groups: list[str | None] = []
@@ -451,7 +455,7 @@ def test_real_local_request_scope_isolated_by_classic_job_group_or_connect_opera
                 "5ccb22a4-5f31-4ee0-95eb-4bf165a13ee9",
             ):
                 with engine.request_scope(request_id):
-                    observed_groups.extend(spark_context.parallelize([0], 1).map(_current_task_job_group).collect())
+                    observed_groups.extend(spark_context.parallelize([0], 1).map(current_task_job_group).collect())
                     assert spark_context.getLocalProperty("spark.job.tags") == "user-tag"
                     assert spark_context.getLocalProperty("spark.scheduler.pool") == "user-pool"
                 assert {key: spark_context.getLocalProperty(key) for key in keys} == caller
