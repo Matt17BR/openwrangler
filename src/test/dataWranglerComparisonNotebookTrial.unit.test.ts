@@ -323,9 +323,9 @@ describe("public readiness oracles", () => {
       { column: "c66", text: "c66 String Missing 2% Distinct 7 enterprise consumer" },
       { column: "c74", text: "c74 String Missing 2% Distinct 98% popular-c74 103000" },
       { column: "c80", text: "c80 Datetime Missing 2% Distinct 98% Min 2000-01-01 Max 2099-12-31" },
-      { column: "c89", text: "c89 Duration Missing 2% Distinct 98% Min -1 day Max 365 days" },
-      { column: "c90", text: "c90 Duration Missing 2% Distinct 98% Min -1 days +00:00:00 Max 365 days 00:00:00" },
-      { column: "c91", text: "c91 Duration Missing 2% Distinct 98% Min -1 day, 0:00:00 Max 365 days, 0:00:00" },
+      { column: "c89", text: "c89 Duration Missing 2% Distinct 98% 2 days 00:00:00 1400000" },
+      { column: "c90", text: "c90 Duration Missing 2% Distinct 98% 2 days, 0:00:00 1400000" },
+      { column: "c91", text: "c91 Duration Missing 2% Distinct 98% 2 days 00:00:00.000000 1400000" },
       { column: "c92", text: "c92 Boolean Missing 2% Distinct 2 True 5000000 False 5000000" }
     ]) {
       expect(mixedProfileTextReady(input)).toBe(true);
@@ -340,7 +340,7 @@ describe("public readiness oracles", () => {
     expect(
       mixedProfileTextReady({
         column: "c89",
-        text: "c89 Duration Missing 2% Distinct 98% Min -1 day Max 364 days"
+        text: "c89 Duration Missing 2% Distinct 98% 2 days 00:00:01 1400000"
       })
     ).toBe(false);
     expect(
@@ -364,7 +364,7 @@ describe("public readiness oracles", () => {
         contract: "mixed-sentinels-v1",
         minimum: 0,
         maximum: 0,
-        text: "c89 Exact statistics Rows 10000000 Null 2% Distinct 98% Min -1 days +00:00:00 Max 365 days 00:00:00"
+        text: "c89 duration[ms] Exact statistics Rows 10000000 Null 2% NaN 0 Distinct 98% Exact distribution Top values 2 days 00:00:00 1400000 Other values 8400000"
       })
     ).toBe(true);
     expect(
@@ -373,7 +373,7 @@ describe("public readiness oracles", () => {
         contract: "mixed-sentinels-v1",
         minimum: 0,
         maximum: 0,
-        text: "c89 Exact statistics Rows 10000000 Null 2% Distinct 98% Min -1 days +00:00:00 Max 36 days 00:00:00"
+        text: "c89 duration[ms] Exact statistics Rows 10000000 Null 2% NaN 0 Distinct 98% Exact distribution Top values 3 days 00:00:00 1400000 Other values 8400000"
       })
     ).toBe(false);
     expect(

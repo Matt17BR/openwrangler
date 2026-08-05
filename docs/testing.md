@@ -577,8 +577,9 @@ The study times native file loading separately from the resident-dataframe noteb
 inline preview, usable workbench grid, all-column profiling, and process-tree PSS. Native file loads are grouped by
 engine rather than product. The fixture contains numeric, categorical, high-cardinality text, timestamp, date,
 duration, and boolean columns with nulls and known per-type profile markers. It is written in bounded 100,000-row
-groups. Profile completion requires the matching marker for every column family. The fixture and output must share a
-filesystem so the session runner can use read-only hard links rather than copy several gigabytes per trial.
+groups. Profile completion requires the matching marker for every column family; durations use a frequent two-day
+value that both products render in their bounded top-values profile. The fixture and output must share a filesystem so
+the session runner can use read-only hard links rather than copy several gigabytes per trial.
 
 Before checking fixture provenance, the runner removes a private trial directory left by an interrupted process. It
 then resumes at the first missing result. A failed editor run uses its fixed slot, stays in the raw report, and does

@@ -1422,17 +1422,12 @@ export function mixedProfileTextReady(input: { readonly column: string; readonly
       text.includes("2099-12-31")
     );
   }
-  if (index < 92) {
-    return durationProfileMetricReady(text, "min", -1) && durationProfileMetricReady(text, "max", 365);
-  }
+  if (index < 92) return durationTopValueReady(text);
   return /\btrue\b/iu.test(text) && /\bfalse\b/iu.test(text);
 }
 
-function durationProfileMetricReady(text: string, label: "min" | "max", days: -1 | 365): boolean {
-  const labelPattern = label === "min" ? "min(?:imum)?" : "max(?:imum)?";
-  const dayPattern = days === -1 ? "-1\\s*days?" : "365\\s*days?";
-  const timePattern = "(?:\\s*\\+?0{1,2}:00:00(?:\\.0+)?)?";
-  return new RegExp(`\\b${labelPattern}\\b\\s*[:=]?\\s*${dayPattern}${timePattern}(?![\\d\\p{L}:])`, "iu").test(text);
+function durationTopValueReady(text: string): boolean {
+  return /(?:^|\s)2\s*days?\s*\+?0{1,2}:00:00(?:\.0+)?(?![\d\p{L}:])/iu.test(text);
 }
 
 export function openWranglerProfileTextReady(input: {

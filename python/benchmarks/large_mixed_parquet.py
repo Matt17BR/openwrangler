@@ -30,6 +30,7 @@ DATE_SENTINEL_MIN_DAYS = 10_957
 DATE_SENTINEL_MAX_DAYS = 47_481
 DURATION_SENTINEL_MIN_MS = -86_400_000
 DURATION_SENTINEL_MAX_MS = 31_536_000_000
+DURATION_TOP_VALUE_MS = 172_800_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +216,7 @@ def build_row_group(start: int, count: int, spec: LargeFixtureSpec) -> pa.Table:
             arrays.append(pa.array(values, type=field.type, mask=mask))
         elif column < 92:
             values = ((rows * (column - 87) * 137) % np.int64(31_536_000_000)).astype(np.int64)
+            values[(rows + column) % 7 == 0] = DURATION_TOP_VALUE_MS
             minimum_row, maximum_row = _sentinel_rows(column)
             values[rows == minimum_row] = DURATION_SENTINEL_MIN_MS
             values[rows == maximum_row] = DURATION_SENTINEL_MAX_MS
@@ -301,6 +303,7 @@ def fixture_manifest(path: Path, spec: LargeFixtureSpec, capacity: dict[str, int
             "highCardinalityTopValueTemplate": "popular-c{column}",
             "datetimeExtrema": ["2000-01-01", "2099-12-31"],
             "durationExtremaMs": [DURATION_SENTINEL_MIN_MS, DURATION_SENTINEL_MAX_MS],
+            "durationTopValueMs": DURATION_TOP_VALUE_MS,
             "booleanValues": ["True", "False"],
         },
         "bytes": path.stat().st_size,

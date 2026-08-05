@@ -7,8 +7,12 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
+import polars as pl
 import pyarrow.parquet as pq
 import pytest
+
+from openwrangler_runtime.engines.pandas_engine import PandasEngine
+from openwrangler_runtime.engines.polars_engine import PolarsEngine
 
 benchmark_directory = Path(__file__).parents[1] / "benchmarks"
 sys.path.insert(0, str(benchmark_directory))
@@ -24,6 +28,7 @@ build_row_group = large_fixture.build_row_group
 column_contract = large_fixture.column_contract
 generate_fixture = large_fixture.generate_fixture
 validate_fixture = large_fixture.validate_fixture
+DURATION_TOP_VALUE_MS = large_fixture.DURATION_TOP_VALUE_MS
 
 
 def test_column_contract_is_exactly_100_mixed_columns() -> None:
@@ -53,6 +58,7 @@ def test_small_fixture_is_deterministic_and_streamed_in_row_groups(tmp_path: Pat
     assert first_manifest["sha256"] == second_manifest["sha256"]
     assert first_manifest["schema"] == column_contract()
     assert first_manifest["profileSentinels"]["numericExtrema"] == [-900_000_000, 900_000_000]
+    assert first_manifest["profileSentinels"]["durationTopValueMs"] == DURATION_TOP_VALUE_MS
     assert first_manifest["capacityAtStart"] is None
     assert pq.ParquetFile(first).metadata.num_row_groups == 5
     assert pq.ParquetFile(first).metadata.num_rows == 257
@@ -80,10 +86,27 @@ def test_mixed_column_families_contain_the_profile_sentinels() -> None:
     assert min(dates) == date(2000, 1, 1)
     assert max(dates) == date(2099, 12, 31)
 
-    durations = [value for value in table["c89"].to_pylist() if value is not None]
-    assert min(durations).days == -1
-    assert max(durations).days == 365
+    for name in ["c89", "c90", "c91"]:
+        durations = [value for value in table[name].to_pylist() if value is not None]
+        counts = Counter(durations)
+        assert min(durations).days == -1
+        assert max(durations).days == 365
+        assert counts.most_common(1)[0][0].total_seconds() * 1000 == DURATION_TOP_VALUE_MS
     assert set(value for value in table["c92"].to_pylist() if value is not None) == {False, True}
+
+
+def test_duration_marker_reaches_pandas_and_polars_top_value_profiles() -> None:
+    table = build_row_group(0, 512, LargeFixtureSpec(rows=512, row_group_rows=512, seed=123)).select(["c89"])
+    summaries = [
+        PandasEngine().summaries(table.to_pandas(), [(0, "duration-column")])[0],
+        PolarsEngine().summaries(pl.from_arrow(table), [(0, "duration-column")])[0],
+    ]
+
+    assert summaries[0]["visualization"]["categories"][0]["value"] == "2 days 00:00:00"
+    assert summaries[1]["visualization"]["categories"][0]["value"] == "2 days, 0:00:00"
+    for summary in summaries:
+        assert summary["type"] == "duration"
+        assert summary["visualization"]["categories"][0] == summary["topValues"][0]
 
 
 def test_generator_refuses_to_replace_a_fixture(tmp_path: Path) -> None:

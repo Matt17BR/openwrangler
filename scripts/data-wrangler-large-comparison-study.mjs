@@ -47,6 +47,7 @@ const MIXED_PROFILE_SENTINELS = Object.freeze({
   highCardinalityTopValueTemplate: "popular-c{column}",
   datetimeExtrema: ["2000-01-01", "2099-12-31"],
   durationExtremaMs: [-86_400_000, 31_536_000_000],
+  durationTopValueMs: 172_800_000,
   booleanValues: ["True", "False"]
 });
 const TRIAL_TIMEOUTS_MS = Object.freeze({
@@ -648,6 +649,7 @@ function validMixedProfileSentinels(value) {
     JSON.stringify(value.numericExtrema) === JSON.stringify(MIXED_PROFILE_SENTINELS.numericExtrema) &&
     JSON.stringify(value.datetimeExtrema) === JSON.stringify(MIXED_PROFILE_SENTINELS.datetimeExtrema) &&
     JSON.stringify(value.durationExtremaMs) === JSON.stringify(MIXED_PROFILE_SENTINELS.durationExtremaMs) &&
+    value.durationTopValueMs === MIXED_PROFILE_SENTINELS.durationTopValueMs &&
     JSON.stringify(value.booleanValues) === JSON.stringify(MIXED_PROFILE_SENTINELS.booleanValues)
   );
 }

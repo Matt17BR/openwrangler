@@ -343,6 +343,7 @@ function provenanceFixture(bytes = 5_000_000_000) {
         highCardinalityTopValueTemplate: "popular-c{column}",
         datetimeExtrema: ["2000-01-01", "2099-12-31"],
         durationExtremaMs: [-86_400_000, 31_536_000_000],
+        durationTopValueMs: 172_800_000,
         booleanValues: ["True", "False"]
       }
     },
