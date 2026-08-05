@@ -116,6 +116,21 @@ test("released-Jupyter Variables acceptance targets the canonical orders showcas
     /async function invokeReleasedNotebookToolbarVariable[\s\S]*?const input = picker\.locator\("\.quick-input-box input:visible"\)\.first\(\);\s*await input\.fill\(variableName\);/u
   );
   assert.match(source, /"orders_df = pd\.DataFrame\(\{"/u);
+
+  const cursorRemoteRestore = source.slice(
+    source.indexOf("async function restoreCursorRemoteReleasedJupyterNotebook("),
+    source.indexOf("async function waitForReleasedJupyterVariableActionReceipt(")
+  );
+  const focusCheck = cursorRemoteRestore.indexOf("vscode.window.activeNotebookEditor?.notebook === notebook");
+  const oneRestore = cursorRemoteRestore.indexOf("showExactReleasedNotebook(notebook)");
+  assert.ok(focusCheck >= 0);
+  assert.ok(oneRestore > focusCheck);
+  assert.equal(cursorRemoteRestore.match(/showExactReleasedNotebook\(notebook\)/gu)?.length, 1);
+  assert.doesNotMatch(cursorRemoteRestore, /jupyter\.openVariableView/u);
+  assert.match(
+    source,
+    /restoreCursorRemoteReleasedJupyterNotebook\(notebook, checkpoint\);\s*const viewerAction = await waitForReleasedJupyterVariableAction/u
+  );
 });
 
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {

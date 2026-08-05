@@ -2775,7 +2775,8 @@ async function dispatchReleasedJupyterVariableAction(
   variableName: string,
   checkpoint: string
 ): Promise<void> {
-  const viewerAction = await waitForReleasedJupyterVariableAction(workbench, variableName, checkpoint);
+  await restoreCursorRemoteReleasedJupyterNotebook(notebook, checkpoint);
+  const viewerAction = await waitForReleasedJupyterVariableAction(workbench, notebook, variableName, checkpoint);
   assert.equal(
     releasedJupyterSessionTabs().length,
     0,
@@ -2803,6 +2804,26 @@ async function dispatchReleasedJupyterVariableAction(
     authoritativeReceiptAfterActivationFailure: () => waitForReleasedJupyterVariableActionReceipt(variableName)
   });
   recordAcceptanceProgress(`${checkpoint}:receipt`);
+}
+
+async function restoreCursorRemoteReleasedJupyterNotebook(
+  notebook: vscode.NotebookDocument,
+  checkpoint: string
+): Promise<void> {
+  if (process.env.OPEN_WRANGLER_TEST_EDITOR !== "cursor" || process.env.OPEN_WRANGLER_TEST_PHASE !== "jupyter-remote") {
+    return;
+  }
+  assertExactOpenNotebookDocument(notebook, "before checking Cursor's remote Jupyter Variables notebook");
+  if (vscode.window.activeNotebookEditor?.notebook === notebook) return;
+
+  recordAcceptanceProgress(`${checkpoint}:focus-drift`);
+  const exactEditor = await showExactReleasedNotebook(notebook);
+  assertExactVisibleReleasedNotebookEditor(
+    notebook,
+    exactEditor,
+    "after restoring Cursor's remote Jupyter Variables notebook"
+  );
+  recordAcceptanceProgress(`${checkpoint}:refocused`);
 }
 
 async function waitForReleasedJupyterVariableActionReceipt(variableName: string): Promise<void> {
@@ -3989,6 +4010,7 @@ function canonicalAcceptancePath(candidate: string): string {
 
 async function waitForReleasedJupyterVariableAction(
   workbench: Page,
+  notebook: vscode.NotebookDocument,
   variableName: string,
   checkpoint: string
 ): Promise<ReleasedJupyterVariableAction> {
@@ -4120,7 +4142,7 @@ async function waitForReleasedJupyterVariableAction(
     return viewerAction;
   }
 
-  const diagnostics = await releasedWorkbenchDiagnostics(workbench, variableName);
+  const diagnostics = await releasedWorkbenchDiagnostics(workbench, notebook, variableName);
   throw new Error(
     `Timed out waiting for ${variableName} in the released Jupyter Variables view: ${JSON.stringify(diagnostics)}`
   );
@@ -4169,20 +4191,55 @@ function releasedWorkbenchFrames(workbench: Page): Frame[] {
   return pages.flatMap((page) => page.frames());
 }
 
-async function releasedWorkbenchDiagnostics(workbench: Page, variableName: string): Promise<unknown> {
-  return Promise.all(
-    releasedWorkbenchFrames(workbench).map(async (frame) => ({
-      url: frame.url(),
-      variableCells: await frame
-        .locator(`[role="cell"][title=${JSON.stringify(variableName)}]`)
-        .count()
-        .catch(() => -1),
-      tables: await frame
-        .getByRole("table", { name: "Variables", exact: true })
-        .allInnerTexts()
-        .catch(() => [])
-    }))
-  );
+async function releasedWorkbenchDiagnostics(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  variableName: string
+): Promise<unknown> {
+  const frames = releasedWorkbenchFrames(workbench);
+  const frameLimit = 12;
+  return {
+    activeNotebook:
+      vscode.window.activeNotebookEditor?.notebook === notebook
+        ? "exact"
+        : vscode.window.activeNotebookEditor
+          ? "other"
+          : "none",
+    frameCount: Math.min(frames.length, 999),
+    framesTruncated: frames.length > frameLimit,
+    frames: await Promise.all(
+      frames.slice(0, frameLimit).map(async (frame) => {
+        const table = frame.getByRole("table", { name: "Variables", exact: true }).first();
+        const emptyRows = frame.locator("#variable-explorer-empty-rows").first();
+        const [tables, tableVisible, variableCells, loading] = await Promise.all([
+          frame
+            .getByRole("table", { name: "Variables", exact: true })
+            .count()
+            .catch(() => 0),
+          table.isVisible().catch(() => false),
+          frame
+            .locator(`[role="cell"][title=${JSON.stringify(variableName)}]`)
+            .count()
+            .catch(() => 0),
+          emptyRows.evaluate((element) => (element.textContent ?? "").trim() === "Loading variables").catch(() => false)
+        ]);
+        return {
+          kind:
+            frame.page() === workbench && frame === workbench.mainFrame()
+              ? "workbench"
+              : /^vscode-webview:.*(?:[?&])extensionId=ms-toolsai\.jupyter(?:&|$)/u.test(frame.url())
+                ? "jupyter"
+                : frame.url().startsWith("vscode-webview:")
+                  ? "webview"
+                  : "other",
+          tables: Math.min(Math.max(tables, 0), 999),
+          tableVisible,
+          variableCells: Math.min(Math.max(variableCells, 0), 999),
+          loading
+        };
+      })
+    )
+  };
 }
 
 async function waitForReleasedJupyterConsent(
