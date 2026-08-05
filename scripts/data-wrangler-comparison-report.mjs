@@ -60,6 +60,7 @@ const STUDY_FAILURE_STAGES = new Set([
 ]);
 const STUDY_TRIAL_ID = /^[a-z0-9][a-z0-9.-]{0,127}$/u;
 const MAX_PSS_SAMPLES = 2_000;
+export const LARGE_STUDY_MAX_PSS_SAMPLES = 7_000;
 const PSS_SAMPLE_INTERVAL_MS = 200;
 const STUDY_CELL_CONTRACT = Object.freeze({
   "pandas-csv": Object.freeze({ engine: "pandas", format: "csv", rows: 100_000, columns: 50 }),
@@ -97,12 +98,15 @@ export function summarizeComparisonValues(values) {
   });
 }
 
-export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) {
+export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200, maxSamples = MAX_PSS_SAMPLES) {
   if (!Number.isSafeInteger(intervalMs) || intervalMs !== PSS_SAMPLE_INTERVAL_MS) {
     throw new TypeError("Study PSS interval must be 200 ms.");
   }
-  if (!Array.isArray(samples) || samples.length === 0 || samples.length > MAX_PSS_SAMPLES) {
-    throw new TypeError(`Study PSS evidence must contain between 1 and ${MAX_PSS_SAMPLES} samples.`);
+  if (!Number.isSafeInteger(maxSamples) || maxSamples < 1 || maxSamples > LARGE_STUDY_MAX_PSS_SAMPLES) {
+    throw new TypeError("Study PSS sample limit is invalid.");
+  }
+  if (!Array.isArray(samples) || samples.length === 0 || samples.length > maxSamples) {
+    throw new TypeError(`Study PSS evidence must contain between 1 and ${maxSamples} samples.`);
   }
   let previous = 0n;
   const sanitized = samples.map((sample, index) => {
@@ -151,6 +155,22 @@ export function summarizeStudyPssSamples(samples, milestones, intervalMs = 200) 
 }
 
 export function validateDataWranglerComparisonStudyTrial(trial, entry, manifest) {
+  return validateComparisonStudyTrial(trial, entry, manifest, {
+    repetitions: manifest?.method?.repetitionsPerSession,
+    maximumOrder: 7,
+    maximumPssSamples: MAX_PSS_SAMPLES
+  });
+}
+
+export function validateLargeDataWranglerComparisonTrial(trial, entry, manifest) {
+  return validateComparisonStudyTrial(trial, entry, manifest, {
+    repetitions: 1,
+    maximumOrder: 19,
+    maximumPssSamples: LARGE_STUDY_MAX_PSS_SAMPLES
+  });
+}
+
+function validateComparisonStudyTrial(trial, entry, manifest, contract) {
   exactKeys(
     trial,
     ["protocol", "trialId", "product", "engine", "format", "kind", "order", "samples", "provenance"],
@@ -163,21 +183,22 @@ export function validateDataWranglerComparisonStudyTrial(trial, entry, manifest)
   if (!["pandas", "polars"].includes(trial.engine)) throw new TypeError("Study trial engine is invalid.");
   if (!["csv", "parquet"].includes(trial.format)) throw new TypeError("Study trial format is invalid.");
   assertEqual(trial.kind, "warm", "study trial kind");
-  assertIntegerBetween(trial.order, 0, 7, "study trial order");
+  assertIntegerBetween(trial.order, 0, contract.maximumOrder, "study trial order");
   if (entry) validateTrialScheduleBinding(trial, entry);
-  const repetitions = manifest?.method?.repetitionsPerSession;
-  if (![2, 10].includes(repetitions) || !Array.isArray(trial.samples) || trial.samples.length !== repetitions) {
-    throw new TypeError(`A study session requires exactly ${repetitions === 2 ? "two" : "ten"} measured samples.`);
+  const repetitions = contract.repetitions;
+  if (![1, 2, 10].includes(repetitions) || !Array.isArray(trial.samples) || trial.samples.length !== repetitions) {
+    const label = repetitions === 1 ? "one" : repetitions === 2 ? "two" : "ten";
+    throw new TypeError(`A study session requires exactly ${label} measured samples.`);
   }
   for (const [offset, sample] of trial.samples.entries()) {
-    validateStudySample(sample, offset + 1, entry);
+    validateStudySample(sample, offset + 1, entry, contract.maximumPssSamples);
   }
   validateStudyProvenance(trial.provenance, manifest);
   assertPublicEvidence(trial);
   return trial;
 }
 
-function validateStudySample(sample, expectedIndex, entry) {
+function validateStudySample(sample, expectedIndex, entry, maximumPssSamples = MAX_PSS_SAMPLES) {
   exactKeys(
     sample,
     ["index", "status", "failure", "metrics", "milestones", "publicUi", "memory"],
@@ -195,7 +216,12 @@ function validateStudySample(sample, expectedIndex, entry) {
     if (sample.failure !== null || milestones.length !== STUDY_MILESTONES.length) {
       throw new TypeError("A successful study sample requires every milestone and no failure.");
     }
-    const recomputed = summarizeStudyPssSamples(sample.memory?.samples, milestones, sample.memory?.intervalMs);
+    const recomputed = summarizeStudyPssSamples(
+      sample.memory?.samples,
+      milestones,
+      sample.memory?.intervalMs,
+      maximumPssSamples
+    );
     exactKeys(sample.memory, Object.keys(recomputed), "study sample memory");
     for (const key of ["peakPssBytes", "sampleCount", "intervalMs"]) {
       assertEqual(sample.memory[key], recomputed[key], `study sample memory ${key}`);

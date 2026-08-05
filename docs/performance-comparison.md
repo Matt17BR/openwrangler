@@ -25,10 +25,11 @@ rather than duration Min/Max statistics. The fixture manifest records the names 
 type, the seed, file hash, size, compression settings, and row-group layout. No user data is read.
 
 Generation stops before writing if Linux reports less than 40 GiB of available memory or the output filesystem has
-less than 15 GiB free. The study repeats those checks immediately before every editor run and also requires the same
-machine, AC power, and CPU governor used when the study began. A changed condition stops the command before another
-run starts. These checks are conservative because a Pandas load can require much more memory than the compressed
-source. The generator refuses to replace an existing file.
+less than 25 GiB free. It also checks that at least 15 GiB remains before keeping the finished fixture. The study
+checks for that 15 GiB reserve immediately before every editor run and also requires the same machine, AC power, and
+CPU governor used when the study began. A changed condition stops the command before another run starts. These checks
+are conservative because a Pandas load can require much more memory than the compressed source. The generator refuses
+to replace an existing file.
 
 ## What is measured
 
@@ -107,7 +108,8 @@ npm run comparison:large:report -- \
   --out /absolute/path/openwrangler-data-wrangler-large-report.json
 ```
 
-The report command writes the detailed result and then checks the minimum counts above. Before publishing numbers, a
+The report command first rejects results that do not match their scheduled product, engine, order, shape, timings, or
+memory samples. It writes the detailed result and then checks the minimum counts above. Before publishing numbers, a
 second person should explain every failed run, check the exact product, editor, Python, package, fixture, and tool
 hashes, verify that product order alternates within each engine, recalculate the four UI groups, and recalculate the
 two five-load engine-only groups from the raw trials.

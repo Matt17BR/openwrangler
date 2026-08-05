@@ -17,7 +17,9 @@ import pyarrow.parquet as pq
 
 FIXTURE_PROTOCOL = "openwrangler-large-parquet-fixture-v1"
 DEFAULT_ROWS, DEFAULT_COLUMNS, DEFAULT_ROW_GROUP_ROWS, DEFAULT_SEED = 10_000_000, 100, 100_000, 17_031
-MIN_AVAILABLE_MEMORY_BYTES, MIN_FREE_DISK_BYTES = 40 * 1024**3, 15 * 1024**3
+MIN_AVAILABLE_MEMORY_BYTES = 40 * 1024**3
+MIN_GENERATION_FREE_DISK_BYTES = 25 * 1024**3
+MIN_STUDY_FREE_DISK_BYTES = 15 * 1024**3
 NUMERIC_MIN, NUMERIC_MAX = -900_000_000, 900_000_000
 DATETIME_MIN_NS, DATETIME_MAX_NS = 946_684_800_000_000_000, 4_102_358_400_000_000_000
 DATE_MIN_DAYS, DATE_MAX_DAYS = 10_957, 47_481
@@ -120,15 +122,18 @@ def available_memory_bytes() -> int:
     raise RuntimeError("Linux did not report available memory for the large comparison fixture.")
 
 
-def assert_large_study_capacity(output: Path) -> dict[str, int]:
+def assert_large_study_capacity(output: Path, *, generating: bool = False) -> dict[str, int]:
     parent = output.parent.resolve()
     if not parent.is_dir() or parent.is_symlink():
         raise RuntimeError("Create a real output directory before generating the large fixture.")
     memory, disk = available_memory_bytes(), disk_usage(parent).free
     if memory < MIN_AVAILABLE_MEMORY_BYTES:
         raise RuntimeError("The large comparison needs at least 40 GiB of available memory.")
-    if disk < MIN_FREE_DISK_BYTES:
-        raise RuntimeError("The large comparison needs at least 15 GiB of free disk space.")
+    required_disk = MIN_GENERATION_FREE_DISK_BYTES if generating else MIN_STUDY_FREE_DISK_BYTES
+    if disk < required_disk:
+        required_gib = required_disk // 1024**3
+        stage = "before generating its fixture" if generating else "before starting a run"
+        raise RuntimeError(f"The large comparison needs at least {required_gib} GiB free {stage}.")
     return {"availableMemoryBytes": memory, "freeDiskBytes": disk}
 
 
@@ -264,7 +269,7 @@ def generate_fixture(
     if output.exists() or output.is_symlink() or manifest_path.exists() or manifest_path.is_symlink():
         raise FileExistsError(f"Refusing to replace existing fixture {output.name}.")
     if check_capacity:
-        assert_large_study_capacity(output)
+        assert_large_study_capacity(output, generating=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent)
     os.close(descriptor)
     temporary = Path(temporary_name)
@@ -278,6 +283,8 @@ def generate_fixture(
         ) as writer:
             for start in range(0, spec.rows, spec.row_group_rows):
                 writer.write_table(build_row_group(start, min(spec.row_group_rows, spec.rows - start), spec))
+        if check_capacity and disk_usage(output.parent).free < MIN_STUDY_FREE_DISK_BYTES:
+            raise RuntimeError("The generated fixture would leave less than 15 GiB free for the comparison runs.")
         validate_fixture(temporary, spec)
         os.replace(temporary, output)
         os.chmod(output, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)

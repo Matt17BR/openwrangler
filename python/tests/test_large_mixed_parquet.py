@@ -6,6 +6,7 @@ import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pyarrow.parquet as pq
 import pytest
@@ -95,3 +96,23 @@ def test_generation_stops_before_replacement_or_low_capacity(monkeypatch: pytest
     with pytest.raises(RuntimeError, match="available memory"):
         large_fixture.assert_large_study_capacity(output)
     assert not output.exists()
+
+    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 48 * 1024**3)
+    monkeypatch.setattr(large_fixture, "disk_usage", lambda _path: SimpleNamespace(free=20 * 1024**3))
+    assert large_fixture.assert_large_study_capacity(output)["freeDiskBytes"] == 20 * 1024**3
+    with pytest.raises(RuntimeError, match="25 GiB free before generating"):
+        large_fixture.assert_large_study_capacity(output, generating=True)
+
+
+def test_generation_keeps_the_study_disk_reserve(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    output = tmp_path / "reserved.parquet"
+    free_space = iter([30 * 1024**3, 14 * 1024**3])
+    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 48 * 1024**3)
+    monkeypatch.setattr(large_fixture, "disk_usage", lambda _path: SimpleNamespace(free=next(free_space)))
+
+    with pytest.raises(RuntimeError, match="leave less than 15 GiB free"):
+        large_fixture.generate_fixture(output, large_fixture.LargeFixtureSpec(rows=10, row_group_rows=5))
+
+    assert not output.exists()
+    assert not output.with_suffix(".parquet.json").exists()
+    assert list(tmp_path.iterdir()) == []

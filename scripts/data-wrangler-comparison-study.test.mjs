@@ -4,7 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DATA_WRANGLER_STUDY_TOOL_NAMES, summarizeStudyPssSamples } from "./data-wrangler-comparison-report.mjs";
+import {
+  DATA_WRANGLER_STUDY_TOOL_NAMES,
+  summarizeStudyPssSamples,
+  validateLargeDataWranglerComparisonTrial
+} from "./data-wrangler-comparison-report.mjs";
 import {
   DATA_WRANGLER_VERSION,
   LARGE_COLUMNS,
@@ -23,6 +27,7 @@ import {
   buildStudyManifest,
   createDataWranglerComparisonSchedule,
   largeComparisonEditorPhaseTimeout,
+  loadLargeTrials,
   loadStudyResults,
   prepareTrial,
   removeStaleTrialDirectories,
@@ -31,6 +36,7 @@ import {
   runLargeComparisonStudy,
   runOneTrial,
   terminalTrialIds,
+  validateLargeLoadResult,
   writeDataWranglerComparisonStudyReport
 } from "./data-wrangler-comparison-study.mjs";
 
@@ -298,6 +304,51 @@ test("large schedule counterbalances fresh sessions and reports every reached en
   assert.equal(summary.metrics.runCellToWorkbenchMs.median, 31);
   assert.equal(Object.hasOwn(summary.metrics.inlinePreviewMs, "p95"), false);
   assert.doesNotThrow(() => assertCompleteLargeReport(report));
+});
+
+test("large results must match their scheduled run and contain valid measurements", () => {
+  const manifest = largeManifestFixture();
+  const entry = manifest.schedule.find(({ measureNativeLoad }) => measureNativeLoad);
+  const trial = sessionResult(entry, manifest, 1);
+  const load = largeLoadResult(entry);
+
+  assert.doesNotThrow(() => validateLargeDataWranglerComparisonTrial(trial, entry, manifest));
+  assert.doesNotThrow(() => validateLargeLoadResult(load, entry));
+
+  assert.throws(
+    () => validateLargeDataWranglerComparisonTrial({ ...trial, product: "data-wrangler" }, entry, manifest),
+    /scheduled product/u
+  );
+  const negativeTiming = structuredClone(trial);
+  negativeTiming.samples[0].metrics.inlinePreviewMs = -1;
+  assert.throws(
+    () => validateLargeDataWranglerComparisonTrial(negativeTiming, entry, manifest),
+    /inlinePreviewMs does not match/u
+  );
+  const negativeMemory = structuredClone(trial);
+  negativeMemory.samples[0].memory.samples[0].pssBytes = -1;
+  assert.throws(() => validateLargeDataWranglerComparisonTrial(negativeMemory, entry, manifest), /invalid bytes/u);
+  assert.throws(() => validateLargeLoadResult({ ...load, protocol: "wrong" }, entry), /scheduled run/u);
+  assert.throws(() => validateLargeLoadResult({ ...load, elapsedMs: Number.NaN }, entry), /scheduled run/u);
+  assert.throws(() => validateLargeLoadResult({ ...load, peakRssBytes: -1 }, entry), /scheduled run/u);
+});
+
+test("stored large results are validated before they can be reported", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-large-stored-results-"));
+  const manifest = largeManifestFixture();
+  const entry = manifest.schedule.find(({ measureNativeLoad }) => measureNativeLoad);
+  try {
+    mkdirSync(join(root, "trials"));
+    mkdirSync(join(root, "loads"));
+    writeFileSync(join(root, "trials", `${entry.id}.json`), JSON.stringify(sessionResult(entry, manifest, 1)));
+    writeFileSync(
+      join(root, "loads", `${entry.id}.json`),
+      JSON.stringify({ ...largeLoadResult(entry), engine: entry.engine === "pandas" ? "polars" : "pandas" })
+    );
+    assert.throws(() => loadLargeTrials(root, manifest), /scheduled run/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("large study records 20 fixed attempts, five native loads per engine, and resumes", async () => {

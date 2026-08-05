@@ -13,6 +13,7 @@ import {
   verifyComparisonRequestSource,
   verifyComparisonSource
 } from "./data-wrangler-comparison-neutral-driver.mjs";
+import { LARGE_STUDY_MAX_PSS_SAMPLES } from "./data-wrangler-comparison-report.mjs";
 
 test("uses the study-specific editor cap for each profile contract", () => {
   assert.equal(comparisonEditorPhaseTimeout("integer-sentinel"), 600_000);
@@ -157,6 +158,16 @@ test("PSS evidence retains a rising process tree during the measured action", ()
     ]).peakPssBytes,
     300_000_000
   );
+});
+
+test("the large study keeps bounded PSS evidence for its longer profiling window", () => {
+  const samples = Array.from({ length: 2_001 }, (_unused, index) => sample(1_000_000_000 + index * 200_000_000, 100));
+  const milestones = [
+    { name: "run-cell-click", monotonicNs: samples[0].monotonicNs },
+    { name: "profiles-complete", monotonicNs: samples.at(-1).monotonicNs }
+  ];
+  assert.throws(() => summarizePss(samples, milestones), /between 1 and 2000 samples/u);
+  assert.equal(summarizePss(samples, milestones, LARGE_STUDY_MAX_PSS_SAMPLES).sampleCount, samples.length);
 });
 
 test("session PSS is split into one bounded memory record per measured sample", () => {

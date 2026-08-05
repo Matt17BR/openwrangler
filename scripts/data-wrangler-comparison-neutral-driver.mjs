@@ -35,7 +35,7 @@ import {
   installComparisonExtension,
   verifyComparisonExtensionInventory
 } from "./data-wrangler-comparison-install.mjs";
-import { summarizeStudyPssSamples } from "./data-wrangler-comparison-report.mjs";
+import { LARGE_STUDY_MAX_PSS_SAMPLES, summarizeStudyPssSamples } from "./data-wrangler-comparison-report.mjs";
 
 const REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v2";
 const RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
@@ -213,7 +213,7 @@ export async function runDataWranglerComparisonNeutralDriver({ requestPath, outp
     format: host.format,
     kind: host.kind,
     order: host.order,
-    samples: attachComparisonSampleMemory(host.samples, samples),
+    samples: attachComparisonSampleMemory(host.samples, samples, request.cell.profileContract),
     provenance: {
       candidate: { version: request.candidate.version, sha256: request.candidate.sha256 },
       dataWranglerVersion: request.dataWranglerVersion,
@@ -345,11 +345,11 @@ async function prepareExtensionDirectory({
   writeJsonAtomic(marker, expected);
 }
 
-export function summarizePss(samples, milestones) {
-  return summarizeStudyPssSamples(samples, milestones);
+export function summarizePss(samples, milestones, maximumSamples) {
+  return summarizeStudyPssSamples(samples, milestones, 200, maximumSamples);
 }
 
-export function attachComparisonSampleMemory(hostSamples, pssSamples) {
+export function attachComparisonSampleMemory(hostSamples, pssSamples, profileContract = "integer-sentinel") {
   if (!Array.isArray(hostSamples) || !Array.isArray(pssSamples)) {
     throw new TypeError("Comparison samples and PSS samples must be arrays.");
   }
@@ -357,11 +357,12 @@ export function attachComparisonSampleMemory(hostSamples, pssSamples) {
     if (!sample || typeof sample !== "object" || sample.index !== offset + 1) {
       throw new TypeError("Comparison sample indices must be consecutive and one-based.");
     }
+    const maximumSamples = profileContract === "mixed-sentinels-v1" ? LARGE_STUDY_MAX_PSS_SAMPLES : undefined;
     return {
       ...sample,
       memory:
         sample.status === "success"
-          ? summarizePss(comparisonSamplePssWindow(pssSamples, sample.milestones), sample.milestones)
+          ? summarizePss(comparisonSamplePssWindow(pssSamples, sample.milestones), sample.milestones, maximumSamples)
           : null
     };
   });

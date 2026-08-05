@@ -569,9 +569,10 @@ The current manual method is in [`docs/performance-comparison.md`](performance-c
 - `npm run comparison:large:study` to run the 20 independent notebook sessions; and
 - `npm run comparison:large:report` to calculate minimum, median, and maximum values.
 
-The large commands require the literal `--confirm-large-study` flag. They are not called by a pull-request, release,
-scheduled, or local default workflow. Tests use small row counts through the Python API and fake editor runners; they
-never generate the full fixture.
+The large commands require the literal `--confirm-large-study` flag. Fixture generation needs 25 GiB free and keeps
+the file only when at least 15 GiB remains for the study. They are not called by a pull-request, release, scheduled,
+or local default workflow. Tests use small row counts through the Python API and fake editor runners; they never
+generate the full fixture.
 
 Normal native editor acceptance keeps its 300-second hard deadline and 180-second inactivity deadline. The manually
 confirmed large comparison is the only new exception: its editor cap is the sum of its two pre-action, inline,

@@ -22,7 +22,8 @@ import {
   DATA_WRANGLER_REGRESSION_LIMITS,
   assertReleaseCompleteStudyReport,
   buildDataWranglerComparisonStudyReport,
-  validateDataWranglerComparisonStudyTrial
+  validateDataWranglerComparisonStudyTrial,
+  validateLargeDataWranglerComparisonTrial
 } from "./data-wrangler-comparison-report.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 
@@ -281,6 +282,7 @@ async function runComparisonStudy(options, dependencies, large) {
       });
       if (large && entry.measureNativeLoad && !largeResults.loads.some(({ trialId }) => trialId === entry.id)) {
         const load = await (dependencies.runLoad ?? measureLargeNativeLoad)(trial.request);
+        validateLargeLoadResult(load, entry);
         writeJsonAtomic(join(output, "loads", `${entry.id}.json`), load);
       }
       result = large
@@ -321,11 +323,8 @@ async function runComparisonStudy(options, dependencies, large) {
         repetitions
       );
     }
-    if (large) {
-      if (result?.trialId !== entry.id || result.samples?.length !== 1) {
-        throw new TypeError(`Large comparison trial ${entry.id} is malformed.`);
-      }
-    } else validateTrialResult(result, entry, manifest);
+    if (large) validateLargeDataWranglerComparisonTrial(result, entry, manifest);
+    else validateTrialResult(result, entry, manifest);
     writeJsonAtomic(join(trialsDirectory, `${entry.id}.json`), result);
     if (large || !isHarnessInterrupted(result)) completed.add(entry.id);
   }
@@ -704,6 +703,8 @@ export function loadLargeTrials(output, manifest) {
         const result = readJson(join(directory, file));
         const entry = schedule.get(result?.trialId);
         if (!entry || file !== `${entry.id}.json`) throw new Error(`Unexpected large comparison result ${file}.`);
+        if (name === "trials") validateLargeDataWranglerComparisonTrial(result, entry, manifest);
+        else validateLargeLoadResult(result, entry);
         return result;
       });
   };
@@ -712,6 +713,18 @@ export function loadLargeTrials(output, manifest) {
 
 export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, loads }) {
   canonicalUtc(generatedAtUtc);
+  const schedule = new Map(manifest.schedule.map((entry) => [entry.id, entry]));
+  const validateUnique = (items, label, validate) => {
+    const seen = new Set();
+    for (const item of items) {
+      const entry = schedule.get(item?.trialId);
+      if (!entry || seen.has(item.trialId)) throw new TypeError(`Large comparison ${label} is unknown or duplicated.`);
+      validate(item, entry);
+      seen.add(item.trialId);
+    }
+  };
+  validateUnique(trials, "trial", (trial, entry) => validateLargeDataWranglerComparisonTrial(trial, entry, manifest));
+  validateUnique(loads, "native load", validateLargeLoadResult);
   const observed = new Map(trials.map((trial) => [trial.trialId, trial]));
   const observedLoads = new Map(loads.map((load) => [load.trialId, load]));
   const summarize = (items, selectors) => ({
@@ -763,6 +776,30 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, l
     loadSummaries,
     summaries
   });
+}
+
+export function validateLargeLoadResult(load, entry) {
+  const keys = load && typeof load === "object" && !Array.isArray(load) ? Object.keys(load).sort() : [];
+  const expectedKeys = ["trialId", "protocol", "engine", "elapsedMs", "rows", "columns", "peakRssBytes"].sort();
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw new TypeError("Large comparison native-load result has missing or unknown fields.");
+  }
+  if (
+    entry?.measureNativeLoad !== true ||
+    load.trialId !== entry.id ||
+    load.protocol !== "openwrangler-large-parquet-load-v1" ||
+    load.engine !== entry.engine ||
+    load.rows !== LARGE_ROWS ||
+    load.columns !== LARGE_COLUMNS ||
+    typeof load.elapsedMs !== "number" ||
+    !Number.isFinite(load.elapsedMs) ||
+    load.elapsedMs < 0 ||
+    !Number.isSafeInteger(load.peakRssBytes) ||
+    load.peakRssBytes < 0
+  ) {
+    throw new TypeError("Large comparison native-load result does not match its scheduled run.");
+  }
+  return load;
 }
 
 export function assertCompleteLargeReport(report) {
