@@ -42,6 +42,11 @@ export function isPackageOnlyChangeSet({ eventName, changedPaths }) {
   );
 }
 
+export function isDependencyLockOnlyChangeSet({ eventName, changedPaths }) {
+  if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
+  return eventName === "pull_request" && changedPaths.length === 1 && changedPaths[0] === "package-lock.json";
+}
+
 export function parsePullRequestDraft({ eventName, value }) {
   if (eventName === "pull_request") {
     if (value === "true") return true;
@@ -59,9 +64,11 @@ export function classifyCiChange({ eventName, changedPaths, pullRequestDraft }) 
   const draftPullRequest = parsePullRequestDraft({ eventName, value: pullRequestDraft });
   const documentationOnly = isDocumentationOnlyChangeSet({ eventName, changedPaths });
   const packageOnly = isPackageOnlyChangeSet({ eventName, changedPaths });
+  const dependencyLockOnly = isDependencyLockOnlyChangeSet({ eventName, changedPaths });
   const lightweightOnly = documentationOnly || draftPullRequest;
-  const fullMatrixRequired = !documentationOnly && !packageOnly && !draftPullRequest;
+  const fullMatrixRequired = !documentationOnly && !packageOnly && !dependencyLockOnly && !draftPullRequest;
   return {
+    dependencyLockOnly,
     documentationOnly,
     draftPullRequest,
     lightweightOnly,
@@ -124,6 +131,7 @@ function main(environment) {
     outputPath,
     [
       `documentation_only=${classification.documentationOnly}`,
+      `dependency_lock_only=${classification.dependencyLockOnly}`,
       `draft_pull_request=${classification.draftPullRequest}`,
       `lightweight_only=${classification.lightweightOnly}`,
       `package_only=${classification.packageOnly}`,

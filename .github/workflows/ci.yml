@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      dependency_lock_only: ${{ steps.classify.outputs.dependency_lock_only }}
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
       draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
@@ -200,6 +201,31 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - run: npm audit --omit=dev
       - run: npm run audit:python
+
+  dependency-lock-validation:
+    name: Dependency lock validation
+    needs: classify
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event_name == 'pull_request' &&
+        needs.classify.result == 'success' &&
+        needs.classify.outputs.dependency_lock_only == 'true' &&
+        needs.classify.outputs.draft_pull_request == 'false'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Resolved dependency tree
+        run: npm ls
+      - name: Full npm audit
+        run: npm audit
 
   linux-packaged-editor:
     name: Packaged VS Code (Linux)
@@ -527,6 +553,7 @@ jobs:
       - contract-tests
       - visual-accessibility
       - production-audits
+      - dependency-lock-validation
       - canonical-vsix
       - linux-packaged-editor
       - coverage
@@ -545,6 +572,7 @@ jobs:
       - name: Require every blocking CI result
         run: node scripts/require-ci-results.mjs
         env:
+          DEPENDENCY_LOCK_ONLY: ${{ needs.classify.outputs.dependency_lock_only }}
           DOCUMENTATION_ONLY: ${{ needs.classify.outputs.documentation_only }}
           DRAFT_PULL_REQUEST: ${{ needs.classify.outputs.draft_pull_request }}
           LIGHTWEIGHT_ONLY: ${{ needs.classify.outputs.lightweight_only }}
@@ -555,6 +583,7 @@ jobs:
           CONTRACT_TESTS_RESULT: ${{ needs.contract-tests.result }}
           VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
           PRODUCTION_AUDITS_RESULT: ${{ needs.production-audits.result }}
+          DEPENDENCY_LOCK_VALIDATION_RESULT: ${{ needs.dependency-lock-validation.result }}
           CANONICAL_VSIX_RESULT: ${{ needs.canonical-vsix.result }}
           LINUX_PACKAGED_EDITOR_RESULT: ${{ needs.linux-packaged-editor.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
