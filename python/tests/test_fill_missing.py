@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from math import isnan
@@ -113,6 +114,16 @@ def execute_generated(engine: Any, frame: Any, plan: list[dict[str, Any]]) -> An
     assert "openwrangler_runtime" not in code
     exec(compile(code, "<generated-fill-plan>", "exec"), namespace, namespace)
     return namespace["clean_data"](frame)
+
+
+def test_polars_generated_fill_plan_uses_python_310_grammar() -> None:
+    engine = PolarsEngine()
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "median"})
+
+    try:
+        ast.parse(engine.compile_plan([operation]), feature_version=(3, 10))
+    finally:
+        engine.close()
 
 
 def test_fill_missing_median_and_typed_value_match_generated_code(engine_and_frame) -> None:

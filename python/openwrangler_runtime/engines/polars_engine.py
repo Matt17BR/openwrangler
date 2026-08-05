@@ -1393,8 +1393,10 @@ class PolarsEngine(DataFrameEngine):
                             f"{median}, _fill_precision_{index}, _fill_scale_{index})"
                         ),
                         f"{prefix}    else:",
-                        f"{prefix}        raise ValueError(f'Cannot calculate a numeric median for Polars type "
-                        f"{{{schema}[{column!r}]}}.')",
+                        (
+                            f"{prefix}        raise ValueError('Cannot calculate a numeric median for Polars type ' "
+                            f"+ str({schema}[{column!r}]) + '.')"
+                        ),
                         f"{prefix}_fill_literal_{index} = pl.lit({median}).cast({schema}[{column!r}], strict=True)",
                         (
                             f"{prefix}df = df.with_columns({expression}.fill_null(_fill_literal_{index})"
