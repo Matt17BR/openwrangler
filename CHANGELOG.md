@@ -8,6 +8,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - PySpark sessions now label unsorted rows as **Source order** and explicitly sorted rows as **Sorted**. The ordering
   badge explains Spark's behavior for unsorted rows and for rows tied across every sort key.
+- PySpark Classic work now has a separate Spark job group for each Open Wrangler request and restores the notebook's
+  previous job properties afterward. Spark Connect keeps its own per-operation interrupt behavior. This does not add
+  request cancellation or change user job tags, scheduler pools, or signal handlers.
 - Future stable and preview releases now ship from `main`. Releases through v1.2.2 can still be recovered from their
   immutable tags, but the old v1 maintenance branch is no longer part of normal development or publishing.
 

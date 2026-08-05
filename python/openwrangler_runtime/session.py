@@ -8,7 +8,7 @@ import threading
 import uuid
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -293,6 +293,24 @@ class SessionManager:
         if selected_backend is not None:
             self.registry.prepare(selected_backend, source)
 
+    @contextmanager
+    def request_scope(self, request_id: str, request: Mapping[str, Any]) -> Iterator[None]:
+        """Bind a protocol request to the engine that owns its live session."""
+
+        if request.get("kind") == "closeSession":
+            # Terminal cleanup does not schedule engine work. In particular,
+            # it must still remove a PySpark session when its Spark context is
+            # stopped or its request properties can no longer be restored.
+            yield
+            return
+        session_id = request.get("sessionId")
+        if not isinstance(session_id, str):
+            yield
+            return
+        session = self._session(session_id)
+        with session.engine.request_scope(request_id):
+            yield
+
     def open_session(
         self,
         source: Mapping[str, Any],
@@ -302,6 +320,7 @@ class SessionManager:
         requested_session_id: str | None = None,
         column_offset: int = 0,
         column_limit: int = MAX_COLUMN_LIMIT,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         if requested_session_id is not None and (not isinstance(requested_session_id, str) or not requested_session_id):
             raise EngineError("requestedSessionId must be a non-empty string.")
@@ -393,7 +412,9 @@ class SessionManager:
                 active_profiles=0,
                 waiting_writers=0,
             )
-            initial_page = self._page(session, 0, page_size, column_offset, column_limit)
+            request_context = engine.request_scope(request_id) if request_id is not None else nullcontext()
+            with request_context:
+                initial_page = self._page(session, 0, page_size, column_offset, column_limit)
             response = {
                 "kind": "sessionOpened",
                 "metadata": self._metadata(session),

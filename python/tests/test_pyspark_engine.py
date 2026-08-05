@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+import signal
+import threading
+from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal
 from importlib import import_module
@@ -14,6 +17,7 @@ import pytest
 
 import __main__
 import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
+import openwrangler_runtime.server as server
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.session import LiveSourceInvalidatedError, SessionManager
@@ -84,6 +88,139 @@ def _empty_view() -> dict[str, Any]:
     return {"logic": "and", "filters": [], "sort": []}
 
 
+class _FakeSparkContext:
+    def __init__(
+        self,
+        properties: dict[str, str] | None = None,
+        *,
+        fail_job_group_after_update: bool = False,
+    ) -> None:
+        self.properties = dict(properties or {})
+        self.groups: list[str] = []
+        self.fail_job_group_after_update = fail_job_group_after_update
+
+    def getLocalProperty(self, key: str) -> str | None:
+        return self.properties.get(key)
+
+    def setLocalProperty(self, key: str, value: str | None) -> None:
+        if value is None:
+            self.properties.pop(key, None)
+        else:
+            self.properties[key] = value
+
+    def setJobGroup(
+        self,
+        group_id: str,
+        description: str,
+        interruptOnCancel: bool = False,
+    ) -> None:
+        self.groups.append(group_id)
+        self.setLocalProperty("spark.job.description", description)
+        self.setLocalProperty("spark.jobGroup.id", group_id)
+        self.setLocalProperty("spark.job.interruptOnCancel", str(interruptOnCancel).lower())
+        if self.fail_job_group_after_update:
+            raise RuntimeError("job-group setup failed")
+
+
+class _ThreadLocalFakeSparkContext:
+    def __init__(self) -> None:
+        self._local = threading.local()
+        self._groups_lock = threading.Lock()
+        self.groups: list[tuple[int, str]] = []
+
+    @property
+    def properties(self) -> dict[str, str]:
+        properties = getattr(self._local, "properties", None)
+        if properties is None:
+            properties = {}
+            self._local.properties = properties
+        return properties
+
+    def getLocalProperty(self, key: str) -> str | None:
+        return self.properties.get(key)
+
+    def setLocalProperty(self, key: str, value: str | None) -> None:
+        if value is None:
+            self.properties.pop(key, None)
+        else:
+            self.properties[key] = value
+
+    def setJobGroup(
+        self,
+        group_id: str,
+        description: str,
+        interruptOnCancel: bool = False,
+    ) -> None:
+        self.setLocalProperty("spark.job.description", description)
+        self.setLocalProperty("spark.jobGroup.id", group_id)
+        self.setLocalProperty("spark.job.interruptOnCancel", str(interruptOnCancel).lower())
+        with self._groups_lock:
+            self.groups.append((threading.get_ident(), group_id))
+
+
+class _StoppedSparkContext:
+    def __init__(self) -> None:
+        self.ownership_calls = 0
+
+    def getLocalProperty(self, _key: str) -> str | None:
+        self.ownership_calls += 1
+        raise RuntimeError("Spark context is stopped")
+
+
+class _RestoreFailingSparkContext:
+    def __init__(self) -> None:
+        self.ownership_calls = 0
+        self._request_group_set = False
+
+    def getLocalProperty(self, _key: str) -> str | None:
+        self.ownership_calls += 1
+        return None
+
+    def setJobGroup(
+        self,
+        _group_id: str,
+        _description: str,
+        interruptOnCancel: bool = False,
+    ) -> None:
+        del interruptOnCancel
+        self.ownership_calls += 1
+        self._request_group_set = True
+
+    def setLocalProperty(self, _key: str, _value: str | None) -> None:
+        self.ownership_calls += 1
+        if self._request_group_set:
+            raise RuntimeError("Spark properties cannot be restored")
+
+
+class _FakeClassicFrame:
+    def __init__(self, spark_context: Any) -> None:
+        self.sparkSession = SimpleNamespace(sparkContext=spark_context)
+
+
+class _FakeConnectFrame:
+    def __init__(self) -> None:
+        self.sparkSession = SimpleNamespace()
+
+
+_FakeConnectFrame.__module__ = "pyspark.sql.connect.dataframe"
+
+
+class _ClosablePySparkSession:
+    def __init__(self, session_id: str, engine: PySparkEngine) -> None:
+        self.session_id = session_id
+        self.engine = engine
+        self.disposed = False
+        self.lock = threading.RLock()
+        self.admission_condition = threading.Condition(threading.Lock())
+        self.profile_condition = threading.Condition(self.lock)
+        self.active_profiles = 0
+        self.waiting_writers = 0
+
+    def dispose(self) -> None:
+        self.disposed = True
+        self.engine.close()
+
+
 def test_capabilities_are_explicitly_read_only_and_not_file_backed() -> None:
     capabilities = PySparkEngine.capabilities
     assert capabilities.source_kinds == frozenset({"notebookVariable"})
@@ -102,6 +239,234 @@ def test_capabilities_are_explicitly_read_only_and_not_file_backed() -> None:
         engine.compile_plan(())
     with pytest.raises(EngineError, match="does not export"):
         engine.export_data(object(), "cleaned.parquet", "parquet")
+
+
+def test_classic_request_scope_owns_jobs_and_restores_the_callers_properties() -> None:
+    caller_properties = {
+        "spark.job.description": "User analysis",
+        "spark.jobGroup.id": "user-job",
+        "spark.job.interruptOnCancel": "true",
+        "spark.job.tags": "user-tag",
+        "spark.scheduler.pool": "user-pool",
+        "user.property": "unchanged",
+    }
+    spark_context = _FakeSparkContext(caller_properties)
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeClassicFrame(spark_context)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+
+    with engine.request_scope("2e6420ea-f6c6-4109-b9f0-907c301af176"):
+        assert pyspark_engine_module._current_pyspark_request_id() == "2e6420ea-f6c6-4109-b9f0-907c301af176"
+        assert spark_context.properties == {
+            **caller_properties,
+            "spark.job.description": "Open Wrangler request",
+            "spark.jobGroup.id": "open-wrangler:2e6420ea-f6c6-4109-b9f0-907c301af176",
+            "spark.job.interruptOnCancel": "false",
+        }
+        assert signal.getsignal(signal.SIGINT) is previous_sigint
+
+    assert spark_context.properties == caller_properties
+    assert spark_context.groups == ["open-wrangler:2e6420ea-f6c6-4109-b9f0-907c301af176"]
+    assert pyspark_engine_module._current_pyspark_request_id() is None
+    assert signal.getsignal(signal.SIGINT) is previous_sigint
+
+
+def test_classic_request_scope_restores_nested_and_failed_requests() -> None:
+    spark_context = _FakeSparkContext()
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeClassicFrame(spark_context)
+
+    with engine.request_scope("outer-request"):
+        outer_properties = dict(spark_context.properties)
+        with engine.request_scope("inner-request"):
+            assert spark_context.getLocalProperty("spark.jobGroup.id") == "open-wrangler:inner-request"
+            assert pyspark_engine_module._current_pyspark_request_id() == "inner-request"
+        assert spark_context.properties == outer_properties
+        assert pyspark_engine_module._current_pyspark_request_id() == "outer-request"
+        with pytest.raises(RuntimeError, match="profile failed"), engine.request_scope("failed-request"):
+            raise RuntimeError("profile failed")
+        assert spark_context.properties == outer_properties
+        assert pyspark_engine_module._current_pyspark_request_id() == "outer-request"
+
+    assert spark_context.properties == {}
+    assert pyspark_engine_module._current_pyspark_request_id() is None
+    assert spark_context.groups == [
+        "open-wrangler:outer-request",
+        "open-wrangler:inner-request",
+        "open-wrangler:failed-request",
+    ]
+
+
+def test_classic_request_scope_isolates_overlapping_threads() -> None:
+    spark_context = _ThreadLocalFakeSparkContext()
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeClassicFrame(spark_context)
+    both_scopes_active = threading.Barrier(2)
+    both_scopes_observed = threading.Barrier(2)
+
+    def run_request(request_id: str) -> tuple[int, dict[str, str], dict[str, str], str | None]:
+        thread_id = threading.get_ident()
+        caller_properties = {
+            "spark.job.description": f"caller-{request_id}",
+            "spark.jobGroup.id": f"caller-group-{request_id}",
+            "spark.job.interruptOnCancel": "true",
+            "spark.scheduler.pool": f"pool-{request_id}",
+        }
+        spark_context.properties.update(caller_properties)
+        with engine.request_scope(request_id):
+            both_scopes_active.wait(timeout=5)
+            inside = dict(spark_context.properties)
+            both_scopes_observed.wait(timeout=5)
+        return (
+            thread_id,
+            inside,
+            dict(spark_context.properties),
+            pyspark_engine_module._current_pyspark_request_id(),
+        )
+
+    request_ids = ("first-request", "second-request")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(run_request, request_id) for request_id in request_ids]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert len({thread_id for thread_id, _inside, _after, _active_request in results}) == 2
+    for request_id, (_thread_id, inside, after, active_request) in zip(request_ids, results, strict=True):
+        assert inside == {
+            "spark.job.description": "Open Wrangler request",
+            "spark.jobGroup.id": f"open-wrangler:{request_id}",
+            "spark.job.interruptOnCancel": "false",
+            "spark.scheduler.pool": f"pool-{request_id}",
+        }
+        assert after == {
+            "spark.job.description": f"caller-{request_id}",
+            "spark.jobGroup.id": f"caller-group-{request_id}",
+            "spark.job.interruptOnCancel": "true",
+            "spark.scheduler.pool": f"pool-{request_id}",
+        }
+        assert active_request is None
+    assert {group for _thread_id, group in spark_context.groups} == {
+        "open-wrangler:first-request",
+        "open-wrangler:second-request",
+    }
+    assert pyspark_engine_module._current_pyspark_request_id() is None
+
+
+def test_classic_request_scope_restores_the_caller_after_partial_setup_failure() -> None:
+    caller_properties = {
+        "spark.job.description": "Caller job",
+        "spark.jobGroup.id": "caller-group",
+        "spark.job.interruptOnCancel": "true",
+    }
+    spark_context = _FakeSparkContext(caller_properties, fail_job_group_after_update=True)
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeClassicFrame(spark_context)
+
+    with (
+        pytest.raises(EngineError, match="Could not establish PySpark request ownership"),
+        engine.request_scope("failed-setup"),
+    ):
+        raise AssertionError("the request body must not run")
+
+    assert spark_context.properties == caller_properties
+    assert pyspark_engine_module._current_pyspark_request_id() is None
+
+
+def test_classic_request_scope_does_not_mask_an_earlier_failure_during_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spark_context = _FakeSparkContext()
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeClassicFrame(spark_context)
+
+    def fail_restore(_spark_context: Any, _properties: Mapping[str, str | None]) -> None:
+        raise EngineError("restore failed")
+
+    monkeypatch.setattr(pyspark_engine_module, "_restore_spark_job_properties", fail_restore)
+
+    with pytest.raises(RuntimeError, match="profile failed"), engine.request_scope("failed-request"):
+        raise RuntimeError("profile failed")
+
+    assert pyspark_engine_module._current_pyspark_request_id() is None
+
+
+def test_connect_request_scope_keeps_only_local_request_identity() -> None:
+    engine = PySparkEngine()
+    frame = _FakeConnectFrame()
+    engine._indexed_frame = frame
+    previous_sigint = signal.getsignal(signal.SIGINT)
+
+    with engine.request_scope("connect-request"):
+        assert pyspark_engine_module._current_pyspark_request_id() == "connect-request"
+        assert vars(frame.sparkSession) == {}
+        assert signal.getsignal(signal.SIGINT) is previous_sigint
+
+    assert pyspark_engine_module._current_pyspark_request_id() is None
+    assert vars(frame.sparkSession) == {}
+    assert signal.getsignal(signal.SIGINT) is previous_sigint
+
+
+def test_real_local_request_scope_isolated_by_classic_job_group_or_connect_operation(
+    spark_session: Any,
+    sample_frame: Any,
+) -> None:
+    engine, indexed = _open_engine(sample_frame, "request-ownership")
+    previous_sigint = signal.getsignal(signal.SIGINT)
+
+    if type(indexed).__module__.startswith("pyspark.sql.connect."):
+        tags_before = set(spark_session.getTags())
+        with engine.request_scope("e694e5ad-947b-4dba-8197-806434d91cd0"):
+            assert pyspark_engine_module._current_pyspark_request_id() == ("e694e5ad-947b-4dba-8197-806434d91cd0")
+            assert indexed.limit(1).collect()
+            assert set(spark_session.getTags()) == tags_before
+        assert set(spark_session.getTags()) == tags_before
+    else:
+        spark_context = spark_session.sparkContext
+        keys = (
+            "spark.job.description",
+            "spark.jobGroup.id",
+            "spark.job.interruptOnCancel",
+            "spark.job.tags",
+            "spark.scheduler.pool",
+        )
+        original = {key: spark_context.getLocalProperty(key) for key in keys}
+        caller = {
+            "spark.job.description": "User analysis",
+            "spark.jobGroup.id": "user-job",
+            "spark.job.interruptOnCancel": "true",
+            "spark.job.tags": "user-tag",
+            "spark.scheduler.pool": "user-pool",
+        }
+        try:
+
+            def current_task_job_group(_value: int) -> str | None:
+                # Spark workers cannot import pytest's top-level test module.
+                # Keep the probe local so cloudpickle sends its small body.
+                task_context = import_module("pyspark").TaskContext.get()
+                assert task_context is not None
+                return task_context.getLocalProperty("spark.jobGroup.id")
+
+            for key, value in caller.items():
+                spark_context.setLocalProperty(key, value)
+            observed_groups: list[str | None] = []
+            for request_id in (
+                "bfe034be-1ad6-4893-945b-c50c75ed6c4f",
+                "5ccb22a4-5f31-4ee0-95eb-4bf165a13ee9",
+            ):
+                with engine.request_scope(request_id):
+                    observed_groups.extend(spark_context.parallelize([0], 1).map(current_task_job_group).collect())
+                    assert spark_context.getLocalProperty("spark.job.tags") == "user-tag"
+                    assert spark_context.getLocalProperty("spark.scheduler.pool") == "user-pool"
+                assert {key: spark_context.getLocalProperty(key) for key in keys} == caller
+            assert observed_groups == [
+                "open-wrangler:bfe034be-1ad6-4893-945b-c50c75ed6c4f",
+                "open-wrangler:5ccb22a4-5f31-4ee0-95eb-4bf165a13ee9",
+            ]
+        finally:
+            for key, value in original.items():
+                spark_context.setLocalProperty(key, value)
+
+    assert pyspark_engine_module._current_pyspark_request_id() is None
+    assert signal.getsignal(signal.SIGINT) is previous_sigint
 
 
 def test_connect_stopped_probe_uses_the_session_local_flag() -> None:
@@ -1435,6 +1800,28 @@ def test_session_manager_detects_live_variable_and_disables_mutation_capabilitie
     }
     assert manager.sessions == {}
     assert spark_session.range(1).count() == 1
+
+
+def test_terminal_close_never_enters_pyspark_request_ownership() -> None:
+    contexts = (_StoppedSparkContext(), _RestoreFailingSparkContext())
+    for index, spark_context in enumerate(contexts):
+        session_id = f"close-without-spark-scope-{index}"
+        engine = PySparkEngine()
+        engine._indexed_frame = _FakeClassicFrame(spark_context)
+        session = _ClosablePySparkSession(session_id, engine)
+        manager = SessionManager()
+        manager.sessions[session_id] = session  # type: ignore[assignment]
+
+        response = server.dispatch(
+            manager,
+            {"kind": "closeSession", "sessionId": session_id, "revision": 0},
+            f"close-request-{index}",
+        )
+
+        assert response == {"kind": "sessionClosed", "sessionId": session_id}
+        assert spark_context.ownership_calls == 0
+        assert session.disposed
+        assert manager.sessions == {}
 
 
 def test_replacing_classic_or_connect_variable_invalidates_cached_pages_before_read(

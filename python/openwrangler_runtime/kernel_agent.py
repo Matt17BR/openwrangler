@@ -23,7 +23,7 @@ def dispatch_json(payload: str) -> str:
         if request["kind"] == "cancelRequest":
             response = {"kind": "cancelled", "targetRequestId": request["targetRequestId"]}
         else:
-            response = dispatch(_manager, request)
+            response = dispatch(_manager, request, request_id)
         return _encode_response(request_id, response)
     except CancelledError:
         response = {"kind": "cancelled", "targetRequestId": request_id}

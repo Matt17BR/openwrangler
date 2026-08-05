@@ -6,7 +6,8 @@ from abc import ABC, abstractmethod
 from base64 import b64encode
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -612,6 +613,12 @@ class DataFrameEngine(ABC):
     def close(self) -> None:
         """Release resources owned by this engine instance."""
         return None
+
+    @contextmanager
+    def request_scope(self, request_id: str) -> Iterator[None]:
+        """Associate one protocol request with engine work, when supported."""
+        del request_id
+        yield
 
     def internal_row_id_column(self, frame: Any) -> Any | None:
         """Return the one private row-identity column, rejecting ambiguous frames."""
