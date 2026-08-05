@@ -6,11 +6,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
-- The optional Data Wrangler comparison now has a manual 2M × 100 mixed-type Parquet study. It uses five fresh
+- The optional Data Wrangler comparison now has a manual 1M × 100 mixed-type Parquet study. It uses five fresh
   editor and kernel sessions per product and input type, checks all 100 column summaries through each product's UI,
   and reports median and range instead of calculating p95 from too few samples. The generated file records its actual
-  compressed size and must be at least 800 MiB. The runner checks power and CPU state before and after every session;
-  normal CI keeps the existing small regression benchmark.
+  compressed size and must be at least 400 MiB. A conservative local memory guard checks each launch, and the runner
+  checks power and CPU state before and after every session; normal CI keeps the existing small regression benchmark.
 
 ### Changed
 

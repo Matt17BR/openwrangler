@@ -11,7 +11,7 @@ raw outcome counts.
 
 ## v1.2.3 study
 
-The new test uses one synthetic 2,000,000 × 100 Parquet file. Its columns are split across floating-point and integer
+The new test uses one synthetic 1,000,000 × 100 Parquet file. Its columns are split across floating-point and integer
 data, low-cardinality categories, high-cardinality text, timestamps, dates, durations, and booleans. The generator
 adds nulls and fixed profile markers. It writes 100,000-row groups with PyArrow and Zstandard compression, so
 it never holds the complete fixture in memory.
@@ -23,19 +23,22 @@ for those values in every profile instead of treating a generic column header as
 duration bounds stay in the fixture but are not used for readiness, because both products expose duration top values
 rather than duration Min/Max statistics. The fixture manifest records the names and markers along with every column
 type, the seed, file hash, actual byte size, compression settings, and row-group layout. The full generator rejects a
-compressed result smaller than 800 MiB, so a highly compressible accidental fixture cannot enter the study. No user
+compressed result smaller than 400 MiB, so a highly compressible accidental fixture cannot enter the study. No user
 data is read.
 
-A 100,000 × 100 sizing run with the same generator produced a 50,381,441-byte Parquet file. With Python 3.14.4, the
+A 100,000 × 100 sizing run with the same generator produced a 50,381,441-byte Parquet file. A later 2,000,000-row
+fixture was 1,007,388,294 bytes. With Python 3.14.4, the
 Pandas 3.0.3 read call took 0.085 seconds (0.36 seconds for the process) and reached 523,088 KiB peak RSS; its
 import-only process reached 108,336 KiB. The Polars 1.42.1 read call took 0.112 seconds (0.21 seconds for the process)
 and reached 204,600 KiB peak RSS; its import-only process reached 39,884 KiB. Scaling the file bytes and RSS above the
-import baseline by 20 puts the 2-million-row file near 0.94 GiB, with about 8.0 GiB peak RSS for Pandas and 3.2 GiB for
-Polars. This sizing run chose the fixture size; it is not part of the product comparison.
+import baseline by 10 puts the 1-million-row file near 480 MiB, with about 4.1 GiB peak RSS for Pandas and 1.6 GiB for
+Polars. The 400 MiB floor leaves room for normal variation while still catching an accidentally compressible file.
+These sizing runs chose the fixture size; they are not part of the product comparison.
 
-Generation and every editor run require at least 32 GiB of currently available memory. The runner stops before
-launching an editor when the machine falls below that floor instead of relying on swap. Generation also requires 8
-GiB of free disk space, and it keeps the finished fixture only if at least 6 GiB remains. A machine with a battery must
+Generation and every editor run require at least 36 GiB of currently available memory. This is a conservative guard
+for running the study on a local workstation. The runner stops before launching an editor when the machine falls
+below that floor instead of relying on swap. Generation also requires 6 GiB of free disk space, and it keeps the
+finished fixture only if at least 4 GiB remains. A machine with a battery must
 be on AC power. A battery-less host records `not-applicable`. A host without a cpufreq governor records `not-exposed`.
 The runner checks the recorded machine, power, governor, memory, and disk both before and after every editor run. The
 generator refuses to replace an existing file.
@@ -83,7 +86,7 @@ connect a laptop to power first:
 
 ```bash
 npm run comparison:large:fixture -- \
-  --out /absolute/path/openwrangler-2m-100.parquet \
+  --out /absolute/path/openwrangler-1m-100.parquet \
   --confirm-large-study
 ```
 
@@ -96,15 +99,16 @@ npm run comparison:large:study -- \
   --python /absolute/path/python3.12 \
   --editor /absolute/path/code \
   --editor-cli /absolute/path/code-cli \
-  --parquet /absolute/path/openwrangler-2m-100.parquet \
+  --parquet /absolute/path/openwrangler-1m-100.parquet \
   --out /absolute/path/benchmark-output \
   --confirm-large-study
 ```
 
-The command writes one result after each editor closes. If the machine sleeps or the command is stopped, run it again
+The command writes one result after each editor closes. If the machine sleeps or the command stops, run it again
 with the same arguments. It removes the abandoned private trial directory, checks the fixture again, and resumes at
-the first missing result. Start the final output with `--limit 4`. Those first four runs cover Pandas and Polars in
-both products, so review their grids and profile markers before resuming the same output without `--limit`.
+the first missing result. Start the final output with `--limit 1` and check that run's memory use before continuing.
+Then use `--limit 3` to cover the other product and input combinations. Review those four grids and profile markers
+before resuming the same output without `--limit`.
 
 Generate the final report after all 20 runs finish:
 
@@ -126,4 +130,4 @@ hash and actual byte size, tool hashes, and alternating product order within eac
 `npm run benchmark:runtime` remains the regular performance gate. It uses the existing 100k × 50 CSV and 1M × 20
 Parquet fixtures to catch runtime and paging regressions without generating the large comparison file. Pull requests
 also run the small unit tests for the generator, schedule, result validation, and report calculations. They never
-create the 2-million-row fixture or start the 20 editor runs.
+create the 1-million-row fixture or start the 20 editor runs.

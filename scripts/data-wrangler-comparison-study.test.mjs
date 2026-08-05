@@ -85,12 +85,12 @@ test("large runs accept stable VM states but still require AC on battery hosts",
   );
   assert.throws(
     () =>
-      assertLargeRunEnvironment({ machine, capacity: { ...capacity, availableMemoryBytes: 31 * 1024 ** 3 } }, machine),
+      assertLargeRunEnvironment({ machine, capacity: { ...capacity, availableMemoryBytes: 35 * 1024 ** 3 } }, machine),
     /memory or disk space/u
   );
-  assert.equal(LARGE_MIN_AVAILABLE_MEMORY_BYTES, 32 * 1024 ** 3);
+  assert.equal(LARGE_MIN_AVAILABLE_MEMORY_BYTES, 36 * 1024 ** 3);
   assert.throws(
-    () => assertLargeRunEnvironment({ machine, capacity: { ...capacity, freeDiskBytes: 5 * 1024 ** 3 } }, machine),
+    () => assertLargeRunEnvironment({ machine, capacity: { ...capacity, freeDiskBytes: 3 * 1024 ** 3 } }, machine),
     /memory or disk space/u
   );
 });
@@ -401,8 +401,8 @@ test("large schedule covers its pilot and marks a four-run UI group inconclusive
 
 test("large manifest records realized bytes and rejects a fixture below its calibrated floor", () => {
   const manifest = largeManifestFixture();
-  assert.equal(LARGE_ROWS, 2_000_000);
-  assert.equal(LARGE_MIN_REALIZED_FIXTURE_BYTES, 800 * 1024 ** 2);
+  assert.equal(LARGE_ROWS, 1_000_000);
+  assert.equal(LARGE_MIN_REALIZED_FIXTURE_BYTES, 400 * 1024 ** 2);
   assert.equal(manifest.provenance.fixture.bytes, LARGE_MIN_REALIZED_FIXTURE_BYTES + 123);
   const provenance = largeProvenanceFixture();
   provenance.fixture.bytes = LARGE_MIN_REALIZED_FIXTURE_BYTES - 1;

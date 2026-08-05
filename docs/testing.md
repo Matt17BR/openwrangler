@@ -563,16 +563,16 @@ Guarded installed-performance packaging tests require every VSCE source to be tr
 ## Data Wrangler comparison
 
 The current manual method is in [`docs/performance-comparison.md`](performance-comparison.md). It uses a generated
-2M × 100 mixed-type Parquet file and five new editor/kernel sessions for every product/input pair. The commands are:
+1M × 100 mixed-type Parquet file and five new editor/kernel sessions for every product/input pair. The commands are:
 
 - `npm run comparison:large:fixture` to stream the opt-in fixture after memory and disk checks;
 - `npm run comparison:large:study` to run the 20 independent notebook sessions; and
 - `npm run comparison:large:report` to calculate minimum, median, and maximum values.
 
-The large commands require the literal `--confirm-large-study` flag. They require at least 32 GiB of currently
-available memory and do not count swap toward that floor. Fixture generation needs 8 GiB free and keeps the file only
-when at least 6 GiB remains for the study. The manifest records the realized Parquet byte size, and the production
-generator rejects a compressed file below 800 MiB. Pull requests, releases, scheduled tasks, and normal local checks
+The large commands require the literal `--confirm-large-study` flag. They use a conservative local floor of 36 GiB
+of currently available memory and do not count swap toward it. Fixture generation needs 6 GiB free and keeps the file
+only when at least 4 GiB remains for the study. The manifest records the realized Parquet byte size, and the production
+generator rejects a compressed file below 400 MiB. Pull requests, releases, scheduled tasks, and normal local checks
 do not call these commands. Tests use small row counts through the Python API and fake editor runners; they never
 generate the full fixture.
 
@@ -595,10 +595,11 @@ Before checking fixture provenance, the runner removes a private trial directory
 then resumes at the first missing result. A failed editor run uses its fixed slot, stays in the raw report, and does
 not stop or get retried. The report needs all 20 slots, at least four successes in each five-run product/input group,
 with a four-out-of-five group marked inconclusive. Headline measurements are calculated only for five-out-of-five
-groups; the raw report keeps earlier endpoints from failed runs. Start with `--limit 4`, review one journey from every
-product/input group, then resume the same output without a limit. Every failure must be explained and checked before
-publication. The review records the commit used to build the candidate beside the candidate SHA-256 already stored in
-the manifest. The candidate must be built from the current protected `main` commit.
+groups; the raw report keeps earlier endpoints from failed runs. Start with `--limit 1` and check its memory use, then
+use `--limit 3` to cover one journey from every product/input group. Review those four journeys before resuming the
+same output without a limit. Every failure must be explained and checked before publication. The review records the
+commit used to build the candidate beside the candidate SHA-256 already stored in the manifest. The candidate must
+be built from the current protected `main` commit.
 
 Immediately before and after every editor session, the runner checks available memory, free disk, power state, and the
 recorded CPU governor. A host with a battery must be on AC. Battery-less hosts record `not-applicable`, and hosts that
