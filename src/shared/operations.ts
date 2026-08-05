@@ -44,6 +44,13 @@ export const operationCatalog: readonly OperationCatalogItem[] = [
     "clear-all"
   ),
   item(
+    "fillMissingValues",
+    "Fill missing values",
+    "Replace missing cells with the column median or a typed value.",
+    "Rows / order",
+    "symbol-null"
+  ),
+  item(
     "dropDuplicates",
     "Drop duplicates",
     "Keep one row for each repeated value combination.",

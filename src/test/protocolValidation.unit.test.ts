@@ -1235,6 +1235,64 @@ describe("protocol-v2 request validation", () => {
     }
   );
 
+  it("validates median and typed fill-missing replacements", () => {
+    const fillStep = (replacement: unknown) => ({
+      id: "fill-value",
+      kind: "fillMissingValues",
+      params: { column: valueReference, replacement }
+    });
+    const previewEnvelope = (replacement: unknown) => ({
+      protocolVersion: 2,
+      requestId: "preview-fill",
+      priority: "interactive",
+      request: {
+        kind: "previewStep",
+        sessionId: "session-1",
+        revision: 0,
+        step: fillStep(replacement),
+        offset: 0,
+        limit: 200,
+        columnOffset: 0,
+        columnLimit: 64
+      }
+    });
+    const validReplacements = [
+      { kind: "median" },
+      { kind: "string", value: "" },
+      { kind: "integer", value: "99999999999999999999999999999999999999" },
+      { kind: "float", value: "-1.25e+3" },
+      { kind: "decimal", value: "0.00000000000000000000000000000000000001" },
+      { kind: "boolean", value: true },
+      { kind: "date", value: "2024-02-29" },
+      { kind: "datetime", value: "2026-08-05T18:20:00+02:00" }
+    ];
+
+    for (const replacement of validReplacements) {
+      expect(isTransformStep(fillStep(replacement)), replacement.kind).toBe(true);
+      expect(validateTransportSchema(previewEnvelope(replacement)), replacement.kind).toBe(true);
+    }
+
+    for (const replacement of [
+      { kind: "median", value: 1 },
+      { kind: "integer", value: "01" },
+      { kind: "integer", value: "100000000000000000000000000000000000000" },
+      { kind: "float", value: "NaN" },
+      { kind: "decimal", value: "999999999999999999999999999999999999999" },
+      { kind: "boolean", value: "true" },
+      { kind: "date", value: "2023-02-29" },
+      { kind: "datetime", value: "2026-08-05T25:00" },
+      { kind: "future", value: "x" },
+      { kind: "string", value: "x", extra: true }
+    ]) {
+      expect(isTransformStep(fillStep(replacement)), JSON.stringify(replacement)).toBe(false);
+    }
+
+    for (const replacement of [null, [], { kind: "string" }]) {
+      expect(isTransformStep(fillStep(replacement))).toBe(false);
+      expect(validateTransportSchema(previewEnvelope(replacement))).toBe(false);
+    }
+  });
+
   it("bounds viewing and transform scalar text by Unicode code points across TypeScript and JSON Schema", () => {
     const request = requests.find((candidate) => candidate.kind === "getPage");
     expect(request?.kind).toBe("getPage");

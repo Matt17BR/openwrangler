@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
+from math import isfinite
 from typing import Any
 
 from .by_example import SynthesisError, normalize_by_example
-from .engines.base import is_internal_row_id_label
+from .engines.base import EngineError, coerce_typed_view_value, is_internal_row_id_label
 from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 
 
@@ -26,6 +29,12 @@ OPERATION_DEFINITIONS = (
     OperationDefinition("sortRows", "Sort rows", "Rows / order", ("rules",)),
     OperationDefinition("filterRows", "Filter rows", "Rows / order", ("filterModel",)),
     OperationDefinition("dropMissingRows", "Drop missing rows", "Rows / order", (), ("columns", "how")),
+    OperationDefinition(
+        "fillMissingValues",
+        "Fill missing values",
+        "Rows / order",
+        ("column", "replacement"),
+    ),
     OperationDefinition("dropDuplicates", "Drop duplicate rows", "Rows / order", (), ("columns", "keep")),
     OperationDefinition("selectColumns", "Select columns", "Columns / types", ("columns",)),
     OperationDefinition("dropColumns", "Drop columns", "Columns / types", ("columns",)),
@@ -114,6 +123,10 @@ COLUMN_TYPES = {
     "struct",
     "unknown",
 }
+_FILL_INTEGER_TEXT = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
+_FILL_NUMBER_TEXT = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$")
+_FILL_REPLACEMENT_KINDS = {"string", "integer", "float", "decimal", "boolean", "date", "datetime"}
+_PORTABLE_FILL_INTEGER_LIMIT = 10**38 - 1
 _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "renameColumn": ("column",),
     "cloneColumn": ("column",),
@@ -121,6 +134,7 @@ _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "formula": ("leftColumn", "rightColumn"),
     "textLength": ("column",),
     "multiLabelBinarize": ("column",),
+    "fillMissingValues": ("column",),
     "findReplace": ("column",),
     "stripText": ("column",),
     "splitText": ("column",),
@@ -222,6 +236,8 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
         params["filterModel"] = _normalize_transform_filter_model(params["filterModel"])
     elif kind == "dropMissingRows" and params.get("how", "any") not in {"any", "all"}:
         raise OperationError("dropMissingRows.how must be any or all.")
+    elif kind == "fillMissingValues":
+        params["replacement"] = _normalize_fill_missing_replacement(params["replacement"])
     elif kind == "dropDuplicates" and params.get("keep", "first") not in {"first", "last", "none"}:
         raise OperationError("dropDuplicates.keep must be first, last, or none.")
     elif kind == "castColumn" and params["dtype"] not in CAST_DTYPES:
@@ -303,6 +319,54 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError("groupBy aggregation aliases cannot duplicate a group key.")
     elif kind == "customCode" and (not isinstance(params["code"], str) or not params["code"].strip()):
         raise OperationError("customCode.code must be non-empty Python code assigning a dataframe to result.")
+
+
+def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise OperationError("fillMissingValues.replacement must be an object.")
+    kind = value.get("kind")
+    if kind == "median":
+        if set(value) != {"kind"}:
+            raise OperationError("A median fill replacement must contain only kind.")
+        return {"kind": "median"}
+    if kind not in _FILL_REPLACEMENT_KINDS:
+        raise OperationError(f"Unsupported fill replacement type: {kind!r}.")
+    if set(value) != {"kind", "value"}:
+        raise OperationError("A typed fill replacement must contain exactly kind and value.")
+
+    raw = value.get("value")
+    if kind == "string":
+        if not isinstance(raw, str) or len(raw) > MAX_VIEW_VALUE_TEXT_CHARACTERS:
+            raise OperationError(
+                "A string fill replacement must be text no longer than "
+                f"{MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points."
+            )
+    elif kind == "boolean":
+        if type(raw) is not bool:
+            raise OperationError("A boolean fill replacement must be true or false.")
+    else:
+        maximum = 40 if kind == "integer" else 64 if kind in {"float", "datetime"} else 128
+        if not isinstance(raw, str) or not raw or len(raw) > maximum:
+            raise OperationError(f"A {kind} fill replacement has an invalid value.")
+        if kind == "integer" and _FILL_INTEGER_TEXT.fullmatch(raw) is None:
+            raise OperationError("An integer fill replacement must use canonical decimal digits.")
+        if kind in {"float", "decimal"} and _FILL_NUMBER_TEXT.fullmatch(raw) is None:
+            raise OperationError(f"A {kind} fill replacement must use a finite decimal number.")
+
+    try:
+        decoded = coerce_typed_view_value(raw, str(kind))
+    except EngineError as error:
+        raise OperationError(f"Invalid {kind} fill replacement: {error}") from error
+    if kind == "integer" and not -_PORTABLE_FILL_INTEGER_LIMIT <= decoded <= _PORTABLE_FILL_INTEGER_LIMIT:
+        raise OperationError("An integer fill replacement must stay within the portable 38-digit envelope.")
+    if kind == "float" and not isfinite(decoded):
+        raise OperationError("A float fill replacement must be finite.")
+    if kind == "decimal":
+        assert isinstance(decoded, Decimal)
+        digits = len(decoded.as_tuple().digits)
+        if not decoded.is_finite() or digits > 38 or (decoded != 0 and not -38 <= decoded.adjusted() <= 37):
+            raise OperationError("A decimal fill replacement must fit a portable 38-digit decimal.")
+    return {"kind": kind, "value": raw}
 
 
 def _normalize_column_reference(value: Any, label: str) -> dict[str, str]:
@@ -519,6 +583,7 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         "castColumn",
         "textLength",
         "multiLabelBinarize",
+        "fillMissingValues",
         "findReplace",
         "stripText",
         "splitText",

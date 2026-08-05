@@ -54,8 +54,15 @@ def bound_step(step_id: str, kind: str, **params):
 
 def test_operation_registry_is_complete_and_validation_is_strict():
     catalog = operation_catalog()
-    assert len(catalog) == 27
-    assert {item["kind"] for item in catalog} >= {"sortRows", "oneHotEncode", "groupBy", "byExample", "customCode"}
+    assert len(catalog) == 28
+    assert {item["kind"] for item in catalog} >= {
+        "sortRows",
+        "fillMissingValues",
+        "oneHotEncode",
+        "groupBy",
+        "byExample",
+        "customCode",
+    }
     with pytest.raises(OperationError, match="Unsupported"):
         validate_step({"id": "bad", "kind": "unknown", "params": {}})
     with pytest.raises(OperationError, match="exactly one"):
@@ -137,9 +144,59 @@ def test_row_order_operations_reject_name_only_transform_columns(operation) -> N
 
 
 @pytest.mark.parametrize(
+    "replacement",
+    [
+        {"kind": "median"},
+        {"kind": "string", "value": ""},
+        {"kind": "integer", "value": "99999999999999999999999999999999999999"},
+        {"kind": "float", "value": "-1.25e+3"},
+        {"kind": "decimal", "value": "0.00000000000000000000000000000000000001"},
+        {"kind": "boolean", "value": True},
+        {"kind": "date", "value": "2024-02-29"},
+        {"kind": "datetime", "value": "2026-08-05T18:20:00+02:00"},
+    ],
+)
+def test_fill_missing_validation_accepts_exact_typed_replacements(replacement: dict[str, Any]) -> None:
+    validated = step(
+        "fill",
+        "fillMissingValues",
+        column=public_ref("c:source:3", "value"),
+        replacement=replacement,
+    )
+
+    assert validated["params"]["replacement"] == replacement
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {"kind": "median", "value": 1},
+        {"kind": "integer", "value": "01"},
+        {"kind": "integer", "value": "100000000000000000000000000000000000000"},
+        {"kind": "float", "value": "NaN"},
+        {"kind": "decimal", "value": "999999999999999999999999999999999999999"},
+        {"kind": "boolean", "value": "true"},
+        {"kind": "date", "value": "2023-02-29"},
+        {"kind": "datetime", "value": "2026-08-05T25:00"},
+        {"kind": "future", "value": "x"},
+        {"kind": "string", "value": "x", "extra": True},
+    ],
+)
+def test_fill_missing_validation_rejects_ambiguous_or_out_of_range_values(replacement: dict[str, Any]) -> None:
+    with pytest.raises(OperationError):
+        step(
+            "bad-fill",
+            "fillMissingValues",
+            column=public_ref("c:source:3", "value"),
+            replacement=replacement,
+        )
+
+
+@pytest.mark.parametrize(
     ("kind", "params"),
     [
         ("oneHotEncode", {"columns": ["group"]}),
+        ("fillMissingValues", {"column": "value", "replacement": {"kind": "median"}}),
         ("multiLabelBinarize", {"column": "tags", "delimiter": "|"}),
         ("findReplace", {"column": "text", "find": "a", "replacement": "b"}),
         ("stripText", {"column": "text"}),

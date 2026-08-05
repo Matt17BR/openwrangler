@@ -998,6 +998,11 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
             },
         ),
         bound_step(
+            "fillMissingValues",
+            column=bound_ref("c:source:3", "value", 3),
+            replacement={"kind": "median"},
+        ),
+        bound_step(
             "dropMissingRows",
             columns=[bound_ref("c:source:3", "value", 3)],
             how="any",

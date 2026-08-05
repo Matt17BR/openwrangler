@@ -7,6 +7,7 @@ import type {
   ColumnReference,
   ColumnSchema,
   ColumnType,
+  FillMissingReplacement,
   OperationKind,
   SessionMetadata,
   TransformFilterModel,
@@ -30,6 +31,26 @@ const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "
 const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
 const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
 const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
+type FillValueKind = Exclude<FillMissingReplacement, { kind: "median" }>["kind"];
+const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
+  "string",
+  "integer",
+  "float",
+  "decimal",
+  "boolean",
+  "date",
+  "datetime",
+  "unknown"
+]);
+const fillValueKindOptions: readonly [FillValueKind, string][] = [
+  ["string", "Text"],
+  ["integer", "Integer"],
+  ["float", "Number"],
+  ["decimal", "Decimal"],
+  ["boolean", "True / false"],
+  ["date", "Date"],
+  ["datetime", "Date and time"]
+];
 const portableScalarColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
   "integer",
@@ -208,6 +229,7 @@ function savedReferenceGroups(step: TransformStep): SavedReferenceGroup[] {
     case "castColumn":
     case "textLength":
     case "multiLabelBinarize":
+    case "fillMissingValues":
     case "findReplace":
     case "stripText":
     case "splitText":
@@ -653,6 +675,9 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
       </>
     );
   }
+  if (kind === "fillMissingValues") {
+    return <FillMissingFields columns={columns} initialStep={initialStep} />;
+  }
   if (kind === "dropDuplicates") {
     return (
       <>
@@ -1053,6 +1078,172 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
   return null;
 }
 
+function FillMissingFields({ columns, initialStep }: { columns: ColumnSchema[]; initialStep?: TransformStep }) {
+  const initialParams = initialStep?.kind === "fillMissingValues" ? initialStep.params : undefined;
+  const initialReplacement = initialParams?.replacement;
+  const medianColumns = compatibleColumns(columns, numericColumnTypes);
+  const valueColumns = compatibleColumns(columns, fillValueColumnTypes);
+  const [mode, setMode] = useState<"median" | "value">(
+    initialReplacement
+      ? initialReplacement.kind === "median"
+        ? "median"
+        : "value"
+      : medianColumns.length
+        ? "median"
+        : "value"
+  );
+  const availableColumns = mode === "median" ? medianColumns : valueColumns;
+  const savedColumnId = columnReferenceId(initialParams?.column);
+  const [selectedColumnId, setSelectedColumnId] = useState(() =>
+    savedColumnId && availableColumns.some((column) => column.id === savedColumnId)
+      ? savedColumnId
+      : (availableColumns[0]?.id ?? "")
+  );
+  const selectedColumn = availableColumns.find((column) => column.id === selectedColumnId);
+  const initialKind = initialReplacement?.kind !== "median" ? initialReplacement?.kind : undefined;
+  const [unknownValueKind, setUnknownValueKind] = useState<FillValueKind>(initialKind ?? "string");
+
+  const changeMode = (nextMode: "median" | "value") => {
+    const nextColumns = nextMode === "median" ? medianColumns : valueColumns;
+    setMode(nextMode);
+    setSelectedColumnId((current) =>
+      nextColumns.some((column) => column.id === current) ? current : (nextColumns[0]?.id ?? "")
+    );
+  };
+  const changeColumn = (id: string) => {
+    setSelectedColumnId(id);
+    const column = availableColumns.find((candidate) => candidate.id === id);
+    if (column?.type !== "unknown") setUnknownValueKind(fillValueKindForColumn(column?.type));
+  };
+  const valueKind =
+    selectedColumn?.type === "unknown" ? unknownValueKind : fillValueKindForColumn(selectedColumn?.type);
+  const savedValue = initialReplacement?.kind !== "median" ? String(initialReplacement?.value) : "";
+
+  return (
+    <>
+      <label className="formField">
+        <span>Fill with</span>
+        <select name="fillMode" value={mode} onChange={(event) => changeMode(event.target.value as "median" | "value")}>
+          <option value="value">A value</option>
+          <option value="median">Column median</option>
+        </select>
+      </label>
+      <ColumnReferenceSelect
+        name="column"
+        label={mode === "median" ? "Numeric column" : "Column"}
+        columns={availableColumns}
+        value={selectedColumnId}
+        onChange={changeColumn}
+        emptyMessage={
+          mode === "median"
+            ? "No numeric columns are available. Choose a typed value or convert a column first."
+            : "No scalar columns support a typed replacement."
+        }
+      />
+      {mode === "median" ? (
+        <p className="panelNote">
+          The median ignores null and NaN cells and keeps the column type. Integer and decimal medians must fit that
+          type exactly.
+        </p>
+      ) : (
+        <>
+          {selectedColumn?.type === "unknown" ? (
+            <label className="formField">
+              <span>Value type</span>
+              <select
+                name="fillValueKind"
+                value={unknownValueKind}
+                onChange={(event) => setUnknownValueKind(event.target.value as FillValueKind)}
+              >
+                {fillValueKindOptions.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <input type="hidden" name="fillValueKind" value={valueKind} />
+          )}
+          <FillReplacementInput kind={valueKind} defaultValue={savedValue} />
+        </>
+      )}
+    </>
+  );
+}
+
+function fillValueKindForColumn(type: ColumnType | undefined): FillValueKind {
+  return type === "integer" ||
+    type === "float" ||
+    type === "decimal" ||
+    type === "boolean" ||
+    type === "date" ||
+    type === "datetime"
+    ? type
+    : "string";
+}
+
+function normalizeFillNumericValue(kind: FillValueKind, value: string): string {
+  const trimmed = value.trim();
+  if (kind === "integer") {
+    if (!/^[+-]?[0-9]+$/u.test(trimmed)) return trimmed;
+    try {
+      return BigInt(trimmed).toString();
+    } catch {
+      return trimmed;
+    }
+  }
+  if (kind !== "float" && kind !== "decimal") return value;
+  const match = trimmed.match(/^([+-]?)(?:(\d+)(\.\d*)?|(\.\d+))([eE][+-]?\d+)?$/u);
+  if (!match) return trimmed;
+  const [, sign, wholeText = "", fractionAfterWhole, fractionOnly, exponent = ""] = match;
+  const whole = (wholeText || "0").replace(/^0+(?=\d)/u, "");
+  const fraction = fractionOnly !== undefined ? fractionOnly.slice(1) : fractionAfterWhole?.slice(1);
+  const coefficient = fraction === undefined ? whole : `${whole}.${fraction || "0"}`;
+  return `${sign === "-" ? "-" : ""}${coefficient}${exponent}`;
+}
+
+function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; defaultValue: string }) {
+  if (kind === "boolean") {
+    return (
+      <SelectField
+        name="fillValue"
+        label="Replacement value"
+        defaultValue={defaultValue === "true" ? "true" : "false"}
+        options={[
+          ["false", "False"],
+          ["true", "True"]
+        ]}
+      />
+    );
+  }
+  if (kind === "date") {
+    return <TextField name="fillValue" label="Replacement value" type="date" defaultValue={defaultValue} required />;
+  }
+  const label =
+    kind === "string"
+      ? "Replacement value"
+      : kind === "datetime"
+        ? "Replacement value (ISO date and time)"
+        : "Replacement number";
+  return (
+    <TextField
+      key={kind}
+      name="fillValue"
+      label={label}
+      defaultValue={defaultValue}
+      required={kind !== "string"}
+      inputMode={kind === "integer" ? "numeric" : kind === "float" || kind === "decimal" ? "decimal" : undefined}
+      maxLength={kind === "string" ? 65_536 : kind === "integer" ? 40 : kind === "decimal" ? 128 : 64}
+      normalizeOnBlur={
+        kind === "integer" || kind === "float" || kind === "decimal"
+          ? (value) => normalizeFillNumericValue(kind, value)
+          : undefined
+      }
+    />
+  );
+}
+
 function buildParams(
   kind: OperationKind,
   form: FormData,
@@ -1087,6 +1278,23 @@ function buildParams(
     return { filterModel: useSaved ? savedFilterModel : transformFilterModel(filterModel, availableColumns) };
   }
   if (kind === "dropMissingRows") return { columns: columnReferences("columns"), how: value("how") };
+  if (kind === "fillMissingValues") {
+    if (value("fillMode") === "median") {
+      return { column: columnReference("column"), replacement: { kind: "median" } };
+    }
+    const replacementKind = value("fillValueKind");
+    const rawValue = value("fillValue");
+    return {
+      column: columnReference("column"),
+      replacement: {
+        kind: replacementKind,
+        value:
+          replacementKind === "boolean"
+            ? rawValue === "true"
+            : normalizeFillNumericValue(replacementKind as FillValueKind, rawValue)
+      }
+    };
+  }
   if (kind === "dropDuplicates") {
     const params: Record<string, unknown> = { keep: value("keep") };
     const columns = columnReferences("columns");
@@ -1603,7 +1811,10 @@ function TextField({
   required = false,
   type = "text",
   min,
-  step
+  step,
+  inputMode,
+  maxLength,
+  normalizeOnBlur
 }: {
   name: string;
   label: string;
@@ -1612,11 +1823,30 @@ function TextField({
   type?: string;
   min?: number;
   step?: number | "any";
+  inputMode?: "numeric" | "decimal";
+  maxLength?: number;
+  normalizeOnBlur?: (value: string) => string;
 }) {
   return (
     <label className="formField">
       <span>{label}</span>
-      <input name={name} type={type} min={min} step={step} defaultValue={defaultValue} required={required} />
+      <input
+        name={name}
+        type={type}
+        min={min}
+        step={step}
+        inputMode={inputMode}
+        maxLength={maxLength}
+        defaultValue={defaultValue}
+        required={required}
+        onBlur={
+          normalizeOnBlur
+            ? (event) => {
+                event.currentTarget.value = normalizeOnBlur(event.currentTarget.value);
+              }
+            : undefined
+        }
+      />
     </label>
   );
 }

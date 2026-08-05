@@ -632,6 +632,7 @@
         "sortRows",
         "filterRows",
         "dropMissingRows",
+        "fillMissingValues",
         "dropDuplicates",
         "selectColumns",
         "dropColumns",
@@ -715,6 +716,93 @@
           "items": { "$ref": "#/definitions/ColumnReference" }
         },
         "how": { "type": "string", "enum": ["any", "all"] }
+      }
+    },
+    "FillMissingReplacement": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "median" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "string" },
+            "value": { "type": "string", "maxLength": 65536 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "integer" },
+            "value": { "type": "string", "maxLength": 40, "pattern": "^-?(?:0|[1-9][0-9]*)$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "float" },
+            "value": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "decimal" },
+            "value": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": { "kind": { "const": "boolean" }, "value": { "type": "boolean" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "date" },
+            "value": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "datetime" },
+            "value": { "type": "string", "minLength": 16, "maxLength": 64 }
+          }
+        }
+      ]
+    },
+    "FillMissingParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "replacement"],
+      "properties": {
+        "column": { "$ref": "#/definitions/ColumnReference" },
+        "replacement": { "$ref": "#/definitions/FillMissingReplacement" }
       }
     },
     "DropDuplicatesParams": {
@@ -1040,6 +1128,7 @@
         { "$ref": "#/definitions/SortRowsTransformStep" },
         { "$ref": "#/definitions/FilterRowsTransformStep" },
         { "$ref": "#/definitions/DropMissingRowsTransformStep" },
+        { "$ref": "#/definitions/FillMissingValuesTransformStep" },
         { "$ref": "#/definitions/DropDuplicatesTransformStep" },
         { "$ref": "#/definitions/SelectColumnsTransformStep" },
         { "$ref": "#/definitions/DropColumnsTransformStep" },
@@ -1101,6 +1190,18 @@
           "properties": {
             "kind": { "const": "dropMissingRows" },
             "params": { "$ref": "#/definitions/DropMissingRowsParams" }
+          }
+        }
+      ]
+    },
+    "FillMissingValuesTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "fillMissingValues" },
+            "params": { "$ref": "#/definitions/FillMissingParams" }
           }
         }
       ]

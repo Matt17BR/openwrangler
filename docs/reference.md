@@ -72,6 +72,7 @@
 | `sortRows`           | Sort rows                 | Rows / order       | `rules`                                     | None                                    |
 | `filterRows`         | Filter rows               | Rows / order       | `filterModel`                               | None                                    |
 | `dropMissingRows`    | Drop missing rows         | Rows / order       | None                                        | `columns`, `how`                        |
+| `fillMissingValues`  | Fill missing values       | Rows / order       | `column`, `replacement`                     | None                                    |
 | `dropDuplicates`     | Drop duplicate rows       | Rows / order       | None                                        | `columns`, `keep`                       |
 | `selectColumns`      | Select columns            | Columns / types    | `columns`                                   | None                                    |
 | `dropColumns`        | Drop columns              | Columns / types    | `columns`                                   | None                                    |
