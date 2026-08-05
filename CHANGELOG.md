@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Cursor's remote-Jupyter check now restores the exact notebook once if the Variables view moves focus. Failure
+  reports use loading state and element counts instead of webview URLs or table text.
 - PySpark column profiles now check and collect their ten displayed values in one Spark job. If the values are too
   large, Spark returns only their byte counts. Ordinary profiles no longer run the same grouped query twice.
 - PySpark Classic and Connect now use the same mixed profiling data in runtime tests. The packaged notebook test

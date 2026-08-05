@@ -116,6 +116,21 @@ test("released-Jupyter Variables acceptance targets the canonical orders showcas
     /async function invokeReleasedNotebookToolbarVariable[\s\S]*?const input = picker\.locator\("\.quick-input-box input:visible"\)\.first\(\);\s*await input\.fill\(variableName\);/u
   );
   assert.match(source, /"orders_df = pd\.DataFrame\(\{"/u);
+
+  const cursorRemoteReadiness = source.slice(
+    source.indexOf("async function prepareCursorRemoteReleasedJupyterVariableDiscovery("),
+    source.indexOf("async function waitForReleasedJupyterVariableActionReceipt(")
+  );
+  const initialProbe = cursorRemoteReadiness.indexOf("let readiness = await releasedWorkbenchDiagnostics(");
+  const conditionalRefocus = cursorRemoteReadiness.indexOf(
+    "if (shouldRefocusReleasedJupyterVariableNotebook(editor, phase, readiness.activeNotebook))"
+  );
+  const readinessWait = cursorRemoteReadiness.indexOf("if (!releasedJupyterVariableViewIsReady(readiness))");
+  assert.ok(initialProbe >= 0);
+  assert.ok(conditionalRefocus > initialProbe);
+  assert.ok(readinessWait > conditionalRefocus);
+  assert.equal(cursorRemoteReadiness.match(/showExactReleasedNotebook\(notebook\)/gu)?.length, 1);
+  assert.doesNotMatch(cursorRemoteReadiness, /jupyter\.openVariableView/u);
 });
 
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
