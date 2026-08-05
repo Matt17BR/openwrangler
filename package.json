@@ -121,6 +121,7 @@
     "test:webview-acceptance": "npm run test:webview-acceptance:run",
     "test:webview-acceptance:run": "npm run brand:render-check && npm run verify:readme-media && npm run test:visual && npm run test:accessibility",
     "benchmark:runtime": "node scripts/run-python.mjs python/benchmarks/runtime_performance.py --strict --fixture-dir tmp/performance --json-out tmp/performance/report.json",
+    "benchmark:pyspark-profile": "node scripts/run-python.mjs python/benchmarks/pyspark_profile.py",
     "comparison:smoke": "node scripts/data-wrangler-comparison-study.mjs smoke",
     "comparison:study": "node scripts/data-wrangler-comparison-study.mjs run",
     "comparison:report": "node scripts/data-wrangler-comparison-study.mjs report",
