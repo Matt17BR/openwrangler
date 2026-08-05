@@ -10,6 +10,7 @@ import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from 
 
 const WORKBENCH_TIMEOUT_MS = 20_000;
 const GRID_TIMEOUT_MS = 120_000;
+const MAX_GRID_TIMEOUT_MS = 180_000;
 const FRAME_PROBE_TIMEOUT_MS = 250;
 const FRAME_PROBE_RETRY_DELAY_MS = 50;
 const FRAME_PROBE_RETRIES = 1;
@@ -112,8 +113,8 @@ export async function waitForGenericGridReadiness(
   readonly frame: Frame;
 }> {
   assert.ok(
-    Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= GRID_TIMEOUT_MS,
-    `Comparison grid discovery timeout must be between 1 and ${GRID_TIMEOUT_MS} ms.`
+    Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= MAX_GRID_TIMEOUT_MS,
+    `Comparison grid discovery timeout must be between 1 and ${MAX_GRID_TIMEOUT_MS} ms.`
   );
   const deadline = Date.now() + timeoutMs;
   const stalledFrames = new Set<Frame>();
