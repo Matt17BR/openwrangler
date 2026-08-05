@@ -309,22 +309,32 @@ describe("App column projection", () => {
     };
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: pysparkMetadata, page: projectedPage(0, 0), summaries: [] });
-    expect(await screen.findByRole("cell", { name: "value-0-row-0" })).toBeVisible();
+    const confirmedCell = await screen.findByRole("cell", { name: "value-0-row-0" });
+    expect(confirmedCell).toBeVisible();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      confirmedCell.focus();
+      postMessage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+      const request = await onlyRuntimeRequest("getPage");
+      dispatch({
+        kind: "error",
+        code: "pyspark_connect_state_lost",
+        message: "Run the cell that creates spark_orders, then choose Reconnect.",
+        recoverable: true,
+        sessionId: pysparkMetadata.sessionId,
+        viewRequestId: String(request.viewRequestId)
+      });
 
-    postMessage.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
-    const request = await onlyRuntimeRequest("getPage");
-    dispatch({
-      kind: "error",
-      code: "pyspark_connect_state_lost",
-      message: "Run the cell that creates spark_orders, then choose Reconnect.",
-      recoverable: true,
-      sessionId: pysparkMetadata.sessionId,
-      viewRequestId: String(request.viewRequestId)
-    });
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("choose Reconnect");
-    expect(screen.getByRole("cell", { name: "value-0-row-0" })).toBeVisible();
+      expect(await screen.findByRole("alert")).toHaveTextContent("choose Reconnect");
+      expect(screen.getByRole("cell", { name: "value-0-row-0" })).toBeVisible();
+      await waitFor(() => {
+        expect(document.activeElement).toHaveAttribute("data-grid-row", "0");
+        expect(document.activeElement).toHaveAttribute("data-grid-column", "0");
+      });
+    } finally {
+      hasFocus.mockRestore();
+    }
     expect(screen.queryByRole("button", { name: "Retry page" })).toBeNull();
 
     postMessage.mockClear();

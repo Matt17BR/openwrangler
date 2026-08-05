@@ -821,14 +821,29 @@ export function App() {
   );
 
   const restoreViewAfterPageFailure = useCallback(
-    (pendingPage: PendingPageRequest) => {
+    (pendingPage: PendingPageRequest, restoreConfirmedViewport = false) => {
       const previous = pendingPage.previousConfirmedState;
       if (pendingPage.changesView && previous) {
         restoreConfirmedViewState(previous);
         return;
       }
+      if (!restoreConfirmedViewport) return;
       const confirmedPage = pageRef.current;
       if (!confirmedPage) return;
+      const focusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+      const focusedRow = focusedElement?.getAttribute("data-grid-row");
+      const focusedColumn = focusedElement?.getAttribute("data-grid-column");
+      const focusedViewContextId = confirmedView.current?.viewContextId;
+      const focusedCell =
+        focusedRow !== null &&
+        focusedRow !== undefined &&
+        focusedColumn !== null &&
+        focusedColumn !== undefined &&
+        /^\d+$/u.test(focusedRow) &&
+        /^\d+$/u.test(focusedColumn)
+          ? { row: focusedRow, column: focusedColumn }
+          : undefined;
+      const restoreGridFocus = focusedCell !== undefined || focusedElement === document.body;
       publishGridViewState({
         ...gridViewStateRef.current,
         viewport: {
@@ -837,6 +852,19 @@ export function App() {
         }
       });
       setViewStateRestoreVersion((current) => current + 1);
+      if (restoreGridFocus) {
+        scheduleWebviewFocusRestoration(() => {
+          scheduleWebviewFocusRestoration(() => {
+            if (confirmedView.current?.viewContextId !== focusedViewContextId) return;
+            const target = focusedCell
+              ? document.querySelector<HTMLElement>(
+                  `[data-grid-row="${focusedCell.row}"][data-grid-column="${focusedCell.column}"]`
+                )
+              : document.querySelector<HTMLElement>('[data-testid="data-grid-scroller"] [tabindex="0"]');
+            target?.focus({ preventScroll: true });
+          });
+        });
+      }
     },
     [publishGridViewState, restoreConfirmedViewState]
   );
@@ -1087,7 +1115,7 @@ export function App() {
               if (pendingPage.reason === "projection") setProjectionLoading(false);
               else setLoading(importOptionsPendingRef.current);
             }
-            restoreViewAfterPageFailure(pendingPage);
+            restoreViewAfterPageFailure(pendingPage, response.code === "pyspark_connect_state_lost");
             storeFailedPageRequest(pendingPage);
             setForegroundError(response.message);
             return;
