@@ -8,8 +8,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Added **Fill missing values** for Pandas, Polars, and DuckDB. A draft can replace null and NaN cells in one
   column with its median or a value of the matching type, then preview, apply, edit, discard, replay, or undo it like
-  any other cleaning step. Median fills return a floating-point column on every engine. Generated Python code
-  produces the same result without converting the dataframe to another engine.
+  any other cleaning step. Median fills keep the existing column type. Integer and decimal medians must fit that type
+  exactly, decimal values must fit the column scale, and datetime values must match the column's timezone awareness.
+  Generated Python code follows the same rules without converting the dataframe to another engine.
 
 ### Changed
 

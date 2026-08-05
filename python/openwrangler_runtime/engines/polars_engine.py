@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from decimal import Decimal
 from importlib import import_module
 from importlib.util import find_spec
 from inspect import signature
@@ -23,8 +24,11 @@ from .base import (
     categorical_visualization,
     coerce_typed_view_value,
     datetime_visualization,
+    decimal_at_scale,
     decode_fill_replacement,
     ensure_output_columns_available,
+    exact_decimal_median,
+    exact_integer_median,
     generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     infer_semantic_type,
@@ -36,6 +40,7 @@ from .base import (
     numeric_histogram_edges,
     numeric_visualization,
     numeric_visualization_from_bin_counts,
+    require_datetime_fill_awareness,
     resolve_excel_sheet_selector,
     typed_selection_value,
     validate_view_predicate_operator,
@@ -918,18 +923,38 @@ class PolarsEngine(DataFrameEngine):
                 expression = expression.fill_nan(None)
             replacement = params["replacement"]
             if replacement.get("kind") == "median":
-                value_expression = expression.cast(pl.Float64, strict=False)
-                aggregate = df.select(value_expression.median().alias("__ow_fill_median"))
-                median_frame = (
-                    aggregate.collect(engine="streaming") if isinstance(aggregate, pl.LazyFrame) else aggregate
-                )
-                median = median_frame.item()
-                if median is None or (isinstance(median, float) and median != median):
-                    raise EngineError(
-                        "Cannot fill with the median because the selected column has no present numeric values."
+                semantic_type = infer_semantic_type(str(dtype))
+                if semantic_type == "float":
+                    aggregate = df.select(expression.median().alias("__ow_fill_median"))
+                    median_frame = (
+                        aggregate.collect(engine="streaming") if isinstance(aggregate, pl.LazyFrame) else aggregate
                     )
-                return df.with_columns(value_expression.fill_null(pl.lit(median)).alias(column))
+                    median = median_frame.item()
+                    if median is None or (isinstance(median, float) and median != median):
+                        raise EngineError(
+                            "Cannot fill with the median because the selected column has no present numeric values."
+                        )
+                else:
+                    lower, upper = _polars_middle_values(df, expression)
+                    if semantic_type == "integer":
+                        median = exact_integer_median(lower, upper)
+                    elif semantic_type == "decimal":
+                        precision = int(getattr(dtype, "precision", None) or 38)
+                        scale = int(getattr(dtype, "scale", None) or 0)
+                        median = exact_decimal_median(lower, upper, precision, scale)
+                    else:
+                        raise EngineError(f"Cannot calculate a numeric median for Polars type {dtype}.")
+                literal = pl.lit(median).cast(dtype, strict=True)
+                return df.with_columns(expression.fill_null(literal).alias(column))
             fill_value = decode_fill_replacement(replacement)
+            if dtype.base_type() == pl.Decimal:
+                fill_value = decimal_at_scale(
+                    Decimal(fill_value),
+                    int(getattr(dtype, "precision", None) or 38),
+                    int(getattr(dtype, "scale", None) or 0),
+                )
+            elif dtype.base_type() == pl.Datetime:
+                fill_value = require_datetime_fill_awareness(fill_value, getattr(dtype, "time_zone", None) is not None)
             promotes_string = infer_semantic_type(str(dtype)) == "string" and str(dtype).lower() not in {
                 "string",
                 "utf8",
@@ -1139,16 +1164,23 @@ class PolarsEngine(DataFrameEngine):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
         needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
-        needs_fill_value_imports = any(step["kind"] == "fillMissingValues" for step in plan)
+        needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
         needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan)
         lines = ["from collections import Counter"] if needs_counter else []
-        if needs_filter_helpers or needs_fill_value_imports:
-            lines.extend(["from datetime import date, datetime, timedelta", "from decimal import Decimal"])
+        if needs_filter_helpers or needs_fill_helpers:
+            decimal_import = (
+                "from decimal import Decimal, InvalidOperation, localcontext"
+                if needs_fill_helpers
+                else "from decimal import Decimal"
+            )
+            lines.extend(["from datetime import date, datetime, timedelta", decimal_import])
         if lines:
             lines.append("")
         lines.extend(["import polars as pl", ""])
         if needs_filter_helpers:
             lines.extend(generated_view_value_helper_lines())
+        if needs_fill_helpers:
+            lines.extend(_generated_polars_fill_helpers())
         if any(_polars_step_needs_checked_integer_helpers(step) for step in plan):
             lines.extend(
                 [
@@ -1316,25 +1348,56 @@ class PolarsEngine(DataFrameEngine):
             ]
             replacement = params["replacement"]
             if replacement.get("kind") == "median":
-                value_expression = f"_fill_value_expression_{index}"
                 aggregate = f"_fill_aggregate_{index}"
                 median = f"_fill_median_{index}"
+                lower = f"_fill_lower_{index}"
+                upper = f"_fill_upper_{index}"
                 lines.extend(
                     [
-                        f"{prefix}{value_expression} = {expression}.cast(pl.Float64, strict=False)",
-                        f"{prefix}{aggregate} = df.select({value_expression}.median().alias('__ow_fill_median'))",
+                        f"{prefix}if {schema}[{column!r}].is_float():",
+                        f"{prefix}    {aggregate} = df.select({expression}.median().alias('__ow_fill_median'))",
                         (
-                            f"{prefix}{aggregate} = {aggregate}.collect(engine='streaming') "
+                            f"{prefix}    {aggregate} = {aggregate}.collect(engine='streaming') "
                             f"if isinstance({aggregate}, pl.LazyFrame) else {aggregate}"
                         ),
-                        f"{prefix}{median} = {aggregate}.item()",
-                        f"{prefix}if {median} is None or (isinstance({median}, float) and {median} != {median}):",
+                        f"{prefix}    {median} = {aggregate}.item()",
+                        f"{prefix}    if {median} is None or (isinstance({median}, float) and {median} != {median}):",
                         (
-                            f"{prefix}    raise ValueError("
+                            f"{prefix}        raise ValueError("
                             "'Cannot fill with the median because the selected column has no present numeric values.')"
                         ),
+                        f"{prefix}else:",
+                        f"{prefix}    {lower}, {upper} = _ow_polars_middle_values(df, {expression})",
+                        f"{prefix}    if {schema}[{column!r}].is_integer():",
+                        f"{prefix}        _fill_total_{index} = int({lower}) + int({upper})",
+                        f"{prefix}        if _fill_total_{index} % 2:",
                         (
-                            f"{prefix}df = df.with_columns({value_expression}.fill_null(pl.lit({median}))"
+                            f"{prefix}            raise ValueError("
+                            "'The integer median is fractional. Cast the column to float or decimal before "
+                            "filling missing values.')"
+                        ),
+                        f"{prefix}        {median} = _fill_total_{index} // 2",
+                        f"{prefix}    elif {schema}[{column!r}].base_type() == pl.Decimal:",
+                        f"{prefix}        _fill_precision_{index} = int({schema}[{column!r}].precision or 38)",
+                        f"{prefix}        _fill_scale_{index} = int({schema}[{column!r}].scale or 0)",
+                        f"{prefix}        with localcontext() as _fill_context_{index}:",
+                        (
+                            f"{prefix}            _fill_context_{index}.prec = max(80, "
+                            f"_fill_precision_{index} + _fill_scale_{index} + 4, "
+                            f"len({lower}.as_tuple().digits) + len({upper}.as_tuple().digits) + "
+                            f"_fill_scale_{index} + 4)"
+                        ),
+                        f"{prefix}            {median} = ({lower} + {upper}) / Decimal(2)",
+                        (
+                            f"{prefix}        {median} = _ow_decimal_at_scale("
+                            f"{median}, _fill_precision_{index}, _fill_scale_{index})"
+                        ),
+                        f"{prefix}    else:",
+                        f"{prefix}        raise ValueError(f'Cannot calculate a numeric median for Polars type "
+                        f"{{{schema}[{column!r}]}}.')",
+                        f"{prefix}_fill_literal_{index} = pl.lit({median}).cast({schema}[{column!r}], strict=True)",
+                        (
+                            f"{prefix}df = df.with_columns({expression}.fill_null(_fill_literal_{index})"
                             f".alias({column!r}))"
                         ),
                     ]
@@ -1345,6 +1408,27 @@ class PolarsEngine(DataFrameEngine):
                 promotes_string = f"_fill_promotes_string_{index}"
                 lines.extend(
                     [
+                        f"{prefix}_fill_value_{index} = {fill_value}",
+                        f"{prefix}if {schema}[{column!r}].base_type() == pl.Decimal:",
+                        (
+                            f"{prefix}    _fill_value_{index} = _ow_decimal_at_scale(Decimal(_fill_value_{index}), "
+                            f"int({schema}[{column!r}].precision or 38), int({schema}[{column!r}].scale or 0))"
+                        ),
+                        f"{prefix}elif {schema}[{column!r}].base_type() == pl.Datetime:",
+                        f"{prefix}    _fill_column_aware_{index} = {schema}[{column!r}].time_zone is not None",
+                        (
+                            f"{prefix}    _fill_value_aware_{index} = _fill_value_{index}.tzinfo is not None and "
+                            f"_fill_value_{index}.utcoffset() is not None"
+                        ),
+                        f"{prefix}    if _fill_value_aware_{index} != _fill_column_aware_{index}:",
+                        (
+                            f"{prefix}        _fill_expected_{index} = 'timezone-aware' "
+                            f"if _fill_column_aware_{index} else 'timezone-naive'"
+                        ),
+                        (
+                            f"{prefix}        raise ValueError(f'The replacement datetime must be "
+                            f"{{_fill_expected_{index}}} to match the selected column.')"
+                        ),
                         (
                             f"{prefix}{promotes_string} = "
                             f"str({schema}[{column!r}]).lower() not in {{'string', 'utf8'}} and "
@@ -1354,11 +1438,11 @@ class PolarsEngine(DataFrameEngine):
                         ),
                         f"{prefix}if {promotes_string}:",
                         f"{prefix}    {expression} = {expression}.cast(pl.String)",
-                        (f"{prefix}    {literal} = pl.lit({fill_value}).cast(pl.String)"),
+                        (f"{prefix}    {literal} = pl.lit(_fill_value_{index}).cast(pl.String)"),
                         f"{prefix}else:",
                         (
-                            f"{prefix}    {literal} = pl.lit({fill_value}) if {schema}[{column!r}] == pl.Null "
-                            f"else pl.lit({fill_value}).cast({schema}[{column!r}], strict=True)"
+                            f"{prefix}    {literal} = pl.lit(_fill_value_{index}) if {schema}[{column!r}] == pl.Null "
+                            f"else pl.lit(_fill_value_{index}).cast({schema}[{column!r}], strict=True)"
                         ),
                         f"{prefix}df = df.with_columns({expression}.fill_null({literal}).alias({column!r}))",
                     ]
@@ -1784,6 +1868,74 @@ def _compile_polars_by_example(
             return f"_ow_checked_integer_formula({left}, {right}, {program['operator']!r})"
         return f"({left} {symbol} {right})"
     raise EngineError(f"Unsupported Polars by-example expression: {kind}")
+
+
+def _polars_middle_values(frame: Any, expression: Any) -> tuple[Any, Any]:
+    import polars as pl
+
+    ordered = expression.drop_nulls().sort()
+    count_query = frame.select(ordered.len().alias("__ow_fill_count"))
+    count_frame = count_query.collect(engine="streaming") if isinstance(count_query, pl.LazyFrame) else count_query
+    count = int(count_frame.item())
+    if count == 0:
+        raise EngineError("Cannot fill with the median because the selected column has no present numeric values.")
+    offset = (count - 1) // 2
+    length = 2 if count % 2 == 0 else 1
+    middle_query = frame.select(ordered.slice(offset, length).alias("__ow_fill_middle"))
+    middle_frame = middle_query.collect(engine="streaming") if isinstance(middle_query, pl.LazyFrame) else middle_query
+    values = middle_frame.to_series().to_list()
+    if len(values) != length:
+        raise EngineError("Polars could not retrieve the exact middle values for the median fill.")
+    return values[0], values[-1]
+
+
+def _generated_polars_fill_helpers() -> list[str]:
+    return [
+        "",
+        "def _ow_decimal_at_scale(value, precision, scale):",
+        "    if not value.is_finite() or precision < 1 or scale < 0 or scale > precision:",
+        "        raise ValueError(f'The replacement value does not fit DECIMAL({precision}, {scale}).')",
+        "    quantum = Decimal((0, (1,), -scale))",
+        "    try:",
+        "        with localcontext() as context:",
+        "            context.prec = max(80, precision + scale + 4, len(value.as_tuple().digits) + scale + 4)",
+        "            normalized = value.quantize(quantum)",
+        "    except InvalidOperation as error:",
+        "        raise ValueError(f'The replacement value does not fit DECIMAL({precision}, {scale}).') from error",
+        "    if normalized != value:",
+        "        raise ValueError(f'The replacement value cannot be represented exactly at decimal scale {scale}.')",
+        "    if normalized != 0 and normalized.adjusted() >= precision - scale:",
+        "        raise ValueError(f'The replacement value does not fit DECIMAL({precision}, {scale}).')",
+        "    return normalized",
+        "",
+        "",
+        "def _ow_polars_middle_values(frame, expression):",
+        "    ordered = expression.drop_nulls().sort()",
+        "    count_query = frame.select(ordered.len().alias('__ow_fill_count'))",
+        (
+            "    count_frame = count_query.collect(engine='streaming') "
+            "if isinstance(count_query, pl.LazyFrame) else count_query"
+        ),
+        "    count = int(count_frame.item())",
+        "    if count == 0:",
+        (
+            "        raise ValueError('Cannot fill with the median because the selected column has no "
+            "present numeric values.')"
+        ),
+        "    offset = (count - 1) // 2",
+        "    length = 2 if count % 2 == 0 else 1",
+        "    middle_query = frame.select(ordered.slice(offset, length).alias('__ow_fill_middle'))",
+        (
+            "    middle_frame = middle_query.collect(engine='streaming') "
+            "if isinstance(middle_query, pl.LazyFrame) else middle_query"
+        ),
+        "    values = middle_frame.to_series().to_list()",
+        "    if len(values) != length:",
+        "        raise ValueError('Polars could not retrieve the exact middle values for the median fill.')",
+        "    return values[0], values[-1]",
+        "",
+        "",
+    ]
 
 
 def _polars_valid_value(expression: Any, dtype: Any) -> Any:

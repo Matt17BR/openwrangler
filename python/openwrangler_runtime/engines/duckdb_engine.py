@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -25,8 +26,11 @@ from .base import (
     categorical_visualization,
     coerce_typed_view_value,
     datetime_visualization,
+    decimal_at_scale,
     decode_fill_replacement,
     ensure_output_columns_available,
+    exact_decimal_median,
+    exact_integer_median,
     generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     infer_semantic_type,
@@ -37,6 +41,7 @@ from .base import (
     numeric_histogram_bin_count,
     numeric_histogram_edges,
     numeric_visualization_from_bin_counts,
+    require_datetime_fill_awareness,
     typed_selection_value,
     validate_view_predicate_operator,
 )
@@ -46,6 +51,7 @@ _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
 _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
+_DUCKDB_DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -816,7 +822,7 @@ class DuckDBEngine(DataFrameEngine):
             if replacement.get("kind") == "median":
                 return [f"{prefix}df = _ow_fill_missing(df, {column!r}, 'median', None)"]
             value = generated_fill_replacement_expression(replacement)
-            return [f"{prefix}df = _ow_fill_missing(df, {column!r}, 'value', {value})"]
+            return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, {value})"]
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
@@ -1033,26 +1039,52 @@ class DuckDBEngine(DataFrameEngine):
         missing = f"NOT ({valid})"
 
         if replacement.get("kind") == "median":
-            value_expression = f"CAST({identifier} AS DOUBLE)"
-            median = self._terminal_scalar(
-                frame,
-                f"SELECT median({value_expression}) FILTER (WHERE {valid}) FROM ow",
-            )
-            if median is None or (isinstance(median, float) and isnan(median)):
-                raise EngineError(
-                    "Cannot fill with the median because the selected column has no present numeric values."
+            if semantic_type == "float":
+                median = self._terminal_scalar(
+                    frame,
+                    f"SELECT median({identifier}) FILTER (WHERE {valid}) FROM ow",
                 )
-            replacement_sql = f"CAST({_sql_literal(median)} AS DOUBLE)"
-            expression = f"CASE WHEN {missing} THEN {replacement_sql} ELSE CAST({identifier} AS DOUBLE) END"
+                if median is None or (isinstance(median, float) and isnan(median)):
+                    raise EngineError(
+                        "Cannot fill with the median because the selected column has no present numeric values."
+                    )
+            else:
+                count = int(self._terminal_scalar(frame, f"SELECT count(*) FROM ow WHERE {valid}"))
+                if count == 0:
+                    raise EngineError(
+                        "Cannot fill with the median because the selected column has no present numeric values."
+                    )
+                offset = (count - 1) // 2
+                limit = 2 if count % 2 == 0 else 1
+                middle = self._terminal_rows(
+                    frame,
+                    f"SELECT {identifier} FROM ow WHERE {valid} ORDER BY {identifier} LIMIT {limit} OFFSET {offset}",
+                )
+                if len(middle) != limit:
+                    raise EngineError("DuckDB could not retrieve the exact middle values for the median fill.")
+                lower, upper = middle[0][0], middle[-1][0]
+                if semantic_type == "integer":
+                    median = exact_integer_median(lower, upper)
+                elif semantic_type == "decimal":
+                    precision, scale = _duckdb_decimal_spec(raw_type)
+                    median = exact_decimal_median(lower, upper, precision, scale)
+                else:
+                    raise EngineError(f"Cannot calculate a numeric median for DuckDB type {raw_type}.")
+            median_literal = _duckdb_decimal_literal(median) if semantic_type == "decimal" else _sql_literal(median)
+            replacement_sql = f"CAST({median_literal} AS {raw_type})"
+            expression = f"CASE WHEN {missing} THEN {replacement_sql} ELSE {identifier} END"
             return self._assign(frame, column, expression)
 
         fill_value = decode_fill_replacement(replacement)
-        literal = (
-            _duckdb_decimal_literal(fill_value) if replacement.get("kind") == "decimal" else _sql_literal(fill_value)
-        )
+        if semantic_type == "decimal":
+            precision, scale = _duckdb_decimal_spec(raw_type)
+            fill_value = decimal_at_scale(Decimal(fill_value), precision, scale)
+        elif semantic_type == "datetime":
+            fill_value = require_datetime_fill_awareness(fill_value, _duckdb_datetime_is_aware(raw_type))
+        literal = _duckdb_decimal_literal(fill_value) if isinstance(fill_value, Decimal) else _sql_literal(fill_value)
         if semantic_type == "unknown":
             expression = f"CASE WHEN {identifier} IS NULL THEN {literal} ELSE {identifier} END"
-        elif semantic_type == "string" and "enum" in raw_type.lower():
+        elif semantic_type == "string" and replacement.get("kind") == "string":
             expression = f"CASE WHEN {missing} THEN CAST({literal} AS VARCHAR) ELSE CAST({identifier} AS VARCHAR) END"
         else:
             expression = f"CASE WHEN {missing} THEN CAST({literal} AS {raw_type}) ELSE {identifier} END"
@@ -1415,6 +1447,18 @@ def _duckdb_decimal_literal(value: Any) -> str:
         raise ValueError("Decimal replacement must be finite")
     scale = max(-exponent, 0)
     return f"CAST({_sql_literal(fixed)} AS DECIMAL(38, {scale}))"
+
+
+def _duckdb_decimal_spec(raw_type: str) -> tuple[int, int]:
+    match = _DUCKDB_DECIMAL_TYPE.fullmatch(raw_type.strip())
+    if match is None:
+        raise EngineError(f"DuckDB decimal type has no portable precision and scale: {raw_type}")
+    return int(match.group(1)), int(match.group(2))
+
+
+def _duckdb_datetime_is_aware(raw_type: str) -> bool:
+    normalized = raw_type.upper().replace("_", " ")
+    return "WITH TIME ZONE" in normalized or "TIMESTAMPTZ" in normalized
 
 
 def _timedelta_seconds_text(value: timedelta) -> str:
@@ -1840,8 +1884,9 @@ def _checked_duckdb_integer_formula(left: str, right: str, operator: str) -> str
 
 
 _GENERATED_HELPERS = r"""import math
+import re
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, localcontext
 
 import duckdb
 
@@ -1896,6 +1941,35 @@ def _ow_decimal_literal(value):
     fixed = format(value, "f")
     scale = max(-value.as_tuple().exponent, 0)
     return "CAST(" + _ow_literal(fixed) + " AS DECIMAL(38, " + str(scale) + "))"
+
+
+def _ow_decimal_spec(raw_type):
+    match = re.fullmatch(r"DECIMAL\((\d+),\s*(\d+)\)", raw_type.strip(), re.IGNORECASE)
+    if match is None:
+        raise ValueError("DuckDB decimal type has no portable precision and scale: " + raw_type)
+    return int(match.group(1)), int(match.group(2))
+
+
+def _ow_decimal_at_scale(value, precision, scale):
+    if not value.is_finite() or precision < 1 or scale < 0 or scale > precision:
+        raise ValueError(f"The replacement value does not fit DECIMAL({precision}, {scale}).")
+    quantum = Decimal((0, (1,), -scale))
+    try:
+        with localcontext() as context:
+            context.prec = max(80, precision + scale + 4, len(value.as_tuple().digits) + scale + 4)
+            normalized = value.quantize(quantum)
+    except InvalidOperation as error:
+        raise ValueError(f"The replacement value does not fit DECIMAL({precision}, {scale}).") from error
+    if normalized != value:
+        raise ValueError(f"The replacement value cannot be represented exactly at decimal scale {scale}.")
+    if normalized != 0 and normalized.adjusted() >= precision - scale:
+        raise ValueError(f"The replacement value does not fit DECIMAL({precision}, {scale}).")
+    return normalized
+
+
+def _ow_datetime_is_aware(raw_type):
+    normalized = raw_type.upper().replace("_", " ")
+    return "WITH TIME ZONE" in normalized or "TIMESTAMPTZ" in normalized
 
 
 def _ow_query(df, query):
@@ -2078,32 +2152,77 @@ def _ow_drop_missing(df, columns, how):
     return _ow_query(df, "SELECT * FROM ow WHERE " + operator.join("(" + item + ")" for item in valid))
 
 
-def _ow_fill_missing(df, column, strategy, value):
+def _ow_fill_missing(df, column, replacement_kind, value):
     types = dict(zip(_ow_columns(df), map(str, df.types)))
     raw_type = types[column]
     lowered_type = raw_type.lower()
     identifier = _ow_ident(column)
     valid = _ow_valid(identifier, raw_type)
     missing = "NOT (" + valid + ")"
-    if strategy == "median":
-        value_expression = "CAST(" + identifier + " AS DOUBLE)"
-        median = _ow_query(
-            df,
-            "SELECT median(" + value_expression + ") FILTER (WHERE " + valid + ") FROM ow",
-        ).fetchone()[0]
-        if median is None or (isinstance(median, float) and math.isnan(median)):
-            raise ValueError("Cannot fill with the median because the selected column has no present numeric values.")
-        replacement = "CAST(" + _ow_literal(median) + " AS DOUBLE)"
-        expression = (
-            "CASE WHEN " + missing + " THEN " + replacement
-            + " ELSE CAST(" + identifier + " AS DOUBLE) END"
-        )
+    if replacement_kind == "median":
+        if _ow_is_float(raw_type):
+            median = _ow_query(
+                df,
+                "SELECT median(" + identifier + ") FILTER (WHERE " + valid + ") FROM ow",
+            ).fetchone()[0]
+            if median is None or (isinstance(median, float) and math.isnan(median)):
+                raise ValueError(
+                    "Cannot fill with the median because the selected column has no present numeric values."
+                )
+        else:
+            count = int(_ow_query(df, "SELECT count(*) FROM ow WHERE " + valid).fetchone()[0])
+            if count == 0:
+                raise ValueError(
+                    "Cannot fill with the median because the selected column has no present numeric values."
+                )
+            offset = (count - 1) // 2
+            limit = 2 if count % 2 == 0 else 1
+            middle = _ow_query(
+                df,
+                "SELECT " + identifier + " FROM ow WHERE " + valid + " ORDER BY " + identifier
+                + " LIMIT " + str(limit) + " OFFSET " + str(offset),
+            ).fetchall()
+            if len(middle) != limit:
+                raise ValueError("DuckDB could not retrieve the exact middle values for the median fill.")
+            lower, upper = middle[0][0], middle[-1][0]
+            if _ow_is_integer(raw_type):
+                total = int(lower) + int(upper)
+                if total % 2:
+                    raise ValueError(
+                        "The integer median is fractional. "
+                        "Cast the column to float or decimal before filling missing values."
+                    )
+                median = total // 2
+            elif lowered_type.startswith("decimal"):
+                precision, scale = _ow_decimal_spec(raw_type)
+                with localcontext() as context:
+                    context.prec = max(
+                        80,
+                        precision + scale + 4,
+                        len(lower.as_tuple().digits) + len(upper.as_tuple().digits) + scale + 4,
+                    )
+                    median = (lower + upper) / Decimal(2)
+                median = _ow_decimal_at_scale(median, precision, scale)
+            else:
+                raise ValueError("Cannot calculate a numeric median for DuckDB type " + raw_type + ".")
+        literal = _ow_decimal_literal(median) if isinstance(median, Decimal) else _ow_literal(median)
+        replacement = "CAST(" + literal + " AS " + raw_type + ")"
+        expression = "CASE WHEN " + missing + " THEN " + replacement + " ELSE " + identifier + " END"
         return _ow_assign(df, column, expression)
 
+    if lowered_type.startswith("decimal"):
+        precision, scale = _ow_decimal_spec(raw_type)
+        value = _ow_decimal_at_scale(Decimal(value), precision, scale)
+    elif replacement_kind == "datetime":
+        column_aware = _ow_datetime_is_aware(raw_type)
+        value_aware = value.tzinfo is not None and value.utcoffset() is not None
+        if value_aware != column_aware:
+            expected = "timezone-aware" if column_aware else "timezone-naive"
+            raise ValueError("The replacement datetime must be " + expected + " to match the selected column.")
     literal = _ow_decimal_literal(value) if isinstance(value, Decimal) else _ow_literal(value)
     if lowered_type == "null":
         expression = "CASE WHEN " + identifier + " IS NULL THEN " + literal + " ELSE " + identifier + " END"
-    elif "enum" in lowered_type:
+    elif replacement_kind == "string":
         expression = (
             "CASE WHEN " + missing + " THEN CAST(" + literal + " AS VARCHAR)"
             + " ELSE CAST(" + identifier + " AS VARCHAR) END"

@@ -47,9 +47,11 @@ Post-1.0 viewing-filter hardening keeps the completed filter surface usable as w
 
 **Fill missing values** works on one stable column at a time. Numeric columns can use the median of their present
 values; supported scalar columns can use an explicit value of the matching type. Both null and floating-point NaN
-are treated as missing. Median fills return a floating-point column in each engine. The original dataframe is
-unchanged until the draft is applied, and the generated Pandas, Polars, or DuckDB code follows the same rule.
-Focused tests cover the dialog and the usual preview, apply, edit, discard, and undo lifecycle.
+are treated as missing. The fill keeps the native column type. Integer and decimal medians must fit that type exactly;
+decimal values must also fit its scale, and datetime values must match its timezone awareness. Applying the draft adds
+the step to Open Wrangler's cleaning plan. It never changes the original dataframe. Generated Pandas, Polars, and
+DuckDB code uses the same rules. Focused tests cover the dialog and the preview, apply, edit, discard, and undo
+lifecycle.
 
 Cleaning-step preview, apply, latest-step edit, discard, and undo now preserve the independent viewing query instead of resetting it. Parameterized Pandas, Polars, and DuckDB runtime coverage keeps compatible selected values, searches, predicates, and ordered multi-sorts; prunes missing, ambiguous, or semantic-type-changed references; restores the exact pre-draft query on discard when the view was untouched; and keeps an explicit in-draft edit authoritative through Discard or Apply. Immediate undo restores the pre-first-apply query only when no later view edit occurred, including across latest-step replacement. Coordinator persistence restores the validated draft-base receipt before replaying a draft and then restores the independent current view; malformed or stale receipt/view sections fall back independently. React coverage verifies that confirmed Discard retains the runtime-published filters and sort priority.
 

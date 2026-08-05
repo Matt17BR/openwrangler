@@ -1142,7 +1142,8 @@ function FillMissingFields({ columns, initialStep }: { columns: ColumnSchema[]; 
       />
       {mode === "median" ? (
         <p className="panelNote">
-          The median ignores null and NaN cells. The filled column uses floating-point values on every engine.
+          The median ignores null and NaN cells and keeps the column type. Integer and decimal medians must fit that
+          type exactly.
         </p>
       ) : (
         <>
@@ -1182,6 +1183,26 @@ function fillValueKindForColumn(type: ColumnType | undefined): FillValueKind {
     : "string";
 }
 
+function normalizeFillNumericValue(kind: FillValueKind, value: string): string {
+  const trimmed = value.trim();
+  if (kind === "integer") {
+    if (!/^[+-]?[0-9]+$/u.test(trimmed)) return trimmed;
+    try {
+      return BigInt(trimmed).toString();
+    } catch {
+      return trimmed;
+    }
+  }
+  if (kind !== "float" && kind !== "decimal") return value;
+  const match = trimmed.match(/^([+-]?)(?:(\d+)(\.\d*)?|(\.\d+))([eE][+-]?\d+)?$/u);
+  if (!match) return trimmed;
+  const [, sign, wholeText = "", fractionAfterWhole, fractionOnly, exponent = ""] = match;
+  const whole = (wholeText || "0").replace(/^0+(?=\d)/u, "");
+  const fraction = fractionOnly !== undefined ? fractionOnly.slice(1) : fractionAfterWhole?.slice(1);
+  const coefficient = fraction === undefined ? whole : `${whole}.${fraction || "0"}`;
+  return `${sign === "-" ? "-" : ""}${coefficient}${exponent}`;
+}
+
 function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; defaultValue: string }) {
   if (kind === "boolean") {
     return (
@@ -1204,7 +1225,7 @@ function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; def
       ? "Replacement value"
       : kind === "datetime"
         ? "Replacement value (ISO date and time)"
-        : `Replacement ${kind}`;
+        : "Replacement number";
   return (
     <TextField
       key={kind}
@@ -1214,6 +1235,11 @@ function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; def
       required={kind !== "string"}
       inputMode={kind === "integer" ? "numeric" : kind === "float" || kind === "decimal" ? "decimal" : undefined}
       maxLength={kind === "string" ? 65_536 : kind === "integer" ? 40 : kind === "decimal" ? 128 : 64}
+      normalizeOnBlur={
+        kind === "integer" || kind === "float" || kind === "decimal"
+          ? (value) => normalizeFillNumericValue(kind, value)
+          : undefined
+      }
     />
   );
 }
@@ -1257,11 +1283,15 @@ function buildParams(
       return { column: columnReference("column"), replacement: { kind: "median" } };
     }
     const replacementKind = value("fillValueKind");
+    const rawValue = value("fillValue");
     return {
       column: columnReference("column"),
       replacement: {
         kind: replacementKind,
-        value: replacementKind === "boolean" ? value("fillValue") === "true" : value("fillValue")
+        value:
+          replacementKind === "boolean"
+            ? rawValue === "true"
+            : normalizeFillNumericValue(replacementKind as FillValueKind, rawValue)
       }
     };
   }
@@ -1783,7 +1813,8 @@ function TextField({
   min,
   step,
   inputMode,
-  maxLength
+  maxLength,
+  normalizeOnBlur
 }: {
   name: string;
   label: string;
@@ -1794,6 +1825,7 @@ function TextField({
   step?: number | "any";
   inputMode?: "numeric" | "decimal";
   maxLength?: number;
+  normalizeOnBlur?: (value: string) => string;
 }) {
   return (
     <label className="formField">
@@ -1807,6 +1839,13 @@ function TextField({
         maxLength={maxLength}
         defaultValue={defaultValue}
         required={required}
+        onBlur={
+          normalizeOnBlur
+            ? (event) => {
+                event.currentTarget.value = normalizeOnBlur(event.currentTarget.value);
+              }
+            : undefined
+        }
       />
     </label>
   );

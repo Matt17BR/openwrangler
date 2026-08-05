@@ -496,6 +496,36 @@ describe("OperationBuilder", () => {
     expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
   });
 
+  it("normalizes common numeric fill values before preview", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Fill with"), { target: { value: "value" } });
+    const input = screen.getByLabelText("Replacement number");
+    for (const [entered, normalized] of [
+      [".5", "0.5"],
+      ["1.", "1.0"],
+      ["+1", "1"]
+    ]) {
+      fireEvent.change(input, { target: { value: entered } });
+      fireEvent.blur(input);
+      expect(input).toHaveValue(normalized);
+      fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+      expect(onPreview.mock.calls.at(-1)?.[0].params).toEqual({
+        column: { id: "c:1", name: "sales" },
+        replacement: { kind: "float", value: normalized }
+      });
+    }
+  });
+
   it("uses stable duplicate-safe references for drop-duplicates columns", () => {
     const onPreview = vi.fn();
     const duplicateColumns = [

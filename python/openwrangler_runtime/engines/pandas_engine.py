@@ -26,8 +26,11 @@ from .base import (
     categorical_visualization,
     coerce_typed_view_value,
     datetime_visualization,
+    decimal_at_scale,
     decode_fill_replacement,
     ensure_output_columns_available,
+    exact_decimal_median,
+    exact_integer_median,
     generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     infer_semantic_type,
@@ -37,6 +40,7 @@ from .base import (
     normalize_page_projection,
     normalize_summary_projection,
     numeric_visualization,
+    require_datetime_fill_awareness,
     resolve_excel_sheet_selector,
     typed_selection_value,
     validate_view_predicate_operator,
@@ -733,6 +737,7 @@ class PandasEngine(DataFrameEngine):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
         needs_missing_helpers = any(step["kind"] in {"filterRows", "fillMissingValues"} for step in plan)
+        needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
@@ -743,11 +748,14 @@ class PandasEngine(DataFrameEngine):
         if needs_missing_helpers:
             lines.append("from datetime import date, datetime, timedelta")
         if needs_nullable_result_helpers or needs_missing_helpers:
-            lines.append(
-                "from decimal import Decimal" + (", MAX_EMAX, MIN_EMIN, localcontext" if needs_group_helpers else "")
-            )
+            decimal_imports = ["Decimal"]
+            if needs_group_helpers:
+                decimal_imports.extend(["MAX_EMAX", "MIN_EMIN", "localcontext"])
+            if needs_fill_helpers:
+                decimal_imports.extend(["InvalidOperation", "localcontext"])
+            lines.append("from decimal import " + ", ".join(dict.fromkeys(decimal_imports)))
         if needs_missing_helpers:
-            lines.append("from numbers import Real")
+            lines.append("from numbers import Integral, Real")
         if lines:
             lines.append("")
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
@@ -779,6 +787,8 @@ class PandasEngine(DataFrameEngine):
                     "",
                 ]
             )
+        if needs_fill_helpers:
+            lines.extend(_generated_pandas_fill_helpers())
         if needs_object_isolation:
             lines.extend(
                 [
@@ -1064,7 +1074,6 @@ class PandasEngine(DataFrameEngine):
             position = bound_column_position(params["column"], kind)
             series = f"_fill_series_{index}"
             missing = f"_fill_missing_{index}"
-            result = f"_fill_result_{index}"
             replacement = params["replacement"]
             lines = [
                 f"{prefix}{series} = df.iloc[:, {position}]",
@@ -1072,55 +1081,17 @@ class PandasEngine(DataFrameEngine):
                     f"{prefix}{missing} = _open_wrangler_mask({series}, _open_wrangler_is_null) | "
                     f"_open_wrangler_mask({series}, _open_wrangler_is_nan)"
                 ),
-                f"{prefix}if {missing}.any():",
             ]
             if replacement.get("kind") == "median":
-                present = f"_fill_present_{index}"
-                ordered = f"_fill_ordered_{index}"
-                middle = f"_fill_middle_{index}"
-                value = f"_fill_value_{index}"
-                lines.extend(
-                    [
-                        (
-                            f"{prefix}    {present} = [value for value, is_missing in "
-                            f"zip({series}.array, {missing}.array) if not is_missing]"
-                        ),
-                        f"{prefix}    if not {present}:",
-                        (
-                            f"{prefix}        raise ValueError("
-                            "'Cannot fill with the median because the selected column has no present numeric values.')"
-                        ),
-                        f"{prefix}    {ordered} = sorted(float(value) for value in {present})",
-                        f"{prefix}    {middle} = len({ordered}) // 2",
-                        (
-                            f"{prefix}    {value} = {ordered}[{middle}] if len({ordered}) % 2 else "
-                            f"({ordered}[{middle} - 1] + {ordered}[{middle}]) / 2.0"
-                        ),
-                        f"{prefix}    if np.isnan({value}):",
-                        (
-                            f"{prefix}        raise ValueError("
-                            "'Cannot fill with the median because the selected column has no finite median.')"
-                        ),
-                        (
-                            f"{prefix}    {result} = pd.Series(pd.array(["
-                            f"{value} if is_missing else float(item) for item, is_missing in "
-                            f"zip({series}.array, {missing}.array)], dtype='Float64'), "
-                            f"index={series}.index, name={series}.name)"
-                        ),
-                    ]
-                )
+                replacement_kind = "median"
+                value = "None"
             else:
+                replacement_kind = str(replacement["kind"])
                 value = generated_fill_replacement_expression(replacement)
-                lines.extend(
-                    [
-                        (
-                            f"{prefix}    {result} = ({series}.astype('string') "
-                            f"if isinstance({series}.dtype, pd.CategoricalDtype) else {series}.copy())"
-                        ),
-                        f"{prefix}    {result} = {result}.mask({missing}, {value})",
-                    ]
-                )
-            lines.append(f"{prefix}    df.isetitem({position}, {result})")
+            lines.append(
+                f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing("
+                f"{series}, {missing}, {replacement_kind!r}, {value}))"
+            )
             return lines
         if kind == "dropDuplicates":
             keep = params.get("keep", "first")
@@ -2352,36 +2323,212 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     import pandas as pd
 
     missing = _null_mask(series) | _nan_mask(series)
-    if not bool(missing.any()):
-        return series.copy()
     if replacement.get("kind") == "median":
+        if not bool(missing.any()):
+            return series.copy()
         present = [value for value, is_missing in zip(series.array, missing.array, strict=True) if not is_missing]
         if not present:
             raise EngineError("Cannot fill with the median because the selected column has no present numeric values.")
+        semantic_type = _pandas_semantic_type(series)
+        ordered = sorted(present)
+        lower = ordered[(len(ordered) - 1) // 2]
+        upper = ordered[len(ordered) // 2]
+        if semantic_type == "integer":
+            fill_value = exact_integer_median(lower, upper)
+        elif semantic_type == "decimal":
+            precision, scale = _pandas_decimal_spec(series, present)
+            fill_value = exact_decimal_median(lower, upper, precision, scale)
+        else:
+            try:
+                fill_value = (float(lower) + float(upper)) / 2.0
+            except (TypeError, ValueError, OverflowError) as error:
+                raise EngineError(f"Cannot calculate a numeric median for the selected column: {error}") from error
+            if isnan(fill_value):
+                raise EngineError("Cannot fill with the median because the selected column has no finite median.")
         try:
-            ordered_numbers = sorted(float(value) for value in present)
-            middle = len(ordered_numbers) // 2
-            fill_value = (
-                ordered_numbers[middle]
-                if len(ordered_numbers) % 2
-                else (ordered_numbers[middle - 1] + ordered_numbers[middle]) / 2.0
-            )
-        except (TypeError, ValueError, OverflowError) as error:
-            raise EngineError(f"Cannot calculate a numeric median for the selected column: {error}") from error
-        if isnan(fill_value):
-            raise EngineError("Cannot fill with the median because the selected column has no finite median.")
-        values = [
-            fill_value if is_missing else float(value)
-            for value, is_missing in zip(series.array, missing.array, strict=True)
-        ]
-        return pd.Series(pd.array(values, dtype="Float64"), index=series.index, name=series.name)
+            return series.copy().mask(missing, fill_value)
+        except (TypeError, ValueError) as error:
+            raise EngineError(f"The median is incompatible with the selected Pandas column: {error}") from error
 
     fill_value = decode_fill_replacement(replacement)
+    semantic_type = _pandas_semantic_type(series)
+    if semantic_type == "decimal":
+        precision, scale = _pandas_decimal_spec(
+            series,
+            [value for value, is_missing in zip(series.array, missing.array, strict=True) if not is_missing],
+        )
+        fill_value = decimal_at_scale(Decimal(fill_value), precision, scale)
+    elif semantic_type == "datetime":
+        fill_value = require_datetime_fill_awareness(fill_value, _pandas_datetime_awareness(series))
     target = series.astype("string") if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()
+    if not bool(missing.any()):
+        return target
     try:
         return target.mask(missing, fill_value)
     except (TypeError, ValueError) as error:
         raise EngineError(f"The replacement value is incompatible with the selected Pandas column: {error}") from error
+
+
+def _pandas_decimal_spec(series: Any, present: list[Any]) -> tuple[int, int]:
+    arrow_type = getattr(series.dtype, "pyarrow_dtype", None)
+    if arrow_type is not None and hasattr(arrow_type, "precision") and hasattr(arrow_type, "scale"):
+        return int(arrow_type.precision), int(arrow_type.scale)
+    decimals = [value for value in present if isinstance(value, Decimal) and value.is_finite()]
+    if len(decimals) != len(present) or not decimals:
+        raise EngineError("The selected Pandas decimal column has no portable native scale.")
+    scale = max(max(-int(value.as_tuple().exponent), 0) for value in decimals)
+    for value in decimals:
+        decimal_at_scale(value, 38, scale)
+    return 38, scale
+
+
+def _pandas_datetime_awareness(series: Any) -> bool:
+    import pandas as pd
+
+    if isinstance(series.dtype, pd.DatetimeTZDtype):
+        return True
+    if pd.api.types.is_datetime64_dtype(series.dtype):
+        return False
+    arrow_type = getattr(series.dtype, "pyarrow_dtype", None)
+    if arrow_type is not None and str(arrow_type).startswith("timestamp"):
+        return getattr(arrow_type, "tz", None) is not None
+    present = [value for value in series.array if not _pandas_is_missing_scalar(value)]
+    awareness = {value.tzinfo is not None and value.utcoffset() is not None for value in present}
+    if len(awareness) != 1:
+        raise EngineError("The selected Pandas datetime column mixes timezone-aware and timezone-naive values.")
+    return awareness.pop()
+
+
+def _generated_pandas_fill_helpers() -> list[str]:
+    return [
+        "def _open_wrangler_fill_semantic_type(series):",
+        "    if pd.api.types.is_integer_dtype(series.dtype):",
+        "        return 'integer'",
+        "    if pd.api.types.is_float_dtype(series.dtype):",
+        "        return 'float'",
+        "    if pd.api.types.is_datetime64_any_dtype(series.dtype):",
+        "        return 'datetime'",
+        "    arrow_type = getattr(series.dtype, 'pyarrow_dtype', None)",
+        "    if arrow_type is not None and hasattr(arrow_type, 'precision') and hasattr(arrow_type, 'scale'):",
+        "        return 'decimal'",
+        "    if pd.api.types.is_object_dtype(series.dtype):",
+        "        inferred = pd.api.types.infer_dtype(series, skipna=True)",
+        "        if inferred == 'decimal':",
+        "            return 'decimal'",
+        "        if inferred in {'integer', 'mixed-integer'}:",
+        "            present = [item for item in series.array if not _open_wrangler_is_null(item)]",
+        (
+            "            if present and all(isinstance(item, Integral) and not isinstance(item, bool) "
+            "for item in present):"
+        ),
+        "                return 'integer'",
+        "        if inferred in {'datetime', 'datetime64'}:",
+        "            return 'datetime'",
+        "    return 'other'",
+        "",
+        "",
+        "def _open_wrangler_decimal_at_scale(value, precision, scale):",
+        "    if not value.is_finite() or precision < 1 or scale < 0 or scale > precision:",
+        "        raise ValueError(f'The replacement value does not fit DECIMAL({precision}, {scale}).')",
+        "    quantum = Decimal((0, (1,), -scale))",
+        "    try:",
+        "        with localcontext() as context:",
+        "            context.prec = max(80, precision + scale + 4, len(value.as_tuple().digits) + scale + 4)",
+        "            normalized = value.quantize(quantum)",
+        "    except InvalidOperation as error:",
+        "        raise ValueError(f'The replacement value does not fit DECIMAL({precision}, {scale}).') from error",
+        "    if normalized != value:",
+        "        raise ValueError(f'The replacement value cannot be represented exactly at decimal scale {scale}.')",
+        "    if normalized != 0 and normalized.adjusted() >= precision - scale:",
+        "        raise ValueError(f'The replacement value does not fit DECIMAL({precision}, {scale}).')",
+        "    return normalized",
+        "",
+        "",
+        "def _open_wrangler_decimal_spec(series, present):",
+        "    arrow_type = getattr(series.dtype, 'pyarrow_dtype', None)",
+        "    if arrow_type is not None and hasattr(arrow_type, 'precision') and hasattr(arrow_type, 'scale'):",
+        "        return int(arrow_type.precision), int(arrow_type.scale)",
+        "    decimals = [item for item in present if isinstance(item, Decimal) and item.is_finite()]",
+        "    if len(decimals) != len(present) or not decimals:",
+        "        raise ValueError('The selected Pandas decimal column has no portable native scale.')",
+        "    scale = max(max(-int(item.as_tuple().exponent), 0) for item in decimals)",
+        "    for item in decimals:",
+        "        _open_wrangler_decimal_at_scale(item, 38, scale)",
+        "    return 38, scale",
+        "",
+        "",
+        "def _open_wrangler_datetime_awareness(series):",
+        "    if isinstance(series.dtype, pd.DatetimeTZDtype):",
+        "        return True",
+        "    if pd.api.types.is_datetime64_dtype(series.dtype):",
+        "        return False",
+        "    arrow_type = getattr(series.dtype, 'pyarrow_dtype', None)",
+        "    if arrow_type is not None and str(arrow_type).startswith('timestamp'):",
+        "        return getattr(arrow_type, 'tz', None) is not None",
+        "    present = [item for item in series.array if not _open_wrangler_is_null(item)]",
+        "    awareness = {item.tzinfo is not None and item.utcoffset() is not None for item in present}",
+        "    if len(awareness) != 1:",
+        (
+            "        raise ValueError('The selected Pandas datetime column mixes timezone-aware and "
+            "timezone-naive values.')"
+        ),
+        "    return awareness.pop()",
+        "",
+        "",
+        "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",
+        "    semantic_type = _open_wrangler_fill_semantic_type(series)",
+        "    present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
+        "    if replacement_kind == 'median':",
+        "        if not missing.any():",
+        "            return series.copy()",
+        "        if not present:",
+        (
+            "            raise ValueError('Cannot fill with the median because the selected column has no "
+            "present numeric values.')"
+        ),
+        "        ordered = sorted(present)",
+        "        lower = ordered[(len(ordered) - 1) // 2]",
+        "        upper = ordered[len(ordered) // 2]",
+        "        if semantic_type == 'integer':",
+        "            total = int(lower) + int(upper)",
+        "            if total % 2:",
+        (
+            "                raise ValueError('The integer median is fractional. Cast the column to float or "
+            "decimal before filling missing values.')"
+        ),
+        "            fill_value = total // 2",
+        "        elif semantic_type == 'decimal':",
+        "            precision, scale = _open_wrangler_decimal_spec(series, present)",
+        "            with localcontext() as context:",
+        (
+            "                context.prec = max(80, precision + scale + 4, "
+            "len(lower.as_tuple().digits) + len(upper.as_tuple().digits) + scale + 4)"
+        ),
+        "                fill_value = (lower + upper) / Decimal(2)",
+        "            fill_value = _open_wrangler_decimal_at_scale(fill_value, precision, scale)",
+        "        else:",
+        "            fill_value = (float(lower) + float(upper)) / 2.0",
+        "            if np.isnan(fill_value):",
+        (
+            "                raise ValueError('Cannot fill with the median because the selected column has no "
+            "finite median.')"
+        ),
+        "        return series.copy().mask(missing, fill_value)",
+        "    fill_value = replacement_value",
+        "    if semantic_type == 'decimal':",
+        "        precision, scale = _open_wrangler_decimal_spec(series, present)",
+        "        fill_value = _open_wrangler_decimal_at_scale(Decimal(fill_value), precision, scale)",
+        "    elif semantic_type == 'datetime':",
+        "        column_aware = _open_wrangler_datetime_awareness(series)",
+        "        value_aware = fill_value.tzinfo is not None and fill_value.utcoffset() is not None",
+        "        if value_aware != column_aware:",
+        "            expected = 'timezone-aware' if column_aware else 'timezone-naive'",
+        "            raise ValueError(f'The replacement datetime must be {expected} to match the selected column.')",
+        "    target = series.astype('string') if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()",
+        "    return target if not missing.any() else target.mask(missing, fill_value)",
+        "",
+        "",
+    ]
 
 
 def _scalar_mask(series: Any, predicate: Any) -> Any:

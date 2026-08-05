@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from math import isnan
+from numbers import Integral
 from typing import Any
 
 import duckdb
 import pandas as pd
 import polars as pl
+import pyarrow as pa
 import pytest
 
 from openwrangler_runtime.engines import DuckDBEngine, EngineError, PandasEngine, PolarsEngine
@@ -97,7 +99,12 @@ def rows(frame: Any) -> list[tuple[Any, ...]]:
 
 
 def normalized_rows(frame: Any) -> list[tuple[Any, ...]]:
-    return [tuple(None if isinstance(value, float) and isnan(value) else value for value in row) for row in rows(frame)]
+    def normalize(value: Any) -> Any:
+        if value is None or type(value).__name__ in {"NAType", "NaTType"}:
+            return None
+        return None if isinstance(value, float) and isnan(value) else value
+
+    return [tuple(normalize(value) for value in row) for row in rows(frame)]
 
 
 def execute_generated(engine: Any, frame: Any, plan: list[dict[str, Any]]) -> Any:
@@ -297,3 +304,240 @@ def test_pandas_fill_missing_keeps_duplicate_and_non_string_labels_positional() 
     assert list(live.columns) == ["duplicate", "duplicate", 7]
     assert normalized_rows(live) == [(1.0, 9.0, 10.0), (None, 3.0, 10.0)]
     assert normalized_rows(generated) == normalized_rows(live)
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_integer_median_preserves_values_above_javascript_safe_integer(backend: str) -> None:
+    lower = 9_007_199_254_740_993
+    median = 9_007_199_254_740_994
+    upper = 9_007_199_254_740_995
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame({"value": pd.array([lower, None, upper], dtype="Int64")})
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame({"value": pl.Series([lower, None, upper], dtype=pl.Int64)})
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql(
+            f"SELECT * FROM (VALUES ({lower}::BIGINT), (NULL::BIGINT), ({upper}::BIGINT)) AS source(value)"
+        )
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "median"})
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        live_values = [row[0] for row in rows(live)]
+        generated_values = [row[0] for row in rows(generated)]
+        assert all(isinstance(value, Integral) and not isinstance(value, bool) for value in live_values)
+        assert all(isinstance(value, Integral) and not isinstance(value, bool) for value in generated_values)
+        assert [int(value) for value in live_values] == [lower, median, upper]
+        assert [int(value) for value in generated_values] == [lower, median, upper]
+        assert normalized_rows(source) == [(lower,), (None,), (upper,)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_decimal_median_preserves_38_digit_values(backend: str) -> None:
+    lower = Decimal("99999999999999999999999999999999999997")
+    median = Decimal("99999999999999999999999999999999999998")
+    upper = Decimal("99999999999999999999999999999999999999")
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame({"value": pd.Series([lower, None, upper], dtype=pd.ArrowDtype(pa.decimal128(38, 0)))})
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame({"value": pl.Series([lower, None, upper], dtype=pl.Decimal(38, 0))})
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql(
+            "SELECT * FROM (VALUES "
+            f"({lower}::DECIMAL(38, 0)), (NULL::DECIMAL(38, 0)), ({upper}::DECIMAL(38, 0))"
+            ") AS source(value)"
+        )
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "median"})
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert all(isinstance(row[0], Decimal) for row in rows(live))
+        assert all(isinstance(row[0], Decimal) for row in rows(generated))
+        assert rows(live) == [(lower,), (median,), (upper,)]
+        assert rows(generated) == rows(live)
+        assert normalized_rows(source) == [(lower,), (None,), (upper,)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_integer_median_rejects_a_fractional_result(backend: str) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame({"value": pd.array([1, None, 2], dtype="Int64")})
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame({"value": pl.Series([1, None, 2], dtype=pl.Int64)})
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql("SELECT * FROM (VALUES (1::BIGINT), (NULL::BIGINT), (2::BIGINT)) AS source(value)")
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "median"})
+
+    try:
+        with pytest.raises(EngineError, match="integer median is fractional"):
+            engine.apply_transform(source, operation)
+        with pytest.raises(ValueError, match="integer median is fractional"):
+            execute_generated(engine, source, [operation])
+        assert normalized_rows(source) == [(1,), (None,), (2,)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_decimal_median_rejects_rounding_to_the_column_scale(backend: str) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame(
+            {
+                "value": pd.Series(
+                    [Decimal("1.25"), None, Decimal("1.26")],
+                    dtype=pd.ArrowDtype(pa.decimal128(38, 2)),
+                )
+            }
+        )
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame({"value": pl.Series([Decimal("1.25"), None, Decimal("1.26")], dtype=pl.Decimal(38, 2))})
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql(
+            "SELECT * FROM (VALUES (1.25::DECIMAL(38, 2)), (NULL::DECIMAL(38, 2)), "
+            "(1.26::DECIMAL(38, 2))) AS source(value)"
+        )
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "median"})
+
+    try:
+        with pytest.raises(EngineError, match="decimal scale 2"):
+            engine.apply_transform(source, operation)
+        with pytest.raises(ValueError, match="decimal scale 2"):
+            execute_generated(engine, source, [operation])
+        assert normalized_rows(source) == [(Decimal("1.25"),), (None,), (Decimal("1.26"),)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_decimal_fill_rejects_rounding_to_the_column_scale(backend: str) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame({"value": pd.Series([Decimal("1.25"), None], dtype=pd.ArrowDtype(pa.decimal128(38, 2)))})
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame({"value": pl.Series([Decimal("1.25"), None], dtype=pl.Decimal(38, 2))})
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql("SELECT * FROM (VALUES (1.25::DECIMAL(38, 2)), (NULL::DECIMAL(38, 2))) AS source(value)")
+    operation = fill_step(
+        bound_ref("c:source:0", "value", 0),
+        {"kind": "decimal", "value": "2.509"},
+    )
+
+    try:
+        with pytest.raises(EngineError, match="decimal scale 2"):
+            engine.apply_transform(source, operation)
+        with pytest.raises(ValueError, match="decimal scale 2"):
+            execute_generated(engine, source, [operation])
+        assert normalized_rows(source) == [(Decimal("1.25"),), (None,)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+@pytest.mark.parametrize("column_aware", [False, True])
+def test_datetime_fill_rejects_naive_and_aware_mismatches(backend: str, column_aware: bool) -> None:
+    present = datetime(2026, 1, 1, 12, tzinfo=timezone.utc) if column_aware else datetime(2026, 1, 1, 12)
+    replacement = "2026-08-05T18:20:00" if column_aware else "2026-08-05T18:20:00+02:00"
+    if backend == "pandas":
+        engine = PandasEngine()
+        dtype = "datetime64[ns, UTC]" if column_aware else "datetime64[ns]"
+        source = pd.DataFrame({"value": pd.Series([present, None], dtype=dtype)})
+    elif backend == "polars":
+        engine = PolarsEngine()
+        dtype = pl.Datetime("us", "UTC") if column_aware else pl.Datetime("us")
+        source = pl.DataFrame({"value": pl.Series([present, None], dtype=dtype)})
+    else:
+        engine = DuckDBEngine()
+        raw_type = "TIMESTAMPTZ" if column_aware else "TIMESTAMP"
+        source = duckdb.sql(
+            f"SELECT * FROM (VALUES ({present.isoformat()!r}::{raw_type}), (NULL::{raw_type})) AS source(value)"
+        )
+    operation = fill_step(
+        bound_ref("c:source:0", "value", 0),
+        {"kind": "datetime", "value": replacement},
+    )
+    expected = "timezone-aware" if column_aware else "timezone-naive"
+
+    try:
+        with pytest.raises(EngineError, match=expected):
+            engine.apply_transform(source, operation)
+        with pytest.raises(ValueError, match=expected):
+            execute_generated(engine, source, [operation])
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+@pytest.mark.parametrize("column_aware", [False, True])
+def test_datetime_fill_accepts_matching_awareness(backend: str, column_aware: bool) -> None:
+    present = datetime(2026, 1, 1, 12, tzinfo=timezone.utc) if column_aware else datetime(2026, 1, 1, 12)
+    replacement = "2026-08-05T18:20:00+00:00" if column_aware else "2026-08-05T18:20:00"
+    expected = datetime.fromisoformat(replacement)
+    if backend == "pandas":
+        engine = PandasEngine()
+        dtype = "datetime64[ns, UTC]" if column_aware else "datetime64[ns]"
+        source = pd.DataFrame({"value": pd.Series([present, None], dtype=dtype)})
+    elif backend == "polars":
+        engine = PolarsEngine()
+        dtype = pl.Datetime("us", "UTC") if column_aware else pl.Datetime("us")
+        source = pl.DataFrame({"value": pl.Series([present, None], dtype=dtype)})
+    else:
+        engine = DuckDBEngine()
+        raw_type = "TIMESTAMPTZ" if column_aware else "TIMESTAMP"
+        source = duckdb.sql(
+            f"SELECT * FROM (VALUES ({present.isoformat()!r}::{raw_type}), (NULL::{raw_type})) AS source(value)"
+        )
+    operation = fill_step(
+        bound_ref("c:source:0", "value", 0),
+        {"kind": "datetime", "value": replacement},
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert rows(live)[1][0] == expected
+        assert rows(generated)[1][0] == expected
+        assert normalized_rows(source)[1] == (None,)
+    finally:
+        engine.close()
+
+
+def test_duckdb_uuid_fill_promotes_the_column_to_varchar() -> None:
+    engine = DuckDBEngine()
+    identifier = "123e4567-e89b-12d3-a456-426614174000"
+    source = duckdb.sql(f"SELECT * FROM (VALUES ({identifier!r}::UUID), (NULL::UUID)) AS source(value)")
+    operation = fill_step(
+        bound_ref("c:source:0", "value", 0),
+        {"kind": "string", "value": "unknown"},
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert rows(live) == [(identifier,), ("unknown",)]
+        assert rows(generated) == rows(live)
+    finally:
+        engine.close()
