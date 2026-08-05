@@ -216,25 +216,25 @@ We compared Open Wrangler 1.2.1 with Microsoft Data Wrangler 1.24.2 on the same 
 times; the faster result is **bold**. Data Wrangler converts Polars data to Pandas for these workflows, while Open
 Wrangler runs it with Polars.
 
-| Data           | Task                  | Open Wrangler | Data Wrangler |
-| -------------- | --------------------- | ------------: | ------------: |
-| Pandas CSV     | Show notebook preview |    **0.34 s** |        1.49 s |
-| Pandas CSV     | Open workbench        |    **0.60 s** |        1.01 s |
-| Pandas CSV     | Profile every column  |    **5.58 s** |       18.80 s |
-| Polars CSV     | Show notebook preview |    **0.32 s** |        1.50 s |
-| Polars CSV     | Open workbench        |    **0.53 s** |        0.99 s |
-| Polars CSV     | Profile every column  |    **5.54 s** |       18.81 s |
-| Pandas Parquet | Show notebook preview |    **0.24 s** |        1.53 s |
-| Pandas Parquet | Open workbench        |    **0.67 s** |        0.69 s |
-| Pandas Parquet | Profile every column  |    **7.64 s** |        7.95 s |
-| Polars Parquet | Show notebook preview |    **0.20 s** |        1.49 s |
-| Polars Parquet | Open workbench        |    **0.48 s** |        0.69 s |
-| Polars Parquet | Profile every column  |    **7.20 s** |        8.23 s |
+| Notebook input         | Task                  | Open Wrangler | Data Wrangler |
+| ---------------------- | --------------------- | ------------: | ------------: |
+| Pandas input · CSV     | Show notebook preview |    **0.34 s** |        1.49 s |
+| Pandas input · CSV     | Open workbench        |    **0.60 s** |        1.01 s |
+| Pandas input · CSV     | Profile every column  |    **5.58 s** |       18.80 s |
+| Polars input · CSV     | Show notebook preview |    **0.32 s** |        1.50 s |
+| Polars input · CSV     | Open workbench        |    **0.53 s** |        0.99 s |
+| Polars input · CSV     | Profile every column  |    **5.54 s** |       18.81 s |
+| Pandas input · Parquet | Show notebook preview |    **0.24 s** |        1.53 s |
+| Pandas input · Parquet | Open workbench        |    **0.67 s** |        0.69 s |
+| Pandas input · Parquet | Profile every column  |    **7.64 s** |        7.95 s |
+| Polars input · Parquet | Show notebook preview |    **0.20 s** |        1.49 s |
+| Polars input · Parquet | Open workbench        |    **0.48 s** |        0.69 s |
+| Polars input · Parquet | Profile every column  |    **7.20 s** |        8.23 s |
 
 The [full results](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
-include p95 timings, memory use, outcome counts, exact versions, and the test method. Small Pandas/Polars differences
-within Data Wrangler are not conversion benchmarks: variables were created before timing, and the measured UI work
-dominates those rows. The
+include p95 timings, memory use, outcome counts, exact versions, and the test method. Small differences between the
+Pandas and Polars inputs do not show how long Data Wrangler spends on conversion: variables were created before
+timing, and the measured UI work dominates those rows. The
 [installed-editor benchmarks](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md#performance-fixtures)
 cover first-grid and scrolling performance in VS Code and Cursor.
 

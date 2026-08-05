@@ -4,10 +4,10 @@ This is a manual test of the notebook workflow in Open Wrangler and Microsoft Da
 buttons and controls in a packaged VS Code installation. The test does not inspect or redistribute Data Wrangler.
 
 The v1.2.1 test was useful for measuring a warm UI, but it was too small to say much about Pandas versus Polars. It
-loaded the dataframe before timing and then reused the same window and kernel ten times. Small Pandas/Polars
-differences in that report are normal run-to-run variation, not evidence that converting Polars to Pandas is free.
-The [v1.2.1 review](performance/data-wrangler-1.2.1/review.md) remains available with the old method and raw outcome
-counts.
+loaded the dataframe before timing and then reused the same window and kernel ten times. Small differences between
+Pandas and Polars inputs in that report are normal run-to-run variation, not evidence that converting Polars to
+Pandas is free. The [v1.2.1 review](performance/data-wrangler-1.2.1/review.md) remains available with the old method
+and raw outcome counts.
 
 ## v1.2.3 study
 

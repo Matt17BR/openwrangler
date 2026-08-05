@@ -24,6 +24,7 @@ import {
   WARM_REPETITIONS,
   assertCompleteLargeReport,
   assertLargeRunEnvironment,
+  buildComparisonNotebook,
   buildLargeComparisonReport,
   buildLargeStudyManifest,
   buildStudyManifest,
@@ -296,6 +297,27 @@ test("prepared request loads one resident dataframe and asks the host for ten me
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("generated notebooks attest the input dataframe type before measurement", () => {
+  const pandas = buildComparisonNotebook(
+    { engine: "pandas", format: "parquet", cellId: "pandas-parquet" },
+    "input.parquet"
+  );
+  const polars = buildComparisonNotebook(
+    { engine: "polars", format: "parquet", cellId: "polars-parquet" },
+    "input.parquet"
+  );
+  assert.match(
+    pandas.cells[0].source.join(""),
+    /study_frame = pd\.read_parquet\("input\.parquet"\)\nassert isinstance\(study_frame, pd\.DataFrame\)$/u
+  );
+  assert.match(
+    polars.cells[0].source.join(""),
+    /study_frame = pl\.read_parquet\("input\.parquet"\)\nassert isinstance\(study_frame, pl\.DataFrame\)$/u
+  );
+  assert.equal(pandas.cells[1].source.join(""), "study_frame");
+  assert.equal(polars.cells[1].source.join(""), "study_frame");
 });
 
 test("stale temporary session roots are removed without touching unrelated entries", () => {

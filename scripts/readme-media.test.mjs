@@ -555,18 +555,18 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /\[full results\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
   );
   for (const row of [
-    /\| Pandas CSV\s+\| Show notebook preview \|\s+\*\*0\.34 s\*\* \|\s+1\.49 s \|/u,
-    /\| Pandas CSV\s+\| Open workbench\s+\|\s+\*\*0\.60 s\*\* \|\s+1\.01 s \|/u,
-    /\| Pandas CSV\s+\| Profile every column\s+\|\s+\*\*5\.58 s\*\* \|\s+18\.80 s \|/u,
-    /\| Polars CSV\s+\| Show notebook preview \|\s+\*\*0\.32 s\*\* \|\s+1\.50 s \|/u,
-    /\| Polars CSV\s+\| Open workbench\s+\|\s+\*\*0\.53 s\*\* \|\s+0\.99 s \|/u,
-    /\| Polars CSV\s+\| Profile every column\s+\|\s+\*\*5\.54 s\*\* \|\s+18\.81 s \|/u,
-    /\| Pandas Parquet \| Show notebook preview \|\s+\*\*0\.24 s\*\* \|\s+1\.53 s \|/u,
-    /\| Pandas Parquet \| Open workbench\s+\|\s+\*\*0\.67 s\*\* \|\s+0\.69 s \|/u,
-    /\| Pandas Parquet \| Profile every column\s+\|\s+\*\*7\.64 s\*\* \|\s+7\.95 s \|/u,
-    /\| Polars Parquet \| Show notebook preview \|\s+\*\*0\.20 s\*\* \|\s+1\.49 s \|/u,
-    /\| Polars Parquet \| Open workbench\s+\|\s+\*\*0\.48 s\*\* \|\s+0\.69 s \|/u,
-    /\| Polars Parquet \| Profile every column\s+\|\s+\*\*7\.20 s\*\* \|\s+8\.23 s \|/u
+    /\| Pandas input · CSV\s+\| Show notebook preview \|\s+\*\*0\.34 s\*\* \|\s+1\.49 s \|/u,
+    /\| Pandas input · CSV\s+\| Open workbench\s+\|\s+\*\*0\.60 s\*\* \|\s+1\.01 s \|/u,
+    /\| Pandas input · CSV\s+\| Profile every column\s+\|\s+\*\*5\.58 s\*\* \|\s+18\.80 s \|/u,
+    /\| Polars input · CSV\s+\| Show notebook preview \|\s+\*\*0\.32 s\*\* \|\s+1\.50 s \|/u,
+    /\| Polars input · CSV\s+\| Open workbench\s+\|\s+\*\*0\.53 s\*\* \|\s+0\.99 s \|/u,
+    /\| Polars input · CSV\s+\| Profile every column\s+\|\s+\*\*5\.54 s\*\* \|\s+18\.81 s \|/u,
+    /\| Pandas input · Parquet \| Show notebook preview \|\s+\*\*0\.24 s\*\* \|\s+1\.53 s \|/u,
+    /\| Pandas input · Parquet \| Open workbench\s+\|\s+\*\*0\.67 s\*\* \|\s+0\.69 s \|/u,
+    /\| Pandas input · Parquet \| Profile every column\s+\|\s+\*\*7\.64 s\*\* \|\s+7\.95 s \|/u,
+    /\| Polars input · Parquet \| Show notebook preview \|\s+\*\*0\.20 s\*\* \|\s+1\.49 s \|/u,
+    /\| Polars input · Parquet \| Open workbench\s+\|\s+\*\*0\.48 s\*\* \|\s+0\.69 s \|/u,
+    /\| Polars input · Parquet \| Profile every column\s+\|\s+\*\*7\.20 s\*\* \|\s+8\.23 s \|/u
   ]) {
     assert.match(readme, row);
   }

@@ -1191,7 +1191,11 @@ export function buildComparisonNotebook(entry, source) {
   const importLine = entry.engine === "pandas" ? "import pandas as pd" : "import polars as pl";
   const bootstrap =
     entry.engine === "pandas" ? 'pd.DataFrame({"c00": [0], "c01": [1]})' : 'pl.DataFrame({"c00": [0], "c01": [1]})';
-  const setup = `${importLine}\naaa_comparison_bootstrap = ${bootstrap}\nstudy_frame = ${reader}`;
+  const typeAssertion =
+    entry.engine === "pandas"
+      ? "assert isinstance(study_frame, pd.DataFrame)"
+      : "assert isinstance(study_frame, pl.DataFrame)";
+  const setup = `${importLine}\naaa_comparison_bootstrap = ${bootstrap}\nstudy_frame = ${reader}\n${typeAssertion}`;
   const measured = "study_frame";
   const cells = [codeCell(setup, [`ow-comparison-setup:${entry.cellId}`])];
   cells.push(codeCell(measured, [`ow-comparison-cell:${entry.cellId}`]));
