@@ -7,10 +7,10 @@ function decodeCandidate(candidate: Record<string, unknown>) {
 
 function minimalContract(): Record<string, unknown> {
   return {
-    contractVersion: 1,
+    contractVersion: 2,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
-    frameSemantics: { classes: ["data.frame"], rowNames: "automatic", keyColumnIds: [] },
+    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
     schema: [
       {
         id: "r:c:0",
@@ -97,6 +97,18 @@ describe("native R frame contract decoder", () => {
     ]);
   });
 
+  it("keeps explicit row names as bounded labels without changing source identity", () => {
+    const candidate = minimalContract();
+    candidate.frameSemantics = { classes: ["data.frame"], rowNames: "explicit", keyColumnIds: [] };
+    const page = candidate.page as Record<string, unknown>;
+    (page.rows as Array<Record<string, unknown>>)[0]!.rowLabel = "Mazda RX4";
+
+    const decoded = decodeCandidate(candidate);
+
+    expect(decoded.frameSemantics.rowNames).toBe("explicit");
+    expect(decoded.page.rows[0]).toMatchObject({ id: "r:r:0", rowNumber: 0, rowLabel: "Mazda RX4" });
+  });
+
   it("accepts unique source row identities in logical view order", () => {
     const candidate = minimalContract();
     candidate.shape = { rows: 3, columns: 1 };
@@ -106,19 +118,19 @@ describe("native R frame contract decoder", () => {
     page.rows = [
       {
         id: "r:r:2",
-        rowNumber: 2,
+        rowNumber: 0,
         values: [{ kind: "integer", raw: "3", display: "3", isNull: false, isNaN: false }]
       },
       {
         id: "r:r:0",
-        rowNumber: 0,
+        rowNumber: 1,
         values: [{ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false }]
       }
     ];
 
     expect(decodeCandidate(candidate).page.rows.map(({ id, rowNumber }) => ({ id, rowNumber }))).toEqual([
-      { id: "r:r:2", rowNumber: 2 },
-      { id: "r:r:0", rowNumber: 0 }
+      { id: "r:r:2", rowNumber: 0 },
+      { id: "r:r:0", rowNumber: 1 }
     ]);
   });
 
@@ -127,14 +139,12 @@ describe("native R frame contract decoder", () => {
       "duplicate source row identities",
       (rows: Array<Record<string, unknown>>) => {
         rows[1]!.id = "r:r:2";
-        rows[1]!.rowNumber = 2;
       }
     ],
     [
       "an out-of-range source row identity",
       (rows: Array<Record<string, unknown>>) => {
         rows[0]!.id = "r:r:3";
-        rows[0]!.rowNumber = 3;
       }
     ]
   ])("rejects %s in a logical view page", (_label, mutate) => {
@@ -146,18 +156,63 @@ describe("native R frame contract decoder", () => {
     const rows = [
       {
         id: "r:r:2",
-        rowNumber: 2,
+        rowNumber: 0,
         values: [{ kind: "integer", raw: "3", display: "3", isNull: false, isNaN: false }]
       },
       {
         id: "r:r:0",
-        rowNumber: 0,
+        rowNumber: 1,
         values: [{ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false }]
       }
     ];
     mutate(rows);
     page.rows = rows;
 
+    expect(() => decodeCandidate(candidate)).toThrow(TypeError);
+  });
+
+  it("rejects source row numbers in place of logical grid positions", () => {
+    const candidate = minimalContract();
+    candidate.shape = { rows: 3, columns: 1 };
+    const page = candidate.page as Record<string, unknown>;
+    page.limit = 1;
+    page.totalRows = 3;
+    page.rows = [
+      {
+        id: "r:r:2",
+        rowNumber: 2,
+        values: [{ kind: "integer", raw: "3", display: "3", isNull: false, isNaN: false }]
+      }
+    ];
+
+    expect(() => decodeCandidate(candidate)).toThrow("logical grid position");
+  });
+
+  it.each([
+    [
+      "a row label on positional row names",
+      (candidate: Record<string, unknown>) => {
+        const page = candidate.page as Record<string, unknown>;
+        (page.rows as Array<Record<string, unknown>>)[0]!.rowLabel = "unexpected";
+      }
+    ],
+    [
+      "a missing label on explicit row names",
+      (candidate: Record<string, unknown>) => {
+        candidate.frameSemantics = { classes: ["data.frame"], rowNames: "explicit", keyColumnIds: [] };
+      }
+    ],
+    [
+      "an oversized explicit row label",
+      (candidate: Record<string, unknown>) => {
+        candidate.frameSemantics = { classes: ["data.frame"], rowNames: "explicit", keyColumnIds: [] };
+        const page = candidate.page as Record<string, unknown>;
+        (page.rows as Array<Record<string, unknown>>)[0]!.rowLabel = "x".repeat(R_FRAME_CONTRACT_LIMITS.nameBytes + 1);
+      }
+    ]
+  ])("rejects %s", (_label, mutate) => {
+    const candidate = minimalContract();
+    mutate(candidate);
     expect(() => decodeCandidate(candidate)).toThrow(TypeError);
   });
 

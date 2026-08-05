@@ -12,6 +12,9 @@ interface SummaryPanelProps {
   schemaById: Map<string, ColumnSchema>;
   selectedColumnId?: string;
   activeView: SummaryPanelView;
+  profileSupported?: boolean;
+  filtersSupported?: boolean;
+  filtersLabel?: string;
   onSelectView(view: SummaryPanelView): void;
 }
 
@@ -24,6 +27,9 @@ export function SummaryPanel({
   schemaById,
   selectedColumnId,
   activeView,
+  profileSupported = true,
+  filtersSupported = true,
+  filtersLabel = "Filters",
   onSelectView
 }: SummaryPanelProps) {
   const resolvedColumnId =
@@ -32,11 +38,17 @@ export function SummaryPanel({
   const selectedSummary = resolvedColumnId
     ? summaries.find((summary) => summary.columnId === resolvedColumnId)
     : undefined;
+  const visibleViews = summaryViews.filter((view) => (view === "filters" ? filtersSupported : profileSupported));
 
   return (
     <section className="panel summaryPanel" data-active-view={activeView}>
-      <div className="summaryViewTabs" role="tablist" aria-label="Column profiles view">
-        {summaryViews.map((view) => (
+      <div
+        className="summaryViewTabs"
+        role="tablist"
+        aria-label={summaryViewTabsLabel(profileSupported, filtersSupported, filtersLabel)}
+        style={{ gridTemplateColumns: `repeat(${Math.max(1, visibleViews.length)}, minmax(0, 1fr))` }}
+      >
+        {visibleViews.map((view) => (
           <button
             key={view}
             id={summaryTabId(view)}
@@ -48,9 +60,9 @@ export function SummaryPanel({
             tabIndex={activeView === view ? 0 : -1}
             data-summary-view={view}
             onClick={() => onSelectView(view)}
-            onKeyDown={(event) => moveTabSelection(event, view, onSelectView)}
+            onKeyDown={(event) => moveTabSelection(event, view, visibleViews, onSelectView)}
           >
-            {viewLabel(view)}
+            {viewLabel(view, filtersLabel)}
           </button>
         ))}
       </div>
@@ -371,18 +383,20 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
 function moveTabSelection(
   event: ReactKeyboardEvent<HTMLButtonElement>,
   currentView: SummaryPanelView,
+  visibleViews: readonly SummaryPanelView[],
   onSelectView: (view: SummaryPanelView) => void
 ): void {
-  const currentIndex = summaryViews.indexOf(currentView);
+  const currentIndex = visibleViews.indexOf(currentView);
+  if (currentIndex < 0 || visibleViews.length === 0) return;
   let nextIndex: number;
-  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % summaryViews.length;
-  else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + summaryViews.length) % summaryViews.length;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % visibleViews.length;
+  else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + visibleViews.length) % visibleViews.length;
   else if (event.key === "Home") nextIndex = 0;
-  else if (event.key === "End") nextIndex = summaryViews.length - 1;
+  else if (event.key === "End") nextIndex = visibleViews.length - 1;
   else return;
 
   event.preventDefault();
-  const nextView = summaryViews[nextIndex];
+  const nextView = visibleViews[nextIndex];
   event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-summary-view="${nextView}"]`)?.focus();
   onSelectView(nextView);
 }
@@ -396,10 +410,18 @@ function topValueKey(item: ValueCount, index: number): string {
   return `${item.value}-${item.count}-${index}`;
 }
 
-function viewLabel(view: SummaryPanelView): string {
+function viewLabel(view: SummaryPanelView, filtersLabel: string): string {
   if (view === "column") return "Column";
   if (view === "dataset") return "Dataset";
-  return "Filters";
+  return filtersLabel;
+}
+
+function summaryViewTabsLabel(profileSupported: boolean, filtersSupported: boolean, filtersLabel: string): string {
+  if (!profileSupported) return `${filtersLabel} view`;
+  if (!filtersSupported) return "Column profiles view";
+  if (filtersLabel === "Sorts") return "Column profiles and sorts view";
+  if (filtersLabel === "Filters / Sorts") return "Column profiles, filters, and sorts view";
+  return "Column profiles and filters view";
 }
 
 const formatNumber = formatNumericSummaryNumber;

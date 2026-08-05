@@ -53,6 +53,7 @@ function createVsix(packageJson = sourceManifest, property = previewProperty, { 
     ["extension/media/icon.png", "icon"],
     ["extension/media/icon-128.png", "icon"],
     ["extension/r/openwrangler_runtime/frame_contract.R", "openwrangler_frame_contract <- function(frame) frame\n"],
+    ["extension/r/openwrangler_runtime/kernel_agent.R", "openwrangler_kernel_agent <- list()\n"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],

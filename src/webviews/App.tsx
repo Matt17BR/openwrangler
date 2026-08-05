@@ -21,7 +21,12 @@ import type {
   TransformStep,
   ValuesResponse
 } from "../shared/protocol";
-import { dataBackendLabel, formatSessionRowCount, isExactGridPage } from "../shared/protocol";
+import {
+  dataBackendLabel,
+  formatSessionRowCount,
+  isExactGridPage,
+  supportsViewingCapability
+} from "../shared/protocol";
 import {
   compactFilterModel,
   emptyFilterModel,
@@ -490,6 +495,7 @@ export function App() {
       const confirmed = confirmedView.current;
       if (
         !currentMetadata ||
+        !supportsViewingCapability(currentMetadata.capabilities, "profile") ||
         !confirmed ||
         !canProfileConfirmedView(confirmed.viewContextId) ||
         !currentMetadata.schema.some((candidate) => candidate.id === columnId) ||
@@ -541,6 +547,8 @@ export function App() {
 
   const updateVisibleSummaryColumns = useCallback(
     (columnIds: string[]) => {
+      const currentMetadata = metadataRef.current;
+      if (!currentMetadata || !supportsViewingCapability(currentMetadata.capabilities, "profile")) return;
       const next = new Set(columnIds);
       for (const [columnId, owners] of [...summaryOwnersByColumnId.current]) {
         if (owners.has("grid") && !next.has(columnId)) releaseSummaryOwner(columnId, "grid");
@@ -564,6 +572,7 @@ export function App() {
         !sidePanelOpenRef.current ||
         summaryPanelViewRef.current !== "dataset" ||
         !currentMetadata ||
+        !supportsViewingCapability(currentMetadata.capabilities, "profile") ||
         currentMetadata.stats ||
         !confirmed ||
         pendingStatsRequest.current ||
@@ -1056,6 +1065,13 @@ export function App() {
           if (stepInspectionTargetRef.current) return;
           const currentMetadata = metadataRef.current;
           if (
+            !currentMetadata ||
+            (!supportsViewingCapability(currentMetadata.capabilities, "filter") &&
+              !supportsViewingCapability(currentMetadata.capabilities, "sort"))
+          ) {
+            return;
+          }
+          if (
             typeof response.column === "string" &&
             currentMetadata?.schema.filter((column) => column.name === response.column).length === 1
           ) {
@@ -1067,6 +1083,8 @@ export function App() {
           setSidePanelOpen(true);
         } else if (response.action === "changeViewSort") {
           if (
+            !metadataRef.current ||
+            !supportsViewingCapability(metadataRef.current.capabilities, "sort") ||
             typeof response.column !== "string" ||
             (response.sortAction !== "moveUp" &&
               response.sortAction !== "moveDown" &&
@@ -1258,6 +1276,20 @@ export function App() {
         setDraftWarnings([]);
         resetViewProfiling();
         summaryOwnersByColumnId.current.clear();
+        const openedProfileSupported = supportsViewingCapability(response.metadata.capabilities, "profile");
+        const openedFilterPanelSupported =
+          supportsViewingCapability(response.metadata.capabilities, "filter") ||
+          supportsViewingCapability(response.metadata.capabilities, "sort");
+        if (!openedProfileSupported && !openedFilterPanelSupported) {
+          sidePanelOpenRef.current = false;
+          setSidePanelOpen(false);
+        } else if (!openedProfileSupported) {
+          summaryPanelViewRef.current = "filters";
+          setSummaryPanelView("filters");
+        } else if (!openedFilterPanelSupported && summaryPanelViewRef.current === "filters") {
+          summaryPanelViewRef.current = "column";
+          setSummaryPanelView("column");
+        }
         confirmView(response.metadata, nextViewRequestId());
         storeMetadata(response.metadata);
         storeFilterModel(response.metadata.filterModel);
@@ -1266,7 +1298,7 @@ export function App() {
         confirmedColumnWindow.current = openedWindow;
         desiredColumnWindow.current = openedWindow;
         inspectionColumnWindow.current = openedWindow;
-        storeSummaries(response.summaries);
+        storeSummaries(supportsViewingCapability(response.metadata.capabilities, "profile") ? response.summaries : []);
         return;
       }
 
@@ -1395,7 +1427,12 @@ export function App() {
         if (!pending || pending.kind !== "summary") return;
         pendingBackgroundRequests.current.delete(response.viewRequestId);
         releaseBackgroundRequest(response.viewRequestId, pending);
-        if (!canProfileConfirmedView(pending.viewContextId) || response.revision !== confirmedView.current?.revision)
+        if (
+          !metadataRef.current ||
+          !supportsViewingCapability(metadataRef.current.capabilities, "profile") ||
+          !canProfileConfirmedView(pending.viewContextId) ||
+          response.revision !== confirmedView.current?.revision
+        )
           return;
         const merged = new Map(summariesRef.current.map((summary) => [summary.columnId, summary]));
         for (const summary of response.summaries) merged.set(summary.columnId, summary);
@@ -1418,6 +1455,8 @@ export function App() {
         pendingBackgroundRequests.current.delete(response.viewRequestId);
         releaseBackgroundRequest(response.viewRequestId, pending);
         if (
+          !metadataRef.current ||
+          !supportsViewingCapability(metadataRef.current.capabilities, "columnValues") ||
           !canProfileConfirmedView(pending.viewContextId) ||
           response.revision !== confirmedView.current?.revision ||
           !isLatest
@@ -1435,7 +1474,12 @@ export function App() {
         if (!pending || pending.kind !== "stats") return;
         pendingBackgroundRequests.current.delete(response.viewRequestId);
         releaseBackgroundRequest(response.viewRequestId, pending);
-        if (!canProfileConfirmedView(pending.viewContextId) || response.revision !== confirmedView.current?.revision)
+        if (
+          !metadataRef.current ||
+          !supportsViewingCapability(metadataRef.current.capabilities, "profile") ||
+          !canProfileConfirmedView(pending.viewContextId) ||
+          response.revision !== confirmedView.current?.revision
+        )
           return;
         const current = metadataRef.current;
         if (current) storeMetadata({ ...current, stats: response.stats });
@@ -1589,6 +1633,19 @@ export function App() {
     };
   }, [gridViewState.columnWidths, gridViewState.viewport.scrollLeft, stepInspection, stepInspectionTarget]);
   const snapshotMode = metadata?.source.kind === "notebookOutput";
+  const filterSupported = metadata ? supportsViewingCapability(metadata.capabilities, "filter") : true;
+  const sortSupported = metadata ? supportsViewingCapability(metadata.capabilities, "sort") : true;
+  const profileSupported = metadata ? supportsViewingCapability(metadata.capabilities, "profile") : true;
+  const columnValuesSupported = metadata ? supportsViewingCapability(metadata.capabilities, "columnValues") : true;
+  const filterPanelSupported = filterSupported || sortSupported;
+  const filterPanelLabel = filterSupported ? (sortSupported ? "Filters / Sorts" : "Filters") : "Sorts";
+  const sidePanelLabel = profileSupported
+    ? filterSupported
+      ? "Column profiles and filters"
+      : sortSupported
+        ? "Column profiles and sorts"
+        : "Column profiles"
+    : filterPanelLabel;
 
   const requestPage = (
     offset: number,
@@ -1663,10 +1720,16 @@ export function App() {
     if (importOptionsPendingRef.current || stepInspectionTargetRef.current) return;
     const currentMetadata = metadataRef.current;
     const confirmed = confirmedView.current;
+    if (
+      !currentMetadata ||
+      !supportsViewingCapability(currentMetadata.capabilities, "filter") ||
+      !supportsViewingCapability(currentMetadata.capabilities, "columnValues")
+    )
+      return;
     if (currentMetadata?.schema.filter((candidate) => candidate.name === column).length !== 1) return;
     const viewRequestId = nextViewRequestId();
     const valuesFilterModel = filterModelForColumnValues(currentMetadata.filterModel, column);
-    if (!currentMetadata || !confirmed || !canProfileConfirmedView(confirmed.viewContextId)) return;
+    if (!confirmed || !canProfileConfirmedView(confirmed.viewContextId)) return;
 
     const previousRequestId = latestValuesByColumn.current.get(column);
     if (previousRequestId) {
@@ -1742,6 +1805,16 @@ export function App() {
       return;
     }
     const nextModel = compactFilterModel(model);
+    const capabilityMetadata = metadataRef.current;
+    if (
+      capabilityMetadata &&
+      ((!supportsViewingCapability(capabilityMetadata.capabilities, "filter") &&
+        !sameFilterRules(nextModel, filterModelRef.current)) ||
+        (!supportsViewingCapability(capabilityMetadata.capabilities, "sort") &&
+          !sameSortRules(nextModel, filterModelRef.current)))
+    ) {
+      return;
+    }
     const pendingPage = latestPageRequest.current;
     const sameDesiredModel = sameFilterModel(nextModel, filterModelRef.current);
     if (sameDesiredModel && pendingPage && sameFilterModel(nextModel, pendingPage.model)) {
@@ -1773,7 +1846,12 @@ export function App() {
 
   useEffect(() => {
     clearFilterColumnActionRef.current = (column) => {
-      if (stepInspectionTargetRef.current) return;
+      if (
+        stepInspectionTargetRef.current ||
+        !metadataRef.current ||
+        !supportsViewingCapability(metadataRef.current.capabilities, "filter")
+      )
+        return;
       const current = filterModelRef.current;
       applyFilters({
         ...current,
@@ -1791,6 +1869,8 @@ export function App() {
       const current = filterModelRef.current;
       if (
         stepInspectionTargetRef.current ||
+        !metadataRef.current ||
+        !supportsViewingCapability(metadataRef.current.capabilities, "sort") ||
         metadataRef.current?.sessionId !== expectedSessionId ||
         viewSortModelSignature(current) !== expectedSortModelSignature ||
         !Number.isInteger(expectedSortIndex) ||
@@ -1926,6 +2006,16 @@ export function App() {
   };
 
   const selectSummaryPanelView = (view: SummaryPanelView) => {
+    const currentMetadata = metadataRef.current;
+    if (!currentMetadata) return;
+    if (
+      (view === "filters" &&
+        !supportsViewingCapability(currentMetadata.capabilities, "filter") &&
+        !supportsViewingCapability(currentMetadata.capabilities, "sort")) ||
+      (view !== "filters" && !supportsViewingCapability(currentMetadata.capabilities, "profile"))
+    ) {
+      return;
+    }
     summaryPanelViewRef.current = view;
     setSummaryPanelView(view);
     if (view !== "filters") return;
@@ -2203,12 +2293,22 @@ export function App() {
                 ref={sidePanelToggleRef}
                 type="button"
                 className="toolbarButton"
-                aria-label={inspectionMode ? "Filters paused during inspection" : "Column profiles and filters"}
+                aria-label={
+                  inspectionMode
+                    ? "Filters paused during inspection"
+                    : profileSupported || filterPanelSupported
+                      ? sidePanelLabel
+                      : "Profiles and filters unavailable"
+                }
                 aria-expanded={sidePanelOpen}
                 aria-controls="openwrangler-insights-panel"
-                disabled={inspectionMode || importOptionsPending}
+                disabled={inspectionMode || importOptionsPending || (!profileSupported && !filterPanelSupported)}
                 title={
-                  inspectionMode ? "Clear the selected-step inspection to use filters and column profiles." : undefined
+                  inspectionMode
+                    ? "Clear the selected-step inspection to use filters and column profiles."
+                    : !profileSupported && !filterPanelSupported
+                      ? "Column profiles, filters, and sorts are unavailable for this dataframe."
+                      : undefined
                 }
                 onClick={(event) => {
                   if (sidePanelOpenRef.current) {
@@ -2216,13 +2316,20 @@ export function App() {
                     return;
                   }
                   sidePanelReturnFocus.current = event.currentTarget;
-                  summaryPanelViewRef.current = "column";
-                  setSummaryPanelView("column");
+                  const initialView: SummaryPanelView = profileSupported ? "column" : "filters";
+                  summaryPanelViewRef.current = initialView;
+                  setSummaryPanelView(initialView);
                   sidePanelOpenRef.current = true;
                   setSidePanelOpen(true);
                 }}
               >
-                {inspectionMode ? "Filters paused during inspection" : "Column profiles"}
+                {inspectionMode
+                  ? "Filters paused during inspection"
+                  : profileSupported
+                    ? "Column profiles"
+                    : filterPanelSupported
+                      ? filterPanelLabel
+                      : "Profiles unavailable"}
               </button>
               <ColumnSearch
                 columns={(displayMetadata ?? metadata).schema}
@@ -2247,10 +2354,10 @@ export function App() {
                 </details>
               )}
               <span className="sessionBadge modeBadge" data-session-badge="mode">
-                {metadata.backend === "pyspark" ? "Viewing only" : metadata.mode}
+                {metadata.backend === "pyspark" || metadata.backend === "r" ? "Viewing only" : metadata.mode}
               </span>
               <span className="sessionBadge backendBadge" data-session-badge="backend">
-                {metadata.backend === "pyspark" ? dataBackendLabel(metadata.backend) : metadata.backend}
+                {dataBackendLabel(metadata.backend)}
               </span>
               {snapshotMode && (
                 <span className="sessionBadge modeBadge" data-session-badge="snapshot">
@@ -2439,9 +2546,12 @@ export function App() {
                 viewControlsDisabledReason={
                   importOptionsPending ? "View controls are unavailable while import options are changing." : undefined
                 }
+                filterControlsDisabled={!filterSupported}
+                sortControlsDisabled={!sortSupported}
+                profilesDisabled={!profileSupported}
                 sortRules={inspectionMode ? [] : filterModel.sort}
                 onSortColumn={(column, direction) =>
-                  inspectionMode
+                  inspectionMode || !sortSupported
                     ? undefined
                     : applyFilters({
                         ...filterModelRef.current,
@@ -2453,7 +2563,7 @@ export function App() {
                       })
                 }
                 onClearSortColumn={(column) =>
-                  inspectionMode
+                  inspectionMode || !sortSupported
                     ? undefined
                     : applyFilters({
                         ...filterModelRef.current,
@@ -2461,7 +2571,7 @@ export function App() {
                       })
                 }
                 onOpenFilter={(column) => {
-                  if (inspectionMode) return;
+                  if (inspectionMode || !filterSupported) return;
                   sidePanelReturnFocus.current =
                     document.activeElement instanceof HTMLElement ? document.activeElement : sidePanelToggleRef.current;
                   setFilterColumn(column);
@@ -2471,7 +2581,9 @@ export function App() {
                   setSidePanelOpen(true);
                   requestValues(column);
                 }}
-                onVisibleSummaryColumnsChange={inspectionMode ? () => undefined : updateVisibleSummaryColumns}
+                onVisibleSummaryColumnsChange={
+                  inspectionMode || !profileSupported ? () => undefined : updateVisibleSummaryColumns
+                }
                 onVisibleColumnRangeChange={handleVisibleColumnRange}
                 onViewStateChange={inspectionMode || importOptionsPending ? () => undefined : publishGridViewState}
               />
@@ -2499,10 +2611,10 @@ export function App() {
               </div>
             )}
           </section>
-          {sidePanelOpen && !inspectionMode && (
-            <aside id="openwrangler-insights-panel" className="sidebar" aria-label="Column profiles and filters">
+          {sidePanelOpen && !inspectionMode && (profileSupported || filterPanelSupported) && (
+            <aside id="openwrangler-insights-panel" className="sidebar" aria-label={sidePanelLabel}>
               <div className="drawerHeader">
-                <strong>Column profiles</strong>
+                <strong>{profileSupported ? "Column profiles" : filterPanelLabel}</strong>
                 <button
                   ref={sidePanelCloseRef}
                   type="button"
@@ -2517,6 +2629,9 @@ export function App() {
                 schemaById={schemaById}
                 selectedColumnId={selectedSummaryColumnId}
                 activeView={summaryPanelView}
+                profileSupported={profileSupported}
+                filtersSupported={filterPanelSupported}
+                filtersLabel={filterPanelLabel}
                 onSelectView={selectSummaryPanelView}
               />
               {summaryPanelView === "filters" && (
@@ -2534,6 +2649,9 @@ export function App() {
                     activeColumn={filterColumn}
                     defaultAdvanced={webviewConfig.filterMode === "advanced"}
                     disabled={mutationPending || importOptionsPending}
+                    filterSupported={filterSupported}
+                    sortSupported={sortSupported}
+                    columnValuesSupported={columnValuesSupported}
                     onApply={applyFilters}
                     onRequestValues={requestValues}
                   />
@@ -2777,6 +2895,17 @@ function isEditableKeyboardTarget(target: EventTarget): boolean {
 
 function sameFilterModel(left: FilterModel, right: FilterModel): boolean {
   return filterModelScope(left) === filterModelScope(right);
+}
+
+function sameFilterRules(left: FilterModel, right: FilterModel): boolean {
+  return (
+    JSON.stringify({ logic: left.logic ?? "and", filters: left.filters }) ===
+    JSON.stringify({ logic: right.logic ?? "and", filters: right.filters })
+  );
+}
+
+function sameSortRules(left: FilterModel, right: FilterModel): boolean {
+  return JSON.stringify(left.sort) === JSON.stringify(right.sort);
 }
 
 function filterModelForColumnValues(model: FilterModel, column: string): FilterModel {

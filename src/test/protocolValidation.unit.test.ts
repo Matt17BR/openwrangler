@@ -331,6 +331,34 @@ describe("protocol-v2 response validation", () => {
     ).toBe(false);
   });
 
+  it("accepts optional viewing capabilities and rejects malformed flags", () => {
+    const opened = responses[1];
+    if (opened?.kind !== "sessionOpened") throw new Error("Expected the session-opened fixture.");
+    const partialCapabilities = {
+      ...capabilities,
+      filter: false,
+      sort: true,
+      profile: false,
+      columnValues: false
+    };
+    const partial = {
+      ...opened,
+      metadata: { ...opened.metadata, capabilities: partialCapabilities }
+    };
+
+    expect(isOpenWranglerResponse(partial)).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 2, requestId: "partial-capabilities", response: partial })).toBe(
+      true
+    );
+    expect(isOpenWranglerResponse(opened)).toBe(true);
+    expect(
+      isOpenWranglerResponse({
+        ...partial,
+        metadata: { ...partial.metadata, capabilities: { ...partialCapabilities, profile: "no" } }
+      })
+    ).toBe(false);
+  });
+
   it("rejects empty, duplicate, or positionally ambiguous schema identities", () => {
     const otherColumn = {
       id: "column:1",
@@ -418,6 +446,16 @@ describe("protocol-v2 response validation", () => {
     expect(isOpenWranglerResponse(pageResponse({ ...page, limit: 0 }))).toBe(false);
     expect(isOpenWranglerResponse(pageResponse({ ...page, columnIds: ["column:0", "column:0"] }))).toBe(false);
     expect(isOpenWranglerResponse(pageResponse({ ...page, columnIds: ["unknown"] }))).toBe(false);
+    expect(isOpenWranglerResponse(pageResponse({ ...page, rows: [{ ...page.rows[0], rowLabel: "Mazda RX4" }] }))).toBe(
+      true
+    );
+    expect(
+      isOpenWranglerResponse(pageResponse({ ...page, rows: [{ ...page.rows[0], rowLabel: "🚙".repeat(1_024) }] }))
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse(pageResponse({ ...page, rows: [{ ...page.rows[0], rowLabel: "x".repeat(1_025) }] }))
+    ).toBe(false);
+    expect(isOpenWranglerResponse(pageResponse({ ...page, rows: [{ ...page.rows[0], rowLabel: 1 }] }))).toBe(false);
     expect(isOpenWranglerResponse(pageResponse({ ...page, rows: [{ id: "row:0", rowNumber: -1, values: [] }] }))).toBe(
       false
     );
@@ -1199,6 +1237,65 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...sparkMetadata, source: metadata.source } })).toBe(
       false
     );
+  });
+
+  it("accepts R only as an identified live notebook frame in viewing mode", () => {
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "r_frame",
+      variableName: "r_frame",
+      uri: "file:///workspace/notebook.ipynb"
+    };
+    const request = {
+      kind: "openSession" as const,
+      source,
+      backend: "r" as const,
+      mode: "viewing" as const,
+      pageSize: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    };
+    const { latestStepInputSchema: _latest, stats: _stats, ...viewingMetadata } = metadata;
+    const rMetadata = {
+      ...viewingMetadata,
+      backend: "r" as const,
+      rDataframeFlavor: "r.tibble" as const,
+      mode: "viewing" as const,
+      source,
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false,
+        filter: false,
+        sort: true,
+        profile: true,
+        columnValues: false
+      },
+      filterModel: { logic: "and" as const, filters: [], sort: [] },
+      steps: []
+    };
+    const opened = { ...responses[1], metadata: rMetadata, summaries: [] };
+
+    expect(isOpenWranglerRequest(request)).toBe(true);
+    expect(isOpenWranglerRequest({ ...request, mode: "editing" })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, source: metadata.source })).toBe(false);
+    expect(isOpenWranglerResponse(opened)).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-open", response: opened })).toBe(true);
+    const { rDataframeFlavor: _rDataframeFlavor, ...rMetadataWithoutFlavor } = rMetadata;
+    const rWithoutFlavor = { ...opened, metadata: rMetadataWithoutFlavor };
+    expect(isOpenWranglerResponse(rWithoutFlavor)).toBe(false);
+    expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-no-flavor", response: rWithoutFlavor })).toBe(
+      false
+    );
+    expect(isOpenWranglerResponse({ ...opened, metadata: { ...rMetadata, mode: "editing" } })).toBe(false);
+    const nonRWithFlavor = { ...responses[1], metadata: { ...metadata, rDataframeFlavor: "r.tibble" as const } };
+    expect(isOpenWranglerResponse(nonRWithFlavor)).toBe(false);
+    expect(
+      validateTransportSchema({ protocolVersion: 2, requestId: "python-r-flavor", response: nonRWithFlavor })
+    ).toBe(false);
   });
 
   it("accepts only unique, non-empty stable IDs in summary projections", () => {

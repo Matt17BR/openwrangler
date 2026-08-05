@@ -1,4 +1,4 @@
-export const R_FRAME_CONTRACT_VERSION = 1 as const;
+export const R_FRAME_CONTRACT_VERSION = 2 as const;
 
 export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   rows: 2_147_483_647,
@@ -7,6 +7,12 @@ export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   pageColumns: 256,
   pageCells: 100_000,
   sortRules: 64,
+  profileColumns: 64,
+  profileRows: 1_000_000,
+  profileCells: 5_000_000,
+  datasetProfileCells: 5_000_000,
+  topValues: 10,
+  histogramBins: 20,
   factorLevels: 100_000,
   textBytes: 8_192,
   nameBytes: 1_024,
@@ -100,6 +106,7 @@ export type RFrameCell =
 export interface RFrameRow {
   readonly id: string;
   readonly rowNumber: number;
+  readonly rowLabel?: string;
   readonly values: readonly RFrameCell[];
 }
 
@@ -119,7 +126,7 @@ export interface RFramePageContract {
   readonly shape: Readonly<{ rows: number; columns: number }>;
   readonly frameSemantics: Readonly<{
     classes: readonly string[];
-    rowNames: "automatic";
+    rowNames: "positional" | "explicit";
     keyColumnIds: readonly string[];
   }>;
   readonly schema: readonly RColumnSchema[];
@@ -193,7 +200,7 @@ export function decodeRFramePageJson(payload: string): RFramePageContract {
   return decodeRFramePage(decoded);
 }
 
-function decodeRFramePage(value: unknown): RFramePageContract {
+export function decodeRFramePage(value: unknown): RFramePageContract {
   const record = exactRecord(value, [
     "contractVersion",
     "dataframeFlavor",
@@ -222,7 +229,9 @@ function decodeRFramePage(value: unknown): RFramePageContract {
   if (!arraysEqual(classes, flavorClasses[dataframeFlavor])) {
     fail("R frame classes do not match dataframeFlavor.");
   }
-  if (frameRecord.rowNames !== "automatic") fail("R frame row-name semantics are unsupported.");
+  if (frameRecord.rowNames !== "positional" && frameRecord.rowNames !== "explicit") {
+    fail("R frame row-name semantics are unsupported.");
+  }
   const keyColumnIds = decodeStringArray(
     frameRecord.keyColumnIds,
     "frameSemantics.keyColumnIds",
@@ -234,9 +243,9 @@ function decodeRFramePage(value: unknown): RFramePageContract {
   if (dataframeFlavor !== "r.data.table" && keyColumnIds.length !== 0) {
     fail("Only data.table frames may publish key columns.");
   }
-  const frameSemantics = Object.freeze({ classes, rowNames: "automatic" as const, keyColumnIds });
+  const frameSemantics = Object.freeze({ classes, rowNames: frameRecord.rowNames, keyColumnIds });
 
-  const page = decodePage(record.page, shape, schema);
+  const page = decodePage(record.page, shape, schema, frameSemantics.rowNames);
   return Object.freeze({
     contractVersion: R_FRAME_CONTRACT_VERSION,
     dataframeFlavor,
@@ -333,7 +342,8 @@ function expectedColumnIdentity(semantics: RColumnSemantics): { rawType: string;
 function decodePage(
   value: unknown,
   shape: Readonly<{ rows: number; columns: number }>,
-  schema: readonly RColumnSchema[]
+  schema: readonly RColumnSchema[],
+  rowNames: "positional" | "explicit"
 ): RFramePage {
   const record = exactRecord(value, [
     "offset",
@@ -367,7 +377,9 @@ function decodePage(
     fail("R frame page exceeds the cell limit.");
   }
   const rows = Object.freeze(
-    record.rows.map((row, index) => decodeRow(row, shape.rows, expectedColumns, `page.rows[${index}]`))
+    record.rows.map((row, index) =>
+      decodeRow(row, shape.rows, offset + index, expectedColumns, rowNames, `page.rows[${index}]`)
+    )
   );
   if (new Set(rows.map((row) => row.id)).size !== rows.length) {
     fail("R frame page row identities must be unique.");
@@ -375,19 +387,38 @@ function decodePage(
   return Object.freeze({ offset, limit, totalRows, columnOffset, columnLimit, columnIds, rows });
 }
 
-function decodeRow(value: unknown, totalRows: number, columns: readonly RColumnSchema[], label: string): RFrameRow {
-  const record = exactRecord(value, ["id", "rowNumber", "values"]);
+function decodeRow(
+  value: unknown,
+  totalRows: number,
+  expectedRowNumber: number,
+  columns: readonly RColumnSchema[],
+  rowNames: "positional" | "explicit",
+  label: string
+): RFrameRow {
+  const record = exactRecord(value, ["id", "rowNumber", "values"], ["rowLabel"]);
   const rowNumber = boundedInteger(record.rowNumber, `${label}.rowNumber`, Math.max(0, totalRows - 1));
-  if (record.id !== `r:r:${rowNumber}` || record.rowNumber !== rowNumber) {
-    fail(`${label} has an invalid stable row identity.`);
+  if (rowNumber !== expectedRowNumber) {
+    fail(`${label}.rowNumber is not the logical grid position.`);
   }
+  const id = boundedString(record.id, `${label}.id`, R_FRAME_CONTRACT_LIMITS.nameBytes);
+  const sourceMatch = /^r:r:(0|[1-9][0-9]*)$/.exec(id);
+  const sourcePosition = sourceMatch ? Number(sourceMatch[1]) : Number.NaN;
+  if (!Number.isSafeInteger(sourcePosition) || sourcePosition < 0 || sourcePosition >= totalRows) {
+    fail(`${label}.id is not an in-range stable source row identity.`);
+  }
+  const hasRowLabel = Object.prototype.hasOwnProperty.call(record, "rowLabel");
+  if (rowNames === "positional" && hasRowLabel) fail(`${label}.rowLabel is invalid for positional row names.`);
+  if (rowNames === "explicit" && !hasRowLabel) fail(`${label}.rowLabel is required for explicit row names.`);
+  const rowLabel = hasRowLabel
+    ? boundedString(record.rowLabel, `${label}.rowLabel`, R_FRAME_CONTRACT_LIMITS.nameBytes)
+    : undefined;
   if (!Array.isArray(record.values) || record.values.length !== columns.length) {
     fail(`${label}.values does not match page.columnIds.`);
   }
   const values = Object.freeze(
     record.values.map((cell, index) => decodeCell(cell, columns[index] as RColumnSchema, `${label}.values[${index}]`))
   );
-  return Object.freeze({ id: record.id, rowNumber, values });
+  return Object.freeze({ id, rowNumber, ...(rowLabel === undefined ? {} : { rowLabel }), values });
 }
 
 function decodeCell(value: unknown, column: RColumnSchema, label: string): RFrameCell {
@@ -571,10 +602,18 @@ function decodeStringArray(
   return Object.freeze(value.map((item, index) => boundedString(item, `${label}[${index}]`, maximumBytes)));
 }
 
-function exactRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {
+function exactRecord(
+  value: unknown,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[] = []
+): Record<string, unknown> {
   if (!isRecord(value)) fail("R frame value must be an object.");
   const actual = Object.keys(value);
-  if (actual.length !== keys.length || keys.some((key) => !Object.prototype.hasOwnProperty.call(value, key))) {
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
+  if (
+    actual.some((key) => !allowed.has(key)) ||
+    requiredKeys.some((key) => !Object.prototype.hasOwnProperty.call(value, key))
+  ) {
     fail("R frame object has missing or unknown fields.");
   }
   return value;

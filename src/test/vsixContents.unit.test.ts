@@ -224,28 +224,35 @@ describe("VSIX production entry allowlist", () => {
     expect(inspectVsixEntries(entries).missing).toEqual(["extension/python/openwrangler_runtime/dependency_guard.py"]);
   });
 
-  it("packages only the production R frame contract", () => {
+  it("packages only the production R runtime files", () => {
     const vscodeIgnore = readFileSync(join(process.cwd(), ".vscodeignore"), "utf8")
       .split(/\r?\n/u)
       .filter((entry) => entry.length > 0 && !entry.startsWith("#"));
-    const entries = requiredVsixEntries.filter(
-      (entry) => entry !== "extension/r/openwrangler_runtime/frame_contract.R"
-    );
+    const rRuntimeEntries = [
+      "extension/r/openwrangler_runtime/frame_contract.R",
+      "extension/r/openwrangler_runtime/kernel_agent.R"
+    ];
+    const entries = requiredVsixEntries.filter((entry) => !rRuntimeEntries.includes(entry));
 
     expect(vscodeIgnore).toContain("r/tests/**");
-    expect(inspectVsixEntries(entries).missing).toEqual(["extension/r/openwrangler_runtime/frame_contract.R"]);
-    expect(inspectVsixEntries([...requiredVsixEntries, "extension/r/tests/frame_contract.R"]).forbidden).toEqual([
-      "extension/r/tests/frame_contract.R"
-    ]);
+    expect(inspectVsixEntries(entries).missing).toEqual(rRuntimeEntries);
+    expect(
+      inspectVsixEntries([
+        ...requiredVsixEntries,
+        "extension/r/tests/frame_contract.R",
+        "extension/r/tests/kernel_agent.R"
+      ]).forbidden
+    ).toEqual(["extension/r/tests/frame_contract.R", "extension/r/tests/kernel_agent.R"]);
   });
 
   it("permits the missing R contract only for an authenticated historical release", () => {
-    const withoutR = requiredVsixEntries.filter(
-      (entry) => entry !== "extension/r/openwrangler_runtime/frame_contract.R"
-    );
+    const withoutR = requiredVsixEntries.filter((entry) => !entry.startsWith("extension/r/openwrangler_runtime/"));
     const withoutRAndServer = withoutR.filter((entry) => entry !== "extension/python/openwrangler_runtime/server.py");
 
-    expect(inspectVsixEntries(withoutR).missing).toEqual(["extension/r/openwrangler_runtime/frame_contract.R"]);
+    expect(inspectVsixEntries(withoutR).missing).toEqual([
+      "extension/r/openwrangler_runtime/frame_contract.R",
+      "extension/r/openwrangler_runtime/kernel_agent.R"
+    ]);
     expect(inspectVsixEntries(withoutR, { requireRFrameContract: false })).toEqual({
       forbidden: [],
       missing: [],

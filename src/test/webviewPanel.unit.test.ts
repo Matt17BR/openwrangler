@@ -4050,6 +4050,65 @@ describe("OpenWranglerPanel retained view state", () => {
     );
   });
 
+  it("forces an R notebook variable into viewing mode and caps its initial page to 100,000 cells", async () => {
+    vi.spyOn(workspace, "getConfiguration").mockImplementation(
+      () =>
+        ({
+          get: (key: string, fallback?: unknown): unknown => {
+            if (key === "fetchBlockSize" || key === "fetchColumnBlockSize") return 10_000;
+            return fallback;
+          }
+        }) as vscode.WorkspaceConfiguration
+    );
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "r_frame",
+      variableName: "r_frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") {
+        return {
+          ...openedResponse,
+          metadata: {
+            ...metadata,
+            backend: "r",
+            rDataframeFlavor: "r.data.frame",
+            mode: "viewing",
+            source,
+            capabilities: {
+              editable: false,
+              lazy: false,
+              cancel: false,
+              exportCsv: false,
+              exportParquet: false,
+              notebookInsert: false
+            }
+          }
+        };
+      }
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+
+    createPanelHarness(
+      { request },
+      { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
+    );
+
+    await vi.waitFor(() => {
+      const openRequest = request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0];
+      expect(openRequest).toMatchObject({
+        backend: "r",
+        mode: "viewing",
+        pageSize: 390,
+        columnOffset: 0,
+        columnLimit: 256
+      });
+      if (!openRequest || openRequest.kind !== "openSession") throw new Error("Expected an open-session request.");
+      expect(openRequest.pageSize * openRequest.columnLimit).toBeLessThanOrEqual(100_000);
+    });
+  });
+
   it("routes the PySpark Reconnect action through the host-only live-session recovery", async () => {
     const source: SessionSource = {
       kind: "notebookVariable",

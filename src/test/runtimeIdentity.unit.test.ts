@@ -5,10 +5,13 @@ import {
   codeDialectLanguageLabel,
   isRuntimeIdentity,
   runtimeIdentityForDataBackend,
+  runtimeIdentityForSessionMetadata,
   type RuntimeIdentity
 } from "../shared/runtimeIdentity";
 
-const identities: Readonly<Record<DataBackend, RuntimeIdentity>> = {
+type PythonDataBackend = Exclude<DataBackend, "r">;
+
+const identities: Readonly<Record<PythonDataBackend, RuntimeIdentity>> = {
   polars: { runtimeLanguage: "python", dataframeFlavor: "polars", codeDialect: "python.polars" },
   duckdb: { runtimeLanguage: "python", dataframeFlavor: "duckdb", codeDialect: "python.duckdb" },
   pandas: { runtimeLanguage: "python", dataframeFlavor: "pandas", codeDialect: "python.pandas" },
@@ -16,7 +19,7 @@ const identities: Readonly<Record<DataBackend, RuntimeIdentity>> = {
 };
 
 describe("host runtime identity", () => {
-  it.each(Object.entries(identities) as Array<[DataBackend, RuntimeIdentity]>)(
+  it.each(Object.entries(identities) as Array<[PythonDataBackend, RuntimeIdentity]>)(
     "maps the confirmed %s backend without changing its engine identity",
     (backend, expected) => {
       const actual = runtimeIdentityForDataBackend(backend);
@@ -27,8 +30,23 @@ describe("host runtime identity", () => {
     }
   );
 
+  it.each(["r.data.frame", "r.tibble", "r.data.table"] as const)(
+    "keeps the native %s flavor separate from its R runtime",
+    (rDataframeFlavor) => {
+      const actual = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor });
+      expect(actual).toEqual({ runtimeLanguage: "r", dataframeFlavor: rDataframeFlavor, codeDialect: null });
+      expect(isRuntimeIdentity(actual)).toBe(true);
+    }
+  );
+
+  it("rejects R metadata without an exact dataframe flavor", () => {
+    expect(() => runtimeIdentityForSessionMetadata({ backend: "r" })).toThrow(
+      "An R session must identify its native dataframe flavor"
+    );
+  });
+
   it("does not derive an identity from an unresolved automatic backend", () => {
-    expect(() => runtimeIdentityForDataBackend("auto" as DataBackend)).toThrow(
+    expect(() => runtimeIdentityForDataBackend("auto" as PythonDataBackend)).toThrow(
       "Unsupported confirmed dataframe backend: auto"
     );
   });

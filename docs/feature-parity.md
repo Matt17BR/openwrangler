@@ -69,20 +69,24 @@ The released v1.1.1 notebook UX prepares automatic Pandas/Polars MIME formatters
 
 Inline MIME v2 output shows every captured column and pages the captured rows at 10, 20, 50, or 100 rows per page. When the output retains one canonical live-variable link, its single **Open in Open Wrangler** action opens the complete current dataframe through the exact originating notebook and kernel; it never substitutes the saved capture. An unlinked output stays readable inline and tells the user to run the cell again instead of exposing a misleading open action. The notebook-toolbar and Jupyter Variables workflows remain additional live entry points. Focused unit, renderer, provenance, provider-conflict, restart, and packaged-editor acceptance defined in `docs/testing.md` must be green before this candidate is released.
 
-## Native R groundwork for Open Wrangler 2
+## Native R work for Open Wrangler 2
 
-R support is not available in the extension yet. The first implementation is an internal, native-R frame contract for
-base `data.frame`, tibble, and `data.table`. It produces bounded typed pages and has a strict TypeScript decoder. It
-does not use Python or change the current Python support matrix.
+R support has not been released. The current Open Wrangler 2 branch can find base `data.frame`, tibble, and
+`data.table` variables in an R notebook and open them in a read-only workbench. It uses the notebook's IRkernel
+directly; Python is not involved. A local packaged test has passed with R 4.5.2 in VS Code 1.132.0 and Cursor 3.14.7.
+Native column and dataset profiles have R and TypeScript contract tests, and the packaged journey now checks their
+rendered workbench UI. R 4.4 and remote-kernel runs still need to pass before a preview ships.
 
-| Surface                                      | Availability | Status  | Recorded evidence                           | Remaining acceptance gate                          |
-| -------------------------------------------- | ------------ | ------- | ------------------------------------------- | -------------------------------------------------- |
-| Native R frame snapshot and typed page       | Internal     | Partial | Focused producer and decoder contract suite | Hosted R 4.4/4.5 and IRkernel lifecycle gates      |
-| Native R ordered viewing sorts               | Internal     | Partial | Stable pure-R sorts and decoder fixtures    | Live-session filtering, sorting, and UI acceptance |
-| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Real cross-language fixtures for all three  | Real notebook discovery, paging, and profiling     |
-| Notebook workbench                           | No           | Planned | No command or coordinator wiring            | Packaged VS Code/Cursor IRkernel acceptance        |
-| R cleaning operations and generated code     | No           | Planned | Frame semantics only                        | Native R IR, adapters, code generation, and tests  |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR       | Stable broker or Open Wrangler-owned helper        |
+| Surface                                      | Availability | Status  | Recorded evidence                                       | Remaining acceptance gate                         |
+| -------------------------------------------- | ------------ | ------- | ------------------------------------------------------- | ------------------------------------------------- |
+| Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, local packaged-editor test | R 4.4 and remote-kernel coverage                  |
+| Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local packaged-editor test             | Live filtering                                    |
+| Native R column and dataset profiles         | Internal     | Partial | Native, host-contract, and packaged harness coverage    | R 4.4 and remote-kernel runs                      |
+| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, paging, sorting, and profile tests    | Remote-kernel coverage                            |
+| Exact IRkernel session transport             | Internal     | Partial | Lifecycle, paging, and profile correlation tests        | Remote IRkernel and restart acceptance            |
+| Notebook workbench                           | Internal     | Partial | Packaged paging/profiles plus production axe coverage   | R 4.4, remote, filters, and editing               |
+| R cleaning operations and generated code     | No           | Planned | Frame semantics only                                    | Native R IR, adapters, code generation, and tests |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                   | Stable broker or Open Wrangler-owned helper       |
 
 ## DuckDB file-backed preview matrix
 
@@ -742,8 +746,8 @@ Grid status and profile vocabulary, 2026-07-31:
   **Column profiles and filters**. Its established region and tab IDs, deterministic Close focus, Escape handling,
   exact opener restoration, and Column / Dataset / Filters ownership remain unchanged.
 - Grid-header summaries remain an independent **Header profiles** toggle with a constant name and `aria-pressed`.
-  `openWrangler.insightsOnOpen` keeps its public key and behavior; PySpark still starts this toggle off and retains
-  its Spark-query cost tooltip.
+  `openWrangler.insightsOnOpen` keeps its public key and behavior. R and PySpark start this toggle off, with a tooltip
+  explaining the profiling work that an explicit click starts.
 - React, production-bundle screenshot, axe, forced-colors, narrow-width, 200%-zoom, packaged-layout, and PySpark
   media assertions cover direct status-bar placement, exact range text, Codicon presence, pressed state, and
   unclipped controls. Dedicated 100,000,000-row terminal fixtures prove the exact

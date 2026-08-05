@@ -2,14 +2,16 @@
 
 ## Product boundaries
 
-Open Wrangler has three cooperating processes:
+Open Wrangler has three cooperating parts:
 
 1. The VS Code extension host owns commands, trusted-workspace enforcement, editor and view providers, session coordination, filesystem prompts, runtime processes, and Jupyter access.
-2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute Python directly.
-3. The bundled Python runtime executes dataframe queries and transformation plans in either a standalone selected interpreter or the active Jupyter kernel.
+2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute dataframe code directly.
+3. A language runtime owns dataframe work. Python sessions use the bundled runtime in a selected interpreter or active
+   Jupyter kernel. R notebook sessions use the bundled R reader inside the selected IRkernel.
 
-These sections describe the shipped Python runtime. Open Wrangler 2 adds R as a separate runtime language; the
-[native R decision](decisions/0001-native-r-runtime.md) defines its IRkernel-first ownership model and keeps runtime
+Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects a read-only R
+viewer to the shared protocol, coordinator, notebook command, grid, and profiles. The
+[native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
@@ -28,34 +30,80 @@ Every request that can run work against an open PySpark session carries its prot
 
 Spark Connect transport errors are handled according to what the server reports. A temporary endpoint outage leaves the confirmed view untouched and allows the failed read to be retried. A missing server session or dataframe blocks ordinary retries and shows a user-initiated **Reconnect** action instead. Reconnect reuses the existing live-variable replay path: it looks up the same variable name in the exact notebook and kernel that opened the view, requires the same schema, and restores the confirmed filter, sort, viewport, widths, and selection before replacing the private runtime. A failed reconnect closes only its candidate and leaves the old confirmed view in place. It never starts Spark, creates a dataframe, switches kernels, loops automatically, or uses captured notebook output as a fallback.
 
-The first native R boundary is deliberately smaller than a session transport. The bundled
-`r/openwrangler_runtime/frame_contract.R` module snapshots a base `data.frame`, tibble, or `data.table` without
-calling Python and returns one bounded projected page. Base frames and tibbles use an R serialization copy;
-`data.table` uses `data.table::copy()` so later by-reference work cannot mutate the notebook object. The page keeps
+The bundled `r/openwrangler_runtime/frame_contract.R` module validates a base `data.frame`, tibble, or `data.table`
+without calling Python and returns one bounded projected page. Live kernel sessions read only the requested rows and
+columns instead of serializing the complete dataframe. They check the source shape and schema again before each read;
+the isolated contract helper still copies its input for unit-level value tests. The page keeps
 duplicate and non-syntactic names while using positional IDs for identity. Its column metadata records factors,
 ordered factors, dates, POSIXct time zones, difftime units, and `bit64::integer64`; cells distinguish `NA`, `NaN`, and
 signed infinity for plain doubles. Non-finite classed temporal values and fractional Dates fail rather than being
 silently relabeled or rounded. Numeric display always uses a dot, regardless of `options(OutDec)`. A POSIXct column
 with no `tzone` attribute or an empty `tzone` uses UTC for display instead of the process's current time zone. The
 original null or empty-string value remains in metadata. R's reserved integer and `bit64::integer64` missing-value
-sentinels can appear only as typed nulls. Explicit row names, grouped or rowwise tibbles, list/matrix/raw/complex
-columns, subclasses, and unrecognized attributes fail instead of losing R semantics.
+sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matrix/raw/complex columns, subclasses, and
+unrecognized attributes fail instead of losing R semantics. Source positions provide stable row identity. Explicit R
+row names travel separately as row labels and appear in the grid gutter instead of becoming a data column.
 
 The same module can apply an ordered list of viewing sorts before it builds a page. A rule names a column by both its
 positional ID and captured name, which keeps duplicate names unambiguous and rejects stale references. Rules are
 applied in priority order, with independent direction and missing-value placement; ties keep their previous order.
 R's `NA` and `NaN` values share the requested missing-value placement while their cell encodings remain distinct.
 Exact `bit64::integer64` values are compared without converting them to doubles. Sorting works on row positions and
-does not reorder or otherwise change the captured frame. A sorted page keeps each source row ID even though those IDs
-no longer follow the page offset.
+does not reorder or otherwise change the source frame. A sorted page keeps each source row ID and explicit row label,
+while `rowNumber` records its current logical position in the grid. A live session caches at most four sort columns
+and 32 MiB of row-order state. It rebuilds that order when those values change, including after a `data.table`
+by-reference update, and releases the cache when sorting is cleared. Larger sorts rebuild for each page instead of
+retaining an unbounded cache.
 
-`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 1, exact fields, canonical
-class/type combinations, contiguous positional column IDs, unique in-range source row IDs, matching row and column
-windows, and values valid for their R column. The current limits are 2,048 source columns, 64 sort rules, 100,000
-factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per text value, and 16 MiB per encoded
-page. A running metadata-and-cell budget stops an oversized page before the complete object or JSON string is built.
-This boundary is not part of Python protocol v2 and is not wired to commands, sessions, or webviews yet. The IRkernel
-transport will consume it in a later Open Wrangler 2 slice.
+Column profiles use the same captured schema and stable column IDs as grid pages. A request can include up to 64
+columns. It is rejected before scanning when it exceeds 1,000,000 rows or 5,000,000 cells. Dataset profiles use the
+same row limit and a separate 5,000,000-cell limit. These caps keep an automatic profile request from monopolizing the
+user's R kernel, which the Jupyter API cannot cancel independently. The R runtime returns at most ten common values
+and twenty numeric histogram bins per column. It keeps `NA` and `NaN` counts separate for plain doubles, preserves
+exact integer and `bit64::integer64` extrema, counts Unicode text length by code point, and reports native factor,
+logical, Date, POSIXct, and difftime statistics. Dataset statistics report missing cells, rows with a missing value,
+duplicate rows, and missing counts in source-column order. Profiling reads the live R object again and rejects a
+changed shape, schema, or column semantics. It does not sort or modify the source object.
+
+`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 2, exact fields, canonical
+class/type combinations, contiguous positional column IDs, unique in-range source row IDs, logical row positions,
+matching row and column windows, and values valid for their R column. Positional frames may not send row labels;
+explicit row-name frames must send one bounded label for every returned row. The current limits are 2,048 source
+columns, 64 sort rules, 100,000 factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per
+text value, and 16 MiB per encoded page. A running metadata-and-cell budget stops an oversized page before the
+complete object or JSON string is built. The canonical grid protocol carries row labels independently from logical
+row numbers. The kernel agent uses a small R-only transport, which `RKernelBridge` validates and maps to the shared
+host protocol; the Python runtime never reads those messages.
+
+`r/openwrangler_runtime/kernel_agent.R` owns the first read-only R sessions. The host creates a UUID before an open,
+and the agent records the named object's shape, schema, and source binding. Later page, sort, and profile requests read
+through that binding and reject structural changes. Open, page, profile, dataset-statistics, and close messages have a
+separate versioned schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
+request IDs, and oversized responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote
+IRkernel does not need access to the extension filesystem.
+
+`RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
+session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
+again before dispatch. Host cancellation and timeouts do not interrupt the user's R kernel. If an open has already
+started, its candidate ID stays mapped to that kernel and one close is sent there after the original execution
+finishes. Page and profile requests that time out or are cancelled still retain the original execution's settlement
+promise. The transport waits for that promise before sending another request to the same IRkernel. Kernel restart
+ends the mappings. Close uses the mapped kernel and never looks one up by URI. Session IDs and pending cleanup records
+have fixed bounds, and repeated disposal joins the same cleanup operation.
+
+Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
+the fixed response codes `unsupported_frame`, `missing_package`, `page_too_large`, and `stale_column`. Request errors,
+missing variables or sessions, and unexpected runtime failures also use a fixed code list. Messages are limited to
+4 KiB, and TypeScript rejects any unrecognized code. Native variable discovery requires `jsonlite` and `rlang` in the
+selected kernel. It recognizes exact base `data.frame`, tibble, and `data.table` class vectors without evaluating
+active or delayed bindings. The notebook command routes those variables through a read-only coordinator session and
+enables native column and dataset profiles. Filters, value search, cleaning, exports, and generated code stay disabled
+until their R implementations exist. R sessions open with header profiles off so opening a frame does not immediately
+scan every visible column. Users can enable them, and the profile drawer still loads the selected column or dataset on
+request. The packaged VS Code/Cursor journey now selects a real R column and checks its
+rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
+duplicate-row statistics. The local packaged journey passes in VS Code and Cursor with R 4.5.2. R 4.4 and remote
+IRkernel remain preview gates.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 
@@ -140,6 +188,8 @@ Scope eviction has no awaited boundary. It revalidates the exact slot and every 
 `python/benchmarks/runtime_performance.py` measures deterministic synthetic CSV/Parquet work at two Python boundaries: direct `SessionManager` calls and canonical protocol-v2 round trips through a standalone runtime process. `--backend` labels native Polars, DuckDB, or Pandas runs; the default and strict release thresholds remain Polars-only. Package/runtime/machine provenance and best-effort process RSS evidence make results reproducible, but they exclude the extension host, VS Code/Cursor, webview layout, and paint. They must not be reported as editor first-paint timings; packaged-editor interaction and visual acceptance are separate evidence.
 
 PySpark summaries check and collect their ten displayed values in one Spark job. When their combined size exceeds the remaining allowance, Spark sends the lengths but substitutes null for the values. Oversized data stays out of Python, and an ordinary profile does not run the same grouped query twice.
+
+Optional `filter`, `sort`, `profile`, and `columnValues` wire flags can disable one viewing feature without hiding the others. Omitted flags keep the protocol-v2 behavior and mean supported.
 
 ## UI composition
 
