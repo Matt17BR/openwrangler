@@ -437,10 +437,10 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
-  assert.match(extension.packageJSON.description, /Open files and notebook variables/u);
-  assert.match(extension.packageJSON.description, /Pandas and Polars are native/u);
+  assert.match(extension.packageJSON.description, /Explore files and notebook data in VS Code and Cursor/u);
+  assert.match(extension.packageJSON.description, /Clean and export with Pandas or Polars/u);
   assert.match(extension.packageJSON.description, /DuckDB viewing is experimental/u);
-  assert.match(extension.packageJSON.description, /local PySpark 4\.2 notebook viewing is supported/u);
+  assert.match(extension.packageJSON.description, /local PySpark 4\.2 Classic\/Connect batch viewing is supported/u);
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
