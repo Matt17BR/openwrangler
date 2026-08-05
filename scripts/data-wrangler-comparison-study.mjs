@@ -11,9 +11,10 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statfsSync,
   writeFileSync
 } from "node:fs";
-import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
+import { arch, cpus, platform, release, totalmem } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -32,6 +33,9 @@ export const DATA_WRANGLER_VERSION = "1.24.2";
 export const WARM_REPETITIONS = 10;
 export const SMOKE_REPETITIONS = 2;
 export const LOCAL_REPETITIONS = 3;
+const LOCAL_FIXTURE_MAX_BYTES = 640 * 1024 * 1024;
+const LOCAL_OUTPUT_MIN_FREE_BYTES = 2 * LOCAL_FIXTURE_MAX_BYTES + 512 * 1024 * 1024;
+const LOCAL_FIXTURE_OWNER_PROTOCOL = "openwrangler-local-comparison-fixture-v1";
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
@@ -125,8 +129,16 @@ export function buildStudyManifest({
   validateMachine(machine);
   validateToolHashes(toolHashes);
   validateComparisonCells(cells);
-  if (![SMOKE_REPETITIONS, LOCAL_REPETITIONS, WARM_REPETITIONS].includes(repetitionsPerSession)) {
-    throw new TypeError("A comparison session requires two smoke, three local, or ten release samples.");
+  const localProfile = sameCells(cells, LOCAL_MIXED_CELLS);
+  const validRepetitions = localProfile
+    ? repetitionsPerSession === LOCAL_REPETITIONS
+    : [SMOKE_REPETITIONS, WARM_REPETITIONS].includes(repetitionsPerSession);
+  if (!validRepetitions) {
+    throw new TypeError(
+      localProfile
+        ? "The local comparison requires exactly three samples."
+        : "The release comparison requires two smoke or ten release samples."
+    );
   }
   if (candidate.version === DATA_WRANGLER_VERSION) {
     throw new TypeError("The candidate version must be independent from the Data Wrangler baseline version.");
@@ -307,7 +319,13 @@ export async function runLocalDataWranglerComparison(options, dependencies = {})
   }
   const output = resolve(options.output);
   mkdirSync(output, { recursive: true, mode: 0o700 });
-  const fixtureRoot = mkdtempSync(join(tmpdir(), "ow-local-comparison-"));
+  removeStaleLocalFixtureDirectories(output, dependencies.isProcessAlive ?? isProcessAlive);
+  (dependencies.requireLocalDiskSpace ?? requireLocalComparisonDiskSpace)(output);
+  const fixtureRoot = mkdtempSync(join(output, `local-fixture-${process.pid}-`));
+  writeJsonAtomic(join(fixtureRoot, "owner.json"), {
+    protocol: LOCAL_FIXTURE_OWNER_PROTOCOL,
+    pid: process.pid
+  });
   const parquet = join(fixtureRoot, "mixed-1000000-100.parquet");
   const generateFixture = dependencies.generateLocalFixture ?? generateLocalMixedFixture;
   const runStudy = dependencies.runStudy ?? runDataWranglerComparisonStudy;
@@ -324,6 +342,57 @@ export async function runLocalDataWranglerComparison(options, dependencies = {})
     );
   } finally {
     rmSync(fixtureRoot, { force: true, recursive: true });
+  }
+}
+
+export function requireLocalComparisonDiskSpace(output, availableBytes = availableDiskBytes(output)) {
+  if (!Number.isSafeInteger(availableBytes) || availableBytes < LOCAL_OUTPUT_MIN_FREE_BYTES) {
+    throw new Error("The local comparison needs 1.75 GiB free for its capped fixture and private trial copy.");
+  }
+}
+
+export function removeStaleLocalFixtureDirectories(output, processAlive = isProcessAlive) {
+  for (const name of readdirSync(output)) {
+    const match = /^local-fixture-(\d+)-[A-Za-z0-9]{6}$/u.exec(name);
+    if (!match) continue;
+    const path = join(output, name);
+    const metadata = lstatSync(path);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error(`Refusing malformed local fixture path ${name}.`);
+    }
+    const pid = Number(match[1]);
+    if (!Number.isSafeInteger(pid) || pid < 1 || processAlive(pid)) {
+      throw new Error(`Local fixture ${name} may still belong to a running comparison.`);
+    }
+    const children = readdirSync(path);
+    const ownerPath = join(path, "owner.json");
+    if (existsSync(ownerPath)) {
+      const owner = readJson(ownerPath);
+      if (
+        Object.keys(owner).sort().join(",") !== "pid,protocol" ||
+        owner.protocol !== LOCAL_FIXTURE_OWNER_PROTOCOL ||
+        owner.pid !== pid
+      ) {
+        throw new Error(`Refusing invalid ownership marker in stale local fixture ${name}.`);
+      }
+    } else if (children.some((child) => !/^owner\.json\.[A-Za-z0-9-]+\.tmp$/u.test(child))) {
+      throw new Error(`Refusing unowned stale local fixture ${name}.`);
+    }
+    for (const child of children) {
+      if (
+        child !== "owner.json" &&
+        child !== "mixed-1000000-100.parquet" &&
+        !/^\.mixed-1000000-100\.parquet\.[A-Za-z0-9_-]+\.tmp$/u.test(child) &&
+        !/^owner\.json\.[A-Za-z0-9-]+\.tmp$/u.test(child)
+      ) {
+        throw new Error(`Refusing unexpected entry ${child} in stale local fixture ${name}.`);
+      }
+      const childMetadata = lstatSync(join(path, child));
+      if (childMetadata.isSymbolicLink() || !childMetadata.isFile() || childMetadata.nlink !== 1) {
+        throw new Error(`Refusing malformed entry ${child} in stale local fixture ${name}.`);
+      }
+    }
+    rmSync(path, { force: true, recursive: true });
   }
 }
 
@@ -664,6 +733,21 @@ async function generateLocalMixedFixture(python, output) {
     cwd: resolve(import.meta.dirname, ".."),
     timeoutMs: 900_000
   });
+}
+
+function availableDiskBytes(path) {
+  const statistics = statfsSync(path, { bigint: true });
+  const bytes = statistics.bavail * statistics.bsize;
+  return bytes > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(bytes);
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
 }
 
 function inspectMachineEnvironment() {

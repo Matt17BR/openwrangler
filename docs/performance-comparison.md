@@ -125,14 +125,15 @@ npm run comparison:local -- \
 ```
 
 This creates one temporary 1,000,000 × 100 Parquet file with numeric, boolean, text, date, timestamp, and null data.
-The file is capped at 640 MiB. The command stops before generating it unless at least 4 GiB of memory and 896 MiB of
-disk are available.
+The file is capped at 640 MiB while it is written. The command stops before generating it unless at least 4 GiB of
+memory and 1.75 GiB of free space are available for the fixture and the private trial copy.
 
 The run has four sessions: Open Wrangler and Data Wrangler with Pandas, then both products with Polars. Each session
 records three passes through inline preview, viewer launch, complete column profiling, and process-tree PSS. It uses
 the same editor driver as the release study, runs only on the current machine, and does not create cloud resources.
 The temporary Parquet file is removed when the command finishes or reports an error. This profile is not part of CI
-and does not replace the reviewed release study.
+and does not replace the reviewed release study. If the process is interrupted, the next run removes the identified
+fixture left by the dead process before it starts.
 
 ## Review
 

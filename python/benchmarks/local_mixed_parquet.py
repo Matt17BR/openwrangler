@@ -7,12 +7,13 @@ import shutil
 import stat
 import tempfile
 from pathlib import Path
+from typing import Any, BinaryIO
 
 LOCAL_ROWS = 1_000_000
 LOCAL_COLUMNS = 100
 LOCAL_MAX_BYTES = 640 * 1024 * 1024
 MIN_AVAILABLE_MEMORY = 4 * 1024 * 1024 * 1024
-MIN_FREE_DISK = LOCAL_MAX_BYTES + 256 * 1024 * 1024
+MIN_FREE_DISK = LOCAL_MAX_BYTES + 512 * 1024 * 1024
 
 
 def require_local_resources(
@@ -26,7 +27,7 @@ def require_local_resources(
     if memory < MIN_AVAILABLE_MEMORY:
         raise RuntimeError("The local comparison requires at least 4 GiB of available memory.")
     if disk < MIN_FREE_DISK:
-        raise RuntimeError("The local comparison requires at least 896 MiB of free disk space.")
+        raise RuntimeError("The fixture filesystem requires at least 1,152 MiB of free disk space.")
 
 
 def create_local_mixed_parquet(
@@ -51,7 +52,7 @@ def create_local_mixed_parquet(
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:
-        _write_mixed_parquet(temporary, rows=rows, columns=columns)
+        _write_with_size_limit(temporary, rows=rows, columns=columns, max_bytes=max_bytes)
         size = temporary.stat().st_size
         if size > max_bytes:
             raise RuntimeError(
@@ -81,25 +82,24 @@ def validate_local_mixed_parquet(
         raise AssertionError("The mixed Parquet fixture exceeds the local size cap.")
     frame = pl.scan_parquet(path)
     schema = frame.collect_schema()
-    if len(schema) != columns or len(set(schema.names())) != columns:
-        raise AssertionError(f"Expected {columns} unique columns, found {len(schema)}.")
+    expected = _column_contract(pl, columns)
+    if schema.names() != [name for name, _dtype, _nullable in expected]:
+        raise AssertionError("Mixed fixture column names do not match the contract.")
+    wrong_types = {name: str(schema[name]) for name, dtype, _nullable in expected if schema[name] != dtype}
+    if wrong_types:
+        raise AssertionError(f"Mixed fixture column types do not match the contract: {wrong_types!r}.")
     row_count = int(frame.select(pl.len()).collect(engine="streaming").item())
     if row_count != rows:
         raise AssertionError(f"Expected {rows} rows, found {row_count}.")
-    type_names = {str(dtype) for dtype in schema.dtypes()}
-    required = {
-        "numeric": any(name.startswith(("Int", "UInt", "Float")) for name in type_names),
-        "boolean": "Boolean" in type_names,
-        "text": "String" in type_names,
-        "temporal": any(name.startswith(("Date", "Datetime")) for name in type_names),
-    }
-    if not all(required.values()):
-        missing = ", ".join(name for name, present in required.items() if not present)
-        raise AssertionError(f"Mixed fixture is missing column families: {missing}.")
+    nullable = [name for name, _dtype, allows_null in expected if allows_null]
+    null_counts = frame.select([pl.col(name).null_count().alias(name) for name in nullable]).collect()
+    missing_nulls = [name for name, count in zip(nullable, null_counts.row(0), strict=True) if int(count) == 0]
+    if missing_nulls:
+        raise AssertionError(f"Mixed fixture nullable columns contain no nulls: {missing_nulls!r}.")
     return {"rows": rows, "columns": columns, "valuesValidated": True, "bytes": size}
 
 
-def _write_mixed_parquet(path: Path, *, rows: int, columns: int) -> None:
+def _write_mixed_parquet(destination: Any, *, rows: int, columns: int) -> None:
     import polars as pl
 
     row = pl.col("__row")
@@ -155,8 +155,74 @@ def _write_mixed_parquet(path: Path, *, rows: int, columns: int) -> None:
         pl.LazyFrame()
         .select(pl.int_range(0, rows, dtype=pl.Int64).alias("__row"))
         .select(expressions)
-        .sink_parquet(path, compression="zstd", compression_level=3, row_group_size=50_000)
+        .sink_parquet(destination, compression="zstd", compression_level=3, row_group_size=50_000)
     )
+
+
+def _write_with_size_limit(path: Path, *, rows: int, columns: int, max_bytes: int) -> None:
+    with path.open("wb") as output:
+        capped = _CappedWriter(output, max_bytes)
+        try:
+            _write_mixed_parquet(capped, rows=rows, columns=columns)
+        except Exception as error:
+            if capped.exceeded:
+                raise RuntimeError("The generated fixture reached the local size cap.") from error
+            raise
+        output.flush()
+        os.fsync(output.fileno())
+
+
+class _CappedWriter:
+    def __init__(self, output: BinaryIO, maximum: int) -> None:
+        self._output = output
+        self._maximum = maximum
+        self.exceeded = False
+
+    @property
+    def closed(self) -> bool:
+        return self._output.closed
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def write(self, value: bytes | bytearray | memoryview) -> int:
+        if self._output.tell() + len(value) > self._maximum:
+            self.exceeded = True
+            raise OSError("The local fixture reached its size cap.")
+        return self._output.write(value)
+
+    def tell(self) -> int:
+        return self._output.tell()
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._output.seek(offset, whence)
+
+    def flush(self) -> None:
+        self._output.flush()
+
+
+def _column_contract(pl: Any, columns: int) -> list[tuple[str, object, bool]]:
+    prefixes = ("integer", "decimal", "flag", "date", "timestamp", "segment", "account", "quantity", "amount", "note")
+    dtypes = (
+        pl.Int64,
+        pl.Float64,
+        pl.Boolean,
+        pl.Date,
+        pl.Datetime("ms"),
+        pl.String,
+        pl.String,
+        pl.Int32,
+        pl.Float64,
+        pl.String,
+    )
+    nullable_modes = {1, 3, 4, 5, 6, 8, 9}
+    return [
+        (f"{prefixes[column % 10]}_{column:03d}", dtypes[column % 10], column % 10 in nullable_modes)
+        for column in range(columns)
+    ]
 
 
 def _available_memory() -> int:

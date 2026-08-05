@@ -19,7 +19,9 @@ import {
   createDataWranglerComparisonSchedule,
   loadStudyResults,
   prepareTrial,
+  removeStaleLocalFixtureDirectories,
   removeStaleTrialDirectories,
+  requireLocalComparisonDiskSpace,
   runDataWranglerComparisonSmoke,
   runDataWranglerComparisonStudy,
   runLocalDataWranglerComparison,
@@ -90,6 +92,7 @@ test("local comparison requires confirmation and removes its generated fixture",
   try {
     await assert.rejects(runLocalDataWranglerComparison({ ...options, confirmLocalComparison: undefined }), /confirm/u);
     const result = await runLocalDataWranglerComparison(options, {
+      requireLocalDiskSpace: () => {},
       generateLocalFixture: async (_python, parquet) => {
         fixtureRoot = dirname(parquet);
         writeFileSync(parquet, "small fake parquet");
@@ -109,6 +112,7 @@ test("local comparison requires confirmation and removes its generated fixture",
       runLocalDataWranglerComparison(
         { ...options, output: join(root, "failed-results") },
         {
+          requireLocalDiskSpace: () => {},
           generateLocalFixture: async (_python, parquet) => {
             fixtureRoot = dirname(parquet);
             writeFileSync(parquet, "small fake parquet");
@@ -121,6 +125,36 @@ test("local comparison requires confirmation and removes its generated fixture",
       /simulated study failure/u
     );
     assert.equal(existsSync(fixtureRoot), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("local comparison preflights peak disk use and safely removes dead fixture roots", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-local-stale-"));
+  const stale = join(root, "local-fixture-999999-AbCd12");
+  const live = join(root, "local-fixture-999998-EfGh34");
+  try {
+    assert.throws(() => requireLocalComparisonDiskSpace(root, 1_879_048_191), /1\.75 GiB/u);
+    assert.doesNotThrow(() => requireLocalComparisonDiskSpace(root, 1_879_048_192));
+    mkdirSync(stale);
+    writeFileSync(
+      join(stale, "owner.json"),
+      JSON.stringify({ protocol: "openwrangler-local-comparison-fixture-v1", pid: 999999 })
+    );
+    writeFileSync(join(stale, "mixed-1000000-100.parquet"), "partial");
+    removeStaleLocalFixtureDirectories(root, () => false);
+    assert.equal(existsSync(stale), false);
+
+    mkdirSync(live);
+    writeFileSync(
+      join(live, "owner.json"),
+      JSON.stringify({ protocol: "openwrangler-local-comparison-fixture-v1", pid: 999998 })
+    );
+    writeFileSync(join(live, "mixed-1000000-100.parquet"), "partial");
+    assert.equal(existsSync(live), true);
+    assert.throws(() => removeStaleLocalFixtureDirectories(root, () => true), /running comparison/u);
+    assert.equal(existsSync(live), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -163,6 +197,37 @@ test("manifest records eight sessions, ten repetitions, fixed workloads, and pub
   assert.equal(manifest.provenance.dataWrangler.version, DATA_WRANGLER_VERSION);
   assert.equal(manifest.provenance.dataWrangler.implementationInspection, "none");
   assert.equal(Object.hasOwn(manifest.provenance.dataWrangler, "sha256"), false);
+});
+
+test("manifest couples each comparison profile to its repetition count", () => {
+  const release = manifestFixture();
+  const common = {
+    createdAtUtc: release.createdAtUtc,
+    candidate: release.provenance.openWrangler,
+    editor: release.provenance.editor,
+    python: release.provenance.python,
+    machine: release.provenance.machine,
+    toolHashes: release.provenance.tools
+  };
+  assert.throws(
+    () =>
+      buildStudyManifest({
+        ...common,
+        fixtures: release.provenance.fixtures,
+        repetitionsPerSession: LOCAL_REPETITIONS
+      }),
+    /release comparison requires/u
+  );
+  assert.throws(
+    () =>
+      buildStudyManifest({
+        ...common,
+        fixtures: { parquet: { rows: 1_000_000, columns: 100, valuesValidated: true, sha256: SHA } },
+        repetitionsPerSession: SMOKE_REPETITIONS,
+        cells: LOCAL_MIXED_CELLS
+      }),
+    /local comparison requires/u
+  );
 });
 
 test("study resumes at session granularity without replacing completed samples", async () => {
