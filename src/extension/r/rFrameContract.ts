@@ -119,7 +119,7 @@ export interface RFramePageContract {
   readonly shape: Readonly<{ rows: number; columns: number }>;
   readonly frameSemantics: Readonly<{
     classes: readonly string[];
-    rowNames: "automatic";
+    rowNames: "positional";
     keyColumnIds: readonly string[];
   }>;
   readonly schema: readonly RColumnSchema[];
@@ -222,7 +222,7 @@ export function decodeRFramePage(value: unknown): RFramePageContract {
   if (!arraysEqual(classes, flavorClasses[dataframeFlavor])) {
     fail("R frame classes do not match dataframeFlavor.");
   }
-  if (frameRecord.rowNames !== "automatic") fail("R frame row-name semantics are unsupported.");
+  if (frameRecord.rowNames !== "positional") fail("R frame rows must use positional identity.");
   const keyColumnIds = decodeStringArray(
     frameRecord.keyColumnIds,
     "frameSemantics.keyColumnIds",
@@ -234,7 +234,7 @@ export function decodeRFramePage(value: unknown): RFramePageContract {
   if (dataframeFlavor !== "r.data.table" && keyColumnIds.length !== 0) {
     fail("Only data.table frames may publish key columns.");
   }
-  const frameSemantics = Object.freeze({ classes, rowNames: "automatic" as const, keyColumnIds });
+  const frameSemantics = Object.freeze({ classes, rowNames: "positional" as const, keyColumnIds });
 
   const page = decodePage(record.page, shape, schema);
   return Object.freeze({

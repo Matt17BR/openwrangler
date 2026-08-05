@@ -52,7 +52,8 @@ const CELL_KINDS = new Set([
   "struct",
   "unknown"
 ]);
-const DATA_BACKENDS = ["polars", "duckdb", "pandas", "pyspark"] as const;
+const DATA_BACKENDS = ["polars", "duckdb", "pandas", "pyspark", "r"] as const;
+const R_DATAFRAME_FLAVORS = ["r.data.frame", "r.tibble", "r.data.table"] as const;
 const OPERATION_KINDS = new Set([
   "sortRows",
   "filterRows",
@@ -153,6 +154,10 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         optional(candidate, "requestedSessionId", isNonEmptyString) &&
         optional(candidate, "backend", (backend) => isOneOf(backend, DATA_BACKENDS)) &&
         (candidate.backend !== "pyspark" ||
+          (isRecord(candidate.source) &&
+            candidate.source.kind === "notebookVariable" &&
+            (candidate.mode === undefined || candidate.mode === "viewing"))) &&
+        (candidate.backend !== "r" ||
           (isRecord(candidate.source) &&
             candidate.source.kind === "notebookVariable" &&
             (candidate.mode === undefined || candidate.mode === "viewing"))) &&
@@ -532,7 +537,7 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
       "filterModel",
       "steps"
     ],
-    ["latestStepInputSchema", "draftStep", "draftReplacesStepId", "stats"]
+    ["latestStepInputSchema", "draftStep", "draftReplacesStepId", "stats", "rDataframeFlavor"]
   );
   return (
     candidate !== undefined &&
@@ -542,6 +547,11 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     isOneOf(candidate.backend, DATA_BACKENDS) &&
     (candidate.backend !== "pyspark" ||
       (isRecord(candidate.source) && candidate.source.kind === "notebookVariable" && candidate.mode === "viewing")) &&
+    (candidate.backend !== "r" ||
+      (isRecord(candidate.source) && candidate.source.kind === "notebookVariable" && candidate.mode === "viewing")) &&
+    (candidate.backend === "r"
+      ? isOneOf(candidate.rDataframeFlavor, R_DATAFRAME_FLAVORS)
+      : !Object.prototype.hasOwnProperty.call(candidate, "rDataframeFlavor")) &&
     isOneOf(candidate.mode, ["viewing", "editing"]) &&
     isSessionSource(candidate.source) &&
     isSourceCapabilities(candidate.capabilities) &&
@@ -627,7 +637,11 @@ function isImportOptions(value: unknown): boolean {
 }
 
 function isSourceCapabilities(value: unknown): boolean {
-  const candidate = exactRecord(value, ["editable", "lazy", "cancel", "exportCsv", "exportParquet", "notebookInsert"]);
+  const candidate = exactRecord(
+    value,
+    ["editable", "lazy", "cancel", "exportCsv", "exportParquet", "notebookInsert"],
+    ["filter", "sort", "profile", "columnValues"]
+  );
   return (
     candidate !== undefined &&
     isBoolean(candidate.editable) &&
@@ -635,7 +649,11 @@ function isSourceCapabilities(value: unknown): boolean {
     isBoolean(candidate.cancel) &&
     isBoolean(candidate.exportCsv) &&
     isBoolean(candidate.exportParquet) &&
-    isBoolean(candidate.notebookInsert)
+    isBoolean(candidate.notebookInsert) &&
+    optional(candidate, "filter", isBoolean) &&
+    optional(candidate, "sort", isBoolean) &&
+    optional(candidate, "profile", isBoolean) &&
+    optional(candidate, "columnValues", isBoolean)
   );
 }
 

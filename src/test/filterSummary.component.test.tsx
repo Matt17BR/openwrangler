@@ -73,6 +73,31 @@ describe("FilterPanel", () => {
     expect(screen.getByText("Preparing filters...")).toBeInTheDocument();
   });
 
+  it("keeps supported predicates while disabling value lists and unavailable sorting", () => {
+    const onRequestValues = vi.fn();
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        filterSupported={true}
+        sortSupported={false}
+        columnValuesSupported={false}
+        onApply={() => undefined}
+        onRequestValues={onRequestValues}
+      />
+    );
+
+    expect(screen.getByRole("textbox", { name: "Search values for city" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByText("Value lists are unavailable. Use a predicate instead.")).toBeVisible();
+    expect(screen.getByText("Sorting is unavailable for this dataframe.")).toBeVisible();
+    expect(screen.queryByRole("combobox", { name: "Sort column" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    expect(onRequestValues).not.toHaveBeenCalled();
+  });
+
   it("builds advanced values, predicates, sorts, and clear actions", () => {
     const onApply = vi.fn();
     const onRequestValues = vi.fn();

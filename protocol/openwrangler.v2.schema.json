@@ -6,7 +6,8 @@
   "oneOf": [{ "$ref": "#/definitions/RuntimeRequestEnvelope" }, { "$ref": "#/definitions/RuntimeResponseEnvelope" }],
   "definitions": {
     "ProtocolVersion": { "type": "integer", "enum": [2] },
-    "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas", "pyspark"] },
+    "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas", "pyspark", "r"] },
+    "RDataframeFlavor": { "type": "string", "enum": ["r.data.frame", "r.tibble", "r.data.table"] },
     "SessionMode": { "type": "string", "enum": ["viewing", "editing"] },
     "RequestPriority": { "type": "string", "enum": ["interactive", "background"] },
     "SessionSource": {
@@ -182,7 +183,11 @@
         "cancel": { "type": "boolean" },
         "exportCsv": { "type": "boolean" },
         "exportParquet": { "type": "boolean" },
-        "notebookInsert": { "type": "boolean" }
+        "notebookInsert": { "type": "boolean" },
+        "filter": { "type": "boolean" },
+        "sort": { "type": "boolean" },
+        "profile": { "type": "boolean" },
+        "columnValues": { "type": "boolean" }
       }
     },
     "ColumnType": {
@@ -1513,6 +1518,10 @@
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
         "backend": { "$ref": "#/definitions/DataBackend" },
+        "rDataframeFlavor": {
+          "description": "Required only for a confirmed R notebook session; forbidden for every other backend.",
+          "$ref": "#/definitions/RDataframeFlavor"
+        },
         "mode": { "$ref": "#/definitions/SessionMode" },
         "source": { "$ref": "#/definitions/SessionSource" },
         "capabilities": { "$ref": "#/definitions/SourceCapabilities" },
@@ -1553,6 +1562,23 @@
             "required": ["backend", "mode"],
             "properties": {
               "backend": { "const": "pyspark" },
+              "mode": { "const": "editing" }
+            }
+          },
+          {
+            "required": ["backend"],
+            "properties": {
+              "backend": { "const": "r" },
+              "source": {
+                "required": ["kind"],
+                "properties": { "kind": { "enum": ["file", "notebookOutput"] } }
+              }
+            }
+          },
+          {
+            "required": ["backend", "mode"],
+            "properties": {
+              "backend": { "const": "r" },
               "mode": { "const": "editing" }
             }
           }

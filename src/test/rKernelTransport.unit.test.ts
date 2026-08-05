@@ -8,8 +8,12 @@ import {
   encodeRKernelRequest,
   type RKernelRequest
 } from "../extension/r/rKernelProtocol";
-import { RKernelOpenDetachedError, RKernelSessionTransport } from "../extension/r/rKernelTransport";
-import { R_KERNEL_RUNTIME_BINDING, buildRKernelBootstrapCode } from "../extension/r/rKernelRuntimeBundle";
+import { RKernelSessionTransport } from "../extension/r/rKernelTransport";
+import {
+  R_KERNEL_RUNTIME_BINDING,
+  buildRKernelBootstrapCode,
+  buildRKernelTeardownCode
+} from "../extension/r/rKernelRuntimeBundle";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const openRequestId = "22222222-2222-4222-8222-222222222222";
@@ -24,15 +28,18 @@ afterEach(() => {
 
 describe("native R kernel runtime bundle", () => {
   it("embeds the pure-R runtime without referencing the extension filesystem", () => {
-    const code = buildRKernelBootstrapCode({
-      "frame_contract.R": "openwrangler_r_frame_contract <- list()\n",
-      "kernel_agent.R": "openwrangler_r_kernel_agent <- list()\n"
-    });
+    const files = testRuntimeFiles();
+    const code = buildRKernelBootstrapCode(files, "transport-owner-a");
+    const teardown = buildRKernelTeardownCode(files, "transport-owner-a");
 
     expect(code).toContain(R_KERNEL_RUNTIME_BINDING);
     expect(code).toContain("jsonlite::base64_dec");
     expect(code).not.toContain("openwrangler_r_frame_contract <- list()");
     expect(code).not.toContain("extensionPath");
+    expect(teardown).toContain(R_KERNEL_RUNTIME_BINDING);
+    expect(teardown).toContain('exists("transport-owner-a", envir = .__ow_existing$transportOwners');
+    expect(teardown).toContain("identical(.__ow_existing$bundleId");
+    expect(teardown).toContain("remove(list = .__ow_binding");
   });
 
   it("rejects incomplete and unexpected R runtime bundles", () => {
@@ -44,6 +51,13 @@ describe("native R kernel runtime bundle", () => {
         "../escape.R": ""
       })
     ).toThrow("incomplete");
+  });
+
+  it("rejects an owner token that could alter generated R code", () => {
+    expect(() => buildRKernelBootstrapCode(testRuntimeFiles(), 'owner"; rm(list = ls()); #')).toThrow(
+      "owner token is invalid"
+    );
+    expect(() => buildRKernelTeardownCode(testRuntimeFiles(), "")).toThrow("owner token is invalid");
   });
 });
 
@@ -187,8 +201,10 @@ describe("exact IRkernel session transport", () => {
       page: { rows: [{ id: "r:r:0" }] }
     });
     await expect(transport.close(sessionId)).resolves.toBeUndefined();
+    await expect(transport.dispose()).resolves.toBeUndefined();
 
     expect(controller.bootstrapExecutions()).toBe(1);
+    expect(controller.teardownExecutions()).toBe(1);
     expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage", "closeSession"]);
     expect(requests[1]).toMatchObject({
       payload: { page: { sorts: [{ column: { id: "r:c:0", name: "value" } }] } }
@@ -230,6 +246,8 @@ describe("exact IRkernel session transport", () => {
 
     expect(invalidated).toHaveBeenCalledOnce();
     await expect(transport.getPage(sessionId, pageWindow())).rejects.toThrow("no live R kernel session");
+    await expect(transport.dispose()).resolves.toBeUndefined();
+    expect(controller.teardownExecutions()).toBe(0);
   });
 
   it("closes only the host-created candidate when an open response names another session", async () => {
@@ -265,8 +283,10 @@ describe("exact IRkernel session transport", () => {
     vi.useFakeTimers();
     const closeStarted = deferred<void>();
     const releaseClose = deferred<void>();
+    let closeRequests = 0;
     const controller = controlledRKernel(async (request) => {
       if (request.kind === "closeSession") {
+        closeRequests += 1;
         closeStarted.resolve();
         await releaseClose.promise;
         return response(request, { kind: "closed", sessionId: request.payload.sessionId });
@@ -279,16 +299,23 @@ describe("exact IRkernel session transport", () => {
     const transport = createTransport(document, [sessionId, openRequestId, closeRequestId]);
 
     await transport.open("frame", pageWindow());
-    const closing = transport.close(sessionId, { timeoutMs: 30 });
-    const closeRejection = expect(closing).rejects.toThrow();
+    const closing = transport.close(sessionId, { timeoutMs: 30 }).catch((error: unknown) => error);
     await closeStarted.promise;
     await vi.advanceTimersByTimeAsync(30);
-    await closeRejection;
+    const detached = await closing;
+    expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+    expect(detached).toMatchObject({ reason: "timeout", dispatched: true });
     expect(mappedSessions(transport).has(sessionId)).toBe(true);
 
+    const repeatedClose = transport.close(sessionId, { timeoutMs: 1_000 });
+    await Promise.resolve();
+    expect(closeRequests).toBe(1);
     releaseClose.resolve();
     vi.useRealTimers();
+    await (detached as DetachedBridgeRequestError).settlement;
+    await expect(repeatedClose).resolves.toBeUndefined();
     await vi.waitFor(() => expect(mappedSessions(transport).has(sessionId)).toBe(false));
+    expect(closeRequests).toBe(1);
   });
 
   it("keeps failed-open cleanup deduplicated until a late exact close settles", async () => {
@@ -381,15 +408,71 @@ describe("exact IRkernel session transport", () => {
     const ids = [sessionId, openRequestId, closeRequestId];
     const transport = createTransport(document, ids);
     const cancellation = cancellationSource();
-    const opening = transport.open("frame", pageWindow(), { cancellation: cancellation.token });
+    const opening = transport
+      .open("frame", pageWindow(), { cancellation: cancellation.token })
+      .catch((error: unknown) => error);
     await vi.waitFor(() => expect(requests).toHaveLength(1));
 
     cancellation.cancel();
-    await expect(opening).rejects.toBeInstanceOf(RKernelOpenDetachedError);
+    const detached = await opening;
+    expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+    expect(detached).toMatchObject({ reason: "cancellation", dispatched: true });
     expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
 
+    const disposal = transport.dispose();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(requests.map((request) => request.kind)).toEqual(["openSession"]);
     pending.resolve(response(requests[0]!, { kind: "page", sessionId, page: minimalFramePage() }));
+    await (detached as DetachedBridgeRequestError).settlement;
+    await expect(disposal).resolves.toBeUndefined();
     await vi.waitFor(() => expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]));
+    expect(requests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
+  });
+
+  it("does not duplicate a detached-open cleanup when its bounded close remains pending", async () => {
+    vi.useFakeTimers();
+    const openStarted = deferred<void>();
+    const releaseOpen = deferred<void>();
+    const closeStarted = deferred<void>();
+    const releaseClose = deferred<void>();
+    const requests: RKernelRequest[] = [];
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "openSession") {
+        openStarted.resolve();
+        await releaseOpen.promise;
+        return response(request, { kind: "page", sessionId, page: minimalFramePage() });
+      }
+      closeStarted.resolve();
+      await releaseClose.promise;
+      return response(request, { kind: "closed", sessionId: request.payload.sessionId });
+    });
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [sessionId, openRequestId, closeRequestId]);
+
+    const opening = transport.open("frame", pageWindow(), { timeoutMs: 30 }).catch((error: unknown) => error);
+    await openStarted.promise;
+    await vi.advanceTimersByTimeAsync(30);
+    const detached = await opening;
+    expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+
+    const disposal = transport.dispose().catch((error: unknown) => error);
+    releaseOpen.resolve();
+    await closeStarted.promise;
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await (detached as DetachedBridgeRequestError).settlement;
+    const disposalError = await disposal;
+    expect(disposalError).toBeInstanceOf(AggregateError);
+    expect(disposalError).toHaveProperty("message", "Open Wrangler could not close every R kernel session.");
+    expect(requests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
+
+    releaseClose.resolve();
+    vi.useRealTimers();
+    await new Promise<void>((resolve) => setImmediate(resolve));
   });
 
   it("parks the next page request behind a cancelled page execution", async () => {
@@ -575,11 +658,19 @@ describe("exact IRkernel session transport", () => {
     await expect(disposal).rejects.toThrow("could not close every R kernel session");
 
     expect(controller.statusListenerCount()).toBe(0);
+    expect(controller.teardownExecutions()).toBe(0);
     expect(mappedSessions(transport).size).toBe(0);
     expect(transport.dispose()).toBe(disposal);
     await expect(transport.open("frame", pageWindow())).rejects.toThrow("transport is disposed");
   });
 });
+
+function testRuntimeFiles(): Readonly<Record<string, string>> {
+  return {
+    "frame_contract.R": "openwrangler_r_frame_contract <- list()\n",
+    "kernel_agent.R": "openwrangler_r_kernel_agent <- list()\n"
+  };
+}
 
 function openRequest(): Extract<RKernelRequest, { kind: "openSession" }> {
   return {
@@ -603,7 +694,7 @@ function minimalFramePage() {
     contractVersion: 1,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
-    frameSemantics: { classes: ["data.frame"], rowNames: "automatic", keyColumnIds: [] },
+    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
     schema: [
       {
         id: "r:c:0",
@@ -664,6 +755,7 @@ function cleanupAttempts(
 interface ControlledRKernel {
   readonly kernel: Kernel;
   bootstrapExecutions(): number;
+  teardownExecutions(): number;
   dispatchExecutions(): number;
   executionTokens(): readonly vscode.CancellationToken[];
   statusListenerCount(): number;
@@ -675,6 +767,7 @@ function controlledRKernel(
   language = "r"
 ): ControlledRKernel {
   let bootstrapExecutions = 0;
+  let teardownExecutions = 0;
   let dispatchExecutions = 0;
   let status: KernelStatus = "idle";
   const listeners = new Set<(status: KernelStatus) => unknown>();
@@ -691,7 +784,8 @@ function controlledRKernel(
     executeCode(code: string, token: vscode.CancellationToken) {
       tokens.push(token);
       if (!code.includes("__OPEN_WRANGLER_R_START_")) {
-        bootstrapExecutions += 1;
+        if (code.includes("remove(list = .__ow_binding")) teardownExecutions += 1;
+        else bootstrapExecutions += 1;
         return emptyOutput();
       }
       dispatchExecutions += 1;
@@ -701,6 +795,7 @@ function controlledRKernel(
   return {
     kernel,
     bootstrapExecutions: () => bootstrapExecutions,
+    teardownExecutions: () => teardownExecutions,
     dispatchExecutions: () => dispatchExecutions,
     executionTokens: () => tokens,
     statusListenerCount: () => listeners.size,

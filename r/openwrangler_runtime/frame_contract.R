@@ -433,12 +433,6 @@ openwrangler_r_frame_contract <- local({
     unserialize(serialize(value, NULL, version = 3L))
   }
 
-  automatic_row_names <- function(value) {
-    row_count <- nrow(value)
-    expected <- if (row_count == 0L) integer() else c(NA_integer_, -as.integer(row_count))
-    identical(.row_names_info(value, type = 0L), expected)
-  }
-
   key_column_ids <- function(snapshot, flavor, names, budget) {
     if (flavor != "r.data.table") return(json_array(character()))
     keys <- data.table::key(snapshot) %||% character()
@@ -589,10 +583,6 @@ openwrangler_r_frame_contract <- local({
     column_count <- ncol(value)
     whole_number(row_count, "row count", maximum_rows)
     whole_number(column_count, "column count", maximum_columns)
-    if (!automatic_row_names(value)) {
-      abort("unsupported-row-names", "explicit row names are not yet supported")
-    }
-
     snapshot <- isolated_snapshot(value, flavor)
     metadata_budget <- new_payload_budget()
     spend_payload_budget(metadata_budget, metadata_base_bytes, "R frame metadata")
@@ -630,7 +620,7 @@ openwrangler_r_frame_contract <- local({
       shape = list(rows = row_count, columns = column_count),
       frameSemantics = list(
         classes = bounded_text_array(class(snapshot), "frame classes", maximum_name_bytes, metadata_budget),
-        rowNames = "automatic",
+        rowNames = "positional",
         keyColumnIds = key_column_ids(snapshot, flavor, column_names, metadata_budget)
       ),
       schema = json_array(schema)

@@ -2142,6 +2142,47 @@ describe("App file import options", () => {
     expect(screen.queryByText(/^viewing$/iu)).not.toBeInTheDocument();
   });
 
+  it("does not issue unsupported viewing requests when capabilities are explicitly disabled", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        capabilities: {
+          ...metadata.capabilities,
+          filter: false,
+          sort: false,
+          profile: false,
+          columnValues: false
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    expect(await screen.findByRole("cell", { name: "Milan" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Profiles and filters unavailable" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Profiles unavailable" })).toBeDisabled();
+
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    fireEvent.click(within(cityHeader).getByLabelText("Column actions for city"));
+    expect(within(cityHeader).getByRole("button", { name: "Filter…" })).toBeDisabled();
+    expect(within(cityHeader).getByRole("button", { name: "Sort ascending" })).toBeDisabled();
+
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
+    dispatchAppMessage({ kind: "editorAction", action: "clearFilterColumn", column: "city" });
+    expect(screen.queryByRole("complementary", { name: "Column profiles and filters" })).not.toBeInTheDocument();
+    expect(
+      webviewPostMessage.mock.calls.some(
+        ([message]) =>
+          message?.kind === "runtimeRequest" &&
+          ["getPage", "getSummary", "getDatasetStats", "getColumnValues"].includes(message.request?.kind)
+      )
+    ).toBe(false);
+  });
+
   it("warns that rows tied across every PySpark sort key may move on rerun", async () => {
     render(<App />);
     dispatchAppMessage({

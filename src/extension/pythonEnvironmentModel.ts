@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import type { DataBackend, SessionSource } from "../shared/protocol";
 
-export type FileDataBackend = Exclude<DataBackend, "pyspark">;
+export type FileDataBackend = Extract<DataBackend, "pandas" | "polars" | "duckdb">;
 
 export interface PythonDependency {
   importModule: string;

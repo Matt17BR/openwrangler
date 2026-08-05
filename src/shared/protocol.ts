@@ -8,6 +8,7 @@ import type {
   LiveGridPage,
   OpenWranglerRequest,
   SessionSource,
+  SourceCapabilities,
   TypedCellKind
 } from "./protocol.generated";
 
@@ -20,6 +21,15 @@ export type BooleanVisualization = Extract<ColumnVisualization, { kind: "boolean
 export type DatetimeVisualization = Extract<ColumnVisualization, { kind: "datetime" }>;
 export type MissingValueByColumn = DatasetStats["missingValuesByColumn"][number];
 export type SessionBoundRequest = Extract<OpenWranglerRequest, { sessionId: string }>;
+export type OptionalViewingCapability = "filter" | "sort" | "profile" | "columnValues";
+
+/** Optional viewing capabilities default to supported for protocol-v2 compatibility. */
+export function supportsViewingCapability(
+  capabilities: SourceCapabilities | undefined,
+  capability: OptionalViewingCapability
+): boolean {
+  return capabilities?.[capability] !== false;
+}
 
 export function dataBackendLabel(backend: DataBackend): string {
   switch (backend) {
@@ -31,6 +41,8 @@ export function dataBackendLabel(backend: DataBackend): string {
       return "Pandas";
     case "pyspark":
       return "PySpark";
+    case "r":
+      return "R";
   }
 }
 

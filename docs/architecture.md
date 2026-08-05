@@ -38,8 +38,9 @@ signed infinity for plain doubles. Non-finite classed temporal values and fracti
 silently relabeled or rounded. Numeric display always uses a dot, regardless of `options(OutDec)`. A POSIXct column
 with no `tzone` attribute or an empty `tzone` uses UTC for display instead of the process's current time zone. The
 original null or empty-string value remains in metadata. R's reserved integer and `bit64::integer64` missing-value
-sentinels can appear only as typed nulls. Explicit row names, grouped or rowwise tibbles, list/matrix/raw/complex
-columns, subclasses, and unrecognized attributes fail instead of losing R semantics.
+sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matrix/raw/complex columns, subclasses, and
+unrecognized attributes fail instead of losing R semantics. Explicit row names are ignored as metadata; source row
+positions provide stable row identity.
 
 The same module can apply an ordered list of viewing sorts before it builds a page. A rule names a column by both its
 positional ID and captured name, which keeps duplicate names unambiguous and rejects stale references. Rules are
@@ -54,7 +55,8 @@ class/type combinations, contiguous positional column IDs, unique in-range sourc
 windows, and values valid for their R column. The current limits are 2,048 source columns, 64 sort rules, 100,000
 factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per text value, and 16 MiB per encoded
 page. A running metadata-and-cell budget stops an oversized page before the complete object or JSON string is built.
-This boundary is not part of Python protocol v2.
+Rows use stable source positions, so ordinary explicit R row names do not prevent a dataframe from opening and are not
+added as a data column. This boundary is not part of Python protocol v2.
 
 `r/openwrangler_runtime/kernel_agent.R` owns the first read-only R sessions. The host creates a UUID before an open,
 the agent captures the named object from the kernel's global environment, and later page and sort requests use that
@@ -75,8 +77,11 @@ fixed bounds, and repeated disposal joins the same cleanup operation.
 Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
 the fixed response codes `unsupported_frame`, `missing_package`, `page_too_large`, and `stale_column`. Request errors,
 missing variables or sessions, and unexpected runtime failures also use a fixed code list. Messages are limited to
-4 KiB, and TypeScript rejects any unrecognized code. The transport is still internal: variable discovery, the
-coordinator, the workbench, and packaged-editor IRkernel acceptance are not wired yet.
+4 KiB, and TypeScript rejects any unrecognized code. Native variable discovery requires `jsonlite` and `rlang` in the
+selected kernel. It recognizes exact base `data.frame`, tibble, and `data.table` class vectors without evaluating
+active or delayed bindings. The notebook command routes those variables through a read-only coordinator session and
+disables filters, profiles, values, cleaning, exports, and generated code until the R implementations exist. Packaged
+VS Code and Cursor acceptance against a real IRkernel is still pending.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 
@@ -161,6 +166,8 @@ Scope eviction has no awaited boundary. It revalidates the exact slot and every 
 `python/benchmarks/runtime_performance.py` measures deterministic synthetic CSV/Parquet work at two Python boundaries: direct `SessionManager` calls and canonical protocol-v2 round trips through a standalone runtime process. `--backend` labels native Polars, DuckDB, or Pandas runs; the default and strict release thresholds remain Polars-only. Package/runtime/machine provenance and best-effort process RSS evidence make results reproducible, but they exclude the extension host, VS Code/Cursor, webview layout, and paint. They must not be reported as editor first-paint timings; packaged-editor interaction and visual acceptance are separate evidence.
 
 PySpark summaries check and collect their ten displayed values in one Spark job. When their combined size exceeds the remaining allowance, Spark sends the lengths but substitutes null for the values. Oversized data stays out of Python, and an ordinary profile does not run the same grouped query twice.
+
+Optional `filter`, `sort`, `profile`, and `columnValues` wire flags can disable one viewing feature without hiding the others. Omitted flags keep the protocol-v2 behavior and mean supported.
 
 ## UI composition
 

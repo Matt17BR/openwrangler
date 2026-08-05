@@ -300,9 +300,12 @@ assert_error(
 )
 
 explicit_names <- data.frame(value = 1:2, row.names = c("left", "right"))
-assert_error(openwrangler_r_frame_contract$capture_frame(explicit_names), "unsupported-row-names")
+explicit_names_capture <- openwrangler_r_frame_contract$capture_frame(explicit_names)
+stopifnot(identical(explicit_names_capture$descriptor$frameSemantics$rowNames, "positional"))
+stopifnot(identical(explicit_names_capture$snapshot$value, 1:2))
 numeric_explicit_names <- data.frame(value = 1:2, row.names = c("1", "2"))
-assert_error(openwrangler_r_frame_contract$capture_frame(numeric_explicit_names), "unsupported-row-names")
+numeric_explicit_names_capture <- openwrangler_r_frame_contract$capture_frame(numeric_explicit_names)
+stopifnot(identical(numeric_explicit_names_capture$descriptor$frameSemantics$rowNames, "positional"))
 
 grouped_tibble <- tibble::tibble(value = 1:2)
 class(grouped_tibble) <- c("grouped_df", class(grouped_tibble))

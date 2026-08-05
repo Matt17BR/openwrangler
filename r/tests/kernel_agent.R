@@ -100,8 +100,7 @@ missing <- dispatch(
 assert_identical(missing$kind, "error", "an unknown variable was accepted")
 assert_identical(missing$code, "unknown_variable", "the unknown-variable diagnostic changed")
 
-source_environment$unsupported <- data.frame(value = 1L)
-row.names(source_environment$unsupported) <- "named-row"
+source_environment$unsupported <- data.frame(value = I(list(1L)))
 unsupported <- dispatch(
   "openSession",
   list(sessionId = second_session_id, variableName = "unsupported", page = page_window())
@@ -109,6 +108,16 @@ unsupported <- dispatch(
 assert_identical(unsupported$kind, "error", "an unsupported dataframe was accepted")
 assert_identical(unsupported$code, "unsupported_frame", "the unsupported-frame diagnostic was not normalized")
 assert_identical(unsupported$recoverable, FALSE, "an unsupported frame was marked recoverable")
+
+source_environment$named_rows <- data.frame(value = 1L, row.names = "named-row")
+named_rows <- dispatch(
+  "openSession",
+  list(sessionId = second_session_id, variableName = "named_rows", page = page_window())
+)
+assert_identical(named_rows$kind, "page", "a dataframe with explicit row names could not be opened")
+assert_identical(named_rows$page$frameSemantics$rowNames, "positional", "R row identity is not positional")
+named_rows_closed <- dispatch("closeSession", list(sessionId = second_session_id))
+assert_identical(named_rows_closed$kind, "closed", "the named-row session did not close")
 
 source_environment$wide <- as.data.frame(
   setNames(replicate(256L, seq_len(401L), simplify = FALSE), sprintf("column_%03d", seq_len(256L))),

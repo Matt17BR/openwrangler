@@ -379,6 +379,41 @@ describe("native operation commands", () => {
     expect(restoredNodes[2]?.contextValue).toBe("openWrangler.viewSortLast");
   });
 
+  it("shows unavailable native views and does not dispatch unsupported viewing actions", async () => {
+    const partial = exportableSnapshot("partial-session", "partial.csv", 1);
+    partial.metadata.capabilities = {
+      ...partial.metadata.capabilities,
+      filter: false,
+      sort: false,
+      profile: false,
+      columnValues: false
+    };
+    partial.viewState.filterModel = {
+      filters: [
+        {
+          column: "value",
+          type: "integer",
+          predicates: [{ kind: "predicate", operator: "gte", value: 1 }]
+        }
+      ],
+      sort: [{ column: "value", direction: "asc", nulls: "last" }]
+    };
+    register(partial);
+
+    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toContainEqual([
+      "Profiles unavailable",
+      "This dataframe does not support profiling"
+    ]);
+    expect(treeChildren("openWrangler.filters").map(nodePresentation)).toEqual([
+      ["Filters and sorts unavailable", "Not supported by this dataframe"]
+    ]);
+
+    await command("openWrangler.clearViewFilterColumn")("value");
+    await command("openWrangler.openViewSort")("value");
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+    expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith("Sorting is unavailable for this dataframe.");
+  });
+
   it("keeps cloned sort handles stable across unrelated updates and rejects an ABA-stale node", async () => {
     const filtered = noDraftSnapshot();
     const originalSort = [
@@ -512,7 +547,7 @@ describe("native operation commands", () => {
     expect(operations.every((node) => node.description !== "Viewing mode" && node.command === undefined)).toBe(true);
     expect(operations.every((node) => String(node.tooltip).includes("Available in editing mode"))).toBe(true);
     expect(treeChildren("openWrangler.summary").map(nodePresentation)).toEqual([
-      ["Saved sales preview", "polars · viewing"],
+      ["Saved sales preview", "Polars · viewing"],
       ["Shape", "4 × 3"],
       ["Columns", "3"],
       ["Selected column", "score"],
@@ -970,6 +1005,7 @@ function register(
     | "inspection-active"
     | "priority-boundary"
     | "panel-unavailable"
+    | "unsupported"
     | undefined;
 } {
   let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;

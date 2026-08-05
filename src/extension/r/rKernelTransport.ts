@@ -22,7 +22,12 @@ import {
   type RKernelRequest,
   type RKernelResponse
 } from "./rKernelProtocol";
-import { buildRKernelBootstrapCode, buildRKernelDispatchCode, readRRuntimeFiles } from "./rKernelRuntimeBundle";
+import {
+  buildRKernelBootstrapCode,
+  buildRKernelDispatchCode,
+  buildRKernelTeardownCode,
+  readRRuntimeFiles
+} from "./rKernelRuntimeBundle";
 import type { RFramePageContract } from "./rFrameContract";
 
 const FAILED_OPEN_CLOSE_TIMEOUT_MS = 5_000;
@@ -32,6 +37,8 @@ const MAX_PENDING_CLEANUP_ATTEMPTS = 64;
 export interface RKernelRequestOptions {
   readonly cancellation?: KernelCancellationLike;
   readonly timeoutMs?: number;
+  /** Host-owned candidate identity used for exact cleanup after an ambiguous open. */
+  readonly requestedSessionId?: string;
 }
 
 export interface RKernelOpenResult {
@@ -46,17 +53,6 @@ export class RKernelDiagnosticError extends Error {
   }
 }
 
-export class RKernelOpenDetachedError extends Error {
-  constructor(readonly reason: "cancelled" | "timeout") {
-    super(
-      reason === "cancelled"
-        ? "Open Wrangler stopped waiting for the R dataframe after host cancellation. Its exact-kernel cleanup will run when that request settles."
-        : "Open Wrangler stopped waiting for the R dataframe after the host deadline. Its exact-kernel cleanup will run when that request settles."
-    );
-    this.name = "RKernelOpenDetachedError";
-  }
-}
-
 interface KernelObservation {
   readonly kernel: Kernel;
   readonly jupyter: Jupyter;
@@ -66,8 +62,11 @@ interface KernelObservation {
 export class RKernelSessionTransport {
   private readonly notebookUri: vscode.Uri;
   private readonly bootstrapCode: string;
+  private readonly teardownCode: string;
+  private readonly bootstrappedKernels = new Set<Kernel>();
   private readonly sessionKernels = new Map<string, Kernel>();
   private readonly retiredSessionIds = new Set<string>();
+  private readonly failedOpenCleanupSessionIds = new Set<string>();
   private readonly cleanupAttempts = new WeakMap<Kernel, Map<string, Promise<boolean>>>();
   private readonly bootstrapPromises = new WeakMap<Kernel, Promise<void>>();
   private readonly kernelSettlementBarriers = new WeakMap<Kernel, Promise<void>>();
@@ -83,10 +82,13 @@ export class RKernelSessionTransport {
   constructor(
     context: vscode.ExtensionContext,
     private readonly notebookDocument: vscode.NotebookDocument,
-    private readonly createId: () => string = randomUUID
+    private readonly createId: () => string = randomUUID,
+    runtimeOwnerToken: string = randomUUID()
   ) {
     this.notebookUri = notebookDocument.uri;
-    this.bootstrapCode = buildRKernelBootstrapCode(readRRuntimeFiles(path.join(context.extensionPath, "r")));
+    const runtimeFiles = readRRuntimeFiles(path.join(context.extensionPath, "r"));
+    this.bootstrapCode = buildRKernelBootstrapCode(runtimeFiles, runtimeOwnerToken);
+    this.teardownCode = buildRKernelTeardownCode(runtimeFiles, runtimeOwnerToken);
   }
 
   async open(
@@ -96,10 +98,11 @@ export class RKernelSessionTransport {
   ): Promise<RKernelOpenResult> {
     this.assertActive();
     this.beginOpen();
+    let detachedSettlement: Promise<void> | undefined;
     try {
       const started = performance.now();
       const timeoutMs = requestTimeout(options.timeoutMs);
-      const sessionId = this.createId();
+      const sessionId = options.requestedSessionId ?? this.createId();
       this.assertSessionIdentityAvailable(sessionId);
       const request = this.request("openSession", { sessionId, variableName, page });
       encodeRKernelRequest(request);
@@ -119,7 +122,7 @@ export class RKernelSessionTransport {
       this.sessionKernels.set(sessionId, acquired.kernel);
       const completion = this.executeRequest(acquired.kernel, request);
       void completion.catch(() => undefined);
-      let detachedReason: "cancelled" | "timeout" | undefined;
+      let detachedReason: DetachedBridgeRequestReason | undefined;
       let response: RKernelResponse;
       try {
         response = await withKernelTimeout(
@@ -130,13 +133,19 @@ export class RKernelSessionTransport {
           },
           options.cancellation,
           () => {
-            detachedReason = "cancelled";
+            detachedReason = "cancellation";
           }
         );
       } catch (error) {
         if (detachedReason) {
-          this.cleanupAfterOpenSettlement(sessionId, acquired.kernel, completion);
-          throw new RKernelOpenDetachedError(detachedReason);
+          detachedSettlement = this.cleanupAfterOpenSettlement(sessionId, acquired.kernel, completion);
+          this.installKernelSettlementBarrier(acquired.kernel, detachedSettlement);
+          throw new DetachedBridgeRequestError(
+            detachedRequestMessage(detachedReason, timeoutMs),
+            detachedReason,
+            true,
+            detachedSettlement
+          );
         }
         await this.cleanupFailedOpen(sessionId, acquired.kernel);
         throw error;
@@ -162,7 +171,14 @@ export class RKernelSessionTransport {
         throw error;
       }
     } finally {
-      this.endOpen();
+      if (detachedSettlement) {
+        void detachedSettlement.then(
+          () => this.endOpen(),
+          () => this.endOpen()
+        );
+      } else {
+        this.endOpen();
+      }
     }
   }
 
@@ -221,10 +237,11 @@ export class RKernelSessionTransport {
     return response.page;
   }
 
-  async close(sessionId: string, options: Readonly<{ timeoutMs?: number }> = {}): Promise<void> {
+  async close(sessionId: string, options: RKernelRequestOptions = {}): Promise<void> {
     this.assertActive();
+    if (this.retiredSessionIds.has(sessionId)) return;
     const kernel = this.requireMappedKernel(sessionId);
-    await this.closeMappedSession(sessionId, kernel, requestTimeout(options.timeoutMs));
+    await this.closeMappedSession(sessionId, kernel, requestTimeout(options.timeoutMs), options.cancellation);
   }
 
   async closeAll(): Promise<void> {
@@ -240,15 +257,53 @@ export class RKernelSessionTransport {
     return this.disposal;
   }
 
-  private async closeMappedSession(sessionId: string, kernel: Kernel, timeoutMs: number): Promise<void> {
+  isSessionMapped(sessionId: string): boolean {
+    return this.sessionKernels.has(sessionId);
+  }
+
+  private async closeMappedSession(
+    sessionId: string,
+    kernel: Kernel,
+    timeoutMs: number,
+    cancellation?: KernelCancellationLike
+  ): Promise<void> {
     const started = performance.now();
-    await this.waitForKernelSettlement(kernel, timeoutMs, started);
+    await this.waitForKernelSettlement(kernel, timeoutMs, started, cancellation);
+    if (this.sessionKernels.get(sessionId) !== kernel) {
+      if (this.retiredSessionIds.has(sessionId)) return;
+      throw new Error(`Open Wrangler no longer owns R kernel session ${sessionId}.`);
+    }
+    assertDispatchAllowed(cancellation, remainingTimeout(timeoutMs, started));
     const completion = this.executeRequest(kernel, this.request("closeSession", { sessionId })).then((response) => {
       if (isCorrelatedClose(response, sessionId)) this.retireSession(sessionId, kernel);
       return response;
     });
     void completion.catch(() => undefined);
-    const response = await withKernelTimeout(completion, remainingTimeout(timeoutMs, started), () => undefined);
+    let detachedReason: DetachedBridgeRequestReason | undefined;
+    let response: RKernelResponse;
+    try {
+      response = await withKernelTimeout(
+        completion,
+        remainingTimeout(timeoutMs, started),
+        () => {
+          detachedReason = "timeout";
+        },
+        cancellation,
+        () => {
+          detachedReason = "cancellation";
+        }
+      );
+    } catch (error) {
+      if (!detachedReason) throw error;
+      const settlement = observeSettlement(completion);
+      this.installKernelSettlementBarrier(kernel, settlement);
+      throw new DetachedBridgeRequestError(
+        detachedRequestMessage(detachedReason, timeoutMs),
+        detachedReason,
+        true,
+        settlement
+      );
+    }
     if (response.kind === "error") {
       if (response.code === "unknown_session") return;
       throw new RKernelDiagnosticError(response);
@@ -264,7 +319,12 @@ export class RKernelSessionTransport {
     for (const sessionId of sessions) {
       try {
         const kernel = this.sessionKernels.get(sessionId);
-        if (kernel) await this.closeMappedSession(sessionId, kernel, DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS);
+        if (!kernel) continue;
+        if (this.failedOpenCleanupSessionIds.has(sessionId)) {
+          failures.push(new Error(`Open Wrangler could not confirm cleanup of failed R kernel open ${sessionId}.`));
+          continue;
+        }
+        await this.closeMappedSession(sessionId, kernel, DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS);
       } catch (error) {
         failures.push(error);
       }
@@ -277,6 +337,7 @@ export class RKernelSessionTransport {
     try {
       await this.openIdle;
       await this.closeMappedSessions();
+      await this.teardownRuntimeBindings();
     } finally {
       this.invalidateKernel();
       this.kernelInvalidatedEmitter.dispose();
@@ -351,6 +412,7 @@ export class RKernelSessionTransport {
     if (!bootstrap) {
       bootstrap = (async () => {
         await this.executeKernelText(acquired.kernel, this.bootstrapCode);
+        this.bootstrappedKernels.add(acquired.kernel);
         this.assertActive();
         this.assertNotebookProvenance();
         if (this.observation !== acquired) throw new Error("The R kernel changed during runtime bootstrap.");
@@ -362,6 +424,22 @@ export class RKernelSessionTransport {
     }
     await bootstrap;
     this.assertActive();
+  }
+
+  private async teardownRuntimeBindings(): Promise<void> {
+    const kernels = [...this.bootstrappedKernels];
+    const failures: unknown[] = [];
+    for (const kernel of kernels) {
+      try {
+        await this.executeKernelText(kernel, this.teardownCode);
+        this.bootstrappedKernels.delete(kernel);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Open Wrangler could not remove every private R kernel runtime binding.");
+    }
   }
 
   private async assertKernelStillSelected(acquired: KernelObservation): Promise<void> {
@@ -447,16 +525,20 @@ export class RKernelSessionTransport {
     }
   }
 
-  private cleanupAfterOpenSettlement(sessionId: string, kernel: Kernel, completion: Promise<RKernelResponse>): void {
-    void completion
-      .catch(() => undefined)
+  private cleanupAfterOpenSettlement(
+    sessionId: string,
+    kernel: Kernel,
+    completion: Promise<RKernelResponse>
+  ): Promise<void> {
+    return observeSettlement(completion)
       .then(() => this.cleanupFailedOpen(sessionId, kernel))
-      .catch(() => undefined);
+      .then(() => undefined);
   }
 
   private cleanupFailedOpen(sessionId: string, kernel: Kernel): Promise<boolean> {
     let completion = this.cleanupAttempts.get(kernel)?.get(sessionId);
     if (!completion) {
+      this.failedOpenCleanupSessionIds.add(sessionId);
       const attempt = this.performFailedOpenCleanup(sessionId, kernel);
       completion = attempt;
       this.rememberCleanupAttempt(kernel, sessionId, attempt);
@@ -515,6 +597,7 @@ export class RKernelSessionTransport {
   private retireSession(sessionId: string, kernel: Kernel): void {
     if (this.sessionKernels.get(sessionId) !== kernel) return;
     this.sessionKernels.delete(sessionId);
+    this.failedOpenCleanupSessionIds.delete(sessionId);
     this.rememberRetiredSessionId(sessionId);
   }
 
@@ -533,9 +616,16 @@ export class RKernelSessionTransport {
     this.observation = undefined;
     observation.subscription?.dispose();
     this.bootstrapPromises.delete(observation.kernel);
+    // A restarting or dead kernel has already discarded its process-local
+    // globals. Trying to execute teardown against it would turn normal kernel
+    // recovery into a cleanup failure.
+    if (invalidatesKernel(observation.kernel.status)) {
+      this.bootstrappedKernels.delete(observation.kernel);
+    }
     for (const [sessionId, kernel] of this.sessionKernels) {
       if (kernel === observation.kernel) {
         this.sessionKernels.delete(sessionId);
+        this.failedOpenCleanupSessionIds.delete(sessionId);
         this.rememberRetiredSessionId(sessionId);
       }
     }

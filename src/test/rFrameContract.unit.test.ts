@@ -10,7 +10,7 @@ function minimalContract(): Record<string, unknown> {
     contractVersion: 1,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
-    frameSemantics: { classes: ["data.frame"], rowNames: "automatic", keyColumnIds: [] },
+    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
     schema: [
       {
         id: "r:c:0",

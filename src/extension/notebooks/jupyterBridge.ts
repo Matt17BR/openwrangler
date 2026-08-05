@@ -4,6 +4,13 @@ import { OpenWranglerPanel } from "../webviewPanel";
 import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import { RKernelBridge } from "../r/rKernelBridge";
+import {
+  discoverRNotebookVariables,
+  RNotebookVariableDiscoveryError,
+  verifyRNotebookVariableSelection,
+  type RNotebookVariableDescriptor
+} from "../r/rNotebookVariableDiscovery";
 import {
   discoverNotebookVariables,
   NotebookVariableDiscoveryError,
@@ -29,8 +36,12 @@ interface JupyterLikeApi {
   kernels: { getKernel(uri: vscode.Uri): Promise<unknown> | unknown };
 }
 
+type NotebookPickerVariable = NotebookVariableDescriptor | RNotebookVariableDescriptor;
+type NotebookVariableDiscovery =
+  Awaited<ReturnType<typeof discoverNotebookVariables>> | Awaited<ReturnType<typeof discoverRNotebookVariables>>;
+
 interface NotebookVariableQuickPickItem extends vscode.QuickPickItem {
-  readonly variable: NotebookVariableDescriptor;
+  readonly variable: NotebookPickerVariable;
 }
 
 export const registerNotebookCommands = (context: vscode.ExtensionContext, coordinator: SessionCoordinator): void => {
@@ -63,10 +74,10 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
 
       let discovered;
       try {
-        discovered = await discoverNotebookVariables(notebook);
+        discovered = await discoverVariablesForSelectedKernel(notebook);
       } catch (error) {
         vscode.window.showWarningMessage(
-          error instanceof NotebookVariableDiscoveryError
+          error instanceof NotebookVariableDiscoveryError || error instanceof RNotebookVariableDiscoveryError
             ? error.message
             : "Open Wrangler could not inspect dataframe variables in the selected notebook kernel."
         );
@@ -74,7 +85,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
       }
       if (discovered.variables.length === 0) {
         vscode.window.showInformationMessage(
-          "Open Wrangler did not find a Pandas, Polars, PySpark, or DuckDB dataframe variable in the active kernel."
+          "Open Wrangler did not find a Pandas, Polars, PySpark, DuckDB, or R dataframe variable in the active kernel."
         );
         return;
       }
@@ -95,6 +106,22 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
       }
       if (!selected || !items.includes(selected)) {
         return;
+      }
+      if ("dataframeFlavor" in selected.variable) {
+        if (!isRNotebookVariableDiscovery(discovered)) {
+          vscode.window.showWarningMessage("Open Wrangler could not confirm the selected R dataframe.");
+          return;
+        }
+        try {
+          await verifyRNotebookVariableSelection(notebook, discovered, selected.variable);
+        } catch (error) {
+          vscode.window.showWarningMessage(
+            error instanceof RNotebookVariableDiscoveryError
+              ? error.message
+              : "Open Wrangler could not confirm the selected R dataframe. Open the picker again."
+          );
+          return;
+        }
       }
       openLiveNotebookVariable(context, coordinator, selected.variable.name, notebook, selected.variable.backend);
     })
@@ -134,7 +161,16 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
   );
 };
 
-function notebookVariableQuickPickItem(variable: NotebookVariableDescriptor): NotebookVariableQuickPickItem {
+function notebookVariableQuickPickItem(variable: NotebookPickerVariable): NotebookVariableQuickPickItem {
+  if ("dataframeFlavor" in variable) {
+    const flavor = rDataframeFlavorLabel(variable.dataframeFlavor);
+    return {
+      label: variable.name,
+      description: `R · ${flavor}`,
+      detail: "Viewing only",
+      variable
+    };
+  }
   const presentation = notebookVariablePresentation(variable.type);
   const detail =
     variable.backend === "pyspark"
@@ -168,14 +204,69 @@ function openLiveNotebookVariable(
     variableName,
     uri: notebook.uri.toString()
   };
-  const bridge = coordinator.createBridge(
-    new KernelBridge(context, notebook, shouldRegisterNotebookFormatters()),
-    notebook
-  );
+  const delegate =
+    backend === "r"
+      ? new RKernelBridge(context, notebook)
+      : new KernelBridge(context, notebook, shouldRegisterNotebookFormatters());
+  const bridge = coordinator.createBridge(delegate, notebook);
   if (backend) {
     OpenWranglerPanel.create(context, bridge, source, backend);
   } else {
     OpenWranglerPanel.create(context, bridge, source);
+  }
+}
+
+async function discoverVariablesForSelectedKernel(
+  notebook: vscode.NotebookDocument
+): Promise<NotebookVariableDiscovery> {
+  const language = await selectedNotebookKernelLanguage(notebook);
+  return language === "r" ? discoverRNotebookVariables(notebook) : discoverNotebookVariables(notebook);
+}
+
+function isRNotebookVariableDiscovery(
+  discovery: NotebookVariableDiscovery
+): discovery is Awaited<ReturnType<typeof discoverRNotebookVariables>> {
+  return discovery.variables.length > 0 && discovery.variables.every((variable) => "dataframeFlavor" in variable);
+}
+
+async function selectedNotebookKernelLanguage(notebook: vscode.NotebookDocument): Promise<string> {
+  if (!isExactOpenNotebook(notebook)) {
+    throw new NotebookVariableDiscoveryError("The originating notebook is no longer open. Reopen it and try again.");
+  }
+  const extension = vscode.extensions.getExtension<JupyterLikeApi>("ms-toolsai.jupyter");
+  if (!extension) {
+    throw new NotebookVariableDiscoveryError(
+      "Install or enable the VS Code Jupyter extension to inspect live dataframe variables."
+    );
+  }
+  const api = await extension.activate();
+  if (!isExactOpenNotebook(notebook)) {
+    throw new NotebookVariableDiscoveryError("The originating notebook is no longer open. Reopen it and try again.");
+  }
+  const kernel = await api.kernels.getKernel(notebook.uri);
+  if (!isExactOpenNotebook(notebook)) {
+    throw new NotebookVariableDiscoveryError("The originating notebook is no longer open. Reopen it and try again.");
+  }
+  const language =
+    typeof kernel === "object" && kernel !== null && typeof (kernel as { language?: unknown }).language === "string"
+      ? (kernel as { language: string }).language.trim().toLowerCase()
+      : "";
+  if (!language) {
+    throw new NotebookVariableDiscoveryError(
+      "Select or start a notebook kernel, run the cell that defines the dataframe, and try again."
+    );
+  }
+  return language;
+}
+
+function rDataframeFlavorLabel(flavor: RNotebookVariableDescriptor["dataframeFlavor"]): string {
+  switch (flavor) {
+    case "r.data.frame":
+      return "data.frame";
+    case "r.tibble":
+      return "tibble";
+    case "r.data.table":
+      return "data.table";
   }
 }
 

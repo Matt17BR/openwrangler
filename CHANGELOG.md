@@ -11,6 +11,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   any other cleaning step. Median fills keep the existing column type. Integer and decimal medians must fit that type
   exactly, decimal values must fit the column scale, and datetime values must match the column's timezone awareness.
   Generated Python code follows the same rules without converting the dataframe to another engine.
+- Added the first R notebook viewer for Open Wrangler 2. The notebook picker can open base `data.frame`, tibble, and
+  `data.table` objects directly from IRkernel, page across the complete frame, and apply view-only sorts. Filters,
+  profiles, cleaning, exports, and Quarto/R Markdown are not part of this first slice.
 
 ### Changed
 

@@ -16,6 +16,7 @@ const notebookMocks = vi.hoisted(() => ({
   showQuickPick: vi.fn(async (items: readonly unknown[], _options?: unknown) => items[0]),
   createPanel: vi.fn(),
   kernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
+  rKernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
   tokenSources: [] as Array<{
     readonly token: { isCancellationRequested: boolean };
     disposed: boolean;
@@ -199,6 +200,14 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
   }
 }));
 
+vi.mock("../extension/r/rKernelBridge", () => ({
+  RKernelBridge: class {
+    constructor(_context: ExtensionContext, document: NotebookDocument) {
+      notebookMocks.rKernelOrigins.push({ uri: document.uri.toString(), document });
+    }
+  }
+}));
+
 import * as vscode from "vscode";
 import { registerNotebookCommands } from "../extension/notebooks/jupyterBridge";
 import {
@@ -220,6 +229,7 @@ describe("notebook command provenance", () => {
     notebookMocks.showQuickPick.mockImplementation(async (items) => items[0]);
     notebookMocks.createPanel.mockReset();
     notebookMocks.kernelOrigins.length = 0;
+    notebookMocks.rKernelOrigins.length = 0;
     notebookMocks.tokenSources.length = 0;
     notebookMocks.executeCode.mockReset();
     notebookMocks.executeCode.mockImplementation((code) => notebookKernelOutputs(code));
@@ -1018,6 +1028,117 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
   });
 
+  it("discovers an R tibble and opens it through the native R bridge", async () => {
+    const original = notebook("file:///workspace/r.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    const rKernel = { language: "R", executeCode: notebookMocks.executeCode };
+    notebookMocks.getKernel.mockResolvedValue(rKernel);
+    notebookMocks.executeCode.mockImplementation((code) =>
+      rDiscoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+      })
+    );
+    const { context, coordinator, coordinatedBridge } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    const [items] = notebookMocks.showQuickPick.mock.calls[0] ?? [];
+    expect(items).toEqual([
+      expect.objectContaining({
+        label: "sales_tbl",
+        description: "R · tibble",
+        detail: "Viewing only"
+      })
+    ]);
+    expect(notebookMocks.executeCode).toHaveBeenCalledTimes(2);
+    expect(notebookMocks.kernelOrigins).toEqual([]);
+    expect(notebookMocks.rKernelOrigins).toEqual([{ uri: original.uri.toString(), document: original }]);
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+    expect(notebookMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      coordinatedBridge,
+      {
+        kind: "notebookVariable",
+        label: "sales_tbl",
+        variableName: "sales_tbl",
+        uri: original.uri.toString()
+      },
+      "r"
+    );
+    expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects an R selection when the kernel changes while the picker is open", async () => {
+    const original = notebook("file:///workspace/r-kernel-change.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    const originalKernel = { language: "R", executeCode: notebookMocks.executeCode };
+    const replacementKernel = { language: "R", executeCode: notebookMocks.executeCode };
+    notebookMocks.getKernel.mockResolvedValue(originalKernel);
+    notebookMocks.executeCode.mockImplementation((code) =>
+      rDiscoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+      })
+    );
+    notebookMocks.showQuickPick.mockImplementationOnce(async (items) => {
+      notebookMocks.getKernel.mockResolvedValue(replacementKernel);
+      return items[0];
+    });
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.executeCode).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.rKernelOrigins).toEqual([]);
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The selected R notebook kernel changed while Open Wrangler inspected its variables. Try again."
+    );
+  });
+
+  it.each([
+    ["name", { name: "renamed_sales_tbl", dataframeFlavor: "r.tibble" }],
+    ["flavor", { name: "sales_tbl", dataframeFlavor: "r.data.frame" }]
+  ])("rejects an R selection when its %s changes while the picker is open", async (_change, changedVariable) => {
+    const original = notebook("file:///workspace/r-variable-change.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    const rKernel = { language: "R", executeCode: notebookMocks.executeCode };
+    notebookMocks.getKernel.mockResolvedValue(rKernel);
+    notebookMocks.executeCode
+      .mockImplementationOnce((code) =>
+        rDiscoveryOutputs(code, {
+          protocolVersion: 1,
+          truncated: false,
+          variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+        })
+      )
+      .mockImplementationOnce((code) =>
+        rDiscoveryOutputs(code, {
+          protocolVersion: 1,
+          truncated: false,
+          variables: [changedVariable]
+        })
+      );
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.executeCode).toHaveBeenCalledTimes(2);
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.rKernelOrigins).toEqual([]);
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The selected R dataframe changed while the picker was open. Open the picker again."
+    );
+  });
+
   it("treats picker cancellation as actionless", async () => {
     const original = notebook("file:///workspace/cancelled.ipynb");
     notebookMocks.notebookDocuments.push(original);
@@ -1477,6 +1598,31 @@ function discoveryOutputs(
     `__OPEN_WRANGLER_VARIABLES_START_${marker}__`,
     typeof payload === "string" ? payload : JSON.stringify(payload),
     `__OPEN_WRANGLER_VARIABLES_END_${marker}__`
+  ].join("\n");
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield {
+        items: [
+          {
+            mime: "application/x.notebook.stream.stdout",
+            data: Buffer.from(text, "utf8")
+          }
+        ]
+      };
+    }
+  };
+}
+
+function rDiscoveryOutputs(
+  code: string,
+  payload: unknown
+): AsyncIterable<{ items: Array<{ mime: string; data: Uint8Array }> }> {
+  const marker = code.match(/__OPEN_WRANGLER_R_VARIABLES_START_([a-f0-9]{32})__/)?.[1];
+  if (!marker) throw new Error("Expected R notebook discovery code to contain a response marker.");
+  const text = [
+    `__OPEN_WRANGLER_R_VARIABLES_START_${marker}__`,
+    typeof payload === "string" ? payload : JSON.stringify(payload),
+    `__OPEN_WRANGLER_R_VARIABLES_END_${marker}__`
   ].join("\n");
   return {
     async *[Symbol.asyncIterator]() {

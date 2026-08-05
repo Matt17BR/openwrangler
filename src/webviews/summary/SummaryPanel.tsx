@@ -12,6 +12,8 @@ interface SummaryPanelProps {
   schemaById: Map<string, ColumnSchema>;
   selectedColumnId?: string;
   activeView: SummaryPanelView;
+  profileSupported?: boolean;
+  filtersSupported?: boolean;
   onSelectView(view: SummaryPanelView): void;
 }
 
@@ -24,6 +26,8 @@ export function SummaryPanel({
   schemaById,
   selectedColumnId,
   activeView,
+  profileSupported = true,
+  filtersSupported = true,
   onSelectView
 }: SummaryPanelProps) {
   const resolvedColumnId =
@@ -32,11 +36,12 @@ export function SummaryPanel({
   const selectedSummary = resolvedColumnId
     ? summaries.find((summary) => summary.columnId === resolvedColumnId)
     : undefined;
+  const visibleViews = summaryViews.filter((view) => (view === "filters" ? filtersSupported : profileSupported));
 
   return (
     <section className="panel summaryPanel" data-active-view={activeView}>
       <div className="summaryViewTabs" role="tablist" aria-label="Column profiles view">
-        {summaryViews.map((view) => (
+        {visibleViews.map((view) => (
           <button
             key={view}
             id={summaryTabId(view)}

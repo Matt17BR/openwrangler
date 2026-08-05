@@ -49,6 +49,12 @@ interface DataGridProps {
   beforeSchema?: ColumnSchema[];
   viewControlsDisabled?: boolean;
   viewControlsDisabledReason?: string;
+  filterControlsDisabled?: boolean;
+  filterControlsDisabledReason?: string;
+  sortControlsDisabled?: boolean;
+  sortControlsDisabledReason?: string;
+  profilesDisabled?: boolean;
+  profilesDisabledReason?: string;
   sortRules?: SortRule[];
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
@@ -126,6 +132,12 @@ export function DataGrid({
   beforeSchema,
   viewControlsDisabled = false,
   viewControlsDisabledReason = "View controls are unavailable while inspecting an applied step.",
+  filterControlsDisabled = false,
+  filterControlsDisabledReason = "Filtering is unavailable for this dataframe.",
+  sortControlsDisabled = false,
+  sortControlsDisabledReason = "Sorting is unavailable for this dataframe.",
+  profilesDisabled = false,
+  profilesDisabledReason = "Column profiles are unavailable for this dataframe.",
   sortRules = metadata.filterModel.sort,
   onPage,
   onSortColumn,
@@ -183,7 +195,9 @@ export function DataGrid({
   useLayoutEffect(() => {
     restorationRef.current = { viewState, metadata, page, pageSize };
   }, [metadata, page, pageSize, viewState]);
-  const [showInsights, setShowInsights] = useState(metadata.backend === "pyspark" ? false : insightsOnOpen);
+  const [showInsights, setShowInsights] = useState(
+    metadata.backend === "pyspark" || profilesDisabled ? false : insightsOnOpen
+  );
   const [viewport, setViewport] = useState({
     firstVisibleRow: viewState.viewport.firstVisibleRow,
     scrollLeft: 0,
@@ -653,8 +667,8 @@ export function DataGrid({
   }, [rovingColumn, rovingRow]);
 
   useEffect(() => {
-    onVisibleSummaryColumnsChange(showInsights ? visibleColumns.map((column) => column.id) : []);
-  }, [onVisibleSummaryColumnsChange, showInsights, viewScope, visibleColumns]);
+    onVisibleSummaryColumnsChange(showInsights && !profilesDisabled ? visibleColumns.map((column) => column.id) : []);
+  }, [onVisibleSummaryColumnsChange, profilesDisabled, showInsights, viewScope, visibleColumns]);
 
   useEffect(() => {
     visibleColumnRangeHandler.current({ start: visibleColumnRange.start, end: visibleColumnRange.end });
@@ -1048,6 +1062,10 @@ export function DataGrid({
                     summary={summaryByColumnId.get(column.id)}
                     viewControlsDisabled={viewControlsDisabled}
                     viewControlsDisabledReason={viewControlsDisabledReason}
+                    filterControlsDisabled={filterControlsDisabled}
+                    filterControlsDisabledReason={filterControlsDisabledReason}
+                    sortControlsDisabled={sortControlsDisabled}
+                    sortControlsDisabledReason={sortControlsDisabledReason}
                     viewColumnNameCount={viewColumnNameCounts.get(column.name) ?? 0}
                     activeSort={activeSortIndex < 0 ? undefined : sortRules[activeSortIndex]}
                     activeSortIndex={activeSortIndex < 0 ? undefined : activeSortIndex}
@@ -1179,10 +1197,19 @@ export function DataGrid({
           type="button"
           className="headerProfilesButton"
           aria-pressed={showInsights}
-          title={metadata.backend === "pyspark" ? "Runs Spark profiling queries for the visible columns." : undefined}
-          onClick={() => setShowInsights((current) => !current)}
+          disabled={profilesDisabled}
+          title={
+            profilesDisabled
+              ? profilesDisabledReason
+              : metadata.backend === "pyspark"
+                ? "Runs Spark profiling queries for the visible columns."
+                : undefined
+          }
+          onClick={() => {
+            if (!profilesDisabled) setShowInsights((current) => !current);
+          }}
         >
-          Header profiles
+          {profilesDisabled ? "Profiles unavailable" : "Header profiles"}
         </button>
       </div>
     </div>
@@ -1445,6 +1472,10 @@ function ColumnHeader({
   summary,
   viewControlsDisabled,
   viewControlsDisabledReason,
+  filterControlsDisabled,
+  filterControlsDisabledReason,
+  sortControlsDisabled,
+  sortControlsDisabledReason,
   viewColumnNameCount,
   activeSort,
   activeSortIndex,
@@ -1463,6 +1494,10 @@ function ColumnHeader({
   summary: ColumnSummary | undefined;
   viewControlsDisabled: boolean;
   viewControlsDisabledReason: string;
+  filterControlsDisabled: boolean;
+  filterControlsDisabledReason: string;
+  sortControlsDisabled: boolean;
+  sortControlsDisabledReason: string;
   viewColumnNameCount: number;
   activeSort: SortRule | undefined;
   activeSortIndex: number | undefined;
@@ -1474,11 +1509,23 @@ function ColumnHeader({
 }) {
   const menuRef = useRef<HTMLDetailsElement>(null);
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
+  const filterDisabledDescriptionId = `column-filter-disabled-${column.position}`;
+  const sortDisabledDescriptionId = `column-sort-disabled-${column.position}`;
   const comparisonUnavailable = !supportsTypedViewComparison(column.type);
   const ambiguityReason =
     viewColumnNameCount > 1 ? ambiguousViewColumnMessage(column.name, viewColumnNameCount) : undefined;
-  const viewQueryControlsDisabled = viewControlsDisabled || ambiguityReason !== undefined;
-  const viewQueryControlsDisabledReason = viewControlsDisabled ? viewControlsDisabledReason : ambiguityReason;
+  const filterUnavailable = viewControlsDisabled || filterControlsDisabled || ambiguityReason !== undefined;
+  const filterUnavailableReason = viewControlsDisabled
+    ? viewControlsDisabledReason
+    : filterControlsDisabled
+      ? filterControlsDisabledReason
+      : ambiguityReason;
+  const sortUnavailable = viewControlsDisabled || sortControlsDisabled || ambiguityReason !== undefined;
+  const sortUnavailableReason = viewControlsDisabled
+    ? viewControlsDisabledReason
+    : sortControlsDisabled
+      ? sortControlsDisabledReason
+      : ambiguityReason;
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (viewControlsDisabled) return;
     event.preventDefault();
@@ -1553,8 +1600,8 @@ function ColumnHeader({
                   activeSort.direction === "asc" ? "codicon-arrow-up" : "codicon-arrow-down"
                 }`}
                 aria-label={`Clear sort for ${column.name}; currently ${activeSortLabel}`}
-                title={`Sorted ${activeSortLabel}. Clear sort`}
-                disabled={viewControlsDisabled}
+                disabled={sortUnavailable}
+                title={sortUnavailable ? sortUnavailableReason : `Sorted ${activeSortLabel}. Clear sort`}
                 onClick={() => onClearSortColumn(column.name)}
               >
                 {sortCount > 1 && activeSortIndex !== undefined && (
@@ -1567,27 +1614,53 @@ function ColumnHeader({
             <details ref={menuRef} className="columnMenu">
               <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
               <div className="columnMenuContent">
-                {viewQueryControlsDisabled && (
+                {viewControlsDisabled && (
                   <span id={disabledDescriptionId} className="columnMenuNotice">
-                    {viewQueryControlsDisabledReason}
+                    {viewControlsDisabledReason}
+                  </span>
+                )}
+                {!viewControlsDisabled && filterControlsDisabled && (
+                  <span id={filterDisabledDescriptionId} className="columnMenuNotice">
+                    {filterControlsDisabledReason}
+                  </span>
+                )}
+                {!viewControlsDisabled && sortControlsDisabled && (
+                  <span id={sortDisabledDescriptionId} className="columnMenuNotice">
+                    {sortControlsDisabledReason}
                   </span>
                 )}
                 <button
                   type="button"
-                  disabled={viewQueryControlsDisabled}
-                  aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
-                  title={viewQueryControlsDisabledReason}
+                  disabled={filterUnavailable}
+                  aria-describedby={
+                    filterUnavailable
+                      ? viewControlsDisabled
+                        ? disabledDescriptionId
+                        : filterControlsDisabled
+                          ? filterDisabledDescriptionId
+                          : undefined
+                      : undefined
+                  }
+                  title={filterUnavailableReason}
                   onClick={() => runMenuAction(() => onOpenFilter(column.name))}
                 >
                   Filter…
                 </button>
                 <button
                   type="button"
-                  disabled={viewQueryControlsDisabled || comparisonUnavailable}
-                  aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
+                  disabled={sortUnavailable || comparisonUnavailable}
+                  aria-describedby={
+                    sortUnavailable
+                      ? viewControlsDisabled
+                        ? disabledDescriptionId
+                        : sortControlsDisabled
+                          ? sortDisabledDescriptionId
+                          : undefined
+                      : undefined
+                  }
                   title={
-                    viewQueryControlsDisabled
-                      ? viewQueryControlsDisabledReason
+                    sortUnavailable
+                      ? sortUnavailableReason
                       : comparisonUnavailable
                         ? `Sorting is unavailable for ${column.type} columns`
                         : undefined
@@ -1598,11 +1671,19 @@ function ColumnHeader({
                 </button>
                 <button
                   type="button"
-                  disabled={viewQueryControlsDisabled || comparisonUnavailable}
-                  aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
+                  disabled={sortUnavailable || comparisonUnavailable}
+                  aria-describedby={
+                    sortUnavailable
+                      ? viewControlsDisabled
+                        ? disabledDescriptionId
+                        : sortControlsDisabled
+                          ? sortDisabledDescriptionId
+                          : undefined
+                      : undefined
+                  }
                   title={
-                    viewQueryControlsDisabled
-                      ? viewQueryControlsDisabledReason
+                    sortUnavailable
+                      ? sortUnavailableReason
                       : comparisonUnavailable
                         ? `Sorting is unavailable for ${column.type} columns`
                         : undefined
@@ -1614,7 +1695,8 @@ function ColumnHeader({
                 {activeSort && (
                   <button
                     type="button"
-                    disabled={viewControlsDisabled}
+                    disabled={sortUnavailable}
+                    title={sortUnavailableReason}
                     onClick={() => runMenuAction(() => onClearSortColumn(column.name))}
                   >
                     Clear sort
