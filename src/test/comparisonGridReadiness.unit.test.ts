@@ -149,7 +149,7 @@ describe("clean-room comparison grid readiness", () => {
       firstHeader: "net_revenue_usd",
       secondHeader: "gross_margin_usd",
       topLeftValues: [
-        ["null", "-387.884"],
+        ["", "-387.884"],
         ["-146.978", "-683.902"]
       ]
     });
@@ -177,8 +177,8 @@ describe("clean-room comparison grid readiness", () => {
       firstHeader: "net_revenue_usd",
       secondHeader: "gross_margin_usd",
       topLeftValues: [
-        ["", "one visible value"],
-        ["", ""]
+        ["", "first visible value"],
+        ["second visible value", ""]
       ]
     });
     const frames = new FrameRuntime();
