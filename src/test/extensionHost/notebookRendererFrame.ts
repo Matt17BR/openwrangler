@@ -98,7 +98,12 @@ export function findExactActiveNotebookRendererButton({
 /** Verifies that a launch action and deterministic preview sentinels share one output boundary. */
 export function observeInlinePreviewReady(
   elementValue: unknown,
-  input: { readonly actionName: string; readonly firstColumn: string; readonly secondColumn: string }
+  input: {
+    readonly actionName: string;
+    readonly firstColumn: string;
+    readonly secondColumn: string;
+    readonly requiredCellValues: readonly string[];
+  }
 ): boolean {
   type Candidate = {
     readonly isConnected: boolean;
@@ -158,7 +163,9 @@ export function observeInlinePreviewReady(
     const cells = Array.from(table.querySelectorAll('[role="cell"], tbody td')).map((item) =>
       normalize(item.textContent)
     );
-    return cells.includes("0") && cells.includes("1");
+    return input.requiredCellValues.length === 0
+      ? cells.length > 0
+      : input.requiredCellValues.every((value) => cells.includes(value));
   });
   if (semanticTableReady) return true;
 
@@ -169,7 +176,13 @@ export function observeInlinePreviewReady(
       .filter((candidate) => candidate.querySelectorAll("*").length === 0 && visible(candidate))
       .map((candidate) => normalize(candidate.textContent))
   );
-  return labels.has(input.firstColumn) && labels.has(input.secondColumn) && labels.has("0") && labels.has("1");
+  return (
+    labels.has(input.firstColumn) &&
+    labels.has(input.secondColumn) &&
+    (input.requiredCellValues.length === 0
+      ? labels.size > 2
+      : input.requiredCellValues.every((value) => labels.has(value)))
+  );
 }
 
 export interface GridScrollability {

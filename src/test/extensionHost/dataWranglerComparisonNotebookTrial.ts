@@ -208,6 +208,7 @@ interface PointerTarget {
     readonly actionName: string;
     readonly firstColumn: string;
     readonly secondColumn: string;
+    readonly requiredCellValues: readonly string[];
   }): Promise<boolean>;
   dispose(): Promise<void>;
 }
@@ -1495,6 +1496,7 @@ function displayedProfileMetric(text: string, label: "min" | "max", value: numbe
 async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest): Promise<PointerTarget | undefined> {
   const matches: PointerTarget[] = [];
   const [firstColumn, secondColumn] = request.cell.columnNames as readonly [string, string, ...string[]];
+  const requiredCellValues = request.cell.profileContract === "integer-sentinel" ? ["0", "1"] : [];
   if (request.product === "open-wrangler") {
     for (const frame of comparisonFrames(page).slice(0, 64)) {
       let handle;
@@ -1515,7 +1517,8 @@ async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest)
             .inlineReady({
               actionName: target.accessibleName,
               firstColumn,
-              secondColumn
+              secondColumn,
+              requiredCellValues
             })
             .catch(() => false))
         ) {
@@ -1534,7 +1537,7 @@ async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest)
       try {
         handle = await frame.evaluateHandle(findExactActiveNotebookPreviewButton, {
           expectedButtonNames: ["Open Data Wrangler", "Open in Data Wrangler"],
-          requiredLabels: [firstColumn, secondColumn, "0", "1"]
+          requiredLabels: [firstColumn, secondColumn, ...requiredCellValues]
         });
         const element = handle.asElement() as ElementHandle<unknown> | null;
         if (!element) {
@@ -1568,7 +1571,9 @@ async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest)
         if (
           actionPattern.test(name) &&
           (await target.pointerReady().catch(() => false)) &&
-          (await target.inlineReady({ actionName: name, firstColumn, secondColumn }).catch(() => false))
+          (await target
+            .inlineReady({ actionName: name, firstColumn, secondColumn, requiredCellValues })
+            .catch(() => false))
         ) {
           matches.push(target);
           handle = undefined;
@@ -1596,7 +1601,9 @@ async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest)
         const target = locatorTarget(button, frame, name);
         if (
           (await target.pointerReady().catch(() => false)) &&
-          (await target.inlineReady({ actionName: name, firstColumn, secondColumn }).catch(() => false))
+          (await target
+            .inlineReady({ actionName: name, firstColumn, secondColumn, requiredCellValues })
+            .catch(() => false))
         ) {
           matches.push(target);
         }
@@ -1618,6 +1625,7 @@ async function waitForInlineTarget(
   deadline: number
 ): Promise<PointerTarget> {
   const [firstColumn, secondColumn] = request.cell.columnNames as readonly [string, string, ...string[]];
+  const requiredCellValues = request.cell.profileContract === "integer-sentinel" ? ["0", "1"] : [];
   do {
     if (freshExecution() && cell.executionSummary?.success === false) {
       throw new Error("The measured notebook cell failed.");
@@ -1662,7 +1670,11 @@ async function waitForInlineTarget(
         exactActionCount += 1;
         const target = locatorTarget(buttons.nth(index), frame, name);
         if (await target.pointerReady().catch(() => false)) exactCssPointerCount += 1;
-        if (await target.inlineReady({ actionName: name, firstColumn, secondColumn }).catch(() => false)) {
+        if (
+          await target
+            .inlineReady({ actionName: name, firstColumn, secondColumn, requiredCellValues })
+            .catch(() => false)
+        ) {
           exactCssInlineCount += 1;
         }
       }
@@ -1678,7 +1690,11 @@ async function waitForInlineTarget(
       const resolvedName = await locatorName(button).catch(() => "");
       const target = locatorTarget(button, frame, resolvedName);
       if (await target.pointerReady().catch(() => false)) exactRolePointerCount += 1;
-      if (await target.inlineReady({ actionName: resolvedName, firstColumn, secondColumn }).catch(() => false)) {
+      if (
+        await target
+          .inlineReady({ actionName: resolvedName, firstColumn, secondColumn, requiredCellValues })
+          .catch(() => false)
+      ) {
         exactRoleInlineCount += 1;
       }
     }

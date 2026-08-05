@@ -18,6 +18,7 @@ import {
   type ComparisonTrialResult,
   type ComparisonTrialSample
 } from "./extensionHost/dataWranglerComparisonNotebookTrial";
+import { observeInlinePreviewReady } from "./extensionHost/notebookRendererFrame";
 
 const SHA = "a".repeat(64);
 const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -387,6 +388,45 @@ describe("public readiness oracles", () => {
       }
     });
     expect(observeVisibleFullShape({ rows: 100_000, columns: 50 })).toBe(true);
+  });
+
+  it("accepts mixed-data inline previews without the legacy zero and one sentinels", () => {
+    const visible = {
+      isConnected: true,
+      parentElement: null,
+      textContent: "value",
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ width: 20, height: 10 }),
+      querySelectorAll: () => []
+    };
+    const headers = ["net_revenue_usd", "gross_margin_usd"].map((textContent) => ({ ...visible, textContent }));
+    const cells = [{ ...visible, textContent: "482901.75" }];
+    const table = {
+      ...visible,
+      querySelectorAll: (selector: string) => (selector.includes("columnheader") ? headers : cells)
+    };
+    const root = {
+      querySelectorAll: (selector: string) => (selector.includes('[role="grid"]') ? [table] : [])
+    };
+    const action = {
+      ...visible,
+      textContent: "Open in Open Wrangler",
+      closest: () => root,
+      ownerDocument: {
+        defaultView: {
+          frameElement: null,
+          getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" })
+        }
+      }
+    };
+    const input = {
+      actionName: "Open in Open Wrangler",
+      firstColumn: "net_revenue_usd",
+      secondColumn: "gross_margin_usd"
+    };
+
+    expect(observeInlinePreviewReady(action, { ...input, requiredCellValues: [] })).toBe(true);
+    expect(observeInlinePreviewReady(action, { ...input, requiredCellValues: ["0", "1"] })).toBe(false);
   });
 
   it("accepts ARIA counts with grid headers without treating a renderer window as the full shape", () => {
