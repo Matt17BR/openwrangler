@@ -5,6 +5,8 @@ export const ALWAYS_REQUIRED_CI_JOBS = Object.freeze(["classify", "fast-feedback
 
 export const PACKAGE_CI_JOBS = Object.freeze(["canonical-vsix"]);
 
+export const DEPENDENCY_LOCK_CI_JOBS = Object.freeze(["dependency-lock-validation"]);
+
 export const FULL_MATRIX_CI_JOBS = Object.freeze([
   "contract-tests",
   "visual-accessibility",
@@ -18,6 +20,7 @@ export const FULL_MATRIX_CI_JOBS = Object.freeze([
 
 export const PRODUCT_CI_JOBS = Object.freeze([
   ...FULL_MATRIX_CI_JOBS.slice(0, 3),
+  ...DEPENDENCY_LOCK_CI_JOBS,
   ...PACKAGE_CI_JOBS,
   ...FULL_MATRIX_CI_JOBS.slice(3)
 ]);
@@ -32,6 +35,7 @@ export function resultEnvironmentKey(jobId) {
 
 export function requireCiResults({
   requiredResults,
+  dependencyLockOnly,
   documentationOnly,
   draftPullRequest,
   lightweightOnly,
@@ -44,11 +48,13 @@ export function requireCiResults({
   if (lightweightOnly !== (documentationOnly || draftPullRequest)) {
     failures.push("lightweight classifier is inconsistent with documentation and draft state");
   }
-  if (documentationOnly && packageOnly) {
-    failures.push("documentation-only and package-only classifiers are mutually exclusive");
+  if ([documentationOnly, packageOnly, dependencyLockOnly].filter(Boolean).length > 1) {
+    failures.push("documentation-only, package-only, and dependency-lock-only classifiers are mutually exclusive");
   }
-  if (fullMatrixRequired !== (!documentationOnly && !packageOnly && !draftPullRequest)) {
-    failures.push("full-matrix classifier is inconsistent with documentation, package, and draft state");
+  if (fullMatrixRequired !== (!documentationOnly && !packageOnly && !dependencyLockOnly && !draftPullRequest)) {
+    failures.push(
+      "full-matrix classifier is inconsistent with documentation, package, dependency lock, and draft state"
+    );
   }
   for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
     const result = requiredResults[jobId];
@@ -57,7 +63,16 @@ export function requireCiResults({
     }
   }
 
-  const expectedPackageResult = !draftPullRequest && (packageOnly || fullMatrixRequired) ? "success" : "skipped";
+  const expectedDependencyLockResult = dependencyLockOnly && !draftPullRequest ? "success" : "skipped";
+  for (const jobId of DEPENDENCY_LOCK_CI_JOBS) {
+    const result = requiredResults[jobId];
+    if (result !== expectedDependencyLockResult) {
+      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedDependencyLockResult})`);
+    }
+  }
+
+  const expectedPackageResult =
+    !draftPullRequest && (packageOnly || dependencyLockOnly || fullMatrixRequired) ? "success" : "skipped";
   for (const jobId of PACKAGE_CI_JOBS) {
     const result = requiredResults[jobId];
     if (result !== expectedPackageResult) {
@@ -100,6 +115,7 @@ function main(environment) {
   );
   requireCiResults({
     requiredResults,
+    dependencyLockOnly: parseRequiredFlag(environment.DEPENDENCY_LOCK_ONLY, "DEPENDENCY_LOCK_ONLY"),
     documentationOnly: parseRequiredFlag(environment.DOCUMENTATION_ONLY, "DOCUMENTATION_ONLY"),
     draftPullRequest: parseRequiredFlag(environment.DRAFT_PULL_REQUEST, "DRAFT_PULL_REQUEST"),
     lightweightOnly: parseRequiredFlag(environment.LIGHTWEIGHT_ONLY, "LIGHTWEIGHT_ONLY"),

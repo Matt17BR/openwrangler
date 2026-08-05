@@ -6,6 +6,7 @@ import { load as parseYaml } from "js-yaml";
 import { loadConfigFromFile } from "vite";
 import {
   classifyCiChange,
+  isDependencyLockOnlyChangeSet,
   isDocumentationOnlyChangeSet,
   isPackageOnlyChangeSet,
   parseChangedPathBuffer,
@@ -13,6 +14,7 @@ import {
 } from "./ci-path-classification.mjs";
 import {
   ALWAYS_REQUIRED_CI_JOBS,
+  DEPENDENCY_LOCK_CI_JOBS,
   FULL_MATRIX_CI_JOBS,
   OPTIONAL_CI_JOB,
   PACKAGE_CI_JOBS,
@@ -40,6 +42,7 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
   "contract-tests",
   "visual-accessibility",
   "production-audits",
+  "dependency-lock-validation",
   "canonical-vsix",
   "linux-packaged-editor",
   "coverage",
@@ -59,7 +62,7 @@ const NON_MATRIX_CONTEXT_IF =
 const SUBSTANTIVE_MATRIX_STEP_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}";
 const CLASSIFICATION_GATE_IF =
-  "${{ needs.classify.result != 'success' || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') || (needs.classify.outputs.draft_pull_request != 'true' && needs.classify.outputs.draft_pull_request != 'false') || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.lightweight_only != 'false') || (needs.classify.outputs.package_only != 'true' && needs.classify.outputs.package_only != 'false') || (needs.classify.outputs.full_matrix_required != 'true' && needs.classify.outputs.full_matrix_required != 'false') || (needs.classify.outputs.lightweight_only == 'true' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') || (needs.classify.outputs.lightweight_only == 'false' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.documentation_only == 'true' && needs.classify.outputs.package_only == 'true') || (needs.classify.outputs.full_matrix_required == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'false' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.package_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') }}";
+  "${{ needs.classify.result != 'success' || (needs.classify.outputs.dependency_lock_only != 'true' && needs.classify.outputs.dependency_lock_only != 'false') || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') || (needs.classify.outputs.draft_pull_request != 'true' && needs.classify.outputs.draft_pull_request != 'false') || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.lightweight_only != 'false') || (needs.classify.outputs.package_only != 'true' && needs.classify.outputs.package_only != 'false') || (needs.classify.outputs.full_matrix_required != 'true' && needs.classify.outputs.full_matrix_required != 'false') || (needs.classify.outputs.lightweight_only == 'true' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') || (needs.classify.outputs.lightweight_only == 'false' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.documentation_only == 'true' && needs.classify.outputs.package_only == 'true') || (needs.classify.outputs.dependency_lock_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true')) || (needs.classify.outputs.full_matrix_required == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'false' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.package_only == 'false' && needs.classify.outputs.dependency_lock_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') }}";
 const PROTECTED_PRODUCT_BRANCHES = ["main"];
 const PULL_REQUEST_ACTIVITY_TYPES = ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"];
 
@@ -222,6 +225,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
 
   const documentationOnly = (eventName, changedPaths) => isDocumentationOnlyChangeSet({ eventName, changedPaths });
   const packageOnly = (eventName, changedPaths) => isPackageOnlyChangeSet({ eventName, changedPaths });
+  const dependencyLockOnly = (eventName, changedPaths) => isDependencyLockOnlyChangeSet({ eventName, changedPaths });
   const allowed = [
     "AGENTS.md",
     "CONTRIBUTING.md",
@@ -236,6 +240,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   ];
   assert.equal(documentationOnly("pull_request", allowed), true);
   assert.deepEqual(classifyCiChange({ eventName: "pull_request", changedPaths: allowed, pullRequestDraft: "false" }), {
+    dependencyLockOnly: false,
     documentationOnly: true,
     draftPullRequest: false,
     lightweightOnly: true,
@@ -247,6 +252,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   assert.deepEqual(
     classifyCiChange({ eventName: "pull_request", changedPaths: packagedDocuments, pullRequestDraft: "false" }),
     {
+      dependencyLockOnly: false,
       documentationOnly: false,
       draftPullRequest: false,
       lightweightOnly: false,
@@ -257,6 +263,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   assert.deepEqual(
     classifyCiChange({ eventName: "pull_request", changedPaths: packagedDocuments, pullRequestDraft: "true" }),
     {
+      dependencyLockOnly: false,
       documentationOnly: false,
       draftPullRequest: true,
       lightweightOnly: true,
@@ -264,6 +271,43 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       fullMatrixRequired: false
     }
   );
+  assert.equal(dependencyLockOnly("pull_request", ["package-lock.json"]), true);
+  assert.deepEqual(
+    classifyCiChange({ eventName: "pull_request", changedPaths: ["package-lock.json"], pullRequestDraft: "false" }),
+    {
+      dependencyLockOnly: true,
+      documentationOnly: false,
+      draftPullRequest: false,
+      lightweightOnly: false,
+      packageOnly: false,
+      fullMatrixRequired: false
+    }
+  );
+  assert.deepEqual(
+    classifyCiChange({ eventName: "pull_request", changedPaths: ["package-lock.json"], pullRequestDraft: "true" }),
+    {
+      dependencyLockOnly: true,
+      documentationOnly: false,
+      draftPullRequest: true,
+      lightweightOnly: true,
+      packageOnly: false,
+      fullMatrixRequired: false
+    }
+  );
+  for (const changedPaths of [
+    [],
+    ["package.json"],
+    ["package-lock.json", "package.json"],
+    ["package-lock.json", "README.md"],
+    ["./package-lock.json"],
+    ["Package-lock.json"]
+  ]) {
+    assert.equal(
+      dependencyLockOnly("pull_request", changedPaths),
+      false,
+      JSON.stringify(changedPaths) + " must not select dependency-lock-only CI."
+    );
+  }
   for (const path of [
     ".github/workflows/ci.yml",
     ".vscodeignore",
@@ -306,6 +350,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       pullRequestDraft: "true"
     }),
     {
+      dependencyLockOnly: false,
       documentationOnly: false,
       draftPullRequest: true,
       lightweightOnly: true,
@@ -315,6 +360,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   );
   assert.equal(documentationOnly("pull_request", []), false, "an empty PR diff must fail closed");
   assert.equal(packageOnly("pull_request", []), false, "an empty PR diff must fail closed");
+  assert.equal(dependencyLockOnly("pull_request", []), false, "an empty PR diff must fail closed");
   for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
     assert.equal(documentationOnly(eventName, allowed), false, `${eventName} must always use the complete workflow.`);
     assert.equal(
@@ -322,7 +368,9 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       false,
       `${eventName} must always use the complete workflow.`
     );
+    assert.equal(dependencyLockOnly(eventName, ["package-lock.json"]), false, `${eventName} must use full CI.`);
     assert.deepEqual(classifyCiChange({ eventName, changedPaths: [], pullRequestDraft: "" }), {
+      dependencyLockOnly: false,
       documentationOnly: false,
       draftPullRequest: false,
       lightweightOnly: false,
@@ -334,6 +382,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   assert.equal(documentationOnly("pull_request", ["docs/testing.md", 42]), false);
   assert.throws(() => documentationOnly("pull_request", undefined), /changedPaths must be an array/u);
   assert.throws(() => packageOnly("pull_request", undefined), /changedPaths must be an array/u);
+  assert.throws(() => dependencyLockOnly("pull_request", undefined), /changedPaths must be an array/u);
   assert.equal(parsePullRequestDraft({ eventName: "pull_request", value: "true" }), true);
   assert.equal(parsePullRequestDraft({ eventName: "pull_request", value: "false" }), false);
   for (const value of [undefined, "", "TRUE", "0", true, false]) {
@@ -543,6 +592,7 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
     assert.equal(job?.name, name);
     assert.equal(job?.["runs-on"], "ubuntu-latest");
     assert.equal(job?.["timeout-minutes"], 5);
+    assert.equal(job?.outputs?.dependency_lock_only, "${{ steps.classify.outputs.dependency_lock_only }}");
     assert.equal(job?.outputs?.documentation_only, "${{ steps.classify.outputs.documentation_only }}");
     assert.equal(job?.outputs?.draft_pull_request, "${{ steps.classify.outputs.draft_pull_request }}");
     assert.equal(job?.outputs?.lightweight_only, "${{ steps.classify.outputs.lightweight_only }}");
@@ -577,6 +627,16 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
   assert.equal(packagedMedia?.run, "npm run test:scripts:media");
   assert.equal(ci?.jobs?.["fast-feedback"]?.needs, undefined);
   assert.equal(ci?.jobs?.["fast-feedback"]?.if, undefined);
+
+  const lockValidation = ci?.jobs?.[DEPENDENCY_LOCK_CI_JOBS[0]];
+  assert.equal(lockValidation?.name, "Dependency lock validation");
+  assert.equal(lockValidation?.needs, "classify");
+  assert.match(lockValidation?.if ?? "", /dependency_lock_only == 'true'/u);
+  assert.match(lockValidation?.if ?? "", /draft_pull_request == 'false'/u);
+  assert.deepEqual(
+    lockValidation?.steps?.filter((step) => typeof step?.run === "string").map((step) => step.run),
+    ["npm ci", "npm ls", "npm audit"]
+  );
 
   for (const [relativePath, classifierName, expectedJobs] of [
     [
@@ -679,6 +739,7 @@ test("ready validation stays fail-closed while drafts report separate feedback",
     assert.equal(resultStep?.env?.[resultEnvironmentKey(jobId)], `\${{ needs.${jobId}.result }}`);
   }
   assert.equal(resultStep?.env?.DOCUMENTATION_ONLY, "${{ needs.classify.outputs.documentation_only }}");
+  assert.equal(resultStep?.env?.DEPENDENCY_LOCK_ONLY, "${{ needs.classify.outputs.dependency_lock_only }}");
   assert.equal(resultStep?.env?.DRAFT_PULL_REQUEST, "${{ needs.classify.outputs.draft_pull_request }}");
   assert.equal(resultStep?.env?.LIGHTWEIGHT_ONLY, "${{ needs.classify.outputs.lightweight_only }}");
   assert.equal(resultStep?.env?.PACKAGE_ONLY, "${{ needs.classify.outputs.package_only }}");
@@ -688,26 +749,41 @@ test("ready validation stays fail-closed while drafts report separate feedback",
 });
 
 test("required CI result validation rejects every absent or non-success blocking result", () => {
-  const successes = Object.fromEntries(REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]));
+  const fullMatrixResults = Object.fromEntries([
+    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
+    ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "success"])
+  ]);
   const documentationResults = Object.fromEntries([
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...PRODUCT_CI_JOBS.map((jobId) => [jobId, "skipped"])
   ]);
   const packageResults = Object.fromEntries([
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
+    ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
+  ]);
+  const dependencyLockResults = Object.fromEntries([
+    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
   ]);
   const validateResults = (configuration) => {
-    const normalized = { draftPullRequest: false, packageOnly: false, ...configuration };
+    const normalized = { dependencyLockOnly: false, draftPullRequest: false, packageOnly: false, ...configuration };
     normalized.lightweightOnly ??= normalized.documentationOnly || normalized.draftPullRequest;
     normalized.fullMatrixRequired ??=
-      !normalized.documentationOnly && !normalized.packageOnly && !normalized.draftPullRequest;
+      !normalized.documentationOnly &&
+      !normalized.packageOnly &&
+      !normalized.dependencyLockOnly &&
+      !normalized.draftPullRequest;
     return requireCiResults(normalized);
   };
   assert.doesNotThrow(() =>
     validateResults({
-      requiredResults: successes,
+      requiredResults: fullMatrixResults,
       documentationOnly: false,
       remoteResult: "skipped",
       remoteRequired: false
@@ -732,7 +808,16 @@ test("required CI result validation rejects every absent or non-success blocking
   );
   assert.doesNotThrow(() =>
     validateResults({
-      requiredResults: successes,
+      requiredResults: dependencyLockResults,
+      dependencyLockOnly: true,
+      documentationOnly: false,
+      remoteResult: "skipped",
+      remoteRequired: false
+    })
+  );
+  assert.doesNotThrow(() =>
+    validateResults({
+      requiredResults: fullMatrixResults,
       documentationOnly: false,
       remoteResult: "success",
       remoteRequired: true
@@ -782,7 +867,14 @@ test("required CI result validation rejects every absent or non-success blocking
       documentationOnly: true,
       packageOnly: true,
       fullMatrixRequired: false,
-      message: /documentation-only and package-only classifiers are mutually exclusive/u
+      message: /classifiers are mutually exclusive/u
+    },
+    {
+      dependencyLockOnly: true,
+      documentationOnly: false,
+      packageOnly: true,
+      fullMatrixRequired: false,
+      message: /classifiers are mutually exclusive/u
     },
     {
       documentationOnly: false,
@@ -801,6 +893,7 @@ test("required CI result validation rejects every absent or non-success blocking
       () =>
         validateResults({
           requiredResults: documentationResults,
+          dependencyLockOnly: configuration.dependencyLockOnly ?? false,
           documentationOnly: configuration.documentationOnly,
           packageOnly: configuration.packageOnly,
           fullMatrixRequired: configuration.fullMatrixRequired,
@@ -811,9 +904,9 @@ test("required CI result validation rejects every absent or non-success blocking
     );
   }
 
-  for (const jobId of REQUIRED_CI_JOBS) {
+  for (const jobId of [...ALWAYS_REQUIRED_CI_JOBS, ...PACKAGE_CI_JOBS, ...FULL_MATRIX_CI_JOBS]) {
     for (const result of [undefined, "failure", "cancelled", "skipped"]) {
-      const candidate = { ...successes };
+      const candidate = { ...fullMatrixResults };
       if (result === undefined) delete candidate[jobId];
       else candidate[jobId] = result;
       assert.throws(
@@ -825,6 +918,25 @@ test("required CI result validation rejects every absent or non-success blocking
             remoteRequired: false
           }),
         new RegExp(`${jobId}=${result ?? "missing"}`, "u")
+      );
+    }
+  }
+
+  for (const jobId of DEPENDENCY_LOCK_CI_JOBS) {
+    for (const result of [undefined, "skipped", "failure", "cancelled"]) {
+      const candidate = { ...dependencyLockResults };
+      if (result === undefined) delete candidate[jobId];
+      else candidate[jobId] = result;
+      assert.throws(
+        () =>
+          validateResults({
+            requiredResults: candidate,
+            dependencyLockOnly: true,
+            documentationOnly: false,
+            remoteResult: "skipped",
+            remoteRequired: false
+          }),
+        new RegExp(`${jobId}=${result ?? "missing"} \\(expected success\\)`, "u")
       );
     }
   }
@@ -911,7 +1023,7 @@ test("required CI result validation rejects every absent or non-success blocking
   assert.throws(
     () =>
       validateResults({
-        requiredResults: successes,
+        requiredResults: fullMatrixResults,
         documentationOnly: false,
         remoteResult: "skipped",
         remoteRequired: true
@@ -921,7 +1033,7 @@ test("required CI result validation rejects every absent or non-success blocking
   assert.throws(
     () =>
       validateResults({
-        requiredResults: successes,
+        requiredResults: fullMatrixResults,
         documentationOnly: false,
         remoteResult: "success",
         remoteRequired: false

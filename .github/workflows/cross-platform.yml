@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      dependency_lock_only: ${{ steps.classify.outputs.dependency_lock_only }}
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
       draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
@@ -59,6 +60,8 @@ jobs:
         if: >-
           ${{
             needs.classify.result != 'success' ||
+            (needs.classify.outputs.dependency_lock_only != 'true' &&
+             needs.classify.outputs.dependency_lock_only != 'false') ||
             (needs.classify.outputs.documentation_only != 'true' &&
              needs.classify.outputs.documentation_only != 'false') ||
             (needs.classify.outputs.draft_pull_request != 'true' &&
@@ -77,13 +80,18 @@ jobs:
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.documentation_only == 'true' &&
              needs.classify.outputs.package_only == 'true') ||
+            (needs.classify.outputs.dependency_lock_only == 'true' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.package_only == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'true' &&
              (needs.classify.outputs.documentation_only == 'true' ||
               needs.classify.outputs.package_only == 'true' ||
+              needs.classify.outputs.dependency_lock_only == 'true' ||
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'false' &&
              needs.classify.outputs.documentation_only == 'false' &&
              needs.classify.outputs.package_only == 'false' &&
+             needs.classify.outputs.dependency_lock_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false')
           }}
         run: exit 1
@@ -139,6 +147,8 @@ jobs:
         if: >-
           ${{
             needs.classify.result != 'success' ||
+            (needs.classify.outputs.dependency_lock_only != 'true' &&
+             needs.classify.outputs.dependency_lock_only != 'false') ||
             (needs.classify.outputs.documentation_only != 'true' &&
              needs.classify.outputs.documentation_only != 'false') ||
             (needs.classify.outputs.draft_pull_request != 'true' &&
@@ -157,13 +167,18 @@ jobs:
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.documentation_only == 'true' &&
              needs.classify.outputs.package_only == 'true') ||
+            (needs.classify.outputs.dependency_lock_only == 'true' &&
+             (needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.package_only == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'true' &&
              (needs.classify.outputs.documentation_only == 'true' ||
               needs.classify.outputs.package_only == 'true' ||
+              needs.classify.outputs.dependency_lock_only == 'true' ||
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'false' &&
              needs.classify.outputs.documentation_only == 'false' &&
              needs.classify.outputs.package_only == 'false' &&
+             needs.classify.outputs.dependency_lock_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false')
           }}
         run: exit 1
