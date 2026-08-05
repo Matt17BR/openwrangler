@@ -56,12 +56,11 @@ launch milestones, so the Run Cell-to-grid measurement keeps the complete cost v
 cannot localize it. The native-load processes do not flush the operating-system file cache, so they measure a warm
 source rather than cold-disk I/O.
 
-The report gives the minimum, median, and maximum for each measurement. A run contributes to every measurement whose
-end point it reached, so a later profiling timeout does not throw away a valid inline or grid time. A usable
-comparison requires all 20 assigned runs to have been attempted, at least four complete runs in each five-run UI
-group, and at least four of the five native loads for each engine. There are no replacement runs. Any failure needs a
-written explanation and a second-person check before numbers are published. The detailed report keeps those
-failures; a short README table may show the usable summaries without repeating the diagnostics.
+The report gives the minimum, median, and maximum for runs that finish. A usable comparison requires all 20 assigned
+runs to have been attempted, at least four complete runs in each five-run UI group, and at least four of the five
+native loads for each engine. There are no replacement runs. Any failure needs a written explanation and a second
+person's review before numbers are published. The detailed report keeps failures and any timings recorded before a
+failure. A short README table may show the completed-run summaries without repeating the diagnostics.
 
 Five values are enough for a practical manual comparison but not for a useful p95, so the report does not calculate
 one. It is a release review, not a job in normal pull-request CI and not a scheduled task on a developer laptop.
@@ -98,8 +97,8 @@ npm run comparison:large:study -- \
 
 The command writes one result after each editor closes. If the machine sleeps or the command is stopped, run it again
 with the same arguments. It removes the abandoned private trial directory, checks the fixture again, and resumes at
-the first missing result. Use `--limit 1` for a single-run check before the full study; that result belongs in a
-separate output directory and is not part of the final comparison.
+the first missing result. Start the final output with `--limit 4`. Those first four runs cover Pandas and Polars in
+both products, so review their grids and profile markers before resuming the same output without `--limit`.
 
 Generate the final report after all 20 runs finish:
 
@@ -111,9 +110,10 @@ npm run comparison:large:report -- \
 
 The report command first rejects results that do not match their scheduled product, engine, order, shape, timings, or
 memory samples. It writes the detailed result and then checks the minimum counts above. Before publishing numbers, a
-second person should explain every failed run, check the exact product, editor, Python, package, fixture, and tool
-hashes, verify that product order alternates within each engine, recalculate the four UI groups, and recalculate the
-two five-load engine-only groups from the raw trials.
+second person should explain every failed run and recalculate the four UI groups and two native-load groups from the
+raw results. Record the commit used to build the candidate beside its SHA-256; it must be the current protected
+`main` commit. The reviewer also checks the product, editor, Python, package, fixture, and tool hashes and confirms that
+product order alternates within each engine.
 
 ## Fast regression tests
 

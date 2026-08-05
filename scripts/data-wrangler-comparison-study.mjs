@@ -727,14 +727,17 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, l
   validateUnique(loads, "native load", validateLargeLoadResult);
   const observed = new Map(trials.map((trial) => [trial.trialId, trial]));
   const observedLoads = new Map(loads.map((load) => [load.trialId, load]));
-  const summarize = (items, selectors) => ({
-    planned: LARGE_REPETITIONS,
-    completed: items.length,
-    successful: items.filter((item) => item.status === undefined || item.status === "success").length,
-    metrics: Object.fromEntries(
-      Object.entries(selectors).map(([name, select]) => [name, summarizeLargeValues(items.map(select))])
-    )
-  });
+  const summarize = (items, selectors) => {
+    const successful = items.filter((item) => item.status === undefined || item.status === "success");
+    return {
+      planned: LARGE_REPETITIONS,
+      completed: items.length,
+      successful: successful.length,
+      metrics: Object.fromEntries(
+        Object.entries(selectors).map(([name, select]) => [name, summarizeLargeValues(successful.map(select))])
+      )
+    };
+  };
   const uiMetrics = {
     inlinePreviewMs: (sample) => sample.metrics?.inlinePreviewMs,
     workbenchOpenMs: (sample) => sample.metrics?.workbenchOpenMs,

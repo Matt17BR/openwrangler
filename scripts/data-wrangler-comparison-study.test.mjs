@@ -309,9 +309,13 @@ test("stale temporary session roots are removed without touching unrelated entri
   }
 });
 
-test("large schedule counterbalances fresh sessions and reports every reached endpoint", () => {
+test("large schedule covers every group in its four-run pilot and summarizes complete journeys", () => {
   const manifest = largeManifestFixture();
   assert.equal(manifest.schedule.length, 20);
+  assert.deepEqual(
+    manifest.schedule.slice(0, 4).map(({ engine, product }) => `${engine}.${product}`),
+    ["pandas.open-wrangler", "pandas.data-wrangler", "polars.data-wrangler", "polars.open-wrangler"]
+  );
   const loads = manifest.schedule.filter(({ measureNativeLoad }) => measureNativeLoad);
   assert.equal(loads.length, 10);
   for (const engine of ["pandas", "polars"]) {
@@ -322,7 +326,8 @@ test("large schedule counterbalances fresh sessions and reports every reached en
     );
   }
   const trials = manifest.schedule.map((entry) => sessionResult(entry, manifest, 1));
-  const partial = trials.find((trial) => trial.engine === "pandas" && trial.product === "open-wrangler").samples[0];
+  const partialTrial = trials.find((trial) => trial.engine === "pandas" && trial.product === "open-wrangler");
+  const partial = partialTrial.samples[0];
   partial.status = "timeout";
   partial.failure = { stage: "profile-all", kind: "timeout", message: "profile timeout" };
   partial.metrics.completeProfileMs = null;
@@ -336,9 +341,11 @@ test("large schedule counterbalances fresh sessions and reports every reached en
   });
   const summary = report.summaries.find(({ engine, product }) => engine === "pandas" && product === "open-wrangler");
   assert.deepEqual(
-    [summary.successful, summary.metrics.inlinePreviewMs.count, summary.metrics.allProfilesMs.count],
-    [4, 5, 4]
+    [summary.completed, summary.successful, summary.metrics.inlinePreviewMs.count, summary.metrics.allProfilesMs.count],
+    [5, 4, 4, 4]
   );
+  const retained = report.trials.find(({ trialId }) => trialId === partialTrial.trialId)?.samples[0];
+  assert.deepEqual([retained.status, retained.metrics.inlinePreviewMs], ["timeout", 10]);
   assert.equal(summary.metrics.runCellToWorkbenchMs.median, 31);
   assert.equal(Object.hasOwn(summary.metrics.inlinePreviewMs, "p95"), false);
   assert.doesNotThrow(() => assertCompleteLargeReport(report));

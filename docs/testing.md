@@ -592,8 +592,11 @@ the session runner can use read-only hard links rather than copy several gigabyt
 Before checking fixture provenance, the runner removes a private trial directory left by an interrupted process. It
 then resumes at the first missing result. A failed editor run uses its fixed slot, stays in the raw report, and does
 not stop or get retried. The report needs all 20 slots, at least four successes in each five-run product/engine group,
-and at least four of five native-load successes per engine. Each measurement includes every run that reached its end
-point, even if a later step failed. Every failure must be explained and checked before publication.
+and at least four of five native-load successes per engine. Headline measurements use only fully completed journeys;
+the raw report keeps earlier endpoints from failed runs. Start with `--limit 4`, review one journey from every
+product/engine group, then resume the same output without a limit. Every failure must be explained and checked before
+publication. The review records the commit used to build the candidate beside the candidate SHA-256 already stored
+in the manifest. The candidate must be built from the current protected `main` commit.
 
 Immediately before every new editor session the runner checks available memory, free disk, power state, and the
 recorded CPU governor. A host with a battery must be on AC. Battery-less hosts record `not-applicable`, and hosts that
