@@ -50,6 +50,7 @@ const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESULT_BYTES = 64 * 1024;
 const POLL_MS = 25;
+const FIRST_PROFILE_READINESS_TIMEOUT_MS = 150_000;
 const COMPARISON_KERNEL_LABEL = "Python 3.12 (Comparison)";
 const COMPARISON_BOOTSTRAP_VARIABLE = "aaa_comparison_bootstrap";
 const DATA_WRANGLER_VIEW_DATA_ACTION = "View data";
@@ -1914,23 +1915,29 @@ async function waitForOpenWranglerProfile(
   stage: FailureStage
 ): Promise<void> {
   const drawer = frame.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  let lastPublicState = "profile drawer was not visible";
   do {
     if ((await drawer.count().catch(() => 0)) === 1 && (await drawer.isVisible().catch(() => false))) {
       const heading = drawer.getByRole("heading", { name: column, exact: true });
+      const drawerText = (await drawer.textContent().catch(() => "")) ?? "";
+      const headingVisible =
+        (await heading.count().catch(() => 0)) === 1 && (await heading.isVisible().catch(() => false));
       const complete = openWranglerProfileTextReady({
         column,
         contract,
         minimum,
         maximum,
-        text: (await drawer.textContent().catch(() => "")) ?? ""
+        text: drawerText
       });
-      if ((await heading.count().catch(() => 0)) === 1 && (await heading.isVisible().catch(() => false)) && complete) {
-        return;
-      }
+      lastPublicState = `${headingVisible ? "heading visible" : "heading missing"}; ${normalizedProfileText(drawerText).slice(0, 320)}`;
+      if (headingVisible && complete) return;
     }
     await frame.page().waitForTimeout(POLL_MS);
   } while (Date.now() < deadline);
-  throw new JourneyTimeout(stage, `Timed out waiting for Open Wrangler's completed profile for ${column}.`);
+  throw new JourneyTimeout(
+    stage,
+    `Timed out waiting for Open Wrangler's completed profile for ${column}. Last public state: ${lastPublicState}`
+  );
 }
 
 export function boundedFailureMessage(error: unknown, request: ComparisonTrialRequest): string {
@@ -2330,11 +2337,14 @@ async function executeMeasuredIteration(
 
     for (let index = 0; index < request.cell.columns; index += 1) {
       const column = request.cell.columnNames[index]!;
+      const columnDeadline =
+        index === 0 ? Math.min(profileDeadline, Date.now() + FIRST_PROFILE_READINESS_TIMEOUT_MS) : profileDeadline;
       if (request.product === "open-wrangler") {
-        await selectOpenWranglerProfileColumn(profileFrame, column, profileDeadline);
+        await selectOpenWranglerProfileColumn(profileFrame, column, columnDeadline);
       } else if (index > 0) {
-        await clickColumnForProfile(profileFrame, column, profileDeadline);
+        await clickColumnForProfile(profileFrame, column, columnDeadline);
       }
+      recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:profile-${index + 1}-selected`);
       const profileStage = index === 0 ? "profile-first" : "profile-all";
       if (request.product === "open-wrangler") {
         await waitForOpenWranglerProfile(
@@ -2343,7 +2353,7 @@ async function executeMeasuredIteration(
           request.cell.profileContract,
           index,
           request.cell.rows - 1 + index,
-          profileDeadline,
+          columnDeadline,
           profileStage
         );
       } else {
@@ -2353,7 +2363,7 @@ async function executeMeasuredIteration(
           request.cell.profileContract,
           index,
           request.cell.rows - 1 + index,
-          profileDeadline,
+          columnDeadline,
           profileStage
         );
       }
