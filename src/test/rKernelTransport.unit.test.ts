@@ -9,6 +9,7 @@ import {
   type RKernelRequest
 } from "../extension/r/rKernelProtocol";
 import { RKernelSessionTransport } from "../extension/r/rKernelTransport";
+import type { RNotebookKernelSelectionBinding } from "../extension/r/rNotebookVariableDiscovery";
 import {
   R_KERNEL_RUNTIME_BINDING,
   buildRKernelBootstrapCode,
@@ -175,6 +176,73 @@ describe("native R kernel protocol", () => {
 });
 
 describe("exact IRkernel session transport", () => {
+  it("never retargets a verified picker selection to a replacement kernel", async () => {
+    const original = controlledRKernel(async (request) =>
+      response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() })
+    );
+    const replacement = controlledRKernel(async (request) =>
+      response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() })
+    );
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const jupyter = mockKernel(original.kernel, async () => replacement.kernel);
+    const binding = selectionBinding(document, jupyter, original.kernel);
+    const transport = createTransport(document, [sessionId, openRequestId], binding);
+
+    await expect(transport.open("frame", pageWindow())).rejects.toThrow("verified R notebook kernel changed");
+    await expect(transport.dispose()).resolves.toBeUndefined();
+
+    expect(original.bootstrapExecutions()).toBe(0);
+    expect(original.dispatchExecutions()).toBe(0);
+    expect(replacement.bootstrapExecutions()).toBe(0);
+    expect(replacement.dispatchExecutions()).toBe(0);
+    expect(binding.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a verified kernel that restarted after bridge construction but before open", async () => {
+    const controller = controlledRKernel(async (request) =>
+      response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() })
+    );
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const jupyter = mockKernel(controller.kernel);
+    let invalidated = false;
+    const binding = selectionBinding(document, jupyter, controller.kernel, "r.data.frame", () => invalidated);
+    const transport = createTransport(document, [sessionId, openRequestId], binding);
+
+    invalidated = true;
+
+    await expect(transport.open("frame", pageWindow())).rejects.toThrow("verified R notebook kernel changed");
+    expect(controller.bootstrapExecutions()).toBe(0);
+    expect(controller.dispatchExecutions()).toBe(0);
+    await expect(transport.dispose()).resolves.toBeUndefined();
+  });
+
+  it("rejects a frame whose flavor no longer matches the verified picker selection", async () => {
+    const requests: RKernelRequest[] = [];
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "closeSession") {
+        return response(request, { kind: "closed", sessionId: request.payload.sessionId });
+      }
+      return response(request, {
+        kind: "page",
+        sessionId: request.payload.sessionId,
+        page: minimalFramePage()
+      });
+    });
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const jupyter = mockKernel(controller.kernel);
+    const binding = selectionBinding(document, jupyter, controller.kernel, "r.tibble");
+    const transport = createTransport(document, [sessionId, openRequestId, closeRequestId], binding);
+
+    await expect(transport.open("frame", pageWindow())).rejects.toThrow("dataframe changed");
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(mappedSessions(transport)).toEqual(new Map());
+    await expect(transport.dispose()).resolves.toBeUndefined();
+  });
+
   it("opens, pages, and closes one immutable R session on its exact kernel", async () => {
     const requests: RKernelRequest[] = [];
     const controller = controlledRKernel(async (request) => {
@@ -627,13 +695,63 @@ describe("exact IRkernel session transport", () => {
     await lookupStarted.promise;
     await vi.advanceTimersByTimeAsync(30);
     await openRejection;
-    await expect(transport.dispose()).resolves.toBeUndefined();
+    let disposalSettled = false;
+    const disposal = transport.dispose().finally(() => {
+      disposalSettled = true;
+    });
+    await Promise.resolve();
+    expect(disposalSettled).toBe(false);
 
     releaseLookup.resolve(controller.kernel);
+    await expect(disposal).resolves.toBeUndefined();
     vi.useRealTimers();
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(controller.statusListenerCount()).toBe(0);
     expect(controller.bootstrapExecutions()).toBe(0);
+  });
+
+  it("waits for a timed-out bootstrap before disposal removes its late runtime bindings", async () => {
+    vi.useFakeTimers();
+    const bootstrapStarted = deferred<void>();
+    const releaseBootstrap = deferred<void>();
+    const controller = controlledRKernel(
+      async (request) =>
+        response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() }),
+      "r",
+      async function* () {
+        bootstrapStarted.resolve();
+        await releaseBootstrap.promise;
+        yield* emptyOutput();
+      }
+    );
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [sessionId, openRequestId]);
+
+    const opening = transport.open("frame", pageWindow(), { timeoutMs: 30 }).catch((error: unknown) => error);
+    await bootstrapStarted.promise;
+    await vi.advanceTimersByTimeAsync(30);
+
+    const detached = await opening;
+    expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+    expect(detached).toMatchObject({ reason: "timeout", dispatched: false });
+
+    let disposalSettled = false;
+    const disposal = transport.dispose().finally(() => {
+      disposalSettled = true;
+    });
+    await Promise.resolve();
+    expect(disposalSettled).toBe(false);
+    expect(controller.bootstrapExecutions()).toBe(1);
+    expect(controller.teardownExecutions()).toBe(0);
+    expect(controller.dispatchExecutions()).toBe(0);
+
+    releaseBootstrap.resolve();
+    await (detached as DetachedBridgeRequestError).settlement;
+    await expect(disposal).resolves.toBeUndefined();
+    expect(controller.teardownExecutions()).toBe(1);
+    expect(controller.statusListenerCount()).toBe(0);
   });
 
   it("finishes host disposal even when the kernel close reports an error", async () => {
@@ -658,8 +776,53 @@ describe("exact IRkernel session transport", () => {
     await expect(disposal).rejects.toThrow("could not close every R kernel session");
 
     expect(controller.statusListenerCount()).toBe(0);
-    expect(controller.teardownExecutions()).toBe(0);
+    expect(controller.teardownExecutions()).toBe(1);
     expect(mappedSessions(transport).size).toBe(0);
+    expect(transport.dispose()).toBe(disposal);
+    await expect(transport.open("frame", pageWindow())).rejects.toThrow("transport is disposed");
+  });
+
+  it("preserves close and teardown failures from one terminal disposal", async () => {
+    const controller = controlledRKernel(
+      async (request) => {
+        if (request.kind === "closeSession") {
+          return response(request, {
+            kind: "error",
+            code: "runtime_error",
+            message: "close failed",
+            recoverable: false
+          });
+        }
+        return response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() });
+      },
+      "r",
+      emptyOutput,
+      async function* () {
+        yield* emptyOutput();
+        throw new Error("teardown failed");
+      }
+    );
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [sessionId, openRequestId, closeRequestId]);
+
+    await transport.open("frame", pageWindow());
+    const disposal = transport.dispose();
+    const error = await disposal.catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error).toHaveProperty("message", "Open Wrangler could not finish R kernel cleanup.");
+    expect((error as AggregateError).errors).toHaveLength(2);
+    expect((error as AggregateError).errors[0]).toHaveProperty(
+      "message",
+      "Open Wrangler could not close every R kernel session."
+    );
+    expect((error as AggregateError).errors[1]).toHaveProperty(
+      "message",
+      "Open Wrangler could not remove every private R kernel runtime binding."
+    );
+    expect(controller.teardownExecutions()).toBe(1);
     expect(transport.dispose()).toBe(disposal);
     await expect(transport.open("frame", pageWindow())).rejects.toThrow("transport is disposed");
   });
@@ -691,7 +854,7 @@ function sortRule() {
 
 function minimalFramePage() {
   return {
-    contractVersion: 1,
+    contractVersion: 2,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -728,13 +891,23 @@ function response(request: RKernelRequest, body: Record<string, unknown>) {
   return { transportVersion: 1, requestId: request.requestId, ...body };
 }
 
-function createTransport(document: vscode.NotebookDocument, ids: readonly string[]): RKernelSessionTransport {
+function createTransport(
+  document: vscode.NotebookDocument,
+  ids: readonly string[],
+  verifiedSelection?: RNotebookKernelSelectionBinding
+): RKernelSessionTransport {
   let index = 0;
-  return new RKernelSessionTransport({ extensionPath: process.cwd() } as vscode.ExtensionContext, document, () => {
-    const id = ids[index++];
-    if (!id) throw new Error("The test exhausted its deterministic IDs.");
-    return id;
-  });
+  return new RKernelSessionTransport(
+    { extensionPath: process.cwd() } as vscode.ExtensionContext,
+    document,
+    () => {
+      const id = ids[index++];
+      if (!id) throw new Error("The test exhausted its deterministic IDs.");
+      return id;
+    },
+    "test-owner",
+    verifiedSelection
+  );
 }
 
 function mappedSessions(transport: RKernelSessionTransport): ReadonlyMap<string, Kernel> {
@@ -764,7 +937,9 @@ interface ControlledRKernel {
 
 function controlledRKernel(
   respond: (request: RKernelRequest) => unknown | Promise<unknown>,
-  language = "r"
+  language = "r",
+  bootstrapOutput: () => AsyncIterable<unknown> = emptyOutput,
+  teardownOutput: () => AsyncIterable<unknown> = emptyOutput
 ): ControlledRKernel {
   let bootstrapExecutions = 0;
   let teardownExecutions = 0;
@@ -784,9 +959,12 @@ function controlledRKernel(
     executeCode(code: string, token: vscode.CancellationToken) {
       tokens.push(token);
       if (!code.includes("__OPEN_WRANGLER_R_START_")) {
-        if (code.includes("remove(list = .__ow_binding")) teardownExecutions += 1;
-        else bootstrapExecutions += 1;
-        return emptyOutput();
+        if (code.includes("remove(list = .__ow_binding")) {
+          teardownExecutions += 1;
+          return teardownOutput();
+        }
+        bootstrapExecutions += 1;
+        return bootstrapOutput();
       }
       dispatchExecutions += 1;
       return rKernelOutput(code, respond);
@@ -824,9 +1002,27 @@ async function* rKernelOutput(
   };
 }
 
-function mockKernel(kernel: Kernel, getKernel: () => Promise<Kernel | undefined> = async () => kernel): void {
+function mockKernel(kernel: Kernel, getKernel: () => Promise<Kernel | undefined> = async () => kernel): Jupyter {
   const jupyter = { kernels: { getKernel } } as unknown as Jupyter;
   vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({ activate: async () => jupyter } as never);
+  return jupyter;
+}
+
+function selectionBinding(
+  document: vscode.NotebookDocument,
+  jupyter: Jupyter,
+  kernel: Kernel,
+  dataframeFlavor: "r.data.frame" | "r.tibble" | "r.data.table" = "r.data.frame",
+  isInvalidated: () => boolean = () => false
+): RNotebookKernelSelectionBinding {
+  return {
+    notebook: document,
+    jupyter,
+    kernel,
+    variable: { name: "frame", backend: "r", dataframeFlavor },
+    isInvalidated,
+    dispose: vi.fn()
+  };
 }
 
 function notebookDocument(): vscode.NotebookDocument {

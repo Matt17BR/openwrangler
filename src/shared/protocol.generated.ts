@@ -1084,6 +1084,10 @@ export interface GridPage {
 export interface DataRow {
   id: string;
   rowNumber: number;
+  /**
+   * Optional source row label. rowNumber remains the zero-based logical grid position.
+   */
+  rowLabel?: string;
   values: CellValue[];
 }
 export interface CellValue {

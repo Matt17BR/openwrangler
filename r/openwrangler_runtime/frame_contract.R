@@ -1,11 +1,13 @@
 openwrangler_r_frame_contract <- local({
-  contract_version <- 1L
+  contract_version <- 2L
   maximum_rows <- .Machine$integer.max
   maximum_columns <- 2048L
   maximum_page_rows <- 1000L
   maximum_page_columns <- 256L
   maximum_page_cells <- 100000L
   maximum_sort_rules <- 64L
+  maximum_cached_sort_columns <- 4L
+  maximum_sort_cache_bytes <- 32L * 1024L * 1024L
   maximum_factor_levels <- 100000L
   maximum_text_bytes <- 8192L
   maximum_name_bytes <- 1024L
@@ -190,7 +192,7 @@ openwrangler_r_frame_contract <- local({
     list(kind = kind, raw = raw, display = display, isNull = FALSE, isNaN = FALSE)
   }
 
-  column_semantics <- function(column, label, budget) {
+  column_semantics <- function(column, label, budget, validate_values = TRUE) {
     if (is.matrix(column) || is.array(column)) {
       abort("unsupported-column", sprintf("%s is a matrix or array column", label))
     }
@@ -265,9 +267,11 @@ openwrangler_r_frame_contract <- local({
       }
       semantics$levels <- bounded_text_array(levels, paste0(label, ".levels"), budget = budget)
       semantics$ordered <- ordered
-      codes <- unclass(column)
-      if (any(!is.na(codes) & (codes < 1L | codes > length(levels)))) {
-        abort("invalid-factor", sprintf("%s contains an invalid factor code", label))
+      if (isTRUE(validate_values)) {
+        codes <- unclass(column)
+        if (any(!is.na(codes) & (codes < 1L | codes > length(levels)))) {
+          abort("invalid-factor", sprintf("%s contains an invalid factor code", label))
+        }
       }
       return(semantics)
     }
@@ -370,6 +374,10 @@ openwrangler_r_frame_contract <- local({
       return(ordinary_cell("string", text, text))
     }
     if (kind == "factor") {
+      code <- unclass(value)
+      if (!is.na(code) && (code < 1L || code > length(semantics$levels))) {
+        abort("invalid-factor", sprintf("%s contains an invalid factor code", label))
+      }
       text <- bounded_utf8(as.character(value), label)
       spend_json_string(budget, text, label, copies = 2L)
       return(ordinary_cell("string", text, text))
@@ -546,15 +554,291 @@ openwrangler_r_frame_contract <- local({
     base::order(values, decreasing = decreasing, method = "radix", na.last = NA)
   }
 
-  sorted_row_positions <- function(capture, sort_rules) {
+  new_capture_metrics <- function() {
+    metrics <- new.env(parent = emptyenv())
+    metrics$nullableScans <- 0
+    metrics$sourceReads <- 0
+    metrics$directPageSlices <- 0
+    metrics$directRowPositions <- 0
+    metrics$sortOrderBuilds <- 0
+    metrics$sortOrderRows <- 0
+    metrics$sortColumnSnapshots <- 0
+    metrics
+  }
+
+  add_metric <- function(metrics, name, amount = 1) {
+    metrics[[name]] <- metrics[[name]] + as.double(amount)
+  }
+
+  inspect_frame <- function(value, conservative_nullable, validate_values, metrics) {
+    if (!is.data.frame(value)) {
+      abort("unsupported-frame", "the value is not an R dataframe")
+    }
+    flavor <- frame_flavor(value)
+    assert_frame_attributes(value, flavor)
+    row_count <- nrow(value)
+    column_count <- ncol(value)
+    whole_number(row_count, "row count", maximum_rows)
+    whole_number(column_count, "column count", maximum_columns)
+    metadata_budget <- new_payload_budget()
+    spend_payload_budget(metadata_budget, metadata_base_bytes, "R frame metadata")
+    column_names <- names(value)
+    if (!is.character(column_names) || length(column_names) != column_count) {
+      abort("invalid-schema", "the dataframe does not have one name per column")
+    }
+    column_names <- vapply(
+      seq_along(column_names),
+      function(index) bounded_utf8(column_names[[index]], sprintf("column name %d", index), maximum_name_bytes),
+      character(1L),
+      USE.NAMES = FALSE
+    )
+    for (index in seq_along(column_names)) {
+      spend_json_string(metadata_budget, column_names[[index]], sprintf("column name %d", index))
+    }
+
+    schema <- lapply(seq_len(column_count), function(index) {
+      spend_payload_budget(metadata_budget, column_fixed_bytes, sprintf("column %d metadata", index))
+      semantics <- column_semantics(
+        value[[index]],
+        sprintf("column %d", index),
+        metadata_budget,
+        validate_values = validate_values
+      )
+      nullable <- if (isTRUE(conservative_nullable)) {
+        TRUE
+      } else {
+        add_metric(metrics, "nullableScans")
+        anyNA(value[[index]])
+      }
+      list(
+        id = sprintf("r:c:%d", index - 1L),
+        name = column_names[[index]],
+        position = index - 1L,
+        rawType = raw_column_type(semantics),
+        type = public_column_type(semantics$kind),
+        nullable = nullable,
+        semantics = semantics
+      )
+    })
+
+    descriptor <- list(
+      contractVersion = contract_version,
+      dataframeFlavor = flavor,
+      shape = list(rows = row_count, columns = column_count),
+      frameSemantics = list(
+        classes = bounded_text_array(class(value), "frame classes", maximum_name_bytes, metadata_budget),
+        rowNames = if (.row_names_info(value, type = 1L) > 0L) "explicit" else "positional",
+        keyColumnIds = key_column_ids(value, flavor, column_names, metadata_budget)
+      ),
+      schema = json_array(schema)
+    )
+    list(descriptor = descriptor, metadataBytes = metadata_budget$used, flavor = flavor)
+  }
+
+  new_sort_cache <- function() {
+    cache <- new.env(parent = emptyenv())
+    cache$valid <- FALSE
+    cache$rules <- list()
+    cache$rowPositions <- integer()
+    cache$columns <- list()
+    cache$bytes <- 0
+    cache
+  }
+
+  clear_sort_cache <- function(cache) {
+    cache$valid <- FALSE
+    cache$rules <- list()
+    cache$rowPositions <- integer()
+    cache$columns <- list()
+    cache$bytes <- 0
+    invisible(NULL)
+  }
+
+  finish_capture <- function(capture) {
+    class(capture) <- "openwrangler_r_frame_capture"
+    lockEnvironment(capture, bindings = TRUE)
+    capture
+  }
+
+  capture_frame <- function(value) {
+    if (!is.data.frame(value)) {
+      abort("unsupported-frame", "the value is not an R dataframe")
+    }
+    flavor <- frame_flavor(value)
+    assert_frame_attributes(value, flavor)
+    snapshot <- isolated_snapshot(value, flavor)
+    metrics <- new_capture_metrics()
+    inspected <- inspect_frame(
+      snapshot,
+      conservative_nullable = FALSE,
+      validate_values = TRUE,
+      metrics = metrics
+    )
+    capture <- new.env(parent = emptyenv())
+    capture$mode <- "isolated"
+    capture$snapshot <- snapshot
+    capture$sourceReader <- NULL
+    capture$descriptor <- inspected$descriptor
+    capture$metadataBytes <- inspected$metadataBytes
+    capture$metrics <- metrics
+    capture$sortCache <- new_sort_cache()
+    finish_capture(capture)
+  }
+
+  capture_live_frame <- function(source_reader) {
+    if (!is.function(source_reader)) {
+      abort("invalid-source-reader", "source_reader must be a function")
+    }
+    metrics <- new_capture_metrics()
+    value <- source_reader()
+    add_metric(metrics, "sourceReads")
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = metrics
+    )
+    capture <- new.env(parent = emptyenv())
+    capture$mode <- "live"
+    capture$snapshot <- NULL
+    capture$sourceReader <- source_reader
+    capture$liveState <- new.env(parent = emptyenv())
+    capture$liveState$hasInitialFrame <- TRUE
+    capture$liveState$initialFrame <- value
+    capture$descriptor <- inspected$descriptor
+    capture$metadataBytes <- inspected$metadataBytes
+    capture$metrics <- metrics
+    capture$sortCache <- new_sort_cache()
+    finish_capture(capture)
+  }
+
+  validate_capture <- function(capture) {
+    if (
+      !inherits(capture, "openwrangler_r_frame_capture") ||
+        !is.environment(capture) ||
+        !environmentIsLocked(capture) ||
+        !capture$mode %in% c("isolated", "live")
+    ) {
+      abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
+    }
+  }
+
+  source_changed <- function() {
+    abort(
+      "source-changed",
+      "The selected R dataframe changed shape or schema. Reopen it in Open Wrangler."
+    )
+  }
+
+  read_capture_frame <- function(capture) {
+    validate_capture(capture)
+    if (identical(capture$mode, "isolated")) return(capture$snapshot)
+
+    live_state <- capture$liveState
+    if (isTRUE(live_state$hasInitialFrame)) {
+      value <- live_state$initialFrame
+      live_state$initialFrame <- NULL
+      live_state$hasInitialFrame <- FALSE
+      return(value)
+    }
+
+    add_metric(capture$metrics, "sourceReads")
+    value <- tryCatch(capture$sourceReader(), error = function(error) source_changed())
+    inspected <- tryCatch(
+      inspect_frame(
+        value,
+        conservative_nullable = TRUE,
+        validate_values = FALSE,
+        metrics = capture$metrics
+      ),
+      openwrangler_r_frame_error = function(error) {
+        if (identical(error$code, "source-changed")) stop(error)
+        source_changed()
+      }
+    )
+    if (!identical(inspected$descriptor, capture$descriptor)) source_changed()
+    value
+  }
+
+  resolve_page_window <- function(
+    descriptor,
+    row_offset,
+    row_limit,
+    column_offset,
+    column_limit
+  ) {
+    total_rows <- descriptor$shape$rows
+    total_columns <- descriptor$shape$columns
+    row_offset <- whole_number(row_offset, "row_offset", total_rows)
+    row_limit <- whole_number(row_limit, "row_limit", maximum_page_rows)
+    column_offset <- whole_number(column_offset, "column_offset", total_columns)
+    column_limit <- whole_number(column_limit, "column_limit", maximum_page_columns)
+    row_count <- min(row_limit, total_rows - row_offset)
+    column_count <- min(column_limit, total_columns - column_offset)
+    if (row_count * column_count > maximum_page_cells) {
+      abort("page-too-large", sprintf("a page may contain at most %d cells", maximum_page_cells))
+    }
+    list(
+      rowOffset = row_offset,
+      rowLimit = row_limit,
+      rowCount = as.integer(row_count),
+      columnOffset = column_offset,
+      columnLimit = column_limit,
+      columnCount = as.integer(column_count)
+    )
+  }
+
+  direct_row_positions <- function(capture, window) {
+    add_metric(capture$metrics, "directPageSlices")
+    add_metric(capture$metrics, "directRowPositions", window$rowCount)
+    if (window$rowCount == 0L) return(integer())
+    seq.int(as.integer(window$rowOffset) + 1L, length.out = window$rowCount)
+  }
+
+  referenced_sort_columns <- function(frame, resolved) {
+    lapply(resolved, function(rule) frame[[rule$position]])
+  }
+
+  snapshot_sort_columns <- function(capture, frame, resolved) {
+    add_metric(capture$metrics, "sortColumnSnapshots", length(resolved))
+    lapply(resolved, function(rule) frame[[rule$position]][])
+  }
+
+  estimated_row_order_bytes <- function(row_count) {
+    # Integer row positions use four bytes per row. Keep a small allowance for
+    # the vector header rather than allocating a probe vector merely to size it.
+    64 + as.double(row_count) * 4
+  }
+
+  estimated_sort_cache_bytes <- function(capture, frame, resolved) {
+    bytes <- estimated_row_order_bytes(capture$descriptor$shape$rows)
+    if (!identical(capture$mode, "live")) return(bytes)
+
+    for (rule in resolved) {
+      bytes <- bytes + as.double(utils::object.size(frame[[rule$position]]))
+      if (!is.finite(bytes) || bytes > maximum_sort_cache_bytes) return(Inf)
+    }
+    bytes
+  }
+
+  cached_sort_values_match <- function(cache, frame, resolved) {
+    if (length(cache$columns) != length(resolved)) return(FALSE)
+    all(vapply(
+      seq_along(resolved),
+      function(index) identical(frame[[resolved[[index]]$position]], cache$columns[[index]]),
+      logical(1L)
+    ))
+  }
+
+  build_sorted_row_positions <- function(capture, sort_columns, resolved) {
     descriptor <- capture$descriptor
-    resolved <- resolve_sort_rules(sort_rules, descriptor)
     row_positions <- seq_len(descriptor$shape$rows)
-    if (length(resolved) == 0L || length(row_positions) == 0L) return(row_positions)
+    add_metric(capture$metrics, "sortOrderBuilds")
+    add_metric(capture$metrics, "sortOrderRows", length(row_positions))
 
     for (rule_index in rev(seq_along(resolved))) {
       rule <- resolved[[rule_index]]
-      column <- capture$snapshot[[rule$position]][row_positions]
+      column <- sort_columns[[rule_index]][row_positions]
       missing <- is.na(column)
       missing_positions <- row_positions[missing]
       present_positions <- which(!missing)
@@ -573,99 +857,63 @@ openwrangler_r_frame_contract <- local({
     row_positions
   }
 
-  capture_frame <- function(value) {
-    if (!is.data.frame(value)) {
-      abort("unsupported-frame", "the value is not an R dataframe")
-    }
-    flavor <- frame_flavor(value)
-    assert_frame_attributes(value, flavor)
-    row_count <- nrow(value)
-    column_count <- ncol(value)
-    whole_number(row_count, "row count", maximum_rows)
-    whole_number(column_count, "column count", maximum_columns)
-    snapshot <- isolated_snapshot(value, flavor)
-    metadata_budget <- new_payload_budget()
-    spend_payload_budget(metadata_budget, metadata_base_bytes, "R frame metadata")
-    column_names <- names(snapshot)
-    if (!is.character(column_names) || length(column_names) != column_count) {
-      abort("invalid-schema", "the dataframe does not have one name per column")
-    }
-    column_names <- vapply(
-      seq_along(column_names),
-      function(index) bounded_utf8(column_names[[index]], sprintf("column name %d", index), maximum_name_bytes),
-      character(1L),
-      USE.NAMES = FALSE
-    )
-    for (index in seq_along(column_names)) {
-      spend_json_string(metadata_budget, column_names[[index]], sprintf("column name %d", index))
+  cached_sorted_row_positions <- function(capture, frame, resolved) {
+    cache <- capture$sortCache
+    if (
+      isTRUE(cache$valid) &&
+        identical(cache$rules, resolved) &&
+        (
+          identical(capture$mode, "isolated") ||
+            cached_sort_values_match(cache, frame, resolved)
+        )
+    ) {
+      return(cache$rowPositions)
     }
 
-    schema <- lapply(seq_len(column_count), function(index) {
-      spend_payload_budget(metadata_budget, column_fixed_bytes, sprintf("column %d metadata", index))
-      semantics <- column_semantics(snapshot[[index]], sprintf("column %d", index), metadata_budget)
-      list(
-        id = sprintf("r:c:%d", index - 1L),
-        name = column_names[[index]],
-        position = index - 1L,
-        rawType = raw_column_type(semantics),
-        type = public_column_type(semantics$kind),
-        nullable = anyNA(snapshot[[index]]),
-        semantics = semantics
-      )
-    })
-
-    descriptor <- list(
-      contractVersion = contract_version,
-      dataframeFlavor = flavor,
-      shape = list(rows = row_count, columns = column_count),
-      frameSemantics = list(
-        classes = bounded_text_array(class(snapshot), "frame classes", maximum_name_bytes, metadata_budget),
-        rowNames = "positional",
-        keyColumnIds = key_column_ids(snapshot, flavor, column_names, metadata_budget)
-      ),
-      schema = json_array(schema)
-    )
-    capture <- new.env(parent = emptyenv())
-    capture$snapshot <- snapshot
-    capture$descriptor <- descriptor
-    capture$metadataBytes <- metadata_budget$used
-    class(capture) <- "openwrangler_r_frame_capture"
-    lockEnvironment(capture, bindings = TRUE)
-    capture
+    # A small live cache keeps copies of the active sort columns so same-schema
+    # notebook mutations, including data.table updates, cannot reuse stale order.
+    # Check the original vectors first: an uncacheable sort must not transiently
+    # duplicate every key merely to discover that it exceeds the cache budget.
+    cache_candidate <-
+      length(resolved) <= maximum_cached_sort_columns &&
+        estimated_sort_cache_bytes(capture, frame, resolved) <= maximum_sort_cache_bytes
+    sort_columns <- if (cache_candidate && identical(capture$mode, "live")) {
+      snapshot_sort_columns(capture, frame, resolved)
+    } else {
+      referenced_sort_columns(frame, resolved)
+    }
+    row_positions <- build_sorted_row_positions(capture, sort_columns, resolved)
+    retained_columns <- if (cache_candidate && identical(capture$mode, "live")) sort_columns else list()
+    cache_bytes <- as.double(utils::object.size(row_positions)) + as.double(utils::object.size(retained_columns))
+    if (cache_candidate && cache_bytes <= maximum_sort_cache_bytes) {
+      cache$rules <- resolved
+      cache$rowPositions <- row_positions
+      cache$columns <- retained_columns
+      cache$bytes <- cache_bytes
+      cache$valid <- TRUE
+    } else {
+      clear_sort_cache(cache)
+    }
+    row_positions
   }
 
   materialize_rows <- function(
     capture,
-    row_order,
-    row_offset = 0L,
-    row_limit = 100L,
-    column_offset = 0L,
-    column_limit = 100L
+    frame,
+    row_positions,
+    window
   ) {
-    if (
-      !inherits(capture, "openwrangler_r_frame_capture") ||
-        !is.environment(capture) ||
-        !environmentIsLocked(capture)
-    ) {
-      abort("invalid-capture", "capture must come from capture_frame")
-    }
-    snapshot <- capture$snapshot
+    validate_capture(capture)
     descriptor <- capture$descriptor
     total_rows <- descriptor$shape$rows
-    total_columns <- descriptor$shape$columns
-    row_offset <- whole_number(row_offset, "row_offset", total_rows)
-    row_limit <- whole_number(row_limit, "row_limit", maximum_page_rows)
-    column_offset <- whole_number(column_offset, "column_offset", total_columns)
-    column_limit <- whole_number(column_limit, "column_limit", maximum_page_columns)
-
-    row_count <- min(row_limit, total_rows - row_offset)
-    column_count <- min(column_limit, total_columns - column_offset)
-    if (row_count * column_count > maximum_page_cells) {
-      abort("page-too-large", sprintf("a page may contain at most %d cells", maximum_page_cells))
+    if (length(row_positions) != window$rowCount) {
+      abort("internal-error", "the R page row window is inconsistent")
     }
-    logical_rows <- if (row_count == 0L) integer() else seq.int(row_offset + 1L, length.out = row_count)
-    row_positions <- row_order[logical_rows]
-    column_positions <- if (column_count == 0L) integer() else seq.int(column_offset + 1L, length.out = column_count)
+    column_positions <- if (window$columnCount == 0L) {
+      integer()
+    } else {
+      seq.int(as.integer(window$columnOffset) + 1L, length.out = window$columnCount)
+    }
     selected_schema <- descriptor$schema[column_positions]
     column_ids <- vapply(selected_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
     page_budget <- new_payload_budget(capture$metadataBytes)
@@ -674,6 +922,13 @@ openwrangler_r_frame_contract <- local({
       spend_json_string(page_budget, column_ids[[index]], sprintf("page column ID %d", index))
       spend_payload_budget(page_budget, 1L, "R frame page projection")
     }
+    explicit_row_names <- if (identical(descriptor$frameSemantics$rowNames, "explicit")) {
+      stored <- attr(frame, "row.names", exact = TRUE)
+      if (length(stored) != total_rows) source_changed()
+      stored
+    } else {
+      NULL
+    }
 
     rows <- lapply(seq_along(row_positions), function(row_index) {
       source_row <- row_positions[[row_index]]
@@ -681,28 +936,38 @@ openwrangler_r_frame_contract <- local({
       values <- lapply(seq_along(column_positions), function(column_index) {
         source_column <- column_positions[[column_index]]
         encode_value(
-          snapshot[[source_column]],
+          frame[[source_column]],
           descriptor$schema[[source_column]]$semantics,
           source_row,
           sprintf("cell[%d,%d]", source_row, source_column),
           page_budget
         )
       })
-      list(
+      row <- list(
         id = sprintf("r:r:%d", source_row - 1L),
-        rowNumber = source_row - 1L,
+        rowNumber = as.integer(window$rowOffset) + row_index - 1L,
         values = json_array(values)
       )
+      if (!is.null(explicit_row_names)) {
+        row_label <- bounded_utf8(
+          as.character(explicit_row_names[[source_row]]),
+          sprintf("row label %d", source_row),
+          maximum_name_bytes
+        )
+        spend_json_string(page_budget, row_label, sprintf("row label %d", source_row))
+        row$rowLabel <- row_label
+      }
+      row
     })
 
     c(
       descriptor,
       list(page = list(
-        offset = row_offset,
-        limit = row_limit,
+        offset = window$rowOffset,
+        limit = window$rowLimit,
         totalRows = total_rows,
-        columnOffset = column_offset,
-        columnLimit = column_limit,
+        columnOffset = window$columnOffset,
+        columnLimit = window$columnLimit,
         columnIds = json_array(column_ids),
         rows = json_array(rows)
       ))
@@ -716,21 +981,16 @@ openwrangler_r_frame_contract <- local({
     column_offset = 0L,
     column_limit = 100L
   ) {
-    if (
-      !inherits(capture, "openwrangler_r_frame_capture") ||
-        !is.environment(capture) ||
-        !environmentIsLocked(capture)
-    ) {
-      abort("invalid-capture", "capture must come from capture_frame")
-    }
-    materialize_rows(
-      capture,
-      seq_len(capture$descriptor$shape$rows),
+    validate_capture(capture)
+    frame <- read_capture_frame(capture)
+    window <- resolve_page_window(
+      capture$descriptor,
       row_offset,
       row_limit,
       column_offset,
       column_limit
     )
+    materialize_rows(capture, frame, direct_row_positions(capture, window), window)
   }
 
   materialize_view_page <- function(
@@ -741,20 +1001,43 @@ openwrangler_r_frame_contract <- local({
     column_offset = 0L,
     column_limit = 100L
   ) {
-    if (
-      !inherits(capture, "openwrangler_r_frame_capture") ||
-        !is.environment(capture) ||
-        !environmentIsLocked(capture)
-    ) {
-      abort("invalid-capture", "capture must come from capture_frame")
-    }
-    materialize_rows(
-      capture,
-      sorted_row_positions(capture, sort_rules),
+    validate_capture(capture)
+    frame <- read_capture_frame(capture)
+    window <- resolve_page_window(
+      capture$descriptor,
       row_offset,
       row_limit,
       column_offset,
       column_limit
+    )
+    resolved <- resolve_sort_rules(sort_rules, capture$descriptor)
+    if (length(resolved) == 0L) {
+      clear_sort_cache(capture$sortCache)
+      row_positions <- direct_row_positions(capture, window)
+    } else if (window$rowCount == 0L) {
+      row_positions <- integer()
+    } else {
+      row_order <- cached_sorted_row_positions(capture, frame, resolved)
+      logical_rows <- seq.int(as.integer(window$rowOffset) + 1L, length.out = window$rowCount)
+      row_positions <- row_order[logical_rows]
+    }
+    materialize_rows(capture, frame, row_positions, window)
+  }
+
+  capture_metrics <- function(capture) {
+    validate_capture(capture)
+    metrics <- capture$metrics
+    list(
+      nullableScans = metrics$nullableScans,
+      sourceReads = metrics$sourceReads,
+      directPageSlices = metrics$directPageSlices,
+      directRowPositions = metrics$directRowPositions,
+      sortOrderBuilds = metrics$sortOrderBuilds,
+      sortOrderRows = metrics$sortOrderRows,
+      sortColumnSnapshots = metrics$sortColumnSnapshots,
+      cachedSortRows = length(capture$sortCache$rowPositions),
+      cachedSortColumns = length(capture$sortCache$columns),
+      cachedSortBytes = capture$sortCache$bytes
     )
   }
 
@@ -786,6 +1069,8 @@ openwrangler_r_frame_contract <- local({
 
   list(
     capture_frame = capture_frame,
+    capture_live_frame = capture_live_frame,
+    capture_metrics = capture_metrics,
     materialize_page = materialize_page,
     materialize_view_page = materialize_view_page,
     encode_page = encode_page,
@@ -797,6 +1082,8 @@ openwrangler_r_frame_contract <- local({
       pageColumns = maximum_page_columns,
       pageCells = maximum_page_cells,
       sortRules = maximum_sort_rules,
+      cachedSortColumns = maximum_cached_sort_columns,
+      sortCacheBytes = maximum_sort_cache_bytes,
       factorLevels = maximum_factor_levels,
       textBytes = maximum_text_bytes,
       nameBytes = maximum_name_bytes,

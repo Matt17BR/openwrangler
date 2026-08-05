@@ -7,9 +7,11 @@ import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 import { RKernelBridge } from "../r/rKernelBridge";
 import {
   discoverRNotebookVariables,
+  disposeVerifiedRNotebookVariableSelection,
   RNotebookVariableDiscoveryError,
   verifyRNotebookVariableSelection,
-  type RNotebookVariableDescriptor
+  type RNotebookVariableDescriptor,
+  type VerifiedRNotebookVariableSelection
 } from "../r/rNotebookVariableDiscovery";
 import {
   discoverNotebookVariables,
@@ -59,7 +61,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
         return;
       }
 
-      openLiveNotebookVariable(context, coordinator, variableName, notebookResolution.notebook, backend);
+      await openLiveNotebookVariable(context, coordinator, variableName, notebookResolution.notebook, backend);
     })
   );
 
@@ -107,13 +109,14 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
       if (!selected || !items.includes(selected)) {
         return;
       }
+      let verifiedRSelection: VerifiedRNotebookVariableSelection | undefined;
       if ("dataframeFlavor" in selected.variable) {
         if (!isRNotebookVariableDiscovery(discovered)) {
           vscode.window.showWarningMessage("Open Wrangler could not confirm the selected R dataframe.");
           return;
         }
         try {
-          await verifyRNotebookVariableSelection(notebook, discovered, selected.variable);
+          verifiedRSelection = await verifyRNotebookVariableSelection(notebook, discovered, selected.variable);
         } catch (error) {
           vscode.window.showWarningMessage(
             error instanceof RNotebookVariableDiscoveryError
@@ -123,7 +126,14 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
           return;
         }
       }
-      openLiveNotebookVariable(context, coordinator, selected.variable.name, notebook, selected.variable.backend);
+      await openLiveNotebookVariable(
+        context,
+        coordinator,
+        selected.variable.name,
+        notebook,
+        selected.variable.backend,
+        verifiedRSelection
+      );
     })
   );
 
@@ -186,15 +196,29 @@ function notebookVariableQuickPickItem(variable: NotebookPickerVariable): Notebo
   };
 }
 
-function openLiveNotebookVariable(
+async function openLiveNotebookVariable(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   variableName: string,
   notebook: vscode.NotebookDocument,
-  backend?: DataBackend
-): void {
+  backend?: DataBackend,
+  verifiedRSelection?: VerifiedRNotebookVariableSelection
+): Promise<void> {
   if (!isExactOpenNotebook(notebook)) {
+    if (verifiedRSelection) disposeVerifiedRNotebookVariableSelection(verifiedRSelection);
     vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
+    return;
+  }
+
+  if (backend === "r" && !verifiedRSelection) {
+    vscode.window.showWarningMessage(
+      "Open this R dataframe from Open Wrangler's notebook variable picker so its kernel can be verified."
+    );
+    return;
+  }
+  if (backend !== "r" && verifiedRSelection) {
+    disposeVerifiedRNotebookVariableSelection(verifiedRSelection);
+    vscode.window.showWarningMessage("Open Wrangler could not match the verified R dataframe to this notebook action.");
     return;
   }
 
@@ -204,15 +228,39 @@ function openLiveNotebookVariable(
     variableName,
     uri: notebook.uri.toString()
   };
-  const delegate =
-    backend === "r"
-      ? new RKernelBridge(context, notebook)
-      : new KernelBridge(context, notebook, shouldRegisterNotebookFormatters());
-  const bridge = coordinator.createBridge(delegate, notebook);
-  if (backend) {
-    OpenWranglerPanel.create(context, bridge, source, backend);
+  let delegate;
+  if (backend === "r") {
+    const selection = verifiedRSelection;
+    if (!selection) return;
+    try {
+      delegate = RKernelBridge.fromVerifiedSelection(context, notebook, selection);
+    } catch (error) {
+      disposeVerifiedRNotebookVariableSelection(selection);
+      vscode.window.showWarningMessage(
+        error instanceof RNotebookVariableDiscoveryError
+          ? error.message
+          : "Open Wrangler could not bind the selected R dataframe to its notebook kernel. Open the picker again."
+      );
+      return;
+    }
   } else {
-    OpenWranglerPanel.create(context, bridge, source);
+    delegate = new KernelBridge(context, notebook, shouldRegisterNotebookFormatters());
+  }
+  try {
+    const bridge = coordinator.createBridge(delegate, notebook);
+    if (backend) {
+      OpenWranglerPanel.create(context, bridge, source, backend);
+    } else {
+      OpenWranglerPanel.create(context, bridge, source);
+    }
+  } catch (error) {
+    try {
+      await delegate.dispose();
+    } catch {
+      // Panel creation already failed. Do not replace that failure with a
+      // secondary cleanup error after still attempting to release the bridge.
+    }
+    throw error;
   }
 }
 

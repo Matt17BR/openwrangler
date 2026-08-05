@@ -65,9 +65,12 @@ assert_identical(
   c(0L, 1L),
   "the initial page row order changed"
 )
+assert_identical(
+  vapply(opened$page$schema, `[[`, logical(1L), "nullable"),
+  c(TRUE, TRUE),
+  "live R metadata did not conservatively report nullable columns"
+)
 
-# A live-variable replacement after open must not alter the isolated capture.
-source_environment$frame <- data.frame(group = "replacement", score = 999)
 sorted <- dispatch(
   "getPage",
   list(
@@ -81,10 +84,70 @@ sorted <- dispatch(
 )
 assert_identical(
   vapply(sorted$page$page$rows, `[[`, integer(1L), "rowNumber"),
-  c(1L, 2L, 0L),
-  "the R agent did not retain the source capture or stable sorted row identities"
+  0:2,
+  "the R agent did not number the sorted logical view"
+)
+assert_identical(
+  vapply(sorted$page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:1", "r:r:2", "r:r:0"),
+  "the R agent changed sorted source-row identities"
+)
+
+# Unsorted reads use the current same-schema value. A sorted read compares the
+# active sort columns with its cached copy and rebuilds the order when they change.
+source_environment$frame <- data.frame(
+  group = c("updated-a", "updated-b", "updated-c"),
+  score = c(101, 102, 103),
+  stringsAsFactors = FALSE
+)
+live_page <- dispatch(
+  "getPage",
+  list(sessionId = session_id, page = page_window(row_limit = 1L, column_offset = 1L, column_limit = 1L))
+)
+assert_identical(
+  live_page$page$page$rows[[1L]]$values[[1L]]$raw,
+  "101",
+  "an unsorted R page did not read the current same-schema value"
+)
+refreshed_sorted <- dispatch(
+  "getPage",
+  list(
+    sessionId = session_id,
+    page = page_window(list(list(
+      column = list(id = "r:c:0", name = "group"),
+      direction = "asc",
+      nulls = "last"
+    )))
+  )
+)
+assert_identical(
+  vapply(refreshed_sorted$page$page$rows, `[[`, integer(1L), "rowNumber"),
+  0:2,
+  "the refreshed sort did not retain logical row numbers"
+)
+assert_identical(
+  vapply(refreshed_sorted$page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:0", "r:r:1", "r:r:2"),
+  "same-schema value changes did not rebuild the active sort model"
 )
 assert_identical(source_object, source_before, "R session paging mutated the original notebook object")
+
+source_environment$frame <- data.frame(group = "replacement", score = 999)
+source_changed <- dispatch(
+  "getPage",
+  list(sessionId = session_id, page = page_window())
+)
+assert_identical(source_changed$kind, "error", "a structurally changed R source was read")
+assert_identical(source_changed$code, "runtime_error", "the source-change diagnostic changed")
+assert_identical(source_changed$recoverable, TRUE, "a source change was not recoverable")
+if (!grepl("changed shape or schema", source_changed$message, fixed = TRUE)) {
+  stop("the source-change diagnostic did not tell the user to reopen the dataframe", call. = FALSE)
+}
+source_environment$frame <- data.frame(
+  group = c("updated-a", "updated-b", "updated-c"),
+  score = c(101, 102, 103),
+  stringsAsFactors = FALSE
+)
 
 duplicate <- dispatch(
   "openSession",
@@ -115,7 +178,9 @@ named_rows <- dispatch(
   list(sessionId = second_session_id, variableName = "named_rows", page = page_window())
 )
 assert_identical(named_rows$kind, "page", "a dataframe with explicit row names could not be opened")
-assert_identical(named_rows$page$frameSemantics$rowNames, "positional", "R row identity is not positional")
+assert_identical(named_rows$page$contractVersion, 2L, "the R kernel agent emitted the wrong frame contract")
+assert_identical(named_rows$page$frameSemantics$rowNames, "explicit", "explicit R row names were hidden")
+assert_identical(named_rows$page$page$rows[[1L]]$rowLabel, "named-row", "the explicit R row label changed")
 named_rows_closed <- dispatch("closeSession", list(sessionId = second_session_id))
 assert_identical(named_rows_closed$kind, "closed", "the named-row session did not close")
 
@@ -136,7 +201,7 @@ assert_identical(oversized$code, "page_too_large", "the oversized-page diagnosti
 assert_identical(oversized$recoverable, TRUE, "an oversized page was not marked recoverable")
 
 missing_package_contract <- list(
-  capture_frame = function(value) {
+  capture_live_frame = function(source_reader) {
     stop(structure(
       list(message = "example package is required", call = NULL, code = "missing-package"),
       class = c("openwrangler_r_frame_error", "error", "condition")
@@ -185,5 +250,16 @@ assert_identical(stale_column$recoverable, TRUE, "a stale column was not marked 
 malformed <- dispatch("getPage", list(sessionId = second_session_id, page = c(page_window(), list(extra = TRUE))))
 assert_identical(malformed$kind, "error", "a malformed page request was accepted")
 assert_identical(malformed$code, "invalid_request", "the malformed-request diagnostic changed")
+
+rm("frame", envir = source_environment)
+removed_source <- dispatch(
+  "getPage",
+  list(sessionId = second_session_id, page = page_window())
+)
+assert_identical(removed_source$kind, "error", "a removed R source was still read")
+assert_identical(removed_source$code, "runtime_error", "the removed-source diagnostic changed")
+assert_identical(removed_source$recoverable, TRUE, "a removed source was not recoverable")
+removed_closed <- dispatch("closeSession", list(sessionId = second_session_id))
+assert_identical(removed_closed$kind, "closed", "a source-changed session did not close")
 
 cat("Native R kernel agent tests passed.\n")

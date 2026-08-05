@@ -73,18 +73,18 @@ Inline MIME v2 output shows every captured column and pages the captured rows at
 
 R support has not been released. The current Open Wrangler 2 branch can find base `data.frame`, tibble, and
 `data.table` variables in an R notebook and open them in a read-only workbench. It uses the notebook's IRkernel
-directly; Python is not involved. Packaged VS Code and Cursor tests with a real IRkernel are still required before
-this can ship as a preview.
+directly; Python is not involved. A local packaged test has passed with R 4.5.2 in VS Code 1.132.0 and Cursor 3.14.7.
+Remote kernels, R 4.4, filters, profiles, and editing still need coverage before this can ship as a preview.
 
-| Surface                                      | Availability | Status  | Recorded evidence                            | Remaining acceptance gate                         |
-| -------------------------------------------- | ------------ | ------- | -------------------------------------------- | ------------------------------------------------- |
-| Native R frame snapshot and typed page       | Internal     | Partial | Focused producer and decoder contract suite  | Hosted R 4.4/4.5 and packaged-editor gates        |
-| Native R ordered viewing sorts               | Internal     | Partial | Stable pure-R sorts and decoder fixtures     | Live filtering, profiling, and UI acceptance      |
-| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, capture, and page tests    | Real notebook paging and profiling                |
-| Exact IRkernel session transport             | Internal     | Partial | Mock-kernel lifecycle and native agent tests | Real local/remote IRkernel and restart acceptance |
-| Notebook workbench                           | Internal     | Partial | Command, coordinator, and focused UI tests   | Packaged VS Code/Cursor IRkernel acceptance       |
-| R cleaning operations and generated code     | No           | Planned | Frame semantics only                         | Native R IR, adapters, code generation, and tests |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR        | Stable broker or Open Wrangler-owned helper       |
+| Surface                                      | Availability | Status  | Recorded evidence                                       | Remaining acceptance gate                         |
+| -------------------------------------------- | ------------ | ------- | ------------------------------------------------------- | ------------------------------------------------- |
+| Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, local packaged-editor test | R 4.4 and remote-kernel coverage                  |
+| Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local packaged-editor test             | Live filtering and profiling                      |
+| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery plus real IRkernel paging              | Remote-kernel and profiling coverage              |
+| Exact IRkernel session transport             | Internal     | Partial | Lifecycle tests plus local VS Code/Cursor acceptance    | Remote IRkernel and restart acceptance            |
+| Notebook workbench                           | Internal     | Partial | Local packaged VS Code/Cursor acceptance                | Filters, profiles, editing, and accessibility     |
+| R cleaning operations and generated code     | No           | Planned | Frame semantics only                                    | Native R IR, adapters, code generation, and tests |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                   | Stable broker or Open Wrangler-owned helper       |
 
 ## DuckDB file-backed preview matrix
 

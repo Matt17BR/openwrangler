@@ -446,6 +446,16 @@ describe("protocol-v2 response validation", () => {
     expect(isOpenWranglerResponse(pageResponse({ ...page, limit: 0 }))).toBe(false);
     expect(isOpenWranglerResponse(pageResponse({ ...page, columnIds: ["column:0", "column:0"] }))).toBe(false);
     expect(isOpenWranglerResponse(pageResponse({ ...page, columnIds: ["unknown"] }))).toBe(false);
+    expect(isOpenWranglerResponse(pageResponse({ ...page, rows: [{ ...page.rows[0], rowLabel: "Mazda RX4" }] }))).toBe(
+      true
+    );
+    expect(
+      isOpenWranglerResponse(pageResponse({ ...page, rows: [{ ...page.rows[0], rowLabel: "🚙".repeat(1_024) }] }))
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse(pageResponse({ ...page, rows: [{ ...page.rows[0], rowLabel: "x".repeat(1_025) }] }))
+    ).toBe(false);
+    expect(isOpenWranglerResponse(pageResponse({ ...page, rows: [{ ...page.rows[0], rowLabel: 1 }] }))).toBe(false);
     expect(isOpenWranglerResponse(pageResponse({ ...page, rows: [{ id: "row:0", rowNumber: -1, values: [] }] }))).toBe(
       false
     );

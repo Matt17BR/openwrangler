@@ -32,6 +32,9 @@ openwrangler_r_kernel_agent <- local({
     if (identical(source_code, "missing-package")) {
       code <- "missing_package"
       recoverable <- TRUE
+    } else if (identical(source_code, "source-changed")) {
+      code <- "runtime_error"
+      recoverable <- TRUE
     } else if (identical(source_code, "stale-column")) {
       code <- "stale_column"
       recoverable <- TRUE
@@ -170,7 +173,7 @@ openwrangler_r_kernel_agent <- local({
   }
 
   new_agent <- function(frame_contract, source_environment = .GlobalEnv) {
-    required_functions <- c("capture_frame", "materialize_view_page")
+    required_functions <- c("capture_live_frame", "materialize_view_page")
     if (
       !is.list(frame_contract) ||
         !all(vapply(required_functions, function(name) is.function(frame_contract[[name]]), logical(1L))) ||
@@ -210,8 +213,20 @@ openwrangler_r_kernel_agent <- local({
           abort("unknown_variable", "The selected R dataframe variable no longer exists", TRUE)
         }
         page <- decode_page(payload$page, frame_contract$limits)
-        value <- get(variable_name, envir = source_environment, inherits = FALSE)
-        capture <- frame_contract$capture_frame(value)
+        source_reader <- local({
+          source_name <- variable_name
+          source <- source_environment
+          function() {
+            if (
+              !exists(source_name, envir = source, inherits = FALSE) ||
+                bindingIsActive(source_name, source)
+            ) {
+              return(NULL)
+            }
+            get(source_name, envir = source, inherits = FALSE)
+          }
+        })
+        capture <- frame_contract$capture_live_frame(source_reader)
         result <- materialize(frame_contract, capture, page)
         assign(session_id, capture, envir = sessions)
         return(list(

@@ -17,6 +17,8 @@ const notebookMocks = vi.hoisted(() => ({
   createPanel: vi.fn(),
   kernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
   rKernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
+  rVerifiedSelections: [] as unknown[],
+  rDelegateDisposals: [] as NotebookDocument[],
   tokenSources: [] as Array<{
     readonly token: { isCancellationRequested: boolean };
     disposed: boolean;
@@ -202,8 +204,21 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
 
 vi.mock("../extension/r/rKernelBridge", () => ({
   RKernelBridge: class {
+    static fromVerifiedSelection(
+      context: ExtensionContext,
+      document: NotebookDocument,
+      verifiedSelection: unknown
+    ): unknown {
+      notebookMocks.rVerifiedSelections.push(verifiedSelection);
+      return new this(context, document);
+    }
     constructor(_context: ExtensionContext, document: NotebookDocument) {
       notebookMocks.rKernelOrigins.push({ uri: document.uri.toString(), document });
+      this.document = document;
+    }
+    private readonly document: NotebookDocument;
+    async dispose(): Promise<void> {
+      notebookMocks.rDelegateDisposals.push(this.document);
     }
   }
 }));
@@ -230,6 +245,8 @@ describe("notebook command provenance", () => {
     notebookMocks.createPanel.mockReset();
     notebookMocks.kernelOrigins.length = 0;
     notebookMocks.rKernelOrigins.length = 0;
+    notebookMocks.rVerifiedSelections.length = 0;
+    notebookMocks.rDelegateDisposals.length = 0;
     notebookMocks.tokenSources.length = 0;
     notebookMocks.executeCode.mockReset();
     notebookMocks.executeCode.mockImplementation((code) => notebookKernelOutputs(code));
@@ -1032,7 +1049,7 @@ describe("notebook command provenance", () => {
     const original = notebook("file:///workspace/r.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
-    const rKernel = { language: "R", executeCode: notebookMocks.executeCode };
+    const rKernel = rNotebookKernel();
     notebookMocks.getKernel.mockResolvedValue(rKernel);
     notebookMocks.executeCode.mockImplementation((code) =>
       rDiscoveryOutputs(code, {
@@ -1056,6 +1073,11 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.executeCode).toHaveBeenCalledTimes(2);
     expect(notebookMocks.kernelOrigins).toEqual([]);
     expect(notebookMocks.rKernelOrigins).toEqual([{ uri: original.uri.toString(), document: original }]);
+    expect(notebookMocks.rVerifiedSelections).toEqual([
+      expect.objectContaining({
+        variable: expect.objectContaining({ name: "sales_tbl", dataframeFlavor: "r.tibble" })
+      })
+    ]);
     expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
     expect(notebookMocks.createPanel).toHaveBeenCalledWith(
       context,
@@ -1071,12 +1093,37 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
   });
 
+  it("disposes the claimed R bridge when panel creation fails", async () => {
+    const original = notebook("file:///workspace/r-panel-failure.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.getKernel.mockResolvedValue(rNotebookKernel());
+    notebookMocks.executeCode.mockImplementation((code) =>
+      rDiscoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+      })
+    );
+    const panelError = new Error("panel creation failed");
+    notebookMocks.createPanel.mockImplementationOnce(() => {
+      throw panelError;
+    });
+    const { coordinator } = register();
+
+    await expect(command("openWrangler.openNotebookVariable")()).rejects.toBe(panelError);
+
+    expect(coordinator.createBridge).toHaveBeenCalledOnce();
+    expect(notebookMocks.rVerifiedSelections).toHaveLength(1);
+    expect(notebookMocks.rDelegateDisposals).toEqual([original]);
+  });
+
   it("rejects an R selection when the kernel changes while the picker is open", async () => {
     const original = notebook("file:///workspace/r-kernel-change.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
-    const originalKernel = { language: "R", executeCode: notebookMocks.executeCode };
-    const replacementKernel = { language: "R", executeCode: notebookMocks.executeCode };
+    const originalKernel = rNotebookKernel();
+    const replacementKernel = rNotebookKernel();
     notebookMocks.getKernel.mockResolvedValue(originalKernel);
     notebookMocks.executeCode.mockImplementation((code) =>
       rDiscoveryOutputs(code, {
@@ -1109,7 +1156,7 @@ describe("notebook command provenance", () => {
     const original = notebook("file:///workspace/r-variable-change.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
-    const rKernel = { language: "R", executeCode: notebookMocks.executeCode };
+    const rKernel = rNotebookKernel();
     notebookMocks.getKernel.mockResolvedValue(rKernel);
     notebookMocks.executeCode
       .mockImplementationOnce((code) =>
@@ -1635,6 +1682,20 @@ function rDiscoveryOutputs(
         ]
       };
     }
+  };
+}
+
+function rNotebookKernel(): {
+  readonly language: "R";
+  readonly status: "idle";
+  readonly executeCode: typeof notebookMocks.executeCode;
+  onDidChangeStatus(listener: (status: "idle") => unknown): { dispose(): void };
+} {
+  return {
+    language: "R",
+    status: "idle",
+    executeCode: notebookMocks.executeCode,
+    onDidChangeStatus: () => ({ dispose: () => undefined })
   };
 }
 

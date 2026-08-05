@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import type { Jupyter, Kernel } from "@vscode/jupyter-extension";
+import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildRNotebookVariableDiscoveryCode,
+  claimVerifiedRNotebookVariableSelection,
   discoverRNotebookVariables,
   parseRNotebookVariableDiscoveryOutput,
   verifyRNotebookVariableSelection
@@ -148,6 +149,12 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
     expect(() =>
       parseRNotebookVariableDiscoveryOutput(framed(MARKER, { protocolVersion: 1, error: "missing_rlang" }), MARKER)
     ).toThrow('install.packages("rlang")');
+    expect(() =>
+      parseRNotebookVariableDiscoveryOutput(
+        framed(MARKER, { protocolVersion: 1, error: "missing_jsonlite_rlang" }),
+        MARKER
+      )
+    ).toThrow('install.packages(c("jsonlite", "rlang"))');
   });
 
   it("uses the public Jupyter API, the exact selected R kernel, and a never-cancelled token", async () => {
@@ -165,7 +172,7 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
         })
       );
     });
-    const selectedKernel = { language: "R", executeCode } as unknown as Kernel;
+    const selectedKernel = rKernel(executeCode, "R");
     const getKernel = vi.fn(async (_uri: vscode.Uri) => selectedKernel);
     const activate = installJupyterMock(getKernel);
     const cancel = vi.spyOn(vscode.CancellationTokenSource.prototype, "cancel");
@@ -187,18 +194,15 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
   it("rejects a kernel switch after discovery instead of retargeting the result", async () => {
     const document = notebookDocument();
     setWorkspaceState(true, document);
-    const firstKernel = {
-      language: "r",
-      executeCode: (code: string) =>
-        kernelOutput(
-          framed(discoveryMarker(code), {
-            protocolVersion: 1,
-            truncated: false,
-            variables: [{ name: "frame", dataframeFlavor: "r.data.frame" }]
-          })
-        )
-    } as unknown as Kernel;
-    const replacementKernel = { language: "r", executeCode: vi.fn() } as unknown as Kernel;
+    const firstKernel = rKernel(((code: string) =>
+      kernelOutput(
+        framed(discoveryMarker(code), {
+          protocolVersion: 1,
+          truncated: false,
+          variables: [{ name: "frame", dataframeFlavor: "r.data.frame" }]
+        })
+      )) as Kernel["executeCode"]);
+    const replacementKernel = rKernel(vi.fn() as Kernel["executeCode"]);
     const getKernel = vi
       .fn()
       .mockResolvedValueOnce(firstKernel)
@@ -223,7 +227,7 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
         })
       );
     });
-    const selectedKernel = { language: "R", executeCode } as unknown as Kernel;
+    const selectedKernel = rKernel(executeCode, "R");
     const getKernel = vi.fn(async () => selectedKernel);
     installJupyterMock(getKernel);
 
@@ -231,12 +235,41 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
     const selected = discovery.variables[0];
     if (!selected) throw new Error("Expected a discovered variable.");
 
-    await expect(verifyRNotebookVariableSelection(document, discovery, selected)).resolves.toBeUndefined();
+    await expect(verifyRNotebookVariableSelection(document, discovery, selected)).resolves.toMatchObject({
+      variable: selected
+    });
 
     expect(executeCode).toHaveBeenCalledTimes(2);
     expect(executeCode.mock.calls[1]?.[0]).toContain('.ow_name <- "orders"');
     expect(executeCode.mock.calls[1]?.[0]).toContain("rlang::env_binding_are_lazy");
     expect(getKernel).toHaveBeenCalledTimes(5);
+  });
+
+  it("keeps a restart guard alive from verification until the transport claims the selection", async () => {
+    const document = notebookDocument();
+    setWorkspaceState(true, document);
+    const controlled = controlledRKernel((code: string) =>
+      kernelOutput(
+        framed(discoveryMarker(code), {
+          protocolVersion: 1,
+          truncated: false,
+          variables: [{ name: "orders", dataframeFlavor: "r.data.frame" }]
+        })
+      )
+    );
+    installJupyterMock(vi.fn(async () => controlled.kernel));
+
+    const discovery = await discoverRNotebookVariables(document);
+    const selected = discovery.variables[0];
+    if (!selected) throw new Error("Expected a discovered variable.");
+    const verified = await verifyRNotebookVariableSelection(document, discovery, selected);
+
+    controlled.setStatus("restarting");
+
+    expect(() => claimVerifiedRNotebookVariableSelection(document, verified)).toThrow(
+      "no longer bound to its verified notebook kernel"
+    );
+    expect(controlled.listenerCount()).toBe(0);
   });
 
   it("rejects a kernel switch while the picker is open without probing the replacement", async () => {
@@ -251,8 +284,8 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
         })
       )
     );
-    const firstKernel = { language: "r", executeCode } as unknown as Kernel;
-    const replacementKernel = { language: "r", executeCode: vi.fn() } as unknown as Kernel;
+    const firstKernel = rKernel(executeCode);
+    const replacementKernel = rKernel(vi.fn() as Kernel["executeCode"]);
     const getKernel = vi
       .fn()
       .mockResolvedValueOnce(firstKernel)
@@ -289,7 +322,7 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
         })
       );
     });
-    const selectedKernel = { language: "r", executeCode } as unknown as Kernel;
+    const selectedKernel = rKernel(executeCode);
     installJupyterMock(vi.fn(async () => selectedKernel));
 
     const discovery = await discoverRNotebookVariables(document);
@@ -323,15 +356,12 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
   it("extracts a bounded actionable jsonlite error from the R kernel", async () => {
     const document = notebookDocument();
     setWorkspaceState(true, document);
-    const selectedKernel = {
-      language: "r",
-      executeCode: () =>
-        kernelErrorOutput({
-          name: "simpleError",
-          message: "there is no package called ‘jsonlite’",
-          stack: ""
-        })
-    } as unknown as Kernel;
+    const selectedKernel = rKernel((() =>
+      kernelErrorOutput({
+        name: "simpleError",
+        message: "there is no package called ‘jsonlite’",
+        stack: ""
+      })) as Kernel["executeCode"]);
     installJupyterMock(vi.fn(async () => selectedKernel));
 
     await expect(discoverRNotebookVariables(document)).rejects.toThrow('install.packages("jsonlite")');
@@ -341,10 +371,8 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
     const document = notebookDocument();
     const replacement = notebookDocument();
     setWorkspaceState(true, document);
-    const selectedKernel = {
-      language: "r",
-      executeCode: (code: string) => replacingKernelOutput(code, replacement)
-    } as unknown as Kernel;
+    const selectedKernel = rKernel(((code: string) =>
+      replacingKernelOutput(code, replacement)) as Kernel["executeCode"]);
     const getKernel = vi.fn(async () => selectedKernel);
     installJupyterMock(getKernel);
 
@@ -423,6 +451,43 @@ function installJupyterMock(getKernel: ReturnType<typeof vi.fn>): ReturnType<typ
   const activate = vi.fn(async () => ({ kernels: { getKernel } }) as unknown as Jupyter);
   vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({ activate } as never);
   return activate;
+}
+
+function rKernel(executeCode: Kernel["executeCode"], language = "r"): Kernel {
+  return {
+    language,
+    status: "idle",
+    executeCode,
+    onDidChangeStatus: () => ({ dispose: () => undefined })
+  } as unknown as Kernel;
+}
+
+function controlledRKernel(executeCode: Kernel["executeCode"]): {
+  readonly kernel: Kernel;
+  listenerCount(): number;
+  setStatus(status: KernelStatus): void;
+} {
+  let status: KernelStatus = "idle";
+  const listeners = new Set<(status: KernelStatus) => unknown>();
+  const kernel = {
+    language: "r",
+    get status() {
+      return status;
+    },
+    executeCode,
+    onDidChangeStatus(listener: (next: KernelStatus) => unknown) {
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    }
+  } as unknown as Kernel;
+  return {
+    kernel,
+    listenerCount: () => listeners.size,
+    setStatus(next) {
+      status = next;
+      for (const listener of [...listeners]) listener(next);
+    }
+  };
 }
 
 function discoveryMarker(code: string): string {

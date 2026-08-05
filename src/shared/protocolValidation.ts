@@ -111,6 +111,7 @@ const MAX_BY_EXAMPLE_CONCAT_PARTS = 64;
 const MAX_BY_EXAMPLE_WARNINGS = 64;
 const MAX_BY_EXAMPLE_STRING_UTF8_BYTES = 8 * 1024;
 const MAX_BY_EXAMPLE_TEXT_UTF8_BYTES = 64 * 1024;
+const MAX_ROW_LABEL_CODE_POINTS = 1_024;
 const SIMPLE_COLUMN_OPERATIONS = new Set([
   "capitalizeText",
   "lowerText",
@@ -1422,13 +1423,18 @@ function isLiveGridPageForMetadata(value: unknown, metadata: SessionMetadata): b
 }
 
 function isDataRow(value: unknown, expectedWidth?: number): boolean {
-  const candidate = exactRecord(value, ["id", "rowNumber", "values"]);
+  const candidate = exactRecord(value, ["id", "rowNumber", "values"], ["rowLabel"]);
   if (candidate === undefined) return false;
   const values = candidate.values;
   if (!Array.isArray(values) || !values.every(isCellValue)) return false;
   return (
     isString(candidate.id) &&
     isNonNegativeInteger(candidate.rowNumber) &&
+    optional(
+      candidate,
+      "rowLabel",
+      (rowLabel) => isString(rowLabel) && hasAtMostCodePoints(rowLabel, MAX_ROW_LABEL_CODE_POINTS)
+    ) &&
     (expectedWidth === undefined || values.length === expectedWidth)
   );
 }
@@ -1873,6 +1879,21 @@ function isJsonScalar(value: unknown): value is string | number | boolean | null
 
 function isBoundedViewValue(value: unknown): boolean {
   return isJsonValue(value) && (typeof value !== "string" || hasAtMostViewValueTextCodePoints(value));
+}
+
+function hasAtMostCodePoints(value: string, maximum: number): boolean {
+  if (value.length <= maximum) return true;
+  let count = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) index += 1;
+    }
+    count += 1;
+    if (count > maximum) return false;
+  }
+  return true;
 }
 
 function isSafeJsonNumber(value: unknown): value is number {

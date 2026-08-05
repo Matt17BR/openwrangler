@@ -19,9 +19,10 @@ const pageRequestId = "33333333-3333-4333-8333-333333333333";
 const closeRequestId = "44444444-4444-4444-8444-444444444444";
 const namedRowsSessionId = "55555555-5555-4555-8555-555555555555";
 const namedRowsRequestId = "66666666-6666-4666-8666-666666666666";
+const sourceChangedRequestId = "77777777-7777-4777-8777-777777777777";
 
 describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
-  it("opens one isolated capture, pages it after variable replacement, and closes it", () => {
+  it("pages current same-schema values, rejects structural changes, and closes the live session", () => {
     const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
     const open = requestCode({
       transportVersion: 1,
@@ -44,6 +45,12 @@ describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
       kind: "closeSession",
       payload: { sessionId }
     });
+    const sourceChanged = requestCode({
+      transportVersion: 1,
+      requestId: sourceChangedRequestId,
+      kind: "getPage",
+      payload: { sessionId, page: pageWindow() }
+    });
     const namedRows = requestCode({
       transportVersion: 1,
       requestId: namedRowsRequestId,
@@ -55,8 +62,10 @@ frame <- data.frame(value = c(1L, 3L, 2L), label = c("a", "c", "b"), stringsAsFa
 named_rows <- data.frame(value = 1L, row.names = "named-row")
 ${bootstrap}
 ${open.code}
-frame <- data.frame(value = 999L, label = "replacement", stringsAsFactors = FALSE)
+frame <- data.frame(value = c(9L, 7L, 8L), label = c("i", "g", "h"), stringsAsFactors = FALSE)
 ${page.code}
+frame <- data.frame(value = 999L, label = "replacement", stringsAsFactors = FALSE)
+${sourceChanged.code}
 ${close.code}
 ${namedRows.code}
 `;
@@ -64,12 +73,21 @@ ${namedRows.code}
 
     const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), openRequestId);
     const paged = decodeRKernelResponseJson(marked(result.stdout, page.marker), pageRequestId);
+    const changed = decodeRKernelResponseJson(marked(result.stdout, sourceChanged.marker), sourceChangedRequestId);
     const closed = decodeRKernelResponseJson(marked(result.stdout, close.marker), closeRequestId);
     const namedRowsPage = decodeRKernelResponseJson(marked(result.stdout, namedRows.marker), namedRowsRequestId);
     expect(opened).toMatchObject({ kind: "page", sessionId, page: { shape: { rows: 3, columns: 2 } } });
     expect(paged).toMatchObject({ kind: "page", sessionId, page: { shape: { rows: 3, columns: 2 } } });
     if (paged.kind !== "page") throw new Error("Expected a page response.");
-    expect(paged.page.page.rows.map((row) => row.rowNumber)).toEqual([1, 2, 0]);
+    expect(paged.page.page.rows.map((row) => row.rowNumber)).toEqual([0, 1, 2]);
+    expect(paged.page.page.rows.map((row) => row.id)).toEqual(["r:r:0", "r:r:2", "r:r:1"]);
+    expect(paged.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(["9", "8", "7"]);
+    expect(changed).toMatchObject({
+      kind: "error",
+      code: "runtime_error",
+      recoverable: true,
+      message: expect.stringContaining("changed shape or schema")
+    });
     expect(closed).toEqual({
       transportVersion: 1,
       requestId: closeRequestId,
@@ -79,7 +97,11 @@ ${namedRows.code}
     expect(namedRowsPage).toMatchObject({
       kind: "page",
       sessionId: namedRowsSessionId,
-      page: { shape: { rows: 1, columns: 1 } }
+      page: {
+        shape: { rows: 1, columns: 1 },
+        frameSemantics: { rowNames: "explicit" },
+        page: { rows: [{ id: "r:r:0", rowNumber: 0, rowLabel: "named-row" }] }
+      }
     });
   });
 

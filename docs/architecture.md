@@ -28,10 +28,10 @@ Every request that can run work against an open PySpark session carries its prot
 
 Spark Connect transport errors are handled according to what the server reports. A temporary endpoint outage leaves the confirmed view untouched and allows the failed read to be retried. A missing server session or dataframe blocks ordinary retries and shows a user-initiated **Reconnect** action instead. Reconnect reuses the existing live-variable replay path: it looks up the same variable name in the exact notebook and kernel that opened the view, requires the same schema, and restores the confirmed filter, sort, viewport, widths, and selection before replacing the private runtime. A failed reconnect closes only its candidate and leaves the old confirmed view in place. It never starts Spark, creates a dataframe, switches kernels, loops automatically, or uses captured notebook output as a fallback.
 
-The first native R boundary is deliberately smaller than a session transport. The bundled
-`r/openwrangler_runtime/frame_contract.R` module snapshots a base `data.frame`, tibble, or `data.table` without
-calling Python and returns one bounded projected page. Base frames and tibbles use an R serialization copy;
-`data.table` uses `data.table::copy()` so later by-reference work cannot mutate the notebook object. The page keeps
+The bundled `r/openwrangler_runtime/frame_contract.R` module validates a base `data.frame`, tibble, or `data.table`
+without calling Python and returns one bounded projected page. Live kernel sessions read only the requested rows and
+columns instead of serializing the complete dataframe. They check the source shape and schema again before each read;
+the isolated contract helper still copies its input for unit-level value tests. The page keeps
 duplicate and non-syntactic names while using positional IDs for identity. Its column metadata records factors,
 ordered factors, dates, POSIXct time zones, difftime units, and `bit64::integer64`; cells distinguish `NA`, `NaN`, and
 signed infinity for plain doubles. Non-finite classed temporal values and fractional Dates fail rather than being
@@ -39,28 +39,32 @@ silently relabeled or rounded. Numeric display always uses a dot, regardless of 
 with no `tzone` attribute or an empty `tzone` uses UTC for display instead of the process's current time zone. The
 original null or empty-string value remains in metadata. R's reserved integer and `bit64::integer64` missing-value
 sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matrix/raw/complex columns, subclasses, and
-unrecognized attributes fail instead of losing R semantics. Explicit row names are ignored as metadata; source row
-positions provide stable row identity.
+unrecognized attributes fail instead of losing R semantics. Source positions provide stable row identity. Explicit R
+row names travel separately as row labels and appear in the grid gutter instead of becoming a data column.
 
 The same module can apply an ordered list of viewing sorts before it builds a page. A rule names a column by both its
 positional ID and captured name, which keeps duplicate names unambiguous and rejects stale references. Rules are
 applied in priority order, with independent direction and missing-value placement; ties keep their previous order.
 R's `NA` and `NaN` values share the requested missing-value placement while their cell encodings remain distinct.
 Exact `bit64::integer64` values are compared without converting them to doubles. Sorting works on row positions and
-does not reorder or otherwise change the captured frame. A sorted page keeps each source row ID even though those IDs
-no longer follow the page offset.
+does not reorder or otherwise change the source frame. A sorted page keeps each source row ID and explicit row label,
+while `rowNumber` records its current logical position in the grid. A live session caches at most four sort columns
+and 32 MiB of row-order state. It rebuilds that order when those values change, including after a `data.table`
+by-reference update, and releases the cache when sorting is cleared. Larger sorts rebuild for each page instead of
+retaining an unbounded cache.
 
-`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 1, exact fields, canonical
-class/type combinations, contiguous positional column IDs, unique in-range source row IDs, matching row and column
-windows, and values valid for their R column. The current limits are 2,048 source columns, 64 sort rules, 100,000
-factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per text value, and 16 MiB per encoded
-page. A running metadata-and-cell budget stops an oversized page before the complete object or JSON string is built.
-Rows use stable source positions, so ordinary explicit R row names do not prevent a dataframe from opening and are not
-added as a data column. This boundary is not part of Python protocol v2.
+`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 2, exact fields, canonical
+class/type combinations, contiguous positional column IDs, unique in-range source row IDs, logical row positions,
+matching row and column windows, and values valid for their R column. Positional frames may not send row labels;
+explicit row-name frames must send one bounded label for every returned row. The current limits are 2,048 source
+columns, 64 sort rules, 100,000 factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per
+text value, and 16 MiB per encoded page. A running metadata-and-cell budget stops an oversized page before the
+complete object or JSON string is built. The canonical grid protocol carries row labels independently from logical
+row numbers. This R contract remains separate from the Python runtime protocol.
 
 `r/openwrangler_runtime/kernel_agent.R` owns the first read-only R sessions. The host creates a UUID before an open,
-the agent captures the named object from the kernel's global environment, and later page and sort requests use that
-capture rather than reading the live variable again. Open, page, and close messages have a separate versioned schema;
+and the agent records the named object's shape, schema, and source binding. Later page and sort requests read through
+that binding and reject structural changes. Open, page, and close messages have a separate versioned schema;
 both R and TypeScript reject extra fields, bad ranges, repeated sort identities, stale request IDs, and oversized
 responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote IRkernel does not need access
 to the extension filesystem.

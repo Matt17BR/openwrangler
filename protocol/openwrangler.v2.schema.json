@@ -279,6 +279,11 @@
       "properties": {
         "id": { "type": "string" },
         "rowNumber": { "type": "integer", "minimum": 0 },
+        "rowLabel": {
+          "description": "Optional source row label. rowNumber remains the zero-based logical grid position.",
+          "type": "string",
+          "maxLength": 1024
+        },
         "values": { "type": "array", "items": { "$ref": "#/definitions/CellValue" } }
       }
     },

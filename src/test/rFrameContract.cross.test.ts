@@ -94,8 +94,8 @@ describe.skipIf(!enabled)("R to TypeScript frame contract", () => {
     expect(frame.page.offset).toBe(0);
     expect(frame.page.rows.map(({ id, rowNumber }) => ({ id, rowNumber }))).toEqual([
       { id: "r:r:0", rowNumber: 0 },
-      { id: "r:r:2", rowNumber: 2 },
-      { id: "r:r:1", rowNumber: 1 }
+      { id: "r:r:2", rowNumber: 1 },
+      { id: "r:r:1", rowNumber: 2 }
     ]);
     expect(frame.page.rows.map((row) => row.values[0]?.display)).toEqual(["1", "-2", "NA"]);
   });

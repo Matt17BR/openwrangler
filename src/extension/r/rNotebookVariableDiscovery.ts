@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Jupyter, Kernel } from "@vscode/jupyter-extension";
+import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { withKernelTimeout } from "../notebooks/kernelLifecycle";
@@ -23,6 +23,7 @@ interface RNotebookVariableDiscoveryReceipt {
 }
 
 const discoveryReceipts = new WeakMap<RNotebookVariableDiscovery, RNotebookVariableDiscoveryReceipt>();
+const verifiedSelectionReceipts = new WeakMap<VerifiedRNotebookVariableSelection, RNotebookKernelSelectionBinding>();
 
 export interface RNotebookVariableDescriptor {
   readonly name: string;
@@ -33,6 +34,20 @@ export interface RNotebookVariableDescriptor {
 export interface RNotebookVariableDiscovery {
   readonly variables: readonly RNotebookVariableDescriptor[];
   readonly truncated: boolean;
+}
+
+/** Opaque, single-use proof that a picker selection was checked on one exact kernel. */
+export interface VerifiedRNotebookVariableSelection {
+  readonly variable: RNotebookVariableDescriptor;
+}
+
+/** Exact-kernel capability claimed by the R bridge immediately after the picker. */
+export interface RNotebookKernelSelectionBinding extends vscode.Disposable {
+  readonly notebook: vscode.NotebookDocument;
+  readonly jupyter: Jupyter;
+  readonly kernel: Kernel;
+  readonly variable: RNotebookVariableDescriptor;
+  isInvalidated(): boolean;
 }
 
 export class RNotebookVariableDiscoveryError extends Error {
@@ -72,7 +87,7 @@ export async function verifyRNotebookVariableSelection(
   notebook: vscode.NotebookDocument,
   discovery: RNotebookVariableDiscovery,
   selected: RNotebookVariableDescriptor
-): Promise<void> {
+): Promise<VerifiedRNotebookVariableSelection> {
   const receipt = discoveryReceipts.get(discovery);
   const discovered = discovery.variables.find(
     (candidate) => candidate.name === selected.name && candidate.dataframeFlavor === selected.dataframeFlavor
@@ -83,7 +98,12 @@ export async function verifyRNotebookVariableSelection(
     );
   }
 
+  let invalidated = invalidatesKernel(receipt.kernel.status);
+  const subscription = receipt.kernel.onDidChangeStatus((status) => {
+    if (invalidatesKernel(status)) invalidated = true;
+  });
   try {
+    if (invalidated) throw changedKernelSelection();
     assertNotebookAccess(notebook);
     const current = await revalidateAfter(
       executeSelectionProbe(receipt.jupyter, receipt.kernel, notebook, discovered),
@@ -97,10 +117,52 @@ export async function verifyRNotebookVariableSelection(
     ) {
       throw changedVariableSelection();
     }
+    if (invalidated) throw changedKernelSelection();
+
+    let disposed = false;
+    const verified = Object.freeze({ variable: discovered });
+    const binding: RNotebookKernelSelectionBinding = Object.freeze({
+      notebook,
+      jupyter: receipt.jupyter,
+      kernel: receipt.kernel,
+      variable: discovered,
+      isInvalidated: () => invalidated || disposed,
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        subscription.dispose();
+      }
+    });
+    verifiedSelectionReceipts.set(verified, binding);
+    return verified;
   } catch (error) {
+    subscription.dispose();
     if (error instanceof RNotebookVariableDiscoveryError) throw error;
     throw changedVariableSelection();
   }
+}
+
+/** Claims the verified selection exactly once and keeps its restart guard alive. */
+export function claimVerifiedRNotebookVariableSelection(
+  notebook: vscode.NotebookDocument,
+  verified: VerifiedRNotebookVariableSelection
+): RNotebookKernelSelectionBinding {
+  const binding = verifiedSelectionReceipts.get(verified);
+  verifiedSelectionReceipts.delete(verified);
+  if (!binding || binding.notebook !== notebook || binding.variable !== verified.variable || binding.isInvalidated()) {
+    binding?.dispose();
+    throw new RNotebookVariableDiscoveryError(
+      "The selected R dataframe is no longer bound to its verified notebook kernel. Open the picker again."
+    );
+  }
+  return binding;
+}
+
+/** Releases a verified selection if panel creation stops before the bridge claims it. */
+export function disposeVerifiedRNotebookVariableSelection(verified: VerifiedRNotebookVariableSelection): void {
+  const binding = verifiedSelectionReceipts.get(verified);
+  verifiedSelectionReceipts.delete(verified);
+  binding?.dispose();
 }
 
 export function buildRNotebookVariableDiscoveryCode(marker: string): string {
@@ -127,15 +189,18 @@ local({
   .ow_variables <- list()
   .ow_failed_binding <- new.env(parent = emptyenv())
 
-  if (!requireNamespace("jsonlite", quietly = TRUE)) {
+  .ow_has_jsonlite <- requireNamespace("jsonlite", quietly = TRUE)
+  .ow_has_rlang <- requireNamespace("rlang", quietly = TRUE)
+  if (!.ow_has_jsonlite || !.ow_has_rlang) {
+    .ow_missing <- if (!.ow_has_jsonlite && !.ow_has_rlang) {
+      "missing_jsonlite_rlang"
+    } else if (!.ow_has_jsonlite) {
+      "missing_jsonlite"
+    } else {
+      "missing_rlang"
+    }
     cat("__OPEN_WRANGLER_R_VARIABLES_START_${marker}__\\n", sep = "")
-    cat('{"protocolVersion":1,"error":"missing_jsonlite"}\\n', sep = "")
-    cat("__OPEN_WRANGLER_R_VARIABLES_END_${marker}__\\n", sep = "")
-    return(invisible(NULL))
-  }
-  if (!requireNamespace("rlang", quietly = TRUE)) {
-    cat("__OPEN_WRANGLER_R_VARIABLES_START_${marker}__\\n", sep = "")
-    cat('{"protocolVersion":1,"error":"missing_rlang"}\\n', sep = "")
+    cat(sprintf('{"protocolVersion":1,"error":"%s"}\\n', .ow_missing), sep = "")
     cat("__OPEN_WRANGLER_R_VARIABLES_END_${marker}__\\n", sep = "")
     return(invisible(NULL))
   }
@@ -243,15 +308,18 @@ local({
   .ow_variables <- list()
   .ow_failed_binding <- new.env(parent = emptyenv())
 
-  if (!requireNamespace("jsonlite", quietly = TRUE)) {
+  .ow_has_jsonlite <- requireNamespace("jsonlite", quietly = TRUE)
+  .ow_has_rlang <- requireNamespace("rlang", quietly = TRUE)
+  if (!.ow_has_jsonlite || !.ow_has_rlang) {
+    .ow_missing <- if (!.ow_has_jsonlite && !.ow_has_rlang) {
+      "missing_jsonlite_rlang"
+    } else if (!.ow_has_jsonlite) {
+      "missing_jsonlite"
+    } else {
+      "missing_rlang"
+    }
     cat("__OPEN_WRANGLER_R_VARIABLES_START_${marker}__\\n", sep = "")
-    cat('{"protocolVersion":1,"error":"missing_jsonlite"}\\n', sep = "")
-    cat("__OPEN_WRANGLER_R_VARIABLES_END_${marker}__\\n", sep = "")
-    return(invisible(NULL))
-  }
-  if (!requireNamespace("rlang", quietly = TRUE)) {
-    cat("__OPEN_WRANGLER_R_VARIABLES_START_${marker}__\\n", sep = "")
-    cat('{"protocolVersion":1,"error":"missing_rlang"}\\n', sep = "")
+    cat(sprintf('{"protocolVersion":1,"error":"%s"}\\n', .ow_missing), sep = "")
     cat("__OPEN_WRANGLER_R_VARIABLES_END_${marker}__\\n", sep = "")
     return(invisible(NULL))
   }
@@ -344,6 +412,9 @@ export function parseRNotebookVariableDiscoveryOutput(output: string, marker: st
     }
     if (parsed.error === "missing_rlang") {
       throw missingRPackage("rlang");
+    }
+    if (parsed.error === "missing_jsonlite_rlang") {
+      throw missingRPackages();
     }
     throw malformedDiscoveryResponse();
   }
@@ -522,10 +593,12 @@ async function revalidateAfter<T>(value: PromiseLike<T>, notebook: vscode.Notebo
 
 function assertSelectedKernel(selected: Kernel | undefined, expected: Kernel): void {
   if (selected !== expected) {
-    throw new RNotebookVariableDiscoveryError(
-      "The selected R notebook kernel changed while Open Wrangler inspected its variables. Try again."
-    );
+    throw changedKernelSelection();
   }
+}
+
+function invalidatesKernel(status: KernelStatus): boolean {
+  return status === "restarting" || status === "autorestarting" || status === "terminating" || status === "dead";
 }
 
 function isJupyterApi(value: unknown): value is Jupyter {
@@ -664,8 +737,20 @@ function missingRPackage(packageName: "jsonlite" | "rlang"): RNotebookVariableDi
   );
 }
 
+function missingRPackages(): RNotebookVariableDiscoveryError {
+  return new RNotebookVariableDiscoveryError(
+    'Run install.packages(c("jsonlite", "rlang")) in the selected R kernel, then try again.'
+  );
+}
+
 function changedVariableSelection(): RNotebookVariableDiscoveryError {
   return new RNotebookVariableDiscoveryError(
     "The selected R dataframe changed while the picker was open. Open the picker again."
+  );
+}
+
+function changedKernelSelection(): RNotebookVariableDiscoveryError {
+  return new RNotebookVariableDiscoveryError(
+    "The selected R notebook kernel changed while Open Wrangler inspected its variables. Try again."
   );
 }

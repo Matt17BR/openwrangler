@@ -29,6 +29,7 @@ import {
   readRRuntimeFiles
 } from "./rKernelRuntimeBundle";
 import type { RFramePageContract } from "./rFrameContract";
+import type { RNotebookKernelSelectionBinding } from "./rNotebookVariableDiscovery";
 
 const FAILED_OPEN_CLOSE_TIMEOUT_MS = 5_000;
 const MAX_RETIRED_SESSION_IDS = 1_024;
@@ -83,7 +84,8 @@ export class RKernelSessionTransport {
     context: vscode.ExtensionContext,
     private readonly notebookDocument: vscode.NotebookDocument,
     private readonly createId: () => string = randomUUID,
-    runtimeOwnerToken: string = randomUUID()
+    runtimeOwnerToken: string = randomUUID(),
+    private readonly verifiedSelection?: RNotebookKernelSelectionBinding
   ) {
     this.notebookUri = notebookDocument.uri;
     const runtimeFiles = readRRuntimeFiles(path.join(context.extensionPath, "r"));
@@ -97,6 +99,9 @@ export class RKernelSessionTransport {
     options: RKernelRequestOptions = {}
   ): Promise<RKernelOpenResult> {
     this.assertActive();
+    if (this.verifiedSelection && variableName !== this.verifiedSelection.variable.name) {
+      throw new Error("The R variable no longer matches the dataframe selected from the notebook picker.");
+    }
     this.beginOpen();
     let detachedSettlement: Promise<void> | undefined;
     try {
@@ -113,7 +118,30 @@ export class RKernelSessionTransport {
         return acquired;
       })();
       void preparation.catch(() => undefined);
-      const acquired = await withKernelTimeout(preparation, timeoutMs, () => undefined, options.cancellation);
+      let preparationDetachedReason: DetachedBridgeRequestReason | undefined;
+      let acquired: KernelObservation;
+      try {
+        acquired = await withKernelTimeout(
+          preparation,
+          timeoutMs,
+          () => {
+            preparationDetachedReason = "timeout";
+          },
+          options.cancellation,
+          () => {
+            preparationDetachedReason = "cancellation";
+          }
+        );
+      } catch (error) {
+        if (!preparationDetachedReason) throw error;
+        detachedSettlement = observeSettlement(preparation);
+        throw new DetachedBridgeRequestError(
+          error instanceof Error ? error.message : detachedRequestMessage(preparationDetachedReason, timeoutMs),
+          preparationDetachedReason,
+          false,
+          detachedSettlement
+        );
+      }
       this.assertActive();
       this.assertSessionIdentityAvailable(sessionId);
       await this.waitForKernelSettlement(acquired.kernel, timeoutMs, started, options.cancellation);
@@ -164,6 +192,12 @@ export class RKernelSessionTransport {
         if (response.kind === "error") throw new RKernelDiagnosticError(response);
         if (response.kind !== "page" || response.sessionId !== sessionId) {
           throw new Error("The R kernel returned a mismatched session identity.");
+        }
+        if (
+          this.verifiedSelection &&
+          response.page.dataframeFlavor !== this.verifiedSelection.variable.dataframeFlavor
+        ) {
+          throw new Error("The selected R dataframe changed before Open Wrangler opened it.");
         }
         return Object.freeze({ sessionId, page: response.page });
       } catch (error) {
@@ -334,11 +368,25 @@ export class RKernelSessionTransport {
   }
 
   private async disposeOnce(): Promise<void> {
+    const failures: unknown[] = [];
     try {
       await this.openIdle;
-      await this.closeMappedSessions();
-      await this.teardownRuntimeBindings();
+      try {
+        await this.closeMappedSessions();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await this.teardownRuntimeBindings();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "Open Wrangler could not finish R kernel cleanup.");
+      }
     } finally {
+      this.verifiedSelection?.dispose();
       this.invalidateKernel();
       this.kernelInvalidatedEmitter.dispose();
     }
@@ -360,6 +408,7 @@ export class RKernelSessionTransport {
     this.assertActive();
     this.assertNotebookProvenance();
     if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before Open Wrangler accesses an R kernel.");
+    if (this.verifiedSelection) return this.acquireVerifiedKernel(this.verifiedSelection);
     const extension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
     if (!extension) throw new Error("Install or enable the VS Code Jupyter extension to open R notebook dataframes.");
     const jupyter = await extension.activate();
@@ -378,6 +427,32 @@ export class RKernelSessionTransport {
       throw new Error(`Open Wrangler requires an R notebook kernel; the selected kernel uses ${kernel.language}.`);
     }
     return this.observeKernel({ kernel, jupyter });
+  }
+
+  private async acquireVerifiedKernel(binding: RNotebookKernelSelectionBinding): Promise<KernelObservation> {
+    if (binding.notebook !== this.notebookDocument || binding.isInvalidated()) {
+      throw new Error("The verified R notebook kernel changed before Open Wrangler opened the dataframe.");
+    }
+    const selected = await binding.jupyter.kernels.getKernel(this.notebookUri);
+    this.assertActive();
+    this.assertNotebookProvenance();
+    if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before Open Wrangler accesses an R kernel.");
+    if (binding.isInvalidated() || selected !== binding.kernel) {
+      throw new Error("The verified R notebook kernel changed before Open Wrangler opened the dataframe.");
+    }
+    if (binding.kernel.language.toLowerCase() !== "r") {
+      throw new Error(
+        `Open Wrangler requires an R notebook kernel; the selected kernel uses ${binding.kernel.language}.`
+      );
+    }
+    const acquired = this.observeKernel({ kernel: binding.kernel, jupyter: binding.jupyter });
+    await this.assertKernelStillSelected(acquired);
+    if (binding.isInvalidated()) {
+      this.invalidateKernel(acquired);
+      this.kernelInvalidatedEmitter.fire();
+      throw new Error("The verified R notebook kernel restarted before Open Wrangler opened the dataframe.");
+    }
+    return acquired;
   }
 
   private observeKernel(acquired: KernelObservation): KernelObservation {

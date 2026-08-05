@@ -29,6 +29,11 @@ import {
   type RFrameCell,
   type RFramePageContract
 } from "./rFrameContract";
+import {
+  claimVerifiedRNotebookVariableSelection,
+  type RNotebookVariableDescriptor,
+  type VerifiedRNotebookVariableSelection
+} from "./rNotebookVariableDiscovery";
 
 const CLOSED_SESSION_LIMIT = 1_024;
 
@@ -61,6 +66,7 @@ interface RBridgeSession {
   readonly dataframeFlavor: RDataframeFlavor;
   readonly shape: Readonly<{ rows: number; columns: number }>;
   readonly schema: readonly ColumnSchema[];
+  readonly rowNames: RFramePageContract["frameSemantics"]["rowNames"];
   invalidated: boolean;
 }
 
@@ -85,12 +91,29 @@ export class RKernelBridge implements OpenWranglerBridge {
   private disposed = false;
   private disposal: Promise<void> | undefined;
 
+  static fromVerifiedSelection(
+    context: vscode.ExtensionContext,
+    notebookDocument: vscode.NotebookDocument,
+    verifiedSelection: VerifiedRNotebookVariableSelection,
+    diagnosticSink?: (message: string) => void
+  ): RKernelBridge {
+    const binding = claimVerifiedRNotebookVariableSelection(notebookDocument, verifiedSelection);
+    try {
+      const transport = new RKernelSessionTransport(context, notebookDocument, randomUUID, randomUUID(), binding);
+      return new RKernelBridge(context, notebookDocument, transport, randomUUID, diagnosticSink, binding.variable);
+    } catch (error) {
+      binding.dispose();
+      throw error;
+    }
+  }
+
   constructor(
     context: vscode.ExtensionContext,
     notebookDocument: vscode.NotebookDocument,
-    transport: RKernelBridgeTransport = new RKernelSessionTransport(context, notebookDocument),
+    transport: RKernelBridgeTransport,
     private readonly createSessionId: () => string = randomUUID,
-    diagnosticSink?: (message: string) => void
+    diagnosticSink?: (message: string) => void,
+    private readonly verifiedVariable?: RNotebookVariableDescriptor
   ) {
     this.transport = transport;
     this.diagnosticSink = diagnosticSink ?? ((message) => appendRDiagnostic(context, message));
@@ -151,6 +174,14 @@ export class RKernelBridge implements OpenWranglerBridge {
     const invalid = validateOpenRequest(request);
     if (invalid) return invalid;
     const sessionId = request.requestedSessionId as string;
+    if (this.verifiedVariable && request.source.variableName !== this.verifiedVariable.name) {
+      return errorResponse(
+        "r_variable_changed",
+        "The R variable no longer matches the dataframe selected from the notebook picker.",
+        true,
+        sessionId
+      );
+    }
     if (
       this.sessions.has(sessionId) ||
       this.openingSessionIds.has(sessionId) ||
@@ -173,6 +204,9 @@ export class RKernelBridge implements OpenWranglerBridge {
       }
       if (result.sessionId !== sessionId) {
         throw new Error("The R kernel returned a different session identity from the host-owned identity.");
+      }
+      if (this.verifiedVariable && result.page.dataframeFlavor !== this.verifiedVariable.dataframeFlavor) {
+        throw new Error("The selected R dataframe changed before Open Wrangler opened it.");
       }
       const session = sessionFromContract(sessionId, request.source, result.page);
       this.sessions.set(sessionId, session);
@@ -456,6 +490,7 @@ function sessionFromContract(sessionId: string, source: SessionSource, contract:
     dataframeFlavor: contract.dataframeFlavor,
     shape: Object.freeze({ ...contract.shape }),
     schema,
+    rowNames: contract.frameSemantics.rowNames,
     invalidated: false
   };
 }
@@ -487,6 +522,7 @@ function gridPageFromContract(contract: RFramePageContract): GridPage {
     rows: contract.page.rows.map((row) => ({
       id: row.id,
       rowNumber: row.rowNumber,
+      ...(row.rowLabel === undefined ? {} : { rowLabel: row.rowLabel }),
       values: row.values.map(cellValueFromR)
     }))
   };
@@ -506,6 +542,7 @@ function assertSameSessionContract(session: RBridgeSession, contract: RFramePage
     contract.dataframeFlavor !== session.dataframeFlavor ||
     contract.shape.rows !== session.shape.rows ||
     contract.shape.columns !== session.shape.columns ||
+    contract.frameSemantics.rowNames !== session.rowNames ||
     contract.page.offset !== request.offset ||
     contract.page.limit !== request.limit ||
     contract.page.totalRows !== session.shape.rows ||

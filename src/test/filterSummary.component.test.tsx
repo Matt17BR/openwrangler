@@ -1083,7 +1083,7 @@ describe("SummaryPanel", () => {
     const onSelectView = vi.fn();
     renderSummary({ activeView: "column", onSelectView });
 
-    expect(screen.getByRole("tablist", { name: "Column profiles view" })).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "Column profiles and filters view" })).toBeInTheDocument();
     const tabs = screen.getAllByRole("tab");
     expect(tabs.map((tab) => tab.textContent)).toEqual(["Column", "Dataset", "Filters"]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");

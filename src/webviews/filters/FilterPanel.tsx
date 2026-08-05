@@ -67,6 +67,7 @@ export function FilterPanel({
   const [advanced, setAdvanced] = useState(defaultAdvanced);
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata?.schema ?? []), [metadata?.schema]);
   const activeFilters = model.filters.filter(isActiveColumnFilter);
+  const panelLabel = filterSupported ? (sortSupported ? "Filters / Sorts" : "Filters") : "Sorts";
 
   useEffect(() => {
     const requestedColumnChanged = previousRequestedColumn.current !== requestedColumn;
@@ -319,7 +320,7 @@ export function FilterPanel({
   return (
     <section className="panel filterSortPanel" aria-busy={disabled}>
       <div className="panelHeader">
-        <h2>Filters / Sorts</h2>
+        <h2>{panelLabel}</h2>
         <button type="button" disabled={disabled || (!filterSupported && !sortSupported)} onClick={clearAll}>
           Clear all
         </button>
@@ -511,12 +512,6 @@ export function FilterPanel({
           Clear column
         </button>
       </details>
-      {!filterSupported && (
-        <p className="mutedText" role="status">
-          Filtering is unavailable for this dataframe.
-        </p>
-      )}
-
       <details
         className="filterSection"
         open={sortOpen}

@@ -12,11 +12,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   exactly, decimal values must fit the column scale, and datetime values must match the column's timezone awareness.
   Generated Python code follows the same rules without converting the dataframe to another engine.
 - Added the first R notebook viewer for Open Wrangler 2. The notebook picker can open base `data.frame`, tibble, and
-  `data.table` objects directly from IRkernel, page across the complete frame, and apply view-only sorts. Filters,
-  profiles, cleaning, exports, and Quarto/R Markdown are not part of this first slice.
+  `data.table` objects directly from IRkernel, page across the complete frame, and apply view-only sorts. Explicit R
+  row names appear in the grid gutter and stay with their source rows when sorted. Filters, profiles, cleaning,
+  exports, and Quarto/R Markdown are not part of this first slice.
 
 ### Changed
 
+- The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and
   view-only; streaming DataFrames, files, cleaning, exports, saved output, remote or authenticated clusters, and Spark

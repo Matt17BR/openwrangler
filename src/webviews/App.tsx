@@ -1638,6 +1638,14 @@ export function App() {
   const profileSupported = metadata ? supportsViewingCapability(metadata.capabilities, "profile") : true;
   const columnValuesSupported = metadata ? supportsViewingCapability(metadata.capabilities, "columnValues") : true;
   const filterPanelSupported = filterSupported || sortSupported;
+  const filterPanelLabel = filterSupported ? (sortSupported ? "Filters / Sorts" : "Filters") : "Sorts";
+  const sidePanelLabel = profileSupported
+    ? filterSupported
+      ? "Column profiles and filters"
+      : sortSupported
+        ? "Column profiles and sorts"
+        : "Column profiles"
+    : filterPanelLabel;
 
   const requestPage = (
     offset: number,
@@ -2288,13 +2296,9 @@ export function App() {
                 aria-label={
                   inspectionMode
                     ? "Filters paused during inspection"
-                    : profileSupported
-                      ? filterPanelSupported
-                        ? "Column profiles and filters"
-                        : "Column profiles"
-                      : filterPanelSupported
-                        ? "Filters and sorts"
-                        : "Profiles and filters unavailable"
+                    : profileSupported || filterPanelSupported
+                      ? sidePanelLabel
+                      : "Profiles and filters unavailable"
                 }
                 aria-expanded={sidePanelOpen}
                 aria-controls="openwrangler-insights-panel"
@@ -2324,7 +2328,7 @@ export function App() {
                   : profileSupported
                     ? "Column profiles"
                     : filterPanelSupported
-                      ? "Filters / Sorts"
+                      ? filterPanelLabel
                       : "Profiles unavailable"}
               </button>
               <ColumnSearch
@@ -2608,9 +2612,9 @@ export function App() {
             )}
           </section>
           {sidePanelOpen && !inspectionMode && (profileSupported || filterPanelSupported) && (
-            <aside id="openwrangler-insights-panel" className="sidebar" aria-label="Column profiles and filters">
+            <aside id="openwrangler-insights-panel" className="sidebar" aria-label={sidePanelLabel}>
               <div className="drawerHeader">
-                <strong>{profileSupported ? "Column profiles" : "Filters / Sorts"}</strong>
+                <strong>{profileSupported ? "Column profiles" : filterPanelLabel}</strong>
                 <button
                   ref={sidePanelCloseRef}
                   type="button"
@@ -2627,6 +2631,7 @@ export function App() {
                 activeView={summaryPanelView}
                 profileSupported={profileSupported}
                 filtersSupported={filterPanelSupported}
+                filtersLabel={filterPanelLabel}
                 onSelectView={selectSummaryPanelView}
               />
               {summaryPanelView === "filters" && (

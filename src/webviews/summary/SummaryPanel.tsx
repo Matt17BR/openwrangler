@@ -14,6 +14,7 @@ interface SummaryPanelProps {
   activeView: SummaryPanelView;
   profileSupported?: boolean;
   filtersSupported?: boolean;
+  filtersLabel?: string;
   onSelectView(view: SummaryPanelView): void;
 }
 
@@ -28,6 +29,7 @@ export function SummaryPanel({
   activeView,
   profileSupported = true,
   filtersSupported = true,
+  filtersLabel = "Filters",
   onSelectView
 }: SummaryPanelProps) {
   const resolvedColumnId =
@@ -40,7 +42,12 @@ export function SummaryPanel({
 
   return (
     <section className="panel summaryPanel" data-active-view={activeView}>
-      <div className="summaryViewTabs" role="tablist" aria-label="Column profiles view">
+      <div
+        className="summaryViewTabs"
+        role="tablist"
+        aria-label={summaryViewTabsLabel(profileSupported, filtersSupported, filtersLabel)}
+        style={{ gridTemplateColumns: `repeat(${Math.max(1, visibleViews.length)}, minmax(0, 1fr))` }}
+      >
         {visibleViews.map((view) => (
           <button
             key={view}
@@ -55,7 +62,7 @@ export function SummaryPanel({
             onClick={() => onSelectView(view)}
             onKeyDown={(event) => moveTabSelection(event, view, onSelectView)}
           >
-            {viewLabel(view)}
+            {viewLabel(view, filtersLabel)}
           </button>
         ))}
       </div>
@@ -401,10 +408,18 @@ function topValueKey(item: ValueCount, index: number): string {
   return `${item.value}-${item.count}-${index}`;
 }
 
-function viewLabel(view: SummaryPanelView): string {
+function viewLabel(view: SummaryPanelView, filtersLabel: string): string {
   if (view === "column") return "Column";
   if (view === "dataset") return "Dataset";
-  return "Filters";
+  return filtersLabel;
+}
+
+function summaryViewTabsLabel(profileSupported: boolean, filtersSupported: boolean, filtersLabel: string): string {
+  if (!profileSupported) return `${filtersLabel} view`;
+  if (!filtersSupported) return "Column profiles view";
+  if (filtersLabel === "Sorts") return "Column profiles and sorts view";
+  if (filtersLabel === "Filters / Sorts") return "Column profiles, filters, and sorts view";
+  return "Column profiles and filters view";
 }
 
 const formatNumber = formatNumericSummaryNumber;

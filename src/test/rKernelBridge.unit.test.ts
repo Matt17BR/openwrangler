@@ -4,10 +4,24 @@ import type { OpenSessionRequest, OpenWranglerRequest } from "../shared/protocol
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { RKernelBridge, type RKernelBridgeTransport } from "../extension/r/rKernelBridge";
 import type { RColumnSchema, RFrameCell, RFramePageContract } from "../extension/r/rFrameContract";
+import type { RNotebookVariableDescriptor } from "../extension/r/rNotebookVariableDiscovery";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 
 describe("canonical R kernel bridge", () => {
+  it("checks the opened frame flavor against the verified picker selection", async () => {
+    const transport = fakeTransport(frameContract());
+    const verifiedVariable: RNotebookVariableDescriptor = {
+      name: "orders",
+      backend: "r",
+      dataframeFlavor: "r.tibble"
+    };
+    const bridge = createBridge(transport, undefined, undefined, verifiedVariable);
+
+    await expect(bridge.request(openRequest())).rejects.toThrow("dataframe changed");
+    expect(transport.open).toHaveBeenCalledOnce();
+  });
+
   it("opens a host-owned read-only R session and maps exact R cells", async () => {
     const contract = frameContract();
     const transport = fakeTransport(contract);
@@ -60,6 +74,20 @@ describe("canonical R kernel bridge", () => {
       cell("null", null, "NA", true, false),
       { ...cell("infinity", null, "Inf"), sign: 1 }
     ]);
+  });
+
+  it("maps explicit R row names into canonical grid row labels", async () => {
+    const transport = fakeTransport(frameContract({ explicitRowLabel: "Mazda RX4" }));
+    const bridge = createBridge(transport);
+
+    const response = await bridge.request(openRequest());
+
+    expect(response).toMatchObject({
+      kind: "sessionOpened",
+      page: {
+        rows: [{ id: "r:r:0", rowNumber: 0, rowLabel: "Mazda RX4" }]
+      }
+    });
   });
 
   it("assigns a host session identity when the panel omits one", async () => {
@@ -341,13 +369,21 @@ describe("canonical R kernel bridge", () => {
 function createBridge(
   transport: FakeRTransport,
   createSessionId?: () => string,
-  diagnosticSink?: (message: string) => void
+  diagnosticSink?: (message: string) => void,
+  verifiedVariable?: RNotebookVariableDescriptor
 ): RKernelBridge {
   const context = {
     extension: { packageJSON: { version: "2.0.0-preview.1" } },
     subscriptions: []
   } as unknown as vscode.ExtensionContext;
-  return new RKernelBridge(context, {} as vscode.NotebookDocument, transport, createSessionId, diagnosticSink);
+  return new RKernelBridge(
+    context,
+    {} as vscode.NotebookDocument,
+    transport,
+    createSessionId,
+    diagnosticSink,
+    verifiedVariable
+  );
 }
 
 function openRequest(): OpenSessionRequest {
@@ -398,7 +434,9 @@ function deferred<T>(): { promise: Promise<T>; resolve(value?: T): void } {
   return { promise, resolve };
 }
 
-function frameContract(options: Readonly<{ duplicateFirstName?: boolean }> = {}): RFramePageContract {
+function frameContract(
+  options: Readonly<{ duplicateFirstName?: boolean; explicitRowLabel?: string }> = {}
+): RFramePageContract {
   const names = [
     "value",
     options.duplicateFirstName ? "value" : "count",
@@ -430,10 +468,14 @@ function frameContract(options: Readonly<{ duplicateFirstName?: boolean }> = {})
     { kind: "infinity", raw: null, display: "Inf", isNull: false, isNaN: false, sign: 1 }
   ];
   return {
-    contractVersion: 1,
+    contractVersion: 2,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 8 },
-    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
+    frameSemantics: {
+      classes: ["data.frame"],
+      rowNames: options.explicitRowLabel === undefined ? "positional" : "explicit",
+      keyColumnIds: []
+    },
     schema: schemas,
     page: {
       offset: 0,
@@ -442,7 +484,14 @@ function frameContract(options: Readonly<{ duplicateFirstName?: boolean }> = {})
       columnOffset: 0,
       columnLimit: 8,
       columnIds: schemas.map((column) => column.id),
-      rows: [{ id: "r:r:0", rowNumber: 0, values }]
+      rows: [
+        {
+          id: "r:r:0",
+          rowNumber: 0,
+          ...(options.explicitRowLabel === undefined ? {} : { rowLabel: options.explicitRowLabel }),
+          values
+        }
+      ]
     }
   };
 }
