@@ -226,6 +226,8 @@ jobs:
         run: npm ls
       - name: Full npm audit
         run: npm audit
+      - name: TypeScript and webview unit tests
+        run: npm run test:ts -- --exclude src/test/notebookVariableDiscovery.python.test.ts
 
   linux-packaged-editor:
     name: Packaged VS Code (Linux)
