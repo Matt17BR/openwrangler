@@ -11,6 +11,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statfsSync,
   writeFileSync
 } from "node:fs";
 import { arch, cpus, platform, release, totalmem } from "node:os";
@@ -31,6 +32,10 @@ export const TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 export const DATA_WRANGLER_VERSION = "1.24.2";
 export const WARM_REPETITIONS = 10;
 export const SMOKE_REPETITIONS = 2;
+export const LOCAL_REPETITIONS = 3;
+const LOCAL_FIXTURE_MAX_BYTES = 640 * 1024 * 1024;
+const LOCAL_OUTPUT_MIN_FREE_BYTES = 2 * LOCAL_FIXTURE_MAX_BYTES + 512 * 1024 * 1024;
+const LOCAL_FIXTURE_OWNER_PROTOCOL = "openwrangler-local-comparison-fixture-v1";
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
@@ -45,15 +50,38 @@ export const STUDY_CELLS = Object.freeze([
   Object.freeze({ id: "pandas-parquet", engine: "pandas", format: "parquet", rows: 1_000_000, columns: 20 }),
   Object.freeze({ id: "polars-parquet", engine: "polars", format: "parquet", rows: 1_000_000, columns: 20 })
 ]);
+export const LOCAL_MIXED_CELLS = Object.freeze([
+  Object.freeze({ id: "pandas-parquet-local", engine: "pandas", format: "parquet", rows: 1_000_000, columns: 100 }),
+  Object.freeze({ id: "polars-parquet-local", engine: "polars", format: "parquet", rows: 1_000_000, columns: 100 })
+]);
 const PRODUCTS = Object.freeze(["open-wrangler", "data-wrangler"]);
 const HASH = /^[0-9a-f]{64}$/u;
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 
-export function createDataWranglerComparisonSchedule() {
+function validateComparisonCells(cells) {
+  if (!sameCells(cells, STUDY_CELLS) && !sameCells(cells, LOCAL_MIXED_CELLS)) {
+    throw new TypeError("Comparison cells must match the release study or capped local Parquet profile.");
+  }
+}
+
+function sameCells(actual, expected) {
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function sampleCountWord(value) {
+  return new Map([
+    [SMOKE_REPETITIONS, "two"],
+    [LOCAL_REPETITIONS, "three"],
+    [WARM_REPETITIONS, "ten"]
+  ]).get(value);
+}
+
+export function createDataWranglerComparisonSchedule(cells = STUDY_CELLS) {
+  validateComparisonCells(cells);
   const schedule = [];
   const productOrders = [PRODUCTS, [...PRODUCTS].reverse(), [...PRODUCTS].reverse(), PRODUCTS];
-  for (const [cellIndex, cell] of STUDY_CELLS.entries()) {
+  for (const [cellIndex, cell] of cells.entries()) {
     for (const product of productOrders[cellIndex]) {
       schedule.push(
         Object.freeze({
@@ -81,7 +109,8 @@ export function buildStudyManifest({
   fixtures,
   machine,
   toolHashes,
-  repetitionsPerSession = WARM_REPETITIONS
+  repetitionsPerSession = WARM_REPETITIONS,
+  cells = STUDY_CELLS
 }) {
   canonicalUtc(createdAtUtc);
   validateVersionedFile(candidate, "Open Wrangler candidate");
@@ -99,13 +128,22 @@ export function buildStudyManifest({
   }
   validateMachine(machine);
   validateToolHashes(toolHashes);
-  if (![SMOKE_REPETITIONS, WARM_REPETITIONS].includes(repetitionsPerSession)) {
-    throw new TypeError("A comparison session requires either two smoke samples or ten release samples.");
+  validateComparisonCells(cells);
+  const localProfile = sameCells(cells, LOCAL_MIXED_CELLS);
+  const validRepetitions = localProfile
+    ? repetitionsPerSession === LOCAL_REPETITIONS
+    : [SMOKE_REPETITIONS, WARM_REPETITIONS].includes(repetitionsPerSession);
+  if (!validRepetitions) {
+    throw new TypeError(
+      localProfile
+        ? "The local comparison requires exactly three samples."
+        : "The release comparison requires two smoke or ten release samples."
+    );
   }
   if (candidate.version === DATA_WRANGLER_VERSION) {
     throw new TypeError("The candidate version must be independent from the Data Wrangler baseline version.");
   }
-  for (const cell of STUDY_CELLS) {
+  for (const cell of cells) {
     const fixture = fixtures[cell.format];
     if (
       !fixture ||
@@ -117,12 +155,12 @@ export function buildStudyManifest({
       throw new TypeError(`${cell.format} fixture does not match the fixed study dimensions.`);
     }
   }
-  const schedule = createDataWranglerComparisonSchedule();
+  const schedule = createDataWranglerComparisonSchedule(cells);
   const manifest = {
     protocol: STUDY_PROTOCOL,
     createdAtUtc,
     method: {
-      cells: STUDY_CELLS.map((cell) => ({ ...cell })),
+      cells: cells.map((cell) => ({ ...cell })),
       repetitionsPerSession,
       regressionLimits: structuredClone(DATA_WRANGLER_REGRESSION_LIMITS),
       timingBoundaries: {
@@ -131,7 +169,7 @@ export function buildStudyManifest({
         firstProfile: "public profiling action to the first completed column summary",
         completeProfile: "public profiling action to final summaries for every column"
       },
-      statistics: `${repetitionsPerSession === WARM_REPETITIONS ? "ten" : "two"} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
+      statistics: `${sampleCountWord(repetitionsPerSession)} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
       memory: "highest observed absolute process-tree PSS during each measured notebook workflow"
     },
     provenance: {
@@ -189,16 +227,22 @@ export async function runDataWranglerComparisonStudy(options, dependencies = {})
   await prepareTools();
   const observed = await captureProvenance(options, dependencies);
   const repetitionsPerSession = options.repetitionsPerSession ?? WARM_REPETITIONS;
+  const cells = options.cells ?? STUDY_CELLS;
   const manifestPath = join(output, "manifest.json");
   let manifest;
   if (existsSync(manifestPath)) {
     manifest = readJson(manifestPath);
-    const expected = buildStudyManifest({ ...observed, createdAtUtc: manifest.createdAtUtc, repetitionsPerSession });
+    const expected = buildStudyManifest({
+      ...observed,
+      createdAtUtc: manifest.createdAtUtc,
+      repetitionsPerSession,
+      cells
+    });
     if (digest(manifest) !== digest(expected)) {
       throw new Error("Study inputs changed since manifest creation. Start a new output directory.");
     }
   } else {
-    manifest = buildStudyManifest({ ...observed, createdAtUtc: now(), repetitionsPerSession });
+    manifest = buildStudyManifest({ ...observed, createdAtUtc: now(), repetitionsPerSession, cells });
     writeJsonAtomic(manifestPath, manifest);
   }
 
@@ -267,6 +311,89 @@ export async function runDataWranglerComparisonStudy(options, dependencies = {})
     completed: completed.size,
     remaining: remainingCount
   });
+}
+
+export async function runLocalDataWranglerComparison(options, dependencies = {}) {
+  if (options.confirmLocalComparison !== "yes") {
+    throw new Error("Pass --confirm-local-comparison yes to run the four local comparison sessions.");
+  }
+  const output = resolve(options.output);
+  mkdirSync(output, { recursive: true, mode: 0o700 });
+  removeStaleLocalFixtureDirectories(output, dependencies.isProcessAlive ?? isProcessAlive);
+  (dependencies.requireLocalDiskSpace ?? requireLocalComparisonDiskSpace)(output);
+  const fixtureRoot = mkdtempSync(join(output, `local-fixture-${process.pid}-`));
+  writeJsonAtomic(join(fixtureRoot, "owner.json"), {
+    protocol: LOCAL_FIXTURE_OWNER_PROTOCOL,
+    pid: process.pid
+  });
+  const parquet = join(fixtureRoot, "mixed-1000000-100.parquet");
+  const generateFixture = dependencies.generateLocalFixture ?? generateLocalMixedFixture;
+  const runStudy = dependencies.runStudy ?? runDataWranglerComparisonStudy;
+  try {
+    await generateFixture(options.python, parquet);
+    return await runStudy(
+      {
+        ...options,
+        parquet,
+        cells: LOCAL_MIXED_CELLS,
+        repetitionsPerSession: LOCAL_REPETITIONS
+      },
+      dependencies
+    );
+  } finally {
+    rmSync(fixtureRoot, { force: true, recursive: true });
+  }
+}
+
+export function requireLocalComparisonDiskSpace(output, availableBytes = availableDiskBytes(output)) {
+  if (!Number.isSafeInteger(availableBytes) || availableBytes < LOCAL_OUTPUT_MIN_FREE_BYTES) {
+    throw new Error("The local comparison needs 1.75 GiB free for its capped fixture and private trial copy.");
+  }
+}
+
+export function removeStaleLocalFixtureDirectories(output, processAlive = isProcessAlive) {
+  for (const name of readdirSync(output)) {
+    const match = /^local-fixture-(\d+)-[A-Za-z0-9]{6}$/u.exec(name);
+    if (!match) continue;
+    const path = join(output, name);
+    const metadata = lstatSync(path);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error(`Refusing malformed local fixture path ${name}.`);
+    }
+    const pid = Number(match[1]);
+    if (!Number.isSafeInteger(pid) || pid < 1 || processAlive(pid)) {
+      throw new Error(`Local fixture ${name} may still belong to a running comparison.`);
+    }
+    const children = readdirSync(path);
+    const ownerPath = join(path, "owner.json");
+    if (existsSync(ownerPath)) {
+      const owner = readJson(ownerPath);
+      if (
+        Object.keys(owner).sort().join(",") !== "pid,protocol" ||
+        owner.protocol !== LOCAL_FIXTURE_OWNER_PROTOCOL ||
+        owner.pid !== pid
+      ) {
+        throw new Error(`Refusing invalid ownership marker in stale local fixture ${name}.`);
+      }
+    } else if (children.some((child) => !/^owner\.json\.[A-Za-z0-9-]+\.tmp$/u.test(child))) {
+      throw new Error(`Refusing unowned stale local fixture ${name}.`);
+    }
+    for (const child of children) {
+      if (
+        child !== "owner.json" &&
+        child !== "mixed-1000000-100.parquet" &&
+        !/^\.mixed-1000000-100\.parquet\.[A-Za-z0-9_-]+\.tmp$/u.test(child) &&
+        !/^owner\.json\.[A-Za-z0-9-]+\.tmp$/u.test(child)
+      ) {
+        throw new Error(`Refusing unexpected entry ${child} in stale local fixture ${name}.`);
+      }
+      const childMetadata = lstatSync(join(path, child));
+      if (childMetadata.isSymbolicLink() || !childMetadata.isFile() || childMetadata.nlink !== 1) {
+        throw new Error(`Refusing malformed entry ${child} in stale local fixture ${name}.`);
+      }
+    }
+    rmSync(path, { force: true, recursive: true });
+  }
 }
 
 export async function runDataWranglerComparisonSmoke(options, dependencies = {}) {
@@ -470,15 +597,20 @@ async function captureProvenance(options, dependencies) {
   const candidate = await inspectCandidate(options.candidate);
   const editor = await inspectEditor(options.editor, options.editorCli);
   const python = { ...(await inspectPython(options.python)), sha256: hashFile(options.python) };
-  const fixtureContract = await validateFixtures(options.python, options.csv, options.parquet);
+  const cells = options.cells ?? STUDY_CELLS;
+  const fixtureContract = await validateFixtures(options.python, options.csv, options.parquet, cells);
+  const fixturePaths = { csv: options.csv, parquet: options.parquet };
+  const fixtures = Object.fromEntries(
+    [...new Set(cells.map(({ format }) => format))].map((format) => [
+      format,
+      { ...fixtureContract[format], sha256: hashFile(fixturePaths[format]) }
+    ])
+  );
   return {
     candidate,
     editor,
     python,
-    fixtures: {
-      csv: { ...fixtureContract.csv, sha256: hashFile(options.csv) },
-      parquet: { ...fixtureContract.parquet, sha256: hashFile(options.parquet) }
-    },
+    fixtures,
     machine: inspectMachine(),
     toolHashes: Object.fromEntries(Object.entries(comparisonToolFiles()).map(([name, path]) => [name, hashFile(path)]))
   };
@@ -553,7 +685,21 @@ async function inspectPythonEnvironment(python) {
   return value;
 }
 
-async function validateFixtureInputs(python, csv, parquet) {
+async function validateFixtureInputs(python, csv, parquet, cells = STUDY_CELLS) {
+  if (sameCells(cells, LOCAL_MIXED_CELLS)) {
+    const script = resolve("python/benchmarks/local_mixed_parquet.py");
+    const program = [
+      "import json, sys",
+      "from pathlib import Path",
+      "sys.path.insert(0, sys.argv[1])",
+      "from local_mixed_parquet import validate_local_mixed_parquet",
+      "print(json.dumps({'parquet': validate_local_mixed_parquet(Path(sys.argv[2]))}))"
+    ].join("; ");
+    const { stdout } = await spawnCommand(python, ["-I", "-c", program, dirname(script), parquet], {
+      timeoutMs: 180_000
+    });
+    return JSON.parse(stdout);
+  }
   const benchmarkDirectory = resolve("python/benchmarks");
   const program = [
     "import json, sys",
@@ -579,6 +725,29 @@ async function validateFixtureInputs(python, csv, parquet) {
     throw new Error("The comparison fixtures did not satisfy the deterministic fixture contract.");
   }
   return value;
+}
+
+async function generateLocalMixedFixture(python, output) {
+  const script = resolve("python/benchmarks/local_mixed_parquet.py");
+  await spawnCommand(python, ["-I", script, "--out", output], {
+    cwd: resolve(import.meta.dirname, ".."),
+    timeoutMs: 900_000
+  });
+}
+
+function availableDiskBytes(path) {
+  const statistics = statfsSync(path, { bigint: true });
+  const bytes = statistics.bavail * statistics.bsize;
+  return bytes > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(bytes);
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
 }
 
 function inspectMachineEnvironment() {
@@ -893,7 +1062,9 @@ function sanitizeError(error) {
 
 function parseArguments(arguments_) {
   const command = arguments_[0];
-  if (!["run", "smoke", "report"].includes(command)) throw new Error("Expected run, smoke, or report.");
+  if (!["run", "smoke", "local", "report"].includes(command)) {
+    throw new Error("Expected run, smoke, local, or report.");
+  }
   const values = new Map();
   for (let index = 1; index < arguments_.length; index += 2) {
     const flag = arguments_[index];
@@ -904,13 +1075,15 @@ function parseArguments(arguments_) {
     values.set(flag, value);
   }
   if (command === "report") return { command, study: required(values, "--study"), output: required(values, "--out") };
-  const paths = ["--candidate", "--python", "--editor", "--editor-cli", "--csv", "--parquet"];
+  const paths = ["--candidate", "--python", "--editor", "--editor-cli"];
+  if (command !== "local") paths.push("--csv", "--parquet");
   for (const flag of paths) {
     const value = required(values, flag);
     if (!isAbsolute(value)) throw new Error(`${flag} must be an absolute path.`);
   }
   const limit = values.has("--limit") ? Number(values.get("--limit")) : undefined;
   if (command === "smoke" && limit !== undefined) throw new Error("Smoke always runs exactly one complete pair.");
+  if (command === "local" && limit !== undefined) throw new Error("Local comparison always runs all four sessions.");
   if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 8)) {
     throw new Error("--limit must be between 1 and 8.");
   }
@@ -923,6 +1096,7 @@ function parseArguments(arguments_) {
     csv: values.get("--csv"),
     parquet: values.get("--parquet"),
     output: required(values, "--out"),
+    confirmLocalComparison: values.get("--confirm-local-comparison"),
     limit
   };
 }
@@ -943,6 +1117,11 @@ async function main() {
   if (options.command === "smoke") {
     const status = await runDataWranglerComparisonSmoke(options);
     console.log(`${status.completed} paired smoke sessions complete.`);
+    return;
+  }
+  if (options.command === "local") {
+    const status = await runLocalDataWranglerComparison(options);
+    console.log(`${status.completed} of ${status.manifest.schedule.length} local comparison sessions complete.`);
     return;
   }
   const { manifest, trials } = loadStudyResults(options.study);

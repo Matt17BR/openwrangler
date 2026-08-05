@@ -8,7 +8,7 @@ import sys
 from collections.abc import Callable
 from importlib import import_module
 from pathlib import Path
-from typing import Literal, Protocol, TypedDict, cast
+from typing import Any, Literal, Protocol, TypedDict, cast
 
 import polars as pl
 import pytest
@@ -34,6 +34,7 @@ benchmark_directory = Path(__file__).parents[1] / "benchmarks"
 sys.path.insert(0, str(benchmark_directory))
 try:
     fixture_contract = import_module("fixture_contract")
+    local_mixed_parquet = import_module("local_mixed_parquet")
     FixtureSpec = cast(_FixtureSpecFactory, fixture_contract.FixtureSpec)
     assert_fixture_contract = cast(
         Callable[[Path, _FixtureSpec], None],
@@ -41,6 +42,79 @@ try:
     )
 finally:
     sys.path.remove(str(benchmark_directory))
+
+
+def test_local_mixed_fixture_fails_early_when_resources_are_too_small(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="available memory"):
+        local_mixed_parquet.require_local_resources(
+            tmp_path,
+            available_memory=local_mixed_parquet.MIN_AVAILABLE_MEMORY - 1,
+            free_disk=local_mixed_parquet.MIN_FREE_DISK,
+        )
+    with pytest.raises(RuntimeError, match="free disk"):
+        local_mixed_parquet.require_local_resources(
+            tmp_path,
+            available_memory=local_mixed_parquet.MIN_AVAILABLE_MEMORY,
+            free_disk=local_mixed_parquet.MIN_FREE_DISK - 1,
+        )
+
+
+def test_local_mixed_fixture_removes_an_oversized_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "mixed.parquet"
+
+    def write_oversized(output: Any, *, rows: int, columns: int) -> None:
+        del rows, columns
+        output.write(b"x" * 129)
+
+    monkeypatch.setattr(local_mixed_parquet, "_write_mixed_parquet", write_oversized)
+    with pytest.raises(RuntimeError, match="size cap"):
+        local_mixed_parquet.create_local_mixed_parquet(
+            destination,
+            rows=10,
+            columns=10,
+            max_bytes=128,
+            check_resources=False,
+        )
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_local_mixed_fixture_validates_exact_schema_and_nulls(tmp_path: Path) -> None:
+    canonical = tmp_path / "canonical.parquet"
+    local_mixed_parquet.create_local_mixed_parquet(
+        canonical,
+        rows=1_000,
+        columns=10,
+        max_bytes=8 * 1024 * 1024,
+        check_resources=False,
+    )
+    local_mixed_parquet.validate_local_mixed_parquet(
+        canonical,
+        rows=1_000,
+        columns=10,
+        max_bytes=8 * 1024 * 1024,
+    )
+
+    frame = pl.read_parquet(canonical)
+    wrong_schema = tmp_path / "wrong-schema.parquet"
+    frame.rename({"date_003": "renamed_date"}).write_parquet(wrong_schema)
+    with pytest.raises(AssertionError, match="column names"):
+        local_mixed_parquet.validate_local_mixed_parquet(
+            wrong_schema,
+            rows=1_000,
+            columns=10,
+            max_bytes=8 * 1024 * 1024,
+        )
+
+    missing_nulls = tmp_path / "missing-nulls.parquet"
+    frame.with_columns(pl.col("segment_005").fill_null("Enterprise")).write_parquet(missing_nulls)
+    with pytest.raises(AssertionError, match="contain no nulls"):
+        local_mixed_parquet.validate_local_mixed_parquet(
+            missing_nulls,
+            rows=1_000,
+            columns=10,
+            max_bytes=8 * 1024 * 1024,
+        )
 
 
 class _FixtureEvidence(TypedDict):

@@ -166,8 +166,17 @@ export function validateDataWranglerComparisonStudyTrial(trial, entry, manifest)
   assertIntegerBetween(trial.order, 0, 7, "study trial order");
   if (entry) validateTrialScheduleBinding(trial, entry);
   const repetitions = manifest?.method?.repetitionsPerSession;
-  if (![2, 10].includes(repetitions) || !Array.isArray(trial.samples) || trial.samples.length !== repetitions) {
-    throw new TypeError(`A study session requires exactly ${repetitions === 2 ? "two" : "ten"} measured samples.`);
+  if (![2, 3, 10].includes(repetitions) || !Array.isArray(trial.samples) || trial.samples.length !== repetitions) {
+    const expected = new Map([
+      [2, "two"],
+      [3, "three"],
+      [10, "ten"]
+    ]).get(repetitions);
+    throw new TypeError(
+      expected
+        ? `A comparison session requires exactly ${expected} measured samples.`
+        : "A comparison session requires two, three, or ten measured samples."
+    );
   }
   for (const [offset, sample] of trial.samples.entries()) {
     validateStudySample(sample, offset + 1, entry);
