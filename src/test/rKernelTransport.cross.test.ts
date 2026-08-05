@@ -15,6 +15,8 @@ const sessionId = "11111111-1111-4111-8111-111111111111";
 const openRequestId = "22222222-2222-4222-8222-222222222222";
 const pageRequestId = "33333333-3333-4333-8333-333333333333";
 const closeRequestId = "44444444-4444-4444-8444-444444444444";
+const unsupportedSessionId = "55555555-5555-4555-8555-555555555555";
+const unsupportedRequestId = "66666666-6666-4666-8666-666666666666";
 
 describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
   it("opens one isolated capture, pages it after variable replacement, and closes it", () => {
@@ -40,13 +42,21 @@ describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
       kind: "closeSession",
       payload: { sessionId }
     });
+    const unsupported = requestCode({
+      transportVersion: 1,
+      requestId: unsupportedRequestId,
+      kind: "openSession",
+      payload: { sessionId: unsupportedSessionId, variableName: "named_rows", page: pageWindow() }
+    });
     const code = `
 frame <- data.frame(value = c(1L, 3L, 2L), label = c("a", "c", "b"), stringsAsFactors = FALSE)
+named_rows <- data.frame(value = 1L, row.names = "named-row")
 ${bootstrap}
 ${open.code}
 frame <- data.frame(value = 999L, label = "replacement", stringsAsFactors = FALSE)
 ${page.code}
 ${close.code}
+${unsupported.code}
 `;
     const result = spawnSync(rscript, ["--vanilla", "-"], {
       cwd: root,
@@ -72,6 +82,7 @@ ${close.code}
     const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), openRequestId);
     const paged = decodeRKernelResponseJson(marked(result.stdout, page.marker), pageRequestId);
     const closed = decodeRKernelResponseJson(marked(result.stdout, close.marker), closeRequestId);
+    const unsupportedFrame = decodeRKernelResponseJson(marked(result.stdout, unsupported.marker), unsupportedRequestId);
     expect(opened).toMatchObject({ kind: "page", sessionId, page: { shape: { rows: 3, columns: 2 } } });
     expect(paged).toMatchObject({ kind: "page", sessionId, page: { shape: { rows: 3, columns: 2 } } });
     if (paged.kind !== "page") throw new Error("Expected a page response.");
@@ -81,6 +92,12 @@ ${close.code}
       requestId: closeRequestId,
       kind: "closed",
       sessionId
+    });
+    expect(unsupportedFrame).toMatchObject({
+      kind: "error",
+      code: "unsupported_frame",
+      recoverable: false,
+      message: "explicit row names are not yet supported"
     });
   });
 });

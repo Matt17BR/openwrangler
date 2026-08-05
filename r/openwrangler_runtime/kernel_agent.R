@@ -14,6 +14,59 @@ openwrangler_r_kernel_agent <- local({
     stop(condition)
   }
 
+  diagnostic_message <- function(error, fallback) {
+    message <- conditionMessage(error)
+    if (!is.character(message) || length(message) != 1L || is.na(message) || Encoding(message) == "bytes") {
+      return(fallback)
+    }
+    converted <- iconv(message, from = "", to = "UTF-8", sub = NA_character_)
+    if (is.na(converted) || nchar(converted, type = "bytes") > maximum_error_bytes) fallback else converted
+  }
+
+  frame_diagnostic <- function(error) {
+    source_code <- error$code
+    if (!is.character(source_code) || length(source_code) != 1L || is.na(source_code)) {
+      source_code <- ""
+    }
+
+    if (identical(source_code, "missing-package")) {
+      code <- "missing_package"
+      recoverable <- TRUE
+    } else if (identical(source_code, "stale-column")) {
+      code <- "stale_column"
+      recoverable <- TRUE
+    } else if (source_code %in% c("page-too-large", "payload-too-large")) {
+      code <- "page_too_large"
+      recoverable <- TRUE
+    } else if (
+      startsWith(source_code, "unsupported-") ||
+        source_code %in% c(
+          "factor-levels-too-large",
+          "invalid-data-table-key",
+          "invalid-factor",
+          "invalid-range",
+          "invalid-schema",
+          "invalid-text",
+          "text-too-large"
+        )
+    ) {
+      code <- "unsupported_frame"
+      recoverable <- FALSE
+    } else if (identical(source_code, "invalid-view-query")) {
+      code <- "invalid_request"
+      recoverable <- FALSE
+    } else {
+      code <- "runtime_error"
+      recoverable <- FALSE
+    }
+
+    list(
+      code = code,
+      message = diagnostic_message(error, "The R dataframe could not be read"),
+      recoverable = recoverable
+    )
+  }
+
   exact_record <- function(value, fields, label) {
     if (!is.list(value) || is.object(value) || is.null(names(value))) {
       abort("invalid_request", sprintf("%s must be an object", label))
@@ -220,7 +273,7 @@ openwrangler_r_kernel_agent <- local({
           dispatch(request)
         },
         openwrangler_r_kernel_error = function(error) {
-          message <- bounded_text(conditionMessage(error), "runtime error", maximum_error_bytes)
+          message <- diagnostic_message(error, "The R runtime request failed")
           list(
             transportVersion = transport_version,
             requestId = request_id,
@@ -230,15 +283,19 @@ openwrangler_r_kernel_agent <- local({
             recoverable = isTRUE(error$recoverable)
           )
         },
+        openwrangler_r_frame_error = function(error) {
+          diagnostic <- frame_diagnostic(error)
+          list(
+            transportVersion = transport_version,
+            requestId = request_id,
+            kind = "error",
+            code = diagnostic$code,
+            message = diagnostic$message,
+            recoverable = diagnostic$recoverable
+          )
+        },
         error = function(error) {
-          message <- conditionMessage(error)
-          if (!is.character(message) || length(message) != 1L || is.na(message)) {
-            message <- "The R runtime request failed"
-          }
-          message <- enc2utf8(message)
-          if (nchar(message, type = "bytes") > maximum_error_bytes) {
-            message <- "The R runtime request failed with an oversized diagnostic"
-          }
+          message <- diagnostic_message(error, "The R runtime request failed")
           list(
             transportVersion = transport_version,
             requestId = request_id,

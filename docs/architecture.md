@@ -67,9 +67,15 @@ to the extension filesystem.
 session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
 again before dispatch. Host cancellation and timeouts do not interrupt the user's R kernel. If an open has already
 started, its candidate ID stays mapped to that kernel and one close is sent there after the original execution
-settles. Kernel restart ends the mappings. Terminal close uses the mapped kernel and never looks one up by URI. This
-transport keeps late correlated closes authoritative, bounds retired-session bookkeeping, and makes disposal a
-single terminal operation even when kernel cleanup reports an error. It is still internal: variable discovery, the
+finishes. A page request that times out or is cancelled returns a promise for that execution's completion. The
+transport keeps the same promise and waits for it before sending another request to that IRkernel. Kernel restart ends
+the mappings. Close uses the mapped kernel and never looks one up by URI. Session IDs and pending cleanup records have
+fixed bounds, and repeated disposal joins the same cleanup operation.
+
+Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
+the fixed response codes `unsupported_frame`, `missing_package`, `page_too_large`, and `stale_column`. Request errors,
+missing variables or sessions, and unexpected runtime failures also use a fixed code list. Messages are limited to
+4 KiB, and TypeScript rejects any unrecognized code. The transport is still internal: variable discovery, the
 coordinator, the workbench, and packaged-editor IRkernel acceptance are not wired yet.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.

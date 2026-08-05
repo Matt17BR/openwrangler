@@ -17,7 +17,11 @@ openwrangler_r_frame_contract <- local({
   cell_fixed_bytes <- 96L
 
   abort <- function(code, message) {
-    stop(sprintf("%s: %s", code, message), call. = FALSE)
+    condition <- structure(
+      list(message = message, call = NULL, code = code),
+      class = c("openwrangler_r_frame_error", "error", "condition")
+    )
+    stop(condition)
   }
 
   json_array <- function(value) {

@@ -4,9 +4,23 @@ export const R_KERNEL_TRANSPORT_VERSION = 1 as const;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 
 const identifierPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const diagnosticCodePattern = /^[a-z][a-z0-9_]{0,127}$/u;
 const maximumVariableNameBytes = 1_024;
 const maximumDiagnosticBytes = 4_096;
+
+export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
+  "duplicate_session",
+  "invalid_request",
+  "missing_package",
+  "page_too_large",
+  "runtime_error",
+  "stale_column",
+  "unknown_session",
+  "unknown_variable",
+  "unsupported_frame"
+] as const);
+
+export type RKernelDiagnosticCode = (typeof R_KERNEL_DIAGNOSTIC_CODES)[number];
+const rKernelDiagnosticCodes = new Set<string>(R_KERNEL_DIAGNOSTIC_CODES);
 
 export interface RKernelSortRule {
   readonly column: Readonly<{ id: string; name: string }>;
@@ -62,7 +76,7 @@ export interface RKernelErrorResponse {
   readonly transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
   readonly requestId: string;
   readonly kind: "error";
-  readonly code: string;
+  readonly code: RKernelDiagnosticCode;
   readonly message: string;
   readonly recoverable: boolean;
 }
@@ -110,7 +124,7 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
   if (kind === "error") {
     const record = exactRecord(value, ["transportVersion", "requestId", "kind", "code", "message", "recoverable"]);
     validateEnvelope(record, expected);
-    if (typeof record.code !== "string" || !diagnosticCodePattern.test(record.code)) {
+    if (typeof record.code !== "string" || !rKernelDiagnosticCodes.has(record.code)) {
       fail("R kernel response has an invalid diagnostic code.");
     }
     if (typeof record.recoverable !== "boolean") fail("R kernel response has an invalid recovery flag.");
@@ -118,7 +132,7 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
       kind: "error" as const,
-      code: record.code,
+      code: record.code as RKernelDiagnosticCode,
       message: boundedText(record.message, "response.message", maximumDiagnosticBytes, false),
       recoverable: record.recoverable
     });

@@ -1,6 +1,7 @@
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import {
   R_KERNEL_TRANSPORT_VERSION,
   decodeRKernelResponseJson,
@@ -16,6 +17,7 @@ const pageRequestId = "33333333-3333-4333-8333-333333333333";
 const closeRequestId = "44444444-4444-4444-8444-444444444444";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   setOpenNotebookDocuments();
 });
@@ -142,6 +144,19 @@ describe("native R kernel protocol", () => {
         openRequestId
       )
     ).toThrow("UTF-8 byte limit");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: 1,
+          requestId: openRequestId,
+          kind: "error",
+          code: "unsupported-row-names",
+          message: "legacy frame error",
+          recoverable: false
+        }),
+        openRequestId
+      )
+    ).toThrow("invalid diagnostic code");
   });
 });
 
@@ -375,6 +390,81 @@ describe("exact IRkernel session transport", () => {
 
     pending.resolve(response(requests[0]!, { kind: "page", sessionId, page: minimalFramePage() }));
     await vi.waitFor(() => expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]));
+  });
+
+  it("parks the next page request behind a cancelled page execution", async () => {
+    const pendingPage = deferred<unknown>();
+    const requests: RKernelRequest[] = [];
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "getPage" && request.requestId === pageRequestId) return pendingPage.promise;
+      return response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() });
+    });
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [sessionId, openRequestId, pageRequestId, closeRequestId]);
+    await transport.open("frame", pageWindow());
+
+    const cancellation = cancellationSource();
+    const firstPage = transport.getPage(sessionId, pageWindow(), { cancellation: cancellation.token }).then(
+      (result) => result,
+      (error: unknown) => error
+    );
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    cancellation.cancel();
+    const detached = await firstPage;
+    expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+    expect(detached).toMatchObject({ reason: "cancellation", dispatched: true });
+
+    const nextPage = transport.getPage(sessionId, pageWindow());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(requests).toHaveLength(2);
+
+    pendingPage.resolve(response(requests[1]!, { kind: "page", sessionId, page: minimalFramePage() }));
+    await (detached as DetachedBridgeRequestError).settlement;
+    await expect(nextPage).resolves.toMatchObject({ page: { rows: [{ id: "r:r:0" }] } });
+    expect(requests.map((request) => request.requestId)).toEqual([openRequestId, pageRequestId, closeRequestId]);
+    expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+  });
+
+  it("parks the next page request behind a timed-out page execution", async () => {
+    vi.useFakeTimers();
+    const pageStarted = deferred<void>();
+    const pendingPage = deferred<unknown>();
+    const requests: RKernelRequest[] = [];
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "getPage" && request.requestId === pageRequestId) {
+        pageStarted.resolve();
+        return pendingPage.promise;
+      }
+      return response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() });
+    });
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [sessionId, openRequestId, pageRequestId, closeRequestId]);
+    await transport.open("frame", pageWindow());
+
+    const firstPage = transport.getPage(sessionId, pageWindow(), { timeoutMs: 30 }).then(
+      (result) => result,
+      (error: unknown) => error
+    );
+    await pageStarted.promise;
+    await vi.advanceTimersByTimeAsync(30);
+    const detached = await firstPage;
+    expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+    expect(detached).toMatchObject({ reason: "timeout", dispatched: true });
+
+    const nextPage = transport.getPage(sessionId, pageWindow(), { timeoutMs: 1_000 });
+    await Promise.resolve();
+    expect(requests).toHaveLength(2);
+
+    pendingPage.resolve(response(requests[1]!, { kind: "page", sessionId, page: minimalFramePage() }));
+    await (detached as DetachedBridgeRequestError).settlement;
+    await expect(nextPage).resolves.toMatchObject({ page: { rows: [{ id: "r:r:0" }] } });
+    expect(requests.map((request) => request.requestId)).toEqual([openRequestId, pageRequestId, closeRequestId]);
   });
 
   it("rejects non-R kernels before bootstrap", async () => {

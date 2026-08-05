@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
+import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import {
   KernelRequestCancelledError,
   type KernelCancellationLike,
@@ -69,6 +70,7 @@ export class RKernelSessionTransport {
   private readonly retiredSessionIds = new Set<string>();
   private readonly cleanupAttempts = new WeakMap<Kernel, Map<string, Promise<boolean>>>();
   private readonly bootstrapPromises = new WeakMap<Kernel, Promise<void>>();
+  private readonly kernelSettlementBarriers = new WeakMap<Kernel, Promise<void>>();
   private observation: KernelObservation | undefined;
   private disposed = false;
   private disposal: Promise<void> | undefined;
@@ -111,6 +113,7 @@ export class RKernelSessionTransport {
       const acquired = await withKernelTimeout(preparation, timeoutMs, () => undefined, options.cancellation);
       this.assertActive();
       this.assertSessionIdentityAvailable(sessionId);
+      await this.waitForKernelSettlement(acquired.kernel, timeoutMs, started, options.cancellation);
       assertDispatchAllowed(options.cancellation, remainingTimeout(timeoutMs, started));
 
       this.sessionKernels.set(sessionId, acquired.kernel);
@@ -178,15 +181,35 @@ export class RKernelSessionTransport {
     const preflight = this.assertKernelStillSelected(acquired);
     void preflight.catch(() => undefined);
     await withKernelTimeout(preflight, timeoutMs, () => undefined, options.cancellation);
+    await this.waitForKernelSettlement(kernel, timeoutMs, started, options.cancellation);
     assertDispatchAllowed(options.cancellation, remainingTimeout(timeoutMs, started));
     const completion = this.executeRequest(kernel, request);
     void completion.catch(() => undefined);
-    const response = await withKernelTimeout(
-      completion,
-      remainingTimeout(timeoutMs, started),
-      () => undefined,
-      options.cancellation
-    );
+    let detachedReason: DetachedBridgeRequestReason | undefined;
+    let response: RKernelResponse;
+    try {
+      response = await withKernelTimeout(
+        completion,
+        remainingTimeout(timeoutMs, started),
+        () => {
+          detachedReason = "timeout";
+        },
+        options.cancellation,
+        () => {
+          detachedReason = "cancellation";
+        }
+      );
+    } catch (error) {
+      if (!detachedReason) throw error;
+      const detached = new DetachedBridgeRequestError(
+        detachedRequestMessage(detachedReason, timeoutMs),
+        detachedReason,
+        true,
+        observeSettlement(completion)
+      );
+      this.installKernelSettlementBarrier(kernel, detached.settlement);
+      throw detached;
+    }
     const postflight = this.assertKernelStillSelected(acquired);
     void postflight.catch(() => undefined);
     await withKernelTimeout(postflight, remainingTimeout(timeoutMs, started), () => undefined, options.cancellation);
@@ -218,12 +241,14 @@ export class RKernelSessionTransport {
   }
 
   private async closeMappedSession(sessionId: string, kernel: Kernel, timeoutMs: number): Promise<void> {
+    const started = performance.now();
+    await this.waitForKernelSettlement(kernel, timeoutMs, started);
     const completion = this.executeRequest(kernel, this.request("closeSession", { sessionId })).then((response) => {
       if (isCorrelatedClose(response, sessionId)) this.retireSession(sessionId, kernel);
       return response;
     });
     void completion.catch(() => undefined);
-    const response = await withKernelTimeout(completion, timeoutMs, () => undefined);
+    const response = await withKernelTimeout(completion, remainingTimeout(timeoutMs, started), () => undefined);
     if (response.kind === "error") {
       if (response.code === "unknown_session") return;
       throw new RKernelDiagnosticError(response);
@@ -373,6 +398,52 @@ export class RKernelSessionTransport {
       );
     } finally {
       tokenSource.dispose();
+    }
+  }
+
+  private installKernelSettlementBarrier(kernel: Kernel, settlement: Promise<void>): void {
+    const preceding = this.kernelSettlementBarriers.get(kernel) ?? Promise.resolve();
+    const barrier = preceding.then(
+      () => settlement,
+      () => settlement
+    );
+    this.kernelSettlementBarriers.set(kernel, barrier);
+    void barrier.then(() => {
+      if (this.kernelSettlementBarriers.get(kernel) === barrier) this.kernelSettlementBarriers.delete(kernel);
+    });
+  }
+
+  private async waitForKernelSettlement(
+    kernel: Kernel,
+    timeoutMs: number,
+    started: number,
+    cancellation?: KernelCancellationLike
+  ): Promise<void> {
+    while (true) {
+      const barrier = this.kernelSettlementBarriers.get(kernel);
+      if (!barrier) return;
+      let detachedReason: DetachedBridgeRequestReason | undefined;
+      try {
+        await withKernelTimeout(
+          barrier,
+          remainingTimeout(timeoutMs, started),
+          () => {
+            detachedReason = "timeout";
+          },
+          cancellation,
+          () => {
+            detachedReason = "cancellation";
+          }
+        );
+      } catch (error) {
+        if (!detachedReason) throw error;
+        throw new DetachedBridgeRequestError(
+          detachedRequestMessage(detachedReason, timeoutMs),
+          detachedReason,
+          false,
+          barrier
+        );
+      }
     }
   }
 
@@ -544,6 +615,19 @@ function remainingTimeout(timeoutMs: number, started: number): number {
 function assertDispatchAllowed(cancellation: KernelCancellationLike | undefined, remainingMs: number): void {
   if (cancellation?.isCancellationRequested) throw new KernelRequestCancelledError();
   if (remainingMs <= 0) throw new Error("Open Wrangler R kernel request timed out before dispatch.");
+}
+
+function detachedRequestMessage(reason: DetachedBridgeRequestReason, timeoutMs: number): string {
+  return reason === "timeout"
+    ? `Open Wrangler stopped waiting after ${timeoutMs} ms; the R kernel request is still finishing.`
+    : "Open Wrangler stopped waiting after host cancellation; the R kernel request is still finishing.";
+}
+
+function observeSettlement(work: Promise<unknown>): Promise<void> {
+  return work.then(
+    () => undefined,
+    () => undefined
+  );
 }
 
 function isJupyter(value: unknown): value is Jupyter {

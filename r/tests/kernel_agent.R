@@ -10,6 +10,7 @@ assert_identical <- function(actual, expected, message) {
 request_id <- "11111111-1111-4111-8111-111111111111"
 session_id <- "22222222-2222-4222-8222-222222222222"
 second_session_id <- "33333333-3333-4333-8333-333333333333"
+third_session_id <- "44444444-4444-4444-8444-444444444444"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -22,24 +23,34 @@ source_before <- unserialize(serialize(source_environment$frame, NULL, version =
 
 agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)
 
-page_window <- function(sorts = list(), row_offset = 0L, row_limit = 100L) {
+page_window <- function(
+  sorts = list(),
+  row_offset = 0L,
+  row_limit = 100L,
+  column_offset = 0L,
+  column_limit = 100L
+) {
   list(
     rowOffset = row_offset,
     rowLimit = row_limit,
-    columnOffset = 0L,
-    columnLimit = 100L,
+    columnOffset = column_offset,
+    columnLimit = column_limit,
     sorts = I(sorts)
   )
 }
 
-dispatch <- function(kind, payload, id = request_id) {
+dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
     list(transportVersion = 1L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
   )
-  jsonlite::fromJSON(agent$dispatch_json(as.character(encoded)), simplifyVector = FALSE)
+  jsonlite::fromJSON(target_agent$dispatch_json(as.character(encoded)), simplifyVector = FALSE)
+}
+
+dispatch <- function(kind, payload, id = request_id) {
+  dispatch_with(agent, kind, payload, id)
 }
 
 opened <- dispatch(
@@ -89,6 +100,52 @@ missing <- dispatch(
 assert_identical(missing$kind, "error", "an unknown variable was accepted")
 assert_identical(missing$code, "unknown_variable", "the unknown-variable diagnostic changed")
 
+source_environment$unsupported <- data.frame(value = 1L)
+row.names(source_environment$unsupported) <- "named-row"
+unsupported <- dispatch(
+  "openSession",
+  list(sessionId = second_session_id, variableName = "unsupported", page = page_window())
+)
+assert_identical(unsupported$kind, "error", "an unsupported dataframe was accepted")
+assert_identical(unsupported$code, "unsupported_frame", "the unsupported-frame diagnostic was not normalized")
+assert_identical(unsupported$recoverable, FALSE, "an unsupported frame was marked recoverable")
+
+source_environment$wide <- as.data.frame(
+  setNames(replicate(256L, seq_len(401L), simplify = FALSE), sprintf("column_%03d", seq_len(256L))),
+  optional = TRUE
+)
+oversized <- dispatch(
+  "openSession",
+  list(
+    sessionId = third_session_id,
+    variableName = "wide",
+    page = page_window(row_limit = 401L, column_limit = 256L)
+  )
+)
+assert_identical(oversized$kind, "error", "an oversized page was accepted")
+assert_identical(oversized$code, "page_too_large", "the oversized-page diagnostic was not normalized")
+assert_identical(oversized$recoverable, TRUE, "an oversized page was not marked recoverable")
+
+missing_package_contract <- list(
+  capture_frame = function(value) {
+    stop(structure(
+      list(message = "example package is required", call = NULL, code = "missing-package"),
+      class = c("openwrangler_r_frame_error", "error", "condition")
+    ))
+  },
+  materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
+  limits = openwrangler_r_frame_contract$limits
+)
+missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
+missing_package <- dispatch_with(
+  missing_package_agent,
+  "openSession",
+  list(sessionId = third_session_id, variableName = "frame", page = page_window())
+)
+assert_identical(missing_package$kind, "error", "a missing package was flattened")
+assert_identical(missing_package$code, "missing_package", "the missing-package diagnostic was not normalized")
+assert_identical(missing_package$recoverable, TRUE, "a missing package was not marked recoverable")
+
 closed <- dispatch("closeSession", list(sessionId = session_id))
 assert_identical(closed$kind, "closed", "the R agent did not close its session")
 assert_identical(closed$sessionId, session_id, "the close response changed session identity")
@@ -102,6 +159,20 @@ reopened <- dispatch(
   list(sessionId = second_session_id, variableName = "frame", page = page_window())
 )
 assert_identical(reopened$kind, "page", "the replacement frame could not be opened independently")
+stale_column <- dispatch(
+  "getPage",
+  list(
+    sessionId = second_session_id,
+    page = page_window(list(list(
+      column = list(id = "r:c:0", name = "old_group_name"),
+      direction = "asc",
+      nulls = "last"
+    )))
+  )
+)
+assert_identical(stale_column$kind, "error", "a stale column reference was accepted")
+assert_identical(stale_column$code, "stale_column", "the stale-column diagnostic was not normalized")
+assert_identical(stale_column$recoverable, TRUE, "a stale column was not marked recoverable")
 malformed <- dispatch("getPage", list(sessionId = second_session_id, page = c(page_window(), list(extra = TRUE))))
 assert_identical(malformed$kind, "error", "a malformed page request was accepted")
 assert_identical(malformed$code, "invalid_request", "the malformed-request diagnostic changed")

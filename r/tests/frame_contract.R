@@ -18,7 +18,9 @@ assert_error <- function(expression, pattern) {
     },
     error = identity
   )
-  if (is.null(error) || !grepl(pattern, conditionMessage(error), fixed = TRUE)) {
+  matches_code <- inherits(error, "openwrangler_r_frame_error") && identical(error$code, pattern)
+  matches_message <- !is.null(error) && grepl(pattern, conditionMessage(error), fixed = TRUE)
+  if (is.null(error) || (!matches_code && !matches_message)) {
     stop(sprintf("Expected an error containing %s", pattern), call. = FALSE)
   }
 }
