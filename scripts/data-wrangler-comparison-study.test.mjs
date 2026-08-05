@@ -91,6 +91,7 @@ test("local comparison requires confirmation and removes its generated fixture",
   let fixtureRoot;
   try {
     await assert.rejects(runLocalDataWranglerComparison({ ...options, confirmLocalComparison: undefined }), /confirm/u);
+    const manifest = localManifestFixture();
     const result = await runLocalDataWranglerComparison(options, {
       requireLocalDiskSpace: () => {},
       generateLocalFixture: async (_python, parquet) => {
@@ -101,8 +102,22 @@ test("local comparison requires confirmation and removes its generated fixture",
         assert.equal(existsSync(localOptions.parquet), true);
         assert.deepEqual(localOptions.cells, LOCAL_MIXED_CELLS);
         assert.equal(localOptions.repetitionsPerSession, 3);
-        return { completed: 4, manifest: { schedule: createDataWranglerComparisonSchedule(localOptions.cells) } };
-      }
+        return { completed: 4, remaining: 0, manifest };
+      },
+      loadResults: () => ({
+        manifest,
+        trials: manifest.schedule.map((entry, entryIndex) => {
+          const trial = sessionResult(entry, manifest, LOCAL_REPETITIONS);
+          return entryIndex === 0
+            ? {
+                ...trial,
+                samples: trial.samples.map((sample, sampleIndex) =>
+                  sampleIndex === 0 ? { ...failedProductSample(sample.index), status: "timeout" } : sample
+                )
+              }
+            : trial;
+        })
+      })
     });
     assert.equal(result.completed, 4);
     assert.equal(existsSync(fixtureRoot), false);
@@ -123,6 +138,32 @@ test("local comparison requires confirmation and removes its generated fixture",
         }
       ),
       /simulated study failure/u
+    );
+    assert.equal(existsSync(fixtureRoot), false);
+
+    await assert.rejects(
+      runLocalDataWranglerComparison(
+        { ...options, output: join(root, "timed-out-results") },
+        {
+          requireLocalDiskSpace: () => {},
+          generateLocalFixture: async (_python, parquet) => {
+            fixtureRoot = dirname(parquet);
+            writeFileSync(parquet, "small fake parquet");
+          },
+          runStudy: async () => ({ completed: 4, remaining: 0, manifest }),
+          loadResults: () => ({
+            manifest,
+            trials: manifest.schedule.map((entry) => ({
+              ...sessionResult(entry, manifest, LOCAL_REPETITIONS),
+              samples: Array.from({ length: LOCAL_REPETITIONS }, (_unused, index) => ({
+                ...failedProductSample(index + 1),
+                status: "timeout"
+              }))
+            }))
+          })
+        }
+      ),
+      /every product and engine needs at least two of three successful samples.*0 success, 0 failure, and 12 timeout/u
     );
     assert.equal(existsSync(fixtureRoot), false);
   } finally {
@@ -183,6 +224,7 @@ test("local profile records all four arms through the existing study runner", as
       loadStudyResults(root).trials.every(({ samples }) => samples.length === 3),
       true
     );
+    assert.match(result.manifest.method.statistics, /three planned warm samples.*at least two successful samples/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -193,6 +235,7 @@ test("manifest records eight sessions, ten repetitions, fixed workloads, and pub
   assert.equal(manifest.protocol, STUDY_PROTOCOL);
   assert.equal(manifest.schedule.length, 8);
   assert.equal(manifest.method.repetitionsPerSession, 10);
+  assert.match(manifest.method.statistics, /ten successful warm samples/u);
   assert.equal(Object.hasOwn(manifest.method, "coldOrder"), false);
   assert.equal(manifest.provenance.dataWrangler.version, DATA_WRANGLER_VERSION);
   assert.equal(manifest.provenance.dataWrangler.implementationInspection, "none");

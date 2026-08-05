@@ -12,7 +12,7 @@ from typing import Any, BinaryIO
 LOCAL_ROWS = 1_000_000
 LOCAL_COLUMNS = 100
 LOCAL_MAX_BYTES = 640 * 1024 * 1024
-MIN_AVAILABLE_MEMORY = 4 * 1024 * 1024 * 1024
+MIN_AVAILABLE_MEMORY = 16 * 1024 * 1024 * 1024
 MIN_FREE_DISK = LOCAL_MAX_BYTES + 512 * 1024 * 1024
 
 
@@ -25,7 +25,7 @@ def require_local_resources(
     memory = _available_memory() if available_memory is None else available_memory
     disk = shutil.disk_usage(directory).free if free_disk is None else free_disk
     if memory < MIN_AVAILABLE_MEMORY:
-        raise RuntimeError("The local comparison requires at least 4 GiB of available memory.")
+        raise RuntimeError("The local comparison requires at least 16 GiB of available memory.")
     if disk < MIN_FREE_DISK:
         raise RuntimeError("The fixture filesystem requires at least 1,152 MiB of free disk space.")
 
@@ -107,21 +107,20 @@ def _write_mixed_parquet(destination: Any, *, rows: int, columns: int) -> None:
     for column in range(columns):
         random_number = (row * (1_103_515_245 + column * 2_003) + 12_345 + column) % 2_147_483_647
         mode = column % 10
-        if mode == 0:
+        if column == 0:
+            value = row.cast(pl.Int64)
+        elif column == 1:
+            value = (row + 1).cast(pl.Int64)
+        elif mode == 0:
             value = random_number.cast(pl.Int64)
-            prefix = "integer"
         elif mode == 1:
             value = (random_number.cast(pl.Float64) / (97 + column)).round(5)
-            prefix = "decimal"
         elif mode == 2:
             value = (random_number % 2).eq(0)
-            prefix = "flag"
         elif mode == 3:
             value = ((random_number % 20_000) + 18_262).cast(pl.Date)
-            prefix = "date"
         elif mode == 4:
             value = ((random_number % 1_000_000_000) + 1_577_836_800_000).cast(pl.Datetime("ms"))
-            prefix = "timestamp"
         elif mode == 5:
             value = (
                 pl.when((random_number % 5) == 0)
@@ -134,22 +133,17 @@ def _write_mixed_parquet(destination: Any, *, rows: int, columns: int) -> None:
                 .then(pl.lit("Small business"))
                 .otherwise(pl.lit("Consumer"))
             )
-            prefix = "segment"
         elif mode == 6:
             value = pl.concat_str([pl.lit("account-"), random_number.cast(pl.String), pl.lit("-"), row.cast(pl.String)])
-            prefix = "account"
         elif mode == 7:
             value = (random_number % 10_000).cast(pl.Int32)
-            prefix = "quantity"
         elif mode == 8:
             value = ((random_number % 100_000).cast(pl.Float64) / 100).round(2)
-            prefix = "amount"
         else:
             value = pl.concat_str([pl.lit("note-"), random_number.cast(pl.String)])
-            prefix = "note"
-        if mode in {1, 3, 4, 5, 6, 8, 9}:
+        if column > 1 and mode in {1, 3, 4, 5, 6, 8, 9}:
             value = pl.when((row + column) % 37 == 0).then(pl.lit(None)).otherwise(value)
-        expressions.append(value.alias(f"{prefix}_{column:03d}"))
+        expressions.append(value.alias(f"c{column:02d}"))
 
     (
         pl.LazyFrame()
@@ -205,7 +199,6 @@ class _CappedWriter:
 
 
 def _column_contract(pl: Any, columns: int) -> list[tuple[str, object, bool]]:
-    prefixes = ("integer", "decimal", "flag", "date", "timestamp", "segment", "account", "quantity", "amount", "note")
     dtypes = (
         pl.Int64,
         pl.Float64,
@@ -220,7 +213,11 @@ def _column_contract(pl: Any, columns: int) -> list[tuple[str, object, bool]]:
     )
     nullable_modes = {1, 3, 4, 5, 6, 8, 9}
     return [
-        (f"{prefixes[column % 10]}_{column:03d}", dtypes[column % 10], column % 10 in nullable_modes)
+        (
+            f"c{column:02d}",
+            pl.Int64 if column < 2 else dtypes[column % 10],
+            column > 1 and column % 10 in nullable_modes,
+        )
         for column in range(columns)
     ]
 

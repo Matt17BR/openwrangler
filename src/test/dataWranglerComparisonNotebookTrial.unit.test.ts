@@ -8,8 +8,10 @@ import {
   comparisonSetupExecutionOutcome,
   integerProfileTextReady,
   isComparisonKernelLabel,
+  mixedProfileTextReady,
   observePointerReady,
   observeVisibleFullShape,
+  openWranglerProfileTextReady,
   validateComparisonNotebookLayout,
   validateComparisonTrialRequest,
   validateComparisonTrialResult,
@@ -319,6 +321,30 @@ describe("public readiness oracles", () => {
         text: "c00 Float64 Missing 0 Distinct 10 Min 2k Max 2k"
       })
     ).toBe(false);
+  });
+
+  it("recognizes completed mixed-type profiles without assuming numeric extrema", () => {
+    expect(mixedProfileTextReady({ column: "c05", text: "c05 String Missing 3% Distinct 5% Enterprise" })).toBe(true);
+    expect(
+      mixedProfileTextReady({ column: "c00", text: "int64c00c00 More optionsMissing 0 (0%)Distinct 100 (100%)" })
+    ).toBe(true);
+    expect(
+      mixedProfileTextReady({
+        column: "c02",
+        text: "boolc02c02 More optionsMissing 0 (0%)False 49 (49%)True 51 (51%)Value counts"
+      })
+    ).toBe(true);
+    expect(mixedProfileTextReady({ column: "c05", text: "c05 String Profiling Missing 3% Distinct 5%" })).toBe(false);
+    expect(mixedProfileTextReady({ column: "c06", text: "c05 String Missing 3% Distinct 5%" })).toBe(false);
+  });
+
+  it("accepts non-numeric Open Wrangler summaries in the local mixed-data study", () => {
+    const text = "c02 Boolean Exact statistics Rows 1,000,000 Null 0 Distinct 2";
+    expect(openWranglerProfileTextReady({ text, requireExtrema: false })).toBe(true);
+    expect(openWranglerProfileTextReady({ text, requireExtrema: true })).toBe(false);
+    expect(openWranglerProfileTextReady({ text: `${text} Profiling selected column`, requireExtrema: false })).toBe(
+      false
+    );
   });
 
   it("recognizes a full-shape label without reading row values", () => {
