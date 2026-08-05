@@ -2868,6 +2868,8 @@ async function assertReleasedPySparkPanelAndQueries(
   assert.equal(second.page.totalRows, 2);
   assert.deepEqual(gridColumnDisplays(second.page, recordId.id), ["3"]);
 
+  const summaryColumnIds = second.metadata.schema.map((column) => column.id);
+  assert.ok(summaryColumnIds[0], `The PySpark ${variant} tiny fixture must retain at least one column.`);
   const summary = await withBoundedAcceptancePromise(
     testing.request({
       kind: "getSummary",
@@ -2875,18 +2877,32 @@ async function assertReleasedPySparkPanelAndQueries(
       sessionId: active.sessionId,
       revision: second.revision,
       filterModel,
-      columnIds: [amount.id]
+      columnIds: [summaryColumnIds[0], ...summaryColumnIds.slice(1)]
     }),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    `the released-Jupyter PySpark ${variant} progressive summary`
+    `the released-Jupyter PySpark ${variant} complete tiny-fixture summaries`
   );
   assert.equal(summary.kind, "summary");
-  if (summary.kind !== "summary") throw new Error(`The PySpark ${variant} summary did not resolve.`);
-  assert.equal(summary.summaries.length, 1);
-  assert.equal(summary.summaries[0]?.columnId, amount.id);
-  assert.equal(summary.summaries[0]?.totalCount, 2);
-  assert.equal(summary.summaries[0]?.numeric?.min, 20);
-  assert.equal(summary.summaries[0]?.numeric?.max, 30);
+  if (summary.kind !== "summary") throw new Error(`The PySpark ${variant} summaries did not resolve.`);
+  assert.deepEqual(
+    summary.summaries.map((item) => item.columnId),
+    summaryColumnIds,
+    `The PySpark ${variant} complete projection must retain schema order.`
+  );
+  assert.deepEqual(
+    summary.summaries.map((item) => item.totalCount),
+    [2, 2, 2]
+  );
+  const recordIdSummary = summary.summaries.find((item) => item.columnId === recordId.id);
+  const category = second.metadata.schema.find((column) => column.name === "category");
+  assert.ok(category);
+  const categorySummary = summary.summaries.find((item) => item.columnId === category.id);
+  const amountSummary = summary.summaries.find((item) => item.columnId === amount.id);
+  assert.equal(recordIdSummary?.numeric?.min, 2);
+  assert.equal(recordIdSummary?.numeric?.max, 3);
+  assert.deepEqual(categorySummary?.topValues, [{ value: "alpha", count: 2 }]);
+  assert.equal(amountSummary?.numeric?.min, 20);
+  assert.equal(amountSummary?.numeric?.max, 30);
   return second;
 }
 

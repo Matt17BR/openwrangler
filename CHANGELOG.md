@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- PySpark Classic and Connect now use the same mixed profiling data in runtime tests. The packaged notebook test
+  profiles all three columns in its small dataframe. A separate manual command records three warm selected-column
+  and all-column samples; it does not run in pull-request CI or impose a performance limit.
 - PySpark sessions now label unsorted rows as **Source order** and explicitly sorted rows as **Sorted**. The ordering
   badge explains Spark's behavior for unsorted rows and for rows tied across every sort key.
 - PySpark Classic work now has a separate Spark job group for each Open Wrangler request and restores the notebook's

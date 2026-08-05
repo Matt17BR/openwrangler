@@ -18,6 +18,7 @@ import pytest
 import __main__
 import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
 import openwrangler_runtime.server as server
+from benchmarks.pyspark_profile import PROFILE_COLUMN_NAMES, build_mixed_profile_frame, summary_projection
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.session import (
@@ -1444,6 +1445,74 @@ def test_partitioned_skewed_frame_keeps_native_progressive_paging_multi_sort_and
 
     # Closing Open Wrangler releases only its logical child, not the user's
     # Classic or Connect Spark session.
+    assert spark_session.range(1).count() == 1
+
+
+def test_mixed_profile_fixture_is_native_ordered_and_complete(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = build_mixed_profile_frame(spark_session, rows=96, partitions=4)
+    engine, indexed = _open_engine(frame, "mixed-profile")
+    dataframe_type = type(indexed)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("The shared PySpark profile fixture must never use a dataframe conversion path.")
+
+    for method_name in ("toPandas", "toArrow", "mapInPandas", "mapInArrow"):
+        if hasattr(dataframe_type, method_name):
+            monkeypatch.setattr(dataframe_type, method_name, forbidden)
+
+    try:
+        schema = engine.schema(indexed)
+        assert [column["name"] for column in schema] == list(PROFILE_COLUMN_NAMES)
+        projection = summary_projection(schema)
+
+        score = engine.summaries(indexed, [projection[1]])[0]
+        assert score["columnId"] == "profile:score"
+        assert score["column"] == "score"
+        assert score["totalCount"] == 96
+        assert score["nullCount"] == 2
+        assert score["nanCount"] == 2
+        assert score["numeric"]["min"] == -1_000_000.25
+        assert score["numeric"]["max"] == 1_000_000.75
+        assert sum(bin_["count"] for bin_ in score["visualization"]["bins"]) == 92
+
+        summaries = engine.summaries(indexed, projection)
+        assert [summary["columnId"] for summary in summaries] == [column_id for _position, column_id in projection]
+        assert [summary["column"] for summary in summaries] == list(PROFILE_COLUMN_NAMES)
+        assert summaries[2]["rawType"] == "decimal(18,2)"
+        assert summaries[5]["rawType"] == "timestamp"
+        assert summaries[6]["rawType"] == "binary"
+        assert summaries[7]["rawType"] == "array<string>"
+        assert summaries[8]["rawType"] == "map<string,string>"
+        assert summaries[9]["rawType"] == "struct<region:string,priority:int>"
+        assert all(summaries[position]["topValues"] for position in (6, 7, 8, 9))
+
+        ordered = engine.apply_filter_model(
+            indexed,
+            {
+                "logic": "and",
+                "filters": [],
+                "sort": [{"column": "record_id", "direction": "asc", "nulls": "last"}],
+            },
+        )
+        page = engine.page(
+            ordered,
+            0,
+            2,
+            total_rows=None,
+            column_projection=projection,
+        )
+        assert page["columnIds"] == [column_id for _position, column_id in projection]
+        assert [row["values"][0]["raw"] for row in page["rows"]] == [0, 1]
+        assert page["rows"][0]["values"][1]["raw"] == -1_000_000.25
+        assert page["rows"][1]["values"][7]["raw"] == ["Enterprise", "tier-1"]
+        assert page["rows"][1]["values"][8]["raw"] == {"region": "Nordics", "bucket": "1"}
+        assert page["rows"][1]["values"][9]["raw"] == {"region": "Nordics", "priority": 1}
+    finally:
+        engine.close()
+
     assert spark_session.range(1).count() == 1
 
 
