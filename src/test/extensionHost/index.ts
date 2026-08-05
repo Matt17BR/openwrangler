@@ -1541,7 +1541,7 @@ async function exerciseReleasedRJupyterExtension(
       notebookInsert: false,
       filter: false,
       sort: true,
-      profile: false,
+      profile: true,
       columnValues: false
     });
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
@@ -1676,9 +1676,63 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     .waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await app.getByRole("button", { name: "Add step", exact: true }).count(), 0);
   assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
-  const profiles = app.getByRole("button", { name: "Profiles unavailable", exact: true });
+  const profiles = app.getByRole("button", { name: "Header profiles", exact: true });
   await profiles.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(await profiles.isDisabled(), true);
+  assert.equal(await profiles.isEnabled(), true);
+
+  const active = testing.activeSession();
+  assert.ok(active, "The native R profile journey requires an active session.");
+  assert.equal(active.sessionId, sessionId, "The native R profile journey must stay on its exact session.");
+  const scoreColumn = active.metadata.schema.find((column) => column.name === "score");
+  assert.ok(scoreColumn, "The native R profile journey requires the score column.");
+  const summary = await testing.request({
+    kind: "getSummary",
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: "jupyter-r-score-summary",
+    filterModel: active.viewState.filterModel,
+    columnIds: [scoreColumn.id]
+  });
+  assert.equal(summary.kind, "summary", "The native R column profile must complete through IRkernel.");
+  if (summary.kind !== "summary") throw new Error("The native R column profile did not resolve.");
+  assert.deepEqual(
+    summary.summaries.map((entry) => ({
+      columnId: entry.columnId,
+      column: entry.column,
+      totalCount: entry.totalCount,
+      distinctCount: entry.distinctCount,
+      min: entry.numeric?.min,
+      max: entry.numeric?.max
+    })),
+    [
+      {
+        columnId: scoreColumn.id,
+        column: "score",
+        totalCount: 1_205,
+        distinctCount: 1_205,
+        min: 1,
+        max: 1_205
+      }
+    ]
+  );
+  const datasetStats = await testing.request({
+    kind: "getDatasetStats",
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: "jupyter-r-dataset-stats",
+    filterModel: active.viewState.filterModel
+  });
+  assert.equal(datasetStats.kind, "datasetStats", "The native R dataset profile must complete through IRkernel.");
+  if (datasetStats.kind !== "datasetStats") throw new Error("The native R dataset profile did not resolve.");
+  assert.deepEqual(
+    {
+      missingCells: datasetStats.stats.missingCells,
+      missingRows: datasetStats.stats.missingRows,
+      duplicateRows: datasetStats.stats.duplicateRows,
+      profiledColumns: datasetStats.stats.missingValuesByColumn.length
+    },
+    { missingCells: 0, missingRows: 0, duplicateRows: 0, profiledColumns: 24 }
+  );
   const sorts = app.getByRole("button", { name: "Sorts", exact: true });
   assert.equal(await sorts.isEnabled(), true);
   await sorts.click();

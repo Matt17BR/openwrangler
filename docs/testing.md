@@ -470,7 +470,10 @@ Python real-kernel tests require Pandas and Polars to emit MIME v2 with a `text/
 
 Generated-code insertion tests cover the 10-second observation bound, event-driven exact-document success, sole-open-document ownership, unique-marker proof, rejected and indeterminate edits, and suppression of queued dispatch behind an unresolved indeterminate edit. VSIX tests parse the exact packaged `media/notebookRenderer.js` bytes and reject an empty or invalid bundle, static or dynamic imports, dependency re-exports, and a missing named `activate` export.
 
-R notebook acceptance is an opt-in local check. It opens real `data.frame`, tibble, and data.table variables through IRkernel in isolated, zero-window VS Code and Cursor profiles. Missing test packages are installed only in a temporary R library that is removed with the run. This mode is not part of routine CI and does not use a cloud runner.
+R notebook acceptance is an opt-in local check. It opens real `data.frame`, tibble, and data.table variables through
+IRkernel in isolated, zero-window VS Code and Cursor profiles. The journey covers projected paging, explicit row
+labels, compound sorts, and native column and dataset profiles. Missing test packages are installed only in a
+temporary R library that is removed with the run. This mode is not part of routine CI and does not use a cloud runner.
 
 ```bash
 OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
