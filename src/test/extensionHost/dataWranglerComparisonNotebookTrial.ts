@@ -19,6 +19,7 @@ import {
   observeGridScrollability,
   observeInlinePreviewReady
 } from "./notebookRendererFrame";
+import { DEFAULT_COMPARISON_GRID_READINESS_INPUT, type ComparisonGridReadinessInput } from "./comparisonGridReadiness";
 
 export const COMPARISON_TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v2";
 export const COMPARISON_TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
@@ -2255,12 +2256,14 @@ async function executeMeasuredIteration(
       );
     }
     let readiness;
+    const gridReadinessInput = comparisonGridReadinessInput(request);
     try {
       readiness = await waitForGenericGridReadiness(
         page,
         new Set<Frame>(),
         new Set<Page>(),
-        Math.max(1, workbenchDeadline - Date.now())
+        Math.max(1, workbenchDeadline - Date.now()),
+        gridReadinessInput
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -2372,7 +2375,8 @@ async function executeMeasuredIteration(
           page,
           new Set<Frame>(),
           new Set<Page>(),
-          Math.max(1, resetDeadline - Date.now())
+          Math.max(1, resetDeadline - Date.now()),
+          gridReadinessInput
         );
         await page.waitForTimeout(250);
       } catch (error) {
@@ -2400,6 +2404,16 @@ async function executeMeasuredIteration(
   }
   if (journeyFailed) throw journeyError;
   if (cleanupError !== undefined) throw cleanupError;
+}
+
+export function comparisonGridReadinessInput(request: ComparisonTrialRequest): ComparisonGridReadinessInput {
+  if (request.cell.profileContract === "integer-sentinel") return DEFAULT_COMPARISON_GRID_READINESS_INPUT;
+  const [firstColumn, secondColumn] = request.cell.columnNames;
+  assert.ok(firstColumn && secondColumn, "Comparison grid readiness requires at least two columns.");
+  return Object.freeze({
+    headers: Object.freeze([firstColumn, secondColumn] as const),
+    bodyContent: Object.freeze({ kind: "minimum-nonempty", count: 3 as const })
+  });
 }
 
 export async function run(): Promise<void> {

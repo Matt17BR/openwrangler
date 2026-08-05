@@ -4,6 +4,7 @@ import {
   COMPARISON_TRIAL_RESULT_PROTOCOL,
   boundedFailureMessage,
   comparisonAriaCountsMatch,
+  comparisonGridReadinessInput,
   clickComparisonPointerTarget,
   comparisonSetupExecutionOutcome,
   integerProfileTextReady,
@@ -146,6 +147,33 @@ describe("neutral comparison request", () => {
       )
     ).toThrow(/profileContract/u);
     expect(() => validateComparisonTrialRequest(request({ kind: "cold" as "warm" }))).toThrow(/kind/u);
+  });
+
+  it("uses exact legacy grid sentinels and mixed-fixture column headers", () => {
+    expect(comparisonGridReadinessInput(request())).toEqual({
+      headers: ["c00", "c01"],
+      bodyContent: {
+        kind: "exact",
+        topLeftValues: [
+          ["0", "1"],
+          ["1", "2"]
+        ]
+      }
+    });
+    expect(
+      comparisonGridReadinessInput(
+        request({
+          cell: {
+            ...request().cell,
+            columnNames: ["net_revenue_usd", "gross_margin_usd", ...request().cell.columnNames.slice(2)],
+            profileContract: "mixed-sentinels-v1"
+          }
+        })
+      )
+    ).toEqual({
+      headers: ["net_revenue_usd", "gross_margin_usd"],
+      bodyContent: { kind: "minimum-nonempty", count: 3 }
+    });
   });
 });
 

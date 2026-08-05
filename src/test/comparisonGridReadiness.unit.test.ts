@@ -66,7 +66,7 @@ describe("clean-room comparison grid readiness", () => {
       pointerUsable: true,
       geometryStableFrames: 2,
       headers: ["c00", "c01"],
-      sentinelsMatched: true,
+      bodyContentMatched: true,
       ariaRowCount: 2_001,
       ariaColumnCount: 9
     });
@@ -80,7 +80,7 @@ describe("clean-room comparison grid readiness", () => {
       rootRole: "table",
       busy: "absent",
       pointerUsable: true,
-      sentinelsMatched: true,
+      bodyContentMatched: true,
       ariaRowCount: null,
       ariaColumnCount: null
     });
@@ -92,7 +92,7 @@ describe("clean-room comparison grid readiness", () => {
     await expect(observe()).resolves.toMatchObject({
       rootRole: "table",
       headers: ["c00", "c01"],
-      sentinelsMatched: true
+      bodyContentMatched: true
     });
   });
 
@@ -101,7 +101,7 @@ describe("clean-room comparison grid readiness", () => {
 
     await expect(observe()).resolves.toMatchObject({
       headers: ["c00", "c01"],
-      sentinelsMatched: true
+      bodyContentMatched: true
     });
   });
 
@@ -144,6 +144,59 @@ describe("clean-room comparison grid readiness", () => {
     await expect(observe()).resolves.toBeNull();
   });
 
+  it("accepts mixed-fixture headers with visible body data without assuming product-specific number formatting", async () => {
+    mountGrid({
+      firstHeader: "net_revenue_usd",
+      secondHeader: "gross_margin_usd",
+      topLeftValues: [
+        ["null", "-387.884"],
+        ["-146.978", "-683.902"]
+      ]
+    });
+    const frames = new FrameRuntime();
+    const observation = observeComparisonGridReadiness(
+      {
+        headers: ["net_revenue_usd", "gross_margin_usd"],
+        bodyContent: { kind: "minimum-nonempty", count: 3 }
+      },
+      frames.runtime
+    );
+
+    frames.advance();
+    await Promise.resolve();
+    frames.advance();
+
+    await expect(observation).resolves.toMatchObject({
+      headers: ["net_revenue_usd", "gross_margin_usd"],
+      bodyContentMatched: true
+    });
+  });
+
+  it("rejects a mixed-fixture grid with fewer than three visible body values", async () => {
+    mountGrid({
+      firstHeader: "net_revenue_usd",
+      secondHeader: "gross_margin_usd",
+      topLeftValues: [
+        ["", "one visible value"],
+        ["", ""]
+      ]
+    });
+    const frames = new FrameRuntime();
+    const observation = observeComparisonGridReadiness(
+      {
+        headers: ["net_revenue_usd", "gross_margin_usd"],
+        bodyContent: { kind: "minimum-nonempty", count: 3 }
+      },
+      frames.runtime
+    );
+
+    frames.advance();
+    await Promise.resolve();
+    frames.advance();
+
+    await expect(observation).resolves.toBeNull();
+  });
+
   it("requires matching visible geometry across two animation frames", async () => {
     const grid = mountGrid();
     const frames = new FrameRuntime();
@@ -157,14 +210,17 @@ describe("clean-room comparison grid readiness", () => {
     await expect(observation).resolves.toBeNull();
   });
 
-  it("fails closed for a noncanonical sentinel contract", async () => {
+  it("fails closed for a malformed readiness contract", async () => {
     mountGrid();
     const invalid = {
-      headers: ["c00", "c01"],
-      topLeftValues: [
-        ["0", "1"],
-        ["1", "99"]
-      ]
+      headers: ["c00", "c00"],
+      bodyContent: {
+        kind: "exact",
+        topLeftValues: [
+          ["0", "1"],
+          ["1", "2"]
+        ]
+      }
     } as unknown as ComparisonGridReadinessInput;
     const frames = new FrameRuntime();
 
@@ -188,7 +244,7 @@ describe("clean-room comparison grid readiness", () => {
     await expect(observation).resolves.toMatchObject({
       rootRole: "grid",
       headers: ["c00", "c01"],
-      sentinelsMatched: true,
+      bodyContentMatched: true,
       pointerUsable: true
     });
   });
@@ -212,8 +268,10 @@ function mountGrid(
     includeCounts?: boolean;
     busy?: string | null;
     rowCount?: string;
+    firstHeader?: string;
     secondHeader?: string;
     bottomRight?: string;
+    topLeftValues?: readonly [readonly [string, string], readonly [string, string]];
     cornerRole?: "columnheader" | "rowheader";
     compositeHeaders?: boolean;
   } = {}
@@ -223,8 +281,13 @@ function mountGrid(
     includeCounts = true,
     busy = "false",
     rowCount = "2001",
+    firstHeader = "c00",
     secondHeader = "c01",
     bottomRight = "2",
+    topLeftValues = [
+      ["0", "1"],
+      ["1", bottomRight]
+    ],
     cornerRole = "columnheader",
     compositeHeaders = false
   } = options;
@@ -241,26 +304,26 @@ function mountGrid(
       : name;
   root.innerHTML = nativeTable
     ? `
-      <thead><tr><th></th><th>${headerMarkup("c00")}</th><th>${headerMarkup(secondHeader)}</th></tr></thead>
+      <thead><tr><th></th><th>${headerMarkup(firstHeader)}</th><th>${headerMarkup(secondHeader)}</th></tr></thead>
       <tbody>
-        <tr><th>1</th><td>0</td><td>1</td></tr>
-        <tr><th>2</th><td>1</td><td>${bottomRight}</td></tr>
+        <tr><th>1</th><td>${topLeftValues[0][0]}</td><td>${topLeftValues[0][1]}</td></tr>
+        <tr><th>2</th><td>${topLeftValues[1][0]}</td><td>${topLeftValues[1][1]}</td></tr>
       </tbody>`
     : `
       <div role="row">
         <div role="${cornerRole}"></div>
-        <div role="columnheader" aria-label="c00, Int64 column">c00</div>
+        <div role="columnheader" aria-label="${firstHeader}, Int64 column">${firstHeader}</div>
         <div role="columnheader">${secondHeader}</div>
       </div>
       <div role="row">
         <div role="rowheader">1</div>
-        <div role="gridcell">0</div>
-        <div role="gridcell">1</div>
+        <div role="gridcell">${topLeftValues[0][0]}</div>
+        <div role="gridcell">${topLeftValues[0][1]}</div>
       </div>
       <div role="row">
         <div role="rowheader">2</div>
-        <div role="gridcell">1</div>
-        <div role="gridcell">${bottomRight}</div>
+        <div role="gridcell">${topLeftValues[1][0]}</div>
+        <div role="gridcell">${topLeftValues[1][1]}</div>
       </div>`;
   document.body.append(root);
   const rootHeight = compositeHeaders ? 600 : 300;

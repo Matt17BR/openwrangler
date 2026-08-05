@@ -4,7 +4,8 @@ import { chromium, type Frame, type Locator, type Page } from "playwright-core";
 import {
   DEFAULT_COMPARISON_GRID_READINESS_INPUT,
   observeComparisonGridReadiness,
-  type ComparisonGridReadinessEvidence
+  type ComparisonGridReadinessEvidence,
+  type ComparisonGridReadinessInput
 } from "./comparisonGridReadiness";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
@@ -106,7 +107,8 @@ export async function waitForGenericGridReadiness(
   workbench: Page,
   baselineFrames: ReadonlySet<Frame>,
   baselinePages: ReadonlySet<Page>,
-  timeoutMs = GRID_TIMEOUT_MS
+  timeoutMs = GRID_TIMEOUT_MS,
+  readinessInput: ComparisonGridReadinessInput = DEFAULT_COMPARISON_GRID_READINESS_INPUT
 ): Promise<{
   readonly grid: ComparisonGridReadinessEvidence;
   readonly rendererFramePointerUsable: true;
@@ -166,7 +168,7 @@ export async function waitForGenericGridReadiness(
       if (parentFrame) observedChildFrames.add(frame);
       else observedTopLevelPages.add(page);
       const probe = await runComparisonFrameProbeWithRetry(
-        () => observeFrameReadiness(frame),
+        () => observeFrameReadiness(frame, readinessInput),
         FRAME_PROBE_TIMEOUT_MS,
         FRAME_PROBE_RETRIES,
         () => workbench.waitForTimeout(FRAME_PROBE_RETRY_DELAY_MS)
@@ -193,7 +195,12 @@ export async function waitForGenericGridReadiness(
     }
     await workbench.waitForTimeout(20);
   } while (Date.now() < deadline);
-  const frameDiagnostics = await comparisonFrameStructureDiagnostics(workbench, baselineFrames, baselinePages);
+  const frameDiagnostics = await comparisonFrameStructureDiagnostics(
+    workbench,
+    baselineFrames,
+    baselinePages,
+    readinessInput.headers
+  );
   throw new Error(
     "No stable visible generic ARIA grid or table exposed the deterministic comparison headers and cells. " +
       `Structural counts: ${JSON.stringify({
@@ -358,7 +365,8 @@ function buildComparisonWorkbenchReadinessEvidence({
 async function comparisonFrameStructureDiagnostics(
   workbench: Page,
   baselineFrames: ReadonlySet<Frame>,
-  baselinePages: ReadonlySet<Page>
+  baselinePages: ReadonlySet<Page>,
+  expectedHeaders: readonly [string, string]
 ): Promise<readonly Record<string, unknown>[]> {
   const diagnostics: Record<string, unknown>[] = [];
   const frames = comparisonFrames(workbench).slice(0, 32);
@@ -397,9 +405,15 @@ async function comparisonFrameStructureDiagnostics(
         )
       )
     );
-    const [c00Headers, c01Headers] = await Promise.all([
-      boundedVisibleLocatorCount(frame.getByRole("columnheader", { name: "c00", exact: true }), "c00 header"),
-      boundedVisibleLocatorCount(frame.getByRole("columnheader", { name: "c01", exact: true }), "c01 header")
+    const [firstHeaders, secondHeaders] = await Promise.all([
+      boundedVisibleLocatorCount(
+        frame.getByRole("columnheader", { name: expectedHeaders[0], exact: true }),
+        `${expectedHeaders[0]} header`
+      ),
+      boundedVisibleLocatorCount(
+        frame.getByRole("columnheader", { name: expectedHeaders[1], exact: true }),
+        `${expectedHeaders[1]} header`
+      )
     ]);
     const publicStates = Object.fromEntries(
       await Promise.all(
@@ -417,16 +431,22 @@ async function comparisonFrameStructureDiagnostics(
         ...documentState,
         roleCounts,
         publicStates,
-        visibleExpectedHeaders: Object.freeze({ c00: c00Headers, c01: c01Headers })
+        visibleExpectedHeaders: Object.freeze({
+          [expectedHeaders[0]]: firstHeaders,
+          [expectedHeaders[1]]: secondHeaders
+        })
       })
     );
   }
   return Object.freeze(diagnostics);
 }
 
-async function observeFrameReadiness(frame: Frame): Promise<ComparisonGridReadinessEvidence | null> {
+async function observeFrameReadiness(
+  frame: Frame,
+  input: ComparisonGridReadinessInput
+): Promise<ComparisonGridReadinessEvidence | null> {
   if (!(await frameChainIsVisibleAndPointerUsable(frame))) return null;
-  return frame.evaluate(observeComparisonGridReadiness, DEFAULT_COMPARISON_GRID_READINESS_INPUT);
+  return frame.evaluate(observeComparisonGridReadiness, input);
 }
 
 async function frameChainIsVisibleAndPointerUsable(frame: Frame): Promise<boolean> {

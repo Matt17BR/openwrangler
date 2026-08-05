@@ -78,7 +78,8 @@ describe("authoritative notebook renderer frame selection", () => {
       observeInlinePreviewReady(guest.button, {
         actionName: "Open Data Wrangler",
         firstColumn: "c00",
-        secondColumn: "c01"
+        secondColumn: "c01",
+        requiredCellValues: ["0", "1"]
       })
     ).toBe(false);
   });
@@ -92,7 +93,8 @@ describe("authoritative notebook renderer frame selection", () => {
       observeInlinePreviewReady(guest.button, {
         actionName: "Open Data Wrangler",
         firstColumn: "c00",
-        secondColumn: "c01"
+        secondColumn: "c01",
+        requiredCellValues: ["0", "1"]
       })
     ).toBe(true);
   });

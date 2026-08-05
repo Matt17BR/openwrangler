@@ -1,6 +1,14 @@
 export interface ComparisonGridReadinessInput {
   readonly headers: readonly [string, string];
-  readonly topLeftValues: readonly [readonly [string, string], readonly [string, string]];
+  readonly bodyContent:
+    | {
+        readonly kind: "exact";
+        readonly topLeftValues: readonly [readonly [string, string], readonly [string, string]];
+      }
+    | {
+        readonly kind: "minimum-nonempty";
+        readonly count: 1 | 2 | 3 | 4;
+      };
 }
 
 export interface ComparisonGridReadinessEvidence {
@@ -9,8 +17,8 @@ export interface ComparisonGridReadinessEvidence {
   readonly visible: true;
   readonly pointerUsable: true;
   readonly geometryStableFrames: 2;
-  readonly headers: readonly ["c00", "c01"];
-  readonly sentinelsMatched: true;
+  readonly headers: readonly [string, string];
+  readonly bodyContentMatched: true;
   readonly ariaRowCount: number | null;
   readonly ariaColumnCount: number | null;
 }
@@ -57,7 +65,10 @@ export interface ComparisonGridRuntime {
 
 export const DEFAULT_COMPARISON_GRID_READINESS_INPUT: ComparisonGridReadinessInput = Object.freeze({
   headers: Object.freeze(["c00", "c01"] as const),
-  topLeftValues: Object.freeze([Object.freeze(["0", "1"] as const), Object.freeze(["1", "2"] as const)] as const)
+  bodyContent: Object.freeze({
+    kind: "exact",
+    topLeftValues: Object.freeze([Object.freeze(["0", "1"] as const), Object.freeze(["1", "2"] as const)] as const)
+  })
 });
 
 /**
@@ -77,25 +88,42 @@ export function observeComparisonGridReadiness(
     geometry: readonly number[];
   };
 
+  const validText = (value: unknown): value is string =>
+    typeof value === "string" && value.length >= 1 && value.length <= 64 && !/[\0\r\n]/u.test(value);
+  const validHeader = (value: unknown): value is string =>
+    typeof value === "string" && /^[a-z][a-z0-9_]{1,63}$/u.test(value);
   const expectedHeaders =
     Array.isArray(input?.headers) &&
     input.headers.length === 2 &&
-    input.headers[0] === "c00" &&
-    input.headers[1] === "c01"
+    validHeader(input.headers[0]) &&
+    validHeader(input.headers[1]) &&
+    input.headers[0] !== input.headers[1]
       ? input.headers
       : undefined;
+  const bodyContent = input?.bodyContent;
   const expectedValues =
-    Array.isArray(input?.topLeftValues) &&
-    input.topLeftValues.length === 2 &&
-    input.topLeftValues[0]?.length === 2 &&
-    input.topLeftValues[1]?.length === 2 &&
-    input.topLeftValues[0][0] === "0" &&
-    input.topLeftValues[0][1] === "1" &&
-    input.topLeftValues[1][0] === "1" &&
-    input.topLeftValues[1][1] === "2"
-      ? input.topLeftValues
+    bodyContent?.kind === "exact" &&
+    Object.keys(bodyContent).length === 2 &&
+    Array.isArray(bodyContent.topLeftValues) &&
+    bodyContent.topLeftValues.length === 2 &&
+    Array.isArray(bodyContent.topLeftValues[0]) &&
+    bodyContent.topLeftValues[0].length === 2 &&
+    Array.isArray(bodyContent.topLeftValues[1]) &&
+    bodyContent.topLeftValues[1].length === 2 &&
+    bodyContent.topLeftValues.every((row) => row.every((value) => validText(value)))
+      ? bodyContent.topLeftValues
       : undefined;
-  if (!expectedHeaders || !expectedValues) return Promise.resolve(null);
+  const minimumNonEmptyValues =
+    bodyContent?.kind === "minimum-nonempty" &&
+    Object.keys(bodyContent).length === 2 &&
+    Number.isSafeInteger(bodyContent.count) &&
+    bodyContent.count >= 1 &&
+    bodyContent.count <= 4
+      ? bodyContent.count
+      : undefined;
+  if (!expectedHeaders || (expectedValues === undefined && minimumNonEmptyValues === undefined)) {
+    return Promise.resolve(null);
+  }
 
   const viewportWidth = runtime.innerWidth || runtime.document.documentElement?.clientWidth || 0;
   const viewportHeight = runtime.innerHeight || runtime.document.documentElement?.clientHeight || 0;
@@ -270,9 +298,11 @@ export function observeComparisonGridReadiness(
         normalizeText(cells[firstHeaderIndex + 1].textContent)
       ]);
       if (
-        observedValues.some((row, rowIndex) =>
-          row.some((value, columnIndex) => value !== expectedValues[rowIndex][columnIndex])
-        )
+        expectedValues
+          ? observedValues.some((row, rowIndex) =>
+              row.some((value, columnIndex) => value !== expectedValues[rowIndex][columnIndex])
+            )
+          : observedValues.flat().filter((value) => value.length > 0).length < (minimumNonEmptyValues as number)
       ) {
         continue;
       }
@@ -296,8 +326,8 @@ export function observeComparisonGridReadiness(
           visible: true,
           pointerUsable: true,
           geometryStableFrames: 2,
-          headers: ["c00", "c01"],
-          sentinelsMatched: true,
+          headers: [expectedHeaders[0], expectedHeaders[1]],
+          bodyContentMatched: true,
           ariaRowCount,
           ariaColumnCount
         },
