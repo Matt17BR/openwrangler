@@ -75,17 +75,16 @@ R support has not been released. The current Open Wrangler 2 branch can find bas
 `data.table` variables in an R notebook and open them in a read-only workbench. It uses the notebook's IRkernel
 directly; Python is not involved. A local packaged test has passed with R 4.5.2 in VS Code 1.132.0 and Cursor 3.14.7.
 Native column and dataset profiles have R and TypeScript contract tests, and the packaged journey now checks their
-rendered workbench UI. The profile journey still needs recorded R 4.4, R 4.5, and remote-kernel runs before a preview
-ships.
+rendered workbench UI. R 4.4 and remote-kernel runs still need to pass before a preview ships.
 
 | Surface                                      | Availability | Status  | Recorded evidence                                       | Remaining acceptance gate                          |
 | -------------------------------------------- | ------------ | ------- | ------------------------------------------------------- | -------------------------------------------------- |
 | Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, local packaged-editor test | R 4.4 and remote-kernel coverage                   |
 | Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local packaged-editor test             | Live filtering                                     |
-| Native R column and dataset profiles         | Internal     | Partial | Native, host-contract, and packaged harness coverage    | Recorded R 4.4, R 4.5, and remote-kernel runs      |
+| Native R column and dataset profiles         | Internal     | Partial | Native, host-contract, and packaged harness coverage    | R 4.4 and remote-kernel runs                       |
 | Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, paging, sorting, and profile tests    | Remote-kernel coverage                             |
 | Exact IRkernel session transport             | Internal     | Partial | Lifecycle, paging, and profile correlation tests        | Remote IRkernel and restart acceptance             |
-| Notebook workbench                           | Internal     | Partial | Local packaged paging/sort; profile journey in harness  | R 4.4/4.5 profiles, remote, filters, editing, a11y |
+| Notebook workbench                           | Internal     | Partial | Local packaged paging, sorts, and rendered profiles     | R 4.4, remote, filters, editing, and accessibility |
 | R cleaning operations and generated code     | No           | Planned | Frame semantics only                                    | Native R IR, adapters, code generation, and tests  |
 | Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                   | Stable broker or Open Wrangler-owned helper        |
 
