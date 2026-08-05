@@ -147,12 +147,12 @@ Select any applied step to inspect that point in history, then return to confirm
   </tr>
   <tr>
     <td>Experimental DuckDB relations are view-only and do not require dataframe conversion.</td>
-    <td>Local PySpark 4.2.x Classic and Connect dataframes support viewing, filtering, sorting, paging, and profiles.</td>
+    <td>Local PySpark 4.2.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles.</td>
   </tr>
 </table>
 
-DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's local Spark session. The first page
-loads without counting or caching the entire dataframe, and the exact row total appears after the last page. The
+PySpark support is notebook-only and view-only. It uses an existing local 4.2 Classic or Connect session. The first
+page loads without counting or caching the entire DataFrame, and the exact row total appears after the last page. The
 ordering badge distinguishes Spark source order from an explicit sort and explains why repeatable rows need a unique
 final sort key.
 

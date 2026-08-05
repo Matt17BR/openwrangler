@@ -6,25 +6,20 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
-- Local PySpark 4.2 Classic and Connect notebook viewing is now supported in VS Code and Cursor. The workbench no
-  longer labels these sessions experimental. They remain viewing-only; file sources, cleaning, exports, saved output,
-  external or authenticated clusters, and Spark provisioning are not supported.
+- Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
+  VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and
+  view-only; streaming DataFrames, files, cleaning, exports, saved output, remote or authenticated clusters, and Spark
+  setup are not supported.
 - PySpark column profiles now check and collect their ten displayed values in one Spark job. If the values are too
   large, Spark returns only their byte counts. Ordinary profiles no longer run the same grouped query twice.
-- PySpark Classic and Connect now use the same mixed profiling data in runtime tests. The packaged notebook test
-  profiles all three columns in its small dataframe. A separate manual command records three warm selected-column
-  and all-column samples; it does not run in pull-request CI or impose a performance limit.
-- PySpark open errors now name streaming frames, conflicting or reserved column names, and DataFrame values missing
-  standard Spark operations, then suggest a specific Spark-side fix. The packaged Jupyter check also rejects a real
-  Variant column without converting it or leaving an Open Wrangler session open, and its scheduled run now checks
-  both VS Code and Cursor.
+- PySpark open errors now explain unsupported streaming or Variant data, conflicting or reserved column names, and
+  objects missing standard DataFrame operations, with a suggested fix where available.
 - PySpark sessions now label unsorted rows as **Source order** and explicitly sorted rows as **Sorted**. The ordering
   badge explains Spark's behavior for unsorted rows and tells users to add a unique final sort key for repeatable
   rows.
-- PySpark Classic work now has a separate Spark job group for each Open Wrangler request and restores the notebook's
-  previous job properties afterward. Spark Connect keeps its own per-operation interrupt behavior. Queued or
-  superseded work is dropped before dispatch, but running work is not interrupted because that could cancel unrelated
-  notebook jobs. User job tags, scheduler pools, and signal handlers are unchanged.
+- PySpark Classic now gives each Open Wrangler request its own Spark job group and restores the notebook's previous
+  job settings. Queued work is dropped when a view closes or changes; work already running is left alone so unrelated
+  notebook jobs are not cancelled.
 - Recreating a PySpark Classic variable after stopping its old Spark session now reopens the live notebook data
   instead of failing while Open Wrangler reads request properties from the stopped Spark context.
 - Spark Connect now tells temporary endpoint failures apart from a server session or DataFrame that no longer exists.

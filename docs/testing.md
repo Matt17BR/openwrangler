@@ -192,8 +192,8 @@ their median and maximum, Spark and machine versions, the dataframe size and par
 cleanup results. There is no pass/fail time limit yet. Run it on an idle machine and review the numbers before using
 them in a release claim. `--rows` and `--partitions` may be changed for diagnosis; the report records both values.
 
-The post-optimization check ran on exact source `2f2c3545ef049a2ddf23e338451bef0e91834316` in
-[GitHub Actions run 30975727813](https://github.com/Matt17BR/openwrangler/actions/runs/30975727813). It used the
+Run [30975727813](https://github.com/Matt17BR/openwrangler/actions/runs/30975727813) tested commit
+`2f2c3545ef049a2ddf23e338451bef0e91834316`. It used the
 standard 1,000,000-row, 10-column, 32-partition fixture, three warm samples, and the public four-CPU, 16 GiB Linux
 runner with Java 17, Python 3.12, and PySpark 4.2. Classic and Connect conversion guards and cleanup passed.
 
@@ -206,6 +206,7 @@ Compared with the preceding exact-main run, all-column medians fell by 8.1% in C
 selected-column changes, +3.8% and -6.2%, are too small to separate from runner variation with only three samples.
 The uploaded JSON artifact has SHA-256
 `a02bacc2a5f11fe0a06e24ef3cbd68c5aedd312ffe3624086e1c7ad1cfbf2ade`.
+These measurements are used to spot regressions; they are not a pass/fail speed target.
 
 External or authenticated Connect servers, cluster provisioning, and running-request cancellation are not supported.
 PySpark remains absent from the extension's production dependencies and is never installed into a user's kernel by

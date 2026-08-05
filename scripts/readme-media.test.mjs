@@ -500,7 +500,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /DuckDB relations are view-only and do not require dataframe conversion/u);
   assert.match(
     readme,
-    /Local PySpark 4\.2\.x Classic and Connect dataframes support viewing, filtering, sorting, paging, and profiles/u
+    /Local PySpark 4\.2\.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles/u
   );
   assert.match(
     readme,
@@ -537,12 +537,15 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /does not count or cache the whole PySpark dataframe before showing the first page; the row total\s+appears after the final page/u
   );
-  assert.match(readme, /PySpark uses the notebook's existing local Spark session and\s+loads pages sequentially/u);
+  assert.match(readme, /PySpark support is notebook-only and view-only/u);
+  assert.match(readme, /existing local 4\.2 Classic or Connect session/u);
+  assert.match(readme, /PySpark loads pages sequentially/u);
   assert.match(readme, /toolbar says \*\*Source order\*\* until you add a sort, then \*\*Sorted\*\*/u);
-  assert.match(readme, /rows tied across every sort key can move when it reruns the dataframe/u);
-  assert.match(readme, /Use a unique final sort key\s+when you need repeatable rows/u);
-  assert.match(readme, /does not install PySpark, start or stop Spark, or configure cluster authentication/u);
-  assert.match(readme, /External and\s+authenticated Spark clusters are not supported/u);
+  assert.match(readme, /rows tied across every sort key can move when it reruns the DataFrame/u);
+  assert.match(readme, /Use a unique final\s+sort key when you need repeatable rows/u);
+  assert.match(readme, /does not install or configure Spark/u);
+  assert.match(readme, /Streaming DataFrames and remote or authenticated clusters are not\s+supported/u);
+  assert.match(readme, /Closing the view leaves Spark work that has already started alone/u);
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   assert.match(readme, /Microsoft Data\s+Wrangler 1\.24\.2/u);
   assert.match(readme, /Data Wrangler converts Polars data to Pandas/u);
@@ -621,7 +624,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   }
   assert.match(gallery, /Dataset\s+sizes in the images describe the example, not a row or column limit/u);
   assert.match(gallery, /Experimental DuckDB relations are view-only and do not require dataframe conversion/u);
-  assert.match(gallery, /Local PySpark 4\.2\.x Classic and Connect dataframes support/u);
+  assert.match(gallery, /Local PySpark 4\.2\.x Classic and Connect batch DataFrames support/u);
   assert.match(gallery, /^## Grid and sidebar$/mu);
   assert.match(
     gallery,
@@ -656,7 +659,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /first page\s+loads without counting or caching the entire dataframe[\s\S]{0,120}exact row total appears after the last page/u
+    /first\s+page loads without counting or caching the entire DataFrame[\s\S]{0,120}exact row total appears after the last page/u
   );
   assert.match(gallery, /ordering\s+badge distinguishes Spark source order from an explicit sort/u);
   assert.doesNotMatch(gallery, /expensive to open|scan and index|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
@@ -692,7 +695,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(mediaSpec, /explicit logical `width` and `height`/u);
   assert.match(mediaSpec, /2 MiB per PNG and 32 MiB for the complete inventory/u);
   assert.match(mediaSpec, /Private setup, restart-probe, and runtime-transfer cells are collapsed/u);
-  assert.match(mediaSpec, /raw PySpark variable-picker capture is acceptance evidence, not public product media/u);
+  assert.match(mediaSpec, /setup cell is too implementation-focused for product documentation/u);
   assert.match(testing, /compose:readme-media[\s\S]{0,160}accepted packaged-editor and\s+production-webview sources/u);
   assert.match(testing, /pixel-exact decoded output/u);
   assert.match(testing, /Generated-code insertion is proven through the exact `NotebookDocument`/u);

@@ -4,7 +4,8 @@ Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15.
 
 Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Open Wrangler 1.0 requires every in-scope row to be **Done**.
 
-The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview. PySpark 4.2 has a separate supported surface for local, viewing-only live-notebook sessions. Neither engine broadens a two-engine **Done** row or replaces either parity engine's release gates.
+The parity table covers Pandas and Polars. DuckDB file support is experimental. Local PySpark 4.2 Classic/Connect
+notebook viewing has its own acceptance table below; neither changes what counts as Done for Pandas or Polars.
 
 VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google says [Antigravity is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open Wrangler 1.2.0 passed one bounded Antigravity Linux x64 install, activation, file-open, source-immutability, and cleanup smoke through Open VSX; the exact non-release-blocking record and its limitations are in [testing](testing.md#experimental-antigravity-smoke). Browser-hosted `vscode.dev` remains outside the local-runtime scope.
 
@@ -117,10 +118,10 @@ The real packaged-Jupyter allow path records the following behavior:
 
 ## PySpark live-notebook viewer
 
-Open Wrangler supports local PySpark 4.2.x Classic and Spark Connect DataFrames opened from a live Jupyter variable
-in VS Code or Cursor. These sessions are for viewing only. The user's kernel owns Spark; Open Wrangler does not
-install PySpark, start or stop Spark, or configure a cluster. External or authenticated clusters, streaming frames,
-file sources, cleaning, exports, saved-output rendering, and provisioning are not part of this supported surface.
+Open Wrangler supports viewing local PySpark 4.2.x Classic and Connect batch DataFrames from live Jupyter notebooks
+in VS Code and Cursor. PySpark support is notebook-only and view-only. Open Wrangler uses the notebook's existing
+Spark session and does not install or configure Spark. Streaming DataFrames, files, cleaning, exports, saved output,
+remote or authenticated clusters, and Spark provisioning are not supported.
 
 Every open checks the value and PySpark version in the exact selected kernel before creating a session. The first
 grid block loads without counting, globally indexing, or caching the whole dataframe. Pages advance sequentially,
@@ -128,12 +129,11 @@ and a short final page establishes the exact total. A changed page boundary asks
 Spark does not guarantee source order, and rows tied across every sort key may move on rerun. Users who need
 repeatable rows must end the sort list with a unique key.
 
-Kernel restarts and same-kernel Classic or Connect replacements recover the confirmed view when the variable keeps
-the same schema. A temporary Connect outage leaves the grid in place for a page retry. If the server loses the
-session or dataframe, the user can rerun the defining cell and choose **Reconnect**; a failed replacement never
-replaces the last confirmed grid. Queued or superseded work is dropped before kernel dispatch. Running Spark work is
-detached and stale-ignored instead of interrupted because PySpark's default SIGINT handler may cancel unrelated jobs
-in the notebook session.
+Kernel restarts and replacement Classic or Connect DataFrames with the same schema restore the current view. A
+temporary Connect outage leaves the grid available for retry. If the server loses the session or DataFrame, rerun
+the defining cell and choose **Reconnect**. Work that has not started is dropped when the view changes; late results
+from running work are ignored rather than interrupting the kernel, because a PySpark interrupt can cancel unrelated
+notebook jobs.
 
 Focused Classic and Connect tests cover projection, progressive paging, filters, ordered multi-column sorts,
 profiles, restart/rebind, reconnect, and cleanup without conversion through Pandas or Arrow. A 1,000,000-row,
@@ -141,12 +141,12 @@ profiles, restart/rebind, reconnect, and cleanup without conversion through Pand
 persistent RDD. The released-Jupyter package phase has also passed local Classic and Connect in VS Code and Cursor.
 Each release still reruns the package phase against the exact candidate VSIX.
 
-The opt-in profiling run on exact `main` commit `2f2c3545ef049a2ddf23e338451bef0e91834316` completed in
-[GitHub Actions run 30975727813](https://github.com/Matt17BR/openwrangler/actions/runs/30975727813). For its three
+Run [30975727813](https://github.com/Matt17BR/openwrangler/actions/runs/30975727813) tested commit
+`2f2c3545ef049a2ddf23e338451bef0e91834316`. For its three
 warm 1,000,000-row, 10-column, 32-partition samples, the median selected-column profile took 3.33 seconds in Classic
 and 2.97 seconds in Connect; all-column profiling took 34.68 and 33.29 seconds. The all-column results were 8.1% and
 13.0% lower than the preceding exact-main baseline. The selected-column differences were small enough to treat as
-run-to-run variation. This diagnostic run has no release threshold.
+run-to-run variation. These measurements are used to spot regressions; they are not a pass/fail speed target.
 
 | Surface                                        | v1.2 support       | Status       | Recorded evidence                                     | Boundary                                     |
 | ---------------------------------------------- | ------------------ | ------------ | ----------------------------------------------------- | -------------------------------------------- |
