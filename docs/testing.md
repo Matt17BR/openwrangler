@@ -581,8 +581,13 @@ groups. Profile completion requires the matching marker for every column family.
 filesystem so the session runner can use read-only hard links rather than copy several gigabytes per trial.
 
 Before checking fixture provenance, the runner removes a private trial directory left by an interrupted process. It
-then resumes at the first missing result. Immediately before every new editor session it checks available memory,
-free disk, AC power, and the recorded CPU governor. A failed check creates no trial result and starts no editor.
+then resumes at the first missing result. A failed editor run uses its fixed slot, stays in the raw report, and does
+not stop or get retried. The report needs all 20 slots, at least four successes in each five-run product/engine group,
+and at least eight native-load successes per engine. Every failure must be explained and checked before publication;
+all successful runs are included in the summary.
+
+Immediately before every new editor session the runner checks available memory, free disk, AC power, and the recorded
+CPU governor. A failed check creates no trial result and starts no editor.
 
 Run these focused checks while changing the new method:
 

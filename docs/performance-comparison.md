@@ -32,7 +32,8 @@ source. The generator refuses to replace an existing file.
 
 There are four groups: Pandas and Polars inputs in Open Wrangler and Data Wrangler. Each group has five repetitions.
 Every repetition gets a new headless VS Code window, private profile, notebook, Python process, and Jupyter kernel.
-That is 20 editor runs in total. A failed run is kept in the raw report and is not silently retried.
+That is 20 editor runs in total. A failed run still uses its assigned slot: it is kept in the raw report, is not
+retried, and does not stop the remaining runs.
 
 Each run records:
 
@@ -50,10 +51,14 @@ the report keeps that input labelled Polars so the conversion cost stays visible
 uses a new Python process, but the test does not flush the operating-system file cache, so these are warm-source loads
 rather than cold-disk timings.
 
-The report gives the minimum, median, and maximum for each measurement. Each UI group has five values and each
-engine-only native-load group has ten. Five values are enough for a practical manual comparison but not for a useful
-p95, so the report does not calculate one. It is a release review, not a job in normal pull-request CI and not a
-scheduled task on a developer laptop.
+The report gives the minimum, median, and maximum over every successful run. A usable comparison requires all 20
+assigned runs to have been attempted, at least four successful runs in each five-run UI group, and at least eight
+successful native loads per engine. There are no replacement runs. Any failure needs a written explanation and a
+second-person check before numbers are published. The detailed report keeps those failures; a short README table may
+show the successful-run summaries without repeating the diagnostics.
+
+Five values are enough for a practical manual comparison but not for a useful p95, so the report does not calculate
+one. It is a release review, not a job in normal pull-request CI and not a scheduled task on a developer laptop.
 
 ## Run the study
 
@@ -93,10 +98,9 @@ npm run comparison:large:report -- \
   --out /absolute/path/openwrangler-data-wrangler-large-report.json
 ```
 
-The report command writes the diagnostic result and then fails if any product/engine group lacks five successful
-runs. Before publishing numbers, a second person should check the exact product, editor, Python, package, fixture,
-and tool hashes, recalculate the four UI groups, and recalculate the two engine-only native-load groups from the raw
-trials.
+The report command writes the detailed result and then checks the minimum counts above. Before publishing numbers, a
+second person should explain every failed run, check the exact product, editor, Python, package, fixture, and tool
+hashes, recalculate the four UI groups, and recalculate the two engine-only native-load groups from the raw trials.
 
 ## Fast regression tests
 

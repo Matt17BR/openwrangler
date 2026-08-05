@@ -16,6 +16,7 @@ import test from "node:test";
 import {
   LARGE_COLUMNS,
   LARGE_FIXTURE_PROTOCOL,
+  LARGE_MIN_SUCCESSFUL_REPETITIONS,
   LARGE_REPETITIONS,
   LARGE_REPORT_PROTOCOL,
   LARGE_ROWS,
@@ -71,7 +72,7 @@ test("large fixture hashing streams the file", async () => {
   }
 });
 
-test("large report requires five successful independent sessions in every group", () => {
+test("large report uses every success after the fixed schedule meets its minimum", () => {
   const manifest = manifestFixture();
   const trials = manifest.schedule.map((entry) =>
     buildLargeTrialResult(entry, loadFixture(entry.engine), journeyFixture())
@@ -104,13 +105,64 @@ test("large report requires five successful independent sessions in every group"
     false
   );
   assert.doesNotThrow(() => assertCompleteLargeReport(report));
+
+  const failures = new Set([
+    manifest.schedule.find(({ engine, product }) => engine === "pandas" && product === "open-wrangler").id,
+    manifest.schedule.find(({ engine, product }) => engine === "polars" && product === "data-wrangler").id
+  ]);
+  const partlySuccessful = trials.map((trial) =>
+    failures.has(trial.trialId) ? failedTrialFixture(manifest.schedule.find(({ id }) => id === trial.trialId)) : trial
+  );
+  const reviewedReport = buildLargeComparisonReport({
+    generatedAtUtc: report.generatedAtUtc,
+    manifest,
+    trials: partlySuccessful
+  });
+  assert.deepEqual(
+    reviewedReport.summaries.map(({ successful }) => successful),
+    [LARGE_MIN_SUCCESSFUL_REPETITIONS, 5, 5, LARGE_MIN_SUCCESSFUL_REPETITIONS]
+  );
+  assert.equal(reviewedReport.trials.filter(({ error }) => error !== null).length, 2);
+  assert.doesNotThrow(() => assertCompleteLargeReport(reviewedReport));
+
   assert.throws(
     () =>
       assertCompleteLargeReport(
         buildLargeComparisonReport({ generatedAtUtc: report.generatedAtUtc, manifest, trials: trials.slice(1) })
       ),
-    /five successful fresh sessions/u
+    /at least four successful sessions/u
   );
+});
+
+test("one failed journey is recorded once and does not stop the fixed schedule", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-large-failure-"));
+  const calls = [];
+  const failedId = createLargeComparisonSchedule()[3].id;
+  try {
+    const dependencies = fakeStudyDependencies(calls, {
+      runJourney: async (request) => {
+        calls.push(request.trialId);
+        if (request.trialId === failedId) return { samples: [failedJourneyFixture()] };
+        return { samples: [journeyFixture()] };
+      }
+    });
+    const result = await runLargeComparisonStudy({ output: root, confirmLargeStudy: true }, dependencies);
+    assert.deepEqual(result, { completed: 20, remaining: 0 });
+    assert.equal(calls.length, 20);
+    assert.equal(calls.filter((id) => id === failedId).length, 1);
+
+    const failed = JSON.parse(readFileSync(join(root, "trials", `${failedId}.json`), "utf8"));
+    assert.equal(failed.trialId, failedId);
+    assert.equal(failed.error, null);
+    assert.equal(failed.journey.status, "failure");
+    assert.match(failed.journey.failure.message, /synthetic editor failure/u);
+
+    const resumed = await runLargeComparisonStudy({ output: root, confirmLargeStudy: true }, dependencies);
+    assert.deepEqual(resumed, { completed: 20, remaining: 0 });
+    assert.equal(calls.length, 20);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("an abrupt interruption is cleaned before fixture provenance is checked", async () => {
@@ -343,5 +395,27 @@ function journeyFixture() {
         { monotonicNs: "200", pssBytes: 600, processCount: 2 }
       ]
     }
+  };
+}
+
+function failedJourneyFixture() {
+  return {
+    ...journeyFixture(),
+    status: "failure",
+    failure: { stage: "workbench-open", kind: "product", message: "synthetic editor failure" }
+  };
+}
+
+function failedTrialFixture(entry) {
+  return {
+    protocol: "openwrangler-large-data-wrangler-trial-v1",
+    trialId: entry.id,
+    product: entry.product,
+    engine: entry.engine,
+    repetition: entry.repetition,
+    order: entry.order,
+    load: null,
+    journey: null,
+    error: "synthetic editor failure"
   };
 }

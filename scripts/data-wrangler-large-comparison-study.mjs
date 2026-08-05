@@ -34,6 +34,7 @@ export const LARGE_FIXTURE_PROTOCOL = "openwrangler-large-parquet-fixture-v1";
 export const LARGE_ROWS = 10_000_000;
 export const LARGE_COLUMNS = 100;
 export const LARGE_REPETITIONS = 5;
+export const LARGE_MIN_SUCCESSFUL_REPETITIONS = 4;
 const PRODUCTS = Object.freeze(["open-wrangler", "data-wrangler"]);
 const ENGINES = Object.freeze(["pandas", "polars"]);
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -120,7 +121,14 @@ export function buildLargeStudyManifest({ createdAtUtc, candidate, editor, pytho
         allProfiles: "profiling action to completed summaries for every column",
         memory: "first, peak, and increase in sampled editor-process-tree PSS during the UI journey"
       },
-      statistics: "five independent measurements; minimum, median, and maximum",
+      statistics: "fixed five-attempt schedule; minimum, median, and maximum over every successful attempt",
+      resultRule: {
+        minimumSuccessfulAttemptsPerProductAndEngine: LARGE_MIN_SUCCESSFUL_REPETITIONS,
+        minimumSuccessfulNativeLoadsPerEngine: LARGE_MIN_SUCCESSFUL_REPETITIONS * PRODUCTS.length,
+        retries: 0,
+        includeEverySuccessfulAttempt: true,
+        reviewEveryFailure: true
+      },
       runRequirements: {
         minimumAvailableMemoryBytes: MIN_AVAILABLE_MEMORY_BYTES,
         minimumFreeDiskBytes: MIN_FREE_DISK_BYTES,
@@ -173,10 +181,6 @@ export async function runLargeComparisonStudy(options, dependencies = {}) {
   });
   const { output, trialsDirectory, manifest } = preparedStudy;
   const existingTrials = loadLargeTrials(output, manifest).trials;
-  const failedExisting = existingTrials.find((trial) => trial.error !== null || trial.journey.status !== "success");
-  if (failedExisting) {
-    throw new Error(`Trial ${failedExisting.trialId} did not finish successfully. Inspect it and start a new study.`);
-  }
   const assertEnvironment = async () =>
     assertLargeRunEnvironment(await inspectRunEnvironment(), manifest.provenance.machine);
   return runComparisonSchedule({
@@ -200,10 +204,7 @@ export async function runLargeComparisonStudy(options, dependencies = {}) {
     afterTrial: assertEnvironment,
     buildFailure: buildLargeTrialFailure,
     validateTrial: validateLargeTrial,
-    isTerminal: (trial) => trial.error === null && trial.journey.status === "success",
-    stopAfter: (trial) => trial.error !== null || trial.journey.status !== "success",
-    stopMessage: (trial) =>
-      `Trial ${trial.trialId} did not finish successfully. The study stopped before starting another editor.`,
+    isTerminal: () => true,
     cleanup: () => removePreparedExtensionDirectories(output)
   });
 }
@@ -407,22 +408,32 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials })
 }
 
 export function assertCompleteLargeReport(report) {
+  const resultRule = report?.method?.resultRule;
   if (
     report?.protocol !== LARGE_REPORT_PROTOCOL ||
     report.plannedTrials !== 20 ||
     report.completedTrials !== 20 ||
+    report.incompleteTrialIds?.length !== 0 ||
+    resultRule?.minimumSuccessfulAttemptsPerProductAndEngine !== LARGE_MIN_SUCCESSFUL_REPETITIONS ||
+    resultRule?.minimumSuccessfulNativeLoadsPerEngine !== LARGE_MIN_SUCCESSFUL_REPETITIONS * PRODUCTS.length ||
+    resultRule?.retries !== 0 ||
+    resultRule?.includeEverySuccessfulAttempt !== true ||
+    resultRule?.reviewEveryFailure !== true ||
     !Array.isArray(report.loadSummaries) ||
     report.loadSummaries.length !== ENGINES.length ||
     report.loadSummaries.some(
       ({ completed, successful }) =>
-        completed !== LARGE_REPETITIONS * PRODUCTS.length || successful !== LARGE_REPETITIONS * PRODUCTS.length
+        completed !== LARGE_REPETITIONS * PRODUCTS.length ||
+        successful < LARGE_MIN_SUCCESSFUL_REPETITIONS * PRODUCTS.length
     ) ||
     !Array.isArray(report.summaries) ||
     report.summaries.some(
-      ({ completed, successful }) => completed !== LARGE_REPETITIONS || successful !== LARGE_REPETITIONS
+      ({ completed, successful }) => completed !== LARGE_REPETITIONS || successful < LARGE_MIN_SUCCESSFUL_REPETITIONS
     )
   ) {
-    throw new Error("The large comparison needs five successful fresh sessions for each product and engine.");
+    throw new Error(
+      "The large comparison needs all 20 fixed attempts and at least four successful sessions for each product and engine."
+    );
   }
 }
 

@@ -324,6 +324,8 @@ describe("public readiness oracles", () => {
       { column: "c74", text: "c74 String Missing 2% Distinct 98% popular-c74 103000" },
       { column: "c80", text: "c80 Datetime Missing 2% Distinct 98% Min 2000-01-01 Max 2099-12-31" },
       { column: "c89", text: "c89 Duration Missing 2% Distinct 98% Min -1 day Max 365 days" },
+      { column: "c90", text: "c90 Duration Missing 2% Distinct 98% Min -1 days +00:00:00 Max 365 days 00:00:00" },
+      { column: "c91", text: "c91 Duration Missing 2% Distinct 98% Min -1 day, 0:00:00 Max 365 days, 0:00:00" },
       { column: "c92", text: "c92 Boolean Missing 2% Distinct 2 True 5000000 False 5000000" }
     ]) {
       expect(mixedProfileTextReady(input)).toBe(true);
@@ -335,6 +337,12 @@ describe("public readiness oracles", () => {
       })
     ).toBe(false);
     expect(mixedProfileTextReady({ column: "c66", text: "c66 String Missing 2% Distinct 7 consumer" })).toBe(false);
+    expect(
+      mixedProfileTextReady({
+        column: "c89",
+        text: "c89 Duration Missing 2% Distinct 98% Min -1 day Max 364 days"
+      })
+    ).toBe(false);
     expect(
       mixedProfileTextReady({ column: "c92", text: "c92 Boolean Profiling Missing 2% Distinct 2 True False" })
     ).toBe(false);
@@ -350,6 +358,24 @@ describe("public readiness oracles", () => {
         text: "c92 Exact statistics Rows 10000000 Null 0 Distinct 2 True 5000000 False 5000000"
       })
     ).toBe(true);
+    expect(
+      openWranglerProfileTextReady({
+        column: "c89",
+        contract: "mixed-sentinels-v1",
+        minimum: 0,
+        maximum: 0,
+        text: "c89 Exact statistics Rows 10000000 Null 2% Distinct 98% Min -1 days +00:00:00 Max 365 days 00:00:00"
+      })
+    ).toBe(true);
+    expect(
+      openWranglerProfileTextReady({
+        column: "c89",
+        contract: "mixed-sentinels-v1",
+        minimum: 0,
+        maximum: 0,
+        text: "c89 Exact statistics Rows 10000000 Null 2% Distinct 98% Min -1 days +00:00:00 Max 36 days 00:00:00"
+      })
+    ).toBe(false);
     expect(
       openWranglerProfileTextReady({
         column: "c00",
