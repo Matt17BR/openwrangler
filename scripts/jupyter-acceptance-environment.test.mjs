@@ -360,11 +360,15 @@ test("released-Jupyter R setup preserves probe ownership uncertainty through its
   }
 });
 
-test("packaged-editor R acceptance keeps local coverage and gates one separate VS Code remote phase", async () => {
+test("packaged-editor R acceptance requires explicit inputs in local or hosted runs and gates one VS Code remote phase", async () => {
   const source = await readFile(new URL("./run-packaged-editor-tests.mjs", import.meta.url), "utf8");
   assert.match(source, /acceptanceMode !== "r-jupyter"/u);
-  assert.match(source, /OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" is a local manual release check, not a CI job/u);
+  const modeStart = source.indexOf('if (acceptanceMode === "r-jupyter")');
+  const supportedEditors = source.indexOf("const supportedEditorKeys", modeStart);
+  assert.ok(modeStart >= 0 && supportedEditors > modeStart);
+  assert.doesNotMatch(source.slice(modeStart, supportedEditors), /process\.env\.CI/u);
   assert.match(source, /requires an explicit, duplicate-free VS Code\/Cursor list/u);
+  assert.match(source, /requires the released Jupyter extension opt-in/u);
   assert.match(source, /OPEN_WRANGLER_TEST_RSCRIPT to name an existing absolute Rscript executable/u);
   assert.match(source, /cannot be combined with the Data Wrangler coexistence opt-in/u);
   assert.match(

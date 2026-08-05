@@ -31,6 +31,21 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: "4.5"
+          use-public-rspm: true
+      - id: rscript
+        name: Locate hosted Rscript
+        shell: bash
+        run: |
+          set -euo pipefail
+          rscript="$(command -v Rscript)"
+          if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
+            echo "Rscript did not resolve to an absolute executable." >&2
+            exit 1
+          fi
+          printf 'executable=%s\n' "$rscript" >> "$GITHUB_OUTPUT"
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
@@ -81,6 +96,28 @@ jobs:
         with:
           name: released-jupyter-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - id: packaged_editor_r
+        name: Test released R Jupyter in packaged VS Code
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload packaged-editor R failure diagnostics
+        if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 9

@@ -228,9 +228,6 @@ try {
           }
           const rscript = process.env.OPEN_WRANGLER_TEST_RSCRIPT;
           if (acceptanceMode === "r-jupyter") {
-            if (process.env.CI) {
-              throw new Error('OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" is a local manual release check, not a CI job.');
-            }
             if (
               !requested?.length ||
               requested.length > 2 ||

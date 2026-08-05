@@ -1545,6 +1545,15 @@ test("standalone released-Jupyter acceptance is schedule/manual-only and self-pa
       "java-version": "17"
     }
   );
+  assert.deepEqual(job?.steps?.find((step) => step?.uses === SETUP_R_ACTION)?.with, {
+    "r-version": "4.5",
+    "use-public-rspm": true
+  });
+  const rscript = job?.steps?.find((step) => step?.id === "rscript");
+  assert.equal(rscript?.name, "Locate hosted Rscript");
+  assert.equal(rscript?.shell, "bash");
+  assert.match(rscript?.run ?? "", /rscript="\$\(command -v Rscript\)"/u);
+  assert.match(rscript?.run ?? "", /printf 'executable=%s\\n' "\$rscript" >> "\$GITHUB_OUTPUT"/u);
   const packaged = job?.steps?.find((step) => step?.id === "packaged_editor");
   assert.equal(packaged?.name, "Test released Jupyter in packaged VS Code and Cursor");
   assert.equal(
@@ -1559,11 +1568,42 @@ test("standalone released-Jupyter acceptance is schedule/manual-only and self-pa
     OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
     VSCODE_TEST_VERSION: "stable"
   });
-  const diagnostics = job?.steps?.find(
-    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@")
-  );
+  const diagnostics = job?.steps?.find((step) => step?.name === "Upload packaged-editor failure diagnostics");
   assert.equal(
     diagnostics?.with?.name,
     "released-jupyter-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(diagnostics?.with?.path, "${{ steps.packaged_editor.outputs.evidence_path }}");
+
+  const packagedR = job?.steps?.find((step) => step?.id === "packaged_editor_r");
+  assert.equal(packagedR?.name, "Test released R Jupyter in packaged VS Code");
+  assert.equal(
+    packagedR?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
+  );
+  assert.deepEqual(packagedR?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const rDiagnostics = job?.steps?.find((step) => step?.name === "Upload packaged-editor R failure diagnostics");
+  assert.equal(
+    rDiagnostics?.if,
+    "${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}"
+  );
+  assert.equal(
+    rDiagnostics?.with?.name,
+    "released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(rDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
+  assert.equal(
+    job?.steps?.filter((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@"))
+      .length,
+    2
   );
 });
