@@ -24,7 +24,8 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Generated code preview and editing                   |    Yes |    Yes | Done   | Native code plus edited packaged exports green; record:docs/testing.md                |
 | Sort/filter cleaning steps                           |    Yes |    Yes | Done   | Stable refs, native/code edges, packaged duplicates; record:docs/testing.md           |
 | Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done   | Reordered mixed-label preview/apply/replay green; record:docs/testing.md              |
-| Missing/duplicate row operations                     |    Yes |    Yes | Done   | Stable refs, all modes, code and packaged duplicates; record:docs/testing.md          |
+| Drop missing/duplicate rows                          |    Yes |    Yes | Done   | Stable refs, all row modes, code and packaged catalog; record:docs/testing.md         |
+| Fill missing values                                  |    Yes |    Yes | Done   | Typed/median fills, code and lifecycle tests; record:docs/testing.md                  |
 | One-hot and multi-label binarization                 |    Yes |    Yes | Done   | Null/blank/collision and generated-code parity; record:docs/testing.md                |
 | Find/replace/strip/split/case transforms             |    Yes |    Yes | Done   | Unicode/null plus packaged text preview/apply; record:docs/testing.md                 |
 | Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done   | Numeric edges plus packaged preview/apply; record:docs/testing.md                     |
@@ -43,6 +44,12 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Cross-platform first-class editor package acceptance |    N/A |    N/A | Done   | Exact VS Code/Cursor OS + Remote SSH green; record:docs/testing.md                    |
 
 Post-1.0 viewing-filter hardening keeps the completed filter surface usable as well as semantically correct. Focused React coverage proves that removing a final selected value removes the column filter itself, changing per-column logic cannot create an empty filter, and **Filter rows** stays disabled for an effective-empty query. A two-column interaction keeps every active filter visible, removes one value or predicate without disturbing siblings, and preserves sorts on the same or another column. The native Filters tree exercises the same whole-column removal through the host/webview action boundary.
+
+**Fill missing values** works on one stable column at a time. Numeric columns can use the median of their present
+values; supported scalar columns can use an explicit value of the matching type. Both null and floating-point NaN
+are treated as missing. Median fills return a floating-point column in each engine. The original dataframe is
+unchanged until the draft is applied, and the generated Pandas, Polars, or DuckDB code follows the same rule.
+Focused tests cover the dialog and the usual preview, apply, edit, discard, and undo lifecycle.
 
 Cleaning-step preview, apply, latest-step edit, discard, and undo now preserve the independent viewing query instead of resetting it. Parameterized Pandas, Polars, and DuckDB runtime coverage keeps compatible selected values, searches, predicates, and ordered multi-sorts; prunes missing, ambiguous, or semantic-type-changed references; restores the exact pre-draft query on discard when the view was untouched; and keeps an explicit in-draft edit authoritative through Discard or Apply. Immediate undo restores the pre-first-apply query only when no later view edit occurred, including across latest-step replacement. Coordinator persistence restores the validated draft-base receipt before replaying a draft and then restores the independent current view; malformed or stale receipt/view sections fall back independently. React coverage verifies that confirmed Discard retains the runtime-published filters and sort priority.
 
@@ -89,7 +96,7 @@ DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither c
 | Notebook variables and inline MIME rendering | Viewing only        | Partial | Packaged native VS Code/Cursor Jupyter relation matrix  | Large relation, OS, and repeated recovery/performance matrix |
 | Grid pages, typed cells, filters, and sorts  | Yes                 | Partial | Native rich-type matrix; packaged page and query slices | Large-scale mixed data and cross-platform matrix             |
 | Summaries, statistics, and distinct values   | Yes                 | Partial | Exact profiles plus packaged progressive-query matrix   | Large-data resource and repeated performance evidence        |
-| Complete 27-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Full DuckDB-specific semantic edge matrix                    |
+| Complete 28-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Fill-missing editor journey and DuckDB semantic edge matrix  |
 | Draft preview, diff, apply, and history      | Preview/apply slice | Partial | Runtime and packaged preview/diff/apply/replay          | DuckDB edit/discard/undo interaction matrix                  |
 | Executable generated DuckDB code             | Yes                 | Partial | All kinds equal; packaged preview/copy/script green     | Edited-code execution acceptance                             |
 | CSV and Parquet cleaned-data export          | Yes                 | Partial | Native/atomic packaged exports preserve source bytes    | Failure injection and cross-platform destination matrix      |

@@ -39,6 +39,16 @@ _BY_EXAMPLE_TEXT_INPUT_TYPES = {"string", "integer", "date", "null"}
 # float operands while Polars and DuckDB may promote them. Keep direct Decimal
 # copies valid, but admit only native integer/float arithmetic expressions.
 _BY_EXAMPLE_ARITHMETIC_INPUT_TYPES = {"integer", "float"}
+_FILL_VALUE_KINDS_BY_COLUMN = {
+    "string": {"string"},
+    "integer": {"integer"},
+    "float": {"integer", "float"},
+    "decimal": {"integer", "decimal"},
+    "boolean": {"boolean"},
+    "date": {"date"},
+    "datetime": {"datetime"},
+    "unknown": {"string", "integer", "float", "decimal", "boolean", "date", "datetime"},
+}
 _BY_EXAMPLE_TEXT_KINDS = {
     "slice",
     "split",
@@ -189,6 +199,23 @@ class _BindingContext:
                 "choose a compatible column or aggregation."
             )
 
+    def require_fill_replacement(self, reference: Mapping[str, Any], replacement: Any, label: str) -> None:
+        column = self._column_for(reference, label)
+        if not isinstance(replacement, Mapping):
+            raise ColumnBindingError("fillMissingValues.replacement must be an object.")
+        kind = replacement.get("kind")
+        if kind == "median":
+            if column.semantic_type not in _NUMERIC_AGGREGATION_TYPES:
+                raise ColumnBindingError(
+                    f"{label} cannot use a median fill for {column.semantic_type!r}; choose a numeric column."
+                )
+            return
+        allowed = _FILL_VALUE_KINDS_BY_COLUMN.get(column.semantic_type, set())
+        if kind not in allowed:
+            raise ColumnBindingError(
+                f"{label} cannot use a {kind!r} replacement for {column.semantic_type!r}; choose a compatible value."
+            )
+
     def _column_for(self, reference: Mapping[str, Any], label: str) -> _Column:
         column = self.by_id.get(str(reference.get("id", "")))
         if column is None:
@@ -236,6 +263,7 @@ def bind_step(
         "sortRows",
         "filterRows",
         "dropMissingRows",
+        "fillMissingValues",
         "dropDuplicates",
         "oneHotEncode",
         "multiLabelBinarize",
@@ -345,6 +373,7 @@ def bind_step(
         "renameColumn",
         "cloneColumn",
         "castColumn",
+        "fillMissingValues",
         "textLength",
         "multiLabelBinarize",
         "findReplace",
@@ -360,6 +389,14 @@ def bind_step(
         "formatDatetime",
     }:
         params["column"] = context.bind(params.get("column"), f"{kind}.column")
+
+    if kind == "fillMissingValues":
+        context.require_fill_replacement(
+            params["column"],
+            params.get("replacement"),
+            "fillMissingValues.column",
+        )
+        return bound
 
     if kind == "renameColumn":
         context.reject_output_collision(params.get("newName"), "renameColumn.newName", replacing=params["column"])

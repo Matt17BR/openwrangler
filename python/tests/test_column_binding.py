@@ -133,6 +133,78 @@ def test_duplicate_label_in_place_value_updates_require_no_explicit_output_name(
         bind_step(step("roundNumber", column=duplicate, newColumn="duplicate"), SCHEMA, LINEAGE)
 
 
+def test_fill_missing_binds_one_exact_duplicate_column() -> None:
+    public = step(
+        "fillMissingValues",
+        column=ref("c:source:1", "duplicate"),
+        replacement={"kind": "median"},
+    )
+
+    bound = bind_step(public, SCHEMA, LINEAGE)
+
+    assert bound["params"] == {
+        "column": {"id": "c:source:1", "name": "duplicate", "position": 1},
+        "replacement": {"kind": "median"},
+    }
+    assert public["params"]["column"] == ref("c:source:1", "duplicate")
+
+
+@pytest.mark.parametrize(
+    ("column_type", "replacement"),
+    [
+        ("integer", {"kind": "median"}),
+        ("float", {"kind": "integer", "value": "0"}),
+        ("decimal", {"kind": "decimal", "value": "1.25"}),
+        ("string", {"kind": "string", "value": "unknown"}),
+        ("boolean", {"kind": "boolean", "value": False}),
+        ("date", {"kind": "date", "value": "2026-08-05"}),
+        ("datetime", {"kind": "datetime", "value": "2026-08-05T18:20:00"}),
+        ("unknown", {"kind": "string", "value": "not available"}),
+    ],
+)
+def test_fill_missing_binding_accepts_only_portable_type_matches(
+    column_type: str,
+    replacement: dict[str, Any],
+) -> None:
+    schema = [{"name": "value", "type": column_type}]
+    lineage = [{"id": "c:value", "name": "value"}]
+
+    bound = bind_step(
+        step("fillMissingValues", column=ref("c:value", "value"), replacement=replacement),
+        schema,
+        lineage,
+    )
+
+    assert bound["params"]["column"]["position"] == 0
+    assert bound["params"]["replacement"] == replacement
+
+
+@pytest.mark.parametrize(
+    ("column_type", "replacement"),
+    [
+        ("string", {"kind": "median"}),
+        ("integer", {"kind": "string", "value": "1"}),
+        ("boolean", {"kind": "integer", "value": "0"}),
+        ("date", {"kind": "datetime", "value": "2026-08-05T18:20:00"}),
+        ("binary", {"kind": "string", "value": "x"}),
+        ("unknown", {"kind": "median"}),
+    ],
+)
+def test_fill_missing_binding_rejects_incompatible_column_types(
+    column_type: str,
+    replacement: dict[str, Any],
+) -> None:
+    schema = [{"name": "value", "type": column_type}]
+    lineage = [{"id": "c:value", "name": "value"}]
+
+    with pytest.raises(ColumnBindingError, match="fillMissingValues.column cannot"):
+        bind_step(
+            step("fillMissingValues", column=ref("c:value", "value"), replacement=replacement),
+            schema,
+            lineage,
+        )
+
+
 @pytest.mark.parametrize(
     "operation",
     [

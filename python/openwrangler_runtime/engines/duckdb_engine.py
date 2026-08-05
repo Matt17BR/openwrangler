@@ -25,7 +25,9 @@ from .base import (
     categorical_visualization,
     coerce_typed_view_value,
     datetime_visualization,
+    decode_fill_replacement,
     ensure_output_columns_available,
+    generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     infer_semantic_type,
     is_blank_delimited_file,
@@ -654,6 +656,12 @@ class DuckDBEngine(DataFrameEngine):
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
             )
             return self._drop_missing(frame, columns, params.get("how", "any"))
+        if kind == "fillMissingValues":
+            return self._fill_missing(
+                frame,
+                bound_column_name(params["column"], kind),
+                params["replacement"],
+            )
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
@@ -802,6 +810,13 @@ class DuckDBEngine(DataFrameEngine):
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
             )
             return [f"{prefix}df = _ow_drop_missing(df, {columns!r}, {params.get('how', 'any')!r})"]
+        if kind == "fillMissingValues":
+            column = bound_column_name(params["column"], kind)
+            replacement = params["replacement"]
+            if replacement.get("kind") == "median":
+                return [f"{prefix}df = _ow_fill_missing(df, {column!r}, 'median', None)"]
+            value = generated_fill_replacement_expression(replacement)
+            return [f"{prefix}df = _ow_fill_missing(df, {column!r}, 'value', {value})"]
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
@@ -1008,6 +1023,45 @@ class DuckDBEngine(DataFrameEngine):
         valid = [_valid_predicate(_quote_ident(column), types[column]) for column in selected]
         operator = " AND " if how == "any" else " OR "
         return self._relation(frame, f"SELECT * FROM ow WHERE {operator.join(f'({item})' for item in valid)}")
+
+    def _fill_missing(self, frame: Any, column: str, replacement: Mapping[str, Any]) -> Any:
+        types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
+        raw_type = types[column]
+        semantic_type = _semantic_type(raw_type)
+        identifier = _quote_ident(column)
+        valid = _valid_predicate(identifier, raw_type)
+        missing = f"NOT ({valid})"
+
+        if replacement.get("kind") == "median":
+            value_expression = f"CAST({identifier} AS DOUBLE)"
+            median = self._terminal_scalar(
+                frame,
+                f"SELECT median({value_expression}) FILTER (WHERE {valid}) FROM ow",
+            )
+            if median is None or (isinstance(median, float) and isnan(median)):
+                raise EngineError(
+                    "Cannot fill with the median because the selected column has no present numeric values."
+                )
+            replacement_sql = f"CAST({_sql_literal(median)} AS DOUBLE)"
+            expression = f"CASE WHEN {missing} THEN {replacement_sql} ELSE CAST({identifier} AS DOUBLE) END"
+            return self._assign(frame, column, expression)
+
+        fill_value = decode_fill_replacement(replacement)
+        literal = (
+            _duckdb_decimal_literal(fill_value) if replacement.get("kind") == "decimal" else _sql_literal(fill_value)
+        )
+        if semantic_type == "unknown":
+            expression = f"CASE WHEN {identifier} IS NULL THEN {literal} ELSE {identifier} END"
+        elif semantic_type == "string" and "enum" in raw_type.lower():
+            expression = f"CASE WHEN {missing} THEN CAST({literal} AS VARCHAR) ELSE CAST({identifier} AS VARCHAR) END"
+        else:
+            expression = f"CASE WHEN {missing} THEN CAST({literal} AS {raw_type}) ELSE {identifier} END"
+        try:
+            return self._assign(frame, column, expression)
+        except EngineError as error:
+            raise EngineError(
+                f"The replacement value is incompatible with the selected DuckDB column: {error}"
+            ) from error
 
     def _drop_duplicates(self, frame: Any, columns: Any, keep: str) -> Any:
         selected = list(columns) if columns else self._visible_columns(frame)
@@ -1351,6 +1405,16 @@ def _sql_literal(value: Any) -> str:
         return "[" + ", ".join(_sql_literal(item) for item in value) + "]"
     text = str(value).replace("'", "''")
     return f"'{text}'"
+
+
+def _duckdb_decimal_literal(value: Any) -> str:
+    decimal_value = value if isinstance(value, Decimal) else Decimal(value)
+    fixed = format(decimal_value, "f")
+    exponent = decimal_value.as_tuple().exponent
+    if not isinstance(exponent, int):
+        raise ValueError("Decimal replacement must be finite")
+    scale = max(-exponent, 0)
+    return f"CAST({_sql_literal(fixed)} AS DECIMAL(38, {scale}))"
 
 
 def _timedelta_seconds_text(value: timedelta) -> str:
@@ -1828,6 +1892,12 @@ def _ow_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _ow_decimal_literal(value):
+    fixed = format(value, "f")
+    scale = max(-value.as_tuple().exponent, 0)
+    return "CAST(" + _ow_literal(fixed) + " AS DECIMAL(38, " + str(scale) + "))"
+
+
 def _ow_query(df, query):
     stripped = query.lstrip()
     if stripped.upper().startswith("WITH "):
@@ -2006,6 +2076,44 @@ def _ow_drop_missing(df, columns, how):
     valid = [_ow_valid(_ow_ident(column), types[column]) for column in selected]
     operator = " AND " if how == "any" else " OR "
     return _ow_query(df, "SELECT * FROM ow WHERE " + operator.join("(" + item + ")" for item in valid))
+
+
+def _ow_fill_missing(df, column, strategy, value):
+    types = dict(zip(_ow_columns(df), map(str, df.types)))
+    raw_type = types[column]
+    lowered_type = raw_type.lower()
+    identifier = _ow_ident(column)
+    valid = _ow_valid(identifier, raw_type)
+    missing = "NOT (" + valid + ")"
+    if strategy == "median":
+        value_expression = "CAST(" + identifier + " AS DOUBLE)"
+        median = _ow_query(
+            df,
+            "SELECT median(" + value_expression + ") FILTER (WHERE " + valid + ") FROM ow",
+        ).fetchone()[0]
+        if median is None or (isinstance(median, float) and math.isnan(median)):
+            raise ValueError("Cannot fill with the median because the selected column has no present numeric values.")
+        replacement = "CAST(" + _ow_literal(median) + " AS DOUBLE)"
+        expression = (
+            "CASE WHEN " + missing + " THEN " + replacement
+            + " ELSE CAST(" + identifier + " AS DOUBLE) END"
+        )
+        return _ow_assign(df, column, expression)
+
+    literal = _ow_decimal_literal(value) if isinstance(value, Decimal) else _ow_literal(value)
+    if lowered_type == "null":
+        expression = "CASE WHEN " + identifier + " IS NULL THEN " + literal + " ELSE " + identifier + " END"
+    elif "enum" in lowered_type:
+        expression = (
+            "CASE WHEN " + missing + " THEN CAST(" + literal + " AS VARCHAR)"
+            + " ELSE CAST(" + identifier + " AS VARCHAR) END"
+        )
+    else:
+        expression = (
+            "CASE WHEN " + missing + " THEN CAST(" + literal + " AS " + raw_type + ")"
+            + " ELSE " + identifier + " END"
+        )
+    return _ow_assign(df, column, expression)
 
 
 def _ow_drop_duplicates(df, columns, keep):

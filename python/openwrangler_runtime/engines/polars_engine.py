@@ -23,7 +23,9 @@ from .base import (
     categorical_visualization,
     coerce_typed_view_value,
     datetime_visualization,
+    decode_fill_replacement,
     ensure_output_columns_available,
+    generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     infer_semantic_type,
     is_blank_delimited_file,
@@ -907,6 +909,37 @@ class PolarsEngine(DataFrameEngine):
             valid = [_polars_valid_value(pl.col(column), schema[column]) for column in columns]
             expression = pl.any_horizontal(valid) if params.get("how", "any") == "all" else pl.all_horizontal(valid)
             return df.filter(expression)
+        if kind == "fillMissingValues":
+            column = bound_column_name(params["column"], kind)
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            dtype = schema[column]
+            expression = pl.col(column)
+            if dtype.is_float():
+                expression = expression.fill_nan(None)
+            replacement = params["replacement"]
+            if replacement.get("kind") == "median":
+                value_expression = expression.cast(pl.Float64, strict=False)
+                aggregate = df.select(value_expression.median().alias("__ow_fill_median"))
+                median_frame = (
+                    aggregate.collect(engine="streaming") if isinstance(aggregate, pl.LazyFrame) else aggregate
+                )
+                median = median_frame.item()
+                if median is None or (isinstance(median, float) and median != median):
+                    raise EngineError(
+                        "Cannot fill with the median because the selected column has no present numeric values."
+                    )
+                return df.with_columns(value_expression.fill_null(pl.lit(median)).alias(column))
+            fill_value = decode_fill_replacement(replacement)
+            promotes_string = infer_semantic_type(str(dtype)) == "string" and str(dtype).lower() not in {
+                "string",
+                "utf8",
+            }
+            if promotes_string:
+                expression = expression.cast(pl.String)
+                literal = pl.lit(fill_value).cast(pl.String)
+            else:
+                literal = pl.lit(fill_value) if dtype == pl.Null else pl.lit(fill_value).cast(dtype, strict=True)
+            return df.with_columns(expression.fill_null(literal).alias(column))
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]]
@@ -1106,9 +1139,10 @@ class PolarsEngine(DataFrameEngine):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
         needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
+        needs_fill_value_imports = any(step["kind"] == "fillMissingValues" for step in plan)
         needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan)
         lines = ["from collections import Counter"] if needs_counter else []
-        if needs_filter_helpers:
+        if needs_filter_helpers or needs_fill_value_imports:
             lines.extend(["from datetime import date, datetime, timedelta", "from decimal import Decimal"])
         if lines:
             lines.append("")
@@ -1270,6 +1304,66 @@ class PolarsEngine(DataFrameEngine):
                 ),
                 f"{prefix}    df = df.filter(pl.{horizontal}(_valid_{index}))",
             ]
+        if kind == "fillMissingValues":
+            column = bound_column_name(params["column"], kind)
+            schema = f"_fill_schema_{index}"
+            expression = f"_fill_expression_{index}"
+            lines = [
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                f"{prefix}{expression} = pl.col({column!r})",
+                f"{prefix}if {schema}[{column!r}].is_float():",
+                f"{prefix}    {expression} = {expression}.fill_nan(None)",
+            ]
+            replacement = params["replacement"]
+            if replacement.get("kind") == "median":
+                value_expression = f"_fill_value_expression_{index}"
+                aggregate = f"_fill_aggregate_{index}"
+                median = f"_fill_median_{index}"
+                lines.extend(
+                    [
+                        f"{prefix}{value_expression} = {expression}.cast(pl.Float64, strict=False)",
+                        f"{prefix}{aggregate} = df.select({value_expression}.median().alias('__ow_fill_median'))",
+                        (
+                            f"{prefix}{aggregate} = {aggregate}.collect(engine='streaming') "
+                            f"if isinstance({aggregate}, pl.LazyFrame) else {aggregate}"
+                        ),
+                        f"{prefix}{median} = {aggregate}.item()",
+                        f"{prefix}if {median} is None or (isinstance({median}, float) and {median} != {median}):",
+                        (
+                            f"{prefix}    raise ValueError("
+                            "'Cannot fill with the median because the selected column has no present numeric values.')"
+                        ),
+                        (
+                            f"{prefix}df = df.with_columns({value_expression}.fill_null(pl.lit({median}))"
+                            f".alias({column!r}))"
+                        ),
+                    ]
+                )
+            else:
+                fill_value = generated_fill_replacement_expression(replacement)
+                literal = f"_fill_literal_{index}"
+                promotes_string = f"_fill_promotes_string_{index}"
+                lines.extend(
+                    [
+                        (
+                            f"{prefix}{promotes_string} = "
+                            f"str({schema}[{column!r}]).lower() not in {{'string', 'utf8'}} and "
+                            f"any(token in str({schema}[{column!r}]).lower() "
+                            "for token in ('str', 'utf8', 'object', 'category', 'categorical', "
+                            "'varchar', 'char', 'uuid', 'enum'))"
+                        ),
+                        f"{prefix}if {promotes_string}:",
+                        f"{prefix}    {expression} = {expression}.cast(pl.String)",
+                        (f"{prefix}    {literal} = pl.lit({fill_value}).cast(pl.String)"),
+                        f"{prefix}else:",
+                        (
+                            f"{prefix}    {literal} = pl.lit({fill_value}) if {schema}[{column!r}] == pl.Null "
+                            f"else pl.lit({fill_value}).cast({schema}[{column!r}], strict=True)"
+                        ),
+                        f"{prefix}df = df.with_columns({expression}.fill_null({literal}).alias({column!r}))",
+                    ]
+                )
+            return lines
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None

@@ -135,6 +135,84 @@ def test_draft_preview_apply_edit_and_undo_replays_the_immutable_source(tmp_path
     assert path.read_text(encoding="utf-8") == source
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_fill_missing_uses_the_standard_preview_apply_and_undo_lifecycle(tmp_path, backend):
+    source = "row,value\n1,1\n2,\n3,5\n"
+    path = tmp_path / f"fill-missing-{backend}.csv"
+    path.write_text(source, encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+
+    preview = manager.preview_step(
+        session_id,
+        0,
+        transform(
+            "fill-value",
+            "fillMissingValues",
+            column=source_ref(1, "value"),
+            replacement={"kind": "median"},
+        ),
+        0,
+        10,
+    )
+    assert preview["metadata"]["draftStep"]["id"] == "fill-value"
+    assert preview["diff"]["changedCells"] >= 1
+    assert any(row["values"][1]["display"] in {"3", "3.0"} for row in preview["page"]["rows"])
+
+    discarded = manager.discard_draft(session_id, 1, 0, 10)
+    assert discarded["metadata"]["steps"] == []
+    assert any(
+        row["values"][1]["isNull"] is True or row["values"][1]["isNaN"] is True for row in discarded["page"]["rows"]
+    )
+
+    manager.preview_step(
+        session_id,
+        2,
+        transform(
+            "fill-value",
+            "fillMissingValues",
+            column=source_ref(1, "value"),
+            replacement={"kind": "median"},
+        ),
+        0,
+        10,
+    )
+    applied = manager.apply_draft(session_id, 3, 0, 10)
+    assert [item["id"] for item in applied["metadata"]["steps"]] == ["fill-value"]
+    assert any(row["values"][1]["display"] in {"3", "3.0"} for row in applied["page"]["rows"])
+
+    edited = manager.preview_step(
+        session_id,
+        4,
+        transform(
+            "fill-value",
+            "fillMissingValues",
+            column=source_ref(1, "value"),
+            replacement={"kind": "integer", "value": "9"},
+        ),
+        0,
+        10,
+        replace_step_id="fill-value",
+    )
+    assert any(row["values"][1]["display"] in {"9", "9.0"} for row in edited["page"]["rows"])
+
+    applied_edit = manager.apply_draft(session_id, 5, 0, 10)
+    assert [item["id"] for item in applied_edit["metadata"]["steps"]] == ["fill-value"]
+    assert any(row["values"][1]["display"] in {"9", "9.0"} for row in applied_edit["page"]["rows"])
+
+    undone = manager.undo_step(session_id, 6, 0, 10)
+    assert undone["metadata"]["steps"] == []
+    assert any(
+        row["values"][1]["isNull"] is True or row["values"][1]["isNaN"] is True for row in undone["page"]["rows"]
+    )
+    assert path.read_text(encoding="utf-8") == source
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
 def test_discard_restores_committed_plan_and_stale_revisions_are_rejected(tmp_path, backend):
     path = tmp_path / "discard.csv"

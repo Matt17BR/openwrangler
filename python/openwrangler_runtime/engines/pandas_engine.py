@@ -26,7 +26,9 @@ from .base import (
     categorical_visualization,
     coerce_typed_view_value,
     datetime_visualization,
+    decode_fill_replacement,
     ensure_output_columns_available,
+    generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     infer_semantic_type,
     is_blank_delimited_file,
@@ -408,6 +410,10 @@ class PandasEngine(DataFrameEngine):
             for current in valid[1:]:
                 keep = keep | current if params.get("how", "any") == "all" else keep & current
             return df.iloc[keep.fillna(False).to_numpy(dtype=bool)]
+        if kind == "fillMissingValues":
+            position = self._bound_frame_position(df, params["column"], kind)
+            df.isetitem(position, _pandas_fill_missing(df.iloc[:, position], params["replacement"]))
+            return df
         if kind == "dropDuplicates":
             keep = params.get("keep", "first")
             positions = self._bound_or_all_visible_positions(df, params.get("columns"), kind)
@@ -726,7 +732,7 @@ class PandasEngine(DataFrameEngine):
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)
-        needs_missing_helpers = any(step["kind"] == "filterRows" for step in plan)
+        needs_missing_helpers = any(step["kind"] in {"filterRows", "fillMissingValues"} for step in plan)
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
@@ -1054,6 +1060,68 @@ class PandasEngine(DataFrameEngine):
                 ),
                 (f"{prefix}    df = df.iloc[_missing_keep_{index}.fillna(False).to_numpy(dtype=bool)]"),
             ]
+        if kind == "fillMissingValues":
+            position = bound_column_position(params["column"], kind)
+            series = f"_fill_series_{index}"
+            missing = f"_fill_missing_{index}"
+            result = f"_fill_result_{index}"
+            replacement = params["replacement"]
+            lines = [
+                f"{prefix}{series} = df.iloc[:, {position}]",
+                (
+                    f"{prefix}{missing} = _open_wrangler_mask({series}, _open_wrangler_is_null) | "
+                    f"_open_wrangler_mask({series}, _open_wrangler_is_nan)"
+                ),
+                f"{prefix}if {missing}.any():",
+            ]
+            if replacement.get("kind") == "median":
+                present = f"_fill_present_{index}"
+                ordered = f"_fill_ordered_{index}"
+                middle = f"_fill_middle_{index}"
+                value = f"_fill_value_{index}"
+                lines.extend(
+                    [
+                        (
+                            f"{prefix}    {present} = [value for value, is_missing in "
+                            f"zip({series}.array, {missing}.array) if not is_missing]"
+                        ),
+                        f"{prefix}    if not {present}:",
+                        (
+                            f"{prefix}        raise ValueError("
+                            "'Cannot fill with the median because the selected column has no present numeric values.')"
+                        ),
+                        f"{prefix}    {ordered} = sorted(float(value) for value in {present})",
+                        f"{prefix}    {middle} = len({ordered}) // 2",
+                        (
+                            f"{prefix}    {value} = {ordered}[{middle}] if len({ordered}) % 2 else "
+                            f"({ordered}[{middle} - 1] + {ordered}[{middle}]) / 2.0"
+                        ),
+                        f"{prefix}    if np.isnan({value}):",
+                        (
+                            f"{prefix}        raise ValueError("
+                            "'Cannot fill with the median because the selected column has no finite median.')"
+                        ),
+                        (
+                            f"{prefix}    {result} = pd.Series(pd.array(["
+                            f"{value} if is_missing else float(item) for item, is_missing in "
+                            f"zip({series}.array, {missing}.array)], dtype='Float64'), "
+                            f"index={series}.index, name={series}.name)"
+                        ),
+                    ]
+                )
+            else:
+                value = generated_fill_replacement_expression(replacement)
+                lines.extend(
+                    [
+                        (
+                            f"{prefix}    {result} = ({series}.astype('string') "
+                            f"if isinstance({series}.dtype, pd.CategoricalDtype) else {series}.copy())"
+                        ),
+                        f"{prefix}    {result} = {result}.mask({missing}, {value})",
+                    ]
+                )
+            lines.append(f"{prefix}    df.isetitem({position}, {result})")
+            return lines
         if kind == "dropDuplicates":
             keep = params.get("keep", "first")
             positions = (
@@ -2278,6 +2346,42 @@ def _null_mask(series: Any) -> Any:
 
 def _nan_mask(series: Any) -> Any:
     return _scalar_mask(series, _is_nan_value)
+
+
+def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
+    import pandas as pd
+
+    missing = _null_mask(series) | _nan_mask(series)
+    if not bool(missing.any()):
+        return series.copy()
+    if replacement.get("kind") == "median":
+        present = [value for value, is_missing in zip(series.array, missing.array, strict=True) if not is_missing]
+        if not present:
+            raise EngineError("Cannot fill with the median because the selected column has no present numeric values.")
+        try:
+            ordered_numbers = sorted(float(value) for value in present)
+            middle = len(ordered_numbers) // 2
+            fill_value = (
+                ordered_numbers[middle]
+                if len(ordered_numbers) % 2
+                else (ordered_numbers[middle - 1] + ordered_numbers[middle]) / 2.0
+            )
+        except (TypeError, ValueError, OverflowError) as error:
+            raise EngineError(f"Cannot calculate a numeric median for the selected column: {error}") from error
+        if isnan(fill_value):
+            raise EngineError("Cannot fill with the median because the selected column has no finite median.")
+        values = [
+            fill_value if is_missing else float(value)
+            for value, is_missing in zip(series.array, missing.array, strict=True)
+        ]
+        return pd.Series(pd.array(values, dtype="Float64"), index=series.index, name=series.name)
+
+    fill_value = decode_fill_replacement(replacement)
+    target = series.astype("string") if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()
+    try:
+        return target.mask(missing, fill_value)
+    except (TypeError, ValueError) as error:
+        raise EngineError(f"The replacement value is incompatible with the selected Pandas column: {error}") from error
 
 
 def _scalar_mask(series: Any, predicate: Any) -> Any:

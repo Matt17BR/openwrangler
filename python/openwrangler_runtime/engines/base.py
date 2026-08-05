@@ -293,6 +293,40 @@ def coerce_typed_view_value(value: Any, column_type: str | None) -> Any:
     raise EngineError(f"View comparisons are unavailable for {column_type or 'unknown'} columns.")
 
 
+def decode_fill_replacement(replacement: Mapping[str, Any]) -> Any:
+    """Decode one validated, explicitly typed fill value into a native Python scalar."""
+
+    kind = replacement.get("kind")
+    if kind == "median":
+        raise EngineError("A median fill does not contain an explicit replacement value.")
+    if kind not in {"string", "integer", "float", "decimal", "boolean", "date", "datetime"}:
+        raise EngineError(f"Unsupported fill replacement type: {kind!r}.")
+    try:
+        return coerce_typed_view_value(replacement.get("value"), str(kind))
+    except EngineError as error:
+        raise EngineError(f"Invalid {kind} fill replacement: {error}") from error
+
+
+def generated_fill_replacement_expression(replacement: Mapping[str, Any]) -> str:
+    """Return a standalone Python expression for one validated fill value."""
+
+    kind = replacement.get("kind")
+    value = replacement.get("value")
+    if kind in {"string", "boolean"}:
+        return repr(value)
+    if kind == "integer":
+        return f"int({value!r})"
+    if kind == "float":
+        return f"float({value!r})"
+    if kind == "decimal":
+        return f"Decimal({value!r})"
+    if kind == "date":
+        return f"date.fromisoformat({value!r})"
+    if kind == "datetime":
+        return f"datetime.fromisoformat({value!r}.replace('Z', '+00:00'))"
+    raise EngineError(f"Unsupported fill replacement type: {kind!r}.")
+
+
 def typed_selection_value(value: Any, column_type: str) -> dict[str, Any] | None:
     """Return the portable selection token for one non-missing scalar value."""
 
