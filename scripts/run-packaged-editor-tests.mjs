@@ -246,9 +246,14 @@ try {
                 'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" requires the released Jupyter extension opt-in.'
               );
             }
-            if (remoteJupyterEnabled || dataWranglerExtensionInstallTarget) {
+            if (dataWranglerExtensionInstallTarget) {
               throw new Error(
-                'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" cannot be combined with remote-Jupyter or Data Wrangler coexistence opt-ins.'
+                'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" cannot be combined with the Data Wrangler coexistence opt-in.'
+              );
+            }
+            if (remoteJupyterEnabled && !requested.includes("vscode")) {
+              throw new Error(
+                "Remote R acceptance requires VS Code in OPEN_WRANGLER_PACKAGED_EDITORS; local R acceptance may also include Cursor."
               );
             }
             if (typeof rscript !== "string" || !isAbsolute(rscript) || !existsSync(rscript)) {
@@ -450,6 +455,8 @@ try {
           for (const editor of candidates) {
             const dataWranglerCoexistenceEnabled =
               dataWranglerExtensionInstallTarget !== undefined && editor.key === "vscode";
+            const remoteRJupyterEnabled =
+              acceptanceMode === "r-jupyter" && remoteJupyterEnabled && editor.key === "vscode";
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
@@ -468,6 +475,7 @@ try {
             const jupyterPySparkUserData = resolve(profile, "js");
             const jupyterRemoteUserData = resolve(profile, "jr");
             const jupyterRUserData = resolve(profile, "jz");
+            const jupyterRemoteRUserData = resolve(profile, "jq");
             const coexistOpenUserData = resolve(profile, "co");
             const coexistDataUserData = resolve(profile, "cd");
             const restrictedUserData = resolve(profile, "r");
@@ -479,6 +487,7 @@ try {
             let jupyterPySparkEnvironment;
             let jupyterRemoteEnvironment;
             let jupyterREnvironment;
+            let jupyterRemoteREnvironment;
             let coexistOpenEnvironment;
             let coexistDataEnvironment;
             const workspace = resolve(profile, "Open Wrangler Demo");
@@ -487,6 +496,7 @@ try {
             const jupyterPySparkWorkspace = resolve(profile, "Open Wrangler Jupyter PySpark");
             const jupyterRemoteWorkspace = resolve(profile, "Open Wrangler Jupyter Remote");
             const jupyterRWorkspace = resolve(profile, "Open Wrangler Jupyter R");
+            const jupyterRemoteRWorkspace = resolve(profile, "Open Wrangler Jupyter Remote R");
             const coexistOpenWorkspace = resolve(profile, "Open Wrangler Coexist Open");
             const coexistDataWorkspace = resolve(profile, "Open Wrangler Coexist Data");
             const acceptanceHarness = resolve(profile, "acceptance-harness");
@@ -509,7 +519,16 @@ try {
                 : {}),
               ...(jupyterExtensionInstallTarget
                 ? acceptanceMode === "r-jupyter"
-                  ? { "jupyter-r": resolve(profile, "jupyter-r-result.json") }
+                  ? {
+                      "jupyter-r": resolve(profile, "jupyter-r-result.json"),
+                      ...(remoteRJupyterEnabled
+                        ? {
+                            "jupyter-r-remote-setup": resolve(profile, "jupyter-r-remote-setup-result.json"),
+                            "jupyter-r-remote": resolve(profile, "jupyter-r-remote-result.json"),
+                            "jupyter-r-remote-cleanup": resolve(profile, "jupyter-r-remote-cleanup-result.json")
+                          }
+                        : {})
+                    }
                   : {
                       "jupyter-deny": resolve(profile, "jupyter-deny-result.json"),
                       "jupyter-allow": resolve(profile, "jupyter-allow-result.json"),
@@ -544,7 +563,16 @@ try {
                 : {}),
               ...(jupyterExtensionInstallTarget
                 ? acceptanceMode === "r-jupyter"
-                  ? { "jupyter-r": randomUUID() }
+                  ? {
+                      "jupyter-r": randomUUID(),
+                      ...(remoteRJupyterEnabled
+                        ? {
+                            "jupyter-r-remote-setup": randomUUID(),
+                            "jupyter-r-remote": randomUUID(),
+                            "jupyter-r-remote-cleanup": randomUUID()
+                          }
+                        : {})
+                    }
                   : {
                       "jupyter-deny": randomUUID(),
                       "jupyter-allow": randomUUID(),
@@ -598,7 +626,7 @@ try {
                 if (jupyterExtensionInstallTarget) {
                   const jupyterWorkspaces =
                     acceptanceMode === "r-jupyter"
-                      ? [jupyterRWorkspace]
+                      ? [jupyterRWorkspace, ...(remoteRJupyterEnabled ? [jupyterRemoteRWorkspace] : [])]
                       : [
                           jupyterAllowWorkspace,
                           jupyterDenyWorkspace,
@@ -640,7 +668,10 @@ try {
                   let jupyterUserData;
                   if (acceptanceMode === "r-jupyter") {
                     jupyterREnvironment = rAcceptanceEnvironment.jupyterEnvironment;
-                    jupyterUserData = [jupyterRUserData];
+                    if (remoteRJupyterEnabled) {
+                      jupyterRemoteREnvironment = writeRemoteJupyterAcceptanceEnvironment(resolve(profile, "kq"));
+                    }
+                    jupyterUserData = [jupyterRUserData, ...(remoteRJupyterEnabled ? [jupyterRemoteRUserData] : [])];
                   } else {
                     jupyterAllowEnvironment = writeJupyterAcceptanceEnvironment(
                       resolve(profile, "ka"),
@@ -1012,6 +1043,143 @@ try {
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:complete");
 
                 const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
+                const runRemoteJupyterPhase = async ({
+                  phaseNames,
+                  privatePaths,
+                  fixtureKind,
+                  workspace: remoteWorkspace,
+                  userData: remoteUserData,
+                  jupyterEnvironment: remoteJupyterEnvironment,
+                  errorLabel
+                }) => {
+                  const {
+                    setup: remoteSetupPhase,
+                    editor: remoteEditorPhase,
+                    cleanup: remoteCleanupPhase
+                  } = phaseNames;
+                  const remoteSetupRunId = runIds[remoteSetupPhase];
+                  const remoteRunId = runIds[remoteEditorPhase];
+                  const remoteCleanupRunId = runIds[remoteCleanupPhase];
+                  const publishRemoteProgress = (progressPath, runId, phase, checkpoint) => {
+                    try {
+                      writeCorrelatedProgress(progressPath, runId, phase, checkpoint);
+                    } catch (error) {
+                      latchAcceptanceOwnershipUncertainty();
+                      throw error;
+                    }
+                  };
+                  const publishRemoteCleanupCheckpoint = (
+                    checkpoint,
+                    originatingPhase,
+                    resumePhase = originatingPhase
+                  ) => {
+                    activePhase = remoteCleanupPhase;
+                    publishRemoteProgress(
+                      progressPaths[remoteCleanupPhase],
+                      remoteCleanupRunId,
+                      remoteCleanupPhase,
+                      `${remoteCleanupPhase}:${checkpoint}:${originatingPhase}`
+                    );
+                    if (checkpoint === "complete") activePhase = resumePhase;
+                  };
+
+                  activePhase = remoteSetupPhase;
+                  const dockerPrivateDirectory = resolve(profile, privatePaths.docker);
+                  const descriptorDirectory = resolve(profile, privatePaths.descriptor);
+                  mkdirSync(dockerPrivateDirectory, { mode: 0o700 });
+                  mkdirSync(descriptorDirectory, { mode: 0o700 });
+                  const token = createRemoteJupyterAcceptanceToken();
+                  let fixture;
+                  publishRemoteProgress(
+                    progressPaths[remoteSetupPhase],
+                    remoteSetupRunId,
+                    remoteSetupPhase,
+                    `${remoteSetupPhase}:start`
+                  );
+                  try {
+                    fixture = await startRemoteJupyterAcceptanceFixture(
+                      { token, runId: remoteRunId },
+                      {
+                        dockerPrivateDirectory,
+                        fixtureKind,
+                        onSetupCheckpoint: (checkpoint) =>
+                          publishRemoteProgress(
+                            progressPaths[remoteSetupPhase],
+                            remoteSetupRunId,
+                            remoteSetupPhase,
+                            `${remoteSetupPhase}:${checkpoint}`
+                          ),
+                        onCleanupCheckpoint: (checkpoint) =>
+                          publishRemoteCleanupCheckpoint(checkpoint, remoteSetupPhase)
+                      }
+                    );
+                  } catch (error) {
+                    latchRemoteJupyterOwnershipUncertainty(error);
+                    throw error;
+                  }
+                  if (!fixture) {
+                    throw new Error(`${errorLabel} did not start its explicitly enabled fixture.`);
+                  }
+
+                  activePhase = remoteEditorPhase;
+                  try {
+                    await runRemoteJupyterAcceptanceLifecycle(
+                      fixture,
+                      async () => {
+                        try {
+                          const remoteJupyterDescriptorPath = writeRemoteJupyterAcceptanceDescriptor(
+                            descriptorDirectory,
+                            {
+                              baseUrl: fixture.baseUrl,
+                              token,
+                              runId: remoteRunId,
+                              hostname: remoteJupyterHostnameForRun(remoteRunId)
+                            },
+                            { containedBy: profile }
+                          );
+                          await runEditorAcceptancePhase({
+                            editor: identifiedEditor,
+                            workspace: remoteWorkspace,
+                            userData: remoteUserData,
+                            extensions: jupyterExtensions,
+                            developmentPaths: [],
+                            testModule,
+                            python: acceptancePythonForPhase(remoteEditorPhase, testPython, jupyterKernelPython),
+                            phase: remoteEditorPhase,
+                            resultPath: resultPaths[remoteEditorPhase],
+                            runId: remoteRunId,
+                            progressPath: progressPaths[remoteEditorPhase],
+                            requiresWorkbenchCdp: true,
+                            jupyterEnvironment: remoteJupyterEnvironment,
+                            remoteJupyterDescriptorPath
+                          });
+                        } catch (error) {
+                          const identityLost = latchPrivateRootIdentityLoss(error, {
+                            scope: "editor-profile",
+                            editor: identifiedEditor.key,
+                            cleanupOfPhase: remoteEditorPhase
+                          });
+                          if (identityLost) latchAcceptanceOwnershipUncertainty();
+                          throw error;
+                        }
+                      },
+                      {
+                        phaseProcessTreeMayBeLive: (error) =>
+                          privatePathSafetyPolicy.failureOwnershipMayBeUnsafe(error, editorProcessTreeMayBeLive),
+                        onOwnershipUncertain: latchAcceptanceOwnershipUncertainty,
+                        onCleanupCheckpoint: (checkpoint, { phaseFailed }) =>
+                          publishRemoteCleanupCheckpoint(
+                            checkpoint,
+                            remoteEditorPhase,
+                            phaseFailed ? remoteEditorPhase : remoteCleanupPhase
+                          )
+                      }
+                    );
+                  } catch (error) {
+                    latchRemoteJupyterOwnershipUncertainty(error);
+                    throw error;
+                  }
+                };
                 if (acceptanceMode === "platform-smoke") {
                   activePhase = "platform-smoke";
                   await runEditorAcceptancePhase({
@@ -1079,6 +1247,21 @@ try {
                     requiresWorkbenchCdp: true,
                     jupyterEnvironment: jupyterREnvironment
                   });
+                  if (remoteRJupyterEnabled) {
+                    await runRemoteJupyterPhase({
+                      phaseNames: {
+                        setup: "jupyter-r-remote-setup",
+                        editor: "jupyter-r-remote",
+                        cleanup: "jupyter-r-remote-cleanup"
+                      },
+                      privatePaths: { docker: "drr", descriptor: "rrd" },
+                      fixtureKind: "r",
+                      workspace: jupyterRemoteRWorkspace,
+                      userData: jupyterRemoteRUserData,
+                      jupyterEnvironment: jupyterRemoteREnvironment,
+                      errorLabel: "Remote R acceptance"
+                    });
+                  }
                 } else if (jupyterExtensionInstallTarget && acceptanceMode !== "data-wrangler-coexistence") {
                   for (const phase of ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"]) {
                     const phaseWorkspace =
@@ -1117,128 +1300,19 @@ try {
                     });
                   }
                   if (remoteJupyterEnabled) {
-                    const remoteSetupPhase = "jupyter-remote-setup";
-                    const remoteEditorPhase = "jupyter-remote";
-                    const remoteCleanupPhase = "jupyter-remote-cleanup";
-                    const remoteSetupRunId = runIds[remoteSetupPhase];
-                    const remoteRunId = runIds[remoteEditorPhase];
-                    const remoteCleanupRunId = runIds[remoteCleanupPhase];
-                    const publishRemoteProgress = (progressPath, runId, phase, checkpoint) => {
-                      try {
-                        writeCorrelatedProgress(progressPath, runId, phase, checkpoint);
-                      } catch (error) {
-                        latchAcceptanceOwnershipUncertainty();
-                        throw error;
-                      }
-                    };
-                    const publishRemoteCleanupCheckpoint = (
-                      checkpoint,
-                      originatingPhase,
-                      resumePhase = originatingPhase
-                    ) => {
-                      activePhase = remoteCleanupPhase;
-                      publishRemoteProgress(
-                        progressPaths[remoteCleanupPhase],
-                        remoteCleanupRunId,
-                        remoteCleanupPhase,
-                        `${remoteCleanupPhase}:${checkpoint}:${originatingPhase}`
-                      );
-                      if (checkpoint === "complete") activePhase = resumePhase;
-                    };
-                    activePhase = remoteSetupPhase;
-                    const dockerPrivateDirectory = resolve(profile, "dr");
-                    const descriptorDirectory = resolve(profile, "rd");
-                    mkdirSync(dockerPrivateDirectory, { mode: 0o700 });
-                    mkdirSync(descriptorDirectory, { mode: 0o700 });
-                    const token = createRemoteJupyterAcceptanceToken();
-                    let fixture;
-                    publishRemoteProgress(
-                      progressPaths[remoteSetupPhase],
-                      remoteSetupRunId,
-                      remoteSetupPhase,
-                      `${remoteSetupPhase}:start`
-                    );
-                    try {
-                      fixture = await startRemoteJupyterAcceptanceFixture(
-                        { token, runId: remoteRunId },
-                        {
-                          dockerPrivateDirectory,
-                          onSetupCheckpoint: (checkpoint) =>
-                            publishRemoteProgress(
-                              progressPaths[remoteSetupPhase],
-                              remoteSetupRunId,
-                              remoteSetupPhase,
-                              `${remoteSetupPhase}:${checkpoint}`
-                            ),
-                          onCleanupCheckpoint: (checkpoint) =>
-                            publishRemoteCleanupCheckpoint(checkpoint, remoteSetupPhase)
-                        }
-                      );
-                    } catch (error) {
-                      latchRemoteJupyterOwnershipUncertainty(error);
-                      throw error;
-                    }
-                    if (!fixture) {
-                      throw new Error("Remote Jupyter acceptance did not start its explicitly enabled fixture.");
-                    }
-                    activePhase = remoteEditorPhase;
-                    try {
-                      await runRemoteJupyterAcceptanceLifecycle(
-                        fixture,
-                        async () => {
-                          try {
-                            const remoteJupyterDescriptorPath = writeRemoteJupyterAcceptanceDescriptor(
-                              descriptorDirectory,
-                              {
-                                baseUrl: fixture.baseUrl,
-                                token,
-                                runId: remoteRunId,
-                                hostname: remoteJupyterHostnameForRun(remoteRunId)
-                              },
-                              { containedBy: profile }
-                            );
-                            await runEditorAcceptancePhase({
-                              editor: identifiedEditor,
-                              workspace: jupyterRemoteWorkspace,
-                              userData: jupyterRemoteUserData,
-                              extensions: jupyterExtensions,
-                              developmentPaths: [],
-                              testModule,
-                              python: acceptancePythonForPhase(remoteEditorPhase, testPython, jupyterKernelPython),
-                              phase: remoteEditorPhase,
-                              resultPath: resultPaths[remoteEditorPhase],
-                              runId: remoteRunId,
-                              progressPath: progressPaths[remoteEditorPhase],
-                              requiresWorkbenchCdp: true,
-                              jupyterEnvironment: jupyterRemoteEnvironment,
-                              remoteJupyterDescriptorPath
-                            });
-                          } catch (error) {
-                            const identityLost = latchPrivateRootIdentityLoss(error, {
-                              scope: "editor-profile",
-                              editor: identifiedEditor.key,
-                              cleanupOfPhase: remoteEditorPhase
-                            });
-                            if (identityLost) latchAcceptanceOwnershipUncertainty();
-                            throw error;
-                          }
-                        },
-                        {
-                          phaseProcessTreeMayBeLive: (error) =>
-                            privatePathSafetyPolicy.failureOwnershipMayBeUnsafe(error, editorProcessTreeMayBeLive),
-                          onOwnershipUncertain: latchAcceptanceOwnershipUncertainty,
-                          onCleanupCheckpoint: (checkpoint, { phaseFailed }) =>
-                            publishRemoteCleanupCheckpoint(
-                              checkpoint,
-                              remoteEditorPhase,
-                              phaseFailed ? remoteEditorPhase : remoteCleanupPhase
-                            )
-                        }
-                      );
-                    } catch (error) {
-                      latchRemoteJupyterOwnershipUncertainty(error);
-                      throw error;
-                    }
+                    await runRemoteJupyterPhase({
+                      phaseNames: {
+                        setup: "jupyter-remote-setup",
+                        editor: "jupyter-remote",
+                        cleanup: "jupyter-remote-cleanup"
+                      },
+                      privatePaths: { docker: "dr", descriptor: "rd" },
+                      fixtureKind: "python",
+                      workspace: jupyterRemoteWorkspace,
+                      userData: jupyterRemoteUserData,
+                      jupyterEnvironment: jupyterRemoteEnvironment,
+                      errorLabel: "Remote Jupyter acceptance"
+                    });
                   }
                 }
                 if (dataWranglerCoexistenceEnabled) {
