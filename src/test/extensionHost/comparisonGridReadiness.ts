@@ -6,8 +6,8 @@ export interface ComparisonGridReadinessInput {
         readonly topLeftValues: readonly [readonly [string, string], readonly [string, string]];
       }
     | {
-        readonly kind: "minimum-nonempty";
-        readonly count: 1 | 2 | 3 | 4;
+        readonly kind: "minimum-finite-numbers";
+        readonly count: 3;
       };
 }
 
@@ -113,15 +113,20 @@ export function observeComparisonGridReadiness(
     bodyContent.topLeftValues.every((row) => row.every((value) => validText(value)))
       ? bodyContent.topLeftValues
       : undefined;
-  const minimumNonEmptyValues =
-    bodyContent?.kind === "minimum-nonempty" &&
-    Object.keys(bodyContent).length === 2 &&
-    Number.isSafeInteger(bodyContent.count) &&
-    bodyContent.count >= 1 &&
-    bodyContent.count <= 4
+  const canonicalExactValues =
+    expectedHeaders?.[0] === "c00" &&
+    expectedHeaders[1] === "c01" &&
+    expectedValues?.[0][0] === "0" &&
+    expectedValues[0][1] === "1" &&
+    expectedValues[1][0] === "1" &&
+    expectedValues[1][1] === "2"
+      ? expectedValues
+      : undefined;
+  const minimumFiniteNumbers =
+    bodyContent?.kind === "minimum-finite-numbers" && Object.keys(bodyContent).length === 2 && bodyContent.count === 3
       ? bodyContent.count
       : undefined;
-  if (!expectedHeaders || (expectedValues === undefined && minimumNonEmptyValues === undefined)) {
+  if (!expectedHeaders || (canonicalExactValues === undefined && minimumFiniteNumbers === undefined)) {
     return Promise.resolve(null);
   }
 
@@ -298,11 +303,15 @@ export function observeComparisonGridReadiness(
         normalizeText(cells[firstHeaderIndex + 1].textContent)
       ]);
       if (
-        expectedValues
+        canonicalExactValues
           ? observedValues.some((row, rowIndex) =>
-              row.some((value, columnIndex) => value !== expectedValues[rowIndex][columnIndex])
+              row.some((value, columnIndex) => value !== canonicalExactValues[rowIndex][columnIndex])
             )
-          : observedValues.flat().filter((value) => value.length > 0).length < (minimumNonEmptyValues as number)
+          : observedValues
+              .flat()
+              .map((value) => value.replace(/\u2212/gu, "-"))
+              .filter((value) => value.length > 0 && Number.isFinite(Number(value))).length <
+            (minimumFiniteNumbers as number)
       ) {
         continue;
       }

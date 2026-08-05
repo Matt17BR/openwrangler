@@ -123,15 +123,43 @@ describe("authoritative notebook renderer frame selection", () => {
     document.body.append(overlay);
     const elementFromPoint = vi.fn<(_: number, __: number) => Element | null>().mockReturnValue(overlay);
     Object.defineProperty(document, "elementFromPoint", { configurable: true, value: elementFromPoint });
-    expect(observeGridScrollability()).toBeNull();
+    expect(observeGridScrollability({ headers: ["c00", "c01"] })).toBeNull();
 
     elementFromPoint.mockReturnValue(hitChild);
-    expect(observeGridScrollability()).toEqual({
+    expect(observeGridScrollability({ headers: ["c00", "c01"] })).toEqual({
       verticalOverflow: 400,
       horizontalOverflow: 250,
       pointerUsable: true
     });
     expect(elementFromPoint).toHaveBeenCalledWith(110, 60);
+  });
+
+  it("finds a scrollable mixed-fixture grid by its actual headers", () => {
+    const grid = document.createElement("div");
+    grid.setAttribute("role", "grid");
+    for (const name of ["net_revenue_usd", "gross_margin_usd"]) {
+      const header = document.createElement("div");
+      header.setAttribute("role", "columnheader");
+      header.textContent = name;
+      grid.append(header);
+    }
+    const hitChild = document.createElement("div");
+    grid.append(hitChild);
+    document.body.append(grid);
+    show(grid, { left: 10, top: 10, width: 200, height: 100 });
+    Object.defineProperties(grid, {
+      clientHeight: { configurable: true, value: 100 },
+      clientWidth: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 1_000 },
+      scrollWidth: { configurable: true, value: 2_000 }
+    });
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => hitChild });
+
+    expect(observeGridScrollability({ headers: ["net_revenue_usd", "gross_margin_usd"] })).toEqual({
+      verticalOverflow: 900,
+      horizontalOverflow: 1_800,
+      pointerUsable: true
+    });
   });
 });
 

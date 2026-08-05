@@ -2293,7 +2293,9 @@ async function executeMeasuredIteration(
         ? "visible-label"
         : undefined;
     assert.ok(fullShape, "The product grid did not expose the full dataframe shape.");
-    const scrollability = await readiness.frame.evaluate(observeGridScrollability);
+    const scrollability = await readiness.frame.evaluate(observeGridScrollability, {
+      headers: gridReadinessInput.headers
+    });
     assert.ok(
       scrollability && scrollability.verticalOverflow > 0 && scrollability.horizontalOverflow > 0,
       `The full dataframe grid was not vertically and horizontally scrollable: ${JSON.stringify(scrollability)}.`
@@ -2412,7 +2414,7 @@ export function comparisonGridReadinessInput(request: ComparisonTrialRequest): C
   assert.ok(firstColumn && secondColumn, "Comparison grid readiness requires at least two columns.");
   return Object.freeze({
     headers: Object.freeze([firstColumn, secondColumn] as const),
-    bodyContent: Object.freeze({ kind: "minimum-nonempty", count: 3 as const })
+    bodyContent: Object.freeze({ kind: "minimum-finite-numbers", count: 3 as const })
   });
 }
 

@@ -191,8 +191,12 @@ export interface GridScrollability {
   readonly pointerUsable: true;
 }
 
+export interface GridScrollabilityInput {
+  readonly headers: readonly [string, string];
+}
+
 /** Product-neutral scrollability probe used after the public grid is ready. */
-export function observeGridScrollability(): GridScrollability | null {
+export function observeGridScrollability(input: GridScrollabilityInput): GridScrollability | null {
   type Candidate = {
     readonly isConnected: boolean;
     readonly parentElement: Candidate | null;
@@ -220,8 +224,16 @@ export function observeGridScrollability(): GridScrollability | null {
   };
   const window_ = runtime.document.defaultView;
   if (!window_) return null;
+  const expectedHeaders =
+    Array.isArray(input?.headers) &&
+    input.headers.length === 2 &&
+    input.headers.every((value) => typeof value === "string" && /^[a-z][a-z0-9_]{1,63}$/u.test(value)) &&
+    input.headers[0] !== input.headers[1]
+      ? input.headers
+      : undefined;
+  if (!expectedHeaders) return null;
   const normalize = (value: string | null): string => (value ?? "").replace(/\s+/gu, " ").trim();
-  const headerMatches = (header: Candidate, expected: "c00" | "c01"): boolean => {
+  const headerMatches = (header: Candidate, expected: string): boolean => {
     const boundary = "[,;:()\\[\\]{}\\u2013\\u2014#|\\-]";
     const pattern = new RegExp(`(?:^|\\s|${boundary})${expected}(?:$|\\s|${boundary})`, "u");
     if (pattern.test(normalize(header.getAttribute("aria-label"))) || pattern.test(normalize(header.textContent))) {
@@ -237,8 +249,8 @@ export function observeGridScrollability(): GridScrollability | null {
     if (!root.isConnected) continue;
     const headers = Array.from(root.querySelectorAll('[role="columnheader"], th'));
     if (
-      !headers.some((header) => headerMatches(header, "c00")) ||
-      !headers.some((header) => headerMatches(header, "c01"))
+      !headers.some((header) => headerMatches(header, expectedHeaders[0])) ||
+      !headers.some((header) => headerMatches(header, expectedHeaders[1]))
     ) {
       continue;
     }

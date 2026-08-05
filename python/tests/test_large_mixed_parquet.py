@@ -50,6 +50,9 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
     large_fixture.validate_fixture(first, spec)
 
     table = pq.read_table(first)
+    first_window = table.select(["net_revenue_usd", "gross_margin_usd"]).slice(0, 2).to_pylist()
+    assert first_window[0]["net_revenue_usd"] is None
+    assert sum(value is not None for row in first_window for value in row.values()) == 3
     names_by_role = {
         role: [column["name"] for column in columns if column["role"] == role]
         for role in {column["role"] for column in columns}

@@ -157,7 +157,7 @@ describe("clean-room comparison grid readiness", () => {
     const observation = observeComparisonGridReadiness(
       {
         headers: ["net_revenue_usd", "gross_margin_usd"],
-        bodyContent: { kind: "minimum-nonempty", count: 3 }
+        bodyContent: { kind: "minimum-finite-numbers", count: 3 }
       },
       frames.runtime
     );
@@ -172,20 +172,20 @@ describe("clean-room comparison grid readiness", () => {
     });
   });
 
-  it("rejects a mixed-fixture grid with fewer than three visible body values", async () => {
+  it("rejects a mixed-fixture grid with fewer than three finite numeric body values", async () => {
     mountGrid({
       firstHeader: "net_revenue_usd",
       secondHeader: "gross_margin_usd",
       topLeftValues: [
-        ["", "first visible value"],
-        ["second visible value", ""]
+        ["", "-387.884"],
+        ["-146.978", "Preparing…"]
       ]
     });
     const frames = new FrameRuntime();
     const observation = observeComparisonGridReadiness(
       {
         headers: ["net_revenue_usd", "gross_margin_usd"],
-        bodyContent: { kind: "minimum-nonempty", count: 3 }
+        bodyContent: { kind: "minimum-finite-numbers", count: 3 }
       },
       frames.runtime
     );
@@ -225,6 +225,24 @@ describe("clean-room comparison grid readiness", () => {
     const frames = new FrameRuntime();
 
     await expect(observeComparisonGridReadiness(invalid, frames.runtime)).resolves.toBeNull();
+    expect(frames.callbacks).toHaveLength(0);
+  });
+
+  it("does not let a caller change the legacy exact sentinel matrix", async () => {
+    mountGrid();
+    const changed = {
+      headers: ["c00", "c01"],
+      bodyContent: {
+        kind: "exact",
+        topLeftValues: [
+          ["0", "1"],
+          ["1", "99"]
+        ]
+      }
+    } as unknown as ComparisonGridReadinessInput;
+    const frames = new FrameRuntime();
+
+    await expect(observeComparisonGridReadiness(changed, frames.runtime)).resolves.toBeNull();
     expect(frames.callbacks).toHaveLength(0);
   });
 

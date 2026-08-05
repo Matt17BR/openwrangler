@@ -160,19 +160,28 @@ describe("neutral comparison request", () => {
         ]
       }
     });
-    expect(
-      comparisonGridReadinessInput(
-        request({
-          cell: {
-            ...request().cell,
-            columnNames: ["net_revenue_usd", "gross_margin_usd", ...request().cell.columnNames.slice(2)],
-            profileContract: "mixed-sentinels-v1"
-          }
-        })
-      )
-    ).toEqual({
+    const columnNames = [
+      "net_revenue_usd",
+      "gross_margin_usd",
+      ...Array.from({ length: 98 }, (_unused, index) => `metric_${String(index).padStart(3, "0")}`)
+    ];
+    const largeRequest = validateComparisonTrialRequest(
+      request({
+        cell: {
+          ...request().cell,
+          id: "pandas-parquet",
+          format: "parquet",
+          rows: 1_000_000,
+          columns: 100,
+          columnNames,
+          source: "/tmp/openwrangler-comparison/fixtures/source.parquet",
+          profileContract: "mixed-sentinels-v1"
+        }
+      })
+    );
+    expect(comparisonGridReadinessInput(largeRequest)).toEqual({
       headers: ["net_revenue_usd", "gross_margin_usd"],
-      bodyContent: { kind: "minimum-nonempty", count: 3 }
+      bodyContent: { kind: "minimum-finite-numbers", count: 3 }
     });
   });
 });
@@ -464,6 +473,9 @@ describe("public readiness oracles", () => {
     expect(comparisonAriaCountsMatch({ rows: 100_000, columns: 50, ariaRowCount: 1006, ariaColumnCount: 51 })).toBe(
       false
     );
+    expect(
+      comparisonAriaCountsMatch({ rows: 1_000_000, columns: 100, ariaRowCount: 1_000_001, ariaColumnCount: 101 })
+    ).toBe(true);
   });
 
   it("requires a stable unobstructed exact pointer target", async () => {
