@@ -105,6 +105,7 @@ import {
   packagedWideSchemaFixtureCsv
 } from "./screenshotEvidence";
 import { prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
+import { customEditorTabDiagnostic, findExactCustomEditorTab } from "./customEditorTabs";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -821,17 +822,64 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => {
-      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-      return input instanceof vscode.TabInputCustom && input.viewType === "openWrangler.viewer";
+      const expectedUri = fixture.toString();
+      const response = testing.panelOpenResponse();
+      const active = testing.activeSession();
+      return Boolean(
+        response?.kind === "sessionOpened" &&
+        response.metadata.source.kind === "file" &&
+        response.metadata.source.uri === expectedUri &&
+        active?.sessionId === response.metadata.sessionId &&
+        active.metadata.source.kind === "file" &&
+        active.metadata.source.uri === expectedUri &&
+        findExactCustomEditorTab<vscode.Tab>(vscode.window.tabGroups.all, "openWrangler.viewer", expectedUri)
+      );
     },
     45_000,
-    "the Open Wrangler custom editor"
+    "the exact Open Wrangler custom editor, file session, and panel response",
+    () => {
+      const expectedUri = fixture.toString();
+      const response = testing.panelOpenResponse();
+      const active = testing.activeSession();
+      const activeTab = activeEditorTabDiagnostic();
+      return JSON.stringify({
+        tabs: customEditorTabDiagnostic(vscode.window.tabGroups.all, "openWrangler.viewer", expectedUri),
+        activeTab: {
+          inputType: activeTab.inputType,
+          viewType: activeTab.viewType,
+          isOpenWranglerSession: activeTab.isOpenWranglerSession
+        },
+        panelResponse: {
+          kind: response?.kind ?? "missing",
+          sourceMatches:
+            response?.kind === "sessionOpened" &&
+            response.metadata.source.kind === "file" &&
+            response.metadata.source.uri === expectedUri,
+          sessionMatches: response?.kind === "sessionOpened" && active?.sessionId === response.metadata.sessionId
+        },
+        activeSession: {
+          present: active !== undefined,
+          sourceMatches: active?.metadata.source.kind === "file" && active.metadata.source.uri === expectedUri
+        },
+        coordinator: {
+          sessionCount: testing.diagnostics().sessionCount,
+          runtimeRunning: testing.runtimeRunning()
+        }
+      });
+    }
   );
 
-  const activeInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-  assert.ok(activeInput instanceof vscode.TabInputCustom);
-  assert.equal(activeInput.viewType, "openWrangler.viewer");
-  assert.equal(path.basename(activeInput.uri.fsPath), "sample.csv");
+  const panelResponse = testing.panelOpenResponse();
+  assert.equal(panelResponse?.kind, "sessionOpened");
+  if (panelResponse?.kind !== "sessionOpened") return;
+  assert.equal(panelResponse.metadata.source.uri, fixture.toString());
+  assert.equal(testing.activeSession()?.sessionId, panelResponse.metadata.sessionId);
+  const customEditorTab = findExactCustomEditorTab<vscode.Tab>(
+    vscode.window.tabGroups.all,
+    "openWrangler.viewer",
+    fixture.toString()
+  );
+  assert.ok(customEditorTab, "The exact source must own an Open Wrangler custom-editor tab in one tab group.");
   await exercisePackagedStepInspection(testing, fixture);
   await vscode.commands.executeCommand("openWrangler.openSourceFile");
   await waitFor(
@@ -845,7 +893,13 @@ export async function run(): Promise<void> {
   const sourceInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   assert.ok(sourceInput instanceof vscode.TabInputText, "Open Source File must resolve the active runtime session.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
-  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  const currentCustomEditorTab = findExactCustomEditorTab<vscode.Tab>(
+    vscode.window.tabGroups.all,
+    "openWrangler.viewer",
+    fixture.toString()
+  );
+  assert.ok(currentCustomEditorTab, "The exact custom-editor tab must still exist immediately before cleanup.");
+  await vscode.window.tabGroups.close(currentCustomEditorTab, true);
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
     10_000,
