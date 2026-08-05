@@ -1448,9 +1448,11 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "for (column_index in seq_len(20L)) {",
     "  base_frame[[sprintf('extra_%02d', column_index)]] <- sprintf('value-%02d-%04d', column_index, seq_len(row_count))",
     "}",
+    "base_frame$extra_20[1L] <- NA_character_",
     "row.names(base_frame) <- sprintf('case-%04d', seq_len(row_count))",
     "orders_tibble <- tibble::as_tibble(base_frame, .name_repair = 'minimal')",
     "orders_table <- data.table::as.data.table(base_frame)",
+    "base_frame_before <- serialize(base_frame, NULL, version = 3L)",
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
     "  pid = Sys.getpid(), rows = nrow(base_frame), columns = ncol(base_frame),",
     "  rVersion = as.character(getRversion()),",
@@ -1460,7 +1462,8 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
   ];
   const bindingProbe = [
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_BINDING_RESULT)}, as.character(jsonlite::toJSON(list(`,
-    `  runtimeBindingPresent = exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE)`,
+    `  runtimeBindingPresent = exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE),`,
+    "  sourceUnchanged = isTRUE(identical(serialize(base_frame, NULL, version = 3L), base_frame_before))",
     "), auto_unbox = TRUE)), '\\n', sep = '')"
   ];
   writeFileSync(
@@ -1537,10 +1540,34 @@ async function waitForReleasedRRuntimeBindingCleanup(
       "boolean",
       "The R runtime binding probe must return one boolean."
     );
+    assert.equal(
+      result.sourceUnchanged,
+      true,
+      "Opening, querying, and closing the native R session must not change its source data.frame."
+    );
     if (result.runtimeBindingPresent === false) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
   assert.fail("The private Open Wrangler R runtime binding remained after the final session closed.");
+}
+
+async function assertReleasedRRuntimeBinding(
+  notebook: vscode.NotebookDocument,
+  expectedBinding: boolean,
+  checkpoint: string
+): Promise<void> {
+  await executeReleasedNotebookCell(notebook, 1, RELEASED_JUPYTER_R_BINDING_RESULT, checkpoint);
+  const result = releasedNotebookJsonResult(
+    notebook.cellAt(1),
+    RELEASED_JUPYTER_R_BINDING_RESULT,
+    "R runtime binding and source-integrity probe"
+  );
+  assert.equal(
+    result.runtimeBindingPresent,
+    expectedBinding,
+    `The R runtime binding must be ${expectedBinding ? "present" : "absent"} during ${checkpoint}.`
+  );
+  assert.equal(result.sourceUnchanged, true, `The source data.frame changed during ${checkpoint}.`);
 }
 
 async function exerciseReleasedRJupyterExtension(
@@ -1635,12 +1662,14 @@ async function exerciseReleasedRJupyterExtension(
       exportCsv: false,
       exportParquet: false,
       notebookInsert: false,
-      filter: false,
+      filter: true,
       sort: true,
       profile: true,
-      columnValues: false
+      columnValues: true
     });
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the base R data.frame session");
 
     for (const expected of [
@@ -1806,11 +1835,11 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     .waitFor({ state: "visible", timeout: 10_000 });
   await columnSearch.press("Enter");
 
-  const profileToggle = app.getByRole("button", { name: "Column profiles and sorts", exact: true });
+  const profileToggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });
   await profileToggle.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await profileToggle.isEnabled(), true);
   await profileToggle.click();
-  const drawer = app.getByRole("complementary", { name: "Column profiles and sorts", exact: true });
+  const drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await drawer.waitFor({ state: "visible", timeout: 10_000 });
   const columnProfile = drawer.getByRole("tabpanel");
   await columnProfile.getByRole("heading", { name: "score", exact: true }).waitFor({
@@ -1837,18 +1866,206 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   });
   await assertReleasedProfileStat(datasetProfile, "Rows", "1,205");
   await assertReleasedProfileStat(datasetProfile, "Columns", "24");
-  await assertReleasedProfileStat(datasetProfile, "Missing cells", "0");
-  await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "0");
+  await assertReleasedProfileStat(datasetProfile, "Missing cells", "1");
+  await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "1");
   await assertReleasedProfileStat(datasetProfile, "Duplicate rows", "0");
-  await drawer.getByRole("tab", { name: "Sorts", exact: true }).click();
-  await drawer.getByRole("heading", { name: "Sorts", exact: true }).waitFor({
+
+  await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+  await drawer.getByRole("heading", { name: "Filters / Sorts", exact: true }).waitFor({
     state: "visible",
     timeout: 10_000
   });
   assert.equal(await drawer.getByText("Filtering is unavailable for this dataframe.", { exact: true }).count(), 0);
-  await drawer.getByRole("button", { name: "Close panel" }).click();
+  let filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
+  await filterPanel.getByRole("button", { name: "Use advanced filters", exact: true }).click();
+  const acrossColumns = filterPanel.getByLabel("Across columns", { exact: true });
+  await acrossColumns.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await acrossColumns.inputValue(), "and");
+
+  await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "score" });
+  await filterPanel.getByLabel("Search values for score", { exact: true }).fill("1200");
+  await filterPanel.getByRole("button", { name: "Values", exact: true }).click();
+  const scoreValue = filterPanel.locator(".valueList label.checkboxRow").filter({ hasText: "1200" }).first();
+  await scoreValue.waitFor({ state: "visible", timeout: 30_000 });
+  assert.equal((await scoreValue.locator("span").innerText()).trim(), "1200");
+  assert.equal((await scoreValue.locator("small").innerText()).trim(), "1");
+  await scoreValue.getByRole("checkbox").check();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.metadata.filteredShape.rows === 1 &&
+        current.viewState.filterModel.filters.length === 1 &&
+        current.viewState.filterModel.filters[0]?.column === "score"
+      );
+    },
+    30_000,
+    "the selected native R score value to filter the complete frame"
+  );
+
+  filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+  await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
+  await filterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+  await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.metadata.filteredShape.rows === 1 &&
+        current.viewState.filterModel.filters.length === 2 &&
+        current.viewState.filterModel.sort.length === 0 &&
+        (current.viewState.filterModel.logic ?? "and") === "and"
+      );
+    },
+    30_000,
+    "the cross-column native R filter to publish its one matching row"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R filter result must be acknowledged before its row and profile are inspected."
+  );
+
+  const filteredSession = testing.activeSession();
+  assert.ok(filteredSession, "The native R filter journey requires its confirmed session.");
+  assert.equal(filteredSession.sessionId, sessionId);
+  assert.equal(filteredSession.metadata.filteredShape.rows, 1);
+  assert.equal(filteredSession.viewState.filterModel.logic ?? "and", "and");
+  assert.deepEqual(filteredSession.viewState.filterModel.sort, []);
+  assert.equal(filteredSession.viewState.filterModel.filters.length, 2);
+  const scoreFilter = filteredSession.viewState.filterModel.filters.find((filter) => filter.column === "score");
+  const groupFilter = filteredSession.viewState.filterModel.filters.find((filter) => filter.column === "group");
+  assert.deepEqual(scoreFilter?.valueFilter?.selectedValues, [
+    {
+      kind: "typedSelection",
+      version: 1,
+      columnType: "float",
+      cell: { kind: "number", raw: "1200", display: "1200", isNull: false, isNaN: false }
+    }
+  ]);
+  assert.deepEqual(groupFilter?.predicates, [{ kind: "predicate", operator: "equals", value: "B" }]);
+  await filterPanel.getByText("2 filtered columns", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await filterPanel
+    .getByRole("button", { name: "Remove equals 1200 (number) filter from score", exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await filterPanel
+    .getByRole("button", { name: 'Remove equals "B" filter from group', exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
 
   const visibleRows = app.getByRole("status", { name: "Visible rows" });
+  await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–1 of 1", 10_000, "the filtered R row");
+  await app
+    .getByRole("rowheader", { name: "Row 1, label case-1200", exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  for (const [column, expected] of [
+    [0, "1200"],
+    [1, "B"],
+    [2, "1200"]
+  ] as const) {
+    await waitForLocatorText(
+      app.locator(`td[data-grid-row="0"][data-grid-column="${column}"]`),
+      (text) => text.trim() === expected,
+      10_000,
+      `the filtered R grid value in column ${column + 1}`
+    );
+  }
+
+  await drawer.getByRole("tab", { name: "Column", exact: true }).click();
+  const filteredColumnProfile = drawer.getByRole("tabpanel");
+  await filteredColumnProfile.getByRole("heading", { name: "score", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await filteredColumnProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 30_000
+  });
+  await assertReleasedProfileStat(filteredColumnProfile, "Rows", "1");
+  await assertReleasedProfileStat(filteredColumnProfile, "Distinct", "1");
+  await assertReleasedProfileStat(filteredColumnProfile, "Min", "1,200");
+  await assertReleasedProfileStat(filteredColumnProfile, "Max", "1,200");
+
+  await drawer.getByRole("tab", { name: "Dataset", exact: true }).click();
+  const filteredDatasetProfile = drawer.getByRole("tabpanel");
+  await filteredDatasetProfile.getByRole("heading", { name: "Dataset", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await filteredDatasetProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 30_000
+  });
+  await assertReleasedProfileStat(filteredDatasetProfile, "Rows", "1");
+  await assertReleasedProfileStat(filteredDatasetProfile, "Columns", "24");
+  await assertReleasedProfileStat(filteredDatasetProfile, "Rows before filters", "1,205");
+  await assertReleasedProfileStat(filteredDatasetProfile, "Missing cells", "0");
+  await assertReleasedProfileStat(filteredDatasetProfile, "Rows with missing values", "0");
+  await assertReleasedProfileStat(filteredDatasetProfile, "Duplicate rows", "0");
+  const filteredStats = testing.activeSession()?.metadata.stats;
+  assert.ok(filteredStats, "The filtered R dataset profile must reach the confirmed host state.");
+  assert.equal(filteredStats.missingValuesByColumn.length, 24);
+  assert.ok(
+    filteredStats.missingValuesByColumn.every((item) => item.count === 0),
+    "The one filtered R row must not contain a missing value."
+  );
+
+  // The real UI owns the filter and both filtered profile requests above.
+  // Read the stable source row only after that visible journey is complete;
+  // Clear all below immediately establishes the next webview-owned context.
+  const filteredPageRequestId = "jupyter-r-filtered-page";
+  const filteredPage = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    sessionId,
+    revision: testing.activeSession()!.metadata.revision,
+    viewRequestId: filteredPageRequestId,
+    offset: 0,
+    limit: 1,
+    filterModel: testing.activeSession()!.viewState.filterModel
+  });
+  assert.equal(filteredPage.kind, "page");
+  if (filteredPage.kind !== "page") throw new Error("The native R filtered page did not resolve.");
+  assert.equal(filteredPage.viewRequestId, filteredPageRequestId);
+  assert.equal(filteredPage.page.totalRows, 1);
+  assert.deepEqual(
+    filteredPage.page.rows.map((row) => ({
+      id: row.id,
+      rowLabel: row.rowLabel,
+      values: row.values.slice(0, 3).map((cell) => cell.display)
+    })),
+    [{ id: "r:r:1199", rowLabel: "case-1200", values: ["1200", "B", "1200"] }]
+  );
+
+  await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+  filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.metadata.filteredShape.rows === 1_205 &&
+        current.viewState.filterModel.filters.length === 0 &&
+        current.viewState.filterModel.sort.length === 0
+      );
+    },
+    30_000,
+    "Clear all to restore the complete native R frame"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The cleared native R view must be acknowledged before paging resumes."
+  );
+  await waitForLocatorText(
+    visibleRows,
+    (text) => text.trim() === "Rows 1–200 of 1,205",
+    10_000,
+    "the restored native R frame"
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+
   const next = app.getByRole("button", { name: "Next block", exact: true });
   for (const expected of [
     "Rows 201–400 of 1,205",

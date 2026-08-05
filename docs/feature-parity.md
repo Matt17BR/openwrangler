@@ -79,21 +79,23 @@ rendered workbench UI. The native contract passes on R 4.4 and 4.5; the packaged
 R 4.5.2. [Hosted run 31055045808](https://github.com/Matt17BR/openwrangler/actions/runs/31055045808) passed at
 `3860685`: local R in VS Code and Cursor, plus a containerized IRkernel in VS Code. Compound viewing filters, ordered
 sorts, and value search and selection are implemented against stable column references. Their R and TypeScript tests
-cover filtered pages, profiles, dataset statistics, and the shared date/datetime/duration literal contract. A
-packaged filter journey and public documentation and screenshots still need to pass before a preview ships.
+cover filtered pages, profiles, dataset statistics, and the shared date/datetime/duration literal contract. The
+packaged journey now selects a typed numeric value, adds a second-column predicate, inspects the one-row grid and its
+profiles, clears the filters, and proves that the source R object was not changed. That new interaction still needs an
+exact hosted run. Public documentation and screenshots also remain before a preview ships.
 
-| Surface                                      | Availability | Status  | Recorded evidence                                             | Remaining acceptance gate                         |
-| -------------------------------------------- | ------------ | ------- | ------------------------------------------------------------- | ------------------------------------------------- |
-| Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, local/remote packaged tests      | Packaged filter journey and preview release       |
-| Native R compound viewing filters            | Internal     | Partial | Stable-reference predicates and shared literal-contract tests | Packaged filter/value journey                     |
-| Native R value search and selections         | Internal     | Partial | Bounded counts, typed selections, and filtered-page tests     | Packaged filter/value journey                     |
-| Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local/remote packaged tests                  | Filter interaction journey                        |
-| Native R column and dataset profiles         | Internal     | Partial | R 4.4/4.5 tests; local/remote UI; filtered contracts          | Packaged filter-aware profile journey             |
-| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, paging, queries, and profile tests          | Packaged filter journey and preview release       |
-| Exact IRkernel session transport             | Internal     | Done    | Local VS Code/Cursor and remote VS Code restart test          | —                                                 |
-| Notebook workbench                           | Internal     | Partial | Local/remote packaged paging and profiles plus production axe | Packaged filter/value journey and editing         |
-| R cleaning operations and generated code     | No           | Planned | Read-only viewing only                                        | Native R IR, adapters, code generation, and tests |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                         | Stable broker or Open Wrangler-owned helper       |
+| Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                     |
+| -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | --------------------------------------------- |
+| Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, local/remote packaged tests | Exact filter run, docs, and preview release   |
+| Native R compound viewing filters            | Internal     | Partial | R contracts and packaged value/predicate path            | Exact hosted interaction run and preview      |
+| Native R value search and selections         | Internal     | Partial | Typed selection contracts and packaged value path        | Exact hosted interaction run and preview      |
+| Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local/remote packaged tests             | Exact combined filter/sort run and preview    |
+| Native R column and dataset profiles         | Internal     | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Exact filter-aware UI run and preview         |
+| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, paging, queries, and profile tests     | Exact filter run, docs, and preview release   |
+| Exact IRkernel session transport             | Internal     | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                             |
+| Notebook workbench                           | Internal     | Partial | Packaged paging/profiles plus production axe             | Exact filter run, public screenshots, editing |
+| R cleaning operations and generated code     | No           | Planned | Read-only viewing only                                   | Native R IR, adapters, code generation, tests |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper   |
 
 ## DuckDB file-backed preview matrix
 
