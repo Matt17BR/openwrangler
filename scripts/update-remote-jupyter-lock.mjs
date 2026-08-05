@@ -8,9 +8,13 @@ import {
   REMOTE_JUPYTER_INPUT_PATH,
   REMOTE_JUPYTER_LOCK_PATH,
   REMOTE_JUPYTER_LOCK_TOOL_VERSION,
+  REMOTE_R_JUPYTER_INPUT_PATH,
+  REMOTE_R_JUPYTER_LOCK_PATH,
   isRemoteJupyterLockToolVersionOutput,
   remoteJupyterCompileArguments,
-  validateRemoteJupyterLock
+  remoteRJupyterCompileArguments,
+  validateRemoteJupyterLock,
+  validateRemoteRJupyterLock
 } from "./remote-jupyter-lock.mjs";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
@@ -37,36 +41,61 @@ if (
 const temporaryRoot = resolve(REPOSITORY_ROOT, "tmp");
 await mkdir(temporaryRoot, { recursive: true, mode: 0o700 });
 const workspace = await mkdtemp(join(temporaryRoot, "remote-jupyter-lock-"));
-const candidatePath = join(workspace, "requirements.txt");
+const fixtures = [
+  {
+    label: "Python",
+    inputPath: REMOTE_JUPYTER_INPUT_PATH,
+    lockPath: REMOTE_JUPYTER_LOCK_PATH,
+    candidatePath: join(workspace, "requirements.txt"),
+    compileArguments: remoteJupyterCompileArguments,
+    validate: validateRemoteJupyterLock
+  },
+  {
+    label: "R",
+    inputPath: REMOTE_R_JUPYTER_INPUT_PATH,
+    lockPath: REMOTE_R_JUPYTER_LOCK_PATH,
+    candidatePath: join(workspace, "requirements.r.txt"),
+    compileArguments: remoteRJupyterCompileArguments,
+    validate: validateRemoteRJupyterLock
+  }
+];
 
 try {
-  const generated = spawnSync("uv", remoteJupyterCompileArguments(candidatePath), {
-    cwd: REPOSITORY_ROOT,
-    env: controlledEnvironment(workspace),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 8 * 1024 * 1024
-  });
-  if (generated.error || generated.status !== 0 || generated.signal !== null) {
-    throw new Error(`Remote Jupyter lock generation failed: ${generated.error?.message ?? generated.stderr.trim()}`);
+  const changed = [];
+  for (const fixture of fixtures) {
+    const generated = spawnSync("uv", fixture.compileArguments(fixture.candidatePath), {
+      cwd: REPOSITORY_ROOT,
+      env: controlledEnvironment(workspace),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 8 * 1024 * 1024
+    });
+    if (generated.error || generated.status !== 0 || generated.signal !== null) {
+      throw new Error(
+        `Remote ${fixture.label} Jupyter lock generation failed: ${generated.error?.message ?? generated.stderr.trim()}`
+      );
+    }
+
+    const [inputText, currentText, candidateText] = await Promise.all([
+      readFile(fixture.inputPath, "utf8"),
+      readFile(fixture.lockPath, "utf8"),
+      readFile(fixture.candidatePath, "utf8")
+    ]);
+    fixture.validate(inputText, candidateText);
+    if (candidateText !== currentText) changed.push({ fixture, candidateText });
   }
 
-  const [inputText, currentText, candidateText] = await Promise.all([
-    readFile(REMOTE_JUPYTER_INPUT_PATH, "utf8"),
-    readFile(REMOTE_JUPYTER_LOCK_PATH, "utf8"),
-    readFile(candidatePath, "utf8")
-  ]);
-  validateRemoteJupyterLock(inputText, candidateText);
-
-  if (candidateText === currentText) {
-    process.stdout.write("Remote Jupyter lock is reproducible and current.\n");
+  if (changed.length === 0) {
+    process.stdout.write("Remote Jupyter locks are reproducible and current.\n");
   } else if (mode === "--check") {
     throw new Error(
-      "Remote Jupyter lock differs from a clean deterministic regeneration; run npm run lock:remote-jupyter."
+      "A remote Jupyter lock differs from clean deterministic regeneration; run npm run lock:remote-jupyter."
     );
   } else {
-    await replaceLock(candidateText);
-    process.stdout.write("Regenerated the remote Jupyter lock deterministically.\n");
+    for (const { fixture, candidateText } of changed) {
+      await replaceLock(fixture.lockPath, candidateText);
+    }
+    process.stdout.write("Regenerated the remote Jupyter locks deterministically.\n");
   }
 } finally {
   await rm(workspace, { recursive: true, force: true });
@@ -94,8 +123,8 @@ function controlledEnvironment(workspace) {
   return environment;
 }
 
-async function replaceLock(candidateText) {
-  const sibling = join(dirname(REMOTE_JUPYTER_LOCK_PATH), `.requirements-${randomUUID()}.tmp`);
+async function replaceLock(lockPath, candidateText) {
+  const sibling = join(dirname(lockPath), `.requirements-${randomUUID()}.tmp`);
   const handle = await open(sibling, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
   try {
     await handle.writeFile(candidateText, "utf8");
@@ -104,13 +133,13 @@ async function replaceLock(candidateText) {
     await handle.close();
   }
   try {
-    await rename(sibling, REMOTE_JUPYTER_LOCK_PATH);
+    await rename(sibling, lockPath);
   } catch (error) {
     await rm(sibling, { force: true });
     throw error;
   }
 
-  const published = await readFile(REMOTE_JUPYTER_LOCK_PATH, "utf8");
+  const published = await readFile(lockPath, "utf8");
   if (published !== candidateText) {
     throw new Error("Published remote Jupyter lock bytes changed after replacement.");
   }

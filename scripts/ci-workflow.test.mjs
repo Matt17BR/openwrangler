@@ -1516,17 +1516,17 @@ test("coverage provisions the exact PySpark runtime before enforcing the unchang
   assert.match(manifest?.scripts?.["test:coverage:python"] ?? "", /pytest python\/tests .*--cov=openwrangler_runtime/u);
 });
 
-test("standalone released-Jupyter acceptance is schedule/manual-only and self-packages", () => {
+test("standalone released-Jupyter acceptance is manual-only and self-packages", () => {
   const source = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
-  assert.deepEqual(Object.keys(workflow?.on ?? {}), ["workflow_dispatch", "schedule"]);
+  assert.deepEqual(Object.keys(workflow?.on ?? {}), ["workflow_dispatch"]);
   assert.equal(workflow?.on?.pull_request, undefined);
   assert.deepEqual(workflow?.concurrency, {
     group: "released-jupyter-${{ github.ref }}",
     "cancel-in-progress": false
   });
   const job = workflow?.jobs?.vscode;
-  assert.equal(job?.name, "VS Code and Cursor with released Jupyter");
+  assert.equal(job?.name, "Released Jupyter in VS Code and Cursor");
   assert.equal(job?.["timeout-minutes"], 90);
   assert.equal(
     job?.steps?.some((step) => step?.run === "npm run package -- --out openwrangler.vsix"),
@@ -1546,7 +1546,7 @@ test("standalone released-Jupyter acceptance is schedule/manual-only and self-pa
     }
   );
   assert.deepEqual(job?.steps?.find((step) => step?.uses === SETUP_R_ACTION)?.with, {
-    "r-version": "4.5",
+    "r-version": "4.5.2",
     "use-public-rspm": true
   });
   const rscript = job?.steps?.find((step) => step?.id === "rscript");
@@ -1554,14 +1554,16 @@ test("standalone released-Jupyter acceptance is schedule/manual-only and self-pa
   assert.equal(rscript?.shell, "bash");
   assert.match(rscript?.run ?? "", /rscript="\$\(command -v Rscript\)"/u);
   assert.match(rscript?.run ?? "", /printf 'executable=%s\\n' "\$rscript" >> "\$GITHUB_OUTPUT"/u);
+  assert.match(rscript?.run ?? "", /r_version="\$\(Rscript --vanilla -e 'cat\(as\.character\(getRversion\(\)\)\)'\)"/u);
+  assert.match(rscript?.run ?? "", /printf 'version=%s\\n' "\$r_version" >> "\$GITHUB_OUTPUT"/u);
   const packaged = job?.steps?.find((step) => step?.id === "packaged_editor");
-  assert.equal(packaged?.name, "Test released Jupyter in packaged VS Code and Cursor");
+  assert.equal(packaged?.name, "Test remote Python Jupyter in packaged VS Code");
   assert.equal(
     packaged?.run,
     "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
   );
   assert.deepEqual(packaged?.env, {
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
     OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
     OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
     OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
@@ -1571,19 +1573,19 @@ test("standalone released-Jupyter acceptance is schedule/manual-only and self-pa
   const diagnostics = job?.steps?.find((step) => step?.name === "Upload packaged-editor failure diagnostics");
   assert.equal(
     diagnostics?.with?.name,
-    "released-jupyter-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
+    "released-jupyter-python-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
   );
   assert.equal(diagnostics?.with?.path, "${{ steps.packaged_editor.outputs.evidence_path }}");
 
   const packagedR = job?.steps?.find((step) => step?.id === "packaged_editor_r");
-  assert.equal(packagedR?.name, "Test released R Jupyter in packaged VS Code");
+  assert.equal(packagedR?.name, "Test released R Jupyter in packaged VS Code and Cursor");
   assert.equal(
     packagedR?.run,
     "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
   );
   assert.deepEqual(packagedR?.env, {
     OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
     OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
     OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
     OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
@@ -1598,7 +1600,7 @@ test("standalone released-Jupyter acceptance is schedule/manual-only and self-pa
   );
   assert.equal(
     rDiagnostics?.with?.name,
-    "released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
+    "released-jupyter-r-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
   );
   assert.equal(rDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
   assert.equal(

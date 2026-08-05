@@ -1480,7 +1480,15 @@ test("the container definition pins its base and direct wheels and never receive
   ];
   assert.ok(lockedEntries.length > 50);
   assert.equal(requirements.replaceAll(/--hash=sha256:[0-9a-f]{64}/gu, "").includes("--hash="), false);
-  for (const dependency of ["duckdb", "ipykernel", "jupyter-server", "pandas", "polars", "polars-runtime-32"]) {
+  for (const dependency of [
+    "duckdb",
+    "ipykernel",
+    "ipython",
+    "jupyter-server",
+    "pandas",
+    "polars",
+    "polars-runtime-32"
+  ]) {
     assert.ok(
       lockedEntries.some((entry) => entry[1] === dependency),
       `missing locked ${dependency}`
@@ -1491,6 +1499,7 @@ test("the container definition pins its base and direct wheels and never receive
   assert.match(server, /^TOKEN_WAIT_SECONDS = 300$/mu);
   assert.equal(/sys\.argv/u.test(server), false);
   assert.equal(/^from (?:IPython|jupyter_server|traitlets)/mu.test(server), false);
+  assert.match(server, /if find_spec\("IPython"\) is not None:/u);
   assert.equal(/config\.ServerApp\.(?:config_dir|runtime_dir)/u.test(server), false);
   const pathVariables = ["JUPYTER_CONFIG_DIR", "JUPYTER_DATA_DIR", "JUPYTER_RUNTIME_DIR", "IPYTHONDIR"];
   assert.deepEqual(
@@ -1524,6 +1533,8 @@ test("the container definition pins its base and direct wheels and never receive
 test("the R container definition pins R, package snapshots, and its exact kernelspec", async () => {
   const dockerfile = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile.r"), "utf8");
   const dockerignore = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", ".dockerignore"), "utf8");
+  const requirementsInput = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "requirements.r.in"), "utf8");
+  const requirements = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "requirements.r.txt"), "utf8");
 
   assert.ok(dockerfile.startsWith(`FROM ${REMOTE_R_JUPYTER_BASE_IMAGE}\n`));
   assert.match(dockerfile, /^ARG UBUNTU_SNAPSHOT=20260311T000000Z$/mu);
@@ -1540,6 +1551,8 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   }
   assert.match(dockerfile, /--only-binary=:all:/u);
   assert.match(dockerfile, /--require-hashes/u);
+  assert.match(dockerfile, /--requirement \/opt\/openwrangler\/requirements\.r\.txt/u);
+  assert.match(dockerfile, /python -I -m pip check/u);
   assert.match(dockerfile, /as\.character\(getRversion\(\)\) == "4\.5\.2"/u);
   assert.match(dockerfile, /identical\(actual, expected\)/u);
   assert.match(dockerfile, /name = "openwrangler-r-remote-acceptance"/u);
@@ -1547,7 +1560,14 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   assert.match(dockerfile, /^USER 65532:65532$/mu);
   assert.match(dockerfile, /^ENTRYPOINT \["python", "-I", "\/opt\/openwrangler\/server\.py"\]$/mu);
   assert.equal(/OPEN_WRANGLER_REMOTE_TOKEN|JUPYTER_TOKEN/u.test(dockerfile), false);
+  assert.equal(requirementsInput, "jupyter-server==2.20.0\n");
+  for (const dependency of ["duckdb", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]) {
+    assert.doesNotMatch(requirements, new RegExp(`^${dependency}==`, "mu"));
+  }
+  assert.ok((requirements.match(/^[a-z][a-z0-9-]*==/gmu) ?? []).length > 40);
   assert.match(dockerignore, /^!Dockerfile\.r$/mu);
+  assert.match(dockerignore, /^!requirements\.r\.in$/mu);
+  assert.match(dockerignore, /^!requirements\.r\.txt$/mu);
 });
 
 test("the private released-Jupyter profiles suppress unrelated extension recommendations", async () => {

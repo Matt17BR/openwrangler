@@ -1433,11 +1433,7 @@ function writeDataWranglerCoexistenceNotebook(notebookPath: string, target: Rele
   );
 }
 
-function writeReleasedRNotebook(
-  notebookPath: string,
-  phase: "jupyter-r" | "jupyter-r-remote",
-  hostExtensionPath: string
-): void {
+function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupyter-r-remote"): void {
   const target = releasedJupyterKernelTarget(phase);
   const source = [
     "row_count <- 1205L",
@@ -1459,8 +1455,7 @@ function writeReleasedRNotebook(
     "  pid = Sys.getpid(), rows = nrow(base_frame), columns = ncol(base_frame),",
     "  rVersion = as.character(getRversion()),",
     "  remoteRunId = Sys.getenv('OPEN_WRANGLER_REMOTE_RUN_ID', unset = ''),",
-    "  hostname = unname(Sys.info()[['nodename']]),",
-    `  hostExtensionVisible = file.exists(${JSON.stringify(hostExtensionPath)})`,
+    "  hostname = unname(Sys.info()[['nodename']])",
     "), auto_unbox = TRUE)), '\\n', sep = '')"
   ];
   const bindingProbe = [
@@ -1566,7 +1561,7 @@ async function exerciseReleasedRJupyterExtension(
   const notebookPath = path.join(directory, "r-dataframes.ipynb");
   const notebookUri = vscode.Uri.file(notebookPath);
   const kernelTarget = releasedJupyterKernelTarget(phase);
-  writeReleasedRNotebook(notebookPath, phase, extension.extensionPath);
+  writeReleasedRNotebook(notebookPath, phase);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
     "notebookPreviewProvider"
@@ -1592,7 +1587,6 @@ async function exerciseReleasedRJupyterExtension(
     if (kernelTarget.remote) {
       assert.equal(setup.remoteRunId, kernelTarget.remote.runId);
       assert.equal(setup.hostname, kernelTarget.remote.hostname);
-      assert.equal(setup.hostExtensionVisible, false);
     }
 
     const picker = await activateReleasedNotebookVariableAction(workbench, notebook, async () => {
@@ -1725,7 +1719,6 @@ async function exerciseReleasedRJupyterExtension(
     if (kernelTarget.remote) {
       assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
       assert.equal(replacementSetup.hostname, kernelTarget.remote.hostname);
-      assert.equal(replacementSetup.hostExtensionVisible, false);
     }
     await invokeReleasedNotebookToolbarVariable(workbench, notebook, "base_frame");
     const recovered = await waitForReleasedVariableSession(

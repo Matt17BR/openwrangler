@@ -58,7 +58,21 @@ const REMOTE_JUPYTER_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
 const REMOTE_JUPYTER_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const REMOTE_JUPYTER_TOKEN = /^owr_[A-Za-z0-9_-]{39}$/u;
 const REMOTE_JUPYTER_DESCRIPTOR_MAX_BYTES = 2_048;
-const R_ACCEPTANCE_PACKAGES = Object.freeze(["IRkernel", "jsonlite", "rlang", "tibble", "data.table"]);
+export const R_ACCEPTANCE_REPOSITORY = "https://p3m.dev/cran/__linux__/noble/2026-03-10";
+export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
+  IRkernel: "1.3.2",
+  jsonlite: "2.0.0",
+  rlang: "1.1.7",
+  tibble: "3.3.1",
+  "data.table": "1.18.2.1"
+});
+const R_ACCEPTANCE_PACKAGES = Object.freeze(Object.keys(R_ACCEPTANCE_PACKAGE_VERSIONS));
+const R_ACCEPTANCE_PACKAGE_RECORD = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)
+  .map(([packageName, version]) => `${packageName}=${version}`)
+  .join("\n");
+const R_ACCEPTANCE_EXPECTED_VERSIONS = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)
+  .map(([packageName, version]) => `${JSON.stringify(packageName)} = ${JSON.stringify(version)}`)
+  .join(", ");
 const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
 const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
 const R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS = 300_000;
@@ -67,7 +81,8 @@ const R_ACCEPTANCE_EXECUTABLE_PROBE = [
   'cat(normalizePath(.ow_r, winslash = "/", mustWork = TRUE), sep = "")'
 ].join("\n");
 const R_ACCEPTANCE_PROBE = [
-  `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
+  `.ow_expected <- c(${R_ACCEPTANCE_EXPECTED_VERSIONS})`,
+  ".ow_packages <- names(.ow_expected)",
   '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
   ".ow_locations <- vapply(.ow_packages, function(.ow_package) {",
   "  .ow_location <- find.package(.ow_package, lib.loc = .ow_library, quiet = TRUE)",
@@ -77,7 +92,8 @@ const R_ACCEPTANCE_PROBE = [
   ".ow_versions <- vapply(.ow_packages, function(.ow_package) {",
   "  as.character(utils::packageVersion(.ow_package, lib.loc = .ow_library))",
   "}, character(1L), USE.NAMES = FALSE)",
-  'cat(paste(.ow_packages, .ow_versions, sep = "="), sep = "\\n")'
+  'if (!identical(.ow_versions, unname(.ow_expected))) quit(save = "no", status = 11L)',
+  'cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'
 ].join("\n");
 const R_ACCEPTANCE_INSTALL = [
   `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
@@ -85,7 +101,7 @@ const R_ACCEPTANCE_INSTALL = [
   "utils::install.packages(",
   "  .ow_packages,",
   "  lib = .ow_library,",
-  '  repos = "https://cloud.r-project.org",',
+  `  repos = ${JSON.stringify(R_ACCEPTANCE_REPOSITORY)},`,
   "  dependencies = NA",
   ")"
 ].join("\n");
@@ -405,6 +421,9 @@ export async function prepareJupyterAcceptanceREnvironment(
     rExecutable,
     kernelSpecPath,
     packages: R_ACCEPTANCE_PACKAGES,
+    packageVersions: R_ACCEPTANCE_PACKAGE_VERSIONS,
+    packageRecord: R_ACCEPTANCE_PACKAGE_RECORD,
+    repository: R_ACCEPTANCE_REPOSITORY,
     jupyterEnvironment: Object.freeze({ dataDir, runtimeDir, configDir, path: pathDir }),
     dependencyProbe,
     dependencyInstall

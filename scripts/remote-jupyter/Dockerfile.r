@@ -38,19 +38,19 @@ RUN find /etc/apt -maxdepth 2 -type f \( -name sources.list -o -name '*.sources'
     && install --directory --owner=65532 --group=65532 --mode=0500 /home/openwrangler \
     && chmod 0555 /opt/openwrangler
 
-COPY requirements.txt /opt/openwrangler/requirements.txt
+COPY requirements.r.txt /opt/openwrangler/requirements.r.txt
 RUN python -I -m pip install \
       --isolated \
       --no-input \
       --only-binary=:all: \
       --require-hashes \
-      --requirement /opt/openwrangler/requirements.txt \
+      --requirement /opt/openwrangler/requirements.r.txt \
     && python -I -m pip check \
     && Rscript --vanilla -e 'repository <- Sys.getenv("R_REPOSITORY"); packages <- c("IRkernel", "jsonlite", "rlang", "tibble", "data.table"); install.packages(packages, repos = repository, Ncpus = 2L); expected <- c(IRkernel = Sys.getenv("IRKERNEL_VERSION"), jsonlite = Sys.getenv("JSONLITE_VERSION"), rlang = Sys.getenv("RLANG_VERSION"), tibble = Sys.getenv("TIBBLE_VERSION"), data.table = Sys.getenv("DATA_TABLE_VERSION")); actual <- vapply(names(expected), function(package) as.character(utils::packageVersion(package)), character(1)); stopifnot(as.character(getRversion()) == "4.5.2", identical(actual, expected)); IRkernel::installspec(user = FALSE, prefix = "/opt/openwrangler/venv", name = "openwrangler-r-remote-acceptance", displayname = "R (Open Wrangler Remote)")'
 
 COPY inject-token.py server.py /opt/openwrangler/
 RUN chmod 0555 /opt/openwrangler/inject-token.py /opt/openwrangler/server.py \
-    && chmod 0444 /opt/openwrangler/requirements.txt
+    && chmod 0444 /opt/openwrangler/requirements.r.txt
 
 USER 65532:65532
 WORKDIR /home/openwrangler

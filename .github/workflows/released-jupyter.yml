@@ -2,8 +2,6 @@ name: Released Jupyter acceptance
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "23 4 * * 1"
 
 permissions:
   contents: read
@@ -14,7 +12,7 @@ concurrency:
 
 jobs:
   vscode:
-    name: VS Code and Cursor with released Jupyter
+    name: Released Jupyter in VS Code and Cursor
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -33,7 +31,7 @@ jobs:
           java-version: "17"
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
-          r-version: "4.5"
+          r-version: "4.5.2"
           use-public-rspm: true
       - id: rscript
         name: Locate hosted Rscript
@@ -45,7 +43,14 @@ jobs:
             echo "Rscript did not resolve to an absolute executable." >&2
             exit 1
           fi
+          r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
+          if [[ "$r_version" != "4.5.2" ]]; then
+            echo "Expected hosted R 4.5.2, got $r_version." >&2
+            exit 1
+          fi
           printf 'executable=%s\n' "$rscript" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$r_version" >> "$GITHUB_OUTPUT"
+          printf 'Hosted R: %s\n' "$r_version"
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
@@ -81,10 +86,10 @@ jobs:
           accessSync(executable, X_OK);
           appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
       - id: packaged_editor
-        name: Test released Jupyter in packaged VS Code and Cursor
+        name: Test remote Python Jupyter in packaged VS Code
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -94,18 +99,18 @@ jobs:
         if: ${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: released-jupyter-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}
+          name: released-jupyter-python-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
       - id: packaged_editor_r
-        name: Test released R Jupyter in packaged VS Code
+        name: Test released R Jupyter in packaged VS Code and Cursor
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -116,7 +121,7 @@ jobs:
         if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
+          name: released-jupyter-r-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7

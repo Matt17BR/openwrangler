@@ -385,8 +385,9 @@ try {
             rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(resolve(temporaryRoot, "rv"), rscript, {
               containedBy: temporaryRoot
             });
+            let dependencyProbeResult;
             try {
-              await runBoundedEditorCommand(
+              dependencyProbeResult = await runBoundedEditorCommand(
                 rAcceptanceEnvironment.dependencyProbe.input,
                 rAcceptanceEnvironment.dependencyProbe.options
               );
@@ -401,11 +402,15 @@ try {
                 rAcceptanceEnvironment.dependencyInstall.input,
                 rAcceptanceEnvironment.dependencyInstall.options
               );
-              await runBoundedEditorCommand(
+              dependencyProbeResult = await runBoundedEditorCommand(
                 rAcceptanceEnvironment.dependencyProbe.input,
                 rAcceptanceEnvironment.dependencyProbe.options
               );
             }
+            if (dependencyProbeResult.stdout !== rAcceptanceEnvironment.packageRecord) {
+              throw new Error("Released-Jupyter R acceptance did not resolve the reviewed package versions.");
+            }
+            process.stdout.write(`Hosted R packages: ${rAcceptanceEnvironment.packageRecord.replaceAll("\n", ", ")}\n`);
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
