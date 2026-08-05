@@ -7,12 +7,18 @@ import test from "node:test";
 import { DATA_WRANGLER_STUDY_TOOL_NAMES, summarizeStudyPssSamples } from "./data-wrangler-comparison-report.mjs";
 import {
   DATA_WRANGLER_VERSION,
+  LARGE_COLUMNS,
+  LARGE_FIXTURE_PROTOCOL,
+  LARGE_ROWS,
   SMOKE_REPETITIONS,
   STUDY_CELLS,
   STUDY_PROTOCOL,
   TRIAL_REQUEST_PROTOCOL,
   TRIAL_RESULT_PROTOCOL,
   WARM_REPETITIONS,
+  assertCompleteLargeReport,
+  buildLargeComparisonReport,
+  buildLargeStudyManifest,
   buildStudyManifest,
   createDataWranglerComparisonSchedule,
   loadStudyResults,
@@ -20,6 +26,7 @@ import {
   removeStaleTrialDirectories,
   runDataWranglerComparisonSmoke,
   runDataWranglerComparisonStudy,
+  runLargeComparisonStudy,
   runOneTrial,
   terminalTrialIds,
   writeDataWranglerComparisonStudyReport
@@ -243,6 +250,92 @@ test("stale temporary session roots are removed without touching unrelated entri
   }
 });
 
+test("large schedule counterbalances fresh sessions and reports every reached endpoint", () => {
+  const manifest = largeManifestFixture();
+  assert.equal(manifest.schedule.length, 20);
+  const loads = manifest.schedule.filter(({ measureNativeLoad }) => measureNativeLoad);
+  assert.equal(loads.length, 10);
+  for (const engine of ["pandas", "polars"]) {
+    assert.equal(loads.filter((entry) => entry.engine === engine).length, 5);
+    assert.equal(
+      new Set(manifest.schedule.filter((entry) => entry.engine === engine).map((entry) => entry.product)).size,
+      2
+    );
+  }
+  const trials = manifest.schedule.map((entry) => sessionResult(entry, manifest, 1));
+  const partial = trials.find((trial) => trial.engine === "pandas" && trial.product === "open-wrangler").samples[0];
+  partial.status = "timeout";
+  partial.failure = { stage: "profile-all", kind: "timeout", message: "profile timeout" };
+  partial.metrics.completeProfileMs = null;
+  partial.milestones.pop();
+  partial.memory = null;
+  const report = buildLargeComparisonReport({
+    generatedAtUtc: manifest.createdAtUtc,
+    manifest,
+    trials,
+    loads: loads.map(largeLoadResult)
+  });
+  const summary = report.summaries.find(({ engine, product }) => engine === "pandas" && product === "open-wrangler");
+  assert.deepEqual(
+    [summary.successful, summary.metrics.inlinePreviewMs.count, summary.metrics.allProfilesMs.count],
+    [4, 5, 4]
+  );
+  assert.equal(summary.metrics.runCellToWorkbenchMs.median, 31);
+  assert.equal(Object.hasOwn(summary.metrics.inlinePreviewMs, "p95"), false);
+  assert.doesNotThrow(() => assertCompleteLargeReport(report));
+});
+
+test("large study records 20 fixed attempts, five native loads per engine, and resumes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-large-study-"));
+  const journeys = [];
+  const loads = [];
+  let checks = 0;
+  const manifest = largeManifestFixture();
+  const failedId = manifest.schedule.find(({ measureNativeLoad }) => measureNativeLoad).id;
+  const dependencies = {
+    now: () => manifest.createdAtUtc,
+    prepareTools: async () => {},
+    captureProvenance: async () => largeProvenanceFixture(),
+    inspectRunEnvironment: async () => {
+      checks += 1;
+      return {
+        machine: manifest.provenance.machine,
+        capacity: { availableMemoryBytes: 48 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 }
+      };
+    },
+    prepareTrial: ({ entry, trialRoot }) => ({
+      request: {
+        trialId: entry.id,
+        cell: entry,
+        isolatedRoot: trialRoot
+      },
+      verifySource() {}
+    }),
+    runLoad: async (request) => {
+      loads.push(request.trialId);
+      return largeLoadResult({ id: request.trialId, engine: request.cell.engine });
+    },
+    runJourney: async (request) => {
+      journeys.push(request.trialId);
+      if (request.trialId === failedId) throw new Error("synthetic editor failure");
+      const entry = manifest.schedule.find(({ id }) => id === request.trialId);
+      return sessionResult(entry, manifest, 1);
+    }
+  };
+  try {
+    assert.deepEqual(await runLargeComparisonStudy({ output: root, confirmLargeStudy: true }, dependencies), {
+      completed: 20,
+      remaining: 0
+    });
+    await runLargeComparisonStudy({ output: root, confirmLargeStudy: true }, dependencies);
+    assert.deepEqual([journeys.length, loads.length, checks], [20, 10, 20]);
+    assert.match(readFileSync(join(root, "trials", `${failedId}.json`), "utf8"), /synthetic editor failure/u);
+    assert.equal(existsSync(join(root, "loads", `${failedId}.json`)), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function fakeDependencies(calls) {
   const manifest = manifestFixture();
   return {
@@ -306,6 +399,41 @@ function manifestFixture({ csvHash = SHA, parquetHash = SHA } = {}) {
     },
     toolHashes: Object.fromEntries(DATA_WRANGLER_STUDY_TOOL_NAMES.map((name) => [name, SHA]))
   });
+}
+
+function largeProvenanceFixture() {
+  return {
+    candidate: { version: "1.2.3", sha256: SHA },
+    editor: { version: "1.132.0", sha256: SHA, cliSha256: SHA },
+    python: { version: "3.12.13", sha256: SHA },
+    fixture: {
+      protocol: LARGE_FIXTURE_PROTOCOL,
+      rows: LARGE_ROWS,
+      columns: LARGE_COLUMNS,
+      rowGroupRows: 100_000,
+      bytes: 5_000_000_000,
+      sha256: SHA,
+      profileSentinels: {}
+    },
+    machine: { ...manifestFixture().provenance.machine, totalMemoryBytes: 64 * 1024 ** 3 },
+    tools: {}
+  };
+}
+
+function largeManifestFixture() {
+  return buildLargeStudyManifest({ createdAtUtc: "2026-08-05T10:00:00.000Z", ...largeProvenanceFixture() });
+}
+
+function largeLoadResult(entry) {
+  return {
+    trialId: entry.id,
+    protocol: "openwrangler-large-parquet-load-v1",
+    engine: entry.engine,
+    elapsedMs: 1_000,
+    rows: LARGE_ROWS,
+    columns: LARGE_COLUMNS,
+    peakRssBytes: 300
+  };
 }
 
 function requestForEntry(entry, manifest, isolatedRoot = "/tmp/ow-comparison-session") {

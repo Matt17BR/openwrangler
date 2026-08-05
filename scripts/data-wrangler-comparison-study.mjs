@@ -4,6 +4,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -31,6 +32,11 @@ export const TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 export const DATA_WRANGLER_VERSION = "1.24.2";
 export const WARM_REPETITIONS = 10;
 export const SMOKE_REPETITIONS = 2;
+export const LARGE_FIXTURE_PROTOCOL = "openwrangler-large-parquet-fixture-v1";
+export const LARGE_ROWS = 10_000_000;
+export const LARGE_COLUMNS = 100;
+export const LARGE_REPETITIONS = 5;
+export const LARGE_MIN_SUCCESSFUL_REPETITIONS = 4;
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
@@ -46,9 +52,19 @@ export const STUDY_CELLS = Object.freeze([
   Object.freeze({ id: "polars-parquet", engine: "polars", format: "parquet", rows: 1_000_000, columns: 20 })
 ]);
 const PRODUCTS = Object.freeze(["open-wrangler", "data-wrangler"]);
+const ENGINES = Object.freeze(["pandas", "polars"]);
 const HASH = /^[0-9a-f]{64}$/u;
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
+const LARGE_TIMEOUTS_MS = Object.freeze({
+  preAction: 120_000,
+  inlinePreview: 120_000,
+  workbenchOpen: 180_000,
+  completeProfile: 600_000,
+  editorPhase: 600_000,
+  neutralDriver: 2_400_000,
+  nativeLoad: 900_000
+});
 
 export function createDataWranglerComparisonSchedule() {
   const schedule = [];
@@ -203,126 +219,108 @@ export async function prepareComparisonStudyRun({ output, now, prepareTools, cap
   return Object.freeze({ output: root, trialsDirectory, manifest });
 }
 
-export async function runComparisonSchedule({
-  output,
-  trialsDirectory,
-  manifest,
-  schedule,
-  completedIds,
-  limit,
-  beforeTrial,
-  executeTrial,
-  afterTrial,
-  buildFailure,
-  validateTrial,
-  isTerminal,
-  stopAfter,
-  stopMessage,
-  cleanup
-}) {
-  const completed = new Set(completedIds);
-  const remaining = schedule.filter(({ id }) => !completed.has(id));
-  const selected = remaining.slice(0, limit ?? remaining.length);
-  for (const entry of selected) {
-    await beforeTrial?.({ entry, manifest });
-    const trialRoot = mkdtempSync(join(output, `trial-${entry.order.toString().padStart(3, "0")}-`));
-    let result;
-    let trialError;
-    try {
-      result = await executeTrial({ entry, manifest, trialRoot });
-    } catch (error) {
-      trialError = error;
-    } finally {
-      rmSync(trialRoot, { force: true, recursive: true });
-    }
-    if (trialError) result = buildFailure(entry, trialError, manifest);
-    try {
-      await afterTrial?.({ entry, manifest, result });
-    } catch (error) {
-      result = buildFailure(entry, error, manifest);
-    }
-    validateTrial(result, entry, manifest);
-    writeJsonAtomic(join(trialsDirectory, `${entry.id}.json`), result);
-    if (isTerminal(result)) completed.add(entry.id);
-    if (stopAfter?.(result)) {
-      throw new Error(stopMessage(result));
-    }
-  }
-  const remainingCount = manifest.schedule.length - completed.size;
-  if (remainingCount === 0) await cleanup?.();
-  return Object.freeze({ completed: completed.size, remaining: remainingCount });
-}
-
-export async function runDataWranglerComparisonStudy(options, dependencies = {}) {
-  const now = dependencies.now ?? (() => new Date().toISOString());
-  const prepareTools = dependencies.prepareTools ?? buildComparisonTestExtension;
-  const runTrial = dependencies.runTrial ?? runNeutralDriver;
-  const makeTrial = dependencies.prepareTrial ?? prepareTrial;
-  const repetitionsPerSession = options.repetitionsPerSession ?? WARM_REPETITIONS;
+async function runComparisonStudy(options, dependencies, large) {
+  const repetitions = large ? 1 : (options.repetitionsPerSession ?? WARM_REPETITIONS);
   const preparedStudy = await prepareComparisonStudyRun({
     output: options.output,
-    now,
-    prepareTools,
-    captureProvenance: () => captureProvenance(options, dependencies),
+    now: dependencies.now ?? (() => new Date().toISOString()),
+    prepareTools: dependencies.prepareTools ?? buildComparisonTestExtension,
+    captureProvenance: () =>
+      large
+        ? (dependencies.captureProvenance ?? captureLargeProvenance)(options)
+        : captureProvenance(options, dependencies),
     buildManifest: ({ observed, createdAtUtc }) =>
-      buildStudyManifest({ ...observed, createdAtUtc, repetitionsPerSession })
+      large
+        ? buildLargeStudyManifest({ ...observed, createdAtUtc })
+        : buildStudyManifest({ ...observed, createdAtUtc, repetitionsPerSession: repetitions })
   });
   const { output, trialsDirectory, manifest } = preparedStudy;
-  const completedIds = terminalTrialIds(trialsDirectory, manifest);
-  const eligibleSchedule =
-    options.scheduleLimit === undefined ? manifest.schedule : manifest.schedule.slice(0, options.scheduleLimit);
+  const largeResults = large ? loadLargeTrials(output, manifest) : undefined;
+  const completed = large
+    ? new Set(largeResults.trials.map(({ trialId }) => trialId))
+    : terminalTrialIds(trialsDirectory, manifest);
+  const schedule = options.scheduleLimit ? manifest.schedule.slice(0, options.scheduleLimit) : manifest.schedule;
   const inspectMachine = dependencies.inspectMachine ?? inspectMachineEnvironment;
-  const assertMachine = () => {
-    if (digest(inspectMachine()) !== digest(manifest.provenance.machine)) {
+  const checkEnvironment = async () => {
+    if (large) {
+      const inspect =
+        dependencies.inspectRunEnvironment ?? (() => inspectLargeRunEnvironment(options.python, options.parquet));
+      assertLargeRunEnvironment(await inspect(), manifest.provenance.machine);
+    } else if (digest(inspectMachine()) !== digest(manifest.provenance.machine)) {
       throw new Error("Machine or power provenance changed during the study.");
     }
   };
-  const status = await runComparisonSchedule({
-    output,
-    trialsDirectory,
-    manifest,
-    schedule: eligibleSchedule,
-    completedIds,
-    limit: options.limit,
-    beforeTrial: assertMachine,
-    executeTrial: async ({ entry, trialRoot }) => {
-      let prepared;
-      let result;
-      let trialError;
-      try {
-        prepared = makeTrial({ entry, manifest, options, trialRoot });
-        result = await runOneTrial({
-          entry,
-          request: prepared.request,
-          runTrial,
-          timeoutMs: STUDY_TIMEOUTS_MS.neutralDriver + 5_000
-        });
-      } catch (error) {
-        trialError = error;
-      } finally {
-        try {
-          prepared?.verifySources?.();
-        } catch (error) {
-          trialError = trialError
-            ? new AggregateError([trialError, error], `${sanitizeError(trialError)}; ${sanitizeError(error)}`)
-            : error;
-        }
+  const pending = schedule.filter(({ id }) => !completed.has(id)).slice(0, options.limit ?? schedule.length);
+  for (const entry of pending) {
+    await checkEnvironment();
+    const trialRoot = mkdtempSync(join(output, `trial-${entry.order.toString().padStart(3, "0")}-`));
+    let trial;
+    let result;
+    let trialError;
+    try {
+      trial = (dependencies.prepareTrial ?? (large ? prepareLargeTrial : prepareTrial))({
+        entry,
+        manifest,
+        options,
+        trialRoot
+      });
+      if (large && entry.measureNativeLoad && !largeResults.loads.some(({ trialId }) => trialId === entry.id)) {
+        const load = await (dependencies.runLoad ?? measureLargeNativeLoad)(trial.request);
+        writeJsonAtomic(join(output, "loads", `${entry.id}.json`), load);
       }
-      if (trialError) throw trialError;
-      return result;
-    },
-    afterTrial: assertMachine,
-    buildFailure: (entry, error) =>
-      failedResult(entry, error, "harness", trialProvenance(manifest), manifest.method.repetitionsPerSession),
-    validateTrial: validateTrialResult,
-    isTerminal: (result) => !isHarnessInterrupted(result),
-    cleanup: () => removePreparedExtensionDirectories(output)
-  });
-  return Object.freeze({
-    manifest,
-    ...status
-  });
+      result = large
+        ? await (dependencies.runJourney ?? runNeutralDriver)(trial.request)
+        : await runOneTrial({
+            entry,
+            request: trial.request,
+            runTrial: dependencies.runTrial ?? runNeutralDriver,
+            timeoutMs: STUDY_TIMEOUTS_MS.neutralDriver + 5_000
+          });
+    } catch (error) {
+      trialError = error;
+    } finally {
+      try {
+        (trial?.verifySource ?? trial?.verifySources)?.();
+      } catch (error) {
+        trialError = trialError
+          ? new AggregateError([trialError, error], `${sanitizeError(trialError)}; ${sanitizeError(error)}`)
+          : error;
+      }
+      rmSync(trialRoot, { force: true, recursive: true });
+    }
+    if (!large) {
+      try {
+        await checkEnvironment();
+      } catch (error) {
+        trialError = trialError
+          ? new AggregateError([trialError, error], `${sanitizeError(trialError)}; ${sanitizeError(error)}`)
+          : error;
+      }
+    }
+    if (trialError) {
+      result = buildComparisonFailureResult(
+        entry,
+        trialError,
+        "harness",
+        comparisonTrialProvenance(manifest),
+        repetitions
+      );
+    }
+    if (large) {
+      if (result?.trialId !== entry.id || result.samples?.length !== 1) {
+        throw new TypeError(`Large comparison trial ${entry.id} is malformed.`);
+      }
+    } else validateTrialResult(result, entry, manifest);
+    writeJsonAtomic(join(trialsDirectory, `${entry.id}.json`), result);
+    if (large || !isHarnessInterrupted(result)) completed.add(entry.id);
+  }
+  const remaining = manifest.schedule.length - completed.size;
+  if (remaining === 0) removePreparedExtensionDirectories(output);
+  return Object.freeze({ manifest, completed: completed.size, remaining });
 }
+
+export const runDataWranglerComparisonStudy = (options, dependencies = {}) =>
+  runComparisonStudy(options, dependencies, false);
 
 export async function runDataWranglerComparisonSmoke(options, dependencies = {}) {
   const output = resolve(options.output);
@@ -399,7 +397,7 @@ export async function runOneTrial({ entry, request, runTrial, timeoutMs }) {
         timer = setTimeout(
           () =>
             resolve(
-              failedResult(
+              buildComparisonFailureResult(
                 entry,
                 new Error("Trial deadline exceeded."),
                 "timeout",
@@ -542,6 +540,332 @@ export function loadStudyResults(output) {
     .sort()
     .map((name) => readJson(join(trialsDirectory, name)));
   return { manifest, trials };
+}
+
+export function createLargeComparisonSchedule() {
+  const schedule = [];
+  for (let repetition = 1; repetition <= LARGE_REPETITIONS; repetition += 1) {
+    const engines = repetition % 2 ? ENGINES : [...ENGINES].reverse();
+    for (const engine of engines) {
+      const products = (repetition + ENGINES.indexOf(engine)) % 2 ? PRODUCTS : [...PRODUCTS].reverse();
+      for (const [productIndex, product] of products.entries()) {
+        schedule.push({
+          id: `fresh.r${String(repetition).padStart(2, "0")}.${engine}.${product}`,
+          product,
+          engine,
+          kind: "warm",
+          cellId: `${engine}-parquet`,
+          format: "parquet",
+          rows: LARGE_ROWS,
+          columns: LARGE_COLUMNS,
+          repetition,
+          measureNativeLoad: productIndex === 0,
+          order: schedule.length
+        });
+      }
+    }
+  }
+  return Object.freeze(schedule);
+}
+
+export function buildLargeStudyManifest({ createdAtUtc, candidate, editor, python, fixture, machine, tools }) {
+  canonicalUtc(createdAtUtc);
+  validateLargeFixtureManifest(fixture);
+  if (machine?.os !== "linux") throw new TypeError("The large comparison currently requires Linux.");
+  return Object.freeze({
+    createdAtUtc,
+    method: {
+      repetitions: LARGE_REPETITIONS,
+      nativeLoadsPerEngine: LARGE_REPETITIONS,
+      minimumComplete: LARGE_MIN_SUCCESSFUL_REPETITIONS,
+      retries: 0,
+      metrics: ["inlinePreview", "workbenchOpen", "runCellToWorkbench", "allProfiles", "processTreePss"]
+    },
+    schedule: createLargeComparisonSchedule(),
+    provenance: {
+      openWrangler: { extensionId: "Matt17BR.openwrangler", ...candidate },
+      dataWrangler: {
+        extensionId: "ms-toolsai.datawrangler",
+        version: DATA_WRANGLER_VERSION,
+        source: "Visual Studio Marketplace"
+      },
+      editor,
+      python,
+      fixture,
+      machine,
+      tools
+    }
+  });
+}
+
+export async function runLargeComparisonStudy(options, dependencies = {}) {
+  if (options.confirmLargeStudy !== true) throw new Error("Pass --confirm-large-study to run this manual benchmark.");
+  const { manifest: _manifest, ...status } = await runComparisonStudy(options, dependencies, true);
+  return status;
+}
+
+function prepareLargeTrial({ entry, manifest, options, trialRoot }) {
+  mkdirSync(trialRoot, { recursive: true, mode: 0o700 });
+  const source = join(trialRoot, basename(options.parquet));
+  try {
+    linkSync(options.parquet, source);
+  } catch (error) {
+    if (error?.code === "EXDEV") throw new Error("Put the fixture and benchmark output on the same filesystem.");
+    throw error;
+  }
+  const sourceIdentity = regularFileIdentity(source);
+  if (sourceIdentity.size !== String(manifest.provenance.fixture.bytes)) {
+    throw new Error("The large fixture size changed before the trial.");
+  }
+  const notebookPath = join(trialRoot, `${entry.id}.ipynb`);
+  writeFileSync(notebookPath, `${JSON.stringify(buildComparisonNotebook(entry, source), null, 2)}\n`, {
+    flag: "wx",
+    mode: 0o600
+  });
+  const request = buildComparisonTrialRequest({
+    entry,
+    manifest,
+    options,
+    trialRoot,
+    source,
+    sourceSha256: manifest.provenance.fixture.sha256,
+    sourceIdentity,
+    repetitions: 1,
+    profileContract: "mixed-sentinels-v1",
+    notebookPath,
+    timeoutsMs: LARGE_TIMEOUTS_MS
+  });
+  return {
+    request,
+    verifySource() {
+      if (digest(regularFileIdentity(source)) !== digest(sourceIdentity)) {
+        throw new Error("The large fixture changed during the trial.");
+      }
+    }
+  };
+}
+
+async function measureLargeNativeLoad(request) {
+  const program = [
+    "import json, resource, sys, time",
+    "engine, source = sys.argv[1:3]",
+    "expected = tuple(map(int, sys.argv[3:5]))",
+    "library = __import__(engine)",
+    "rss = lambda: int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024",
+    "started = time.perf_counter_ns(); frame = library.read_parquet(source)",
+    "elapsed = round((time.perf_counter_ns() - started) / 1_000_000, 3); shape = tuple(frame.shape)",
+    "assert shape == expected, (shape, expected)",
+    "print(json.dumps({'protocol':'openwrangler-large-parquet-load-v1','engine':engine,'elapsedMs':elapsed,'rows':shape[0],'columns':shape[1],'peakRssBytes':rss()}))"
+  ].join("\n");
+  const { stdout } = await spawnCommand(
+    request.python.path,
+    [
+      "-I",
+      "-c",
+      program,
+      request.cell.engine,
+      request.cell.source,
+      String(request.cell.rows),
+      String(request.cell.columns)
+    ],
+    { cwd: resolve(import.meta.dirname, ".."), timeoutMs: LARGE_TIMEOUTS_MS.nativeLoad }
+  );
+  return { trialId: request.trialId, ...JSON.parse(stdout) };
+}
+
+export function loadLargeTrials(output, manifest) {
+  const schedule = new Map(manifest.schedule.map((entry) => [entry.id, entry]));
+  const load = (name) => {
+    const directory = join(resolve(output), name);
+    if (!existsSync(directory)) return [];
+    return readdirSync(directory)
+      .filter((file) => file.endsWith(".json"))
+      .sort()
+      .map((file) => {
+        const result = readJson(join(directory, file));
+        const entry = schedule.get(result?.trialId);
+        if (!entry || file !== `${entry.id}.json`) throw new Error(`Unexpected large comparison result ${file}.`);
+        return result;
+      });
+  };
+  return { manifest, trials: load("trials"), loads: load("loads") };
+}
+
+export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, loads }) {
+  canonicalUtc(generatedAtUtc);
+  const observed = new Map(trials.map((trial) => [trial.trialId, trial]));
+  const observedLoads = new Map(loads.map((load) => [load.trialId, load]));
+  const summarize = (items, selectors) => ({
+    planned: LARGE_REPETITIONS,
+    completed: items.length,
+    successful: items.filter((item) => item.status === undefined || item.status === "success").length,
+    metrics: Object.fromEntries(
+      Object.entries(selectors).map(([name, select]) => [name, summarizeLargeValues(items.map(select))])
+    )
+  });
+  const uiMetrics = {
+    inlinePreviewMs: (sample) => sample.metrics?.inlinePreviewMs,
+    workbenchOpenMs: (sample) => sample.metrics?.workbenchOpenMs,
+    runCellToWorkbenchMs,
+    allProfilesMs: (sample) => sample.metrics?.completeProfileMs,
+    peakPssBytes: (sample) => sample.memory?.peakPssBytes
+  };
+  const summaries = ENGINES.flatMap((engine) =>
+    PRODUCTS.map((product) => ({
+      engine,
+      product,
+      ...summarize(
+        trials.filter((trial) => trial.engine === engine && trial.product === product).map((trial) => trial.samples[0]),
+        uiMetrics
+      )
+    }))
+  );
+  const loadSummaries = ENGINES.map((engine) => {
+    const attempts = manifest.schedule.filter(({ id, engine: value, measureNativeLoad }) =>
+      Boolean(value === engine && measureNativeLoad && observed.has(id))
+    );
+    return {
+      engine,
+      ...summarize(attempts.map(({ id }) => observedLoads.get(id)).filter(Boolean), {
+        elapsedMs: (load) => load.elapsedMs,
+        peakRssBytes: (load) => load.peakRssBytes
+      })
+    };
+  });
+  return Object.freeze({
+    generatedAtUtc,
+    plannedTrials: manifest.schedule.length,
+    completedTrials: observed.size,
+    incompleteTrialIds: manifest.schedule.filter(({ id }) => !observed.has(id)).map(({ id }) => id),
+    method: structuredClone(manifest.method),
+    provenance: structuredClone(manifest.provenance),
+    trials: structuredClone(trials),
+    loads: structuredClone(loads),
+    loadSummaries,
+    summaries
+  });
+}
+
+export function assertCompleteLargeReport(report) {
+  if (
+    report?.plannedTrials !== 20 ||
+    report.completedTrials !== 20 ||
+    report.incompleteTrialIds?.length !== 0 ||
+    report.method?.repetitions !== LARGE_REPETITIONS ||
+    report.method?.nativeLoadsPerEngine !== LARGE_REPETITIONS ||
+    report.method?.minimumComplete !== LARGE_MIN_SUCCESSFUL_REPETITIONS ||
+    report.method?.retries !== 0 ||
+    report.summaries?.length !== 4 ||
+    report.summaries?.some(
+      ({ completed, successful }) => completed !== LARGE_REPETITIONS || successful < LARGE_MIN_SUCCESSFUL_REPETITIONS
+    ) ||
+    report.loadSummaries?.length !== 2 ||
+    report.loadSummaries.some(
+      ({ completed, successful }) => completed !== LARGE_REPETITIONS || successful < LARGE_MIN_SUCCESSFUL_REPETITIONS
+    )
+  ) {
+    throw new Error("The large comparison needs all 20 attempts and at least four complete runs per group.");
+  }
+  return report;
+}
+
+function summarizeLargeValues(values) {
+  const sorted = values
+    .filter((value) => typeof value === "number" && Number.isFinite(value) && value >= 0)
+    .sort((a, b) => a - b);
+  if (sorted.length === 0) return null;
+  const middle = Math.floor(sorted.length / 2);
+  return {
+    count: sorted.length,
+    minimum: sorted[0],
+    median: sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2,
+    maximum: sorted.at(-1)
+  };
+}
+
+function runCellToWorkbenchMs(sample) {
+  const marker = (name) => sample.milestones?.find(({ name: value }) => value === name)?.monotonicNs;
+  const [start, end] = [marker("run-cell-click"), marker("workbench-ready")];
+  return /^[1-9]\d*$/u.test(start ?? "") && /^[1-9]\d*$/u.test(end ?? "") && BigInt(end) >= BigInt(start)
+    ? Number(BigInt(end) - BigInt(start)) / 1_000_000
+    : null;
+}
+
+async function captureLargeProvenance(options) {
+  const metadata = lstatSync(resolve(options.parquet));
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1 || (metadata.mode & 0o222) !== 0) {
+    throw new Error("Use the generator's single-link read-only fixture.");
+  }
+  const fixture = readJson(`${resolve(options.parquet)}.json`);
+  validateLargeFixtureManifest(fixture);
+  if (metadata.size !== fixture.bytes) throw new Error("The large fixture size does not match its manifest.");
+  const environment = await inspectLargeRunEnvironment(options.python, options.parquet, true);
+  assertLargeRunEnvironment(environment, environment.machine);
+  const comparison = await inspectComparisonEnvironment(options, {
+    toolFiles: { ...comparisonToolFiles(), largeFixture: resolve("python/benchmarks/large_mixed_parquet.py") }
+  });
+  return { ...comparison, fixture, machine: environment.machine };
+}
+
+async function inspectLargeRunEnvironment(python, parquet, validate = false) {
+  const program = [
+    "import json, sys",
+    "from pathlib import Path",
+    "sys.path.insert(0, sys.argv[1])",
+    "from large_mixed_parquet import LargeFixtureSpec, assert_large_study_capacity, validate_fixture",
+    "path = Path(sys.argv[2])",
+    `validate_fixture(path, LargeFixtureSpec(rows=${LARGE_ROWS}, row_group_rows=100000)) if sys.argv[3] == '1' else None`,
+    "print(json.dumps(assert_large_study_capacity(path)))"
+  ].join("; ");
+  const { stdout } = await spawnCommand(
+    python,
+    ["-I", "-c", program, resolve("python/benchmarks"), resolve(parquet), validate ? "1" : "0"],
+    { cwd: resolve(import.meta.dirname, ".."), timeoutMs: validate ? 180_000 : 30_000 }
+  );
+  return { machine: inspectMachineEnvironment(), capacity: JSON.parse(stdout) };
+}
+
+export function assertLargeRunEnvironment(environment, expectedMachine) {
+  if (digest(environment?.machine) !== digest(expectedMachine)) {
+    throw new Error("Machine, power source, or CPU governor changed during the large study.");
+  }
+  if (environment.machine.powerSource !== "ac" || environment.machine.cpuGovernor === "unknown") {
+    throw new Error("The large study requires AC power and a readable CPU governor.");
+  }
+  if (
+    environment.capacity?.availableMemoryBytes < 40 * 1024 ** 3 ||
+    environment.capacity?.freeDiskBytes < 15 * 1024 ** 3
+  ) {
+    throw new Error("Available memory or disk space fell below the large-study minimum.");
+  }
+}
+
+function validateLargeFixtureManifest(fixture) {
+  if (
+    fixture?.protocol !== LARGE_FIXTURE_PROTOCOL ||
+    fixture.rows !== LARGE_ROWS ||
+    fixture.columns !== LARGE_COLUMNS ||
+    fixture.rowGroupRows !== 100_000 ||
+    !Number.isSafeInteger(fixture.bytes) ||
+    fixture.bytes < 1 ||
+    !HASH.test(fixture.sha256 ?? "") ||
+    typeof fixture.profileSentinels !== "object"
+  ) {
+    throw new TypeError("The large Parquet fixture manifest is malformed.");
+  }
+}
+
+function regularFileIdentity(path) {
+  const metadata = lstatSync(path, { bigint: true });
+  if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("The fixture link is not a regular file.");
+  return Object.fromEntries(
+    [
+      ["device", metadata.dev],
+      ["inode", metadata.ino],
+      ["size", metadata.size],
+      ["mtimeNs", metadata.mtimeNs]
+    ].map(([name, value]) => [name, value.toString()])
+  );
 }
 
 async function captureProvenance(options, dependencies) {
@@ -791,7 +1115,7 @@ function codeCell(source, tags = []) {
   };
 }
 
-function failedResult(entry, error, status, provenance, repetitions) {
+export function buildComparisonFailureResult(entry, error, status, provenance, repetitions) {
   const failureStatus = status === "timeout" ? "timeout" : "failure";
   const failure = {
     stage: "harness",
@@ -819,7 +1143,7 @@ function failedResult(entry, error, status, provenance, repetitions) {
   };
 }
 
-function trialProvenance(manifest) {
+export function comparisonTrialProvenance(manifest) {
   return {
     candidate: {
       version: manifest.provenance.openWrangler.version,
@@ -988,15 +1312,25 @@ export function sanitizeError(error) {
     .slice(0, 500);
 }
 
-export function parseComparisonFlags(arguments_, { commands, valueFlags, booleanFlags = [] }) {
+function parseArguments(arguments_) {
   const command = arguments_[0];
+  const commands = ["run", "smoke", "report", "large-run", "large-report"];
   if (!commands.includes(command)) throw new Error(`Expected ${commands.join(", ")}.`);
-  const acceptedValues = new Set(valueFlags);
-  const acceptedBooleans = new Set(booleanFlags);
+  const acceptedValues = new Set([
+    "--candidate",
+    "--python",
+    "--editor",
+    "--editor-cli",
+    "--csv",
+    "--parquet",
+    "--out",
+    "--study",
+    "--limit"
+  ]);
   const values = new Map();
   for (let index = 1; index < arguments_.length; index += 1) {
     const flag = arguments_[index];
-    if (acceptedBooleans.has(flag)) {
+    if (flag === "--confirm-large-study") {
       if (values.has(flag)) throw new Error(`Duplicate ${flag}.`);
       values.set(flag, true);
       continue;
@@ -1008,48 +1342,28 @@ export function parseComparisonFlags(arguments_, { commands, valueFlags, boolean
     values.set(flag, value);
     index += 1;
   }
-  return { command, values };
-}
-
-export function requiredComparisonFlag(values, flag) {
-  const value = values.get(flag);
-  if (!value) throw new Error(`Missing ${flag}.`);
-  return value;
-}
-
-function parseArguments(arguments_) {
-  const { command, values } = parseComparisonFlags(arguments_, {
-    commands: ["run", "smoke", "report", "large-run", "large-report"],
-    valueFlags: [
-      "--candidate",
-      "--python",
-      "--editor",
-      "--editor-cli",
-      "--csv",
-      "--parquet",
-      "--out",
-      "--study",
-      "--limit"
-    ],
-    booleanFlags: ["--confirm-large-study"]
-  });
+  const required = (flag) => {
+    const value = values.get(flag);
+    if (!value) throw new Error(`Missing ${flag}.`);
+    return value;
+  };
   if (command !== "large-run" && values.has("--confirm-large-study")) {
     throw new Error("--confirm-large-study is only valid for the large study.");
   }
   if (["report", "large-report"].includes(command)) {
     return {
       command,
-      study: requiredComparisonFlag(values, "--study"),
-      output: requiredComparisonFlag(values, "--out")
+      study: required("--study"),
+      output: required("--out")
     };
   }
   const paths = ["--candidate", "--python", "--editor", "--editor-cli", "--parquet"];
   if (command !== "large-run") paths.push("--csv");
   for (const flag of paths) {
-    const value = requiredComparisonFlag(values, flag);
+    const value = required(flag);
     if (!isAbsolute(value)) throw new Error(`${flag} must be an absolute path.`);
   }
-  if (command === "large-run" && !isAbsolute(requiredComparisonFlag(values, "--out"))) {
+  if (command === "large-run" && !isAbsolute(required("--out"))) {
     throw new Error("--out must be an absolute path.");
   }
   const limit = values.has("--limit") ? Number(values.get("--limit")) : undefined;
@@ -1066,7 +1380,7 @@ function parseArguments(arguments_) {
     editorCli: values.get("--editor-cli"),
     csv: values.get("--csv"),
     parquet: values.get("--parquet"),
-    output: requiredComparisonFlag(values, "--out"),
+    output: required("--out"),
     limit,
     confirmLargeStudy: values.get("--confirm-large-study") === true
   };
@@ -1075,17 +1389,14 @@ function parseArguments(arguments_) {
 async function main() {
   const options = parseArguments(process.argv.slice(2));
   if (options.command === "large-run") {
-    const { runLargeComparisonStudy } = await import("./data-wrangler-large-comparison-study.mjs");
     const status = await runLargeComparisonStudy(options);
     console.log(`${status.completed} of 20 fresh comparison sessions complete.`);
     return;
   }
   if (options.command === "large-report") {
-    const { assertCompleteLargeReport, buildLargeComparisonReport, loadLargeTrials } =
-      await import("./data-wrangler-large-comparison-study.mjs");
     const manifest = readJson(join(resolve(options.study), "manifest.json"));
-    const { trials } = loadLargeTrials(options.study, manifest);
-    const report = buildLargeComparisonReport({ generatedAtUtc: new Date().toISOString(), manifest, trials });
+    const { trials, loads } = loadLargeTrials(options.study, manifest);
+    const report = buildLargeComparisonReport({ generatedAtUtc: new Date().toISOString(), manifest, trials, loads });
     writeJsonAtomic(resolve(options.output), report);
     assertCompleteLargeReport(report);
     console.log(`Large comparison report written to ${options.output}.`);

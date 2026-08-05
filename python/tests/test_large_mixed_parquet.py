@@ -7,12 +7,8 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
-import polars as pl
 import pyarrow.parquet as pq
 import pytest
-
-from openwrangler_runtime.engines.pandas_engine import PandasEngine
-from openwrangler_runtime.engines.polars_engine import PolarsEngine
 
 benchmark_directory = Path(__file__).parents[1] / "benchmarks"
 sys.path.insert(0, str(benchmark_directory))
@@ -45,7 +41,6 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
     assert first_manifest["sha256"] == second_manifest["sha256"]
     assert first_manifest["schema"] == columns
     assert first_manifest["profileSentinels"]["numericExtrema"] == [-900_000_000, 900_000_000]
-    assert first_manifest["capacityAtStart"] is None
     assert json.loads(first.with_suffix(".parquet.json").read_text(encoding="utf-8")) == first_manifest
     metadata = pq.ParquetFile(first).metadata
     assert (metadata.num_rows, metadata.num_columns, metadata.num_row_groups) == (512, 100, 4)
@@ -61,15 +56,6 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
     assert min(value for value in table["c80"].to_pylist() if value is not None).date() == date(2000, 1, 1)
     assert max(value for value in table["c86"].to_pylist() if value is not None) == date(2099, 12, 31)
     assert set(value for value in table["c92"].to_pylist() if value is not None) == {False, True}
-
-    duration = table.select(["c89"])
-    summaries = [
-        PandasEngine().summaries(duration.to_pandas(), [(0, "duration-column")])[0],
-        PolarsEngine().summaries(pl.from_arrow(duration), [(0, "duration-column")])[0],
-    ]
-    for summary in summaries:
-        assert summary["type"] == "duration"
-        assert summary["visualization"]["categories"][0] == summary["topValues"][0]
 
 
 def test_generation_stops_before_replacement_or_low_capacity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

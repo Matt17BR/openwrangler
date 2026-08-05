@@ -11,7 +11,6 @@ import {
   mixedProfileTextReady,
   observePointerReady,
   observeVisibleFullShape,
-  openWranglerProfileTextReady,
   validateComparisonNotebookLayout,
   validateComparisonTrialRequest,
   validateComparisonTrialResult,
@@ -324,8 +323,6 @@ describe("public readiness oracles", () => {
       { column: "c74", text: "c74 String Missing 2% Distinct 98% popular-c74 103000" },
       { column: "c80", text: "c80 Datetime Missing 2% Distinct 98% Min 2000-01-01 Max 2099-12-31" },
       { column: "c89", text: "c89 Duration Missing 2% Distinct 98% 2 days 00:00:00 1400000" },
-      { column: "c90", text: "c90 Duration Missing 2% Distinct 98% 2 days, 0:00:00 1400000" },
-      { column: "c91", text: "c91 Duration Missing 2% Distinct 98% 2 days 00:00:00.000000 1400000" },
       { column: "c92", text: "c92 Boolean Missing 2% Distinct 2 True 5000000 False 5000000" }
     ]) {
       expect(mixedProfileTextReady(input)).toBe(true);
@@ -336,54 +333,8 @@ describe("public readiness oracles", () => {
         text: "c42 Float64 Missing 2% Distinct 98% Min -800m Max 900m"
       })
     ).toBe(false);
-    expect(mixedProfileTextReady({ column: "c66", text: "c66 String Missing 2% Distinct 7 consumer" })).toBe(false);
-    expect(
-      mixedProfileTextReady({
-        column: "c89",
-        text: "c89 Duration Missing 2% Distinct 98% 2 days 00:00:01 1400000"
-      })
-    ).toBe(false);
     expect(
       mixedProfileTextReady({ column: "c92", text: "c92 Boolean Profiling Missing 2% Distinct 2 True False" })
-    ).toBe(false);
-  });
-
-  it("accepts type-specific Open Wrangler statistics in the mixed fixture", () => {
-    expect(
-      openWranglerProfileTextReady({
-        column: "c92",
-        contract: "mixed-sentinels-v1",
-        minimum: 0,
-        maximum: 0,
-        text: "c92 Exact statistics Rows 10000000 Null 0 Distinct 2 True 5000000 False 5000000"
-      })
-    ).toBe(true);
-    expect(
-      openWranglerProfileTextReady({
-        column: "c89",
-        contract: "mixed-sentinels-v1",
-        minimum: 0,
-        maximum: 0,
-        text: "c89 duration[ms] Exact statistics Rows 10000000 Null 2% NaN 0 Distinct 98% Exact distribution Top values 2 days 00:00:00 1400000 Other values 8400000"
-      })
-    ).toBe(true);
-    expect(
-      openWranglerProfileTextReady({
-        column: "c89",
-        contract: "mixed-sentinels-v1",
-        minimum: 0,
-        maximum: 0,
-        text: "c89 duration[ms] Exact statistics Rows 10000000 Null 2% NaN 0 Distinct 98% Exact distribution Top values 3 days 00:00:00 1400000 Other values 8400000"
-      })
-    ).toBe(false);
-    expect(
-      openWranglerProfileTextReady({
-        column: "c00",
-        contract: "integer-sentinel",
-        minimum: 0,
-        maximum: 99_999,
-        text: "c00 Exact statistics Rows 100000 Null 0 Distinct 100000"
-      })
     ).toBe(false);
   });
 

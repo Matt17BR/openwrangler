@@ -595,7 +595,7 @@ Run these focused checks while changing the new method:
 
 ```bash
 node --test \
-  scripts/data-wrangler-large-comparison-study.test.mjs \
+  scripts/data-wrangler-comparison-study.test.mjs \
   scripts/data-wrangler-comparison-neutral-driver.test.mjs
 node scripts/run-python.mjs -m pytest python/tests/test_large_mixed_parquet.py -q
 ```

@@ -43,7 +43,7 @@ Each product run records:
 2. the viewer button to a usable, scrollable grid;
 3. Run Cell to that usable grid, so input conversion and the complete launch path stay in one timing;
 4. the profiling action to completed summaries for all 100 columns; and
-5. the first, highest, and increase in process-tree PSS during the UI part of the run.
+5. peak process-tree PSS during the UI part of the run.
 
 Each repetition also runs one native `read_parquet` in a separate Python process for its engine: five Pandas loads
 and five Polars loads in total. Those results are grouped by engine, not attributed to either extension. The notebook
