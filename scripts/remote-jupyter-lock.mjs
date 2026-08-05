@@ -6,6 +6,8 @@ const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
 
 export const REMOTE_JUPYTER_INPUT_PATH = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "requirements.in");
 export const REMOTE_JUPYTER_LOCK_PATH = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "requirements.txt");
+export const REMOTE_R_JUPYTER_INPUT_PATH = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "requirements.r.in");
+export const REMOTE_R_JUPYTER_LOCK_PATH = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "requirements.r.txt");
 export const REMOTE_JUPYTER_DIRECT_DEPENDENCIES = Object.freeze([
   "duckdb",
   "ipykernel",
@@ -13,6 +15,7 @@ export const REMOTE_JUPYTER_DIRECT_DEPENDENCIES = Object.freeze([
   "pandas",
   "polars"
 ]);
+export const REMOTE_R_JUPYTER_DIRECT_DEPENDENCIES = Object.freeze(["jupyter-server"]);
 export const REMOTE_JUPYTER_MINIMUM_SAFE_SERVER_VERSION = "2.20.0";
 export const REMOTE_JUPYTER_LOCK_TOOL_VERSION = "0.11.32";
 export const REMOTE_JUPYTER_LOCK_PYTHON_VERSION = "3.12";
@@ -127,18 +130,18 @@ function compareStableVersions(left, right) {
   return 0;
 }
 
-export function validateRemoteJupyterLock(inputText, lockText) {
+function validateFixtureLock(inputText, lockText, directDependencies, { minimumPackages, forbiddenPackages = [] }) {
   const directEntries = parseRemoteJupyterInput(inputText);
   const lockedEntries = parseRemoteJupyterLock(lockText);
   const directNames = directEntries.map(({ name }) => name);
 
   if (
-    directNames.length !== REMOTE_JUPYTER_DIRECT_DEPENDENCIES.length ||
-    directNames.some((name, index) => name !== REMOTE_JUPYTER_DIRECT_DEPENDENCIES[index])
+    directNames.length !== directDependencies.length ||
+    directNames.some((name, index) => name !== directDependencies[index])
   ) {
-    fail(`requirements.in must pin exactly ${REMOTE_JUPYTER_DIRECT_DEPENDENCIES.join(", ")}.`);
+    fail(`requirements.in must pin exactly ${directDependencies.join(", ")}.`);
   }
-  if (lockedEntries.length <= 50) {
+  if (lockedEntries.length < minimumPackages) {
     fail("requirements.txt must retain the complete transitive fixture closure.");
   }
 
@@ -149,8 +152,10 @@ export function validateRemoteJupyterLock(inputText, lockText) {
       fail(`direct pin ${direct.name} must match its hashed lock entry exactly.`);
     }
   }
-  if (!lockedByName.has("polars-runtime-32")) {
-    fail("requirements.txt must retain the native Polars runtime wheel.");
+  for (const packageName of forbiddenPackages) {
+    if (lockedByName.has(packageName)) {
+      fail(`requirements.txt must not include ${packageName}.`);
+    }
   }
 
   const server = directEntries.find(({ name }) => name === "jupyter-server");
@@ -161,11 +166,28 @@ export function validateRemoteJupyterLock(inputText, lockText) {
   return { directEntries, lockedEntries };
 }
 
-export function remoteJupyterCompileArguments(outputPath) {
+export function validateRemoteJupyterLock(inputText, lockText) {
+  const result = validateFixtureLock(inputText, lockText, REMOTE_JUPYTER_DIRECT_DEPENDENCIES, {
+    minimumPackages: 51
+  });
+  if (!result.lockedEntries.some(({ name }) => name === "polars-runtime-32")) {
+    fail("requirements.txt must retain the native Polars runtime wheel.");
+  }
+  return result;
+}
+
+export function validateRemoteRJupyterLock(inputText, lockText) {
+  return validateFixtureLock(inputText, lockText, REMOTE_R_JUPYTER_DIRECT_DEPENDENCIES, {
+    minimumPackages: 40,
+    forbiddenPackages: ["duckdb", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]
+  });
+}
+
+function fixtureCompileArguments(inputPath, outputPath) {
   return [
     "pip",
     "compile",
-    REMOTE_JUPYTER_INPUT_PATH,
+    inputPath,
     "--python-version",
     REMOTE_JUPYTER_LOCK_PYTHON_VERSION,
     "--python-platform",
@@ -196,6 +218,14 @@ export function remoteJupyterCompileArguments(outputPath) {
   ];
 }
 
+export function remoteJupyterCompileArguments(outputPath) {
+  return fixtureCompileArguments(REMOTE_JUPYTER_INPUT_PATH, outputPath);
+}
+
+export function remoteRJupyterCompileArguments(outputPath) {
+  return fixtureCompileArguments(REMOTE_R_JUPYTER_INPUT_PATH, outputPath);
+}
+
 export async function checkRemoteJupyterLockFiles() {
   const [inputText, lockText] = await Promise.all([
     readFile(REMOTE_JUPYTER_INPUT_PATH, "utf8"),
@@ -204,11 +234,20 @@ export async function checkRemoteJupyterLockFiles() {
   return validateRemoteJupyterLock(inputText, lockText);
 }
 
+export async function checkRemoteRJupyterLockFiles() {
+  const [inputText, lockText] = await Promise.all([
+    readFile(REMOTE_R_JUPYTER_INPUT_PATH, "utf8"),
+    readFile(REMOTE_R_JUPYTER_LOCK_PATH, "utf8")
+  ]);
+  return validateRemoteRJupyterLock(inputText, lockText);
+}
+
 async function main() {
-  const { directEntries, lockedEntries } = await checkRemoteJupyterLockFiles();
-  const server = directEntries.find(({ name }) => name === "jupyter-server");
+  const [pythonFixture, rFixture] = await Promise.all([checkRemoteJupyterLockFiles(), checkRemoteRJupyterLockFiles()]);
+  const server = pythonFixture.directEntries.find(({ name }) => name === "jupyter-server");
   process.stdout.write(
-    `Remote Jupyter lock is canonical: ${lockedEntries.length} packages, jupyter-server ${server?.version}.\n`
+    `Remote Jupyter locks are canonical: Python ${pythonFixture.lockedEntries.length} packages, ` +
+      `R ${rFixture.lockedEntries.length} packages, jupyter-server ${server?.version}.\n`
   );
 }
 

@@ -17,6 +17,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
+  R_ACCEPTANCE_PACKAGE_VERSIONS,
+  R_ACCEPTANCE_REPOSITORY,
   acceptancePythonForPhase,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
@@ -120,6 +122,7 @@ test("released-Jupyter phases alone receive the dedicated kernel interpreter", (
   }
   assert.equal(acceptancePythonForPhase("jupyter-remote", normalPython, kernelPython), normalPython);
   assert.equal(acceptancePythonForPhase("jupyter-r", normalPython, kernelPython), normalPython);
+  assert.equal(acceptancePythonForPhase("jupyter-r-remote", normalPython, kernelPython), normalPython);
   assert.throws(
     () => acceptancePythonForPhase("jupyter-allow", normalPython, undefined),
     /dedicated private kernel interpreter/u
@@ -161,6 +164,12 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     assert.equal(prepared.kernelDisplayName, "R (Open Wrangler)");
     assert.equal(prepared.rExecutable, rExecutable);
     assert.deepEqual(prepared.packages, ["IRkernel", "jsonlite", "rlang", "tibble", "data.table"]);
+    assert.deepEqual(prepared.packageVersions, R_ACCEPTANCE_PACKAGE_VERSIONS);
+    assert.equal(prepared.repository, R_ACCEPTANCE_REPOSITORY);
+    assert.equal(
+      prepared.packageRecord,
+      "IRkernel=1.3.2\njsonlite=2.0.0\nrlang=1.1.7\ntibble=3.3.1\ndata.table=1.18.2.1"
+    );
     assert.deepEqual(prepared.jupyterEnvironment, {
       dataDir: join(privateRoot, "d"),
       runtimeDir: join(privateRoot, "r"),
@@ -226,13 +235,22 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     }
     assert.match(prepared.dependencyProbe.input.args.at(-1), /find\.package\(.+lib\.loc = \.ow_library/su);
     assert.match(prepared.dependencyProbe.input.args.at(-1), /packageVersion\(.+lib\.loc = \.ow_library/su);
+    for (const [packageName, version] of Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)) {
+      assert.match(
+        prepared.dependencyProbe.input.args.at(-1),
+        new RegExp(`"${packageName.replace(".", "\\.")}" = "${version.replaceAll(".", "\\.")}"`, "u")
+      );
+    }
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /status = 11L/u);
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /collapse = "\\n"\), sep = ""\)$/u);
     assert.deepEqual(prepared.dependencyProbe.options, { timeoutMs: 30_000 });
-    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes("https://cloud.r-project.org"), true);
+    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes(R_ACCEPTANCE_REPOSITORY), true);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /lib = \.ow_library/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /dependencies = NA/u);
     assert.deepEqual(prepared.dependencyInstall.options, { timeoutMs: 240_000 });
     assert.equal(Object.isFrozen(prepared), true);
     assert.equal(Object.isFrozen(prepared.packages), true);
+    assert.equal(Object.isFrozen(prepared.packageVersions), true);
     assert.equal(Object.isFrozen(prepared.jupyterEnvironment), true);
     assert.equal(process.env.R_LIBS_USER, previousRLibrary);
     assert.deepEqual(inheritedEnvironment, {
@@ -359,32 +377,62 @@ test("released-Jupyter R setup preserves probe ownership uncertainty through its
   }
 });
 
-test("packaged-editor R acceptance stays explicit, local, isolated, and single-phase", async () => {
+test("packaged-editor R acceptance wires the private R environment to local editors and one VS Code remote phase", async () => {
   const source = await readFile(new URL("./run-packaged-editor-tests.mjs", import.meta.url), "utf8");
-  assert.match(source, /acceptanceMode !== "r-jupyter"/u);
-  assert.match(source, /OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" is a local manual release check, not a CI job/u);
-  assert.match(source, /requires an explicit, duplicate-free VS Code\/Cursor list/u);
-  assert.match(source, /OPEN_WRANGLER_TEST_RSCRIPT to name an existing absolute Rscript executable/u);
-  assert.match(source, /cannot be combined with remote-Jupyter or Data Wrangler coexistence opt-ins/u);
+  const modeStart = source.indexOf('if (acceptanceMode === "r-jupyter")');
+  const supportedEditors = source.indexOf("const supportedEditorKeys", modeStart);
+  assert.ok(modeStart >= 0 && supportedEditors > modeStart);
+  assert.doesNotMatch(source.slice(modeStart, supportedEditors), /process\.env\.CI/u);
+  assert.match(
+    source,
+    /remoteRJupyterEnabled =\s*acceptanceMode === "r-jupyter" && remoteJupyterEnabled && editor\.key === "vscode"/u
+  );
 
   const setup = source.indexOf("rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(");
   const display = source.indexOf("editorDisplay = await startIsolatedEditorDisplay()");
   assert.ok(setup >= 0 && display > setup, "The private R library must be ready before an editor can start.");
-  assert.match(source.slice(setup, display), /rAcceptanceEnvironment\.dependencyProbe/u);
-  assert.match(source.slice(setup, display), /rAcceptanceEnvironment\.dependencyInstall/u);
-
-  const editorLoop = source.indexOf("for (const editor of candidates)");
-  const phaseBranch = source.indexOf(
-    'if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter")',
-    editorLoop
+  assert.match(
+    source.slice(setup, display),
+    /dependencyProbeResult\.stdout !== rAcceptanceEnvironment\.packageRecord/u
   );
+
+  const phaseBranch = source.indexOf('if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter")');
   const otherJupyterBranch = source.indexOf("} else if (jupyterExtensionInstallTarget", phaseBranch);
-  assert.ok(editorLoop >= 0 && phaseBranch > editorLoop && otherJupyterBranch > phaseBranch);
+  assert.ok(phaseBranch >= 0 && otherJupyterBranch > phaseBranch);
   const rPhase = source.slice(phaseBranch, otherJupyterBranch);
   assert.match(rPhase, /phase: "jupyter-r"/u);
-  assert.match(rPhase, /jupyterEnvironment: jupyterREnvironment/u);
-  assert.doesNotMatch(rPhase, /jupyter-(?:allow|deny|pyspark|remote)/u);
-  assert.doesNotMatch(source, /Promise\.all\(candidates/u);
+  assert.match(rPhase, /editor: "jupyter-r-remote"/u);
+  assert.match(rPhase, /fixtureKind: "r"/u);
+  assert.equal((source.match(/await runRemoteJupyterPhase\(\{/gu) ?? []).length, 2);
+});
+
+test("extension-host R acceptance routes the remote kernel and does not probe a host extension path", async () => {
+  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
+  const writerStart = source.indexOf("function writeReleasedRNotebook(");
+  const start = source.indexOf("async function exerciseReleasedRJupyterExtension(");
+  const end = source.indexOf("async function exerciseReleasedRGridJourney(", start);
+  assert.ok(writerStart >= 0 && start > writerStart && end > start);
+  const writer = source.slice(writerStart, start);
+  const remoteRJourney = source.slice(start, end);
+
+  assert.match(source, /RELEASED_JUPYTER_REMOTE_R_KERNEL_LABEL = "R \(Open Wrangler Remote\)"/u);
+  assert.match(source, /phase === "jupyter-r-remote"/u);
+  assert.match(remoteRJourney, /registerReleasedRemoteJupyterServer\(jupyterApi, kernelTarget\)/u);
+  assert.match(remoteRJourney, /assert\.equal\(setup\.remoteRunId, kernelTarget\.remote\.runId\)/u);
+  assert.match(remoteRJourney, /waitForReleasedRRuntimeBindingCleanup\(notebook, cleanupEditor, phase\)/u);
+  assert.doesNotMatch(writer, /hostExtensionVisible|extension\.extensionPath/u);
+
+  const setupExecution = remoteRJourney.indexOf("await executeReleasedNotebookCell(");
+  const exactRefocus = remoteRJourney.indexOf("const actionNotebookEditor = await showExactReleasedNotebook(notebook)");
+  const firstToolbarAction = remoteRJourney.indexOf("const picker = await activateReleasedNotebookVariableAction(");
+  assert.ok(
+    setupExecution >= 0 && exactRefocus > setupExecution && firstToolbarAction > exactRefocus,
+    "The first R toolbar click must refocus the exact notebook after kernel setup."
+  );
+  assert.match(
+    remoteRJourney.slice(exactRefocus, firstToolbarAction),
+    /assert\.equal\(\s*actionNotebookEditor,\s*notebookEditor,/u
+  );
 });
 
 test("remote Jupyter phases receive empty private client roots without a host kernelspec", async () => {

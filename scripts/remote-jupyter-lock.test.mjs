@@ -10,10 +10,15 @@ import {
   REMOTE_JUPYTER_LOCK_PLATFORM,
   REMOTE_JUPYTER_LOCK_PYTHON_VERSION,
   REMOTE_JUPYTER_LOCK_TOOL_VERSION,
+  REMOTE_R_JUPYTER_INPUT_PATH,
+  REMOTE_R_JUPYTER_LOCK_PATH,
   checkRemoteJupyterLockFiles,
+  checkRemoteRJupyterLockFiles,
   isRemoteJupyterLockToolVersionOutput,
   remoteJupyterCompileArguments,
-  validateRemoteJupyterLock
+  remoteRJupyterCompileArguments,
+  validateRemoteJupyterLock,
+  validateRemoteRJupyterLock
 } from "./remote-jupyter-lock.mjs";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
@@ -22,6 +27,16 @@ test("the remote Jupyter lock is complete, canonical, and above its security flo
   const { directEntries, lockedEntries } = await checkRemoteJupyterLockFiles();
   assert.equal(directEntries.find(({ name }) => name === "jupyter-server")?.version, "2.20.0");
   assert.ok(lockedEntries.length > 50);
+});
+
+test("the R fixture has a separate server-only lock without Python dataframe engines", async () => {
+  const { directEntries, lockedEntries } = await checkRemoteRJupyterLockFiles();
+  assert.deepEqual(directEntries, [{ name: "jupyter-server", version: "2.20.0" }]);
+  assert.ok(lockedEntries.length > 40);
+  const names = new Set(lockedEntries.map(({ name }) => name));
+  for (const forbidden of ["duckdb", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]) {
+    assert.equal(names.has(forbidden), false);
+  }
 });
 
 test("the remote Jupyter lock rejects a vulnerable server regression", async () => {
@@ -68,6 +83,9 @@ test("the lock compiler freezes its tool, target, index, and release horizon", (
   assert.ok(argumentsList.includes("--no-config"));
   assert.ok(argumentsList.includes("--upgrade"));
   assert.deepEqual(argumentsList.slice(-2), ["--output-file", output]);
+  const rArguments = remoteRJupyterCompileArguments(output);
+  assert.deepEqual(rArguments.slice(0, 3), ["pip", "compile", REMOTE_R_JUPYTER_INPUT_PATH]);
+  assert.deepEqual(rArguments.slice(3), argumentsList.slice(3));
 });
 
 test("the lock compiler accepts only the exact resolver version output", () => {
@@ -88,8 +106,9 @@ test("ordinary and released audit workflows cannot omit the fixture lock", async
   const packageJson = JSON.parse(packageText);
   assert.match(packageJson.scripts["audit:python"], /audit:remote-jupyter/u);
   assert.match(packageJson.scripts["audit:remote-jupyter"], /scripts\/remote-jupyter\/requirements\.txt/u);
-  assert.match(packageJson.scripts["audit:remote-jupyter"], /--require-hashes/u);
-  assert.match(packageJson.scripts["audit:remote-jupyter"], /--strict/u);
+  assert.match(packageJson.scripts["audit:remote-jupyter"], /scripts\/remote-jupyter\/requirements\.r\.txt/u);
+  assert.equal((packageJson.scripts["audit:remote-jupyter"].match(/--require-hashes/gu) ?? []).length, 2);
+  assert.equal((packageJson.scripts["audit:remote-jupyter"].match(/--strict/gu) ?? []).length, 2);
   assert.doesNotMatch(packageJson.scripts["audit:remote-jupyter"], /--ignore-vuln/u);
   assert.match(packageJson.scripts.check, /check:remote-jupyter-lock/u);
   const uvBootstrap =
@@ -109,3 +128,14 @@ test("ordinary and released audit workflows cannot omit the fixture lock", async
 async function fixtureTexts() {
   return Promise.all([readFile(REMOTE_JUPYTER_INPUT_PATH, "utf8"), readFile(REMOTE_JUPYTER_LOCK_PATH, "utf8")]);
 }
+
+test("the R fixture validator rejects Python engine packages", async () => {
+  const [inputText, lockText] = await Promise.all([
+    readFile(REMOTE_R_JUPYTER_INPUT_PATH, "utf8"),
+    readFile(REMOTE_R_JUPYTER_LOCK_PATH, "utf8")
+  ]);
+  assert.throws(
+    () => validateRemoteRJupyterLock(inputText, lockText.replace(/^pandocfilters==/mu, "pandas==")),
+    /must not include pandas/u
+  );
+});

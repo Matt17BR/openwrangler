@@ -39,6 +39,7 @@ import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
+import { R_KERNEL_RUNTIME_BINDING } from "../../extension/r/rKernelRuntimeBundle";
 import type { SessionSchedulerState } from "../../extension/sessionCoordinator";
 import {
   normalizeNotebookOutputPayload,
@@ -257,10 +258,13 @@ const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)";
 const RELEASED_JUPYTER_R_KERNEL_LABEL = "R (Open Wrangler)";
 const RELEASED_JUPYTER_R_KERNEL_NAME = "openwrangler-r-acceptance";
 const RELEASED_JUPYTER_R_SETUP_RESULT = "__OW_RELEASED_R_SETUP__";
+const RELEASED_JUPYTER_R_BINDING_RESULT = "__OW_RELEASED_R_BINDING__";
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
 const RELEASED_JUPYTER_REMOTE_KERNEL_LABEL = "Open Wrangler Remote Acceptance";
 const RELEASED_JUPYTER_REMOTE_KERNEL_NAME = "openwrangler-remote-acceptance";
+const RELEASED_JUPYTER_REMOTE_R_KERNEL_LABEL = "R (Open Wrangler Remote)";
+const RELEASED_JUPYTER_REMOTE_R_KERNEL_NAME = "openwrangler-r-remote-acceptance";
 const RELEASED_JUPYTER_REMOTE_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
 const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = 30_000;
 const OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT = 64;
@@ -752,14 +756,15 @@ export async function run(): Promise<void> {
     phase === "jupyter-allow" ||
     phase === "jupyter-pyspark" ||
     phase === "jupyter-remote" ||
-    phase === "jupyter-r"
+    phase === "jupyter-r" ||
+    phase === "jupyter-r-remote"
   ) {
     assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected host Python environment.");
     recordAcceptanceProgress(`${phase}:start`);
     if (phase === "jupyter-pyspark") {
       await exerciseReleasedPySparkJupyterExtension(testing, extension, testPython);
-    } else if (phase === "jupyter-r") {
-      await exerciseReleasedRJupyterExtension(testing, extension);
+    } else if (phase === "jupyter-r" || phase === "jupyter-r-remote") {
+      await exerciseReleasedRJupyterExtension(testing, extension, phase);
     } else {
       await exerciseReleasedJupyterExtension(testing, extension, phase, testPython);
     }
@@ -774,7 +779,9 @@ export async function run(): Promise<void> {
               ? "PySpark"
               : phase === "jupyter-r"
                 ? "R"
-                : "allow"
+                : phase === "jupyter-r-remote"
+                  ? "remote R"
+                  : "allow"
       } acceptance passed.`
     );
     return;
@@ -1040,7 +1047,13 @@ type DataWranglerCoexistencePhase =
   | "jupyter-coexist-data-restart";
 
 type ReleasedJupyterPhase =
-  "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote" | "jupyter-r" | DataWranglerCoexistencePhase;
+  | "jupyter-deny"
+  | "jupyter-allow"
+  | "jupyter-pyspark"
+  | "jupyter-remote"
+  | "jupyter-r"
+  | "jupyter-r-remote"
+  | DataWranglerCoexistencePhase;
 
 interface ReleasedJupyterKernelTarget {
   readonly label: string;
@@ -1420,8 +1433,8 @@ function writeDataWranglerCoexistenceNotebook(notebookPath: string, target: Rele
   );
 }
 
-function writeReleasedRNotebook(notebookPath: string): void {
-  const target = releasedJupyterKernelTarget("jupyter-r");
+function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupyter-r-remote"): void {
+  const target = releasedJupyterKernelTarget(phase);
   const source = [
     "row_count <- 1205L",
     "base_frame <- data.frame(",
@@ -1439,7 +1452,15 @@ function writeReleasedRNotebook(notebookPath: string): void {
     "orders_tibble <- tibble::as_tibble(base_frame, .name_repair = 'minimal')",
     "orders_table <- data.table::as.data.table(base_frame)",
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
-    "  pid = Sys.getpid(), rows = nrow(base_frame), columns = ncol(base_frame)",
+    "  pid = Sys.getpid(), rows = nrow(base_frame), columns = ncol(base_frame),",
+    "  rVersion = as.character(getRversion()),",
+    "  remoteRunId = Sys.getenv('OPEN_WRANGLER_REMOTE_RUN_ID', unset = ''),",
+    "  hostname = unname(Sys.info()[['nodename']])",
+    "), auto_unbox = TRUE)), '\\n', sep = '')"
+  ];
+  const bindingProbe = [
+    `cat(${JSON.stringify(RELEASED_JUPYTER_R_BINDING_RESULT)}, as.character(jsonlite::toJSON(list(`,
+    `  runtimeBindingPresent = exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE)`,
     "), auto_unbox = TRUE)), '\\n', sep = '')"
   ];
   writeFileSync(
@@ -1452,6 +1473,13 @@ function writeReleasedRNotebook(notebookPath: string): void {
           metadata: {},
           outputs: [],
           source: source.map((line) => `${line}\n`)
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: bindingProbe.map((line) => `${line}\n`)
         }
       ],
       metadata: {
@@ -1464,11 +1492,62 @@ function writeReleasedRNotebook(notebookPath: string): void {
   );
 }
 
+function assertReleasedRVersion(
+  result: Readonly<Record<string, unknown>>,
+  target: ReleasedJupyterKernelTarget,
+  description: string
+): void {
+  if (typeof result.rVersion !== "string") {
+    assert.fail(`The ${description} must report its R version.`);
+  }
+  const version = result.rVersion;
+  assert.match(
+    version,
+    /^4\.(?:4|5)\.(?:0|[1-9][0-9]*)$/u,
+    `The ${description} must use a supported R 4.4 or 4.5 release.`
+  );
+  if (target.remote) {
+    assert.equal(version, "4.5.2", "The pinned remote R fixture must use exactly R 4.5.2.");
+  }
+}
+
+async function waitForReleasedRRuntimeBindingCleanup(
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  phase: "jupyter-r" | "jupyter-r-remote"
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let attempt = 0;
+  do {
+    attempt += 1;
+    await executeReleasedNotebookCell(
+      notebook,
+      1,
+      RELEASED_JUPYTER_R_BINDING_RESULT,
+      `${phase}:binding-cleanup-${attempt}`,
+      notebookEditor
+    );
+    const result = releasedNotebookJsonResult(
+      notebook.cellAt(1),
+      RELEASED_JUPYTER_R_BINDING_RESULT,
+      "R runtime binding probe"
+    );
+    assert.equal(
+      typeof result.runtimeBindingPresent,
+      "boolean",
+      "The R runtime binding probe must return one boolean."
+    );
+    if (result.runtimeBindingPresent === false) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  assert.fail("The private Open Wrangler R runtime binding remained after the final session closed.");
+}
+
 async function exerciseReleasedRJupyterExtension(
   testing: TestApi,
-  extension: vscode.Extension<ExtensionApi>
+  extension: vscode.Extension<ExtensionApi>,
+  phase: "jupyter-r" | "jupyter-r-remote"
 ): Promise<void> {
-  const phase: ReleasedJupyterPhase = "jupyter-r";
   assert.equal(testing.diagnostics().sessionCount, 0);
   const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
   assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
@@ -1481,24 +1560,41 @@ async function exerciseReleasedRJupyterExtension(
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-released-jupyter-r-"));
   const notebookPath = path.join(directory, "r-dataframes.ipynb");
   const notebookUri = vscode.Uri.file(notebookPath);
-  writeReleasedRNotebook(notebookPath);
+  const kernelTarget = releasedJupyterKernelTarget(phase);
+  writeReleasedRNotebook(notebookPath, phase);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
     "notebookPreviewProvider"
   )?.workspaceValue;
   let notebook: vscode.NotebookDocument | undefined;
+  let remoteServerCollection: JupyterServerCollection | undefined;
   let acceptanceError: { readonly value: unknown } | undefined;
   try {
     await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
     notebook = await vscode.workspace.openNotebookDocument(notebookUri);
     const notebookEditor = await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
     const workbench = await connectToEditorWorkbench();
-    await jupyterExtension.activate();
-    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, releasedJupyterKernelTarget(phase));
-    await executeReleasedNotebookCell(notebook, 0, RELEASED_JUPYTER_R_SETUP_RESULT, "jupyter-r:setup", notebookEditor);
+    const jupyterApi = await jupyterExtension.activate();
+    if (kernelTarget.remote) {
+      remoteServerCollection = registerReleasedRemoteJupyterServer(jupyterApi, kernelTarget);
+    }
+    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
+    await executeReleasedNotebookCell(notebook, 0, RELEASED_JUPYTER_R_SETUP_RESULT, `${phase}:setup`, notebookEditor);
     const setup = releasedNotebookJsonResult(notebook.cellAt(0), RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
     assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 24 });
+    assertReleasedRVersion(setup, kernelTarget, "R setup");
+    assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
+    if (kernelTarget.remote) {
+      assert.equal(setup.remoteRunId, kernelTarget.remote.runId);
+      assert.equal(setup.hostname, kernelTarget.remote.hostname);
+    }
 
+    const actionNotebookEditor = await showExactReleasedNotebook(notebook);
+    assert.equal(
+      actionNotebookEditor,
+      notebookEditor,
+      "The first R toolbar action must retain the exact editor used to execute setup."
+    );
     const picker = await activateReleasedNotebookVariableAction(workbench, notebook, async () => {
       const consent = await waitForReleasedJupyterConsent(workbench, testing);
       await consent.allow.click();
@@ -1531,7 +1627,7 @@ async function exerciseReleasedRJupyterExtension(
       },
       "the base R data.frame opened from the notebook picker"
     );
-    await assertReleasedSessionPage(testing, base, "1", "jupyter-r-base-page");
+    await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page`);
     assert.deepEqual(base.metadata.capabilities, {
       editable: false,
       lazy: false,
@@ -1574,7 +1670,7 @@ async function exerciseReleasedRJupyterExtension(
         expected,
         `the native ${expected.rDataframeFlavor} session`
       );
-      await assertReleasedSessionPage(testing, session, "1", `jupyter-r-${expected.name}-page`);
+      await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
       await disposePackagedSessionPanel(testing, session.sessionId, `the native ${expected.rDataframeFlavor} session`);
     }
 
@@ -1600,7 +1696,7 @@ async function exerciseReleasedRJupyterExtension(
       ...GRID_COLUMN_WINDOW,
       sessionId: beforeRestart.sessionId,
       revision: beforeRestart.metadata.revision,
-      viewRequestId: "jupyter-r-restarted-session",
+      viewRequestId: `${phase}-restarted-session`,
       offset: 0,
       limit: 10,
       filterModel: beforeRestart.metadata.filterModel
@@ -1616,9 +1712,20 @@ async function exerciseReleasedRJupyterExtension(
       notebook,
       0,
       RELEASED_JUPYTER_R_SETUP_RESULT,
-      "jupyter-r:replacement-setup",
+      `${phase}:replacement-setup`,
       replacementEditor
     );
+    const replacementSetup = releasedNotebookJsonResult(
+      notebook.cellAt(0),
+      RELEASED_JUPYTER_R_SETUP_RESULT,
+      "replacement R setup"
+    );
+    assert.notEqual(Number(replacementSetup.pid), Number(setup.pid));
+    assertReleasedRVersion(replacementSetup, kernelTarget, "replacement R setup");
+    if (kernelTarget.remote) {
+      assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
+      assert.equal(replacementSetup.hostname, kernelTarget.remote.hostname);
+    }
     await invokeReleasedNotebookToolbarVariable(workbench, notebook, "base_frame");
     const recovered = await waitForReleasedVariableSession(
       workbench,
@@ -1635,9 +1742,11 @@ async function exerciseReleasedRJupyterExtension(
       "the reopened R session after kernel restart"
     );
     assert.notEqual(recovered.sessionId, beforeRestart.sessionId);
-    await assertReleasedSessionPage(testing, recovered, "1", "jupyter-r-recovered-page");
+    await assertReleasedSessionPage(testing, recovered, "1", `${phase}-recovered-page`);
     await disposePackagedSessionPanel(testing, recovered.sessionId, "the recovered R session");
     assert.equal(testing.diagnostics().sessionCount, 0);
+    const cleanupEditor = await showExactReleasedNotebook(notebook);
+    await waitForReleasedRRuntimeBindingCleanup(notebook, cleanupEditor, phase);
   } catch (error) {
     acceptanceError = { value: error };
   } finally {
@@ -1648,6 +1757,11 @@ async function exerciseReleasedRJupyterExtension(
     }
     try {
       await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+    try {
+      remoteServerCollection?.dispose();
     } catch (error) {
       acceptanceError ??= { value: error };
     }
@@ -3547,7 +3661,7 @@ function releasedJupyterKernelTarget(phase: ReleasedJupyterPhase): ReleasedJupyt
       routeLabels: ["Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."]
     };
   }
-  if (phase !== "jupyter-remote") {
+  if (phase !== "jupyter-remote" && phase !== "jupyter-r-remote") {
     return {
       label: RELEASED_JUPYTER_LOCAL_KERNEL_LABEL,
       name: "openwrangler-acceptance",
@@ -3573,8 +3687,8 @@ function releasedJupyterKernelTarget(phase: ReleasedJupyterPhase): ReleasedJupyt
   assert.equal(parsed.hash, "");
   assert.equal(parsed.origin, serializedBaseUrl, "The remote Jupyter base URL must be one canonical origin.");
   return {
-    label: RELEASED_JUPYTER_REMOTE_KERNEL_LABEL,
-    name: RELEASED_JUPYTER_REMOTE_KERNEL_NAME,
+    label: phase === "jupyter-r-remote" ? RELEASED_JUPYTER_REMOTE_R_KERNEL_LABEL : RELEASED_JUPYTER_REMOTE_KERNEL_LABEL,
+    name: phase === "jupyter-r-remote" ? RELEASED_JUPYTER_REMOTE_R_KERNEL_NAME : RELEASED_JUPYTER_REMOTE_KERNEL_NAME,
     routeLabels: [RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL, RELEASED_JUPYTER_REMOTE_SERVER_LABEL],
     remote: {
       baseUrl: vscode.Uri.parse(serializedBaseUrl, true),

@@ -76,18 +76,20 @@ R support has not been released. The current Open Wrangler 2 branch can find bas
 directly; Python is not involved. A local packaged test has passed with R 4.5.2 in VS Code 1.132.0 and Cursor 3.14.7.
 Native column and dataset profiles have R and TypeScript contract tests, and the packaged journey now checks their
 rendered workbench UI. The native contract passes on R 4.4 and 4.5; the packaged editor journey currently uses local
-R 4.5.2. A remote-kernel run still needs to pass before a preview ships.
+R 4.5.2. [Hosted run 31055045808](https://github.com/Matt17BR/openwrangler/actions/runs/31055045808) passed at
+`3860685`: local R in VS Code and Cursor, plus a containerized IRkernel in VS Code. The first preview still needs
+native filters and its public documentation and screenshots.
 
-| Surface                                      | Availability | Status  | Recorded evidence                                     | Remaining acceptance gate                         |
-| -------------------------------------------- | ------------ | ------- | ----------------------------------------------------- | ------------------------------------------------- |
-| Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, R 4.4/4.5 contract tests | Remote-kernel coverage                            |
-| Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local packaged-editor test           | Live filtering                                    |
-| Native R column and dataset profiles         | Internal     | Partial | R 4.4/4.5 contract and local packaged-editor coverage | Remote-kernel run                                 |
-| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, paging, sorting, and profile tests  | Remote-kernel coverage                            |
-| Exact IRkernel session transport             | Internal     | Partial | Lifecycle, paging, and profile correlation tests      | Remote IRkernel and restart acceptance            |
-| Notebook workbench                           | Internal     | Partial | Local packaged paging/profiles plus production axe    | Remote, filters, and editing                      |
-| R cleaning operations and generated code     | No           | Planned | Frame semantics only                                  | Native R IR, adapters, code generation, and tests |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                 | Stable broker or Open Wrangler-owned helper       |
+| Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                         |
+| -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | ------------------------------------------------- |
+| Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, local/remote packaged tests | Native filters and preview release                |
+| Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local packaged-editor test              | Live filtering                                    |
+| Native R column and dataset profiles         | Internal     | Partial | R 4.4/4.5 contracts plus local/remote packaged tests     | Filter-aware and larger-data coverage             |
+| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, paging, sorting, and profile tests     | Native filters and preview release                |
+| Exact IRkernel session transport             | Internal     | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                                 |
+| Notebook workbench                           | Internal     | Partial | Local/remote packaged paging and profiles plus axe       | Filters and editing                               |
+| R cleaning operations and generated code     | No           | Planned | Frame semantics only                                     | Native R IR, adapters, code generation, and tests |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper       |
 
 ## DuckDB file-backed preview matrix
 
@@ -791,16 +793,16 @@ Released-Jupyter packaged acceptance harness, 2026-07-26:
 - The runner derives exact `ipykernel`, Pandas, and Polars versions from the selected interpreter, installs their binary wheels into a disposable private kernel environment, and fails if that environment can already resolve `openwrangler_runtime`. Ordinary packaged-editor phases continue using the selected project interpreter.
 - The acceptance contract drives Jupyter's actual consent dialog and Variables action plus Open Wrangler's notebook toolbar, covering Pandas and Polars DataFrame/Series values, automatic MIME v2 rendering and expansion, exact-origin generated-code insertion, restart/replay, and terminal session/kernel cleanup.
 - Every notebook cell result must follow a fresh execution-summary event. Restart recovery observes the released stable API's real kernel status transition back to idle, proves the process changed, and proves the replacement kernel again lacks the runtime before Open Wrangler retransfers and replays it. A persisted denial must reach a new terminal panel error without another consent prompt.
-- `.github/workflows/released-jupyter.yml` makes the VS Code phase manually dispatchable and weekly without adding it to required pull-request CI. Failures use the hardened exact-path sanitized-evidence handoff.
+- `.github/workflows/released-jupyter.yml` makes the VS Code phase manually dispatchable without adding it to required pull-request CI. Failures use the hardened exact-path sanitized-evidence handoff.
 
 The notebook-variable row remains **Partial** pending the real remote-kernel and remaining release-platform evidence tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). The local combined run below closes the released-Jupyter functional gate for both supported Linux desktop editors.
 
-Real remote-Jupyter acceptance harness, 2026-07-26:
+Real remote-Python Jupyter acceptance harness, 2026-07-26:
 
 - The opt-in Linux phase uses the same packaged VSIX and pinned released Jupyter extension against a real Jupyter Server in an unprivileged, read-only, resource-bounded Docker container. The image is digest-pinned, every Python wheel is hash-locked, the exact kernelspec is proven through the authenticated server API, and no checkout/runtime path is mounted into the container.
 - A run-derived hostname and public correlation ID prove remote identity. The private token has one redaction-friendly fixed shape, enters through bounded stdin and atomic private-file publication, and reaches the editor only through an owned mode-0400 descriptor under its isolated root. It is absent from Docker metadata, phase envelopes, logs, and workflow configuration.
 - The remote phase follows the released server-collection and workbench kernel-picker path, then runs the existing Pandas/Polars DataFrame/Series, MIME-v2 renderer, exact-origin insertion, runtime-transfer, kernel-restart, plan-replay, and zero-session contract. Cleanup reattests the Docker engine and exact labelled container/image; ambiguous completion or disappearance suppresses evidence and preserves the private root.
-- `.github/workflows/released-jupyter.yml` enables this phase weekly and on manual dispatch. Pull requests use the unit, renderer, and extension-host contracts; preview and stable release candidates rerun the real packaged Jupyter journey before publication. The exact hosted acceptance recorded below is the authoritative Docker-backed result.
+- `.github/workflows/released-jupyter.yml` exposes this phase through manual dispatch. Pull requests use the unit, renderer, and extension-host contracts; preview and stable release candidates rerun the real packaged Jupyter journey before publication. The exact hosted acceptance recorded below is the authoritative Docker-backed Python result.
 
 Local released-Jupyter evidence, 2026-07-26:
 

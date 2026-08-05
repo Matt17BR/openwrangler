@@ -74,7 +74,7 @@
     "lock:remote-jupyter": "node scripts/update-remote-jupyter-lock.mjs --write",
     "lock:remote-jupyter:check": "node scripts/update-remote-jupyter-lock.mjs --check",
     "audit:python": "node scripts/run-python.mjs -m pip_audit && npm run audit:remote-jupyter",
-    "audit:remote-jupyter": "node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.txt --disable-pip --require-hashes --progress-spinner off --strict",
+    "audit:remote-jupyter": "node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.txt --disable-pip --require-hashes --progress-spinner off --strict && node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.r.txt --disable-pip --require-hashes --progress-spinner off --strict",
     "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run typecheck && npm run docs:check && npm run brand:check && npm run check:remote-jupyter-lock && npm run license:check",
     "watch": "npm-run-all --parallel watch:extension watch:webview",
     "watch:extension": "tsc -w -p tsconfig.extension.json",
