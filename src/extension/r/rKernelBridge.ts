@@ -4,6 +4,9 @@ import {
   PROTOCOL_VERSION,
   type CellValue,
   type ColumnSchema,
+  type ColumnSummary,
+  type DatasetStats,
+  type DatasetStatsRequest,
   type ErrorResponse,
   type FilterModel,
   type GridPage,
@@ -13,6 +16,7 @@ import {
   type PageRequest,
   type SessionMetadata,
   type SessionSource,
+  type SummaryRequest,
   type SourceCapabilities
 } from "../../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
@@ -22,7 +26,7 @@ import {
   type RKernelOpenResult,
   type RKernelRequestOptions
 } from "./rKernelTransport";
-import type { RKernelPageWindow, RKernelSortRule } from "./rKernelProtocol";
+import type { RKernelColumnReference, RKernelPageWindow, RKernelSortRule } from "./rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
   type RDataframeFlavor,
@@ -46,7 +50,7 @@ const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   notebookInsert: false,
   filter: false,
   sort: true,
-  profile: false,
+  profile: true,
   columnValues: false
 });
 
@@ -55,6 +59,12 @@ export interface RKernelBridgeTransport {
   readonly onDidInvalidateKernel: vscode.Event<void>;
   open(variableName: string, page: RKernelPageWindow, options?: RKernelRequestOptions): Promise<RKernelOpenResult>;
   getPage(sessionId: string, page: RKernelPageWindow, options?: RKernelRequestOptions): Promise<RFramePageContract>;
+  getSummary(
+    sessionId: string,
+    columns: readonly RKernelColumnReference[],
+    options?: RKernelRequestOptions
+  ): Promise<readonly ColumnSummary[]>;
+  getDatasetStats(sessionId: string, options?: RKernelRequestOptions): Promise<DatasetStats>;
   close(sessionId: string, options?: RKernelRequestOptions): Promise<void>;
   isSessionMapped(sessionId: string): boolean;
   dispose(): Promise<void>;
@@ -141,6 +151,10 @@ export class RKernelBridge implements OpenWranglerBridge {
         return this.openSession(withHostSessionIdentity(request, this.createSessionId), options);
       case "getPage":
         return this.getPage(request, options);
+      case "getSummary":
+        return this.getSummary(request, options);
+      case "getDatasetStats":
+        return this.getDatasetStats(request, options);
       case "closeSession":
         return this.closeSession(request.sessionId, options);
       default:
@@ -271,6 +285,100 @@ export class RKernelBridge implements OpenWranglerBridge {
       };
     } catch (error) {
       if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      if (error instanceof RKernelDiagnosticError) {
+        return diagnosticResponse(error, request.sessionId, request.viewRequestId);
+      }
+      throw error;
+    }
+  }
+
+  private async getSummary(request: SummaryRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    const invalid = validateProfileRequest(request, session);
+    if (invalid) return invalid;
+    const confirmed = session as RBridgeSession;
+    const requestedIds = request.columnIds ?? confirmed.schema.map((column) => column.id);
+    if (requestedIds.length === 0) {
+      return { kind: "summary", revision: 0, viewRequestId: request.viewRequestId, summaries: [] };
+    }
+    if (requestedIds.length > R_FRAME_CONTRACT_LIMITS.profileColumns) {
+      return errorResponse(
+        "profile_too_large",
+        `R profile requests may contain at most ${R_FRAME_CONTRACT_LIMITS.profileColumns} columns.`,
+        true,
+        request.sessionId,
+        request.viewRequestId
+      );
+    }
+
+    let columns: readonly RKernelColumnReference[];
+    try {
+      columns = resolveProfileColumns(requestedIds, confirmed.schema);
+      resolveSorts(request.filterModel, confirmed.schema);
+    } catch (error) {
+      return errorResponse(
+        "invalid_view",
+        error instanceof Error ? error.message : String(error),
+        true,
+        request.sessionId,
+        request.viewRequestId
+      );
+    }
+
+    try {
+      const summaries = await this.transport.getSummary(request.sessionId, columns, transportOptions(options));
+      if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      assertSummaryContract(confirmed, columns, summaries);
+      return {
+        kind: "summary",
+        revision: 0,
+        viewRequestId: request.viewRequestId,
+        summaries: summaries.map((summary) => ({ ...summary }))
+      };
+    } catch (error) {
+      if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      if (error instanceof RKernelDiagnosticError) {
+        return diagnosticResponse(error, request.sessionId, request.viewRequestId);
+      }
+      throw error;
+    }
+  }
+
+  private async getDatasetStats(
+    request: DatasetStatsRequest,
+    options: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    const invalid = validateProfileRequest(request, session);
+    if (invalid) return invalid;
+    const confirmed = session as RBridgeSession;
+    try {
+      resolveSorts(request.filterModel, confirmed.schema);
+    } catch (error) {
+      return errorResponse(
+        "invalid_view",
+        error instanceof Error ? error.message : String(error),
+        true,
+        request.sessionId,
+        request.viewRequestId
+      );
+    }
+
+    try {
+      const stats = await this.transport.getDatasetStats(request.sessionId, transportOptions(options));
+      if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      assertDatasetStatsContract(confirmed, stats);
+      return {
+        kind: "datasetStats",
+        revision: 0,
+        viewRequestId: request.viewRequestId,
+        stats: {
+          ...stats,
+          missingValuesByColumn: stats.missingValuesByColumn.map((entry) => ({ ...entry }))
+        }
+      };
+    } catch (error) {
+      if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
       if (error instanceof RKernelDiagnosticError) {
         return diagnosticResponse(error, request.sessionId, request.viewRequestId);
       }
@@ -469,6 +577,104 @@ function resolveSorts(filterModel: FilterModel, schema: readonly ColumnSchema[])
       });
     })
   );
+}
+
+function validateProfileRequest(
+  request: SummaryRequest | DatasetStatsRequest,
+  session: RBridgeSession | undefined
+): ErrorResponse | undefined {
+  if (!session) return unknownSessionError(request.sessionId, request.viewRequestId);
+  if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+  if (request.revision !== 0) {
+    return errorResponse(
+      "stale_revision",
+      "This R session is read-only and has revision 0.",
+      true,
+      request.sessionId,
+      request.viewRequestId
+    );
+  }
+  if (request.filterModel.filters.length > 0) return unsupportedRequest(request);
+  return undefined;
+}
+
+function resolveProfileColumns(
+  columnIds: readonly string[],
+  schema: readonly ColumnSchema[]
+): readonly RKernelColumnReference[] {
+  if (columnIds.length === 0 || new Set(columnIds).size !== columnIds.length) {
+    throw new TypeError("R profile columns must be a non-empty unique list.");
+  }
+  const schemaById = new Map(schema.map((column) => [column.id, column]));
+  return Object.freeze(
+    columnIds.map((columnId) => {
+      const column = schemaById.get(columnId);
+      if (!column) throw new TypeError(`The profile column ${JSON.stringify(columnId)} is no longer available.`);
+      return Object.freeze({ id: column.id, name: column.name });
+    })
+  );
+}
+
+function assertSummaryContract(
+  session: RBridgeSession,
+  requested: readonly RKernelColumnReference[],
+  summaries: readonly ColumnSummary[]
+): void {
+  if (summaries.length !== requested.length) {
+    throw new Error("The R kernel returned summaries for the wrong column projection.");
+  }
+  const schemaById = new Map(session.schema.map((column) => [column.id, column]));
+  const totalRows = session.shape.rows;
+  for (const [index, summary] of summaries.entries()) {
+    const reference = requested[index] as RKernelColumnReference;
+    const schema = schemaById.get(reference.id);
+    if (
+      !schema ||
+      summary.columnId !== reference.id ||
+      summary.column !== reference.name ||
+      summary.column !== schema.name ||
+      summary.type !== schema.type ||
+      summary.rawType !== schema.rawType ||
+      summary.totalCount !== totalRows ||
+      summary.nullCount + summary.nanCount > totalRows ||
+      (summary.distinctCount !== undefined &&
+        summary.distinctCount > totalRows - summary.nullCount - summary.nanCount) ||
+      summary.topValues.reduce((count, value) => count + value.count, 0) >
+        totalRows - summary.nullCount - summary.nanCount
+    ) {
+      throw new Error("The R kernel returned a summary that does not match the active dataframe.");
+    }
+    if (
+      summary.visualization?.kind === "boolean" &&
+      summary.visualization.trueCount + summary.visualization.falseCount !==
+        totalRows - summary.nullCount - summary.nanCount
+    ) {
+      throw new Error("The R kernel returned inconsistent boolean profile counts.");
+    }
+  }
+}
+
+function assertDatasetStatsContract(session: RBridgeSession, stats: DatasetStats): void {
+  const rows = session.shape.rows;
+  const columns = session.schema.length;
+  if (
+    stats.missingRows > rows ||
+    stats.duplicateRows > Math.max(0, rows - 1) ||
+    stats.missingCells > rows * columns ||
+    stats.missingValuesByColumn.length !== columns
+  ) {
+    throw new Error("The R kernel returned dataset statistics outside the active dataframe shape.");
+  }
+  let missingCells = 0;
+  for (const [index, entry] of stats.missingValuesByColumn.entries()) {
+    if (entry.column !== session.schema[index]?.name || entry.count > rows) {
+      throw new Error("The R kernel returned dataset statistics for the wrong column projection.");
+    }
+    missingCells += entry.count;
+  }
+  if (missingCells !== stats.missingCells) {
+    throw new Error("The R kernel returned inconsistent missing-value totals.");
+  }
 }
 
 function sessionFromContract(sessionId: string, source: SessionSource, contract: RFramePageContract): RBridgeSession {

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
+import type { ColumnSummary, DatasetStats } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import {
@@ -18,6 +19,7 @@ import {
   R_KERNEL_MAX_RESPONSE_BYTES,
   R_KERNEL_TRANSPORT_VERSION,
   type RKernelErrorResponse,
+  type RKernelColumnReference,
   type RKernelPageWindow,
   type RKernelRequest,
   type RKernelResponse
@@ -221,12 +223,75 @@ export class RKernelSessionTransport {
     page: RKernelPageWindow,
     options: RKernelRequestOptions = {}
   ): Promise<RFramePageContract> {
+    const request = this.request("getPage", { sessionId, page });
+    encodeRKernelRequest(request);
+    const response = await this.executeMappedRequest(sessionId, request, options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "page" || response.sessionId !== sessionId) {
+      throw new Error("The R kernel returned a mismatched page session identity.");
+    }
+    return response.page;
+  }
+
+  async getSummary(
+    sessionId: string,
+    columns: readonly RKernelColumnReference[],
+    options: RKernelRequestOptions = {}
+  ): Promise<readonly ColumnSummary[]> {
+    const request = this.request("getSummary", { sessionId, columns });
+    encodeRKernelRequest(request);
+    const response = await this.executeMappedRequest(sessionId, request, options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "summary" || response.sessionId !== sessionId) {
+      throw new Error("The R kernel returned a mismatched summary session identity.");
+    }
+    return response.summaries;
+  }
+
+  async getDatasetStats(sessionId: string, options: RKernelRequestOptions = {}): Promise<DatasetStats> {
+    const request = this.request("getDatasetStats", { sessionId });
+    encodeRKernelRequest(request);
+    const response = await this.executeMappedRequest(sessionId, request, options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "datasetStats" || response.sessionId !== sessionId) {
+      throw new Error("The R kernel returned mismatched dataset statistics.");
+    }
+    return response.stats;
+  }
+
+  async close(sessionId: string, options: RKernelRequestOptions = {}): Promise<void> {
+    this.assertActive();
+    if (this.retiredSessionIds.has(sessionId)) return;
+    const kernel = this.requireMappedKernel(sessionId);
+    await this.closeMappedSession(sessionId, kernel, requestTimeout(options.timeoutMs), options.cancellation);
+  }
+
+  async closeAll(): Promise<void> {
+    this.assertActive();
+    await this.closeMappedSessions();
+  }
+
+  dispose(): Promise<void> {
+    if (!this.disposal) {
+      this.disposed = true;
+      this.disposal = this.disposeOnce();
+    }
+    return this.disposal;
+  }
+
+  isSessionMapped(sessionId: string): boolean {
+    return this.sessionKernels.has(sessionId);
+  }
+
+  private async executeMappedRequest(
+    sessionId: string,
+    request: Extract<RKernelRequest, { kind: "getPage" | "getSummary" | "getDatasetStats" }>,
+    options: RKernelRequestOptions
+  ): Promise<RKernelResponse> {
     this.assertActive();
     const started = performance.now();
     const timeoutMs = requestTimeout(options.timeoutMs);
     const kernel = this.requireMappedKernel(sessionId);
-    const request = this.request("getPage", { sessionId, page });
-    encodeRKernelRequest(request);
     const acquired = this.requireObservation(kernel);
     const preflight = this.assertKernelStillSelected(acquired);
     void preflight.catch(() => undefined);
@@ -263,36 +328,8 @@ export class RKernelSessionTransport {
     const postflight = this.assertKernelStillSelected(acquired);
     void postflight.catch(() => undefined);
     await withKernelTimeout(postflight, remainingTimeout(timeoutMs, started), () => undefined, options.cancellation);
-    if (response.kind === "error") throw new RKernelDiagnosticError(response);
-    if (response.kind !== "page" || response.sessionId !== sessionId) {
-      throw new Error("The R kernel returned a mismatched page session identity.");
-    }
     this.assertActive();
-    return response.page;
-  }
-
-  async close(sessionId: string, options: RKernelRequestOptions = {}): Promise<void> {
-    this.assertActive();
-    if (this.retiredSessionIds.has(sessionId)) return;
-    const kernel = this.requireMappedKernel(sessionId);
-    await this.closeMappedSession(sessionId, kernel, requestTimeout(options.timeoutMs), options.cancellation);
-  }
-
-  async closeAll(): Promise<void> {
-    this.assertActive();
-    await this.closeMappedSessions();
-  }
-
-  dispose(): Promise<void> {
-    if (!this.disposal) {
-      this.disposed = true;
-      this.disposal = this.disposeOnce();
-    }
-    return this.disposal;
-  }
-
-  isSessionMapped(sessionId: string): boolean {
-    return this.sessionKernels.has(sessionId);
+    return response;
   }
 
   private async closeMappedSession(

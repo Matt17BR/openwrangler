@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
-import type { OpenSessionRequest, OpenWranglerRequest } from "../shared/protocol";
+import type { ColumnSummary, DatasetStats, OpenSessionRequest, OpenWranglerRequest } from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { RKernelBridge, type RKernelBridgeTransport } from "../extension/r/rKernelBridge";
 import type { RColumnSchema, RFrameCell, RFramePageContract } from "../extension/r/rFrameContract";
@@ -189,18 +189,109 @@ describe("canonical R kernel bridge", () => {
     expect(transport.getPage).not.toHaveBeenCalled();
   });
 
-  it("keeps unsupported profiling, filtering, mutation, and export requests out of IRkernel", async () => {
+  it("maps projected native R profiles and dataset statistics to the current view", async () => {
+    const transport = fakeTransport(frameContract());
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest());
+
+    const summary = await bridge.request({
+      kind: "getSummary",
+      sessionId,
+      revision: 0,
+      viewRequestId: "summary-1",
+      filterModel: {
+        filters: [],
+        sort: [{ column: "count", direction: "desc", nulls: "last" }]
+      },
+      columnIds: ["r:c:0"]
+    });
+    expect(transport.getSummary).toHaveBeenCalledWith(sessionId, [{ id: "r:c:0", name: "value" }], expect.any(Object));
+    expect(summary).toMatchObject({
+      kind: "summary",
+      revision: 0,
+      viewRequestId: "summary-1",
+      summaries: [{ columnId: "r:c:0", column: "value", type: "float", totalCount: 1 }]
+    });
+
+    const stats = await bridge.request({
+      kind: "getDatasetStats",
+      sessionId,
+      revision: 0,
+      viewRequestId: "stats-1",
+      filterModel: { filters: [], sort: [] }
+    });
+    expect(transport.getDatasetStats).toHaveBeenCalledWith(sessionId, expect.any(Object));
+    expect(stats).toMatchObject({
+      kind: "datasetStats",
+      revision: 0,
+      viewRequestId: "stats-1",
+      stats: { missingCells: 1, missingRows: 1, duplicateRows: 0 }
+    });
+  });
+
+  it("rejects filtered and mis-correlated R profile work", async () => {
+    const transport = fakeTransport(frameContract());
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest());
+
+    await expect(
+      bridge.request({
+        kind: "getSummary",
+        sessionId,
+        revision: 0,
+        viewRequestId: "filtered-summary",
+        filterModel: {
+          filters: [
+            {
+              column: "value",
+              type: "float",
+              predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+            }
+          ],
+          sort: []
+        },
+        columnIds: ["r:c:0"]
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation", viewRequestId: "filtered-summary" });
+    expect(transport.getSummary).not.toHaveBeenCalled();
+
+    transport.getSummary.mockResolvedValueOnce([
+      {
+        ...summaryFor(frameContract(), { id: "r:c:0", name: "value" }),
+        columnId: "r:c:1"
+      }
+    ]);
+    await expect(
+      bridge.request({
+        kind: "getSummary",
+        sessionId,
+        revision: 0,
+        viewRequestId: "wrong-summary",
+        filterModel: { filters: [], sort: [] },
+        columnIds: ["r:c:0"]
+      })
+    ).rejects.toThrow("active dataframe");
+
+    transport.getDatasetStats.mockResolvedValueOnce({
+      ...datasetStatsFor(frameContract()),
+      duplicateRows: 1
+    });
+    await expect(
+      bridge.request({
+        kind: "getDatasetStats",
+        sessionId,
+        revision: 0,
+        viewRequestId: "wrong-stats",
+        filterModel: { filters: [], sort: [] }
+      })
+    ).rejects.toThrow("active dataframe shape");
+  });
+
+  it("keeps unsupported filtering, mutation, and export requests out of IRkernel", async () => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
     await bridge.request(openRequest());
     const requests: OpenWranglerRequest[] = [
-      {
-        kind: "getSummary",
-        sessionId,
-        revision: 0,
-        viewRequestId: "summary",
-        filterModel: { filters: [], sort: [] }
-      },
       {
         kind: "getPage",
         sessionId,
@@ -247,6 +338,8 @@ describe("canonical R kernel bridge", () => {
       });
     }
     expect(transport.getPage).not.toHaveBeenCalled();
+    expect(transport.getSummary).not.toHaveBeenCalled();
+    expect(transport.getDatasetStats).not.toHaveBeenCalled();
     expect(transport.open).toHaveBeenCalledTimes(1);
   });
 
@@ -407,6 +500,8 @@ function openRequest(): OpenSessionRequest {
 interface FakeRTransport extends RKernelBridgeTransport {
   open: ReturnType<typeof vi.fn<RKernelBridgeTransport["open"]>>;
   getPage: ReturnType<typeof vi.fn<RKernelBridgeTransport["getPage"]>>;
+  getSummary: ReturnType<typeof vi.fn<RKernelBridgeTransport["getSummary"]>>;
+  getDatasetStats: ReturnType<typeof vi.fn<RKernelBridgeTransport["getDatasetStats"]>>;
   close: ReturnType<typeof vi.fn<RKernelBridgeTransport["close"]>>;
   isSessionMapped: ReturnType<typeof vi.fn<RKernelBridgeTransport["isSessionMapped"]>>;
   dispose: ReturnType<typeof vi.fn<RKernelBridgeTransport["dispose"]>>;
@@ -419,10 +514,44 @@ function fakeTransport(contract: RFramePageContract, openedSessionId = sessionId
     onDidInvalidateKernel: emitter.event,
     open: vi.fn(async () => ({ sessionId: openedSessionId, page: contract })),
     getPage: vi.fn(async () => contract),
+    getSummary: vi.fn(async (_sessionId, columns) => columns.map((column) => summaryFor(contract, column))),
+    getDatasetStats: vi.fn(async () => datasetStatsFor(contract)),
     close: vi.fn(async () => undefined),
     isSessionMapped: vi.fn(() => true),
     dispose: vi.fn(async () => undefined),
     invalidate: () => emitter.fire()
+  };
+}
+
+function summaryFor(contract: RFramePageContract, reference: Readonly<{ id: string; name: string }>): ColumnSummary {
+  const schema = contract.schema.find((column) => column.id === reference.id);
+  if (!schema || schema.name !== reference.name) throw new Error("Unknown fake R profile column.");
+  const cell = contract.page.rows[0]?.values[schema.position];
+  const nullCount = cell?.isNull ? 1 : 0;
+  const nanCount = cell?.isNaN ? 1 : 0;
+  return {
+    columnId: schema.id,
+    column: schema.name,
+    type: schema.type,
+    rawType: schema.rawType,
+    totalCount: contract.shape.rows,
+    nullCount,
+    nanCount,
+    distinctCount: contract.shape.rows - nullCount - nanCount,
+    topValues: cell && !cell.isNull && !cell.isNaN ? [{ value: cell.display, count: 1 }] : []
+  };
+}
+
+function datasetStatsFor(contract: RFramePageContract): DatasetStats {
+  const missingValuesByColumn = contract.schema.map((schema) => ({
+    column: schema.name,
+    count: contract.page.rows[0]?.values[schema.position]?.isNull ? 1 : 0
+  }));
+  return {
+    missingCells: missingValuesByColumn.reduce((total, entry) => total + entry.count, 0),
+    missingRows: missingValuesByColumn.some((entry) => entry.count > 0) ? 1 : 0,
+    duplicateRows: 0,
+    missingValuesByColumn
   };
 }
 
@@ -543,7 +672,7 @@ function rCapabilities(): Record<string, boolean> {
     notebookInsert: false,
     filter: false,
     sort: true,
-    profile: false,
+    profile: true,
     columnValues: false
   };
 }

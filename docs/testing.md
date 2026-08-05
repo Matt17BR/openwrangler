@@ -17,12 +17,18 @@ matrix for release candidates or changes that cross all of its boundaries.
   duplicate-name references, sorted pagination, source immutability, malformed or stale rules, and source row IDs in
   logical view order. Ambient `OutDec` and `TZ` settings must not change a cell, including POSIXct columns with null or
   empty-string timezone metadata. The TypeScript decoder rejects the reserved R integer and bit64 integer64 NA
-  sentinels when they are mislabeled as ordinary values. The cross-language cases run only when
+  sentinels when they are mislabeled as ordinary values. Profile tests cover stable column references, `NA` versus
+  `NaN` and infinity, exact integer64 extrema, factors, Unicode text lengths, logical counts, Date/POSIXct ranges,
+  difftime statistics, numeric histograms, common-value limits, empty and all-missing columns, duplicate rows, and
+  source immutability. They also check extreme finite histogram ranges, the row and cell work limits, the 64-column
+  request limit, and strict count relationships in R profile and dataset-statistics messages. The cross-language
+  cases run only when
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix. It
-  also runs the native read-only kernel agent through open, sorted page, variable replacement, malformed request, and
-  close cases. The R tests check the fixed diagnostics for unsupported frames, missing packages, oversized pages, and
-  stale columns. Focused TypeScript tests cover the embedded remote-kernel bootstrap, response decoder, sole-open
-  notebook checks, exact-kernel paging, restart handling, late close completion, repeated disposal, and delayed
+  also runs the native read-only kernel agent through open, sorted page, profile, dataset-statistics, variable
+  replacement, malformed request, and close cases. The R tests check the fixed diagnostics for unsupported frames,
+  missing packages, oversized pages or profiles, and stale columns. Focused TypeScript tests cover the embedded
+  remote-kernel bootstrap, response decoder, sole-open notebook checks, exact-kernel paging and profiling, restart
+  handling, late close completion, repeated disposal, and delayed
   candidate cleanup without interrupting Jupyter. They also cancel and time out page requests, then prove that the next
   request waits for the original execution to finish. Variable-discovery tests cover exact base `data.frame`, tibble,
   and `data.table` class vectors, active and delayed bindings, missing `jsonlite` or `rlang`, malformed output, and

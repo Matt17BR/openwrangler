@@ -158,6 +158,171 @@ table_snapshot <- get("snapshot", envir = table_capture, inherits = FALSE)
 table_snapshot[, value := "changed"]
 assert_true(identical(table_frame, table_before), "data.table snapshot mutation reached the source frame")
 
+profile_reference <- function(capture, position) {
+  schema <- capture$descriptor$schema[[position]]
+  list(id = schema$id, name = schema$name)
+}
+
+profile_source_before <- unserialize(serialize(base_frame, NULL, version = 3L))
+base_summaries <- openwrangler_r_frame_contract$materialize_summaries(
+  base_capture,
+  lapply(seq_len(ncol(base_frame)), function(position) profile_reference(base_capture, position))
+)
+assert_identical(
+  vapply(base_summaries, `[[`, character(1L), "columnId"),
+  sprintf("r:c:%d", 0:9),
+  "R profiles did not preserve stable positional column identities"
+)
+assert_identical(base_summaries[[1L]]$visualization$trueCount, 1L, "logical TRUE counts changed")
+assert_identical(base_summaries[[1L]]$visualization$falseCount, 1L, "logical FALSE counts changed")
+assert_identical(base_summaries[[3L]]$nullCount, 0L, "double NA was miscounted")
+assert_identical(base_summaries[[3L]]$nanCount, 1L, "double NaN was not counted separately")
+assert_identical(base_summaries[[4L]]$text$minLength, 4L, "UTF-8 text minimum length changed")
+assert_identical(base_summaries[[4L]]$text$maxLength, 5L, "UTF-8 text maximum length changed")
+assert_identical(base_summaries[[6L]]$rawType, "ordered factor", "ordered-factor profile metadata changed")
+assert_identical(base_summaries[[7L]]$visualization$min, "2026-01-01", "Date profile minimum changed")
+assert_identical(base_summaries[[7L]]$visualization$max, "2026-01-03", "Date profile maximum changed")
+assert_identical(
+  base_summaries[[8L]]$visualization$min,
+  "2026-01-01T12:00:00.000000",
+  "POSIXct profile minimum changed"
+)
+assert_identical(base_summaries[[9L]]$numeric$min, 1, "difftime profile minimum changed")
+assert_identical(base_summaries[[9L]]$numeric$max, 3, "difftime profile maximum changed")
+assert_identical(
+  base_summaries[[10L]]$numeric$exactMin$raw,
+  "-9223372036854775807",
+  "integer64 profile minimum lost precision"
+)
+assert_identical(
+  base_summaries[[10L]]$numeric$exactMax$raw,
+  "9223372036854775806",
+  "integer64 profile maximum lost precision"
+)
+assert_identical(base_frame, profile_source_before, "profiling mutated the source data.frame")
+
+base_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(base_capture)
+assert_identical(base_stats$missingCells, 10, "dataset missing-cell count changed")
+assert_identical(base_stats$missingRows, 2L, "dataset missing-row count changed")
+assert_identical(base_stats$duplicateRows, 0L, "dataset duplicate-row count changed")
+assert_identical(
+  vapply(base_stats$missingValuesByColumn, `[[`, character(1L), "column"),
+  names(base_frame),
+  "dataset missing counts lost duplicate or non-syntactic names"
+)
+
+tibble_profile <- openwrangler_r_frame_contract$materialize_summaries(
+  tibble_capture,
+  list(profile_reference(tibble_capture, 4L))
+)
+assert_identical(tibble_profile[[1L]]$text$minLength, 4L, "tibble profiling changed text semantics")
+table_profile <- openwrangler_r_frame_contract$materialize_summaries(
+  table_capture,
+  list(profile_reference(table_capture, 1L))
+)
+assert_identical(table_profile[[1L]]$distinctCount, 2L, "data.table profiling changed distinct values")
+assert_true(identical(table_frame, table_before), "profiling mutated the source data.table")
+
+empty_profile_frame <- data.frame(
+  text = character(),
+  amount = double(),
+  all_missing = logical()
+)
+empty_profile_capture <- openwrangler_r_frame_contract$capture_frame(empty_profile_frame)
+empty_summaries <- openwrangler_r_frame_contract$materialize_summaries(
+  empty_profile_capture,
+  lapply(seq_len(ncol(empty_profile_frame)), function(position) profile_reference(empty_profile_capture, position))
+)
+assert_identical(empty_summaries[[1L]]$text, list(emptyCount = 0L), "empty text profile invented bounds")
+assert_identical(empty_summaries[[2L]]$topValues, I(list()), "empty numeric profile invented values")
+
+duplicate_profile_frame <- data.frame(value = c(1L, 1L, NA_integer_), flag = c(TRUE, TRUE, NA))
+duplicate_profile_capture <- openwrangler_r_frame_contract$capture_frame(duplicate_profile_frame)
+duplicate_profile_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(duplicate_profile_capture)
+assert_identical(duplicate_profile_stats$missingCells, 2, "all-null counts changed")
+assert_identical(duplicate_profile_stats$missingRows, 1L, "all-null row count changed")
+assert_identical(duplicate_profile_stats$duplicateRows, 1L, "duplicate-row count changed")
+all_null_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = c(NA_character_, NA_character_)))
+all_null_summary <- openwrangler_r_frame_contract$materialize_summaries(
+  all_null_capture,
+  list(profile_reference(all_null_capture, 1L))
+)[[1L]]
+assert_identical(all_null_summary$nullCount, 2L, "all-null column count changed")
+assert_identical(all_null_summary$distinctCount, 0L, "all-null column invented a distinct value")
+assert_identical(all_null_summary$text, list(emptyCount = 0L), "all-null text profile invented length bounds")
+bounded_profile_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = seq_len(40L)))
+bounded_profile <- openwrangler_r_frame_contract$materialize_summaries(
+  bounded_profile_capture,
+  list(profile_reference(bounded_profile_capture, 1L))
+)[[1L]]
+assert_identical(length(bounded_profile$topValues), 10L, "R profiles exceeded the top-value limit")
+assert_identical(length(bounded_profile$visualization$bins), 20L, "R profiles exceeded the histogram-bin limit")
+extreme_profile_capture <- openwrangler_r_frame_contract$capture_frame(
+  data.frame(value = c(-1e308, 0, 1e308))
+)
+extreme_profile <- openwrangler_r_frame_contract$materialize_summaries(
+  extreme_profile_capture,
+  list(profile_reference(extreme_profile_capture, 1L))
+)[[1L]]
+assert_identical(length(extreme_profile$visualization$bins), 3L, "an extreme finite range lost its histogram")
+assert_identical(
+  sum(vapply(extreme_profile$visualization$bins, `[[`, integer(1L), "count")),
+  3L,
+  "an extreme finite histogram lost values"
+)
+too_wide_profile_frame <- as.data.frame(
+  setNames(rep(list(1L), openwrangler_r_frame_contract$limits$profileColumns + 1L),
+           sprintf("profile_%d", seq_len(openwrangler_r_frame_contract$limits$profileColumns + 1L))),
+  optional = TRUE
+)
+too_wide_profile_capture <- openwrangler_r_frame_contract$capture_frame(too_wide_profile_frame)
+assert_error(
+  openwrangler_r_frame_contract$materialize_summaries(
+    too_wide_profile_capture,
+    lapply(seq_len(ncol(too_wide_profile_frame)), function(position) {
+      profile_reference(too_wide_profile_capture, position)
+    })
+  ),
+  "profile-too-large"
+)
+work_column_count <- 50L
+work_row_count <- floor(openwrangler_r_frame_contract$limits$profileCells / work_column_count) + 1L
+shared_work_column <- rep(1L, work_row_count)
+bounded_work_frame <- structure(
+  setNames(rep(list(shared_work_column), work_column_count), sprintf("work_%d", seq_len(work_column_count))),
+  class = "data.frame",
+  row.names = c(NA_integer_, -work_row_count)
+)
+bounded_work_capture <- openwrangler_r_frame_contract$capture_live_frame(function() bounded_work_frame)
+bounded_work_references <- lapply(
+  seq_len(work_column_count),
+  function(position) profile_reference(bounded_work_capture, position)
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_summaries(bounded_work_capture, bounded_work_references),
+  "profile-too-large"
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_dataset_stats(bounded_work_capture),
+  "profile-too-large"
+)
+too_tall_frame <- structure(
+  list(value = rep(FALSE, openwrangler_r_frame_contract$limits$profileRows + 1L)),
+  class = "data.frame",
+  row.names = c(NA_integer_, -(openwrangler_r_frame_contract$limits$profileRows + 1L))
+)
+too_tall_capture <- openwrangler_r_frame_contract$capture_live_frame(function() too_tall_frame)
+assert_error(
+  openwrangler_r_frame_contract$materialize_summaries(
+    too_tall_capture,
+    list(profile_reference(too_tall_capture, 1L))
+  ),
+  "profile-too-large"
+)
+profile_metrics <- openwrangler_r_frame_contract$capture_metrics(base_capture)
+assert_identical(profile_metrics$profileColumns, 10, "projected profile work scanned the wrong number of columns")
+assert_identical(profile_metrics$datasetProfiles, 1, "dataset profiling ran an unexpected number of times")
+
 sort_rule <- function(id, name, direction = "asc", nulls = "last") {
   list(column = list(id = id, name = name), direction = direction, nulls = nulls)
 }

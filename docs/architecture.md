@@ -53,6 +53,16 @@ and 32 MiB of row-order state. It rebuilds that order when those values change, 
 by-reference update, and releases the cache when sorting is cleared. Larger sorts rebuild for each page instead of
 retaining an unbounded cache.
 
+Column profiles use the same captured schema and stable column IDs as grid pages. A request can include up to 64
+columns. It is rejected before scanning when it exceeds 1,000,000 rows or 5,000,000 cells. Dataset profiles use the
+same row limit and a separate 5,000,000-cell limit. These caps keep an automatic profile request from monopolizing the
+user's R kernel, which the Jupyter API cannot cancel independently. The R runtime returns at most ten common values
+and twenty numeric histogram bins per column. It keeps `NA` and `NaN` counts separate for plain doubles, preserves
+exact integer and `bit64::integer64` extrema, counts Unicode text length by code point, and reports native factor,
+logical, Date, POSIXct, and difftime statistics. Dataset statistics report missing cells, rows with a missing value,
+duplicate rows, and missing counts in source-column order. Profiling reads the live R object again and rejects a
+changed shape, schema, or column semantics. It does not sort or modify the source object.
+
 `src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 2, exact fields, canonical
 class/type combinations, contiguous positional column IDs, unique in-range source row IDs, logical row positions,
 matching row and column windows, and values valid for their R column. Positional frames may not send row labels;
@@ -63,20 +73,20 @@ complete object or JSON string is built. The canonical grid protocol carries row
 row numbers. This R contract remains separate from the Python runtime protocol.
 
 `r/openwrangler_runtime/kernel_agent.R` owns the first read-only R sessions. The host creates a UUID before an open,
-and the agent records the named object's shape, schema, and source binding. Later page and sort requests read through
-that binding and reject structural changes. Open, page, and close messages have a separate versioned schema;
-both R and TypeScript reject extra fields, bad ranges, repeated sort identities, stale request IDs, and oversized
-responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote IRkernel does not need access
-to the extension filesystem.
+and the agent records the named object's shape, schema, and source binding. Later page, sort, and profile requests read
+through that binding and reject structural changes. Open, page, profile, dataset-statistics, and close messages have a
+separate versioned schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
+request IDs, and oversized responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote
+IRkernel does not need access to the extension filesystem.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
 session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
 again before dispatch. Host cancellation and timeouts do not interrupt the user's R kernel. If an open has already
 started, its candidate ID stays mapped to that kernel and one close is sent there after the original execution
-finishes. A page request that times out or is cancelled returns a promise for that execution's completion. The
-transport keeps the same promise and waits for it before sending another request to that IRkernel. Kernel restart ends
-the mappings. Close uses the mapped kernel and never looks one up by URI. Session IDs and pending cleanup records have
-fixed bounds, and repeated disposal joins the same cleanup operation.
+finishes. Page and profile requests that time out or are cancelled still retain the original execution's settlement
+promise. The transport waits for that promise before sending another request to the same IRkernel. Kernel restart
+ends the mappings. Close uses the mapped kernel and never looks one up by URI. Session IDs and pending cleanup records
+have fixed bounds, and repeated disposal joins the same cleanup operation.
 
 Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
 the fixed response codes `unsupported_frame`, `missing_package`, `page_too_large`, and `stale_column`. Request errors,
@@ -84,8 +94,9 @@ missing variables or sessions, and unexpected runtime failures also use a fixed 
 4 KiB, and TypeScript rejects any unrecognized code. Native variable discovery requires `jsonlite` and `rlang` in the
 selected kernel. It recognizes exact base `data.frame`, tibble, and `data.table` class vectors without evaluating
 active or delayed bindings. The notebook command routes those variables through a read-only coordinator session and
-disables filters, profiles, values, cleaning, exports, and generated code until the R implementations exist. Packaged
-VS Code and Cursor acceptance against a real IRkernel is still pending.
+enables native column and dataset profiles. Filters, value search, cleaning, exports, and generated code stay disabled
+until their R implementations exist. Packaged VS Code and Cursor acceptance for the new profile path is still
+pending.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 

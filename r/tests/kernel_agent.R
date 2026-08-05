@@ -93,6 +93,66 @@ assert_identical(
   "the R agent changed sorted source-row identities"
 )
 
+summary_response <- dispatch(
+  "getSummary",
+  list(
+    sessionId = session_id,
+    columns = I(list(
+      list(id = "r:c:1", name = "score"),
+      list(id = "r:c:0", name = "group")
+    ))
+  )
+)
+assert_identical(summary_response$kind, "summary", "the R agent did not return column profiles")
+assert_identical(summary_response$requestId, request_id, "the R agent changed profile correlation")
+assert_identical(
+  vapply(summary_response$summaries, `[[`, character(1L), "columnId"),
+  c("r:c:1", "r:c:0"),
+  "the R agent changed the requested profile order"
+)
+assert_identical(summary_response$summaries[[1L]]$nullCount, 1L, "the R agent changed numeric null counts")
+assert_identical(summary_response$summaries[[1L]]$numeric$min, 1L, "the R agent changed numeric minima")
+assert_identical(summary_response$summaries[[1L]]$numeric$max, 2L, "the R agent changed numeric maxima")
+assert_identical(summary_response$summaries[[2L]]$topValues[[1L]]$value, "a", "the R agent changed top values")
+
+stats_response <- dispatch("getDatasetStats", list(sessionId = session_id))
+assert_identical(stats_response$kind, "datasetStats", "the R agent did not return dataset statistics")
+assert_identical(stats_response$requestId, request_id, "the R agent changed dataset-profile correlation")
+assert_identical(stats_response$stats$missingCells, 1L, "the R agent changed missing-cell counts")
+assert_identical(stats_response$stats$missingRows, 1L, "the R agent changed missing-row counts")
+assert_identical(stats_response$stats$duplicateRows, 0L, "the R agent changed duplicate-row counts")
+
+stale_profile <- dispatch(
+  "getSummary",
+  list(sessionId = session_id, columns = I(list(list(id = "r:c:1", name = "old_score"))))
+)
+assert_identical(stale_profile$kind, "error", "a stale R profile column was accepted")
+assert_identical(stale_profile$code, "stale_column", "the stale profile diagnostic changed")
+
+repeated_profile <- dispatch(
+  "getSummary",
+  list(
+    sessionId = session_id,
+    columns = I(list(list(id = "r:c:0", name = "group"), list(id = "r:c:0", name = "group")))
+  )
+)
+assert_identical(repeated_profile$kind, "error", "a repeated R profile column was accepted")
+assert_identical(repeated_profile$code, "invalid_request", "the repeated-profile diagnostic changed")
+
+oversized_profile <- dispatch(
+  "getSummary",
+  list(
+    sessionId = session_id,
+    columns = I(list(
+      list(id = "r:c:0", name = "group"),
+      list(id = "r:c:1", name = "score"),
+      list(id = "r:c:2", name = "missing")
+    ))
+  )
+)
+assert_identical(oversized_profile$kind, "error", "an oversized R profile was accepted")
+assert_identical(oversized_profile$code, "profile_too_large", "the oversized-profile diagnostic changed")
+
 # Unsorted reads use the current same-schema value. A sorted read compares the
 # active sort columns with its cached copy and rebuilds the order when they change.
 source_environment$frame <- data.frame(
@@ -109,6 +169,12 @@ assert_identical(
   "101",
   "an unsorted R page did not read the current same-schema value"
 )
+live_summary <- dispatch(
+  "getSummary",
+  list(sessionId = session_id, columns = I(list(list(id = "r:c:1", name = "score"))))
+)
+assert_identical(live_summary$summaries[[1L]]$numeric$min, 101L, "a live R profile kept stale values")
+assert_identical(live_summary$summaries[[1L]]$numeric$max, 103L, "a live R profile missed current values")
 refreshed_sorted <- dispatch(
   "getPage",
   list(
@@ -208,6 +274,8 @@ missing_package_contract <- list(
     ))
   },
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
+  materialize_summaries = function(...) stop("unexpected summary materialization", call. = FALSE),
+  materialize_dataset_stats = function(...) stop("unexpected dataset profile", call. = FALSE),
   limits = openwrangler_r_frame_contract$limits
 )
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)

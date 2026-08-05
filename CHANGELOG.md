@@ -12,9 +12,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   exactly, decimal values must fit the column scale, and datetime values must match the column's timezone awareness.
   Generated Python code follows the same rules without converting the dataframe to another engine.
 - Added the first R notebook viewer for Open Wrangler 2. The notebook picker can open base `data.frame`, tibble, and
-  `data.table` objects directly from IRkernel, page across the complete frame, and apply view-only sorts. Explicit R
-  row names appear in the grid gutter and stay with their source rows when sorted. Filters, profiles, cleaning,
-  exports, and Quarto/R Markdown are not part of this first slice.
+  `data.table` objects directly from IRkernel, page across the complete frame, apply view-only sorts, and calculate
+  column and dataset profiles. Profiles include missing and distinct counts, common values, numeric statistics and
+  histograms, text lengths, boolean counts, and date ranges. Explicit R row names appear in the grid gutter and stay
+  with their source rows when sorted. Filters, cleaning, exports, and Quarto/R Markdown are not available yet.
 
 ### Changed
 

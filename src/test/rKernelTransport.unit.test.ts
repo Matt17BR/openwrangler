@@ -20,6 +20,8 @@ const sessionId = "11111111-1111-4111-8111-111111111111";
 const openRequestId = "22222222-2222-4222-8222-222222222222";
 const pageRequestId = "33333333-3333-4333-8333-333333333333";
 const closeRequestId = "44444444-4444-4444-8444-444444444444";
+const summaryRequestId = "55555555-5555-4555-8555-555555555555";
+const statsRequestId = "66666666-6666-4666-8666-666666666666";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -80,6 +82,119 @@ describe("native R kernel protocol", () => {
     expect(() => decodeRKernelResponseJson(encoded, pageRequestId)).toThrow("stale or mis-correlated");
   });
 
+  it("strictly decodes bounded column profiles and dataset statistics", () => {
+    const summary = JSON.stringify({
+      transportVersion: 1,
+      requestId: summaryRequestId,
+      kind: "summary",
+      sessionId,
+      summaries: [minimalSummary()]
+    });
+    expect(decodeRKernelResponseJson(summary, summaryRequestId)).toMatchObject({
+      kind: "summary",
+      sessionId,
+      summaries: [{ columnId: "r:c:0", numeric: { exactMin: { raw: 1 } } }]
+    });
+
+    const stats = JSON.stringify({
+      transportVersion: 1,
+      requestId: statsRequestId,
+      kind: "datasetStats",
+      sessionId,
+      stats: minimalDatasetStats()
+    });
+    expect(decodeRKernelResponseJson(stats, statsRequestId)).toMatchObject({
+      kind: "datasetStats",
+      sessionId,
+      stats: { missingCells: 0, missingValuesByColumn: [{ column: "value", count: 0 }] }
+    });
+
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: 1,
+          requestId: summaryRequestId,
+          kind: "summary",
+          sessionId,
+          summaries: [{ ...minimalSummary(), extra: true }]
+        }),
+        summaryRequestId
+      )
+    ).toThrow("summary response is invalid");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: 1,
+          requestId: statsRequestId,
+          kind: "datasetStats",
+          sessionId,
+          stats: { ...minimalDatasetStats(), missingRows: -1 }
+        }),
+        statsRequestId
+      )
+    ).toThrow("dataset-statistics response is invalid");
+
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: 1,
+          requestId: summaryRequestId,
+          kind: "summary",
+          sessionId,
+          summaries: [
+            {
+              ...minimalSummary(),
+              visualization: { kind: "numeric", bins: [{ min: 1, max: 1, count: 2 }] }
+            }
+          ]
+        }),
+        summaryRequestId
+      )
+    ).toThrow("histogram counts outside");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: 1,
+          requestId: summaryRequestId,
+          kind: "summary",
+          sessionId,
+          summaries: [
+            {
+              columnId: "r:c:0",
+              column: "value",
+              type: "string",
+              rawType: "character",
+              totalCount: 1,
+              nullCount: 0,
+              nanCount: 0,
+              distinctCount: 1,
+              text: { emptyCount: 0, minLength: 1, maxLength: 1, meanLength: 1 },
+              visualization: {
+                kind: "categorical",
+                categories: [{ value: "a", count: 1 }],
+                otherCount: 1
+              },
+              topValues: [{ value: "a", count: 1 }]
+            }
+          ]
+        }),
+        summaryRequestId
+      )
+    ).toThrow("inconsistent categorical counts");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: 1,
+          requestId: statsRequestId,
+          kind: "datasetStats",
+          sessionId,
+          stats: { ...minimalDatasetStats(), missingCells: 1 }
+        }),
+        statsRequestId
+      )
+    ).toThrow("inconsistent missing-value totals");
+  });
+
   it("validates page windows and repeated stable sort identities before dispatch", () => {
     const valid = openRequest();
     expect(JSON.parse(encodeRKernelRequest(valid))).toEqual(valid);
@@ -100,6 +215,22 @@ describe("native R kernel protocol", () => {
         payload: { ...valid.payload, variableName: String.fromCharCode(0xd800) }
       })
     ).toThrow("bounded string");
+  });
+
+  it("validates projected profile identities before dispatch", () => {
+    const request: RKernelRequest = {
+      transportVersion: 1,
+      requestId: summaryRequestId,
+      kind: "getSummary",
+      payload: { sessionId, columns: [{ id: "r:c:0", name: "value" }] }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    expect(() =>
+      encodeRKernelRequest({
+        ...request,
+        payload: { ...request.payload, columns: [...request.payload.columns, ...request.payload.columns] }
+      })
+    ).toThrow("repeated identity");
   });
 
   it("rejects extra or malformed request fields before kernel dispatch", () => {
@@ -243,12 +374,26 @@ describe("exact IRkernel session transport", () => {
     await expect(transport.dispose()).resolves.toBeUndefined();
   });
 
-  it("opens, pages, and closes one immutable R session on its exact kernel", async () => {
+  it("opens, pages, profiles, and closes one immutable R session on its exact kernel", async () => {
     const requests: RKernelRequest[] = [];
     const controller = controlledRKernel(async (request) => {
       requests.push(request);
       if (request.kind === "closeSession") {
         return response(request, { kind: "closed", sessionId: request.payload.sessionId });
+      }
+      if (request.kind === "getSummary") {
+        return response(request, {
+          kind: "summary",
+          sessionId: request.payload.sessionId,
+          summaries: [minimalSummary()]
+        });
+      }
+      if (request.kind === "getDatasetStats") {
+        return response(request, {
+          kind: "datasetStats",
+          sessionId: request.payload.sessionId,
+          stats: minimalDatasetStats()
+        });
       }
       return response(request, {
         kind: "page",
@@ -259,7 +404,14 @@ describe("exact IRkernel session transport", () => {
     mockKernel(controller.kernel);
     const document = notebookDocument();
     setOpenNotebookDocuments(document);
-    const transport = createTransport(document, [sessionId, openRequestId, pageRequestId, closeRequestId]);
+    const transport = createTransport(document, [
+      sessionId,
+      openRequestId,
+      pageRequestId,
+      summaryRequestId,
+      statsRequestId,
+      closeRequestId
+    ]);
 
     await expect(transport.open("frame", pageWindow())).resolves.toMatchObject({
       sessionId,
@@ -268,12 +420,22 @@ describe("exact IRkernel session transport", () => {
     await expect(transport.getPage(sessionId, pageWindow([sortRule()]))).resolves.toMatchObject({
       page: { rows: [{ id: "r:r:0" }] }
     });
+    await expect(transport.getSummary(sessionId, [{ id: "r:c:0", name: "value" }])).resolves.toMatchObject([
+      { columnId: "r:c:0", totalCount: 1 }
+    ]);
+    await expect(transport.getDatasetStats(sessionId)).resolves.toEqual(minimalDatasetStats());
     await expect(transport.close(sessionId)).resolves.toBeUndefined();
     await expect(transport.dispose()).resolves.toBeUndefined();
 
     expect(controller.bootstrapExecutions()).toBe(1);
     expect(controller.teardownExecutions()).toBe(1);
-    expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage", "closeSession"]);
+    expect(requests.map((request) => request.kind)).toEqual([
+      "openSession",
+      "getPage",
+      "getSummary",
+      "getDatasetStats",
+      "closeSession"
+    ]);
     expect(requests[1]).toMatchObject({
       payload: { page: { sorts: [{ column: { id: "r:c:0", name: "value" } }] } }
     });
@@ -884,6 +1046,32 @@ function minimalFramePage() {
         }
       ]
     }
+  } as const;
+}
+
+function minimalSummary() {
+  const exact = { kind: "integer", raw: 1, display: "1", isNull: false, isNaN: false } as const;
+  return {
+    columnId: "r:c:0",
+    column: "value",
+    type: "integer",
+    rawType: "integer",
+    totalCount: 1,
+    nullCount: 0,
+    nanCount: 0,
+    distinctCount: 1,
+    numeric: { min: 1, max: 1, mean: 1, median: 1, exactMin: exact, exactMax: exact },
+    visualization: { kind: "numeric", bins: [{ min: 1, max: 1, count: 1 }] },
+    topValues: [{ value: "1", count: 1 }]
+  } as const;
+}
+
+function minimalDatasetStats() {
+  return {
+    missingCells: 0,
+    missingRows: 0,
+    duplicateRows: 0,
+    missingValuesByColumn: [{ column: "value", count: 0 }]
   } as const;
 }
 

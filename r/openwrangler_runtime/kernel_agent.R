@@ -38,6 +38,9 @@ openwrangler_r_kernel_agent <- local({
     } else if (identical(source_code, "stale-column")) {
       code <- "stale_column"
       recoverable <- TRUE
+    } else if (identical(source_code, "profile-too-large")) {
+      code <- "profile_too_large"
+      recoverable <- TRUE
     } else if (source_code %in% c("page-too-large", "payload-too-large")) {
       code <- "page_too_large"
       recoverable <- TRUE
@@ -161,6 +164,29 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  decode_column_references <- function(value, limits) {
+    if (
+      !is.list(value) ||
+        is.object(value) ||
+        length(value) == 0L ||
+        length(value) > limits$profileColumns
+    ) {
+      abort("invalid_request", "request.payload.columns must be a bounded non-empty array")
+    }
+    references <- lapply(seq_along(value), function(index) {
+      reference <- exact_record(value[[index]], c("id", "name"), sprintf("columns[%d]", index))
+      list(
+        id = bounded_text(reference$id, sprintf("columns[%d].id", index), maximum_identifier_bytes),
+        name = bounded_text(reference$name, sprintf("columns[%d].name", index), maximum_variable_name_bytes)
+      )
+    })
+    ids <- vapply(references, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    if (anyDuplicated(ids)) {
+      abort("invalid_request", "request.payload.columns contains a repeated column identity")
+    }
+    references
+  }
+
   materialize <- function(frame_contract, capture, page) {
     frame_contract$materialize_view_page(
       capture,
@@ -173,7 +199,12 @@ openwrangler_r_kernel_agent <- local({
   }
 
   new_agent <- function(frame_contract, source_environment = .GlobalEnv) {
-    required_functions <- c("capture_live_frame", "materialize_view_page")
+    required_functions <- c(
+      "capture_live_frame",
+      "materialize_view_page",
+      "materialize_summaries",
+      "materialize_dataset_stats"
+    )
     if (
       !is.list(frame_contract) ||
         !all(vapply(required_functions, function(name) is.function(frame_contract[[name]]), logical(1L))) ||
@@ -252,6 +283,39 @@ openwrangler_r_kernel_agent <- local({
           kind = "page",
           sessionId = session_id,
           page = materialize(frame_contract, capture, page)
+        ))
+      }
+
+      if (identical(kind, "getSummary")) {
+        payload <- exact_record(request$payload, c("sessionId", "columns"), "request.payload")
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        columns <- decode_column_references(payload$columns, frame_contract$limits)
+        capture <- get(session_id, envir = sessions, inherits = FALSE)
+        return(list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "summary",
+          sessionId = session_id,
+          summaries = frame_contract$materialize_summaries(capture, columns)
+        ))
+      }
+
+      if (identical(kind, "getDatasetStats")) {
+        payload <- exact_record(request$payload, c("sessionId"), "request.payload")
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        capture <- get(session_id, envir = sessions, inherits = FALSE)
+        return(list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "datasetStats",
+          sessionId = session_id,
+          stats = frame_contract$materialize_dataset_stats(capture)
         ))
       }
 

@@ -1,4 +1,6 @@
 import { decodeRFramePage, R_FRAME_CONTRACT_LIMITS, type RFramePageContract } from "./rFrameContract";
+import type { ColumnSummary, DatasetStats } from "../../shared/protocol";
+import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
 export const R_KERNEL_TRANSPORT_VERSION = 1 as const;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
@@ -12,6 +14,7 @@ export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "invalid_request",
   "missing_package",
   "page_too_large",
+  "profile_too_large",
   "runtime_error",
   "stale_column",
   "unknown_session",
@@ -36,6 +39,11 @@ export interface RKernelPageWindow {
   readonly sorts: readonly RKernelSortRule[];
 }
 
+export interface RKernelColumnReference {
+  readonly id: string;
+  readonly name: string;
+}
+
 export type RKernelRequest =
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -48,6 +56,18 @@ export type RKernelRequest =
       requestId: string;
       kind: "getPage";
       payload: Readonly<{ sessionId: string; page: RKernelPageWindow }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "getSummary";
+      payload: Readonly<{ sessionId: string; columns: readonly RKernelColumnReference[] }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "getDatasetStats";
+      payload: Readonly<{ sessionId: string }>;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -69,6 +89,20 @@ export type RKernelResponse =
       requestId: string;
       kind: "closed";
       sessionId: string;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "summary";
+      sessionId: string;
+      summaries: readonly ColumnSummary[];
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "datasetStats";
+      sessionId: string;
+      stats: DatasetStats;
     }>
   | RKernelErrorResponse;
 
@@ -109,6 +143,65 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       kind: "page" as const,
       sessionId: identifier(record.sessionId, "response.sessionId"),
       page: decodeRFramePage(record.page)
+    });
+  }
+  if (kind === "summary") {
+    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "summaries"]);
+    validateEnvelope(record, expected);
+    const candidate: unknown = {
+      kind: "summary",
+      revision: 0,
+      viewRequestId: "r-kernel-profile",
+      summaries: record.summaries
+    };
+    if (!isOpenWranglerResponse(candidate) || candidate.kind !== "summary") {
+      fail("R kernel summary response is invalid.");
+    }
+    if (
+      candidate.summaries.length === 0 ||
+      candidate.summaries.length > R_FRAME_CONTRACT_LIMITS.profileColumns ||
+      candidate.summaries.some(
+        (summary) =>
+          summary.topValues.length > R_FRAME_CONTRACT_LIMITS.topValues ||
+          (summary.visualization?.kind === "numeric" &&
+            summary.visualization.bins.length > R_FRAME_CONTRACT_LIMITS.histogramBins) ||
+          (summary.visualization?.kind === "categorical" &&
+            summary.visualization.categories.length > R_FRAME_CONTRACT_LIMITS.topValues)
+      )
+    ) {
+      fail("R kernel summary response exceeds its profile limits.");
+    }
+    validateRColumnSummaries(candidate.summaries);
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "summary" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      summaries: Object.freeze(candidate.summaries)
+    });
+  }
+  if (kind === "datasetStats") {
+    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "stats"]);
+    validateEnvelope(record, expected);
+    const candidate: unknown = {
+      kind: "datasetStats",
+      revision: 0,
+      viewRequestId: "r-kernel-profile",
+      stats: record.stats
+    };
+    if (!isOpenWranglerResponse(candidate) || candidate.kind !== "datasetStats") {
+      fail("R kernel dataset-statistics response is invalid.");
+    }
+    if (candidate.stats.missingValuesByColumn.length > R_FRAME_CONTRACT_LIMITS.columns) {
+      fail("R kernel dataset-statistics response exceeds the column limit.");
+    }
+    validateRDatasetStats(candidate.stats);
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "datasetStats" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      stats: Object.freeze(candidate.stats)
     });
   }
   if (kind === "closed") {
@@ -163,12 +256,143 @@ function validateRequest(request: RKernelRequest): void {
     validatePage(payload.page);
     return;
   }
+  if (record.kind === "getSummary") {
+    const payload = exactRecord(record.payload, ["sessionId", "columns"], "R kernel summary payload");
+    identifier(payload.sessionId, "request.payload.sessionId");
+    validateColumnReferences(payload.columns);
+    return;
+  }
+  if (record.kind === "getDatasetStats") {
+    const payload = exactRecord(record.payload, ["sessionId"], "R kernel dataset-statistics payload");
+    identifier(payload.sessionId, "request.payload.sessionId");
+    return;
+  }
   if (record.kind === "closeSession") {
     const payload = exactRecord(record.payload, ["sessionId"], "R kernel close payload");
     identifier(payload.sessionId, "request.payload.sessionId");
     return;
   }
   fail("R kernel request has an unsupported kind.");
+}
+
+function validateColumnReferences(value: unknown): void {
+  if (!Array.isArray(value) || value.length === 0 || value.length > R_FRAME_CONTRACT_LIMITS.profileColumns) {
+    fail("R kernel summary columns exceed the supported limit.");
+  }
+  const seen = new Set<string>();
+  for (const [index, candidate] of value.entries()) {
+    const reference = exactRecord(candidate, ["id", "name"], `R kernel summary column ${index}`);
+    const id = boundedText(reference.id, `request.payload.columns[${index}].id`, 128, false);
+    boundedText(reference.name, `request.payload.columns[${index}].name`, maximumVariableNameBytes, true);
+    if (seen.has(id)) fail("R kernel summary columns contain a repeated identity.");
+    seen.add(id);
+  }
+}
+
+function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
+  for (const [index, summary] of summaries.entries()) {
+    const label = `R kernel summary ${index}`;
+    boundedText(summary.columnId, `${label}.columnId`, 128, false);
+    boundedText(summary.column, `${label}.column`, maximumVariableNameBytes, true);
+    boundedText(summary.rawType, `${label}.rawType`, maximumVariableNameBytes, false);
+    if (summary.totalCount > R_FRAME_CONTRACT_LIMITS.profileRows) {
+      fail(`${label} exceeds the row profiling limit.`);
+    }
+    const present = summary.totalCount - summary.nullCount - summary.nanCount;
+    if (
+      present < 0 ||
+      summary.distinctCount === undefined ||
+      (summary.distinctCount !== undefined && summary.distinctCount > present) ||
+      (summary.distinctCount !== undefined &&
+        summary.topValues.length !== Math.min(R_FRAME_CONTRACT_LIMITS.topValues, summary.distinctCount))
+    ) {
+      fail(`${label} has inconsistent value counts.`);
+    }
+    let topValueCount = 0;
+    for (const [valueIndex, entry] of summary.topValues.entries()) {
+      boundedText(entry.value, `${label}.topValues[${valueIndex}].value`, R_FRAME_CONTRACT_LIMITS.textBytes, true);
+      if (entry.count <= 0 || entry.selectionValue !== undefined) {
+        fail(`${label} has an invalid native R top value.`);
+      }
+      topValueCount += entry.count;
+    }
+    if (topValueCount > present) fail(`${label} has top-value counts outside the column.`);
+    if ((summary.type === "string") !== (summary.text !== undefined)) {
+      fail(`${label} has text statistics for the wrong column type.`);
+    }
+
+    const visualization = summary.visualization;
+    if (!visualization) {
+      if (
+        summary.type === "boolean" ||
+        summary.type === "string" ||
+        summary.type === "date" ||
+        summary.type === "datetime"
+      ) {
+        fail(`${label} is missing its native R visualization.`);
+      }
+      continue;
+    }
+    if (visualization.kind === "numeric") {
+      if (summary.type !== "integer" && summary.type !== "float" && summary.type !== "duration") {
+        fail(`${label} has a numeric visualization for the wrong column type.`);
+      }
+      let binCount = 0;
+      let previousMaximum: number | undefined;
+      for (const bin of visualization.bins) {
+        if (bin.min > bin.max || (previousMaximum !== undefined && bin.min !== previousMaximum)) {
+          fail(`${label} has unordered numeric histogram bins.`);
+        }
+        previousMaximum = bin.max;
+        binCount += bin.count;
+      }
+      if (binCount > present) fail(`${label} has histogram counts outside the column.`);
+    } else if (visualization.kind === "boolean") {
+      if (summary.type !== "boolean" || visualization.trueCount + visualization.falseCount !== present) {
+        fail(`${label} has inconsistent boolean counts.`);
+      }
+    } else if (visualization.kind === "categorical") {
+      const categoryValues = new Set(visualization.categories.map((entry) => entry.value));
+      if (
+        summary.type !== "string" ||
+        categoryValues.size !== visualization.categories.length ||
+        visualization.categories.length !== summary.topValues.length ||
+        visualization.categories.some(
+          (entry, categoryIndex) =>
+            entry.value !== summary.topValues[categoryIndex]?.value ||
+            entry.count !== summary.topValues[categoryIndex]?.count ||
+            entry.selectionValue !== undefined
+        ) ||
+        visualization.categories.reduce((count, entry) => count + entry.count, 0) + visualization.otherCount !== present
+      ) {
+        fail(`${label} has inconsistent categorical counts.`);
+      }
+    } else {
+      if (summary.type !== "date" && summary.type !== "datetime") {
+        fail(`${label} has a datetime visualization for the wrong column type.`);
+      }
+      const hasMinimum = visualization.min !== undefined;
+      const hasMaximum = visualization.max !== undefined;
+      if ((present === 0 && (hasMinimum || hasMaximum)) || (present > 0 && (!hasMinimum || !hasMaximum))) {
+        fail(`${label} has inconsistent datetime bounds.`);
+      }
+      if (visualization.min !== undefined && visualization.max !== undefined) {
+        boundedText(visualization.min, `${label}.visualization.min`, R_FRAME_CONTRACT_LIMITS.textBytes, false);
+        boundedText(visualization.max, `${label}.visualization.max`, R_FRAME_CONTRACT_LIMITS.textBytes, false);
+      }
+    }
+  }
+}
+
+function validateRDatasetStats(stats: DatasetStats): void {
+  let missingCells = 0;
+  for (const [index, entry] of stats.missingValuesByColumn.entries()) {
+    boundedText(entry.column, `R kernel dataset stats column ${index}`, maximumVariableNameBytes, true);
+    missingCells += entry.count;
+  }
+  if (missingCells !== stats.missingCells) {
+    fail("R kernel dataset statistics have inconsistent missing-value totals.");
+  }
 }
 
 function validatePage(value: unknown): void {
