@@ -26,6 +26,11 @@ their branches are integrated or abandoned.
 
 ## Non-negotiable invariants
 
+Scope note for invariant 40: ordinary native editor acceptance keeps the 300-second hard limit and 180-second
+inactivity limit. The historical comparison keeps its fixed reproduction cap. Only the user-confirmed manual large
+Data Wrangler comparison may introduce a derived longer hard cap; it keeps per-column progress under the same
+inactivity limit and never runs in CI or on a schedule.
+
 1. Pandas, Polars, DuckDB, and PySpark paths remain engine-native. Polars code must never call `to_pandas()`; DuckDB code must never convert through Pandas, Polars, or Arrow. PySpark is a live-notebook, viewing-only backend: it must never call `toPandas()`, `toArrow()`, convert through a local dataframe engine, or perform an unbounded `collect()`/iterator. Projection, filtering, sorting, counting, and aggregation stay in Spark. Container profiles use canonical orderable native keys. A page must pass its Spark-side transport-byte preflight before value collection and then remain within its cell, strict-protocol-byte, complex-node, and nesting-depth limits; only that bounded page/value sample or a fixed-size aggregate result may cross into the kernel process.
 2. Viewing filters/sorts are separate from committed cleaning steps and never alter the source.
 3. User data is not overwritten. Exports target a separate destination and use atomic replacement.

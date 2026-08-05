@@ -56,12 +56,27 @@ const ENGINES = Object.freeze(["pandas", "polars"]);
 const HASH = /^[0-9a-f]{64}$/u;
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
-const LARGE_TIMEOUTS_MS = Object.freeze({
+const LARGE_EDITOR_STARTUP_CLEANUP_MS = 120_000;
+const LARGE_STAGE_TIMEOUTS_MS = Object.freeze({
   preAction: 120_000,
   inlinePreview: 120_000,
   workbenchOpen: 180_000,
-  completeProfile: 600_000,
-  editorPhase: 600_000,
+  completeProfile: 600_000
+});
+
+export function largeComparisonEditorPhaseTimeout(timeouts = LARGE_STAGE_TIMEOUTS_MS) {
+  return (
+    timeouts.preAction * 2 +
+    timeouts.inlinePreview +
+    timeouts.workbenchOpen +
+    timeouts.completeProfile +
+    LARGE_EDITOR_STARTUP_CLEANUP_MS
+  );
+}
+
+export const LARGE_TIMEOUTS_MS = Object.freeze({
+  ...LARGE_STAGE_TIMEOUTS_MS,
+  editorPhase: largeComparisonEditorPhaseTimeout(),
   neutralDriver: 2_400_000,
   nativeLoad: 900_000
 });

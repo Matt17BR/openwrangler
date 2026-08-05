@@ -2342,6 +2342,9 @@ async function executeMeasuredIteration(
         expectedColumns: request.cell.columns,
         completedColumns: index + 1
       });
+      recordProgress(
+        `comparison:${request.trialId}:sample-${sampleIndex}:profile-${index + 1}-of-${request.cell.columns}`
+      );
     }
     milestones.mark("profiles-complete");
     recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:profiles-complete`);

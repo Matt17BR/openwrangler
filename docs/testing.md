@@ -573,6 +573,12 @@ The large commands require the literal `--confirm-large-study` flag. They are no
 scheduled, or local default workflow. Tests use small row counts through the Python API and fake editor runners; they
 never generate the full fixture.
 
+Normal native editor acceptance keeps its 300-second hard deadline and 180-second inactivity deadline. The manually
+confirmed large comparison is the only new exception: its editor cap is the sum of its two pre-action, inline,
+workbench, and profiling deadlines plus 120 seconds for startup and cleanup (currently 1,260 seconds). It still uses
+the 180-second inactivity guard and writes a checkpoint after every completed profile column. The historical v1.2.1
+reproduction retains the 600-second cap already present on `main`; it does not define the normal acceptance limit.
+
 The study times native file loading separately from the resident-dataframe notebook UI. Each editor run measures
 inline preview, usable workbench grid, Run Cell to that grid, all-column profiling, and process-tree PSS. One trial
 per engine and repetition owns the native load, for five Pandas and five Polars loads grouped by engine rather than

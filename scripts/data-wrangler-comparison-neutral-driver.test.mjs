@@ -6,12 +6,19 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   attachComparisonSampleMemory,
+  comparisonEditorPhaseTimeout,
   comparisonProductSettings,
   comparisonHostRequest,
   summarizePss,
   verifyComparisonRequestSource,
   verifyComparisonSource
 } from "./data-wrangler-comparison-neutral-driver.mjs";
+
+test("uses the study-specific editor cap for each profile contract", () => {
+  assert.equal(comparisonEditorPhaseTimeout("integer-sentinel"), 600_000);
+  assert.equal(comparisonEditorPhaseTimeout("mixed-sentinels-v1"), 1_260_000);
+  assert.throws(() => comparisonEditorPhaseTimeout("unknown"), /profile contract is unknown/u);
+});
 
 test("enables each product's public notebook renderer for Pandas and Polars", () => {
   assert.deepEqual(comparisonProductSettings("open-wrangler"), {

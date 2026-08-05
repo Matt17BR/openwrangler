@@ -28,6 +28,7 @@ import {
   writeEditorSettings
 } from "./editor-acceptance.mjs";
 import { startLinuxPssSampler } from "./linux-pss-sampler.mjs";
+import { LARGE_TIMEOUTS_MS, STUDY_TIMEOUTS_MS } from "./data-wrangler-comparison-study.mjs";
 import {
   COMPARISON_COMMON_EXTENSION_LOCK,
   DATA_WRANGLER_MARKETPLACE_EXTENSION,
@@ -52,6 +53,12 @@ export function comparisonProductSettings(product) {
           "polars.dataframe.frame.DataFrame": true
         }
       };
+}
+
+export function comparisonEditorPhaseTimeout(profileContract) {
+  if (profileContract === "integer-sentinel") return STUDY_TIMEOUTS_MS.editorPhase;
+  if (profileContract === "mixed-sentinels-v1") return LARGE_TIMEOUTS_MS.editorPhase;
+  throw new TypeError("Comparison profile contract is unknown.");
 }
 
 export async function runDataWranglerComparisonNeutralDriver({ requestPath, outputPath }) {
@@ -403,7 +410,7 @@ function validateRequest(request) {
     !SHA256.test(request.editor?.cliSha256 ?? "") ||
     !isAbsolute(request.python?.path) ||
     !SHA256.test(request.python?.sha256 ?? "") ||
-    request.timeoutsMs?.editorPhase !== 600_000
+    request.timeoutsMs?.editorPhase !== comparisonEditorPhaseTimeout(request.cell.profileContract)
   ) {
     throw new TypeError("Neutral comparison request is malformed.");
   }

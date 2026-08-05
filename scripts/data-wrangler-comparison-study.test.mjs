@@ -10,6 +10,7 @@ import {
   LARGE_COLUMNS,
   LARGE_FIXTURE_PROTOCOL,
   LARGE_ROWS,
+  LARGE_TIMEOUTS_MS,
   SMOKE_REPETITIONS,
   STUDY_CELLS,
   STUDY_PROTOCOL,
@@ -21,6 +22,7 @@ import {
   buildLargeStudyManifest,
   buildStudyManifest,
   createDataWranglerComparisonSchedule,
+  largeComparisonEditorPhaseTimeout,
   loadStudyResults,
   prepareTrial,
   removeStaleTrialDirectories,
@@ -33,6 +35,18 @@ import {
 } from "./data-wrangler-comparison-study.mjs";
 
 const SHA = "a".repeat(64);
+
+test("derives the large editor cap from its bounded stages and overhead", () => {
+  const innerDeadlines =
+    LARGE_TIMEOUTS_MS.preAction * 2 +
+    LARGE_TIMEOUTS_MS.inlinePreview +
+    LARGE_TIMEOUTS_MS.workbenchOpen +
+    LARGE_TIMEOUTS_MS.completeProfile;
+  assert.equal(innerDeadlines, 1_140_000);
+  assert.equal(LARGE_TIMEOUTS_MS.editorPhase, innerDeadlines + 120_000);
+  assert.equal(LARGE_TIMEOUTS_MS.editorPhase, largeComparisonEditorPhaseTimeout(LARGE_TIMEOUTS_MS));
+  assert.ok(LARGE_TIMEOUTS_MS.neutralDriver > LARGE_TIMEOUTS_MS.editorPhase);
+});
 
 test("writes diagnostic report bytes before enforcing release completeness", () => {
   const root = mkdtempSync(join(tmpdir(), "ow-comparison-report-"));

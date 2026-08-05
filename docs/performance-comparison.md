@@ -64,6 +64,11 @@ failures; a short README table may show the usable summaries without repeating t
 Five values are enough for a practical manual comparison but not for a useful p95, so the report does not calculate
 one. It is a release review, not a job in normal pull-request CI and not a scheduled task on a developer laptop.
 
+The large run's hard editor limit is calculated from both pre-action deadlines, the inline, workbench, and profiling
+deadlines, and another two minutes for editor startup and cleanup. With the current stage limits, that is 1,260
+seconds. Completing each column writes a progress checkpoint; three minutes without a checkpoint still stops the
+run. Normal editor acceptance tests keep their 300-second hard limit.
+
 ## Run the study
 
 Create an empty directory on a filesystem with enough free space. Generate the fixture only when the machine is idle
