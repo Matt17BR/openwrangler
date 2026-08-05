@@ -595,8 +595,10 @@ not stop or get retried. The report needs all 20 slots, at least four successes 
 and at least four of five native-load successes per engine. Each measurement includes every run that reached its end
 point, even if a later step failed. Every failure must be explained and checked before publication.
 
-Immediately before every new editor session the runner checks available memory, free disk, AC power, and the recorded
-CPU governor. A failed check creates no trial result and starts no editor.
+Immediately before every new editor session the runner checks available memory, free disk, power state, and the
+recorded CPU governor. A host with a battery must be on AC. Battery-less hosts record `not-applicable`, and hosts that
+do not expose a cpufreq governor record `not-exposed`; those values must remain unchanged. A failed check creates no
+trial result and starts no editor.
 
 Run these focused checks while changing the new method:
 

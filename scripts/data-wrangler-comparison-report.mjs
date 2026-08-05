@@ -535,7 +535,7 @@ function validateStudyManifest(manifest) {
   }
   assertPositiveInteger(machine.logicalCpuCount, "study machine logical CPU count");
   assertPositiveInteger(machine.totalMemoryBytes, "study machine total memory");
-  if (!["ac", "battery", "unknown"].includes(machine.powerSource)) {
+  if (!["ac", "battery", "not-applicable", "unknown"].includes(machine.powerSource)) {
     throw new TypeError("Study machine power source is invalid.");
   }
   exactKeys(provenance?.tools, DATA_WRANGLER_STUDY_TOOL_NAMES, "study tool provenance");

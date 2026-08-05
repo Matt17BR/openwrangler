@@ -26,10 +26,11 @@ type, the seed, file hash, size, compression settings, and row-group layout. No 
 
 Generation stops before writing if Linux reports less than 40 GiB of available memory or the output filesystem has
 less than 25 GiB free. It also checks that at least 15 GiB remains before keeping the finished fixture. The study
-checks for that 15 GiB reserve immediately before every editor run and also requires the same machine, AC power, and
-CPU governor used when the study began. A changed condition stops the command before another run starts. These checks
-are conservative because a Pandas load can require much more memory than the compressed source. The generator refuses
-to replace an existing file.
+checks for that 15 GiB reserve immediately before every editor run. A machine with a battery must be on AC; a
+battery-less host records `not-applicable`. A host without a cpufreq governor records `not-exposed`. The recorded
+machine, power, and governor values must remain unchanged throughout the study. These checks are conservative because
+a Pandas load can require much more memory than the compressed source. The generator refuses to replace an existing
+file.
 
 ## What is measured
 
@@ -72,8 +73,8 @@ run. Normal editor acceptance tests keep their 300-second hard limit.
 
 ## Run the study
 
-Create an empty directory on a filesystem with enough free space. Generate the fixture only when the machine is idle
-and connected to power:
+Create an empty directory on a filesystem with enough free space. Generate the fixture only when the machine is idle;
+connect a laptop to power first:
 
 ```bash
 npm run comparison:large:fixture -- \

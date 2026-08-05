@@ -885,8 +885,11 @@ export function assertLargeRunEnvironment(environment, expectedMachine) {
   if (digest(environment?.machine) !== digest(expectedMachine)) {
     throw new Error("Machine, power source, or CPU governor changed during the large study.");
   }
-  if (environment.machine.powerSource !== "ac" || environment.machine.cpuGovernor === "unknown") {
-    throw new Error("The large study requires AC power and a readable CPU governor.");
+  if (!["ac", "not-applicable"].includes(environment.machine.powerSource)) {
+    throw new Error("The large study requires AC power when the machine has a battery.");
+  }
+  if (["", "unknown"].includes(environment.machine.cpuGovernor)) {
+    throw new Error("The large study could not determine whether the CPU governor is exposed.");
   }
   if (
     environment.capacity?.availableMemoryBytes < 40 * 1024 ** 3 ||
@@ -1065,6 +1068,7 @@ async function validateFixtureInputs(python, csv, parquet) {
 export function inspectMachineEnvironment() {
   const cpuList = cpus();
   if (cpuList.length === 0 || totalmem() <= 0) throw new Error("Machine provenance is unavailable.");
+  const cpuGovernor = readOptionalSystemText("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor");
   return {
     os: platform(),
     osRelease: release(),
@@ -1073,7 +1077,7 @@ export function inspectMachineEnvironment() {
     logicalCpuCount: cpuList.length,
     totalMemoryBytes: totalmem(),
     powerSource: linuxPowerSource(),
-    cpuGovernor: readOptionalSystemText("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor") ?? "unknown"
+    cpuGovernor: cpuGovernor || "not-exposed"
   };
 }
 
@@ -1081,14 +1085,34 @@ function linuxPowerSource() {
   if (platform() !== "linux") return "unknown";
   const root = "/sys/class/power_supply";
   try {
-    const online = readdirSync(root).some((name) => {
-      const type = readOptionalSystemText(join(root, name, "type"));
-      return ["Mains", "USB", "USB_C"].includes(type) && readOptionalSystemText(join(root, name, "online")) === "1";
-    });
-    return online ? "ac" : "battery";
+    return classifyLinuxPowerSupplies(
+      readdirSync(root).map((name) => ({
+        type: readOptionalSystemText(join(root, name, "type")),
+        online: readOptionalSystemText(join(root, name, "online"))
+      }))
+    );
   } catch {
     return "unknown";
   }
+}
+
+export function classifyLinuxPowerSupplies(supplies) {
+  if (
+    !Array.isArray(supplies) ||
+    supplies.some(
+      (supply) =>
+        !supply ||
+        typeof supply !== "object" ||
+        typeof supply.type !== "string" ||
+        (supply.online !== undefined && typeof supply.online !== "string")
+    )
+  ) {
+    return "unknown";
+  }
+  if (!supplies.some(({ type }) => type === "Battery")) return "not-applicable";
+  return supplies.some(({ type, online }) => ["Mains", "USB", "USB_C"].includes(type) && online === "1")
+    ? "ac"
+    : "battery";
 }
 
 function readOptionalSystemText(path) {
@@ -1305,7 +1329,7 @@ function validateMachine(value) {
     value.logicalCpuCount < 1 ||
     !Number.isSafeInteger(value.totalMemoryBytes) ||
     value.totalMemoryBytes < 1 ||
-    !["ac", "battery", "unknown"].includes(value.powerSource) ||
+    !["ac", "battery", "not-applicable", "unknown"].includes(value.powerSource) ||
     typeof value.cpuGovernor !== "string"
   ) {
     throw new TypeError("Study machine provenance is incomplete.");

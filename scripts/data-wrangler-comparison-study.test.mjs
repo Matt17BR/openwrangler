@@ -22,9 +22,11 @@ import {
   TRIAL_RESULT_PROTOCOL,
   WARM_REPETITIONS,
   assertCompleteLargeReport,
+  assertLargeRunEnvironment,
   buildLargeComparisonReport,
   buildLargeStudyManifest,
   buildStudyManifest,
+  classifyLinuxPowerSupplies,
   createDataWranglerComparisonSchedule,
   largeComparisonEditorPhaseTimeout,
   loadLargeTrials,
@@ -52,6 +54,42 @@ test("derives the large editor cap from its bounded stages and overhead", () => 
   assert.equal(LARGE_TIMEOUTS_MS.editorPhase, innerDeadlines + 120_000);
   assert.equal(LARGE_TIMEOUTS_MS.editorPhase, largeComparisonEditorPhaseTimeout(LARGE_TIMEOUTS_MS));
   assert.ok(LARGE_TIMEOUTS_MS.neutralDriver > LARGE_TIMEOUTS_MS.editorPhase);
+});
+
+test("classifies battery-less hosts separately from laptops on battery", () => {
+  assert.equal(classifyLinuxPowerSupplies([]), "not-applicable");
+  assert.equal(classifyLinuxPowerSupplies([{ type: "Mains", online: "1" }]), "not-applicable");
+  assert.equal(classifyLinuxPowerSupplies([{ type: "Battery" }, { type: "Mains", online: "1" }]), "ac");
+  assert.equal(classifyLinuxPowerSupplies([{ type: "Battery" }, { type: "Mains", online: "0" }]), "battery");
+  assert.equal(classifyLinuxPowerSupplies([{ type: undefined }]), "unknown");
+});
+
+test("large runs accept stable VM states but still require AC on battery hosts", () => {
+  const machine = {
+    ...largeProvenanceFixture().machine,
+    powerSource: "not-applicable",
+    cpuGovernor: "not-exposed"
+  };
+  const capacity = { availableMemoryBytes: 48 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 };
+  assert.doesNotThrow(() => assertLargeRunEnvironment({ machine, capacity }, machine));
+
+  const acMachine = { ...machine, powerSource: "ac" };
+  assert.doesNotThrow(() => assertLargeRunEnvironment({ machine: acMachine, capacity }, acMachine));
+  const batteryMachine = { ...machine, powerSource: "battery" };
+  assert.throws(() => assertLargeRunEnvironment({ machine: batteryMachine, capacity }, batteryMachine), /requires AC/u);
+  assert.throws(
+    () => assertLargeRunEnvironment({ machine: { ...machine, cpuGovernor: "performance" }, capacity }, machine),
+    /changed during the large study/u
+  );
+  assert.throws(
+    () =>
+      assertLargeRunEnvironment({ machine, capacity: { ...capacity, availableMemoryBytes: 39 * 1024 ** 3 } }, machine),
+    /memory or disk space/u
+  );
+  assert.throws(
+    () => assertLargeRunEnvironment({ machine, capacity: { ...capacity, freeDiskBytes: 14 * 1024 ** 3 } }, machine),
+    /memory or disk space/u
+  );
 });
 
 test("writes diagnostic report bytes before enforcing release completeness", () => {
