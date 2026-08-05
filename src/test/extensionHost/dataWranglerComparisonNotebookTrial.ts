@@ -1919,7 +1919,7 @@ async function waitForOpenWranglerProfile(
   do {
     if ((await drawer.count().catch(() => 0)) === 1 && (await drawer.isVisible().catch(() => false))) {
       const heading = drawer.getByRole("heading", { name: column, exact: true });
-      const drawerText = (await drawer.textContent().catch(() => "")) ?? "";
+      const drawerText = await drawer.innerText().catch(() => "");
       const headingVisible =
         (await heading.count().catch(() => 0)) === 1 && (await heading.isVisible().catch(() => false));
       const complete = openWranglerProfileTextReady({

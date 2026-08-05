@@ -12,6 +12,7 @@ import {
   mixedProfileTextReady,
   observePointerReady,
   observeVisibleFullShape,
+  openWranglerProfileTextReady,
   validateComparisonNotebookLayout,
   validateComparisonTrialRequest,
   validateComparisonTrialResult,
@@ -408,6 +409,48 @@ describe("public readiness oracles", () => {
         text: "is_active Boolean Profiling Missing 2% Distinct 2 True False"
       })
     ).toBe(false);
+  });
+
+  it("recognizes the rendered million-row Open Wrangler profile panel", () => {
+    expect(
+      openWranglerProfileTextReady({
+        column: "net_revenue_usd",
+        contract: "mixed-sentinels-v1",
+        minimum: 0,
+        maximum: 999_999,
+        text: [
+          "Column profiles",
+          "Column",
+          "Dataset",
+          "Filters",
+          "Selected column",
+          "net_revenue_usd",
+          "float64",
+          "Exact statistics",
+          "Exact distribution",
+          "Rows",
+          "1,000,000",
+          "Null",
+          "0",
+          "NaN",
+          "34,483",
+          "Distinct",
+          "965,517",
+          "Min",
+          "-900,000,000",
+          "Max",
+          "900,000,000",
+          "Mean",
+          "-0.1033",
+          "Median",
+          "0.124",
+          "Std. deviation",
+          "1,295,322.1077",
+          "Distribution",
+          "-900,000,000 to 900,000,000 · 20 bins"
+        ].join("\n")
+      })
+    ).toBe(true);
   });
 
   it("recognizes a full-shape label without reading row values", () => {
