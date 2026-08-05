@@ -421,6 +421,22 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   assert.match(remoteRJourney, /assert\.equal\(setup\.remoteRunId, kernelTarget\.remote\.runId\)/u);
   assert.match(remoteRJourney, /waitForReleasedRRuntimeBindingCleanup\(notebook, cleanupEditor, phase\)/u);
   assert.doesNotMatch(writer, /hostExtensionVisible|extension\.extensionPath/u);
+
+  const setupExecution = remoteRJourney.indexOf("await executeReleasedNotebookCell(");
+  const exactRefocus = remoteRJourney.indexOf("const actionNotebookEditor = await showExactReleasedNotebook(notebook)");
+  const firstToolbarAction = remoteRJourney.indexOf("const picker = await activateReleasedNotebookVariableAction(");
+  assert.ok(
+    setupExecution >= 0 && exactRefocus > setupExecution && firstToolbarAction > exactRefocus,
+    "The first R toolbar click must refocus the exact notebook after kernel setup."
+  );
+  assert.match(
+    remoteRJourney.slice(exactRefocus, firstToolbarAction),
+    /assert\.equal\(\s*actionNotebookEditor,\s*notebookEditor,/u
+  );
+  assert.match(
+    source,
+    /\.part\.editor \.editor-group-container\.active \.notebook-editor:visible \.notebook-toolbar-container:visible/u
+  );
 });
 
 test("remote Jupyter phases receive empty private client roots without a host kernelspec", async () => {

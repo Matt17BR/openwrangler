@@ -1589,6 +1589,12 @@ async function exerciseReleasedRJupyterExtension(
       assert.equal(setup.hostname, kernelTarget.remote.hostname);
     }
 
+    const actionNotebookEditor = await showExactReleasedNotebook(notebook);
+    assert.equal(
+      actionNotebookEditor,
+      notebookEditor,
+      "The first R toolbar action must retain the exact editor used to execute setup."
+    );
     const picker = await activateReleasedNotebookVariableAction(workbench, notebook, async () => {
       const consent = await waitForReleasedJupyterConsent(workbench, testing);
       await consent.allow.click();
@@ -5708,7 +5714,7 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
   do {
     for (const frame of releasedWorkbenchFrames(workbench)) {
       try {
-        const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
+        const toolbar = activeReleasedNotebookToolbar(frame);
         const directItems = notebookToolbarCommandItems(toolbar, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
         const directCount = await directItems.count();
         assert.ok(directCount < 2, "The notebook toolbar exposed duplicate Open Wrangler variable actions.");
@@ -5738,7 +5744,7 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
             releasedNotebookLaunchSurfaceMatches(workbench, "notebook-toolbar", overflow.inventory.visible)
           );
           if (!surfaceMatches) continue;
-          const refreshedToolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
+          const refreshedToolbar = activeReleasedNotebookToolbar(frame);
           const refreshedItems = notebookToolbarCommandItems(
             refreshedToolbar,
             RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND
@@ -5843,6 +5849,12 @@ function notebookToolbarCommandItems(container: Locator, command: string): Locat
   return container.locator(`.action-item[data-command-id="${command}"]`);
 }
 
+function activeReleasedNotebookToolbar(frame: Frame): Locator {
+  return frame.locator(
+    ".part.editor .editor-group-container.active .notebook-editor:visible .notebook-toolbar-container:visible"
+  );
+}
+
 function notebookToolbarCommandAction(item: Locator, command: string): Locator {
   return item.locator(`:scope > .action-label[data-command-id="${command}"]`);
 }
@@ -5888,7 +5900,7 @@ async function releasedNotebookLaunchSurfaceMatches(
   let notebookToolbar = 0;
   let editorTitle = 0;
   for (const frame of releasedWorkbenchFrames(workbench)) {
-    const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
+    const toolbar = activeReleasedNotebookToolbar(frame);
     const title = frame.locator(".part.editor .editor-group-container.active .editor-actions:visible");
     notebookToolbar += await releasedVisibleOwnedActionCount(toolbar, "button");
     editorTitle += await releasedVisibleOwnedActionCount(title, "button");
@@ -5960,7 +5972,7 @@ async function releaseReleasedNotebookOverflowAfterInspection(overflow: Released
 
 async function probeReleasedNotebookToolbarOverflow(workbench: Page): Promise<ReleasedNotebookOverflowProbe> {
   for (const frame of releasedWorkbenchFrames(workbench)) {
-    const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
+    const toolbar = activeReleasedNotebookToolbar(frame);
     const moreItems = notebookToolbarCommandItems(toolbar, NOTEBOOK_TOOLBAR_MORE_COMMAND);
     const moreCount = await moreItems.count();
     assert.ok(moreCount < 2, "The notebook toolbar exposed duplicate More Actions buttons.");
@@ -6131,7 +6143,7 @@ async function releasedNotebookToolbarDiagnostics(
       .slice(0, NOTEBOOK_RENDERER_TARGET_LIMIT)
       .map(async (frame) => {
         const notebookEditors = frame.locator(".notebook-editor");
-        const toolbars = frame.locator(".notebook-editor .notebook-toolbar-container");
+        const toolbars = activeReleasedNotebookToolbar(frame);
         const directCommand = notebookToolbarCommandItems(toolbars, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
         const directCommandState = await releasedLocatorState(directCommand);
         const directActionLocator =
