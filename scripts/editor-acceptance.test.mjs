@@ -117,20 +117,20 @@ test("released-Jupyter Variables acceptance targets the canonical orders showcas
   );
   assert.match(source, /"orders_df = pd\.DataFrame\(\{"/u);
 
-  const cursorRemoteReadiness = source.slice(
-    source.indexOf("async function prepareCursorRemoteReleasedJupyterVariableDiscovery("),
+  const cursorRemoteRestore = source.slice(
+    source.indexOf("async function restoreCursorRemoteReleasedJupyterNotebook("),
     source.indexOf("async function waitForReleasedJupyterVariableActionReceipt(")
   );
-  const initialProbe = cursorRemoteReadiness.indexOf("let readiness = await releasedWorkbenchDiagnostics(");
-  const conditionalRefocus = cursorRemoteReadiness.indexOf(
-    "if (shouldRefocusReleasedJupyterVariableNotebook(editor, phase, readiness.activeNotebook))"
+  const focusCheck = cursorRemoteRestore.indexOf("vscode.window.activeNotebookEditor?.notebook === notebook");
+  const oneRestore = cursorRemoteRestore.indexOf("showExactReleasedNotebook(notebook)");
+  assert.ok(focusCheck >= 0);
+  assert.ok(oneRestore > focusCheck);
+  assert.equal(cursorRemoteRestore.match(/showExactReleasedNotebook\(notebook\)/gu)?.length, 1);
+  assert.doesNotMatch(cursorRemoteRestore, /jupyter\.openVariableView/u);
+  assert.match(
+    source,
+    /restoreCursorRemoteReleasedJupyterNotebook\(notebook, checkpoint\);\s*const viewerAction = await waitForReleasedJupyterVariableAction/u
   );
-  const readinessWait = cursorRemoteReadiness.indexOf("if (!releasedJupyterVariableViewIsReady(readiness))");
-  assert.ok(initialProbe >= 0);
-  assert.ok(conditionalRefocus > initialProbe);
-  assert.ok(readinessWait > conditionalRefocus);
-  assert.equal(cursorRemoteReadiness.match(/showExactReleasedNotebook\(notebook\)/gu)?.length, 1);
-  assert.doesNotMatch(cursorRemoteReadiness, /jupyter\.openVariableView/u);
 });
 
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
