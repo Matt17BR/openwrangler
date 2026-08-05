@@ -103,7 +103,8 @@ scan every visible column. Users can enable them, and the profile drawer still l
 request. The packaged VS Code/Cursor journey now selects a real R column and checks its
 rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
 duplicate-row statistics. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code
-and Cursor with R 4.5.2; remote IRkernel acceptance remains a preview gate.
+and Cursor with R 4.5.2. The hosted gate also passes against a containerized IRkernel in VS Code, including kernel
+restart, reopening the frame, and final session cleanup.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 

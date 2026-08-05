@@ -19,6 +19,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- The Open Wrangler 2 notebook gate now tests local R in VS Code and Cursor and a containerized R kernel in VS Code.
+  The hosted run covers paging, sorting, profiles, kernel restart, reopening, and cleanup with fixed R and package
+  versions.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and
