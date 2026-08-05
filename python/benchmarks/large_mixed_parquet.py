@@ -158,6 +158,10 @@ def fixture_schema() -> pa.Schema:
     )
 
 
+def dictionary_columns() -> list[str]:
+    return [column["name"] for column in column_contract() if column["role"] == "categorical text"]
+
+
 def _marker_rows(column: int) -> tuple[int, int]:
     period, rows, candidate = 29 + column % 53, [], 101 + column * 3
     while len(rows) < 2:
@@ -232,7 +236,7 @@ def fixture_manifest(path: Path, spec: LargeFixtureSpec) -> dict[str, Any]:
         "columns": DEFAULT_COLUMNS,
         "rowGroupRows": spec.row_group_rows,
         "seed": spec.seed,
-        "compression": {"codec": "zstd", "level": 3, "dictionaryColumns": [f"c{i:02d}" for i in range(66, 74)]},
+        "compression": {"codec": "zstd", "level": 3, "dictionaryColumns": dictionary_columns()},
         "schema": column_contract(),
         "profileSentinels": {
             "numericExtrema": [NUMERIC_MIN, NUMERIC_MAX],
@@ -270,7 +274,7 @@ def generate_fixture(
             fixture_schema(),
             compression="zstd",
             compression_level=3,
-            use_dictionary=[f"c{i:02d}" for i in range(66, 74)],  # pyright: ignore[reportArgumentType]
+            use_dictionary=dictionary_columns(),  # pyright: ignore[reportArgumentType]
         ) as writer:
             for start in range(0, spec.rows, spec.row_group_rows):
                 writer.write_table(build_row_group(start, min(spec.row_group_rows, spec.rows - start), spec))

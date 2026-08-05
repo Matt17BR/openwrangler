@@ -68,7 +68,7 @@ test("host request omits the launcher-only VS Code CLI path", () => {
   assert.equal(host.repetitions, 10);
   assert.equal(Object.hasOwn(host.timeoutsMs, "editorPhase"), false);
   assert.equal(Object.hasOwn(host.cell, "sourceSha256"), false);
-  assert.deepEqual(host.cell.columnNames.slice(0, 2), ["c00", "c01"]);
+  assert.deepEqual(host.cell.columnNames, request.cell.columnNames);
   assert.equal(host.cell.profileContract, "integer-sentinel");
 });
 

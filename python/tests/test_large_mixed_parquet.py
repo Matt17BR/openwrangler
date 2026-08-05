@@ -53,6 +53,13 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
         role: [column["name"] for column in columns if column["role"] == role]
         for role in {column["role"] for column in columns}
     }
+    dictionary_columns = first_manifest["compression"]["dictionaryColumns"]
+    assert dictionary_columns == names_by_role["categorical text"]
+    assert dictionary_columns == [
+        metadata.schema.column(index).name
+        for index in range(metadata.num_columns)
+        if "RLE_DICTIONARY" in metadata.row_group(0).column(index).encodings
+    ]
     for name in [
         names_by_role["floating-point"][0],
         names_by_role["floating-point"][-1],
