@@ -571,17 +571,16 @@ The current manual method is in [`docs/performance-comparison.md`](performance-c
 
 The large commands require the literal `--confirm-large-study` flag. They require 12 GiB of currently available
 memory and do not count swap toward it. Fixture generation needs 6 GiB free and keeps the file
-only when at least 4 GiB remains for the study. The manifest records the realized Parquet byte size, and the production
-generator rejects a compressed file below 400 MiB. Pull requests, releases, scheduled tasks, and normal local checks
-do not call these commands. Tests use small row counts through the Python API and fake editor runners; they never
-generate the full fixture.
+only when at least 4 GiB remains for the study. Generation stops after 15 minutes or as soon as the temporary file
+passes 640 MiB. The manifest records the final byte size, and the production generator rejects a compressed file below
+400 MiB. Pull requests, releases, scheduled tasks, and normal local checks do not call these commands. Tests use small
+row counts through the Python API and fake editor runners; they never generate the full fixture.
 
-Normal native editor acceptance keeps its 300-second hard deadline and 180-second inactivity deadline. The manually
-confirmed large comparison is the only new exception: its editor cap is the sum of its two pre-action, inline,
-workbench, and column-summary deadlines plus 120 seconds for startup and cleanup (currently 1,260 seconds). It still
-uses the 180-second inactivity guard and writes a checkpoint after every verified column summary. The historical
-v1.2.1 reproduction retains the 600-second cap already present on `main`; it does not define the normal acceptance
-limit.
+Every large-study attempt has a five-minute outer deadline, including editor cleanup. One command may run for at most
+one hour and then leaves the remaining slots for the next invocation. A Linux watchdog samples the complete descendant
+tree twice a second and stops it above 12 GiB aggregate RSS or 64 processes. Normal native editor acceptance keeps its
+existing 300-second hard deadline and 180-second inactivity deadline. The historical v1.2.1 reproduction retains the
+600-second cap already present on `main`; it does not define the normal acceptance limit.
 
 Each editor run measures inline preview, usable workbench grid, Run Cell to that grid, a 100-column summary sweep, and
 process-tree PSS. The summary sweep opens each product's public summary UI, visits every column, and waits for its known

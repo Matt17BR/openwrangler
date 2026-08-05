@@ -224,6 +224,11 @@ def assert_realized_fixture_size(size_bytes: int, spec: LargeFixtureSpec) -> Non
         raise AssertionError("The large-comparison fixture must not exceed 640 MiB after compression.")
 
 
+def assert_temporary_fixture_size(path: Path) -> None:
+    if path.stat().st_size > MAX_REALIZED_FIXTURE_BYTES:
+        raise RuntimeError("The temporary Parquet exceeded 640 MiB while writing row groups.")
+
+
 def validate_fixture(path: Path, spec: LargeFixtureSpec) -> None:
     metadata = path.lstat()
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
@@ -267,8 +272,52 @@ def fixture_manifest(path: Path, spec: LargeFixtureSpec) -> dict[str, Any]:
     }
 
 
+def _reserve_temporary(output: Path, temporary_path: Path | None) -> tuple[Path, tuple[int, int]]:
+    if temporary_path is None:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent)
+        try:
+            metadata = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        return Path(temporary_name), (metadata.st_dev, metadata.st_ino)
+
+    if not temporary_path.is_absolute():
+        raise ValueError("The reserved temporary path must be absolute.")
+    temporary = temporary_path
+    metadata = temporary.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_size != 0
+        or temporary.parent.resolve() != output.parent
+        or temporary.resolve() == output
+    ):
+        raise RuntimeError("The reserved temporary file is not a new regular sibling of the fixture.")
+    return temporary, (metadata.st_dev, metadata.st_ino)
+
+
+def _remove_owned_temporary(temporary: Path, identity: tuple[int, int]) -> None:
+    try:
+        metadata = temporary.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or (metadata.st_dev, metadata.st_ino) != identity
+    ):
+        raise RuntimeError("Refusing to remove a replaced large-fixture temporary file.")
+    temporary.unlink()
+
+
 def generate_fixture(
-    output: Path, spec: LargeFixtureSpec | None = None, *, check_capacity: bool = True
+    output: Path,
+    spec: LargeFixtureSpec | None = None,
+    *,
+    check_capacity: bool = True,
+    temporary_path: Path | None = None,
 ) -> dict[str, Any]:
     spec = spec or LargeFixtureSpec()
     spec.validate()
@@ -280,9 +329,7 @@ def generate_fixture(
         raise FileExistsError(f"Refusing to replace existing fixture {output.name}.")
     if check_capacity:
         assert_large_study_capacity(output, generating=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent)
-    os.close(descriptor)
-    temporary = Path(temporary_name)
+    temporary, temporary_identity = _reserve_temporary(output, temporary_path)
     try:
         with pq.ParquetWriter(
             temporary,
@@ -293,6 +340,7 @@ def generate_fixture(
         ) as writer:
             for start in range(0, spec.rows, spec.row_group_rows):
                 writer.write_table(build_row_group(start, min(spec.row_group_rows, spec.rows - start), spec))
+                assert_temporary_fixture_size(temporary)
         if check_capacity and disk_usage(output.parent).free < MIN_STUDY_FREE_DISK_BYTES:
             raise RuntimeError("The generated fixture would leave less than 4 GiB free for the comparison runs.")
         validate_fixture(temporary, spec)
@@ -304,17 +352,25 @@ def generate_fixture(
             destination.write("\n")
         return manifest
     finally:
-        temporary.unlink(missing_ok=True)
+        _remove_owned_temporary(temporary, temporary_identity)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate the opt-in 1M x 100 mixed Parquet fixture.")
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--temporary", required=True, type=Path)
     parser.add_argument("--confirm-large-study", action="store_true")
     arguments = parser.parse_args()
     if not arguments.confirm_large_study:
         raise SystemExit("Pass --confirm-large-study to generate the 1M x 100 fixture.")
-    print(json.dumps({"path": str(arguments.out.resolve()), "manifest": generate_fixture(arguments.out)}))
+    print(
+        json.dumps(
+            {
+                "path": str(arguments.out.resolve()),
+                "manifest": generate_fixture(arguments.out, temporary_path=arguments.temporary),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

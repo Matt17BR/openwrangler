@@ -125,7 +125,7 @@
     "comparison:smoke": "node scripts/data-wrangler-comparison-study.mjs smoke",
     "comparison:study": "node scripts/data-wrangler-comparison-study.mjs run",
     "comparison:report": "node scripts/data-wrangler-comparison-study.mjs report",
-    "comparison:large:fixture": "node scripts/run-python.mjs python/benchmarks/large_mixed_parquet.py",
+    "comparison:large:fixture": "node scripts/data-wrangler-comparison-study.mjs large-fixture",
     "comparison:large:study": "node scripts/data-wrangler-comparison-study.mjs large-run",
     "comparison:large:report": "node scripts/data-wrangler-comparison-study.mjs large-report",
     "benchmark:installed": "node scripts/run-installed-performance.mjs",

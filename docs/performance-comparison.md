@@ -36,10 +36,9 @@ The generator also rejects more than 1,000,000 rows or a file above 640 MiB. Thi
 it is not part of the product comparison.
 
 Generation and every editor run require at least 12 GiB of currently available memory. The local pilot peaked at
-6.64 GiB of proportional set size, so the guard leaves several GiB for the editor, kernel, and desktop without
-requiring an unusually large workstation. The runner stops before launching an editor when the machine falls below
-that floor instead of relying on swap. Generation also requires 6 GiB of free disk space, and it keeps the finished
-fixture only if at least 4 GiB remains. A machine with a battery must
+6.64 GiB of proportional set size. The runner stops before launch when available memory falls below 12 GiB and stops
+the benchmark process tree if its aggregate RSS passes 12 GiB. Generation also requires 6 GiB of free disk space, and
+it keeps the finished fixture only if at least 4 GiB remains. A machine with a battery must
 be on AC power. A battery-less host records `not-applicable`. A host without a cpufreq governor records `not-exposed`.
 The runner checks the recorded machine, power, governor, memory, and disk both before and after every editor run. The
 generator refuses to replace an existing file.
@@ -72,13 +71,13 @@ in each five-run UI group, and no replacement runs. Any failure needs a written 
 review before results are published. A short README table may show figures only for groups that finished five out of
 five runs.
 
-Five values are enough for a practical manual comparison but not for a useful p95, so the report does not calculate
-one. It is a release review, not a job in normal pull-request CI and not a scheduled task on a developer laptop.
+Five values are enough for this manual comparison but not for a useful p95, so the report does not calculate one. The
+large study is never run by pull-request, release, or scheduled CI.
 
-The large run's hard editor limit is calculated from both pre-action deadlines, the inline, workbench, and profiling
-deadlines, and another two minutes for editor startup and cleanup. With the current stage limits, that is 1,260
-seconds. Completing each column writes a progress checkpoint; three minutes without a checkpoint still stops the
-run. Normal editor acceptance tests keep their 300-second hard limit.
+Each editor attempt has five minutes and the command stops starting attempts before its one-hour deadline. Rerunning
+the same command resumes from the next missing result. A Linux watchdog stops a process tree above 12 GiB RSS or 64
+processes. Fixture generation has a 15-minute deadline and stops while writing if the temporary Parquet grows past
+640 MiB. Normal editor acceptance tests keep their existing limits.
 
 ## Run the study
 
@@ -105,11 +104,11 @@ npm run comparison:large:study -- \
   --confirm-large-study
 ```
 
-The command writes one result after each editor closes. If the machine sleeps or the command stops, run it again
-with the same arguments. It removes the abandoned private trial directory, checks the fixture again, and resumes at
-the first missing result. Start the final output with `--limit 1` and check that run's memory use before continuing.
-Then use `--limit 3` to cover the other product and input combinations. Review those four grids and profile markers
-before resuming the same output without `--limit`.
+The command writes one result after each editor closes. If the machine sleeps, reaches the one-hour limit, or the
+command stops, run it again with the same arguments. It removes the abandoned private trial directory, checks the
+fixture again, and resumes at the first missing result. Start the final output with `--limit 1` and check that run's
+memory use before continuing. Then use `--limit 3` to cover the other product and input combinations. Review those
+four grids and profile markers before resuming the same output without `--limit`.
 
 Generate the final report after all 20 runs finish:
 

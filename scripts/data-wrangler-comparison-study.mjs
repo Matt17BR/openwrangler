@@ -2,16 +2,20 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { arch, cpus, platform, release, totalmem } from "node:os";
@@ -39,8 +43,18 @@ export const LARGE_COLUMNS = 100;
 export const LARGE_REPETITIONS = 5;
 export const LARGE_MIN_SUCCESSFUL_REPETITIONS = 4;
 export const LARGE_MIN_AVAILABLE_MEMORY_BYTES = 12 * 1024 ** 3;
+export const LARGE_MAX_PROCESS_TREE_RSS_BYTES = 12 * 1024 ** 3;
+export const LARGE_MAX_PROCESS_TREE_PROCESSES = 64;
 export const LARGE_MIN_REALIZED_FIXTURE_BYTES = 400 * 1024 ** 2;
 export const LARGE_MAX_REALIZED_FIXTURE_BYTES = 640 * 1024 ** 2;
+export const LARGE_ATTEMPT_TIMEOUT_MS = 5 * 60_000;
+export const LARGE_WHOLE_RUN_TIMEOUT_MS = 60 * 60_000;
+export const LARGE_FIXTURE_GENERATION_TIMEOUT_MS = 15 * 60_000;
+export const LARGE_TERMINATION_RESERVE_MS = 5_000;
+const LARGE_RUN_CLEANUP_RESERVE_MS = 30_000;
+const LARGE_RESOURCE_POLL_MS = 500;
+const LARGE_STUDY_WORKER_ENV = "OPEN_WRANGLER_LARGE_STUDY_WORKER";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
@@ -60,12 +74,12 @@ const ENGINES = Object.freeze(["pandas", "polars"]);
 const HASH = /^[0-9a-f]{64}$/u;
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
-const LARGE_EDITOR_STARTUP_CLEANUP_MS = 120_000;
+const LARGE_EDITOR_STARTUP_CLEANUP_MS = 30_000;
 const LARGE_STAGE_TIMEOUTS_MS = Object.freeze({
-  preAction: 120_000,
-  inlinePreview: 120_000,
-  workbenchOpen: 150_000,
-  completeProfile: 600_000
+  preAction: 20_000,
+  inlinePreview: 20_000,
+  workbenchOpen: 30_000,
+  completeProfile: 150_000
 });
 
 export function largeComparisonEditorPhaseTimeout(timeouts = LARGE_STAGE_TIMEOUTS_MS) {
@@ -81,7 +95,13 @@ export function largeComparisonEditorPhaseTimeout(timeouts = LARGE_STAGE_TIMEOUT
 export const LARGE_TIMEOUTS_MS = Object.freeze({
   ...LARGE_STAGE_TIMEOUTS_MS,
   editorPhase: largeComparisonEditorPhaseTimeout(),
-  neutralDriver: 2_400_000
+  neutralDriver: LARGE_ATTEMPT_TIMEOUT_MS - LARGE_TERMINATION_RESERVE_MS
+});
+
+export const LARGE_RESOURCE_LIMITS = Object.freeze({
+  maxRssBytes: LARGE_MAX_PROCESS_TREE_RSS_BYTES,
+  maxProcesses: LARGE_MAX_PROCESS_TREE_PROCESSES,
+  pollMs: LARGE_RESOURCE_POLL_MS
 });
 
 export function createDataWranglerComparisonSchedule() {
@@ -238,6 +258,8 @@ export async function prepareComparisonStudyRun({ output, now, prepareTools, cap
 }
 
 async function runComparisonStudy(options, dependencies, large) {
+  const nowMs = dependencies.nowMs ?? Date.now;
+  const wholeRunDeadlineMs = large ? nowMs() + LARGE_WHOLE_RUN_TIMEOUT_MS : undefined;
   const repetitions = large ? 1 : (options.repetitionsPerSession ?? WARM_REPETITIONS);
   const preparedStudy = await prepareComparisonStudyRun({
     output: options.output,
@@ -269,7 +291,9 @@ async function runComparisonStudy(options, dependencies, large) {
   };
   const pending = schedule.filter(({ id }) => !completed.has(id)).slice(0, options.limit ?? schedule.length);
   for (const entry of pending) {
+    if (large && wholeRunDeadlineMs - nowMs() < LARGE_ATTEMPT_TIMEOUT_MS + LARGE_RUN_CLEANUP_RESERVE_MS) break;
     await checkEnvironment();
+    if (large && wholeRunDeadlineMs - nowMs() < LARGE_ATTEMPT_TIMEOUT_MS + LARGE_RUN_CLEANUP_RESERVE_MS) break;
     const trialRoot = mkdtempSync(join(output, `trial-${entry.order.toString().padStart(3, "0")}-`));
     let trial;
     let result;
@@ -282,7 +306,10 @@ async function runComparisonStudy(options, dependencies, large) {
         trialRoot
       });
       result = large
-        ? await (dependencies.runJourney ?? runNeutralDriver)(trial.request)
+        ? await (dependencies.runJourney ?? runNeutralDriver)(trial.request, {
+            timeoutMs: LARGE_TIMEOUTS_MS.neutralDriver,
+            resourceLimits: LARGE_RESOURCE_LIMITS
+          })
         : await runOneTrial({
             entry,
             request: trial.request,
@@ -527,14 +554,21 @@ export function buildComparisonTrialRequest({
 
 export async function runNeutralDriver(
   request,
-  { driver = resolve("scripts/data-wrangler-comparison-neutral-driver.mjs") } = {}
+  {
+    driver = resolve("scripts/data-wrangler-comparison-neutral-driver.mjs"),
+    timeoutMs = request.cell?.profileContract === "mixed-sentinels-v1"
+      ? LARGE_TIMEOUTS_MS.neutralDriver
+      : STUDY_TIMEOUTS_MS.neutralDriver,
+    resourceLimits = request.cell?.profileContract === "mixed-sentinels-v1" ? LARGE_RESOURCE_LIMITS : undefined
+  } = {}
 ) {
   const requestPath = join(request.isolatedRoot, "request.json");
   const resultPath = join(request.isolatedRoot, "result.json");
   writeJsonAtomic(requestPath, request);
   await spawnCommand(process.execPath, [driver, "--request", requestPath, "--out", resultPath], {
     cwd: resolve(import.meta.dirname, ".."),
-    timeoutMs: STUDY_TIMEOUTS_MS.neutralDriver
+    timeoutMs,
+    resourceLimits
   });
   return readJson(resultPath);
 }
@@ -1098,6 +1132,140 @@ export async function buildComparisonTestExtension() {
   });
 }
 
+function reserveLargeFixtureTemporary(output) {
+  const temporary = join(dirname(output), `.${basename(output)}.${randomUUID()}.tmp`);
+  let descriptor;
+  let reservation;
+  let failure;
+  let created = false;
+  try {
+    descriptor = openSync(temporary, "wx", 0o600);
+    created = true;
+    const metadata = fstatSync(descriptor, { bigint: true });
+    reservation = Object.freeze({ temporary, device: metadata.dev, inode: metadata.ino });
+  } catch (error) {
+    failure = error;
+  }
+  if (descriptor !== undefined) {
+    try {
+      closeSync(descriptor);
+    } catch (error) {
+      failure = failure
+        ? new AggregateError([failure, error], "Large-fixture temporary reservation failed while closing.")
+        : error;
+    }
+  }
+  if (failure) {
+    if (created) {
+      try {
+        if (reservation) removeReservedLargeFixtureTemporary(reservation);
+        else unlinkSync(temporary);
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          failure = new AggregateError([failure, error], "Large-fixture temporary reservation and cleanup failed.");
+        }
+      }
+    }
+    throw failure;
+  }
+  return reservation;
+}
+
+function removeReservedLargeFixtureTemporary(reservation) {
+  let metadata;
+  try {
+    metadata = lstatSync(reservation.temporary, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    metadata.dev !== reservation.device ||
+    metadata.ino !== reservation.inode
+  ) {
+    throw new Error("Refusing to remove a replaced large-fixture temporary file.");
+  }
+  unlinkSync(reservation.temporary);
+}
+
+export async function runLargeFixtureGeneration(options, dependencies = {}) {
+  if (options.confirmLargeStudy !== true) {
+    throw new Error("Pass --confirm-large-study to generate this manual benchmark fixture.");
+  }
+  if (!isAbsolute(options.output)) throw new Error("--out must be an absolute path.");
+  const runCommand = dependencies.runCommand ?? spawnCommand;
+  const output = resolve(options.output);
+  const reservation = reserveLargeFixtureTemporary(output);
+  let result;
+  let failure;
+  try {
+    result = await runCommand(
+      process.execPath,
+      [
+        resolve("scripts/run-python.mjs"),
+        resolve("python/benchmarks/large_mixed_parquet.py"),
+        "--out",
+        output,
+        "--temporary",
+        reservation.temporary,
+        "--confirm-large-study"
+      ],
+      {
+        cwd: resolve(import.meta.dirname, ".."),
+        timeoutMs: LARGE_FIXTURE_GENERATION_TIMEOUT_MS - LARGE_TERMINATION_RESERVE_MS,
+        resourceLimits: LARGE_RESOURCE_LIMITS
+      }
+    );
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    removeReservedLargeFixtureTemporary(reservation);
+  } catch (error) {
+    failure = failure
+      ? new AggregateError([failure, error], "Large-fixture command and temporary cleanup both failed.")
+      : error;
+  }
+  if (failure) throw failure;
+  return result;
+}
+
+export async function runLargeComparisonProcess(options, dependencies = {}) {
+  if (options.confirmLargeStudy !== true) {
+    throw new Error("Pass --confirm-large-study to run this manual benchmark.");
+  }
+  const runCommand = dependencies.runCommand ?? spawnCommand;
+  const arguments_ = [
+    resolve("scripts/data-wrangler-comparison-study.mjs"),
+    "large-run",
+    "--candidate",
+    options.candidate,
+    "--python",
+    options.python,
+    "--editor",
+    options.editor,
+    "--editor-cli",
+    options.editorCli,
+    "--parquet",
+    options.parquet,
+    "--out",
+    options.output,
+    "--confirm-large-study"
+  ];
+  if (options.limit !== undefined) arguments_.push("--limit", String(options.limit));
+  const workerCapability = randomUUID();
+  return await runCommand(process.execPath, arguments_, {
+    cwd: resolve(import.meta.dirname, ".."),
+    timeoutMs: LARGE_WHOLE_RUN_TIMEOUT_MS - LARGE_TERMINATION_RESERVE_MS,
+    resourceLimits: LARGE_RESOURCE_LIMITS,
+    environment: { ...process.env, [LARGE_STUDY_WORKER_ENV]: workerCapability },
+    workerCapability
+  });
+}
+
 export function buildComparisonNotebook(entry, source) {
   const reader =
     entry.engine === "pandas"
@@ -1191,12 +1359,129 @@ function trialProvenanceFromRequest(request) {
   };
 }
 
-export async function spawnCommand(command, arguments_, { cwd, timeoutMs }) {
+function parseLinuxProcessStat(source) {
+  const closingParenthesis = source.lastIndexOf(")");
+  if (closingParenthesis < 2) return undefined;
+  const pid = Number(source.slice(0, source.indexOf(" ")));
+  const fields = source
+    .slice(closingParenthesis + 2)
+    .trim()
+    .split(/\s+/u);
+  const parentPid = Number(fields[1]);
+  const startTimeTicks = fields[19];
+  if (
+    !Number.isSafeInteger(pid) ||
+    pid < 1 ||
+    !Number.isSafeInteger(parentPid) ||
+    parentPid < 0 ||
+    !/^(?:0|[1-9]\d*)$/u.test(startTimeTicks ?? "")
+  ) {
+    return undefined;
+  }
+  return { pid, parentPid, startTimeTicks };
+}
+
+export function summarizeLinuxProcessTree(rootPid, processes) {
+  if (!Number.isSafeInteger(rootPid) || rootPid < 1 || !Array.isArray(processes)) {
+    throw new TypeError("Linux process-tree input is invalid.");
+  }
+  const byPid = new Map();
+  const children = new Map();
+  for (const process of processes) {
+    if (
+      !process ||
+      !Number.isSafeInteger(process.pid) ||
+      process.pid < 1 ||
+      !Number.isSafeInteger(process.parentPid) ||
+      process.parentPid < 0 ||
+      !Number.isSafeInteger(process.rssBytes) ||
+      process.rssBytes < 0 ||
+      typeof process.startTimeTicks !== "string"
+    ) {
+      throw new TypeError("Linux process-tree entry is invalid.");
+    }
+    byPid.set(process.pid, process);
+    const siblings = children.get(process.parentPid) ?? [];
+    siblings.push(process.pid);
+    children.set(process.parentPid, siblings);
+  }
+  if (!byPid.has(rootPid)) return Object.freeze({ processCount: 0, rssBytes: 0, processes: Object.freeze([]) });
+  const selected = [];
+  const pending = [rootPid];
+  const seen = new Set();
+  while (pending.length > 0) {
+    const pid = pending.pop();
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    const process = byPid.get(pid);
+    if (!process) continue;
+    selected.push(process);
+    pending.push(...(children.get(pid) ?? []));
+  }
+  const rssBytes = selected.reduce((total, process) => total + process.rssBytes, 0);
+  if (!Number.isSafeInteger(rssBytes)) throw new Error("Linux process-tree RSS is too large to measure safely.");
+  return Object.freeze({
+    processCount: selected.length,
+    rssBytes,
+    processes: Object.freeze(selected.map((process) => Object.freeze({ ...process })))
+  });
+}
+
+export function readLinuxProcessTreeUsage(rootPid, procRoot = "/proc") {
+  const processes = [];
+  for (const name of readdirSync(procRoot)) {
+    if (!/^[1-9]\d*$/u.test(name)) continue;
+    try {
+      const statSource = readFileSync(join(procRoot, name, "stat"), "utf8");
+      const identity = parseLinuxProcessStat(statSource);
+      if (!identity) continue;
+      const status = readFileSync(join(procRoot, name, "status"), "utf8");
+      const rssKiB = Number(/^VmRSS:\s+(\d+)\s+kB$/mu.exec(status)?.[1] ?? "0");
+      const rssBytes = rssKiB * 1024;
+      if (!Number.isSafeInteger(rssBytes)) throw new Error(`RSS for process ${name} is too large.`);
+      processes.push({ ...identity, rssBytes });
+    } catch (error) {
+      if (!["ENOENT", "ESRCH", "EACCES"].includes(error?.code)) throw error;
+    }
+  }
+  return summarizeLinuxProcessTree(rootPid, processes);
+}
+
+export function assertLargeProcessTreeUsage(usage, limits = LARGE_RESOURCE_LIMITS) {
+  if (
+    !usage ||
+    !Number.isSafeInteger(usage.processCount) ||
+    usage.processCount < 0 ||
+    !Number.isSafeInteger(usage.rssBytes) ||
+    usage.rssBytes < 0
+  ) {
+    throw new TypeError("Large-comparison process usage is malformed.");
+  }
+  if (usage.processCount > limits.maxProcesses) {
+    throw new Error(`Large comparison exceeded its ${limits.maxProcesses}-process limit.`);
+  }
+  if (usage.rssBytes > limits.maxRssBytes) {
+    throw new Error("Large comparison exceeded its 12 GiB process-tree RSS limit.");
+  }
+}
+
+export async function spawnCommand(
+  command,
+  arguments_,
+  {
+    cwd,
+    timeoutMs,
+    resourceLimits,
+    inspectResources = readLinuxProcessTreeUsage,
+    environment = process.env,
+    workerCapability
+  }
+) {
   return await new Promise((resolvePromise, reject) => {
     const child = spawn(command, arguments_, {
       cwd,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      env: environment,
+      stdio: workerCapability === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
       windowsHide: true,
       detached: process.platform !== "win32"
     });
@@ -1204,16 +1489,70 @@ export async function spawnCommand(command, arguments_, { cwd, timeoutMs }) {
     let settled = false;
     let failure;
     let killTimer;
+    let resourceTimer;
+    let ownedProcesses = [];
+    const killOwnedProcesses = (signal) => {
+      for (const owned of [...ownedProcesses].reverse()) {
+        try {
+          const current = parseLinuxProcessStat(readFileSync(`/proc/${owned.pid}/stat`, "utf8"));
+          if (current?.startTimeTicks === owned.startTimeTicks) process.kill(owned.pid, signal);
+        } catch (error) {
+          if (!["ENOENT", "ESRCH", "EACCES"].includes(error?.code)) throw error;
+        }
+      }
+    };
+    const signalProcesses = (signal) => {
+      const errors = [];
+      try {
+        killOwnedProcesses(signal);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        killChild(child, signal);
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length > 0) failure = new AggregateError([failure, ...errors], "Command process-tree cleanup failed.");
+    };
     const terminate = (error) => {
       if (failure) return;
       failure = error;
-      killChild(child, "SIGTERM");
-      killTimer = setTimeout(() => killChild(child, "SIGKILL"), 2_000);
+      signalProcesses("SIGTERM");
+      killTimer = setTimeout(() => {
+        signalProcesses("SIGKILL");
+      }, 2_000);
       killTimer.unref();
+    };
+    const capabilityStream = workerCapability === undefined ? undefined : child.stdio[3];
+    if (capabilityStream) {
+      capabilityStream.on("error", (error) => {
+        if (!settled) terminate(new Error(`Worker capability pipe failed: ${error.message}`));
+      });
+      capabilityStream.end(workerCapability);
+    }
+    const inspectProcessTree = () => {
+      if (!resourceLimits || settled || child.pid === undefined) return;
+      try {
+        const usage = inspectResources(child.pid);
+        ownedProcesses = usage.processes ?? [];
+        assertLargeProcessTreeUsage(usage, resourceLimits);
+      } catch (error) {
+        terminate(error);
+      }
     };
     const timer = setTimeout(() => {
       terminate(new Error(`Command timed out after ${timeoutMs} ms.`));
     }, timeoutMs);
+    if (resourceLimits) {
+      if (process.platform !== "linux") {
+        terminate(new Error("Large-comparison resource limits require Linux."));
+      } else {
+        inspectProcessTree();
+        resourceTimer = setInterval(inspectProcessTree, resourceLimits.pollMs);
+        resourceTimer.unref();
+      }
+    }
     for (const [stream, key] of [
       [child.stdout, "stdout"],
       [child.stderr, "stderr"]
@@ -1230,6 +1569,8 @@ export async function spawnCommand(command, arguments_, { cwd, timeoutMs }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (resourceTimer) clearInterval(resourceTimer);
+      if (failure) signalProcesses("SIGKILL");
       if (killTimer) clearTimeout(killTimer);
       reject(failure ?? error);
     });
@@ -1237,6 +1578,8 @@ export async function spawnCommand(command, arguments_, { cwd, timeoutMs }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (resourceTimer) clearInterval(resourceTimer);
+      if (failure) signalProcesses("SIGKILL");
       if (killTimer) clearTimeout(killTimer);
       if (failure) reject(failure);
       else if (code === 0) resolvePromise(output);
@@ -1341,7 +1684,7 @@ export function sanitizeError(error) {
 
 function parseArguments(arguments_) {
   const command = arguments_[0];
-  const commands = ["run", "smoke", "report", "large-run", "large-report"];
+  const commands = ["run", "smoke", "report", "large-fixture", "large-run", "large-report"];
   if (!commands.includes(command)) throw new Error(`Expected ${commands.join(", ")}.`);
   const acceptedValues = new Set([
     "--candidate",
@@ -1374,8 +1717,16 @@ function parseArguments(arguments_) {
     if (!value) throw new Error(`Missing ${flag}.`);
     return value;
   };
-  if (command !== "large-run" && values.has("--confirm-large-study")) {
+  if (!["large-fixture", "large-run"].includes(command) && values.has("--confirm-large-study")) {
     throw new Error("--confirm-large-study is only valid for the large study.");
+  }
+  if (command === "large-fixture") {
+    if ([...values.keys()].some((flag) => !["--out", "--confirm-large-study"].includes(flag))) {
+      throw new Error("Large fixture generation accepts only --out and --confirm-large-study.");
+    }
+    const output = required("--out");
+    if (!isAbsolute(output)) throw new Error("--out must be an absolute path.");
+    return { command, output, confirmLargeStudy: values.get("--confirm-large-study") === true };
   }
   if (["report", "large-report"].includes(command)) {
     return {
@@ -1384,18 +1735,19 @@ function parseArguments(arguments_) {
       output: required("--out")
     };
   }
+  const largeRun = command === "large-run";
   const paths = ["--candidate", "--python", "--editor", "--editor-cli", "--parquet"];
-  if (command !== "large-run") paths.push("--csv");
+  if (!largeRun) paths.push("--csv");
   for (const flag of paths) {
     const value = required(flag);
     if (!isAbsolute(value)) throw new Error(`${flag} must be an absolute path.`);
   }
-  if (command === "large-run" && !isAbsolute(required("--out"))) {
+  if (largeRun && !isAbsolute(required("--out"))) {
     throw new Error("--out must be an absolute path.");
   }
   const limit = values.has("--limit") ? Number(values.get("--limit")) : undefined;
   if (command === "smoke" && limit !== undefined) throw new Error("Smoke always runs exactly one complete pair.");
-  const maximum = command === "large-run" ? 20 : 8;
+  const maximum = largeRun ? 20 : 8;
   if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > maximum)) {
     throw new Error(`--limit must be between 1 and ${maximum}.`);
   }
@@ -1415,9 +1767,31 @@ function parseArguments(arguments_) {
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
+  if (options.command === "large-fixture") {
+    const { stdout } = await runLargeFixtureGeneration(options);
+    console.log(stdout.trim());
+    return;
+  }
   if (options.command === "large-run") {
-    const status = await runLargeComparisonStudy(options);
-    console.log(`${status.completed} of 20 fresh comparison sessions complete.`);
+    const workerToken = process.env[LARGE_STUDY_WORKER_ENV];
+    delete process.env[LARGE_STUDY_WORKER_ENV];
+    let workerCapability;
+    if (workerToken !== undefined) {
+      if (!UUID.test(workerToken)) throw new Error("The private large-study worker marker is invalid.");
+      try {
+        workerCapability = readFileSync(3, "utf8");
+      } catch {
+        throw new Error("The private large-study worker capability is unavailable.");
+      }
+    }
+    if (workerToken !== undefined) {
+      if (workerCapability !== workerToken) throw new Error("The private large-study worker capability is invalid.");
+      const status = await runLargeComparisonStudy(options);
+      console.log(`${status.completed} of 20 fresh comparison sessions complete.`);
+    } else {
+      const { stdout } = await runLargeComparisonProcess(options);
+      console.log(stdout.trim());
+    }
     return;
   }
   if (options.command === "large-report") {

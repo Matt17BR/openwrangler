@@ -11,13 +11,20 @@ import {
 } from "./data-wrangler-comparison-report.mjs";
 import {
   DATA_WRANGLER_VERSION,
+  LARGE_ATTEMPT_TIMEOUT_MS,
   LARGE_COLUMNS,
+  LARGE_FIXTURE_GENERATION_TIMEOUT_MS,
   LARGE_FIXTURE_PROTOCOL,
   LARGE_MAX_REALIZED_FIXTURE_BYTES,
+  LARGE_MAX_PROCESS_TREE_PROCESSES,
+  LARGE_MAX_PROCESS_TREE_RSS_BYTES,
   LARGE_MIN_AVAILABLE_MEMORY_BYTES,
   LARGE_MIN_REALIZED_FIXTURE_BYTES,
+  LARGE_RESOURCE_LIMITS,
   LARGE_ROWS,
+  LARGE_TERMINATION_RESERVE_MS,
   LARGE_TIMEOUTS_MS,
+  LARGE_WHOLE_RUN_TIMEOUT_MS,
   SMOKE_REPETITIONS,
   STUDY_CELLS,
   STUDY_PROTOCOL,
@@ -26,6 +33,7 @@ import {
   WARM_REPETITIONS,
   assertCompleteLargeReport,
   assertLargeRunEnvironment,
+  assertLargeProcessTreeUsage,
   buildComparisonNotebook,
   buildLargeComparisonReport,
   buildLargeStudyManifest,
@@ -39,8 +47,11 @@ import {
   removeStaleTrialDirectories,
   runDataWranglerComparisonSmoke,
   runDataWranglerComparisonStudy,
+  runLargeComparisonProcess,
+  runLargeFixtureGeneration,
   runLargeComparisonStudy,
   runOneTrial,
+  summarizeLinuxProcessTree,
   terminalTrialIds,
   writeDataWranglerComparisonStudyReport
 } from "./data-wrangler-comparison-study.mjs";
@@ -53,10 +64,108 @@ test("derives the large editor cap from its bounded stages and overhead", () => 
     LARGE_TIMEOUTS_MS.inlinePreview +
     LARGE_TIMEOUTS_MS.workbenchOpen +
     LARGE_TIMEOUTS_MS.completeProfile;
-  assert.equal(innerDeadlines, 1_110_000);
-  assert.equal(LARGE_TIMEOUTS_MS.editorPhase, innerDeadlines + 120_000);
+  assert.equal(innerDeadlines, 240_000);
+  assert.equal(LARGE_TIMEOUTS_MS.editorPhase, innerDeadlines + 30_000);
   assert.equal(LARGE_TIMEOUTS_MS.editorPhase, largeComparisonEditorPhaseTimeout(LARGE_TIMEOUTS_MS));
-  assert.ok(LARGE_TIMEOUTS_MS.neutralDriver > LARGE_TIMEOUTS_MS.editorPhase);
+  assert.equal(LARGE_TIMEOUTS_MS.neutralDriver, LARGE_ATTEMPT_TIMEOUT_MS - LARGE_TERMINATION_RESERVE_MS);
+  assert.ok(LARGE_TIMEOUTS_MS.editorPhase < LARGE_ATTEMPT_TIMEOUT_MS);
+});
+
+test("large local commands share hard process-tree and wall-clock limits", async () => {
+  assert.equal(LARGE_MAX_PROCESS_TREE_RSS_BYTES, 12 * 1024 ** 3);
+  assert.equal(LARGE_MAX_PROCESS_TREE_PROCESSES, 64);
+  assert.equal(LARGE_WHOLE_RUN_TIMEOUT_MS, 60 * 60_000);
+  assert.equal(LARGE_FIXTURE_GENERATION_TIMEOUT_MS, 15 * 60_000);
+  assert.equal(LARGE_TERMINATION_RESERVE_MS, 5_000);
+
+  const usage = summarizeLinuxProcessTree(10, [
+    { pid: 10, parentPid: 1, startTimeTicks: "100", rssBytes: 2_000 },
+    { pid: 11, parentPid: 10, startTimeTicks: "101", rssBytes: 3_000 },
+    { pid: 12, parentPid: 11, startTimeTicks: "102", rssBytes: 4_000 },
+    { pid: 20, parentPid: 1, startTimeTicks: "103", rssBytes: 99_000 }
+  ]);
+  assert.deepEqual(
+    { processCount: usage.processCount, rssBytes: usage.rssBytes },
+    { processCount: 3, rssBytes: 9_000 }
+  );
+  assert.doesNotThrow(() => assertLargeProcessTreeUsage(usage));
+  assert.throws(() => assertLargeProcessTreeUsage({ processCount: 65, rssBytes: 1 }), /64-process limit/u);
+  assert.throws(() => assertLargeProcessTreeUsage({ processCount: 1, rssBytes: 12 * 1024 ** 3 + 1 }), /12 GiB/u);
+
+  const root = mkdtempSync(join(tmpdir(), "ow-large-command-"));
+  const fixture = join(root, "large.parquet");
+  const calls = [];
+  try {
+    let successfulTemporary;
+    await runLargeFixtureGeneration(
+      { output: fixture, confirmLargeStudy: true },
+      {
+        runCommand: async (...arguments_) => {
+          calls.push(arguments_);
+          const temporaryIndex = arguments_[1].indexOf("--temporary");
+          successfulTemporary = arguments_[1][temporaryIndex + 1];
+          assert.equal(existsSync(successfulTemporary), true);
+          writeFileSync(successfulTemporary, "partial fixture");
+          return { stdout: "fixture-ready\n", stderr: "" };
+        }
+      }
+    );
+    assert.equal(existsSync(successfulTemporary), false);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][2].timeoutMs, LARGE_FIXTURE_GENERATION_TIMEOUT_MS - LARGE_TERMINATION_RESERVE_MS);
+    assert.deepEqual(calls[0][2].resourceLimits, LARGE_RESOURCE_LIMITS);
+
+    let failedTemporary;
+    await assert.rejects(
+      runLargeFixtureGeneration(
+        { output: fixture, confirmLargeStudy: true },
+        {
+          runCommand: async (_command, arguments_) => {
+            failedTemporary = arguments_[arguments_.indexOf("--temporary") + 1];
+            writeFileSync(failedTemporary, "partial fixture");
+            throw new Error("synthetic generator timeout");
+          }
+        }
+      ),
+      /synthetic generator timeout/u
+    );
+    assert.equal(existsSync(failedTemporary), false);
+    await assert.rejects(
+      runLargeFixtureGeneration({ output: fixture, confirmLargeStudy: false }),
+      /confirm-large-study/u
+    );
+
+    calls.length = 0;
+    await runLargeComparisonProcess(
+      {
+        candidate: join(root, "openwrangler.vsix"),
+        python: join(root, "python"),
+        editor: join(root, "code"),
+        editorCli: join(root, "code-cli"),
+        parquet: fixture,
+        output: join(root, "large-results"),
+        confirmLargeStudy: true
+      },
+      {
+        runCommand: async (...arguments_) => {
+          calls.push(arguments_);
+          return { stdout: "0 of 20 fresh comparison sessions complete.\n", stderr: "" };
+        }
+      }
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1][1], "large-run");
+    assert.equal(calls[0][1].includes("large-run-worker"), false);
+    assert.match(
+      calls[0][2].environment.OPEN_WRANGLER_LARGE_STUDY_WORKER,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+    );
+    assert.equal(calls[0][2].workerCapability, calls[0][2].environment.OPEN_WRANGLER_LARGE_STUDY_WORKER);
+    assert.equal(calls[0][2].timeoutMs, LARGE_WHOLE_RUN_TIMEOUT_MS - LARGE_TERMINATION_RESERVE_MS);
+    assert.deepEqual(calls[0][2].resourceLimits, LARGE_RESOURCE_LIMITS);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("classifies battery-less hosts separately from laptops on battery", () => {
@@ -463,6 +572,7 @@ test("stored large UI results are validated before they can be reported", () => 
 test("large study records 20 fixed UI attempts, checks the host before and after each, and resumes", async () => {
   const root = mkdtempSync(join(tmpdir(), "ow-large-study-"));
   const journeys = [];
+  const runOptions = [];
   let checks = 0;
   const manifest = largeManifestFixture();
   const failedId = manifest.schedule[0].id;
@@ -485,8 +595,9 @@ test("large study records 20 fixed UI attempts, checks the host before and after
       },
       verifySource() {}
     }),
-    runJourney: async (request) => {
+    runJourney: async (request, options) => {
       journeys.push(request.trialId);
+      runOptions.push(options);
       if (request.trialId === failedId) throw new Error("synthetic editor failure");
       const entry = manifest.schedule.find(({ id }) => id === request.trialId);
       return sessionResult(entry, manifest, 1);
@@ -499,7 +610,50 @@ test("large study records 20 fixed UI attempts, checks the host before and after
     });
     await runLargeComparisonStudy({ output: root, confirmLargeStudy: true }, dependencies);
     assert.deepEqual([journeys.length, checks], [20, 40]);
+    assert.equal(
+      runOptions.every(({ timeoutMs }) => timeoutMs === LARGE_TIMEOUTS_MS.neutralDriver),
+      true
+    );
+    assert.equal(
+      runOptions.every(({ resourceLimits }) => resourceLimits === LARGE_RESOURCE_LIMITS),
+      true
+    );
     assert.match(readFileSync(join(root, "trials", `${failedId}.json`), "utf8"), /synthetic editor failure/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("one large-study invocation stops before its one-hour local deadline", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-large-deadline-"));
+  const manifest = largeManifestFixture();
+  let now = 0;
+  let attempts = 0;
+  const dependencies = {
+    now: () => manifest.createdAtUtc,
+    nowMs: () => now,
+    prepareTools: async () => {},
+    captureProvenance: async () => largeProvenanceFixture(),
+    inspectRunEnvironment: async () => ({
+      machine: manifest.provenance.machine,
+      capacity: { availableMemoryBytes: 40 * 1024 ** 3, freeDiskBytes: 10 * 1024 ** 3 }
+    }),
+    prepareTrial: ({ entry, trialRoot }) => ({
+      request: { trialId: entry.id, cell: entry, isolatedRoot: trialRoot },
+      verifySource() {}
+    }),
+    runJourney: async (request, { timeoutMs }) => {
+      attempts += 1;
+      now += timeoutMs;
+      const entry = manifest.schedule.find(({ id }) => id === request.trialId);
+      return sessionResult(entry, manifest, 1);
+    }
+  };
+  try {
+    const result = await runLargeComparisonStudy({ output: root, confirmLargeStudy: true }, dependencies);
+    assert.deepEqual(result, { completed: 12, remaining: 8 });
+    assert.equal(attempts, 12);
+    assert.ok(now < LARGE_WHOLE_RUN_TIMEOUT_MS);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

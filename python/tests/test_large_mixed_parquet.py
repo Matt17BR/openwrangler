@@ -23,8 +23,16 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
     spec = large_fixture.LargeFixtureSpec(rows=512, row_group_rows=128, seed=123)
     first = tmp_path / "first.parquet"
     second = tmp_path / "second.parquet"
-    first_manifest = large_fixture.generate_fixture(first, spec, check_capacity=False)
+    first_temporary = tmp_path / ".first.parquet.reserved.tmp"
+    first_temporary.touch(mode=0o600)
+    first_manifest = large_fixture.generate_fixture(
+        first,
+        spec,
+        check_capacity=False,
+        temporary_path=first_temporary,
+    )
     second_manifest = large_fixture.generate_fixture(second, spec, check_capacity=False)
+    assert not first_temporary.exists()
 
     columns = large_fixture.column_contract()
     assert len(columns) == 100
@@ -145,3 +153,61 @@ def test_generation_keeps_the_study_disk_reserve(monkeypatch: pytest.MonkeyPatch
     assert not output.exists()
     assert not output.with_suffix(".parquet.json").exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_generation_aborts_as_soon_as_a_row_group_exceeds_the_file_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "oversized.parquet"
+    temporary = tmp_path / ".oversized.parquet.reserved.tmp"
+    temporary.touch(mode=0o600)
+    writes = 0
+
+    class OversizedWriter:
+        def __init__(self, path: Path, *_args: object, **_kwargs: object) -> None:
+            self.path = Path(path)
+
+        def __enter__(self) -> OversizedWriter:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def write_table(self, _table: object) -> None:
+            nonlocal writes
+            writes += 1
+            with self.path.open("r+b") as target:
+                target.truncate(large_fixture.MAX_REALIZED_FIXTURE_BYTES + 1)
+
+    monkeypatch.setattr(large_fixture.pq, "ParquetWriter", OversizedWriter)
+    monkeypatch.setattr(large_fixture, "build_row_group", lambda *_args: object())
+
+    with pytest.raises(RuntimeError, match="exceeded 640 MiB while writing row groups"):
+        large_fixture.generate_fixture(
+            output,
+            large_fixture.LargeFixtureSpec(rows=3, row_group_rows=1),
+            check_capacity=False,
+            temporary_path=temporary,
+        )
+
+    assert writes == 1
+    assert not temporary.exists()
+    assert not output.exists()
+    assert not output.with_suffix(".parquet.json").exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_generation_rejects_a_nonempty_reserved_temporary(tmp_path: Path) -> None:
+    output = tmp_path / "reserved.parquet"
+    temporary = tmp_path / ".reserved.parquet.foreign.tmp"
+    temporary.write_bytes(b"not ours")
+
+    with pytest.raises(RuntimeError, match="not a new regular sibling"):
+        large_fixture.generate_fixture(
+            output,
+            large_fixture.LargeFixtureSpec(rows=3, row_group_rows=1),
+            check_capacity=False,
+            temporary_path=temporary,
+        )
+
+    assert temporary.read_bytes() == b"not ours"

@@ -17,7 +17,7 @@ import { LARGE_STUDY_MAX_PSS_SAMPLES } from "./data-wrangler-comparison-report.m
 
 test("uses the study-specific editor cap for each profile contract", () => {
   assert.equal(comparisonEditorPhaseTimeout("integer-sentinel"), 600_000);
-  assert.equal(comparisonEditorPhaseTimeout("mixed-sentinels-v1"), 1_260_000);
+  assert.equal(comparisonEditorPhaseTimeout("mixed-sentinels-v1"), 270_000);
   assert.throws(() => comparisonEditorPhaseTimeout("unknown"), /profile contract is unknown/u);
 });
 
