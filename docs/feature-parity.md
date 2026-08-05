@@ -77,16 +77,16 @@ directly; Python is not involved. A local packaged test has passed with R 4.5.2 
 Native column and dataset profiles have R and TypeScript contract tests, and the packaged journey now checks their
 rendered workbench UI. R 4.4 and remote-kernel runs still need to pass before a preview ships.
 
-| Surface                                      | Availability | Status  | Recorded evidence                                       | Remaining acceptance gate                          |
-| -------------------------------------------- | ------------ | ------- | ------------------------------------------------------- | -------------------------------------------------- |
-| Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, local packaged-editor test | R 4.4 and remote-kernel coverage                   |
-| Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local packaged-editor test             | Live filtering                                     |
-| Native R column and dataset profiles         | Internal     | Partial | Native, host-contract, and packaged harness coverage    | R 4.4 and remote-kernel runs                       |
-| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, paging, sorting, and profile tests    | Remote-kernel coverage                             |
-| Exact IRkernel session transport             | Internal     | Partial | Lifecycle, paging, and profile correlation tests        | Remote IRkernel and restart acceptance             |
-| Notebook workbench                           | Internal     | Partial | Local packaged paging, sorts, and rendered profiles     | R 4.4, remote, filters, editing, and accessibility |
-| R cleaning operations and generated code     | No           | Planned | Frame semantics only                                    | Native R IR, adapters, code generation, and tests  |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                   | Stable broker or Open Wrangler-owned helper        |
+| Surface                                      | Availability | Status  | Recorded evidence                                       | Remaining acceptance gate                         |
+| -------------------------------------------- | ------------ | ------- | ------------------------------------------------------- | ------------------------------------------------- |
+| Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, local packaged-editor test | R 4.4 and remote-kernel coverage                  |
+| Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local packaged-editor test             | Live filtering                                    |
+| Native R column and dataset profiles         | Internal     | Partial | Native, host-contract, and packaged harness coverage    | R 4.4 and remote-kernel runs                      |
+| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, paging, sorting, and profile tests    | Remote-kernel coverage                            |
+| Exact IRkernel session transport             | Internal     | Partial | Lifecycle, paging, and profile correlation tests        | Remote IRkernel and restart acceptance            |
+| Notebook workbench                           | Internal     | Partial | Packaged paging/profiles plus production axe coverage   | R 4.4, remote, filters, and editing               |
+| R cleaning operations and generated code     | No           | Planned | Frame semantics only                                    | Native R IR, adapters, code generation, and tests |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                   | Stable broker or Open Wrangler-owned helper       |
 
 ## DuckDB file-backed preview matrix
 
