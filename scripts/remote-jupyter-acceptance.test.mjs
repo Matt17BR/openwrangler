@@ -9,6 +9,7 @@ import test, { after } from "node:test";
 import {
   REAL_REMOTE_JUPYTER_ENV,
   REMOTE_JUPYTER_BASE_IMAGE,
+  REMOTE_R_JUPYTER_BASE_IMAGE,
   REMOTE_JUPYTER_OWNERSHIP_UNCERTAIN_CODE,
   REMOTE_JUPYTER_SETUP_HEARTBEAT_MS,
   REMOTE_JUPYTER_SETUP_INACTIVITY_TIMEOUT_MS,
@@ -16,6 +17,7 @@ import {
   assertRemoteJupyterPrivateDirectory,
   createRemoteJupyterDockerEnvironment,
   remoteJupyterAcceptanceEnabled,
+  remoteJupyterFixtureDefinition,
   remoteJupyterHostnameForRun,
   remoteJupyterOwnershipMayBeLive,
   runBoundedDockerCommand,
@@ -90,6 +92,30 @@ function kernelspecResponse(overrides = {}) {
             display_name: "Open Wrangler Remote Acceptance",
             language: "python",
             metadata: { debugger: false }
+          },
+          resources: {}
+        }
+      },
+      ...overrides
+    }),
+    {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }
+  );
+}
+
+function rKernelspecResponse(overrides = {}) {
+  return new Response(
+    JSON.stringify({
+      default: "openwrangler-r-remote-acceptance",
+      kernelspecs: {
+        "openwrangler-r-remote-acceptance": {
+          name: "openwrangler-r-remote-acceptance",
+          spec: {
+            argv: ["/usr/local/lib/R/bin/R", "--slave", "-e", "IRkernel::main()", "--args", "{connection_file}"],
+            display_name: "R (Open Wrangler Remote)",
+            language: "R"
           },
           resources: {}
         }
@@ -287,6 +313,69 @@ test("remote-Jupyter acceptance is disabled by default and requires literal opt-
   });
   assert.equal(result, undefined);
   assert.equal(called, false);
+});
+
+test("remote fixtures accept only the two fixed language definitions", async () => {
+  assert.deepEqual(remoteJupyterFixtureDefinition("python"), {
+    dockerfile: "Dockerfile",
+    imageName: "openwrangler-remote-jupyter",
+    kernelName: "openwrangler-remote-acceptance",
+    kernelLabel: "Open Wrangler Remote Acceptance",
+    language: "python"
+  });
+  assert.deepEqual(remoteJupyterFixtureDefinition("r"), {
+    dockerfile: "Dockerfile.r",
+    imageName: "openwrangler-remote-r-jupyter",
+    kernelName: "openwrangler-r-remote-acceptance",
+    kernelLabel: "R (Open Wrangler Remote)",
+    language: "R"
+  });
+  for (const fixtureKind of [undefined, null, "", "R", "python/../Dockerfile.r", { language: "r" }]) {
+    assert.throws(() => remoteJupyterFixtureDefinition(fixtureKind), /exactly "python" or "r"/u);
+  }
+
+  const fake = createFakeDocker();
+  await assert.rejects(startWithFake(fake, { fixtureKind: "R" }), /exactly "python" or "r"/u);
+  assert.equal(fake.commands.length, 0);
+});
+
+linuxTest("the R fixture selects its fixed Dockerfile and exact IRkernel", async () => {
+  const fake = createFakeDocker();
+  const fixture = await startWithFake(fake, {
+    fixtureKind: "r",
+    fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+  });
+  const build = fake.commands.find(({ args }) => args[0] === "build");
+  assert.equal(
+    build.args[build.args.indexOf("--file") + 1],
+    resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile.r")
+  );
+  assert.match(build.args[build.args.indexOf("--tag") + 1], /^openwrangler-remote-r-jupyter:/u);
+  await fixture.cleanup();
+});
+
+linuxTest("language fixtures reject the other kernelspec", async () => {
+  for (const [fixtureKind, response] of [
+    ["r", kernelspecResponse()],
+    ["python", rKernelspecResponse()]
+  ]) {
+    const fake = createFakeDocker();
+    let clock = 0;
+    await assert.rejects(
+      startWithFake(fake, {
+        fixtureKind,
+        readyTimeoutMs: 200,
+        now: () => clock,
+        sleep: async (milliseconds) => {
+          clock += milliseconds;
+        },
+        fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? response.clone() : readyResponse())
+      }),
+      /fixed deadline/u
+    );
+    assert.equal(fake.state.containerPresent, false);
+    assert.equal(fake.state.imagePresent, false);
+  }
 });
 
 test("remote-Jupyter lifecycle cleans exactly once after a successful phase", async () => {
@@ -1430,6 +1519,35 @@ test("the container definition pins its base and direct wheels and never receive
   assert.equal(REMOTE_JUPYTER_SETUP_TIMEOUT_MS, 300_000);
   assert.equal(REMOTE_JUPYTER_SETUP_INACTIVITY_TIMEOUT_MS, 180_000);
   assert.equal(REMOTE_JUPYTER_SETUP_HEARTBEAT_MS, 60_000);
+});
+
+test("the R container definition pins R, package snapshots, and its exact kernelspec", async () => {
+  const dockerfile = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile.r"), "utf8");
+  const dockerignore = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", ".dockerignore"), "utf8");
+
+  assert.ok(dockerfile.startsWith(`FROM ${REMOTE_R_JUPYTER_BASE_IMAGE}\n`));
+  assert.match(dockerfile, /^ARG UBUNTU_SNAPSHOT=20260311T000000Z$/mu);
+  assert.match(dockerfile, /https:\/\/snapshot\.ubuntu\.com\/ubuntu\/\$\{UBUNTU_SNAPSHOT\}/u);
+  assert.match(dockerfile, /^ARG R_REPOSITORY=https:\/\/p3m\.dev\/cran\/__linux__\/noble\/2026-03-10$/mu);
+  for (const [name, version] of [
+    ["IRKERNEL_VERSION", "1.3.2"],
+    ["JSONLITE_VERSION", "2.0.0"],
+    ["RLANG_VERSION", "1.1.7"],
+    ["TIBBLE_VERSION", "3.3.1"],
+    ["DATA_TABLE_VERSION", "1.18.2.1"]
+  ]) {
+    assert.match(dockerfile, new RegExp(`^ARG ${name}=${version.replaceAll(".", "\\.")}$`, "mu"));
+  }
+  assert.match(dockerfile, /--only-binary=:all:/u);
+  assert.match(dockerfile, /--require-hashes/u);
+  assert.match(dockerfile, /as\.character\(getRversion\(\)\) == "4\.5\.2"/u);
+  assert.match(dockerfile, /identical\(actual, expected\)/u);
+  assert.match(dockerfile, /name = "openwrangler-r-remote-acceptance"/u);
+  assert.match(dockerfile, /displayname = "R \(Open Wrangler Remote\)"/u);
+  assert.match(dockerfile, /^USER 65532:65532$/mu);
+  assert.match(dockerfile, /^ENTRYPOINT \["python", "-I", "\/opt\/openwrangler\/server\.py"\]$/mu);
+  assert.equal(/OPEN_WRANGLER_REMOTE_TOKEN|JUPYTER_TOKEN/u.test(dockerfile), false);
+  assert.match(dockerignore, /^!Dockerfile\.r$/mu);
 });
 
 test("the private released-Jupyter profiles suppress unrelated extension recommendations", async () => {
