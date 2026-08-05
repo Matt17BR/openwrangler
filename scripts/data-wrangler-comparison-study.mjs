@@ -63,7 +63,7 @@ const LARGE_EDITOR_STARTUP_CLEANUP_MS = 120_000;
 const LARGE_STAGE_TIMEOUTS_MS = Object.freeze({
   preAction: 120_000,
   inlinePreview: 120_000,
-  workbenchOpen: 180_000,
+  workbenchOpen: 150_000,
   completeProfile: 600_000
 });
 

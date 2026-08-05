@@ -52,7 +52,7 @@ test("derives the large editor cap from its bounded stages and overhead", () => 
     LARGE_TIMEOUTS_MS.inlinePreview +
     LARGE_TIMEOUTS_MS.workbenchOpen +
     LARGE_TIMEOUTS_MS.completeProfile;
-  assert.equal(innerDeadlines, 1_140_000);
+  assert.equal(innerDeadlines, 1_110_000);
   assert.equal(LARGE_TIMEOUTS_MS.editorPhase, innerDeadlines + 120_000);
   assert.equal(LARGE_TIMEOUTS_MS.editorPhase, largeComparisonEditorPhaseTimeout(LARGE_TIMEOUTS_MS));
   assert.ok(LARGE_TIMEOUTS_MS.neutralDriver > LARGE_TIMEOUTS_MS.editorPhase);
