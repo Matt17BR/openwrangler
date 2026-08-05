@@ -345,8 +345,8 @@ class SessionManager:
                 raise PySparkConnectStateLostError(
                     session.session_id,
                     f"The Spark Connect session or dataframe for {label!r} no longer exists on the server. "
-                    "The current Open Wrangler view is unchanged. Recreate the Spark session and rerun "
-                    "the cell that defines this variable, then retry or reopen it.",
+                    "The current Open Wrangler view is unchanged. Rerun the cell that defines this "
+                    "variable, then choose Reconnect in Open Wrangler.",
                 ) from error
             raise
 

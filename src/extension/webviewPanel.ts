@@ -37,6 +37,7 @@ export class OpenWranglerPanel {
   private currentImportChangeTask: Promise<void> | undefined;
   private nativeImportCommand: Promise<boolean> | undefined;
   private runtimeDependencyInstallTask: Promise<void> | undefined;
+  private reconnectingLiveSource = false;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
   private sessionOpenCancellation: vscode.CancellationTokenSource | undefined;
   private readonly forwardedRequests = new Set<Promise<void>>();
@@ -446,6 +447,11 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "reconnectLiveSource") {
+      await this.reconnectLiveSource();
+      return;
+    }
+
     if (this.changingImportOptions) {
       await this.post({
         kind: "error",
@@ -479,6 +485,65 @@ export class OpenWranglerPanel {
       return;
     }
     await this.forward(request, decoded.viewContextId);
+  }
+
+  private async reconnectLiveSource(): Promise<void> {
+    const sessionId = this.sessionId;
+    const revision = this.sessionRevision;
+    if (!sessionId || this.disposed || this.reconnectingLiveSource) return;
+    if (!this.bridge.reconnectLiveSession) {
+      await this.post({
+        kind: "error",
+        code: "pyspark_connect_state_lost",
+        message: "This Open Wrangler session cannot reconnect the live PySpark dataframe.",
+        recoverable: true,
+        sessionId
+      });
+      return;
+    }
+
+    this.reconnectingLiveSource = true;
+    try {
+      const response = await this.bridge.reconnectLiveSession(sessionId, revision, { priority: "interactive" });
+      if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
+      if (response.kind === "sessionOpened") {
+        if (response.metadata.sessionId !== sessionId || response.metadata.revision !== revision) {
+          await this.post({
+            kind: "error",
+            code: "pyspark_connect_state_lost",
+            message: "Open Wrangler rejected a reconnect response for a different dataframe view.",
+            recoverable: true,
+            sessionId
+          });
+          return;
+        }
+        this.invalidateRendererSynchronization();
+        this.openResponse = response;
+        this.snapshot = response;
+        this.snapshotViewContextId = undefined;
+        this.latestPageViewRequestId = undefined;
+        await this.post(response);
+        await this.postSessionPresentation();
+        await this.postViewState();
+        if (this.rendererReady) this.scheduleRendererSynchronization(false);
+        return;
+      }
+      await this.post(response);
+    } catch (error) {
+      if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
+      await this.post({
+        kind: "error",
+        code: "pyspark_connect_state_lost",
+        message:
+          error instanceof Error
+            ? `Open Wrangler could not reconnect the live PySpark dataframe: ${error.message}`
+            : "Open Wrangler could not reconnect the live PySpark dataframe.",
+        recoverable: true,
+        sessionId
+      });
+    } finally {
+      this.reconnectingLiveSource = false;
+    }
   }
 
   private enqueueImportOptionsChange(): Promise<void> {
@@ -1360,6 +1425,9 @@ export class OpenWranglerPanel {
     if (message.kind === "exportData") {
       return hasExactKeys(message, ["kind"]) ? { kind: "exportData" } : undefined;
     }
+    if (message.kind === "reconnectLiveSource") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "reconnectLiveSource" } : undefined;
+    }
     if (
       message.kind !== "runtimeRequest" ||
       !hasExactKeys(message, ["kind", "request"], ["viewContextId"]) ||
@@ -1461,6 +1529,7 @@ type WebviewRequest =
   | { kind: "changeImportOptions"; actionId?: string }
   | { kind: "installRuntimeDependencies" }
   | { kind: "exportData" }
+  | { kind: "reconnectLiveSource" }
   | {
       kind: "runtimeRequest";
       request: OpenWranglerRequest;

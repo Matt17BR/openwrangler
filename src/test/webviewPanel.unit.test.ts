@@ -4050,6 +4050,65 @@ describe("OpenWranglerPanel retained view state", () => {
     );
   });
 
+  it("routes the PySpark Reconnect action through the host-only live-session recovery", async () => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "spark_frame",
+      variableName: "spark_frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const pysparkOpened: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: {
+        ...metadata,
+        backend: "pyspark",
+        mode: "viewing",
+        source,
+        capabilities: {
+          editable: false,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false
+        }
+      }
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") return pysparkOpened;
+      if (candidate.kind === "closeSession") return { kind: "sessionClosed", sessionId: candidate.sessionId };
+      throw new Error(`Unexpected reconnect panel request ${candidate.kind}`);
+    });
+    const reconnectLiveSession = vi.fn(async (): Promise<OpenWranglerResponse> => pysparkOpened);
+    const getViewState = vi.fn(() => ({
+      selectedColumnId: "c:0",
+      columnWidths: { "c:0": 240 },
+      viewport: { firstVisibleRow: 0, scrollLeft: 30 }
+    }));
+    const getSessionPresentation = vi.fn(() => ({
+      sessionId: "session",
+      revision: 0,
+      code: ""
+    }));
+    const harness = createPanelHarness(
+      { request, reconnectLiveSession, getViewState, getSessionPresentation },
+      { source, backend: "pyspark", backendPreference: "pyspark", delegateOpen: true }
+    );
+    await harness.open();
+    harness.posted.length = 0;
+
+    await harness.receive({ kind: "reconnectLiveSource" });
+
+    expect(reconnectLiveSession).toHaveBeenCalledWith("session", 0, { priority: "interactive" });
+    expect(harness.posted).toContainEqual(pysparkOpened);
+    expect(harness.posted).toContainEqual({
+      kind: "sessionPresentation",
+      presentation: { sessionId: "session", revision: 0, code: "" }
+    });
+    expect(harness.posted).toContainEqual({ kind: "viewState", state: getViewState.mock.results[0]?.value });
+    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+  });
+
   it("does not retry a failed live notebook open when renderer readiness arrives later", async () => {
     const source: SessionSource = {
       kind: "notebookVariable",

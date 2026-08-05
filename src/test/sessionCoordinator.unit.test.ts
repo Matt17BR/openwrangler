@@ -403,6 +403,170 @@ describe("SessionCoordinator", () => {
     }
   );
 
+  it("requires an explicit same-kernel reconnect after Spark Connect loses the dataframe", async () => {
+    const notebook = {
+      uri: vscode.Uri.parse("file:///workspace/connect-reconnect.ipynb"),
+      isClosed: false
+    } as NotebookDocument;
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "orders",
+      variableName: "orders",
+      uri: notebook.uri.toString()
+    };
+    const schema = [
+      { id: "c:value", name: "value", position: 0, rawType: "bigint", type: "integer" as const, nullable: false }
+    ];
+    const openedFor = (runtimeId: string, openedSchema = schema): SessionOpenedResponse => {
+      const opened = openedResponse(runtimeId, "pyspark");
+      opened.metadata = {
+        ...opened.metadata,
+        source,
+        mode: "viewing",
+        capabilities: {
+          editable: false,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false
+        },
+        shape: { rows: null, columns: 1 },
+        filteredShape: { rows: null, columns: 1 },
+        schema: openedSchema
+      };
+      return {
+        ...opened,
+        page: {
+          offset: 0,
+          limit: 100,
+          totalRows: null,
+          hasMore: true,
+          columnIds: ["c:value"],
+          rows: []
+        }
+      };
+    };
+    let openCount = 0;
+    const delegateRequest = vi.fn(
+      async (request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") {
+          openCount += 1;
+          if (openCount > 1) expect(options?.requiredKernelSessionId).toBe("spark-runtime-1");
+          if (openCount === 2) {
+            return openedFor("spark-runtime-2", [
+              { id: "c:changed", name: "changed", position: 0, rawType: "bigint", type: "integer", nullable: false }
+            ]);
+          }
+          return openedFor(`spark-runtime-${openCount}`);
+        }
+        if (request.kind === "getPage" && request.sessionId === "spark-runtime-1") {
+          return {
+            kind: "error",
+            code: "pyspark_connect_state_lost",
+            message: "Run the cell that creates orders, then choose Reconnect.",
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
+        if (request.kind === "getPage" && request.sessionId === "spark-runtime-3") {
+          return {
+            kind: "page",
+            revision: request.revision,
+            viewRequestId: request.viewRequestId,
+            metadata: { ...openedFor(request.sessionId).metadata, filterModel: request.filterModel },
+            page: {
+              offset: request.offset,
+              limit: request.limit,
+              totalRows: null,
+              hasMore: true,
+              columnIds: ["c:value"],
+              rows: []
+            }
+          };
+        }
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected explicit reconnect request: ${request.kind}`);
+      }
+    );
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest }, notebook);
+    setOpenNotebookDocuments(notebook);
+
+    try {
+      const opened = await bridge.request({ ...openRequest, source, backend: "pyspark", mode: "viewing" });
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the Spark Connect dataframe to open.");
+      await bridge.updateViewState?.(opened.metadata.sessionId, {
+        selectedColumnId: "c:value",
+        columnWidths: { "c:value": 260 },
+        viewport: { firstVisibleRow: 12, scrollLeft: 40 }
+      });
+      const confirmed = coordinator.activeSession();
+
+      const lost = await bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "connect-state-lost",
+        offset: 100,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      });
+      expect(lost).toMatchObject({ kind: "error", code: "pyspark_connect_state_lost" });
+      expect(coordinator.activeSession()).toEqual(confirmed);
+
+      const ordinaryRetry = await bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "ordinary-retry",
+        offset: 100,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      });
+      expect(ordinaryRetry).toMatchObject({
+        kind: "error",
+        code: "pyspark_connect_state_lost",
+        viewRequestId: "ordinary-retry"
+      });
+      expect(openCount).toBe(1);
+      expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "getPage")).toHaveLength(1);
+
+      const rejectedReconnect = await bridge.reconnectLiveSession?.(
+        opened.metadata.sessionId,
+        opened.metadata.revision
+      );
+      expect(rejectedReconnect).toMatchObject({ kind: "error", code: "pyspark_connect_state_lost" });
+      expect(coordinator.activeSession()).toEqual(confirmed);
+      expect(openCount).toBe(2);
+
+      const reconnected = await bridge.reconnectLiveSession?.(opened.metadata.sessionId, opened.metadata.revision);
+      expect(reconnected).toMatchObject({
+        kind: "sessionOpened",
+        metadata: {
+          sessionId: opened.metadata.sessionId,
+          revision: opened.metadata.revision,
+          backend: "pyspark",
+          source
+        },
+        page: { offset: 0, columnIds: ["c:value"] }
+      });
+      expect(openCount).toBe(3);
+      expect(coordinator.activeSession()?.viewState).toEqual(confirmed?.viewState);
+      expect(
+        delegateRequest.mock.calls
+          .filter(([request]) => request.kind === "openSession")
+          .map(([, options]) => options?.requiredKernelSessionId)
+      ).toEqual([undefined, "spark-runtime-1", "spark-runtime-1"]);
+    } finally {
+      setOpenNotebookDocuments();
+      await coordinator.shutdown();
+    }
+  });
+
   it("commits a terminal PySpark page's exact shape without a filter, revision, or plan change", async () => {
     const source = {
       kind: "notebookVariable" as const,
