@@ -9,6 +9,7 @@ import {
   comparisonProductSettings,
   comparisonHostRequest,
   summarizePss,
+  validateComparisonTrialRequest,
   verifyComparisonSource
 } from "./data-wrangler-comparison-neutral-driver.mjs";
 
@@ -65,6 +66,31 @@ test("host request omits the launcher-only VS Code CLI path", () => {
   assert.equal(host.repetitions, 10);
   assert.equal(Object.hasOwn(host.timeoutsMs, "editorPhase"), false);
   assert.equal(Object.hasOwn(host.cell, "sourceSha256"), false);
+});
+
+test("accepts the smoke, local, and release repetition counts", () => {
+  const request = {
+    protocol: "openwrangler-comparison-trial-request-v2",
+    product: "open-wrangler",
+    kind: "warm",
+    order: 0,
+    isolatedRoot: "/trial",
+    notebookPath: "/trial/study.ipynb",
+    cell: { source: "/trial/source.parquet", sourceSha256: "a".repeat(64) },
+    candidate: { path: "/candidate.vsix", sha256: "b".repeat(64) },
+    editor: {
+      path: "/code",
+      cliPath: "/code-cli",
+      sha256: "c".repeat(64),
+      cliSha256: "d".repeat(64)
+    },
+    python: { path: "/python", sha256: "e".repeat(64) },
+    timeoutsMs: { editorPhase: 600_000 }
+  };
+  for (const repetitions of [2, 3, 10]) {
+    assert.doesNotThrow(() => validateComparisonTrialRequest({ ...request, repetitions }));
+  }
+  assert.throws(() => validateComparisonTrialRequest({ ...request, repetitions: 4 }), /request is malformed/u);
 });
 
 test("private trial sources are checked before and after editor use", () => {
