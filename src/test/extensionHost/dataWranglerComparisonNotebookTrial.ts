@@ -23,7 +23,14 @@ import {
 export const COMPARISON_TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v2";
 export const COMPARISON_TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 
-const CELL_IDS = ["pandas-csv", "pandas-parquet", "polars-csv", "polars-parquet"] as const;
+const CELL_IDS = [
+  "pandas-csv",
+  "pandas-parquet",
+  "polars-csv",
+  "polars-parquet",
+  "pandas-parquet-local",
+  "polars-parquet-local"
+] as const;
 const MILESTONE_NAMES = [
   "run-cell-click",
   "inline-ready",
@@ -86,7 +93,7 @@ export interface ComparisonTrialRequest {
   readonly product: Product;
   readonly kind: TrialKind;
   readonly order: number;
-  readonly repetitions: 2 | 10;
+  readonly repetitions: 2 | 3 | 10;
   readonly isolatedRoot: string;
   readonly notebookPath: string;
   readonly cell: {
@@ -333,7 +340,10 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
   const id = oneOf(cell.id, CELL_IDS, "Comparison request cell.id");
   const engine = oneOf(cell.engine, ["pandas", "polars"] as const, "Comparison request cell.engine");
   const format = oneOf(cell.format, ["csv", "parquet"] as const, "Comparison request cell.format");
-  if (id !== `${engine}-${format}`) fail("Comparison request cell identity does not match its engine and format.");
+  const engineFormat = `${engine}-${format}`;
+  if (id !== engineFormat && id !== `${engineFormat}-local`) {
+    fail("Comparison request cell identity does not match its engine and format.");
+  }
   const timeouts = record(request.timeoutsMs, "Comparison request timeoutsMs");
   exactKeys(
     timeouts,
@@ -342,7 +352,9 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
   );
   if (request.dataWranglerVersion !== "1.24.2") fail("The comparison baseline must be Data Wrangler 1.24.2.");
   const repetitions = boundedInteger(request.repetitions, 2, 10, "Comparison request repetitions");
-  if (repetitions !== 2 && repetitions !== 10) fail("Comparison request repetitions is invalid.");
+  if (repetitions !== 2 && repetitions !== 3 && repetitions !== 10) {
+    fail("Comparison request repetitions is invalid.");
+  }
   return Object.freeze({
     protocol: COMPARISON_TRIAL_REQUEST_PROTOCOL,
     trialId: matchingString(request.trialId, ID, "Comparison request trialId"),
@@ -396,7 +408,7 @@ export function validateComparisonTrialResult(value: unknown): ComparisonTrialRe
   oneOf(result.format, ["csv", "parquet"] as const, "Comparison result format");
   oneOf(result.kind, ["warm"] as const, "Comparison result kind");
   boundedInteger(result.order, 0, 255, "Comparison result order");
-  if (!Array.isArray(result.samples) || ![2, 10].includes(result.samples.length)) {
+  if (!Array.isArray(result.samples) || ![2, 3, 10].includes(result.samples.length)) {
     fail("Comparison result must contain exactly two smoke samples or ten release samples.");
   }
   result.samples.forEach((sample, index) => validateComparisonSample(sample, index + 1));

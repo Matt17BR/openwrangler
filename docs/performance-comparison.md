@@ -94,6 +94,10 @@ npm run comparison:study -- \
   --out /absolute/path/benchmark-output
 ```
 
+Pass the real executable files, not symlink launchers. On Linux, `realpath /usr/bin/code` gives the VS Code CLI file.
+If a virtual environment symlinks `python`, create it with `python3.12 -m venv --copies` or use another regular
+Python 3.12 executable that has the pinned packages installed.
+
 The command writes one atomic result per session. Re-running it resumes at the first missing or interrupted session.
 It does not replace a successful session.
 
