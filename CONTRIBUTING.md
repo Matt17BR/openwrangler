@@ -23,9 +23,8 @@ editorial read; do not rely on an AI detector or a word list.
 
 ## Pull requests
 
-- Target `main` for every change intended for a future release. Open Wrangler 2 work stays on its feature branch
-  until it is ready for a preview pull request; do not create a maintenance branch before parallel maintenance is
-  actually needed.
+- Target `main` for 1.x work and `v2` for native R work. Both branches require pull requests and the same protected
+  checks. Publication stays on `main` until the first Open Wrangler 2 preview is ready.
 - Keep a pull request limited to one documented milestone or issue.
 - Add or update tests with every behavior change.
 - Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable generated-code coverage for every editing-capable engine.
