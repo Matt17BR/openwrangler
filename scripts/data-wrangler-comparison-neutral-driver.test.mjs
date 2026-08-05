@@ -51,6 +51,7 @@ test("host request omits the launcher-only VS Code CLI path", () => {
       format: "csv",
       rows: 100_000,
       columns: 50,
+      columnNames: Array.from({ length: 50 }, (_unused, index) => `c${String(index).padStart(2, "0")}`),
       source: "/source.csv",
       sourceSha256: "c".repeat(64),
       variableName: "study_frame",
@@ -67,6 +68,7 @@ test("host request omits the launcher-only VS Code CLI path", () => {
   assert.equal(host.repetitions, 10);
   assert.equal(Object.hasOwn(host.timeoutsMs, "editorPhase"), false);
   assert.equal(Object.hasOwn(host.cell, "sourceSha256"), false);
+  assert.deepEqual(host.cell.columnNames.slice(0, 2), ["c00", "c01"]);
   assert.equal(host.cell.profileContract, "integer-sentinel");
 });
 

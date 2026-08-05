@@ -23,15 +23,77 @@ DATETIME_MIN_NS, DATETIME_MAX_NS = 946_684_800_000_000_000, 4_102_358_400_000_00
 DATE_MIN_DAYS, DATE_MAX_DAYS = 10_957, 47_481
 DURATION_MIN_MS, DURATION_MAX_MS, DURATION_TOP_VALUE_MS = -86_400_000, 31_536_000_000, 172_800_000
 COLUMN_FAMILIES = (
-    (36, "floating-point", pa.float64()),
-    (66, "integer", pa.int64()),
-    (74, "categorical text", pa.string()),
-    (80, "high-cardinality text", pa.string()),
-    (83, "timestamp", pa.timestamp("ns")),
-    (86, "timestamp", pa.timestamp("ns", tz="UTC")),
-    (89, "date", pa.date32()),
-    (92, "duration", pa.duration("ms")),
-    (100, "boolean", pa.bool_()),
+    (
+        36,
+        "floating-point",
+        pa.float64(),
+        (
+            "net_revenue_usd",
+            "gross_margin_usd",
+            "unit_price_usd",
+            "discount_rate",
+            "forecast_amount_usd",
+            "tax_amount_usd",
+        ),
+    ),
+    (
+        66,
+        "integer",
+        pa.int64(),
+        ("order_quantity", "active_users", "invoice_count", "inventory_units", "event_count", "days_overdue"),
+    ),
+    (
+        74,
+        "categorical text",
+        pa.string(),
+        (
+            "customer_segment",
+            "sales_region",
+            "order_channel",
+            "product_family",
+            "billing_country",
+            "account_tier",
+            "risk_band",
+            "renewal_status",
+        ),
+    ),
+    (
+        80,
+        "high-cardinality text",
+        pa.string(),
+        (
+            "account_display_name",
+            "event_description",
+            "product_description",
+            "shipping_address",
+            "support_case_subject",
+            "external_reference",
+        ),
+    ),
+    (83, "timestamp", pa.timestamp("ns"), ("order_created_at", "account_updated_at", "event_received_at")),
+    (
+        86,
+        "timestamp",
+        pa.timestamp("ns", tz="UTC"),
+        ("invoice_posted_at_utc", "shipment_sent_at_utc", "renewal_scored_at_utc"),
+    ),
+    (89, "date", pa.date32(), ("invoice_due_date", "contract_start_date", "renewal_date")),
+    (92, "duration", pa.duration("ms"), ("session_duration_ms", "fulfillment_duration_ms", "response_duration_ms")),
+    (
+        100,
+        "boolean",
+        pa.bool_(),
+        (
+            "is_active",
+            "is_priority",
+            "is_overdue",
+            "has_discount",
+            "is_renewal",
+            "is_enterprise",
+            "is_test_account",
+            "is_billable",
+        ),
+    ),
 )
 
 
@@ -70,20 +132,30 @@ def assert_large_study_capacity(output: Path) -> dict[str, int]:
     return {"availableMemoryBytes": memory, "freeDiskBytes": disk}
 
 
-def _role_and_type(index: int) -> tuple[str, pa.DataType]:
-    return next((role, data_type) for end, role, data_type in COLUMN_FAMILIES if index < end)
+def _column_definition(index: int) -> tuple[str, str, pa.DataType]:
+    start = 0
+    for end, role, data_type, names in COLUMN_FAMILIES:
+        if index < end:
+            offset = index - start
+            cycle, name_index = divmod(offset, len(names))
+            base = names[name_index]
+            return (base if cycle == 0 else f"{base}_{cycle + 1:02d}", role, data_type)
+        start = end
+    raise IndexError(index)
 
 
 def column_contract() -> list[dict[str, Any]]:
     return [
-        {"name": f"c{index:02d}", "role": role, "arrowType": str(data_type)}
+        {"name": name, "role": role, "arrowType": str(data_type)}
         for index in range(DEFAULT_COLUMNS)
-        for role, data_type in [_role_and_type(index)]
+        for name, role, data_type in [_column_definition(index)]
     ]
 
 
 def fixture_schema() -> pa.Schema:
-    return pa.schema([pa.field(f"c{index:02d}", _role_and_type(index)[1], nullable=True) for index in range(100)])
+    return pa.schema(
+        [pa.field(name, data_type, nullable=True) for name, _, data_type in map(_column_definition, range(100))]
+    )
 
 
 def _marker_rows(column: int) -> tuple[int, int]:
@@ -117,7 +189,7 @@ def build_row_group(start: int, count: int, spec: LargeFixtureSpec) -> pa.Table:
             random_values = rng.integers(0, np.iinfo(np.uint64).max, count, dtype=np.uint64)
             values = [f"record-{column:02d}-{int(value):016x}" for value in random_values]
             for position in np.flatnonzero((rows + column) % 97 == 0):
-                values[int(position)] = f"popular-c{column:02d}"
+                values[int(position)] = f"popular-{field.name}"
         elif column < 86:
             values = 1_672_531_200_000_000_000 + rows * (column - 79) * 1_000_000_000
             values[rows == minimum_row], values[rows == maximum_row] = DATETIME_MIN_NS, DATETIME_MAX_NS
@@ -165,7 +237,7 @@ def fixture_manifest(path: Path, spec: LargeFixtureSpec) -> dict[str, Any]:
         "profileSentinels": {
             "numericExtrema": [NUMERIC_MIN, NUMERIC_MAX],
             "categoricalTopValue": "enterprise",
-            "highCardinalityTopValueTemplate": "popular-c{column}",
+            "highCardinalityTopValueTemplate": "popular-{column}",
             "datetimeExtrema": ["2000-01-01", "2099-12-31"],
             "durationExtremaMs": [DURATION_MIN_MS, DURATION_MAX_MS],
             "durationTopValueMs": DURATION_TOP_VALUE_MS,

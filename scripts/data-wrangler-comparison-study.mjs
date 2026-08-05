@@ -477,6 +477,10 @@ export function buildComparisonTrialRequest({
       format: entry.format,
       rows: entry.rows,
       columns: entry.columns,
+      columnNames:
+        profileContract === "mixed-sentinels-v1"
+          ? manifest.provenance.fixture.schema.map(({ name }) => name)
+          : Array.from({ length: entry.columns }, (_unused, index) => `c${String(index).padStart(2, "0")}`),
       source,
       sourceSha256,
       ...(sourceIdentity ? { sourceIdentity } : {}),
@@ -841,6 +845,7 @@ export function assertLargeRunEnvironment(environment, expectedMachine) {
 }
 
 function validateLargeFixtureManifest(fixture) {
+  const names = Array.isArray(fixture?.schema) ? fixture.schema.map((column) => column?.name) : [];
   if (
     fixture?.protocol !== LARGE_FIXTURE_PROTOCOL ||
     fixture.rows !== LARGE_ROWS ||
@@ -849,6 +854,9 @@ function validateLargeFixtureManifest(fixture) {
     !Number.isSafeInteger(fixture.bytes) ||
     fixture.bytes < 1 ||
     !HASH.test(fixture.sha256 ?? "") ||
+    names.length !== LARGE_COLUMNS ||
+    new Set(names).size !== LARGE_COLUMNS ||
+    names.some((name) => typeof name !== "string" || !/^[a-z][a-z0-9_]{1,63}$/u.test(name)) ||
     typeof fixture.profileSentinels !== "object"
   ) {
     throw new TypeError("The large Parquet fixture manifest is malformed.");

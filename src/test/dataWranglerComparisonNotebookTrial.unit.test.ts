@@ -43,6 +43,7 @@ function request(overrides: Partial<ComparisonTrialRequest> = {}): ComparisonTri
       format: "csv",
       rows: 100_000,
       columns: 50,
+      columnNames: Array.from({ length: 50 }, (_unused, index) => `c${String(index).padStart(2, "0")}`),
       source: "/tmp/openwrangler-comparison/fixtures/source.csv",
       variableName: "study_frame",
       profileContract: "integer-sentinel"
@@ -135,6 +136,9 @@ describe("neutral comparison request", () => {
       validateComparisonTrialRequest(request({ timeoutsMs: { ...request().timeoutsMs, completeProfile: 1 } }))
     ).toThrow(/completeProfile timeout/u);
     expect(() => validateComparisonTrialRequest(request({ repetitions: 3 as 10 }))).toThrow(/repetitions/u);
+    expect(() =>
+      validateComparisonTrialRequest(request({ cell: { ...request().cell, columnNames: Array(50).fill("duplicate") } }))
+    ).toThrow(/unique/u);
     expect(() =>
       validateComparisonTrialRequest(
         request({ cell: { ...request().cell, profileContract: "unknown" as "integer-sentinel" } })
@@ -318,23 +322,48 @@ describe("public readiness oracles", () => {
 
   it("requires the generated sentinel for every mixed-fixture column family", () => {
     for (const input of [
-      { column: "c42", text: "c42 Float64 Missing 2% Distinct 98% Min -900m Max 900m" },
-      { column: "c66", text: "c66 String Missing 2% Distinct 7 enterprise consumer" },
-      { column: "c74", text: "c74 String Missing 2% Distinct 98% popular-c74 103000" },
-      { column: "c80", text: "c80 Datetime Missing 2% Distinct 98% Min 2000-01-01 Max 2099-12-31" },
-      { column: "c89", text: "c89 Duration Missing 2% Distinct 98% 2 days 00:00:00 1400000" },
-      { column: "c92", text: "c92 Boolean Missing 2% Distinct 2 True 5000000 False 5000000" }
+      {
+        column: "active_users_02",
+        index: 42,
+        text: "active_users_02 Int64 Missing 2% Distinct 98% Min -900m Max 900m"
+      },
+      {
+        column: "customer_segment",
+        index: 66,
+        text: "customer_segment String Missing 2% Distinct 7 enterprise consumer"
+      },
+      {
+        column: "account_display_name",
+        index: 74,
+        text: "account_display_name String Missing 2% Distinct 98% popular-account_display_name 103000"
+      },
+      {
+        column: "order_created_at",
+        index: 80,
+        text: "order_created_at Datetime Missing 2% Distinct 98% Min 2000-01-01 Max 2099-12-31"
+      },
+      {
+        column: "session_duration_ms",
+        index: 89,
+        text: "session_duration_ms Duration Missing 2% Distinct 98% 2 days 00:00:00 1400000"
+      },
+      { column: "is_active", index: 92, text: "is_active Boolean Missing 2% Distinct 2 True 5000000 False 5000000" }
     ]) {
       expect(mixedProfileTextReady(input)).toBe(true);
     }
     expect(
       mixedProfileTextReady({
-        column: "c42",
-        text: "c42 Float64 Missing 2% Distinct 98% Min -800m Max 900m"
+        column: "active_users_02",
+        index: 42,
+        text: "active_users_02 Int64 Missing 2% Distinct 98% Min -800m Max 900m"
       })
     ).toBe(false);
     expect(
-      mixedProfileTextReady({ column: "c92", text: "c92 Boolean Profiling Missing 2% Distinct 2 True False" })
+      mixedProfileTextReady({
+        column: "is_active",
+        index: 92,
+        text: "is_active Boolean Profiling Missing 2% Distinct 2 True False"
+      })
     ).toBe(false);
   });
 

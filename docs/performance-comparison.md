@@ -16,13 +16,13 @@ data, low-cardinality categories, high-cardinality text, timestamps, dates, dura
 adds nulls and fixed profile markers. It writes 100,000-row groups with PyArrow and Zstandard compression, so
 it never holds the complete fixture in memory.
 
-The column names stay `c00` through `c99` because both products must receive the same simple schema. Each column
-family has a known profile value: fixed numeric and date bounds, a dominant category, a repeated text or two-day
-duration value, or both boolean values. The test waits for those values in every profile instead of treating a generic
-column header as a completed summary. The rare duration bounds stay in the fixture but are not used for readiness,
-because both products expose duration top values rather than duration Min/Max statistics. The fixture manifest records
-the markers along with every column type, the seed, file hash, size, compression settings, and row-group layout. No
-user data is read.
+The schema uses deterministic business-style names such as `net_revenue_usd`, `customer_segment`,
+`account_display_name`, and `invoice_posted_at_utc`. Each column family has a known profile value: fixed numeric and
+date bounds, a dominant category, a repeated text or two-day duration value, or both boolean values. The test waits
+for those values in every profile instead of treating a generic column header as a completed summary. The rare
+duration bounds stay in the fixture but are not used for readiness, because both products expose duration top values
+rather than duration Min/Max statistics. The fixture manifest records the names and markers along with every column
+type, the seed, file hash, size, compression settings, and row-group layout. No user data is read.
 
 Generation stops before writing if Linux reports less than 40 GiB of available memory or the output filesystem has
 less than 15 GiB free. The study repeats those checks immediately before every editor run and also requires the same

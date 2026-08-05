@@ -227,6 +227,7 @@ test("prepared request loads one resident dataframe and asks the host for ten me
     assert.equal(prepared.request.kind, "warm");
     assert.equal(prepared.request.repetitions, WARM_REPETITIONS);
     assert.equal(prepared.request.cell.profileContract, "integer-sentinel");
+    assert.deepEqual(prepared.request.cell.columnNames.slice(0, 2), ["c00", "c01"]);
     const notebook = JSON.parse(readFileSync(prepared.request.notebookPath, "utf8"));
     assert.equal(notebook.cells.length, 2);
     assert.match(notebook.cells[0].source.join(""), /study_frame = pd\.read_csv/u);
@@ -413,6 +414,9 @@ function largeProvenanceFixture() {
       rowGroupRows: 100_000,
       bytes: 5_000_000_000,
       sha256: SHA,
+      schema: Array.from({ length: LARGE_COLUMNS }, (_unused, index) => ({
+        name: `benchmark_field_${String(index).padStart(3, "0")}`
+      })),
       profileSentinels: {}
     },
     machine: { ...manifestFixture().provenance.machine, totalMemoryBytes: 64 * 1024 ** 3 },

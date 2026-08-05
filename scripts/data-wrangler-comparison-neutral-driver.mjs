@@ -246,6 +246,7 @@ export function comparisonHostRequest(request) {
       format: request.cell.format,
       rows: request.cell.rows,
       columns: request.cell.columns,
+      columnNames: request.cell.columnNames,
       source: request.cell.source,
       variableName: request.cell.variableName,
       profileContract: request.cell.profileContract
@@ -375,6 +376,7 @@ function comparisonSamplePssWindow(samples, milestones) {
 }
 
 function validateRequest(request) {
+  const columnNames = request?.cell?.columnNames;
   if (
     !request ||
     request.protocol !== REQUEST_PROTOCOL ||
@@ -387,6 +389,10 @@ function validateRequest(request) {
     !isAbsolute(request.isolatedRoot) ||
     !isAbsolute(request.notebookPath) ||
     !isAbsolute(request.cell?.source) ||
+    !Array.isArray(columnNames) ||
+    columnNames.length !== request.cell?.columns ||
+    new Set(columnNames).size !== columnNames.length ||
+    columnNames.some((name) => typeof name !== "string" || !/^[a-z][a-z0-9_]{1,63}$/u.test(name)) ||
     !SHA256.test(request.cell?.sourceSha256 ?? "") ||
     !["integer-sentinel", "mixed-sentinels-v1"].includes(request.cell?.profileContract) ||
     !isAbsolute(request.candidate?.path) ||

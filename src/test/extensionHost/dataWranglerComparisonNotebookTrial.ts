@@ -96,6 +96,7 @@ export interface ComparisonTrialRequest {
     readonly format: Format;
     readonly rows: number;
     readonly columns: number;
+    readonly columnNames: readonly string[];
     readonly source: string;
     readonly variableName: string;
     readonly profileContract: ProfileContract;
@@ -204,8 +205,8 @@ interface PointerTarget {
   click(): Promise<void>;
   inlineReady(input: {
     readonly actionName: string;
-    readonly firstColumn: "c00";
-    readonly secondColumn: "c01";
+    readonly firstColumn: string;
+    readonly secondColumn: string;
   }): Promise<boolean>;
   dispose(): Promise<void>;
 }
@@ -333,13 +334,21 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
   const cell = record(request.cell, "Comparison request cell");
   exactKeys(
     cell,
-    ["id", "engine", "format", "rows", "columns", "source", "variableName", "profileContract"],
+    ["id", "engine", "format", "rows", "columns", "columnNames", "source", "variableName", "profileContract"],
     "Comparison request cell"
   );
   const id = oneOf(cell.id, CELL_IDS, "Comparison request cell.id");
   const engine = oneOf(cell.engine, ["pandas", "polars"] as const, "Comparison request cell.engine");
   const format = oneOf(cell.format, ["csv", "parquet"] as const, "Comparison request cell.format");
   if (id !== `${engine}-${format}`) fail("Comparison request cell identity does not match its engine and format.");
+  const columns = boundedInteger(cell.columns, 2, 2_048, "Comparison request cell.columns");
+  if (!Array.isArray(cell.columnNames) || cell.columnNames.length !== columns) {
+    fail("Comparison request columnNames must match the declared width.");
+  }
+  const columnNames = cell.columnNames.map((name, index) =>
+    matchingString(name, /^[a-z][a-z0-9_]{1,63}$/u, `Comparison request columnNames[${index}]`)
+  );
+  if (new Set(columnNames).size !== columnNames.length) fail("Comparison request columnNames must be unique.");
   const timeouts = record(request.timeoutsMs, "Comparison request timeoutsMs");
   exactKeys(
     timeouts,
@@ -363,7 +372,8 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
       engine,
       format,
       rows: boundedInteger(cell.rows, 2, 100_000_000, "Comparison request cell.rows"),
-      columns: boundedInteger(cell.columns, 2, 2_048, "Comparison request cell.columns"),
+      columns,
+      columnNames: Object.freeze(columnNames),
       source: containedPath(root, cell.source, "Comparison request cell.source"),
       variableName: matchingString(cell.variableName, VARIABLE, "Comparison request cell.variableName"),
       profileContract: oneOf(
@@ -1399,21 +1409,33 @@ export function integerProfileTextReady(input: {
   );
 }
 
-export function mixedProfileTextReady(input: { readonly column: string; readonly text: string }): boolean {
-  if (!/^c\d{2}$/u.test(input.column)) return false;
+export function mixedProfileTextReady(input: {
+  readonly column: string;
+  readonly index: number;
+  readonly text: string;
+}): boolean {
+  if (
+    !/^[a-z][a-z0-9_]{1,63}$/u.test(input.column) ||
+    !Number.isSafeInteger(input.index) ||
+    input.index < 0 ||
+    input.index >= 100
+  )
+    return false;
   const text = normalizedProfileText(input.text);
+  const column = normalizedProfileText(input.column);
   const baseReady =
-    new RegExp(`(?:^|\\b)${input.column}(?:\\b|[,;:()\\[\\]{}-])`, "u").test(text) &&
+    new RegExp(`(?:^|\\b)${escapeRegex(column)}(?:\\b|[,;:()\\[\\]{}-])`, "u").test(text) &&
     !/\b(?:loading|profiling|calculating|pending|preparing)\b/iu.test(text) &&
     /\b(?:missing|null(?:s| values?)?)\s*[:=]?\s*\d/iu.test(text) &&
     /\b(?:distinct|unique)\s*[:=]?\s*\d/iu.test(text);
   if (!baseReady) return false;
-  const index = Number(input.column.slice(1));
+  const index = input.index;
   if (index < 66) {
     return displayedProfileMetric(text, "min", -900_000_000) && displayedProfileMetric(text, "max", 900_000_000);
   }
   if (index < 74) return /\benterprise\b/iu.test(text);
-  if (index < 80) return new RegExp(`\\bpopular-${input.column}\\b`, "iu").test(text);
+  if (index < 80)
+    return new RegExp(`\\b${escapeRegex(normalizedProfileText(`popular-${input.column}`))}\\b`, "iu").test(text);
   if (index < 89) {
     return (
       /\bmin(?:imum)?\b/iu.test(text) &&
@@ -1441,7 +1463,7 @@ export function openWranglerProfileTextReady(input: {
   if (!["Exact statistics", "Rows"].every((label) => text.includes(label))) return false;
   return input.contract === "integer-sentinel"
     ? integerProfileTextReady({ ...input, text })
-    : mixedProfileTextReady({ column: input.column, text });
+    : mixedProfileTextReady({ column: input.column, index: input.minimum, text });
 }
 
 function normalizedProfileText(text: string): string {
@@ -1471,6 +1493,7 @@ function displayedProfileMetric(text: string, label: "min" | "max", value: numbe
 
 async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest): Promise<PointerTarget | undefined> {
   const matches: PointerTarget[] = [];
+  const [firstColumn, secondColumn] = request.cell.columnNames as readonly [string, string, ...string[]];
   if (request.product === "open-wrangler") {
     for (const frame of comparisonFrames(page).slice(0, 64)) {
       let handle;
@@ -1490,8 +1513,8 @@ async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest)
           (await target
             .inlineReady({
               actionName: target.accessibleName,
-              firstColumn: "c00",
-              secondColumn: "c01"
+              firstColumn,
+              secondColumn
             })
             .catch(() => false))
         ) {
@@ -1510,7 +1533,7 @@ async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest)
       try {
         handle = await frame.evaluateHandle(findExactActiveNotebookPreviewButton, {
           expectedButtonNames: ["Open Data Wrangler", "Open in Data Wrangler"],
-          requiredLabels: ["c00", "c01", "0", "1"]
+          requiredLabels: [firstColumn, secondColumn, "0", "1"]
         });
         const element = handle.asElement() as ElementHandle<unknown> | null;
         if (!element) {
@@ -1544,7 +1567,7 @@ async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest)
         if (
           actionPattern.test(name) &&
           (await target.pointerReady().catch(() => false)) &&
-          (await target.inlineReady({ actionName: name, firstColumn: "c00", secondColumn: "c01" }).catch(() => false))
+          (await target.inlineReady({ actionName: name, firstColumn, secondColumn }).catch(() => false))
         ) {
           matches.push(target);
           handle = undefined;
@@ -1572,7 +1595,7 @@ async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest)
         const target = locatorTarget(button, frame, name);
         if (
           (await target.pointerReady().catch(() => false)) &&
-          (await target.inlineReady({ actionName: name, firstColumn: "c00", secondColumn: "c01" }).catch(() => false))
+          (await target.inlineReady({ actionName: name, firstColumn, secondColumn }).catch(() => false))
         ) {
           matches.push(target);
         }
@@ -1593,6 +1616,7 @@ async function waitForInlineTarget(
   freshExecution: () => boolean,
   deadline: number
 ): Promise<PointerTarget> {
+  const [firstColumn, secondColumn] = request.cell.columnNames as readonly [string, string, ...string[]];
   do {
     if (freshExecution() && cell.executionSummary?.success === false) {
       throw new Error("The measured notebook cell failed.");
@@ -1637,9 +1661,7 @@ async function waitForInlineTarget(
         exactActionCount += 1;
         const target = locatorTarget(buttons.nth(index), frame, name);
         if (await target.pointerReady().catch(() => false)) exactCssPointerCount += 1;
-        if (
-          await target.inlineReady({ actionName: name, firstColumn: "c00", secondColumn: "c01" }).catch(() => false)
-        ) {
+        if (await target.inlineReady({ actionName: name, firstColumn, secondColumn }).catch(() => false)) {
           exactCssInlineCount += 1;
         }
       }
@@ -1655,11 +1677,7 @@ async function waitForInlineTarget(
       const resolvedName = await locatorName(button).catch(() => "");
       const target = locatorTarget(button, frame, resolvedName);
       if (await target.pointerReady().catch(() => false)) exactRolePointerCount += 1;
-      if (
-        await target
-          .inlineReady({ actionName: resolvedName, firstColumn: "c00", secondColumn: "c01" })
-          .catch(() => false)
-      ) {
+      if (await target.inlineReady({ actionName: resolvedName, firstColumn, secondColumn }).catch(() => false)) {
         exactRoleInlineCount += 1;
       }
     }
@@ -1809,11 +1827,10 @@ async function revealColumnHeader(frame: Frame, column: string, deadline: number
 
 async function clickColumnForProfile(
   frame: Frame,
-  index: number,
+  column: string,
   deadline: number,
   beforeClick?: () => void
 ): Promise<ActionEvidence> {
-  const column = `c${String(index).padStart(2, "0")}`;
   const header = await revealColumnHeader(frame, column, deadline);
   const name = await locatorName(header);
   const evidence = await clickTarget(locatorTarget(header, frame, name), beforeClick ?? (() => undefined));
@@ -1860,7 +1877,7 @@ async function waitForProfile(
       const ready =
         contract === "integer-sentinel"
           ? integerProfileTextReady({ column, minimum, maximum, text: profileText })
-          : mixedProfileTextReady({ column, text: profileText });
+          : mixedProfileTextReady({ column, index: minimum, text: profileText });
       if (ready) {
         return frame;
       }
@@ -2279,7 +2296,7 @@ async function executeMeasuredIteration(
       const target = await findExactButton(profileFrame, "Column profiles and filters", profileDeadline);
       profileAction = await clickTarget(target, () => milestones.mark("profile-click"));
     } else {
-      profileAction = await clickColumnForProfile(profileFrame, 0, profileDeadline, () =>
+      profileAction = await clickColumnForProfile(profileFrame, request.cell.columnNames[0]!, profileDeadline, () =>
         milestones.mark("profile-click")
       );
     }
@@ -2291,11 +2308,11 @@ async function executeMeasuredIteration(
     recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:profile-click`);
 
     for (let index = 0; index < request.cell.columns; index += 1) {
-      const column = `c${String(index).padStart(2, "0")}`;
+      const column = request.cell.columnNames[index]!;
       if (request.product === "open-wrangler") {
         await selectOpenWranglerProfileColumn(profileFrame, column, profileDeadline);
       } else if (index > 0) {
-        await clickColumnForProfile(profileFrame, index, profileDeadline);
+        await clickColumnForProfile(profileFrame, column, profileDeadline);
       }
       const profileStage = index === 0 ? "profile-first" : "profile-all";
       if (request.product === "open-wrangler") {
@@ -2331,7 +2348,7 @@ async function executeMeasuredIteration(
     if (request.product === "open-wrangler") {
       const resetDeadline = Date.now() + 10_000;
       try {
-        await selectOpenWranglerProfileColumn(profileFrame, "c00", resetDeadline, "harness");
+        await selectOpenWranglerProfileColumn(profileFrame, request.cell.columnNames[0]!, resetDeadline, "harness");
         await waitForGenericGridReadiness(
           page,
           new Set<Frame>(),

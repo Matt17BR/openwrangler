@@ -98,7 +98,7 @@ export function findExactActiveNotebookRendererButton({
 /** Verifies that a launch action and deterministic preview sentinels share one output boundary. */
 export function observeInlinePreviewReady(
   elementValue: unknown,
-  input: { readonly actionName: string; readonly firstColumn: "c00"; readonly secondColumn: "c01" }
+  input: { readonly actionName: string; readonly firstColumn: string; readonly secondColumn: string }
 ): boolean {
   type Candidate = {
     readonly isConnected: boolean;

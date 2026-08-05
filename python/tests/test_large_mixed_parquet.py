@@ -27,7 +27,9 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
 
     columns = large_fixture.column_contract()
     assert len(columns) == 100
-    assert [column["name"] for column in columns] == [f"c{index:02d}" for index in range(100)]
+    assert len({column["name"] for column in columns}) == 100
+    assert columns[0]["name"] == "net_revenue_usd"
+    assert columns[-1]["name"] == "is_billable"
     assert {column["role"] for column in columns} == {
         "floating-point",
         "integer",
@@ -47,15 +49,28 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
     large_fixture.validate_fixture(first, spec)
 
     table = pq.read_table(first)
-    for name in ["c00", "c35", "c36", "c65"]:
+    names_by_role = {
+        role: [column["name"] for column in columns if column["role"] == role]
+        for role in {column["role"] for column in columns}
+    }
+    for name in [
+        names_by_role["floating-point"][0],
+        names_by_role["floating-point"][-1],
+        names_by_role["integer"][0],
+        names_by_role["integer"][-1],
+    ]:
         values = [value for value in table[name].to_pylist() if value is not None]
         assert (min(values), max(values)) == (-900_000_000, 900_000_000)
-    categories = Counter(value for value in table["c66"].to_pylist() if value is not None)
+    categories = Counter(
+        value for value in table[names_by_role["categorical text"][0]].to_pylist() if value is not None
+    )
     assert categories["enterprise"] > max(count for value, count in categories.items() if value != "enterprise")
-    assert "popular-c74" in table["c74"].to_pylist()
-    assert min(value for value in table["c80"].to_pylist() if value is not None).date() == date(2000, 1, 1)
-    assert max(value for value in table["c86"].to_pylist() if value is not None) == date(2099, 12, 31)
-    assert set(value for value in table["c92"].to_pylist() if value is not None) == {False, True}
+    text_name = names_by_role["high-cardinality text"][0]
+    assert f"popular-{text_name}" in table[text_name].to_pylist()
+    timestamps = names_by_role["timestamp"]
+    assert min(value for value in table[timestamps[0]].to_pylist() if value is not None).date() == date(2000, 1, 1)
+    assert max(value for value in table[timestamps[-1]].to_pylist() if value is not None).date() == date(2099, 12, 31)
+    assert set(value for value in table[names_by_role["boolean"][0]].to_pylist() if value is not None) == {False, True}
 
 
 def test_generation_stops_before_replacement_or_low_capacity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
