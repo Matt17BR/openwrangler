@@ -7,9 +7,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Added
 
 - The optional Data Wrangler comparison now has a manual 10M × 100 mixed-type Parquet study. It uses five fresh
-  editor and kernel sessions per product/engine pair, five native loads per engine, and reports median and range
-  instead of calculating p95 from too few samples. Battery-less hosts and hosts without a cpufreq governor record
-  that state explicitly. Normal CI keeps the existing small regression benchmark.
+  editor and kernel sessions per product and input type, checks all 100 column summaries through each product's UI,
+  and reports median and range instead of calculating p95 from too few samples. The generated file records its actual
+  compressed size and must be at least 4 GiB. The runner checks power and CPU state before and after every session;
+  normal CI keeps the existing small regression benchmark.
 
 ### Changed
 
@@ -66,8 +67,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Pandas profiles no longer scan ordinary numeric, boolean, date, and duration columns in Python just to count
   missing values. In the 1 million × 20 Parquet test, profiling all 20 columns dropped from about 21 seconds to 6.5
   seconds.
-- Open Wrangler was faster than Data Wrangler 1.24.2 in the median notebook-preview, workbench-open, and full-profile
-  measurements across Pandas, Polars, CSV, and Parquet. The
+- Open Wrangler was faster than Data Wrangler 1.24.2 in the median notebook-preview, workbench-open, and column-summary
+  sweep measurements across Pandas, Polars, CSV, and Parquet. The
   [full report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
   includes p95, memory, outcome counts, and exact versions.
 - PySpark notebook sessions now show the first page without indexing, counting, and caching the entire DataFrame. The

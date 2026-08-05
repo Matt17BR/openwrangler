@@ -14,6 +14,7 @@ import {
   LARGE_COLUMNS,
   LARGE_FIXTURE_PROTOCOL,
   LARGE_MIN_AVAILABLE_MEMORY_BYTES,
+  LARGE_MIN_REALIZED_FIXTURE_BYTES,
   LARGE_ROWS,
   LARGE_TIMEOUTS_MS,
   SMOKE_REPETITIONS,
@@ -40,7 +41,6 @@ import {
   runLargeComparisonStudy,
   runOneTrial,
   terminalTrialIds,
-  validateLargeLoadResult,
   writeDataWranglerComparisonStudyReport
 } from "./data-wrangler-comparison-study.mjs";
 
@@ -333,17 +333,14 @@ test("stale temporary session roots are removed without touching unrelated entri
   }
 });
 
-test("large schedule covers its pilot and marks a four-run group inconclusive", () => {
+test("large schedule covers its pilot and marks a four-run UI group inconclusive", () => {
   const manifest = largeManifestFixture();
   assert.equal(manifest.schedule.length, 20);
   assert.deepEqual(
     manifest.schedule.slice(0, 4).map(({ engine, product }) => `${engine}.${product}`),
     ["pandas.open-wrangler", "pandas.data-wrangler", "polars.data-wrangler", "polars.open-wrangler"]
   );
-  const loads = manifest.schedule.filter(({ measureNativeLoad }) => measureNativeLoad);
-  assert.equal(loads.length, 10);
   for (const engine of ["pandas", "polars"]) {
-    assert.equal(loads.filter((entry) => entry.engine === engine).length, 5);
     assert.equal(
       new Set(manifest.schedule.filter((entry) => entry.engine === engine).map((entry) => entry.product)).size,
       2
@@ -360,9 +357,9 @@ test("large schedule covers its pilot and marks a four-run group inconclusive", 
   const report = buildLargeComparisonReport({
     generatedAtUtc: manifest.createdAtUtc,
     manifest,
-    trials,
-    loads: loads.map(largeLoadResult)
+    trials
   });
+  assert.equal(report.provenance.fixture.bytes, LARGE_MIN_REALIZED_FIXTURE_BYTES + 123);
   const summary = report.summaries.find(({ engine, product }) => engine === "pandas" && product === "open-wrangler");
   assert.deepEqual(
     [summary.completed, summary.successful, summary.headlineStatus, summary.metrics],
@@ -374,21 +371,35 @@ test("large schedule covers its pilot and marks a four-run group inconclusive", 
     ({ engine, product }) => engine === "polars" && product === "open-wrangler"
   );
   assert.deepEqual(
-    [completeSummary.headlineStatus, completeSummary.metrics.runCellToWorkbenchMs.median],
-    ["complete", 31]
+    [
+      completeSummary.headlineStatus,
+      completeSummary.metrics.runCellToWorkbenchMs.median,
+      completeSummary.metrics.columnSummarySweepMs.median
+    ],
+    ["complete", 31, 30]
   );
+  assert.equal(Object.hasOwn(completeSummary.metrics, "allProfilesMs"), false);
   assert.equal(Object.hasOwn(completeSummary.metrics.inlinePreviewMs, "p95"), false);
   assert.doesNotThrow(() => assertCompleteLargeReport(report));
 });
 
+test("large manifest records realized bytes and rejects a compressed fixture below 4 GiB", () => {
+  const manifest = largeManifestFixture();
+  assert.equal(manifest.provenance.fixture.bytes, LARGE_MIN_REALIZED_FIXTURE_BYTES + 123);
+  const provenance = largeProvenanceFixture();
+  provenance.fixture.bytes = LARGE_MIN_REALIZED_FIXTURE_BYTES - 1;
+  assert.throws(
+    () => buildLargeStudyManifest({ createdAtUtc: "2026-08-05T10:00:00.000Z", ...provenance }),
+    /fixture manifest is malformed/u
+  );
+});
+
 test("large results must match their scheduled run and contain valid measurements", () => {
   const manifest = largeManifestFixture();
-  const entry = manifest.schedule.find(({ measureNativeLoad }) => measureNativeLoad);
+  const entry = manifest.schedule[0];
   const trial = sessionResult(entry, manifest, 1);
-  const load = largeLoadResult(entry);
 
   assert.doesNotThrow(() => validateLargeDataWranglerComparisonTrial(trial, entry, manifest));
-  assert.doesNotThrow(() => validateLargeLoadResult(load, entry));
 
   assert.throws(
     () => validateLargeDataWranglerComparisonTrial({ ...trial, product: "data-wrangler" }, entry, manifest),
@@ -403,36 +414,33 @@ test("large results must match their scheduled run and contain valid measurement
   const negativeMemory = structuredClone(trial);
   negativeMemory.samples[0].memory.samples[0].pssBytes = -1;
   assert.throws(() => validateLargeDataWranglerComparisonTrial(negativeMemory, entry, manifest), /invalid bytes/u);
-  assert.throws(() => validateLargeLoadResult({ ...load, protocol: "wrong" }, entry), /scheduled run/u);
-  assert.throws(() => validateLargeLoadResult({ ...load, elapsedMs: Number.NaN }, entry), /scheduled run/u);
-  assert.throws(() => validateLargeLoadResult({ ...load, peakRssBytes: -1 }, entry), /scheduled run/u);
 });
 
-test("stored large results are validated before they can be reported", () => {
+test("stored large UI results are validated before they can be reported", () => {
   const root = mkdtempSync(join(tmpdir(), "ow-large-stored-results-"));
   const manifest = largeManifestFixture();
-  const entry = manifest.schedule.find(({ measureNativeLoad }) => measureNativeLoad);
+  const entry = manifest.schedule[0];
   try {
     mkdirSync(join(root, "trials"));
-    mkdirSync(join(root, "loads"));
-    writeFileSync(join(root, "trials", `${entry.id}.json`), JSON.stringify(sessionResult(entry, manifest, 1)));
     writeFileSync(
-      join(root, "loads", `${entry.id}.json`),
-      JSON.stringify({ ...largeLoadResult(entry), engine: entry.engine === "pandas" ? "polars" : "pandas" })
+      join(root, "trials", `${entry.id}.json`),
+      JSON.stringify({
+        ...sessionResult(entry, manifest, 1),
+        product: entry.product === "open-wrangler" ? "data-wrangler" : "open-wrangler"
+      })
     );
-    assert.throws(() => loadLargeTrials(root, manifest), /scheduled run/u);
+    assert.throws(() => loadLargeTrials(root, manifest), /scheduled product/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("large study records 20 fixed attempts, five native loads per engine, and resumes", async () => {
+test("large study records 20 fixed UI attempts, checks the host before and after each, and resumes", async () => {
   const root = mkdtempSync(join(tmpdir(), "ow-large-study-"));
   const journeys = [];
-  const loads = [];
   let checks = 0;
   const manifest = largeManifestFixture();
-  const failedId = manifest.schedule.find(({ measureNativeLoad }) => measureNativeLoad).id;
+  const failedId = manifest.schedule[0].id;
   const dependencies = {
     now: () => manifest.createdAtUtc,
     prepareTools: async () => {},
@@ -452,10 +460,6 @@ test("large study records 20 fixed attempts, five native loads per engine, and r
       },
       verifySource() {}
     }),
-    runLoad: async (request) => {
-      loads.push(request.trialId);
-      return largeLoadResult({ id: request.trialId, engine: request.cell.engine });
-    },
     runJourney: async (request) => {
       journeys.push(request.trialId);
       if (request.trialId === failedId) throw new Error("synthetic editor failure");
@@ -469,9 +473,8 @@ test("large study records 20 fixed attempts, five native loads per engine, and r
       remaining: 0
     });
     await runLargeComparisonStudy({ output: root, confirmLargeStudy: true }, dependencies);
-    assert.deepEqual([journeys.length, loads.length, checks], [20, 10, 20]);
+    assert.deepEqual([journeys.length, checks], [20, 40]);
     assert.match(readFileSync(join(root, "trials", `${failedId}.json`), "utf8"), /synthetic editor failure/u);
-    assert.equal(existsSync(join(root, "loads", `${failedId}.json`)), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -552,7 +555,7 @@ function largeProvenanceFixture() {
       rows: LARGE_ROWS,
       columns: LARGE_COLUMNS,
       rowGroupRows: 100_000,
-      bytes: 5_000_000_000,
+      bytes: LARGE_MIN_REALIZED_FIXTURE_BYTES + 123,
       sha256: SHA,
       schema: Array.from({ length: LARGE_COLUMNS }, (_unused, index) => ({
         name: `benchmark_field_${String(index).padStart(3, "0")}`
@@ -566,18 +569,6 @@ function largeProvenanceFixture() {
 
 function largeManifestFixture() {
   return buildLargeStudyManifest({ createdAtUtc: "2026-08-05T10:00:00.000Z", ...largeProvenanceFixture() });
-}
-
-function largeLoadResult(entry) {
-  return {
-    trialId: entry.id,
-    protocol: "openwrangler-large-parquet-load-v1",
-    engine: entry.engine,
-    elapsedMs: 1_000,
-    rows: LARGE_ROWS,
-    columns: LARGE_COLUMNS,
-    peakRssBytes: 300
-  };
 }
 
 function requestForEntry(entry, manifest, isolatedRoot = "/tmp/ow-comparison-session") {

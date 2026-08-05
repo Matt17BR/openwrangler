@@ -105,6 +105,19 @@ test("flattens eight sessions into eighty raw samples and eight summaries", () =
   assert.equal(assertReleaseCompleteStudyReport(report), report);
 });
 
+test("accepts the historical raw timing labels while new manifests use summary wording", () => {
+  const manifest = structuredClone(manifestFixture());
+  assert.match(manifest.method.timingBoundaries.completeProfile, /visiting and verifying every column summary/u);
+  manifest.method.timingBoundaries.firstProfile = "public profiling action to the first completed column summary";
+  manifest.method.timingBoundaries.completeProfile = "public profiling action to final summaries for every column";
+  const report = buildDataWranglerComparisonStudyReport({
+    generatedAtUtc: "2026-08-04T12:00:00.000Z",
+    manifest,
+    trials: manifest.schedule.map((entry) => sessionResult(entry, manifest))
+  });
+  assert.equal(assertReleaseCompleteStudyReport(report), report);
+});
+
 test("keeps p95 descriptive and gates material regressions on the median only", () => {
   const manifest = manifestFixture();
   const trials = manifest.schedule.map((entry) => {

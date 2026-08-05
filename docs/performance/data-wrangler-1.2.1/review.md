@@ -7,8 +7,8 @@ Status: reviewed on 2026-08-04.
 The collection used the earlier warm-session method now summarized in
 [`docs/performance-comparison.md`](../../performance-comparison.md): Pandas and Polars inputs loaded from CSV and
 Parquet, one isolated headless VS Code session per product and input, and ten timed samples per session. Each sample
-used the public inline preview, launch, grid, and all-column profiling controls. Process-tree PSS was sampled across
-the same measured window.
+used the public inline preview, launch, grid, and column-summary controls. The harness then visited every column and
+waited for its visible summary. Process-tree PSS was sampled across the same measured window.
 
 The primary run used:
 
@@ -27,19 +27,19 @@ independent recalculation matched every count, median, type-7 p95, and PSS summa
 Status: passed before collection.
 
 The smoke ran two samples per product with a Pandas input loaded from CSV. It verified the expected inline and launch
-actions, full scrollable grid, first and final profile milestones, continuous PSS coverage, and clean shutdown. Smoke
+actions, full scrollable grid, first and final summary milestones, continuous PSS coverage, and clean shutdown. Smoke
 timings were discarded and are not included below.
 
 ## Results
 
-Status: complete. Three Data Wrangler profiling samples did not finish.
+Status: complete. Three Data Wrangler column-summary sweeps did not finish.
 
 The primary report contains eight sessions and 80 attempted samples. Open Wrangler completed 40/40. Data Wrangler
-completed 37/40: one profiling action was not pointer-ready, and two all-column profiling passes timed out. The timing
-and PSS summaries below use successful samples only, so the three affected Data Wrangler rows have nine observations.
+completed 37/40: one column-summary action was not pointer-ready, and two full summary sweeps timed out. The timing and
+PSS summaries below use successful samples only, so the three affected Data Wrangler rows have nine observations.
 Values are **median / p95**; timings are milliseconds and PSS is MiB.
 
-| Notebook input         | Product       | Success |    Inline preview |    Full workbench |   First profile |        All profiles |      Observed PSS |
+| Notebook input         | Product       | Success |    Inline preview |    Full workbench |   First summary |       Summary sweep |      Observed PSS |
 | ---------------------- | ------------- | ------: | ----------------: | ----------------: | --------------: | ------------------: | ----------------: |
 | Pandas input · CSV     | Open Wrangler |   10/10 |     341.9 / 374.5 |     597.6 / 804.1 |   192.4 / 210.6 |   5,577.2 / 5,895.5 | 2,460.9 / 2,518.5 |
 | Pandas input · CSV     | Data Wrangler |    9/10 | 1,490.3 / 1,748.3 | 1,013.7 / 1,383.9 |   308.5 / 909.9 | 18,795.4 / 20,300.6 | 2,348.9 / 2,518.3 |
@@ -53,13 +53,13 @@ Values are **median / p95**; timings are milliseconds and PSS is MiB.
 Primary report SHA-256:
 `e45eb499fed50febb61fb0d32cfa9a20800d59b04c67edd20d2568e39aa34ff3`.
 
-The small differences between the Pandas and Polars inputs do not show how long conversion takes. Fixture loading
-happened before timing, and this test did not isolate the cost of converting Polars data to Pandas. The measured window
-mostly covers the inline renderer, workbench launch, and profiling UI, where fixed overhead and normal run-to-run
-variation can be larger than that conversion difference.
+The small differences between the Pandas and Polars inputs do not show how Data Wrangler handles either input. Fixture
+loading happened before timing, and this test did not isolate any internal conversion stage. The measured window
+mostly covers the inline renderer, workbench launch, and summary UI, where fixed overhead and normal run-to-run
+variation can be larger than those differences.
 
 The three affected Data Wrangler sessions were collected once more without changing the timeout. The two CSV sessions
-then completed 10/10. The Parquet session with a Polars input timed out again during full profiling, this time on
+then completed 10/10. The Parquet session with a Polars input timed out again during the full summary sweep, this time on
 sample 6. That confirmation was not substituted into the primary table: repeatedly collecting until the baseline
 happens to pass would hide the observed instability. Confirmation report SHA-256:
 `56b933c6db09255d3f3b8338830613950e604094fefc1d3a1db691017f1f7b4b`.
@@ -68,8 +68,9 @@ happens to pass would hide the observed instability. Confirmation report SHA-256
 
 No Open Wrangler median exceeded the preset relative and absolute regression allowances. Data Wrangler took
 4.4–7.3× as long to show the inline preview, 1.0–1.8× as long to open the full workbench, and about 3.4× as long to
-profile every CSV column. Parquet profiling was close, with Open Wrangler slightly faster. Open Wrangler used a little
-more PSS on the two CSV cases and less on both million-row Parquet cases, all within the memory allowance.
+visit and verify every CSV column summary. The Parquet summary sweep was close, with Open Wrangler slightly faster.
+Open Wrangler used a little more PSS on the two CSV cases and less on both million-row Parquet cases, all within the
+memory allowance.
 
 The successful samples did not identify an Open Wrangler regression to fix. The preset completion rule required all
 80 samples to finish, so the run did not satisfy that rule. The stable publication workflow has separate required

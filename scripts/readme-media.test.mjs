@@ -548,25 +548,26 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Closing the view leaves Spark work that has already started alone/u);
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   assert.match(readme, /Microsoft Data\s+Wrangler 1\.24\.2/u);
-  assert.match(readme, /Data Wrangler converts Polars data to Pandas/u);
+  assert.match(readme, /does not\s+inspect Data Wrangler's internal execution path/u);
+  assert.doesNotMatch(readme, /Data Wrangler converts Polars data to Pandas/u);
   assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
   assert.match(
     readme,
     /\[full results\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
   );
   for (const row of [
-    /\| Pandas input · CSV\s+\| Show notebook preview \|\s+\*\*0\.34 s\*\* \|\s+1\.49 s \|/u,
+    /\| Pandas input · CSV\s+\| Show notebook preview\s+\|\s+\*\*0\.34 s\*\* \|\s+1\.49 s \|/u,
     /\| Pandas input · CSV\s+\| Open workbench\s+\|\s+\*\*0\.60 s\*\* \|\s+1\.01 s \|/u,
-    /\| Pandas input · CSV\s+\| Profile every column\s+\|\s+\*\*5\.58 s\*\* \|\s+18\.80 s \|/u,
-    /\| Polars input · CSV\s+\| Show notebook preview \|\s+\*\*0\.32 s\*\* \|\s+1\.50 s \|/u,
+    /\| Pandas input · CSV\s+\| Check column summaries\s+\|\s+\*\*5\.58 s\*\* \|\s+18\.80 s \|/u,
+    /\| Polars input · CSV\s+\| Show notebook preview\s+\|\s+\*\*0\.32 s\*\* \|\s+1\.50 s \|/u,
     /\| Polars input · CSV\s+\| Open workbench\s+\|\s+\*\*0\.53 s\*\* \|\s+0\.99 s \|/u,
-    /\| Polars input · CSV\s+\| Profile every column\s+\|\s+\*\*5\.54 s\*\* \|\s+18\.81 s \|/u,
-    /\| Pandas input · Parquet \| Show notebook preview \|\s+\*\*0\.24 s\*\* \|\s+1\.53 s \|/u,
+    /\| Polars input · CSV\s+\| Check column summaries\s+\|\s+\*\*5\.54 s\*\* \|\s+18\.81 s \|/u,
+    /\| Pandas input · Parquet \| Show notebook preview\s+\|\s+\*\*0\.24 s\*\* \|\s+1\.53 s \|/u,
     /\| Pandas input · Parquet \| Open workbench\s+\|\s+\*\*0\.67 s\*\* \|\s+0\.69 s \|/u,
-    /\| Pandas input · Parquet \| Profile every column\s+\|\s+\*\*7\.64 s\*\* \|\s+7\.95 s \|/u,
-    /\| Polars input · Parquet \| Show notebook preview \|\s+\*\*0\.20 s\*\* \|\s+1\.49 s \|/u,
+    /\| Pandas input · Parquet \| Check column summaries\s+\|\s+\*\*7\.64 s\*\* \|\s+7\.95 s \|/u,
+    /\| Polars input · Parquet \| Show notebook preview\s+\|\s+\*\*0\.20 s\*\* \|\s+1\.49 s \|/u,
     /\| Polars input · Parquet \| Open workbench\s+\|\s+\*\*0\.48 s\*\* \|\s+0\.69 s \|/u,
-    /\| Polars input · Parquet \| Profile every column\s+\|\s+\*\*7\.20 s\*\* \|\s+8\.23 s \|/u
+    /\| Polars input · Parquet \| Check column summaries\s+\|\s+\*\*7\.20 s\*\* \|\s+8\.23 s \|/u
   ]) {
     assert.match(readme, row);
   }

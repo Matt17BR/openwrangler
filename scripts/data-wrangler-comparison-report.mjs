@@ -429,13 +429,21 @@ function validateStudyManifest(manifest) {
     ["inlinePreview", "workbenchOpen", "firstProfile", "completeProfile"],
     "study manifest timing boundaries"
   );
-  for (const [key, expected] of Object.entries({
-    inlinePreview: "Run Cell click to stable public inline output and a usable launch action",
-    workbenchOpen: "public launch-action click to a stable, unobstructed, scrollable workbench grid",
-    firstProfile: "public profiling action to the first completed column summary",
-    completeProfile: "public profiling action to final summaries for every column"
+  for (const [key, accepted] of Object.entries({
+    inlinePreview: ["Run Cell click to stable public inline output and a usable launch action"],
+    workbenchOpen: ["public launch-action click to a stable, unobstructed, scrollable workbench grid"],
+    firstProfile: [
+      "opening the public column-summary UI to the first verified summary",
+      "public profiling action to the first completed column summary"
+    ],
+    completeProfile: [
+      "opening the public column-summary UI through visiting and verifying every column summary",
+      "public profiling action to final summaries for every column"
+    ]
   })) {
-    assertEqual(manifest.method.timingBoundaries[key], expected, `study manifest ${key} timing boundary`);
+    if (!accepted.includes(manifest.method.timingBoundaries[key])) {
+      throw new TypeError(`study manifest ${key} timing boundary is invalid.`);
+    }
   }
   assertEqual(
     manifest.method.statistics,

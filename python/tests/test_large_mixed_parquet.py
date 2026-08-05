@@ -81,6 +81,18 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
     assert set(value for value in table[names_by_role["boolean"][0]].to_pylist() if value is not None) == {False, True}
 
 
+def test_full_fixture_requires_a_multi_gib_realized_file() -> None:
+    full = large_fixture.LargeFixtureSpec()
+    floor = large_fixture.MIN_REALIZED_FIXTURE_BYTES
+    assert floor == 4 * 1024**3
+    large_fixture.assert_realized_fixture_size(floor, full)
+    with pytest.raises(AssertionError, match="at least 4 GiB"):
+        large_fixture.assert_realized_fixture_size(floor - 1, full)
+
+    small = large_fixture.LargeFixtureSpec(rows=512, row_group_rows=128)
+    large_fixture.assert_realized_fixture_size(1, small)
+
+
 def test_generation_stops_before_replacement_or_low_capacity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     existing = tmp_path / "existing.parquet"
     existing.write_bytes(b"owned")

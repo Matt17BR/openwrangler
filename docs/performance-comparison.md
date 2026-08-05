@@ -5,9 +5,9 @@ buttons and controls in a packaged VS Code installation. The test does not inspe
 
 The v1.2.1 test was useful for measuring a warm UI, but it was too small to say much about Pandas versus Polars. It
 loaded the dataframe before timing and then reused the same window and kernel ten times. Small differences between
-Pandas and Polars inputs in that report are normal run-to-run variation, not evidence that converting Polars to
-Pandas is free. The [v1.2.1 review](performance/data-wrangler-1.2.1/review.md) remains available with the old method
-and raw outcome counts.
+Pandas and Polars inputs in that report are normal run-to-run variation; they do not show how Data Wrangler handles a
+Polars input. The [v1.2.1 review](performance/data-wrangler-1.2.1/review.md) remains available with the old method and
+raw outcome counts.
 
 ## v1.2.3 study
 
@@ -22,15 +22,17 @@ date bounds, a dominant category, a repeated text or two-day duration value, or 
 for those values in every profile instead of treating a generic column header as a completed summary. The rare
 duration bounds stay in the fixture but are not used for readiness, because both products expose duration top values
 rather than duration Min/Max statistics. The fixture manifest records the names and markers along with every column
-type, the seed, file hash, size, compression settings, and row-group layout. No user data is read.
+type, the seed, file hash, actual byte size, compression settings, and row-group layout. The full generator rejects a
+compressed result smaller than 4 GiB, so a highly compressible accidental fixture cannot enter the study. No user
+data is read.
 
 Generation and every editor run require at least 96 GiB of available memory. A 64 GiB machine cannot start this
 study. Generation also requires 25 GiB of free disk space, and it keeps the finished fixture only if at least 15 GiB
 remains. The study checks that disk reserve immediately before every editor run. A machine with a battery must be on
 AC power. A battery-less host records `not-applicable`. A host without a cpufreq governor records `not-exposed`. The
-recorded machine, power, and governor values must remain unchanged throughout the study. These checks are conservative
-because a Pandas load can require much more memory than the compressed source. The generator refuses to replace an
-existing file.
+runner checks the recorded machine, power, governor, memory, and disk both before and after every editor run. These
+checks are conservative because a Pandas load can require much more memory than the compressed source. The generator
+refuses to replace an existing file.
 
 ## What is measured
 
@@ -43,25 +45,22 @@ Each product run records:
 
 1. Run Cell to a usable inline preview;
 2. the viewer button to a usable, scrollable grid;
-3. Run Cell to that usable grid, so input conversion and the complete launch path stay in one timing;
-4. the profiling action to completed summaries for all 100 columns; and
+3. Run Cell to that usable grid, the only timing that spans all work between cell evaluation and grid readiness;
+4. opening the column-summary UI, visiting all 100 columns, and verifying each visible summary; and
 5. peak process-tree PSS during the UI part of the run.
 
-For each engine and repetition, one of the two product journeys is paired with a native `read_parquet` in a separate
-Python process. That produces five Pandas reads and five Polars reads, or ten native reads in total. Those results are
-grouped by engine, not attributed to either extension. The notebook kernel then loads the same dataframe before the UI
-measurement, which matches the common case where a dataframe already exists and the user evaluates its name. Data
-Wrangler accepts a Polars input through its Pandas conversion path. That conversion can happen between the inline and
-launch milestones, so the Run Cell-to-grid measurement keeps the complete cost visible even if either shorter timing
-cannot localize it. The native-load processes do not flush the operating-system file cache, so they measure a warm
-source rather than cold-disk I/O.
+The notebook setup cell loads the dataframe with Pandas or Polars before the UI measurement, which matches the common
+case where a dataframe already exists and the user evaluates its name. The study does not inspect or isolate how Data
+Wrangler handles a Polars input. Only Run Cell-to-grid spans the complete measured path and can include any conversion
+performed before the grid is ready; it is not a conversion-only measurement. The inline and launch-action timings
+cover narrower UI intervals.
 
 The report gives the minimum, median, and maximum only when all five runs in a group finish. A group with four
 successful runs is marked inconclusive, while its raw runs and any timings recorded before a failure stay in the
 detailed report. The report still requires all 20 assigned runs to have been attempted, at least four complete runs
-in each five-run UI group, and at least four of the five native loads for each engine. There are no replacement runs.
-Any failure needs a written explanation and a second person's review before results are published. A short README
-table may show figures only for groups that finished five out of five runs.
+in each five-run UI group, and no replacement runs. Any failure needs a written explanation and a second person's
+review before results are published. A short README table may show figures only for groups that finished five out of
+five runs.
 
 Five values are enough for a practical manual comparison but not for a useful p95, so the report does not calculate
 one. It is a release review, not a job in normal pull-request CI and not a scheduled task on a developer laptop.
@@ -109,12 +108,12 @@ npm run comparison:large:report -- \
   --out /absolute/path/openwrangler-data-wrangler-large-report.json
 ```
 
-The report command first rejects results that do not match their scheduled product, engine, order, shape, timings, or
-memory samples. It writes the detailed result and then checks the minimum counts above. Before publishing numbers, a
-second person should explain every failed run and recalculate each five-out-of-five UI or native-load group from the
-raw results. Four successful runs leave that group inconclusive. Record the commit used to build the candidate beside
-its SHA-256; it must be the current protected `main` commit. The reviewer also checks the product, editor, Python,
-package, fixture, and tool hashes and confirms that product order alternates within each engine.
+The report command first rejects results that do not match their scheduled product, input type, order, shape, timings,
+or memory samples. It writes the detailed result and then checks the minimum counts above. Before publishing numbers,
+a second person should explain every failed run and recalculate each five-out-of-five UI group from the raw results.
+Four successful runs leave that group inconclusive. Record the commit used to build the candidate beside its SHA-256;
+it must be the current protected `main` commit. The reviewer also checks the product, editor, Python, package, fixture
+hash and actual byte size, tool hashes, and alternating product order within each input type.
 
 ## Fast regression tests
 

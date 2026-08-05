@@ -20,6 +20,7 @@ DEFAULT_ROWS, DEFAULT_COLUMNS, DEFAULT_ROW_GROUP_ROWS, DEFAULT_SEED = 10_000_000
 MIN_AVAILABLE_MEMORY_BYTES = 96 * 1024**3
 MIN_GENERATION_FREE_DISK_BYTES = 25 * 1024**3
 MIN_STUDY_FREE_DISK_BYTES = 15 * 1024**3
+MIN_REALIZED_FIXTURE_BYTES = 4 * 1024**3
 NUMERIC_MIN, NUMERIC_MAX = -900_000_000, 900_000_000
 DATETIME_MIN_NS, DATETIME_MAX_NS = 946_684_800_000_000_000, 4_102_358_400_000_000_000
 DATE_MIN_DAYS, DATE_MAX_DAYS = 10_957, 47_481
@@ -215,12 +216,18 @@ def build_row_group(start: int, count: int, spec: LargeFixtureSpec) -> pa.Table:
     return pa.Table.from_arrays(arrays, schema=fixture_schema())
 
 
+def assert_realized_fixture_size(size_bytes: int, spec: LargeFixtureSpec) -> None:
+    if spec.rows == DEFAULT_ROWS and size_bytes < MIN_REALIZED_FIXTURE_BYTES:
+        raise AssertionError("The full large-comparison fixture must be at least 4 GiB after compression.")
+
+
 def validate_fixture(path: Path, spec: LargeFixtureSpec) -> None:
     metadata = path.lstat()
-    parquet = pq.ParquetFile(path)
-    expected_groups = (spec.rows + spec.row_group_rows - 1) // spec.row_group_rows
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise AssertionError("The fixture must be a regular file.")
+    assert_realized_fixture_size(metadata.st_size, spec)
+    parquet = pq.ParquetFile(path)
+    expected_groups = (spec.rows + spec.row_group_rows - 1) // spec.row_group_rows
     if (parquet.metadata.num_rows, parquet.metadata.num_columns, parquet.metadata.num_row_groups) != (
         spec.rows,
         DEFAULT_COLUMNS,

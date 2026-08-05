@@ -39,6 +39,7 @@ export const LARGE_COLUMNS = 100;
 export const LARGE_REPETITIONS = 5;
 export const LARGE_MIN_SUCCESSFUL_REPETITIONS = 4;
 export const LARGE_MIN_AVAILABLE_MEMORY_BYTES = 96 * 1024 ** 3;
+export const LARGE_MIN_REALIZED_FIXTURE_BYTES = 4 * 1024 ** 3;
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
@@ -79,8 +80,7 @@ export function largeComparisonEditorPhaseTimeout(timeouts = LARGE_STAGE_TIMEOUT
 export const LARGE_TIMEOUTS_MS = Object.freeze({
   ...LARGE_STAGE_TIMEOUTS_MS,
   editorPhase: largeComparisonEditorPhaseTimeout(),
-  neutralDriver: 2_400_000,
-  nativeLoad: 900_000
+  neutralDriver: 2_400_000
 });
 
 export function createDataWranglerComparisonSchedule() {
@@ -161,8 +161,8 @@ export function buildStudyManifest({
       timingBoundaries: {
         inlinePreview: "Run Cell click to stable public inline output and a usable launch action",
         workbenchOpen: "public launch-action click to a stable, unobstructed, scrollable workbench grid",
-        firstProfile: "public profiling action to the first completed column summary",
-        completeProfile: "public profiling action to final summaries for every column"
+        firstProfile: "opening the public column-summary UI to the first verified summary",
+        completeProfile: "opening the public column-summary UI through visiting and verifying every column summary"
       },
       statistics: `${repetitionsPerSession === WARM_REPETITIONS ? "ten" : "two"} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
       memory: "highest observed absolute process-tree PSS during each measured notebook workflow"
@@ -252,9 +252,8 @@ async function runComparisonStudy(options, dependencies, large) {
         : buildStudyManifest({ ...observed, createdAtUtc, repetitionsPerSession: repetitions })
   });
   const { output, trialsDirectory, manifest } = preparedStudy;
-  const largeResults = large ? loadLargeTrials(output, manifest) : undefined;
   const completed = large
-    ? new Set(largeResults.trials.map(({ trialId }) => trialId))
+    ? new Set(loadLargeTrials(output, manifest).trials.map(({ trialId }) => trialId))
     : terminalTrialIds(trialsDirectory, manifest);
   const schedule = options.scheduleLimit ? manifest.schedule.slice(0, options.scheduleLimit) : manifest.schedule;
   const inspectMachine = dependencies.inspectMachine ?? inspectMachineEnvironment;
@@ -281,11 +280,6 @@ async function runComparisonStudy(options, dependencies, large) {
         options,
         trialRoot
       });
-      if (large && entry.measureNativeLoad && !largeResults.loads.some(({ trialId }) => trialId === entry.id)) {
-        const load = await (dependencies.runLoad ?? measureLargeNativeLoad)(trial.request);
-        validateLargeLoadResult(load, entry);
-        writeJsonAtomic(join(output, "loads", `${entry.id}.json`), load);
-      }
       result = large
         ? await (dependencies.runJourney ?? runNeutralDriver)(trial.request)
         : await runOneTrial({
@@ -306,7 +300,7 @@ async function runComparisonStudy(options, dependencies, large) {
       }
       rmSync(trialRoot, { force: true, recursive: true });
     }
-    if (!large) {
+    if (large) {
       try {
         await checkEnvironment();
       } catch (error) {
@@ -567,7 +561,7 @@ export function createLargeComparisonSchedule() {
     const engines = repetition % 2 ? ENGINES : [...ENGINES].reverse();
     for (const engine of engines) {
       const products = (repetition + ENGINES.indexOf(engine)) % 2 ? PRODUCTS : [...PRODUCTS].reverse();
-      for (const [productIndex, product] of products.entries()) {
+      for (const product of products) {
         schedule.push({
           id: `fresh.r${String(repetition).padStart(2, "0")}.${engine}.${product}`,
           product,
@@ -578,7 +572,6 @@ export function createLargeComparisonSchedule() {
           rows: LARGE_ROWS,
           columns: LARGE_COLUMNS,
           repetition,
-          measureNativeLoad: productIndex === 0,
           order: schedule.length
         });
       }
@@ -595,10 +588,9 @@ export function buildLargeStudyManifest({ createdAtUtc, candidate, editor, pytho
     createdAtUtc,
     method: {
       repetitions: LARGE_REPETITIONS,
-      nativeLoadsPerEngine: LARGE_REPETITIONS,
       minimumComplete: LARGE_MIN_SUCCESSFUL_REPETITIONS,
       retries: 0,
-      metrics: ["inlinePreview", "workbenchOpen", "runCellToWorkbench", "allProfiles", "processTreePss"]
+      metrics: ["inlinePreview", "workbenchOpen", "runCellToWorkbench", "columnSummarySweep", "processTreePss"]
     },
     schedule: createLargeComparisonSchedule(),
     provenance: {
@@ -664,55 +656,25 @@ function prepareLargeTrial({ entry, manifest, options, trialRoot }) {
   };
 }
 
-async function measureLargeNativeLoad(request) {
-  const program = [
-    "import json, resource, sys, time",
-    "engine, source = sys.argv[1:3]",
-    "expected = tuple(map(int, sys.argv[3:5]))",
-    "library = __import__(engine)",
-    "rss = lambda: int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024",
-    "started = time.perf_counter_ns(); frame = library.read_parquet(source)",
-    "elapsed = round((time.perf_counter_ns() - started) / 1_000_000, 3); shape = tuple(frame.shape)",
-    "assert shape == expected, (shape, expected)",
-    "print(json.dumps({'protocol':'openwrangler-large-parquet-load-v1','engine':engine,'elapsedMs':elapsed,'rows':shape[0],'columns':shape[1],'peakRssBytes':rss()}))"
-  ].join("\n");
-  const { stdout } = await spawnCommand(
-    request.python.path,
-    [
-      "-I",
-      "-c",
-      program,
-      request.cell.engine,
-      request.cell.source,
-      String(request.cell.rows),
-      String(request.cell.columns)
-    ],
-    { cwd: resolve(import.meta.dirname, ".."), timeoutMs: LARGE_TIMEOUTS_MS.nativeLoad }
-  );
-  return { trialId: request.trialId, ...JSON.parse(stdout) };
-}
-
 export function loadLargeTrials(output, manifest) {
   const schedule = new Map(manifest.schedule.map((entry) => [entry.id, entry]));
-  const load = (name) => {
-    const directory = join(resolve(output), name);
-    if (!existsSync(directory)) return [];
-    return readdirSync(directory)
-      .filter((file) => file.endsWith(".json"))
-      .sort()
-      .map((file) => {
-        const result = readJson(join(directory, file));
-        const entry = schedule.get(result?.trialId);
-        if (!entry || file !== `${entry.id}.json`) throw new Error(`Unexpected large comparison result ${file}.`);
-        if (name === "trials") validateLargeDataWranglerComparisonTrial(result, entry, manifest);
-        else validateLargeLoadResult(result, entry);
-        return result;
-      });
-  };
-  return { manifest, trials: load("trials"), loads: load("loads") };
+  const directory = join(resolve(output), "trials");
+  const trials = !existsSync(directory)
+    ? []
+    : readdirSync(directory)
+        .filter((file) => file.endsWith(".json"))
+        .sort()
+        .map((file) => {
+          const result = readJson(join(directory, file));
+          const entry = schedule.get(result?.trialId);
+          if (!entry || file !== `${entry.id}.json`) throw new Error(`Unexpected large comparison result ${file}.`);
+          validateLargeDataWranglerComparisonTrial(result, entry, manifest);
+          return result;
+        });
+  return { manifest, trials };
 }
 
-export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, loads }) {
+export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials }) {
   canonicalUtc(generatedAtUtc);
   const schedule = new Map(manifest.schedule.map((entry) => [entry.id, entry]));
   const validateUnique = (items, label, validate) => {
@@ -725,9 +687,7 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, l
     }
   };
   validateUnique(trials, "trial", (trial, entry) => validateLargeDataWranglerComparisonTrial(trial, entry, manifest));
-  validateUnique(loads, "native load", validateLargeLoadResult);
   const observed = new Map(trials.map((trial) => [trial.trialId, trial]));
-  const observedLoads = new Map(loads.map((load) => [load.trialId, load]));
   const summarize = (items, selectors) => {
     const successful = items.filter((item) => item.status === undefined || item.status === "success");
     const headlineComplete = successful.length === LARGE_REPETITIONS;
@@ -747,7 +707,7 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, l
     inlinePreviewMs: (sample) => sample.metrics?.inlinePreviewMs,
     workbenchOpenMs: (sample) => sample.metrics?.workbenchOpenMs,
     runCellToWorkbenchMs,
-    allProfilesMs: (sample) => sample.metrics?.completeProfileMs,
+    columnSummarySweepMs: (sample) => sample.metrics?.completeProfileMs,
     peakPssBytes: (sample) => sample.memory?.peakPssBytes
   };
   const summaries = ENGINES.flatMap((engine) =>
@@ -760,18 +720,6 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, l
       )
     }))
   );
-  const loadSummaries = ENGINES.map((engine) => {
-    const attempts = manifest.schedule.filter(({ id, engine: value, measureNativeLoad }) =>
-      Boolean(value === engine && measureNativeLoad && observed.has(id))
-    );
-    return {
-      engine,
-      ...summarize(attempts.map(({ id }) => observedLoads.get(id)).filter(Boolean), {
-        elapsedMs: (load) => load.elapsedMs,
-        peakRssBytes: (load) => load.peakRssBytes
-      })
-    };
-  });
   return Object.freeze({
     generatedAtUtc,
     plannedTrials: manifest.schedule.length,
@@ -780,34 +728,8 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials, l
     method: structuredClone(manifest.method),
     provenance: structuredClone(manifest.provenance),
     trials: structuredClone(trials),
-    loads: structuredClone(loads),
-    loadSummaries,
     summaries
   });
-}
-
-export function validateLargeLoadResult(load, entry) {
-  const keys = load && typeof load === "object" && !Array.isArray(load) ? Object.keys(load).sort() : [];
-  const expectedKeys = ["trialId", "protocol", "engine", "elapsedMs", "rows", "columns", "peakRssBytes"].sort();
-  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
-    throw new TypeError("Large comparison native-load result has missing or unknown fields.");
-  }
-  if (
-    entry?.measureNativeLoad !== true ||
-    load.trialId !== entry.id ||
-    load.protocol !== "openwrangler-large-parquet-load-v1" ||
-    load.engine !== entry.engine ||
-    load.rows !== LARGE_ROWS ||
-    load.columns !== LARGE_COLUMNS ||
-    typeof load.elapsedMs !== "number" ||
-    !Number.isFinite(load.elapsedMs) ||
-    load.elapsedMs < 0 ||
-    !Number.isSafeInteger(load.peakRssBytes) ||
-    load.peakRssBytes < 0
-  ) {
-    throw new TypeError("Large comparison native-load result does not match its scheduled run.");
-  }
-  return load;
 }
 
 export function assertCompleteLargeReport(report) {
@@ -832,13 +754,10 @@ export function assertCompleteLargeReport(report) {
     report.completedTrials !== 20 ||
     report.incompleteTrialIds?.length !== 0 ||
     report.method?.repetitions !== LARGE_REPETITIONS ||
-    report.method?.nativeLoadsPerEngine !== LARGE_REPETITIONS ||
     report.method?.minimumComplete !== LARGE_MIN_SUCCESSFUL_REPETITIONS ||
     report.method?.retries !== 0 ||
     report.summaries?.length !== 4 ||
-    report.summaries?.some(invalidSummary) ||
-    report.loadSummaries?.length !== 2 ||
-    report.loadSummaries.some(invalidSummary)
+    report.summaries?.some(invalidSummary)
   ) {
     throw new Error("The large comparison needs all 20 attempts and at least four complete runs per group.");
   }
@@ -927,7 +846,7 @@ function validateLargeFixtureManifest(fixture) {
     fixture.columns !== LARGE_COLUMNS ||
     fixture.rowGroupRows !== 100_000 ||
     !Number.isSafeInteger(fixture.bytes) ||
-    fixture.bytes < 1 ||
+    fixture.bytes < LARGE_MIN_REALIZED_FIXTURE_BYTES ||
     !HASH.test(fixture.sha256 ?? "") ||
     names.length !== LARGE_COLUMNS ||
     new Set(names).size !== LARGE_COLUMNS ||
@@ -1503,8 +1422,8 @@ async function main() {
   }
   if (options.command === "large-report") {
     const manifest = readJson(join(resolve(options.study), "manifest.json"));
-    const { trials, loads } = loadLargeTrials(options.study, manifest);
-    const report = buildLargeComparisonReport({ generatedAtUtc: new Date().toISOString(), manifest, trials, loads });
+    const { trials } = loadLargeTrials(options.study, manifest);
+    const report = buildLargeComparisonReport({ generatedAtUtc: new Date().toISOString(), manifest, trials });
     writeJsonAtomic(resolve(options.output), report);
     assertCompleteLargeReport(report);
     console.log(`Large comparison report written to ${options.output}.`);

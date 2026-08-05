@@ -563,7 +563,7 @@ Guarded installed-performance packaging tests require every VSCE source to be tr
 ## Data Wrangler comparison
 
 The current manual method is in [`docs/performance-comparison.md`](performance-comparison.md). It uses a generated
-10M × 100 mixed-type Parquet file and five new editor/kernel sessions for every product/engine pair. The commands are:
+10M × 100 mixed-type Parquet file and five new editor/kernel sessions for every product/input pair. The commands are:
 
 - `npm run comparison:large:fixture` to stream the opt-in fixture after memory and disk checks;
 - `npm run comparison:large:study` to run the 20 independent notebook sessions; and
@@ -571,39 +571,39 @@ The current manual method is in [`docs/performance-comparison.md`](performance-c
 
 The large commands require the literal `--confirm-large-study` flag. They require at least 96 GiB of available
 memory, so a 64 GiB machine cannot start them. Fixture generation needs 25 GiB free and keeps the file only when at
-least 15 GiB remains for the study. They are not called by a pull-request, release, scheduled,
-or local default workflow. Tests use small row counts through the Python API and fake editor runners; they never
-generate the full fixture.
+least 15 GiB remains for the study. The manifest records the realized Parquet byte size, and the production generator
+rejects a compressed file below 4 GiB. These commands are not called by a pull-request, release, scheduled, or local
+default workflow. Tests use small row counts through the Python API and fake editor runners; they never generate the
+full fixture.
 
 Normal native editor acceptance keeps its 300-second hard deadline and 180-second inactivity deadline. The manually
 confirmed large comparison is the only new exception: its editor cap is the sum of its two pre-action, inline,
-workbench, and profiling deadlines plus 120 seconds for startup and cleanup (currently 1,260 seconds). It still uses
-the 180-second inactivity guard and writes a checkpoint after every completed profile column. The historical v1.2.1
-reproduction retains the 600-second cap already present on `main`; it does not define the normal acceptance limit.
+workbench, and column-summary deadlines plus 120 seconds for startup and cleanup (currently 1,260 seconds). It still
+uses the 180-second inactivity guard and writes a checkpoint after every verified column summary. The historical
+v1.2.1 reproduction retains the 600-second cap already present on `main`; it does not define the normal acceptance
+limit.
 
-The study times native file loading separately from the resident-dataframe notebook UI. Each editor run measures
-inline preview, usable workbench grid, Run Cell to that grid, all-column profiling, and process-tree PSS. One trial
-per engine and repetition owns the native load, for five Pandas and five Polars loads grouped by engine rather than
-product. The fixture contains numeric, categorical, high-cardinality text, timestamp, date,
-duration, and boolean columns with nulls and known per-type profile markers. It is written in bounded 100,000-row
-groups. Profile completion requires the matching marker for every column family; durations use a frequent two-day
-value that both products render in their bounded top-values profile. The fixture and output must share a filesystem so
-the session runner can use read-only hard links rather than copy several gigabytes per trial.
+Each editor run measures inline preview, usable workbench grid, Run Cell to that grid, a 100-column summary sweep, and
+process-tree PSS. The summary sweep opens each product's public summary UI, visits every column, and waits for its known
+marker; it is not a backend-only profiling timer. The fixture contains numeric, categorical, high-cardinality text,
+timestamp, date, duration, and boolean columns with nulls and known per-type markers. It is written in bounded
+100,000-row groups. Durations use a frequent two-day value that both products render in their bounded top-values
+summary. The fixture and output must share a filesystem so the session runner can use read-only hard links rather than
+copy several gigabytes per trial.
 
 Before checking fixture provenance, the runner removes a private trial directory left by an interrupted process. It
 then resumes at the first missing result. A failed editor run uses its fixed slot, stays in the raw report, and does
-not stop or get retried. The report needs all 20 slots, at least four successes in each five-run product/engine group,
-and at least four of five native-load successes per engine. A four-out-of-five group is marked inconclusive. Headline
-measurements are calculated only for five-out-of-five groups; the raw report keeps earlier endpoints from failed
-runs. Start with `--limit 4`, review one journey from every
-product/engine group, then resume the same output without a limit. Every failure must be explained and checked before
-publication. The review records the commit used to build the candidate beside the candidate SHA-256 already stored
-in the manifest. The candidate must be built from the current protected `main` commit.
+not stop or get retried. The report needs all 20 slots, at least four successes in each five-run product/input group,
+with a four-out-of-five group marked inconclusive. Headline measurements are calculated only for five-out-of-five
+groups; the raw report keeps earlier endpoints from failed runs. Start with `--limit 4`, review one journey from every
+product/input group, then resume the same output without a limit. Every failure must be explained and checked before
+publication. The review records the commit used to build the candidate beside the candidate SHA-256 already stored in
+the manifest. The candidate must be built from the current protected `main` commit.
 
-Immediately before every new editor session the runner checks available memory, free disk, power state, and the
+Immediately before and after every editor session, the runner checks available memory, free disk, power state, and the
 recorded CPU governor. A host with a battery must be on AC. Battery-less hosts record `not-applicable`, and hosts that
-do not expose a cpufreq governor record `not-exposed`; those values must remain unchanged. A failed check creates no
-trial result and starts no editor.
+do not expose a cpufreq governor record `not-exposed`; those values must remain unchanged. A failed pre-run check
+starts no editor; a failed post-run check marks that assigned run as a harness failure.
 
 Run these focused checks while changing the new method:
 
