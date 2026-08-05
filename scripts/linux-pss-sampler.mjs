@@ -25,7 +25,7 @@ function parseStat(text, expectedPid) {
     !Number.isSafeInteger(parentPid) ||
     parentPid < 0 ||
     !Number.isSafeInteger(processGroupId) ||
-    processGroupId <= 0 ||
+    processGroupId < 0 ||
     !/^\d+$/u.test(startTimeTicks ?? "")
   ) {
     throw new Error(`Could not parse ownership fields from /proc/${expectedPid}/stat.`);

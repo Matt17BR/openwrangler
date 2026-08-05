@@ -23,7 +23,14 @@ import {
 export const COMPARISON_TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v2";
 export const COMPARISON_TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 
-const CELL_IDS = ["pandas-csv", "pandas-parquet", "polars-csv", "polars-parquet"] as const;
+const CELL_IDS = [
+  "pandas-csv",
+  "pandas-parquet",
+  "polars-csv",
+  "polars-parquet",
+  "pandas-parquet-local",
+  "polars-parquet-local"
+] as const;
 const MILESTONE_NAMES = [
   "run-cell-click",
   "inline-ready",
@@ -86,7 +93,7 @@ export interface ComparisonTrialRequest {
   readonly product: Product;
   readonly kind: TrialKind;
   readonly order: number;
-  readonly repetitions: 2 | 10;
+  readonly repetitions: 2 | 3 | 10;
   readonly isolatedRoot: string;
   readonly notebookPath: string;
   readonly cell: {
@@ -333,7 +340,10 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
   const id = oneOf(cell.id, CELL_IDS, "Comparison request cell.id");
   const engine = oneOf(cell.engine, ["pandas", "polars"] as const, "Comparison request cell.engine");
   const format = oneOf(cell.format, ["csv", "parquet"] as const, "Comparison request cell.format");
-  if (id !== `${engine}-${format}`) fail("Comparison request cell identity does not match its engine and format.");
+  const engineFormat = `${engine}-${format}`;
+  if (id !== engineFormat && id !== `${engineFormat}-local`) {
+    fail("Comparison request cell identity does not match its engine and format.");
+  }
   const timeouts = record(request.timeoutsMs, "Comparison request timeoutsMs");
   exactKeys(
     timeouts,
@@ -342,7 +352,9 @@ export function validateComparisonTrialRequest(value: unknown): ComparisonTrialR
   );
   if (request.dataWranglerVersion !== "1.24.2") fail("The comparison baseline must be Data Wrangler 1.24.2.");
   const repetitions = boundedInteger(request.repetitions, 2, 10, "Comparison request repetitions");
-  if (repetitions !== 2 && repetitions !== 10) fail("Comparison request repetitions is invalid.");
+  if (repetitions !== 2 && repetitions !== 3 && repetitions !== 10) {
+    fail("Comparison request repetitions is invalid.");
+  }
   return Object.freeze({
     protocol: COMPARISON_TRIAL_REQUEST_PROTOCOL,
     trialId: matchingString(request.trialId, ID, "Comparison request trialId"),
@@ -396,7 +408,7 @@ export function validateComparisonTrialResult(value: unknown): ComparisonTrialRe
   oneOf(result.format, ["csv", "parquet"] as const, "Comparison result format");
   oneOf(result.kind, ["warm"] as const, "Comparison result kind");
   boundedInteger(result.order, 0, 255, "Comparison result order");
-  if (!Array.isArray(result.samples) || ![2, 10].includes(result.samples.length)) {
+  if (!Array.isArray(result.samples) || ![2, 3, 10].includes(result.samples.length)) {
     fail("Comparison result must contain exactly two smoke samples or ten release samples.");
   }
   result.samples.forEach((sample, index) => validateComparisonSample(sample, index + 1));
@@ -1408,6 +1420,32 @@ export function integerProfileTextReady(input: {
   );
 }
 
+export function mixedProfileTextReady(input: { readonly column: string; readonly text: string }): boolean {
+  if (!/^c\d{2}$/u.test(input.column)) return false;
+  const text = input.text.replace(/\s+/gu, " ").trim();
+  const hasDistribution =
+    /(?:distinct|unique)\s*[:=]?\s*\d/iu.test(text) ||
+    (/value counts/iu.test(text) && /false\s*[:=]?\s*\d/iu.test(text) && /true\s*[:=]?\s*\d/iu.test(text));
+  return (
+    text.includes(input.column) &&
+    !/\b(?:loading|profiling|calculating|pending)\b/iu.test(text) &&
+    /(?:missing|null(?:s| values?)?)\s*[:=]?\s*\d/iu.test(text) &&
+    hasDistribution
+  );
+}
+
+export function openWranglerProfileTextReady(input: {
+  readonly text: string;
+  readonly requireExtrema: boolean;
+}): boolean {
+  const text = input.text.replace(/\s+/gu, " ").trim();
+  return (
+    !/Preparing column summary|Profiling selected column/iu.test(text) &&
+    ["Exact statistics", "Rows", "Null", "Distinct"].every((label) => text.includes(label)) &&
+    (!input.requireExtrema || ["Min", "Max"].every((label) => text.includes(label)))
+  );
+}
+
 async function discoverInlineTarget(page: Page, request: ComparisonTrialRequest): Promise<PointerTarget | undefined> {
   const matches: PointerTarget[] = [];
   if (request.product === "open-wrangler") {
@@ -1803,25 +1841,37 @@ async function waitForProfile(
   throw new JourneyTimeout(stage, `Timed out waiting for the completed public profile for ${column}.`);
 }
 
+async function waitForMixedProfile(page: Page, column: string, deadline: number, stage: FailureStage): Promise<Frame> {
+  let lastObserved = "";
+  do {
+    for (const frame of comparisonFrames(page).slice(0, 64)) {
+      const header = await visibleColumnHeader(frame, column).catch(() => undefined);
+      if (!header) continue;
+      const [name, text] = await Promise.all([locatorName(header).catch(() => ""), header.innerText().catch(() => "")]);
+      lastObserved = `${name} ${text}`.replace(/\s+/gu, " ").trim().slice(0, 240);
+      if (mixedProfileTextReady({ column, text: lastObserved })) return frame;
+    }
+    await page.waitForTimeout(POLL_MS);
+  } while (Date.now() < deadline);
+  throw new JourneyTimeout(
+    stage,
+    `Timed out waiting for the completed public mixed-data profile for ${column}; last observed ${JSON.stringify(lastObserved)}.`
+  );
+}
+
 async function waitForOpenWranglerProfile(
   frame: Frame,
   column: string,
   deadline: number,
-  stage: FailureStage
+  stage: FailureStage,
+  requireExtrema: boolean
 ): Promise<void> {
   const drawer = frame.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   do {
     if ((await drawer.count().catch(() => 0)) === 1 && (await drawer.isVisible().catch(() => false))) {
       const heading = drawer.getByRole("heading", { name: column, exact: true });
-      const complete = await drawer
-        .evaluate((element) => {
-          const text = (element.textContent ?? "").replace(/\s+/gu, " ");
-          return (
-            !/Preparing column summary|Profiling selected column/iu.test(text) &&
-            ["Exact statistics", "Rows", "Null", "Distinct", "Min", "Max"].every((label) => text.includes(label))
-          );
-        })
-        .catch(() => false);
+      const text = await drawer.innerText().catch(() => "");
+      const complete = openWranglerProfileTextReady({ text, requireExtrema });
       if ((await heading.count().catch(() => 0)) === 1 && (await heading.isVisible().catch(() => false)) && complete) {
         return;
       }
@@ -2086,6 +2136,7 @@ async function executeMeasuredIteration(
   let runTarget: PointerTarget | undefined;
   let listener: vscode.Disposable | undefined;
   let inlineTarget: PointerTarget | undefined;
+  let openWranglerProfileFrame: Frame | undefined;
   let journeyError: unknown;
   let journeyFailed = false;
   try {
@@ -2210,6 +2261,7 @@ async function executeMeasuredIteration(
     if (request.product === "open-wrangler") {
       const target = await findExactButton(profileFrame, "Column profiles and filters", profileDeadline);
       profileAction = await clickTarget(target, () => milestones.mark("profile-click"));
+      openWranglerProfileFrame = profileFrame;
     } else {
       profileAction = await clickColumnForProfile(profileFrame, 0, profileDeadline, () =>
         milestones.mark("profile-click")
@@ -2231,7 +2283,15 @@ async function executeMeasuredIteration(
       }
       const profileStage = index === 0 ? "profile-first" : "profile-all";
       if (request.product === "open-wrangler") {
-        await waitForOpenWranglerProfile(profileFrame, column, profileDeadline, profileStage);
+        await waitForOpenWranglerProfile(
+          profileFrame,
+          column,
+          profileDeadline,
+          profileStage,
+          !request.cell.id.endsWith("-local")
+        );
+      } else if (request.cell.id.endsWith("-local")) {
+        profileFrame = await waitForMixedProfile(page, column, profileDeadline, profileStage);
       } else {
         profileFrame = await waitForProfile(
           page,
@@ -2251,28 +2311,28 @@ async function executeMeasuredIteration(
     }
     milestones.mark("profiles-complete");
     recordProgress(`comparison:${request.trialId}:sample-${sampleIndex}:profiles-complete`);
-    if (request.product === "open-wrangler") {
-      const resetDeadline = Date.now() + 10_000;
-      try {
-        await selectOpenWranglerProfileColumn(profileFrame, "c00", resetDeadline, "harness");
-        await waitForGenericGridReadiness(
-          page,
-          new Set<Frame>(),
-          new Set<Page>(),
-          Math.max(1, resetDeadline - Date.now())
-        );
-        await page.waitForTimeout(250);
-      } catch (error) {
-        throw new JourneyTimeout("harness", "Could not restore the first-column viewport after profiling.", {
-          cause: error
-        });
-      }
-    }
   } catch (error) {
     journeyFailed = true;
     journeyError = error;
   }
   let cleanupError: unknown;
+  if (openWranglerProfileFrame) {
+    const resetDeadline = Date.now() + 10_000;
+    try {
+      await selectOpenWranglerProfileColumn(openWranglerProfileFrame, "c00", resetDeadline, "harness");
+      await waitForGenericGridReadiness(
+        page,
+        new Set<Frame>(),
+        new Set<Page>(),
+        Math.max(1, resetDeadline - Date.now())
+      );
+      await page.waitForTimeout(250);
+    } catch (error) {
+      cleanupError = new JourneyTimeout("harness", "Could not restore the first-column viewport after profiling.", {
+        cause: error
+      });
+    }
+  }
   try {
     listener?.dispose();
   } catch (error) {

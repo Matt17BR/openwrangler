@@ -45,6 +45,11 @@ finally:
 
 
 def test_local_mixed_fixture_fails_early_when_resources_are_too_small(tmp_path: Path) -> None:
+    local_mixed_parquet.require_local_resources(
+        tmp_path,
+        available_memory=local_mixed_parquet.MIN_AVAILABLE_MEMORY,
+        free_disk=local_mixed_parquet.MIN_FREE_DISK,
+    )
     with pytest.raises(RuntimeError, match="available memory"):
         local_mixed_parquet.require_local_resources(
             tmp_path,
@@ -96,8 +101,10 @@ def test_local_mixed_fixture_validates_exact_schema_and_nulls(tmp_path: Path) ->
     )
 
     frame = pl.read_parquet(canonical)
+    assert frame.columns == [f"c{index:02d}" for index in range(10)]
+    assert frame.select("c00", "c01").row(0) == (0, 1)
     wrong_schema = tmp_path / "wrong-schema.parquet"
-    frame.rename({"date_003": "renamed_date"}).write_parquet(wrong_schema)
+    frame.rename({"c03": "renamed_date"}).write_parquet(wrong_schema)
     with pytest.raises(AssertionError, match="column names"):
         local_mixed_parquet.validate_local_mixed_parquet(
             wrong_schema,
@@ -107,7 +114,7 @@ def test_local_mixed_fixture_validates_exact_schema_and_nulls(tmp_path: Path) ->
         )
 
     missing_nulls = tmp_path / "missing-nulls.parquet"
-    frame.with_columns(pl.col("segment_005").fill_null("Enterprise")).write_parquet(missing_nulls)
+    frame.with_columns(pl.col("c05").fill_null("Enterprise")).write_parquet(missing_nulls)
     with pytest.raises(AssertionError, match="contain no nulls"):
         local_mixed_parquet.validate_local_mixed_parquet(
             missing_nulls,

@@ -169,7 +169,9 @@ export function buildStudyManifest({
         firstProfile: "public profiling action to the first completed column summary",
         completeProfile: "public profiling action to final summaries for every column"
       },
-      statistics: `${sampleCountWord(repetitionsPerSession)} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
+      statistics: localProfile
+        ? "three planned warm samples per product and engine; summaries require at least two successful samples; Hyndman-Fan type 7 min, max, median, and p95"
+        : `${sampleCountWord(repetitionsPerSession)} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
       memory: "highest observed absolute process-tree PSS during each measured notebook workflow"
     },
     provenance: {
@@ -329,9 +331,10 @@ export async function runLocalDataWranglerComparison(options, dependencies = {})
   const parquet = join(fixtureRoot, "mixed-1000000-100.parquet");
   const generateFixture = dependencies.generateLocalFixture ?? generateLocalMixedFixture;
   const runStudy = dependencies.runStudy ?? runDataWranglerComparisonStudy;
+  const loadResults = dependencies.loadResults ?? loadStudyResults;
   try {
     await generateFixture(options.python, parquet);
-    return await runStudy(
+    const result = await runStudy(
       {
         ...options,
         parquet,
@@ -340,8 +343,43 @@ export async function runLocalDataWranglerComparison(options, dependencies = {})
       },
       dependencies
     );
+    assertLocalComparisonUsable(result, output, loadResults);
+    return result;
   } finally {
     rmSync(fixtureRoot, { force: true, recursive: true });
+  }
+}
+
+function assertLocalComparisonUsable(result, output, loadResults) {
+  const expectedSessions = result.manifest.schedule.length;
+  const expectedSamples = expectedSessions * LOCAL_REPETITIONS;
+  const scheduledIds = new Set(result.manifest.schedule.map(({ id }) => id));
+  const trials = loadResults(output).trials.filter(({ trialId }) => scheduledIds.has(trialId));
+  const samples = trials.flatMap(({ samples: trialSamples }) => trialSamples);
+  const outcomes = Object.fromEntries(
+    ["success", "failure", "timeout"].map((status) => [
+      status,
+      samples.filter((sample) => sample.status === status).length
+    ])
+  );
+  const successfulByTrial = trials.map(({ trialId, samples: trialSamples }) => ({
+    trialId,
+    successes: trialSamples.filter(({ status }) => status === "success").length
+  }));
+  const insufficientTrials = successfulByTrial.filter(({ successes }) => successes < 2);
+  if (
+    result.completed !== expectedSessions ||
+    result.remaining !== 0 ||
+    trials.length !== expectedSessions ||
+    samples.length !== expectedSamples ||
+    insufficientTrials.length > 0
+  ) {
+    throw new Error(
+      "Local comparison failed: every product and engine needs at least two of three successful samples; found " +
+        `${outcomes.success} success, ${outcomes.failure} failure, and ${outcomes.timeout} timeout. ` +
+        `Insufficient sessions: ${insufficientTrials.map(({ trialId, successes }) => `${trialId} (${successes}/3)`).join(", ") || "none"}. ` +
+        `Results were kept in ${output}.`
+    );
   }
 }
 

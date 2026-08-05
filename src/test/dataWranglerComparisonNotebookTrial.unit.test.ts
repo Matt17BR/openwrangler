@@ -8,8 +8,10 @@ import {
   comparisonSetupExecutionOutcome,
   integerProfileTextReady,
   isComparisonKernelLabel,
+  mixedProfileTextReady,
   observePointerReady,
   observeVisibleFullShape,
+  openWranglerProfileTextReady,
   validateComparisonNotebookLayout,
   validateComparisonTrialRequest,
   validateComparisonTrialResult,
@@ -114,6 +116,22 @@ describe("neutral comparison request", () => {
     expect(validateComparisonTrialRequest(request({ repetitions: 2 }))).toEqual(request({ repetitions: 2 }));
   });
 
+  it("accepts the three-sample local mixed Parquet contract", () => {
+    const local = request({
+      trialId: "warm.pandas-parquet-local.open-wrangler",
+      repetitions: 3,
+      cell: {
+        ...request().cell,
+        id: "pandas-parquet-local",
+        format: "parquet",
+        rows: 1_000_000,
+        columns: 100,
+        source: "/tmp/openwrangler-comparison/fixtures/source.parquet"
+      }
+    });
+    expect(validateComparisonTrialRequest(local)).toEqual(local);
+  });
+
   it("rejects mismatched cell identities and paths outside the isolated root", () => {
     expect(() => validateComparisonTrialRequest(request({ cell: { ...request().cell, id: "polars-csv" } }))).toThrow(
       /identity does not match/u
@@ -128,7 +146,7 @@ describe("neutral comparison request", () => {
     expect(() =>
       validateComparisonTrialRequest(request({ timeoutsMs: { ...request().timeoutsMs, completeProfile: 1 } }))
     ).toThrow(/completeProfile timeout/u);
-    expect(() => validateComparisonTrialRequest(request({ repetitions: 3 as 10 }))).toThrow(/repetitions/u);
+    expect(() => validateComparisonTrialRequest(request({ repetitions: 4 as 10 }))).toThrow(/repetitions/u);
     expect(() => validateComparisonTrialRequest(request({ kind: "cold" as "warm" }))).toThrow(/kind/u);
   });
 });
@@ -303,6 +321,30 @@ describe("public readiness oracles", () => {
         text: "c00 Float64 Missing 0 Distinct 10 Min 2k Max 2k"
       })
     ).toBe(false);
+  });
+
+  it("recognizes completed mixed-type profiles without assuming numeric extrema", () => {
+    expect(mixedProfileTextReady({ column: "c05", text: "c05 String Missing 3% Distinct 5% Enterprise" })).toBe(true);
+    expect(
+      mixedProfileTextReady({ column: "c00", text: "int64c00c00 More optionsMissing 0 (0%)Distinct 100 (100%)" })
+    ).toBe(true);
+    expect(
+      mixedProfileTextReady({
+        column: "c02",
+        text: "boolc02c02 More optionsMissing 0 (0%)False 49 (49%)True 51 (51%)Value counts"
+      })
+    ).toBe(true);
+    expect(mixedProfileTextReady({ column: "c05", text: "c05 String Profiling Missing 3% Distinct 5%" })).toBe(false);
+    expect(mixedProfileTextReady({ column: "c06", text: "c05 String Missing 3% Distinct 5%" })).toBe(false);
+  });
+
+  it("accepts non-numeric Open Wrangler summaries in the local mixed-data study", () => {
+    const text = "c02 Boolean Exact statistics Rows 1,000,000 Null 0 Distinct 2";
+    expect(openWranglerProfileTextReady({ text, requireExtrema: false })).toBe(true);
+    expect(openWranglerProfileTextReady({ text, requireExtrema: true })).toBe(false);
+    expect(openWranglerProfileTextReady({ text: `${text} Profiling selected column`, requireExtrema: false })).toBe(
+      false
+    );
   });
 
   it("recognizes a full-shape label without reading row values", () => {

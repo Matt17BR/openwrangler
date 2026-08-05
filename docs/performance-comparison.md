@@ -94,6 +94,10 @@ npm run comparison:study -- \
   --out /absolute/path/benchmark-output
 ```
 
+Pass the real executable files, not symlink launchers. On Linux, `realpath /usr/bin/code` gives the VS Code CLI file.
+If a virtual environment symlinks `python`, create it with `python3.12 -m venv --copies` or use another regular
+Python 3.12 executable that has the pinned packages installed.
+
 The command writes one atomic result per session. Re-running it resumes at the first missing or interrupted session.
 It does not replace a successful session.
 
@@ -125,12 +129,14 @@ npm run comparison:local -- \
 ```
 
 This creates one temporary 1,000,000 × 100 Parquet file with numeric, boolean, text, date, timestamp, and null data.
-The file is capped at 640 MiB while it is written. The command stops before generating it unless at least 4 GiB of
+The file is capped at 640 MiB while it is written. The command stops before generating it unless at least 16 GiB of
 memory and 1.75 GiB of free space are available for the fixture and the private trial copy.
 
 The run has four sessions: Open Wrangler and Data Wrangler with Pandas, then both products with Polars. Each session
 records three passes through inline preview, viewer launch, complete column profiling, and process-tree PSS. It uses
 the same editor driver as the release study, runs only on the current machine, and does not create cloud resources.
+At least two passes must finish in each session. A failed pass stays in the raw results, so an occasional editor
+timeout is visible without making the optional check unusable.
 The temporary Parquet file is removed when the command finishes or reports an error. This profile is not part of CI
 and does not replace the reviewed release study. If the process is interrupted, the next run removes the identified
 fixture left by the dead process before it starts.

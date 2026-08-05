@@ -56,7 +56,7 @@ export function comparisonProductSettings(product) {
 
 export async function runDataWranglerComparisonNeutralDriver({ requestPath, outputPath }) {
   const request = readJson(requestPath);
-  validateRequest(request);
+  validateComparisonTrialRequest(request);
   requireContained(request.isolatedRoot, requestPath, "request");
   requireContained(request.isolatedRoot, outputPath, "result");
   requireContained(request.isolatedRoot, request.notebookPath, "notebook");
@@ -373,7 +373,7 @@ function comparisonSamplePssWindow(samples, milestones) {
   });
 }
 
-function validateRequest(request) {
+export function validateComparisonTrialRequest(request) {
   if (
     !request ||
     request.protocol !== REQUEST_PROTOCOL ||
@@ -382,7 +382,7 @@ function validateRequest(request) {
     !Number.isSafeInteger(request.order) ||
     request.order < 0 ||
     request.order > 255 ||
-    ![2, 10].includes(request.repetitions) ||
+    ![2, 3, 10].includes(request.repetitions) ||
     !isAbsolute(request.isolatedRoot) ||
     !isAbsolute(request.notebookPath) ||
     !isAbsolute(request.cell?.source) ||
