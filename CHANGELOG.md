@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Local PySpark 4.2 Classic and Connect notebook viewing is now supported in VS Code and Cursor. The workbench no
+  longer labels these sessions experimental. They remain viewing-only; file sources, cleaning, exports, saved output,
+  external or authenticated clusters, and Spark provisioning are not supported.
 - PySpark column profiles now check and collect their ten displayed values in one Spark job. If the values are too
   large, Spark returns only their byte counts. Ordinary profiles no longer run the same grouped query twice.
 - PySpark Classic and Connect now use the same mixed profiling data in runtime tests. The packaged notebook test
@@ -16,10 +19,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   Variant column without converting it or leaving an Open Wrangler session open, and its scheduled run now checks
   both VS Code and Cursor.
 - PySpark sessions now label unsorted rows as **Source order** and explicitly sorted rows as **Sorted**. The ordering
-  badge explains Spark's behavior for unsorted rows and for rows tied across every sort key.
+  badge explains Spark's behavior for unsorted rows and tells users to add a unique final sort key for repeatable
+  rows.
 - PySpark Classic work now has a separate Spark job group for each Open Wrangler request and restores the notebook's
-  previous job properties afterward. Spark Connect keeps its own per-operation interrupt behavior. This does not add
-  request cancellation or change user job tags, scheduler pools, or signal handlers.
+  previous job properties afterward. Spark Connect keeps its own per-operation interrupt behavior. Queued or
+  superseded work is dropped before dispatch, but running work is not interrupted because that could cancel unrelated
+  notebook jobs. User job tags, scheduler pools, and signal handlers are unchanged.
 - Recreating a PySpark Classic variable after stopping its old Spark session now reopens the live notebook data
   instead of failing while Open Wrangler reads request properties from the stopped Spark context.
 - Spark Connect now tells temporary endpoint failures apart from a server session or DataFrame that no longer exists.

@@ -1,7 +1,7 @@
 {
   "name": "openwrangler",
   "displayName": "Open Wrangler",
-  "description": "Open files and notebook variables, then clean and export data in VS Code and Cursor. Pandas and Polars are native. DuckDB and PySpark are experimental; their notebook sessions are viewing-only.",
+  "description": "Open files and notebook variables, then clean and export data in VS Code and Cursor. Pandas and Polars are native. DuckDB viewing is experimental; local PySpark 4.2 notebook viewing is supported.",
   "version": "1.2.2",
   "publisher": "Matt17BR",
   "license": "MIT",
@@ -473,7 +473,7 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Open files or notebook variables, inspect profiles, preview cleaning steps, and export code or data. Filters and cleaning steps do not overwrite the source. DuckDB and PySpark are experimental; their notebook sessions are viewing-only.",
+        "description": "Open files or notebook variables, inspect profiles, preview cleaning steps, and export code or data. Filters and cleaning steps do not overwrite the source. DuckDB viewing is experimental; local PySpark 4.2 notebook viewing is supported.",
         "steps": [
           {
             "id": "openData",

@@ -500,7 +500,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /DuckDB relations are view-only and do not require dataframe conversion/u);
   assert.match(
     readme,
-    /Experimental PySpark 4\.2\.x support stays native for viewing, filtering, sorting, paging, and profiles/u
+    /Local PySpark 4\.2\.x Classic and Connect dataframes support viewing, filtering, sorting, paging, and profiles/u
   );
   assert.match(
     readme,
@@ -508,7 +508,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /alt="PySpark dataframe grid beside the revenue profile, with Source Order, Experimental, Viewing Only, and PySpark badges"/u
+    /alt="PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges"/u
   );
   assert.match(readme, /Larger datasets can work, but the\s+practical limit depends on the engine and machine/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
@@ -535,12 +535,14 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(readme, /safe (?:pickle|unpickling|deserialization)/iu);
   assert.match(
     readme,
-    /does not count or cache the whole dataframe before showing the first page; the row total appears after\s+the final page/u
+    /does not count or cache the whole PySpark dataframe before showing the first page; the row total\s+appears after the final page/u
   );
-  assert.match(readme, /PySpark uses the notebook's existing Spark session and loads pages\s+sequentially/u);
+  assert.match(readme, /PySpark uses the notebook's existing local Spark session and\s+loads pages sequentially/u);
   assert.match(readme, /toolbar says \*\*Source order\*\* until you add a sort, then \*\*Sorted\*\*/u);
-  assert.match(readme, /rows tied across every sort key can move when Spark reruns the dataframe/u);
-  assert.match(readme, /does\s+not install PySpark, handle cluster authentication, or stop your Spark session/u);
+  assert.match(readme, /rows tied across every sort key can move when it reruns the dataframe/u);
+  assert.match(readme, /Use a unique final sort key\s+when you need repeatable rows/u);
+  assert.match(readme, /does not install PySpark, start or stop Spark, or configure cluster authentication/u);
+  assert.match(readme, /External and\s+authenticated Spark clusters are not supported/u);
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   assert.match(readme, /Microsoft Data\s+Wrangler 1\.24\.2/u);
   assert.match(readme, /Data Wrangler converts Polars data to Pandas/u);
@@ -570,7 +572,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(comparisonReview, /e45eb499fed50febb61fb0d32cfa9a20800d59b04c67edd20d2568e39aa34ff3/u);
   assert.match(comparisonReview, /56b933c6db09255d3f3b8338830613950e604094fefc1d3a1db691017f1f7b4b/u);
   assert.doesNotMatch(readme, /tracks a planned comparison with Microsoft Data Wrangler/u);
-  assert.match(readme, /\*\*Next in v1:\*\*[\s\S]{0,180}#36/u);
+  assert.match(
+    readme,
+    /\*\*v1:\*\* keep improving performance, DuckDB coverage, and support for other desktop VS Code forks/u
+  );
+  assert.doesNotMatch(readme, /#36/u);
   assert.doesNotMatch(readme, /#263/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   const v2Roadmap = readme.slice(readme.indexOf("- **v2:**"), readme.indexOf("## Contributing and support"));
@@ -615,7 +621,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   }
   assert.match(gallery, /Dataset\s+sizes in the images describe the example, not a row or column limit/u);
   assert.match(gallery, /Experimental DuckDB relations are view-only and do not require dataframe conversion/u);
-  assert.match(gallery, /Experimental PySpark 4\.2\.x support/u);
+  assert.match(gallery, /Local PySpark 4\.2\.x Classic and Connect dataframes support/u);
   assert.match(gallery, /^## Grid and sidebar$/mu);
   assert.match(
     gallery,
@@ -642,7 +648,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /alt="PySpark dataframe grid beside the revenue profile, with Source Order, Experimental, Viewing Only, and PySpark badges"/u
+    /alt="PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges"/u
   );
   assert.match(
     gallery,
@@ -650,7 +656,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /first page loads\s+without counting or caching the entire dataframe[\s\S]{0,120}exact row total appears after the last page/u
+    /first page\s+loads without counting or caching the entire dataframe[\s\S]{0,120}exact row total appears after the last page/u
   );
   assert.match(gallery, /ordering\s+badge distinguishes Spark source order from an explicit sort/u);
   assert.doesNotMatch(gallery, /expensive to open|scan and index|cache(?:s|d)? the complete (?:frame|dataframe)/iu);

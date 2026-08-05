@@ -4,7 +4,7 @@
 
 <h1 align="center">Open Wrangler</h1>
 
-<p align="center">A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks. Open files and notebook dataframes with native Pandas and Polars support. DuckDB and PySpark viewing are experimental.</p>
+<p align="center">A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks. Pandas and Polars support native cleaning, DuckDB viewing is experimental, and local PySpark 4.2 notebook viewing is supported.</p>
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/fd32489afc1e264fd29d6ca771b7d1f4d1bbe530/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/fd32489afc1e264fd29d6ca771b7d1f4d1bbe530/docs/images/readme/v1.2/explore.png" width="1440" height="870"></a>
 
@@ -47,7 +47,7 @@ Opening data or running Python requires a trusted workspace. Open Wrangler stays
 
 ## Why Open Wrangler
 
-- Pandas and Polars run natively. DuckDB and PySpark also run natively, with experimental viewing-only support.
+- Pandas and Polars support viewing and cleaning. DuckDB and PySpark stay in their own engines for viewing; PySpark supports local 4.2 Classic and Connect notebook dataframes.
 - Each cleaning step previews changed values and generated code before you apply it.
 - Filters and multi-column sorts change only the view. Exports write a separate file.
 - The grid fetches visible rows and columns on demand. Supported file-backed Polars sources use lazy scans.
@@ -144,22 +144,28 @@ Choose Notebook Preview Provider**.
   </tr>
   <tr>
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/fd32489afc1e264fd29d6ca771b7d1f4d1bbe530/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/fd32489afc1e264fd29d6ca771b7d1f4d1bbe530/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png" width="872" height="700"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/fd32489afc1e264fd29d6ca771b7d1f4d1bbe530/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Source Order, Experimental, Viewing Only, and PySpark badges" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/fd32489afc1e264fd29d6ca771b7d1f4d1bbe530/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/fd32489afc1e264fd29d6ca771b7d1f4d1bbe530/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/fd32489afc1e264fd29d6ca771b7d1f4d1bbe530/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
   </tr>
   <tr>
     <td>DuckDB relations are view-only and do not require dataframe conversion.</td>
-    <td>Experimental PySpark 4.2.x support stays native for viewing, filtering, sorting, paging, and profiles.</td>
+    <td>Local PySpark 4.2.x Classic and Connect dataframes support viewing, filtering, sorting, paging, and profiles.</td>
   </tr>
 </table>
 
-DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's existing Spark session and loads pages
-sequentially. The toolbar says **Source order** until you add a sort, then **Sorted**. Open the badge to see what Spark
-can reorder: source order can change, and rows tied across every sort key can move when Spark reruns the dataframe.
-Open Wrangler does not count or cache the whole dataframe before showing the first page; the row total appears after
-the final page. If the data changes while you page through it, Open Wrangler asks you to reopen the variable. It does
-not install PySpark, handle cluster authentication, or stop your Spark session. A temporary Spark Connect outage
-leaves the current grid in place and shows **Retry page**. If the server has lost the session or dataframe, rerun the
-cell that creates the same variable and choose **Reconnect**. The old grid stays visible unless that reconnect works.
+DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's existing local Spark session and
+loads pages sequentially. The toolbar says **Source order** until you add a sort, then **Sorted**. Spark can change
+source order, and rows tied across every sort key can move when it reruns the dataframe. Use a unique final sort key
+when you need repeatable rows.
+
+Open Wrangler does not count or cache the whole PySpark dataframe before showing the first page; the row total
+appears after the final page. If the data changes while you page through it, Open Wrangler asks you to reopen the
+variable. A temporary Spark Connect outage leaves the current grid in place and shows **Retry page**. If the server
+has lost the session or dataframe, rerun the cell that creates the same variable and choose **Reconnect**. The old
+grid stays visible unless that reconnect works.
+
+Open Wrangler does not install PySpark, start or stop Spark, or configure cluster authentication. External and
+authenticated Spark clusters are not supported. Closing a view does not interrupt Spark work already running in the
+kernel because a Jupyter interrupt could cancel unrelated notebook jobs.
 
 ## Export
 
@@ -176,12 +182,12 @@ cell that creates the same variable and choose **Reconnect**. The old grid stays
 
 ## Engines and formats
 
-| Engine                      | Files                                  | Notebook data                | How it runs                                               |
-| --------------------------- | -------------------------------------- | ---------------------------- | --------------------------------------------------------- |
-| Polars                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; lazy scans for CSV, TSV, Parquet, and JSONL       |
-| Pandas                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series            | Native, including duplicate column labels                 |
-| DuckDB, experimental        | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only               |
-| PySpark 4.2.x, experimental | Not currently supported                | DataFrame                    | Native notebook viewing, filtering, sorting, and profiles |
+| Engine               | Files                                  | Notebook data                   | How it runs                                               |
+| -------------------- | -------------------------------------- | ------------------------------- | --------------------------------------------------------- |
+| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series    | Native; lazy scans for CSV, TSV, Parquet, and JSONL       |
+| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series               | Native, including duplicate column labels                 |
+| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation                | Native; notebook relations are viewing-only               |
+| PySpark 4.2.x        | No                                     | Local Classic/Connect DataFrame | Native notebook viewing, filtering, sorting, and profiles |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and
@@ -232,8 +238,8 @@ cover first-grid and scrolling performance in VS Code and Cursor.
 
 ## Roadmap
 
-- **Next in v1:** continue the distributed Spark work in [#36](https://github.com/Matt17BR/openwrangler/issues/36).
-  Support for other VS Code-based desktop editors is currently experimental.
+- **v1:** keep improving performance, DuckDB coverage, and support for other desktop VS Code forks. Fork support is
+  currently experimental.
 - **v2:** add native R data frames, tibbles, and `data.table`, then add Quarto and R Markdown workflows. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in
