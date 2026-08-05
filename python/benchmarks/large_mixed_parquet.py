@@ -16,11 +16,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 FIXTURE_PROTOCOL = "openwrangler-large-parquet-fixture-v1"
-DEFAULT_ROWS, DEFAULT_COLUMNS, DEFAULT_ROW_GROUP_ROWS, DEFAULT_SEED = 10_000_000, 100, 100_000, 17_031
-MIN_AVAILABLE_MEMORY_BYTES = 96 * 1024**3
-MIN_GENERATION_FREE_DISK_BYTES = 25 * 1024**3
-MIN_STUDY_FREE_DISK_BYTES = 15 * 1024**3
-MIN_REALIZED_FIXTURE_BYTES = 4 * 1024**3
+DEFAULT_ROWS, DEFAULT_COLUMNS, DEFAULT_ROW_GROUP_ROWS, DEFAULT_SEED = 2_000_000, 100, 100_000, 17_031
+MIN_AVAILABLE_MEMORY_BYTES = 32 * 1024**3
+MIN_GENERATION_FREE_DISK_BYTES = 8 * 1024**3
+MIN_STUDY_FREE_DISK_BYTES = 6 * 1024**3
+MIN_REALIZED_FIXTURE_BYTES = 800 * 1024**2
 NUMERIC_MIN, NUMERIC_MAX = -900_000_000, 900_000_000
 DATETIME_MIN_NS, DATETIME_MAX_NS = 946_684_800_000_000_000, 4_102_358_400_000_000_000
 DATE_MIN_DAYS, DATE_MAX_DAYS = 10_957, 47_481
@@ -129,7 +129,7 @@ def assert_large_study_capacity(output: Path, *, generating: bool = False) -> di
         raise RuntimeError("Create a real output directory before generating the large fixture.")
     memory, disk = available_memory_bytes(), disk_usage(parent).free
     if memory < MIN_AVAILABLE_MEMORY_BYTES:
-        raise RuntimeError("The large comparison needs at least 96 GiB of available memory.")
+        raise RuntimeError("The large comparison needs at least 32 GiB of available memory.")
     required_disk = MIN_GENERATION_FREE_DISK_BYTES if generating else MIN_STUDY_FREE_DISK_BYTES
     if disk < required_disk:
         required_gib = required_disk // 1024**3
@@ -218,7 +218,7 @@ def build_row_group(start: int, count: int, spec: LargeFixtureSpec) -> pa.Table:
 
 def assert_realized_fixture_size(size_bytes: int, spec: LargeFixtureSpec) -> None:
     if spec.rows == DEFAULT_ROWS and size_bytes < MIN_REALIZED_FIXTURE_BYTES:
-        raise AssertionError("The full large-comparison fixture must be at least 4 GiB after compression.")
+        raise AssertionError("The full large-comparison fixture must be at least 800 MiB after compression.")
 
 
 def validate_fixture(path: Path, spec: LargeFixtureSpec) -> None:
@@ -291,7 +291,7 @@ def generate_fixture(
             for start in range(0, spec.rows, spec.row_group_rows):
                 writer.write_table(build_row_group(start, min(spec.row_group_rows, spec.rows - start), spec))
         if check_capacity and disk_usage(output.parent).free < MIN_STUDY_FREE_DISK_BYTES:
-            raise RuntimeError("The generated fixture would leave less than 15 GiB free for the comparison runs.")
+            raise RuntimeError("The generated fixture would leave less than 6 GiB free for the comparison runs.")
         validate_fixture(temporary, spec)
         os.replace(temporary, output)
         os.chmod(output, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
@@ -305,12 +305,12 @@ def generate_fixture(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate the opt-in 10M x 100 mixed Parquet fixture.")
+    parser = argparse.ArgumentParser(description="Generate the opt-in 2M x 100 mixed Parquet fixture.")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--confirm-large-study", action="store_true")
     arguments = parser.parse_args()
     if not arguments.confirm_large_study:
-        raise SystemExit("Pass --confirm-large-study to generate the 10M x 100 fixture.")
+        raise SystemExit("Pass --confirm-large-study to generate the 2M x 100 fixture.")
     print(json.dumps({"path": str(arguments.out.resolve()), "manifest": generate_fixture(arguments.out)}))
 
 

@@ -11,7 +11,7 @@ raw outcome counts.
 
 ## v1.2.3 study
 
-The new test uses one synthetic 10,000,000 × 100 Parquet file. Its columns are split across floating-point and integer
+The new test uses one synthetic 2,000,000 × 100 Parquet file. Its columns are split across floating-point and integer
 data, low-cardinality categories, high-cardinality text, timestamps, dates, durations, and booleans. The generator
 adds nulls and fixed profile markers. It writes 100,000-row groups with PyArrow and Zstandard compression, so
 it never holds the complete fixture in memory.
@@ -23,16 +23,22 @@ for those values in every profile instead of treating a generic column header as
 duration bounds stay in the fixture but are not used for readiness, because both products expose duration top values
 rather than duration Min/Max statistics. The fixture manifest records the names and markers along with every column
 type, the seed, file hash, actual byte size, compression settings, and row-group layout. The full generator rejects a
-compressed result smaller than 4 GiB, so a highly compressible accidental fixture cannot enter the study. No user
+compressed result smaller than 800 MiB, so a highly compressible accidental fixture cannot enter the study. No user
 data is read.
 
-Generation and every editor run require at least 96 GiB of available memory. A 64 GiB machine cannot start this
-study. Generation also requires 25 GiB of free disk space, and it keeps the finished fixture only if at least 15 GiB
-remains. The study checks that disk reserve immediately before every editor run. A machine with a battery must be on
-AC power. A battery-less host records `not-applicable`. A host without a cpufreq governor records `not-exposed`. The
-runner checks the recorded machine, power, governor, memory, and disk both before and after every editor run. These
-checks are conservative because a Pandas load can require much more memory than the compressed source. The generator
-refuses to replace an existing file.
+A 100,000 × 100 sizing run with the same generator produced a 50,381,441-byte Parquet file. With Python 3.14.4, the
+Pandas 3.0.3 read call took 0.085 seconds (0.36 seconds for the process) and reached 523,088 KiB peak RSS; its
+import-only process reached 108,336 KiB. The Polars 1.42.1 read call took 0.112 seconds (0.21 seconds for the process)
+and reached 204,600 KiB peak RSS; its import-only process reached 39,884 KiB. Scaling the file bytes and RSS above the
+import baseline by 20 puts the 2-million-row file near 0.94 GiB, with about 8.0 GiB peak RSS for Pandas and 3.2 GiB for
+Polars. This sizing run chose the fixture size; it is not part of the product comparison.
+
+Generation and every editor run require at least 32 GiB of currently available memory. The runner stops before
+launching an editor when the machine falls below that floor instead of relying on swap. Generation also requires 8
+GiB of free disk space, and it keeps the finished fixture only if at least 6 GiB remains. A machine with a battery must
+be on AC power. A battery-less host records `not-applicable`. A host without a cpufreq governor records `not-exposed`.
+The runner checks the recorded machine, power, governor, memory, and disk both before and after every editor run. The
+generator refuses to replace an existing file.
 
 ## What is measured
 
@@ -77,12 +83,12 @@ connect a laptop to power first:
 
 ```bash
 npm run comparison:large:fixture -- \
-  --out /absolute/path/openwrangler-10m-100.parquet \
+  --out /absolute/path/openwrangler-2m-100.parquet \
   --confirm-large-study
 ```
 
 Build the candidate VSIX, then start the editor runs. The fixture and output directory must be on the same filesystem;
-the runner uses read-only hard links instead of making twenty multi-gigabyte copies.
+the runner uses read-only hard links instead of making twenty copies.
 
 ```bash
 npm run comparison:large:study -- \
@@ -90,7 +96,7 @@ npm run comparison:large:study -- \
   --python /absolute/path/python3.12 \
   --editor /absolute/path/code \
   --editor-cli /absolute/path/code-cli \
-  --parquet /absolute/path/openwrangler-10m-100.parquet \
+  --parquet /absolute/path/openwrangler-2m-100.parquet \
   --out /absolute/path/benchmark-output \
   --confirm-large-study
 ```
@@ -120,4 +126,4 @@ hash and actual byte size, tool hashes, and alternating product order within eac
 `npm run benchmark:runtime` remains the regular performance gate. It uses the existing 100k × 50 CSV and 1M × 20
 Parquet fixtures to catch runtime and paging regressions without generating the large comparison file. Pull requests
 also run the small unit tests for the generator, schedule, result validation, and report calculations. They never
-create the 10-million-row fixture or start the 20 editor runs.
+create the 2-million-row fixture or start the 20 editor runs.

@@ -34,12 +34,12 @@ export const DATA_WRANGLER_VERSION = "1.24.2";
 export const WARM_REPETITIONS = 10;
 export const SMOKE_REPETITIONS = 2;
 export const LARGE_FIXTURE_PROTOCOL = "openwrangler-large-parquet-fixture-v1";
-export const LARGE_ROWS = 10_000_000;
+export const LARGE_ROWS = 2_000_000;
 export const LARGE_COLUMNS = 100;
 export const LARGE_REPETITIONS = 5;
 export const LARGE_MIN_SUCCESSFUL_REPETITIONS = 4;
-export const LARGE_MIN_AVAILABLE_MEMORY_BYTES = 96 * 1024 ** 3;
-export const LARGE_MIN_REALIZED_FIXTURE_BYTES = 4 * 1024 ** 3;
+export const LARGE_MIN_AVAILABLE_MEMORY_BYTES = 32 * 1024 ** 3;
+export const LARGE_MIN_REALIZED_FIXTURE_BYTES = 800 * 1024 ** 2;
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
@@ -830,7 +830,7 @@ export function assertLargeRunEnvironment(environment, expectedMachine) {
   }
   if (
     environment.capacity?.availableMemoryBytes < LARGE_MIN_AVAILABLE_MEMORY_BYTES ||
-    environment.capacity?.freeDiskBytes < 15 * 1024 ** 3
+    environment.capacity?.freeDiskBytes < 6 * 1024 ** 3
   ) {
     throw new Error("Available memory or disk space fell below the large-study minimum.");
   }

@@ -563,18 +563,18 @@ Guarded installed-performance packaging tests require every VSCE source to be tr
 ## Data Wrangler comparison
 
 The current manual method is in [`docs/performance-comparison.md`](performance-comparison.md). It uses a generated
-10M × 100 mixed-type Parquet file and five new editor/kernel sessions for every product/input pair. The commands are:
+2M × 100 mixed-type Parquet file and five new editor/kernel sessions for every product/input pair. The commands are:
 
 - `npm run comparison:large:fixture` to stream the opt-in fixture after memory and disk checks;
 - `npm run comparison:large:study` to run the 20 independent notebook sessions; and
 - `npm run comparison:large:report` to calculate minimum, median, and maximum values.
 
-The large commands require the literal `--confirm-large-study` flag. They require at least 96 GiB of available
-memory, so a 64 GiB machine cannot start them. Fixture generation needs 25 GiB free and keeps the file only when at
-least 15 GiB remains for the study. The manifest records the realized Parquet byte size, and the production generator
-rejects a compressed file below 4 GiB. These commands are not called by a pull-request, release, scheduled, or local
-default workflow. Tests use small row counts through the Python API and fake editor runners; they never generate the
-full fixture.
+The large commands require the literal `--confirm-large-study` flag. They require at least 32 GiB of currently
+available memory and do not count swap toward that floor. Fixture generation needs 8 GiB free and keeps the file only
+when at least 6 GiB remains for the study. The manifest records the realized Parquet byte size, and the production
+generator rejects a compressed file below 800 MiB. Pull requests, releases, scheduled tasks, and normal local checks
+do not call these commands. Tests use small row counts through the Python API and fake editor runners; they never
+generate the full fixture.
 
 Normal native editor acceptance keeps its 300-second hard deadline and 180-second inactivity deadline. The manually
 confirmed large comparison is the only new exception: its editor cap is the sum of its two pre-action, inline,
@@ -589,7 +589,7 @@ marker; it is not a backend-only profiling timer. The fixture contains numeric, 
 timestamp, date, duration, and boolean columns with nulls and known per-type markers. It is written in bounded
 100,000-row groups. Durations use a frequent two-day value that both products render in their bounded top-values
 summary. The fixture and output must share a filesystem so the session runner can use read-only hard links rather than
-copy several gigabytes per trial.
+copy the fixture per trial.
 
 Before checking fixture provenance, the runner removes a private trial directory left by an interrupted process. It
 then resumes at the first missing result. A failed editor run uses its fixed slot, stays in the raw report, and does

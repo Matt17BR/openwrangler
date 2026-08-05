@@ -94,7 +94,7 @@ test("private trial sources are checked before and after editor use", () => {
   }
 });
 
-test("large synthetic fixtures can use a pinned hard-link identity instead of hashing gigabytes per session", () => {
+test("large synthetic fixtures can use a pinned hard-link identity instead of rehashing per session", () => {
   const root = mkdtempSync(join(tmpdir(), "ow-comparison-source-identity-"));
   const fixture = join(root, "fixture.parquet");
   const source = join(root, "source.parquet");

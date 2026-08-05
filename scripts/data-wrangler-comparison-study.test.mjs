@@ -72,7 +72,7 @@ test("large runs accept stable VM states but still require AC on battery hosts",
     powerSource: "not-applicable",
     cpuGovernor: "not-exposed"
   };
-  const capacity = { availableMemoryBytes: 104 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 };
+  const capacity = { availableMemoryBytes: 40 * 1024 ** 3, freeDiskBytes: 10 * 1024 ** 3 };
   assert.doesNotThrow(() => assertLargeRunEnvironment({ machine, capacity }, machine));
 
   const acMachine = { ...machine, powerSource: "ac" };
@@ -85,12 +85,12 @@ test("large runs accept stable VM states but still require AC on battery hosts",
   );
   assert.throws(
     () =>
-      assertLargeRunEnvironment({ machine, capacity: { ...capacity, availableMemoryBytes: 64 * 1024 ** 3 } }, machine),
+      assertLargeRunEnvironment({ machine, capacity: { ...capacity, availableMemoryBytes: 31 * 1024 ** 3 } }, machine),
     /memory or disk space/u
   );
-  assert.equal(LARGE_MIN_AVAILABLE_MEMORY_BYTES, 96 * 1024 ** 3);
+  assert.equal(LARGE_MIN_AVAILABLE_MEMORY_BYTES, 32 * 1024 ** 3);
   assert.throws(
-    () => assertLargeRunEnvironment({ machine, capacity: { ...capacity, freeDiskBytes: 14 * 1024 ** 3 } }, machine),
+    () => assertLargeRunEnvironment({ machine, capacity: { ...capacity, freeDiskBytes: 5 * 1024 ** 3 } }, machine),
     /memory or disk space/u
   );
 });
@@ -399,8 +399,10 @@ test("large schedule covers its pilot and marks a four-run UI group inconclusive
   assert.doesNotThrow(() => assertCompleteLargeReport(report));
 });
 
-test("large manifest records realized bytes and rejects a compressed fixture below 4 GiB", () => {
+test("large manifest records realized bytes and rejects a fixture below its calibrated floor", () => {
   const manifest = largeManifestFixture();
+  assert.equal(LARGE_ROWS, 2_000_000);
+  assert.equal(LARGE_MIN_REALIZED_FIXTURE_BYTES, 800 * 1024 ** 2);
   assert.equal(manifest.provenance.fixture.bytes, LARGE_MIN_REALIZED_FIXTURE_BYTES + 123);
   const provenance = largeProvenanceFixture();
   provenance.fixture.bytes = LARGE_MIN_REALIZED_FIXTURE_BYTES - 1;
@@ -465,7 +467,7 @@ test("large study records 20 fixed UI attempts, checks the host before and after
       checks += 1;
       return {
         machine: manifest.provenance.machine,
-        capacity: { availableMemoryBytes: 104 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 }
+        capacity: { availableMemoryBytes: 40 * 1024 ** 3, freeDiskBytes: 10 * 1024 ** 3 }
       };
     },
     prepareTrial: ({ entry, trialRoot }) => ({

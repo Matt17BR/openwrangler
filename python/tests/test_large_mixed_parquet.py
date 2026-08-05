@@ -81,12 +81,16 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
     assert set(value for value in table[names_by_role["boolean"][0]].to_pylist() if value is not None) == {False, True}
 
 
-def test_full_fixture_requires_a_multi_gib_realized_file() -> None:
+def test_full_fixture_requires_the_calibrated_realized_size() -> None:
     full = large_fixture.LargeFixtureSpec()
     floor = large_fixture.MIN_REALIZED_FIXTURE_BYTES
-    assert floor == 4 * 1024**3
+    assert full.rows == 2_000_000
+    assert floor == 800 * 1024**2
+    assert large_fixture.MIN_AVAILABLE_MEMORY_BYTES == 32 * 1024**3
+    assert large_fixture.MIN_GENERATION_FREE_DISK_BYTES == 8 * 1024**3
+    assert large_fixture.MIN_STUDY_FREE_DISK_BYTES == 6 * 1024**3
     large_fixture.assert_realized_fixture_size(floor, full)
-    with pytest.raises(AssertionError, match="at least 4 GiB"):
+    with pytest.raises(AssertionError, match="at least 800 MiB"):
         large_fixture.assert_realized_fixture_size(floor - 1, full)
 
     small = large_fixture.LargeFixtureSpec(rows=512, row_group_rows=128)
@@ -109,24 +113,24 @@ def test_generation_stops_before_replacement_or_low_capacity(monkeypatch: pytest
         large_fixture.assert_large_study_capacity(output)
     assert not output.exists()
 
-    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 64 * 1024**3)
-    with pytest.raises(RuntimeError, match="96 GiB of available memory"):
+    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 31 * 1024**3)
+    with pytest.raises(RuntimeError, match="32 GiB of available memory"):
         large_fixture.assert_large_study_capacity(output)
 
-    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 104 * 1024**3)
-    monkeypatch.setattr(large_fixture, "disk_usage", lambda _path: SimpleNamespace(free=20 * 1024**3))
-    assert large_fixture.assert_large_study_capacity(output)["freeDiskBytes"] == 20 * 1024**3
-    with pytest.raises(RuntimeError, match="25 GiB free before generating"):
+    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 40 * 1024**3)
+    monkeypatch.setattr(large_fixture, "disk_usage", lambda _path: SimpleNamespace(free=7 * 1024**3))
+    assert large_fixture.assert_large_study_capacity(output)["freeDiskBytes"] == 7 * 1024**3
+    with pytest.raises(RuntimeError, match="8 GiB free before generating"):
         large_fixture.assert_large_study_capacity(output, generating=True)
 
 
 def test_generation_keeps_the_study_disk_reserve(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     output = tmp_path / "reserved.parquet"
-    free_space = iter([30 * 1024**3, 14 * 1024**3])
-    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 104 * 1024**3)
+    free_space = iter([10 * 1024**3, 5 * 1024**3])
+    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 40 * 1024**3)
     monkeypatch.setattr(large_fixture, "disk_usage", lambda _path: SimpleNamespace(free=next(free_space)))
 
-    with pytest.raises(RuntimeError, match="leave less than 15 GiB free"):
+    with pytest.raises(RuntimeError, match="leave less than 6 GiB free"):
         large_fixture.generate_fixture(output, large_fixture.LargeFixtureSpec(rows=10, row_group_rows=5))
 
     assert not output.exists()
