@@ -14,11 +14,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from python.benchmarks.pyspark_profile import PROFILE_COLUMN_NAMES, build_mixed_profile_frame, summary_projection
 
 import __main__
 import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
 import openwrangler_runtime.server as server
-from benchmarks.pyspark_profile import PROFILE_COLUMN_NAMES, build_mixed_profile_frame, summary_projection
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.session import (
