@@ -480,6 +480,12 @@ jsonlite 2.0.0, rlang 1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Tests cover 
 compound sorts, column and dataset profiles, kernel restart, and cleanup. They also check that header profiles
 start off; the journey does not turn them on. The temporary R library is deleted with the run.
 
+[Run 31055045808](https://github.com/Matt17BR/openwrangler/actions/runs/31055045808) passed from commit
+`3860685db0e9e9a49f120fdbc039bb8367414e28` on 2026-08-05. It covered local R 4.5.2 in VS Code 1.132.0 and
+Cursor 3.14.7, plus the containerized R kernel in VS Code. The remote path restarted the kernel, recreated the
+variables, reopened the frame, and finished with no Open Wrangler session or private R binding left behind. This run
+does not cover the unfinished R filters, editing, Quarto, or R Markdown work.
+
 ```bash
 OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
 OPEN_WRANGLER_REAL_JUPYTER_EXTENSION=1 \
