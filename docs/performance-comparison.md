@@ -59,7 +59,8 @@ Each product run records:
 5. peak process-tree PSS during the UI part of the run.
 
 The notebook setup cell loads the dataframe with Pandas or Polars before the UI measurement, which matches the common
-case where a dataframe already exists and the user evaluates its name. The study does not inspect or isolate how Data
+case where a dataframe already exists and the user evaluates its name. After first-use kernel permission, both
+products get the same untimed five-second wait for their inline formatter to finish registering. The study does not inspect or isolate how Data
 Wrangler handles a Polars input. Only Run Cell-to-grid spans the complete measured path and can include any conversion
 performed before the grid is ready; it is not a conversion-only measurement. The inline and launch-action timings
 cover narrower UI intervals.
