@@ -171,6 +171,23 @@ class PySparkEngine(DataFrameEngine):
         del path, options
         raise EngineError("The experimental PySpark backend supports live notebook variables only.")
 
+    def validate_internal_row_id_namespace(self, frame: Any, allowed_internal: Any | None = None) -> None:
+        matches = [label for label in self._raw_column_labels(frame) if is_internal_row_id_label(label)]
+        if allowed_internal is None:
+            unexpected = matches
+        else:
+            unexpected = [label for label in matches if label != allowed_internal]
+            if matches.count(allowed_internal) > 1:
+                unexpected.append(allowed_internal)
+        if unexpected:
+            detail = ", ".join(repr(str(label)) for label in unexpected[:3])
+            if len(unexpected) > 3:
+                detail += f" and {len(unexpected) - 3} more"
+            raise EngineError(
+                f"The PySpark dataframe has a reserved Open Wrangler column name: {detail}. "
+                "Rename it in Spark with withColumnRenamed() before opening the dataframe."
+            )
+
     def validate_column_addressability(self, frame: Any) -> None:
         self._require_supported_frame(frame)
         names = list(frame.columns)
@@ -182,8 +199,8 @@ class PySparkEngine(DataFrameEngine):
             previous = folded.get(normalized)
             if previous is not None:
                 raise EngineError(
-                    "PySpark dataframe columns must be unique without relying on case: "
-                    f"{previous!r} conflicts with {name!r}."
+                    f"The PySpark dataframe has conflicting columns {previous!r} and {name!r}. "
+                    "Rename them in Spark with toDF() so every column name is unique when case is ignored."
                 )
             folded[normalized] = name
 
@@ -937,14 +954,20 @@ class PySparkEngine(DataFrameEngine):
     @staticmethod
     def _require_supported_frame(frame: Any) -> None:
         if bool(frame.isStreaming):
-            raise EngineError("Streaming PySpark dataframes are not supported.")
+            raise EngineError(
+                "This PySpark dataframe is streaming. Write the stream to a table or files, then open a static "
+                "dataframe read from that output."
+            )
         pyspark_module = import_module("pyspark")
         raw_version = pyspark_module.__dict__.get("__version__")
         version = raw_version if isinstance(raw_version, str) else ""
         if not _is_supported_pyspark_version(version):
             raise EngineError(f"The experimental PySpark backend requires PySpark 4.2.x, not {version or 'unknown'}.")
         if not callable(getattr(frame, "withColumn", None)):
-            raise EngineError("This PySpark dataframe does not provide the required native projection API.")
+            raise EngineError(
+                f"PySpark value type {type(frame).__name__} does not support Spark's withColumn() operation. "
+                "Assign frame.select('*') to a new variable in Spark and open that variable."
+            )
         unsupported: list[tuple[str, str]] = []
         ambiguous_nested: list[tuple[str, str, str, str]] = []
         for field in frame.schema.fields:

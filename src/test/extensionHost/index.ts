@@ -2328,20 +2328,42 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(classicSetup.module, "pyspark.sql.classic.dataframe");
     assert.equal(classicSetup.workerPythonPinned, true);
     assert.deepEqual(classicSetup.conversionTraps, ["toPandas", "toArrow", "mapInPandas", "mapInArrow"]);
+    assert.deepEqual(classicSetup.variantConversionTraps, ["toPandas", "toArrow", "mapInPandas", "mapInArrow"]);
 
     if (screenshotOutput) {
       await captureReleasedJupyterPySparkPicker(workbench, testing, notebook, classicEditor, screenshotOutput);
     }
 
-    recordAcceptanceProgress(`${phase}:classic-variables`);
+    recordAcceptanceProgress(`${phase}:unsupported-variant`);
     await showExactReleasedNotebook(notebook);
     await vscode.commands.executeCommand("jupyter.openVariableView");
-    await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_classic_frame", `${phase}:classic-action`);
+    await dispatchReleasedJupyterVariableAction(
+      workbench,
+      notebook,
+      "spark_unsupported_variant_frame",
+      `${phase}:unsupported-variant-action`
+    );
     if (!screenshotOutput) {
       const consent = await waitForReleasedJupyterConsent(workbench, testing);
       await consent.allow.click();
       await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
     }
+    const unsupportedVariantError = (await waitForReleasedJupyterTerminalPanelError(workbench, testing))
+      .replace(/\s+/gu, " ")
+      .trim();
+    assert.match(
+      unsupportedVariantError,
+      /required viewing profiles.*'payload' \(variant\).*Convert these columns in Spark/u
+    );
+    await waitForStableReleasedJupyterSessionCount(testing, 0, 2_000, 10_000);
+    assert.equal(testing.activeSession(), undefined, "An unsupported PySpark Variant frame must not become active.");
+    await closeReleasedJupyterSessionTabs();
+    assert.equal(releasedJupyterSessionTabs().length, 0);
+
+    recordAcceptanceProgress(`${phase}:classic-variables`);
+    await showExactReleasedNotebook(notebook);
+    await vscode.commands.executeCommand("jupyter.openVariableView");
+    await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_classic_frame", `${phase}:classic-action`);
     const classic = await waitForReleasedVariableSession(
       workbench,
       testing,
@@ -3181,6 +3203,8 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "    (4, 'gamma', None),",
           "], 'record_id long, category string, amount double').repartition(2)",
           "_open_wrangler_classic_conversion_traps = _open_wrangler_arm_conversion_traps(spark_classic_frame)",
+          'spark_unsupported_variant_frame = spark.sql("SELECT parse_json(\'{\\"region\\":\\"eu\\"}\') AS payload")',
+          "_open_wrangler_variant_conversion_traps = _open_wrangler_arm_conversion_traps(spark_unsupported_variant_frame)",
           "def _open_wrangler_label(values, index):",
           "    return F.element_at(",
           "        F.array(*[F.lit(value) for value in values]),",
@@ -3220,6 +3244,7 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "        and os.environ.get('PYSPARK_DRIVER_PYTHON') == sys.executable",
           "    ),",
           "    'conversionTraps': _open_wrangler_classic_conversion_traps,",
+          "    'variantConversionTraps': _open_wrangler_variant_conversion_traps,",
           "}, sort_keys=True))"
         ]),
         cell([
