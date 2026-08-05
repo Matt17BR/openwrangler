@@ -20,7 +20,12 @@ import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
 import openwrangler_runtime.server as server
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
-from openwrangler_runtime.session import LiveSourceInvalidatedError, SessionManager
+from openwrangler_runtime.session import (
+    LiveSourceInvalidatedError,
+    PySparkConnectStateLostError,
+    PySparkConnectUnavailableError,
+    SessionManager,
+)
 
 _PYSPARK_VERSION_CONTRACT = json.loads(
     (Path(__file__).resolve().parents[2] / "fixtures" / "pyspark-version-contract.json").read_text(encoding="utf-8")
@@ -205,6 +210,40 @@ class _FakeConnectFrame:
 _FakeConnectFrame.__module__ = "pyspark.sql.connect.dataframe"
 
 
+class _FakeSparkConnectError(Exception):
+    def __init__(
+        self,
+        *,
+        condition: str | None = None,
+        parameters: Mapping[str, str] | None = None,
+        status_name: str | None = None,
+        accessors_fail: bool = False,
+    ) -> None:
+        super().__init__(condition or status_name or "Spark Connect request failed")
+        self.condition = condition
+        self.parameters = parameters
+        self.status_name = status_name
+        self.accessors_fail = accessors_fail
+
+    def getCondition(self) -> str | None:
+        if self.accessors_fail:
+            raise RuntimeError("condition unavailable")
+        return self.condition
+
+    def getMessageParameters(self) -> Mapping[str, str] | None:
+        if self.accessors_fail:
+            raise RuntimeError("parameters unavailable")
+        return self.parameters
+
+    def getGrpcStatusCode(self) -> Any:
+        if self.accessors_fail:
+            raise RuntimeError("status unavailable")
+        return SimpleNamespace(name=self.status_name) if self.status_name else None
+
+
+_FakeSparkConnectError.__module__ = "pyspark.errors.exceptions.connect"
+
+
 class _ClosablePySparkSession:
     def __init__(self, session_id: str, engine: PySparkEngine) -> None:
         self.session_id = session_id
@@ -219,6 +258,20 @@ class _ClosablePySparkSession:
     def dispose(self) -> None:
         self.disposed = True
         self.engine.close()
+
+
+class _FailureClassifyingSession:
+    def __init__(self, session_id: str, engine: PySparkEngine) -> None:
+        self.session_id = session_id
+        self.engine = engine
+        self.source = {"kind": "notebookVariable", "variableName": "orders", "label": "orders"}
+        self.page_cache = {"confirmed": object()}
+        self.page_cache_bytes = 128
+        self.disposed = False
+
+    def clear_page_cache(self) -> None:
+        self.page_cache.clear()
+        self.page_cache_bytes = 0
 
 
 def test_capabilities_are_explicitly_read_only_and_not_file_backed() -> None:
@@ -403,6 +456,118 @@ def test_connect_request_scope_keeps_only_local_request_identity() -> None:
     assert pyspark_engine_module._current_pyspark_request_id() is None
     assert vars(frame.sparkSession) == {}
     assert signal.getsignal(signal.SIGINT) is previous_sigint
+
+
+@pytest.mark.parametrize(
+    "condition",
+    (
+        "NO_ACTIVE_SESSION",
+        "INVALID_HANDLE.SESSION_CHANGED",
+        "INVALID_HANDLE.SESSION_CLOSED",
+        "INVALID_HANDLE.SESSION_NOT_FOUND",
+        "CONNECT_INVALID_PLAN.DATAFRAME_NOT_FOUND",
+    ),
+)
+def test_connect_request_failure_classifies_lost_server_state(condition: str) -> None:
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeConnectFrame()
+
+    assert engine.classify_request_failure(_FakeSparkConnectError(condition=condition)) == "state_lost"
+
+
+def test_connect_request_failure_classifies_reattach_session_loss() -> None:
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeConnectFrame()
+
+    error = _FakeSparkConnectError(
+        condition="RESPONSE_ALREADY_RECEIVED",
+        parameters={"error_type": "INVALID_HANDLE.SESSION_NOT_FOUND"},
+    )
+    assert engine.classify_request_failure(error) == "state_lost"
+
+
+def test_connect_request_failure_classifies_exhausted_unavailable_status() -> None:
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeConnectFrame()
+
+    assert (
+        engine.classify_request_failure(_FakeSparkConnectError(status_name="UNAVAILABLE")) == "temporarily_unavailable"
+    )
+
+
+def test_connect_request_failure_does_not_guess_from_messages_or_unrelated_conditions() -> None:
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeConnectFrame()
+
+    assert engine.classify_request_failure(RuntimeError("INVALID_HANDLE.SESSION_NOT_FOUND")) is None
+    assert (
+        engine.classify_request_failure(_FakeSparkConnectError(condition="INVALID_HANDLE.OPERATION_NOT_FOUND")) is None
+    )
+    assert (
+        engine.classify_request_failure(
+            _FakeSparkConnectError(
+                condition="RESPONSE_ALREADY_RECEIVED",
+                parameters={"error_type": "INVALID_HANDLE.OPERATION_NOT_FOUND"},
+            )
+        )
+        is None
+    )
+
+
+def test_connect_request_failure_requires_connect_and_safe_structured_accessors() -> None:
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeClassicFrame(_FakeSparkContext())
+    lost = _FakeSparkConnectError(condition="INVALID_HANDLE.SESSION_NOT_FOUND")
+    assert engine.classify_request_failure(lost) is None
+
+    engine._indexed_frame = _FakeConnectFrame()
+    assert engine.classify_request_failure(_FakeSparkConnectError(accessors_fail=True)) is None
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_error", "cache_cleared"),
+    (
+        (
+            _FakeSparkConnectError(status_name="UNAVAILABLE"),
+            PySparkConnectUnavailableError,
+            False,
+        ),
+        (
+            _FakeSparkConnectError(condition="INVALID_HANDLE.SESSION_NOT_FOUND"),
+            PySparkConnectStateLostError,
+            True,
+        ),
+    ),
+    ids=("temporarily-unavailable", "state-lost"),
+)
+def test_manager_preserves_connect_session_and_reports_structured_failure(
+    error: Exception,
+    expected_error: type[Exception],
+    cache_cleared: bool,
+) -> None:
+    session_id = "connect-session"
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeConnectFrame()
+    session = _FailureClassifyingSession(session_id, engine)
+    manager = SessionManager()
+    manager.sessions[session_id] = session  # type: ignore[assignment]
+    source_before = dict(session.source)
+
+    with (
+        pytest.raises(expected_error, match="current Open Wrangler view is unchanged") as classified,
+        manager.request_scope(
+            "connect-request",
+            {"kind": "getPage", "sessionId": session_id},
+        ),
+    ):
+        raise error
+
+    assert classified.value.session_id == session_id  # type: ignore[attr-defined]
+    assert manager.sessions[session_id] is session
+    assert session.source == source_before
+    assert session.disposed is False
+    assert (session.page_cache == {}) is cache_cleared
+    assert session.page_cache_bytes == (0 if cache_cleared else 128)
 
 
 def test_real_local_request_scope_isolated_by_classic_job_group_or_connect_operation(

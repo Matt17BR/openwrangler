@@ -4,9 +4,17 @@ import json
 from concurrent.futures import CancelledError
 from typing import Any
 
+import pytest
+
 from openwrangler_runtime import kernel_agent
 from openwrangler_runtime.engines import AmbiguousViewColumnError
-from openwrangler_runtime.session import LiveSourceInvalidatedError, SessionCleanupError, SessionManager
+from openwrangler_runtime.session import (
+    LiveSourceInvalidatedError,
+    PySparkConnectStateLostError,
+    PySparkConnectUnavailableError,
+    SessionCleanupError,
+    SessionManager,
+)
 
 EMPTY_FILTER = {"filters": [], "sort": []}
 
@@ -121,6 +129,59 @@ def test_live_source_invalidation_is_a_correlated_recoverable_response(monkeypat
             "sessionId": "spark-session",
             "viewRequestId": "view-live-source",
         },
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    (
+        (
+            PySparkConnectUnavailableError("spark-session", "Spark Connect is temporarily unavailable."),
+            "pyspark_connect_unavailable",
+        ),
+        (
+            PySparkConnectStateLostError("spark-session", "The Spark Connect dataframe no longer exists."),
+            "pyspark_connect_state_lost",
+        ),
+    ),
+    ids=("temporarily-unavailable", "state-lost"),
+)
+def test_spark_connect_failure_is_a_correlated_recoverable_response(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    code: str,
+) -> None:
+    def fail(_manager: SessionManager, _request: dict[str, Any], request_id: str) -> dict[str, Any]:
+        assert request_id == "spark-connect-request"
+        raise error
+
+    monkeypatch.setattr(kernel_agent, "dispatch", fail)
+    result = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "getPage",
+                    "sessionId": "spark-session",
+                    "revision": 0,
+                    "viewRequestId": "view-spark-connect",
+                    "offset": 0,
+                    "limit": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
+                    "filterModel": EMPTY_FILTER,
+                },
+                request_id="spark-connect-request",
+            )
+        )
+    )
+
+    assert result["response"] == {
+        "kind": "error",
+        "code": code,
+        "message": str(error),
+        "recoverable": True,
+        "sessionId": "spark-session",
+        "viewRequestId": "view-spark-connect",
     }
 
 

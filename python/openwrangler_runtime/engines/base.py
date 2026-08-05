@@ -34,6 +34,7 @@ ColumnType = Literal[
 ]
 EngineSourceKind = Literal["file", "notebookVariable", "notebookOutput"]
 ExportFormat = Literal["csv", "parquet"]
+EngineRequestFailure = Literal["temporarily_unavailable", "state_lost"]
 PageColumnProjection = Sequence[tuple[int, str]]
 SummaryColumnProjection = Sequence[tuple[int, str]]
 ExcelSheetSelector = tuple[Literal["sheetName"], str] | tuple[Literal["sheetIndex"], int]
@@ -619,6 +620,11 @@ class DataFrameEngine(ABC):
         """Associate one protocol request with engine work, when supported."""
         del request_id
         yield
+
+    def classify_request_failure(self, error: Exception) -> EngineRequestFailure | None:
+        """Classify a failed request when an engine exposes reliable structured errors."""
+        del error
+        return None
 
     def internal_row_id_column(self, frame: Any) -> Any | None:
         """Return the one private row-identity column, rejecting ambiguous frames."""

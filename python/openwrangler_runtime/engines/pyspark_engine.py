@@ -17,6 +17,7 @@ from .base import (
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
+    EngineRequestFailure,
     PageColumnProjection,
     SessionDataShape,
     SummaryColumnProjection,
@@ -49,6 +50,15 @@ _SPARK_JOB_PROPERTIES = (
     "spark.job.description",
     "spark.jobGroup.id",
     "spark.job.interruptOnCancel",
+)
+_SPARK_CONNECT_LOST_CONDITIONS = frozenset(
+    {
+        "NO_ACTIVE_SESSION",
+        "INVALID_HANDLE.SESSION_CHANGED",
+        "INVALID_HANDLE.SESSION_CLOSED",
+        "INVALID_HANDLE.SESSION_NOT_FOUND",
+        "CONNECT_INVALID_PLAN.DATAFRAME_NOT_FOUND",
+    }
 )
 
 
@@ -138,6 +148,24 @@ class PySparkEngine(DataFrameEngine):
         except (ImportError, AttributeError):
             return False
         return isinstance(value, dataframe_type)
+
+    def classify_request_failure(self, error: Exception) -> EngineRequestFailure | None:
+        frame = self._indexed_frame
+        if frame is None or not _is_connect_frame(frame) or not _is_pyspark_exception(error):
+            return None
+
+        condition = _exception_method(error, "getCondition")
+        if condition in _SPARK_CONNECT_LOST_CONDITIONS:
+            return "state_lost"
+        if condition == "RESPONSE_ALREADY_RECEIVED":
+            parameters = _exception_method(error, "getMessageParameters")
+            if isinstance(parameters, Mapping) and parameters.get("error_type") == "INVALID_HANDLE.SESSION_NOT_FOUND":
+                return "state_lost"
+
+        status = _exception_method(error, "getGrpcStatusCode")
+        if getattr(status, "name", None) == "UNAVAILABLE":
+            return "temporarily_unavailable"
+        return None
 
     def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         del path, options
@@ -951,6 +979,20 @@ def _spark_column(functions: Any, name: str) -> Any:
 
 def _is_connect_frame(frame: Any) -> bool:
     return type(frame).__module__.startswith("pyspark.sql.connect.")
+
+
+def _is_pyspark_exception(error: Exception) -> bool:
+    return type(error).__module__.startswith("pyspark.")
+
+
+def _exception_method(error: Exception, name: str) -> Any:
+    method = getattr(error, name, None)
+    if not callable(method):
+        return None
+    try:
+        return method()
+    except Exception:
+        return None
 
 
 def _restore_spark_job_properties(

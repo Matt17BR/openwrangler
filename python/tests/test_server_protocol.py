@@ -555,6 +555,56 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
             },
         ),
         (
+            {
+                "kind": "getPage",
+                "sessionId": "spark-session",
+                "revision": 0,
+                "viewRequestId": "view-spark-connect-unavailable",
+                "offset": 0,
+                "limit": 20,
+                "columnOffset": 0,
+                "columnLimit": 64,
+                "filterModel": {"filters": [], "sort": []},
+            },
+            server.PySparkConnectUnavailableError(
+                "spark-session",
+                "Spark Connect is temporarily unavailable.",
+            ),
+            {
+                "kind": "error",
+                "code": "pyspark_connect_unavailable",
+                "message": "Spark Connect is temporarily unavailable.",
+                "recoverable": True,
+                "sessionId": "spark-session",
+                "viewRequestId": "view-spark-connect-unavailable",
+            },
+        ),
+        (
+            {
+                "kind": "getPage",
+                "sessionId": "spark-session",
+                "revision": 0,
+                "viewRequestId": "view-spark-connect-state-lost",
+                "offset": 0,
+                "limit": 20,
+                "columnOffset": 0,
+                "columnLimit": 64,
+                "filterModel": {"filters": [], "sort": []},
+            },
+            server.PySparkConnectStateLostError(
+                "spark-session",
+                "The Spark Connect dataframe no longer exists.",
+            ),
+            {
+                "kind": "error",
+                "code": "pyspark_connect_state_lost",
+                "message": "The Spark Connect dataframe no longer exists.",
+                "recoverable": True,
+                "sessionId": "spark-session",
+                "viewRequestId": "view-spark-connect-state-lost",
+            },
+        ),
+        (
             {"kind": "closeSession", "sessionId": "cleanup-session", "revision": 0},
             server.SessionCleanupError("cleanup-session", "Could not release the Spark cache."),
             {
@@ -566,7 +616,7 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
             },
         ),
     ],
-    ids=("live-source", "terminal-cleanup"),
+    ids=("live-source", "spark-connect-unavailable", "spark-connect-state-lost", "terminal-cleanup"),
 )
 def test_stdio_server_preserves_correlated_live_session_errors(
     monkeypatch: pytest.MonkeyPatch,

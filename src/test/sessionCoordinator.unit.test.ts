@@ -328,6 +328,81 @@ describe("SessionCoordinator", () => {
     expect(coordinator.diagnostics().sessionCount).toBe(0);
   });
 
+  it.each(["pyspark_connect_unavailable", "pyspark_connect_state_lost"] as const)(
+    "keeps the confirmed PySpark view after %s",
+    async (code) => {
+      const source = {
+        kind: "notebookVariable" as const,
+        label: "orders",
+        variableName: "orders",
+        uri: "file:///workspace/spark.ipynb"
+      };
+      const runtimeOpened = openedResponse("spark-runtime", "pyspark");
+      runtimeOpened.metadata = {
+        ...runtimeOpened.metadata,
+        source,
+        mode: "viewing",
+        capabilities: {
+          editable: false,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false
+        }
+      };
+      const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") return runtimeOpened;
+        if (request.kind === "getPage") {
+          return {
+            kind: "error",
+            code,
+            message: "Spark Connect request failed.",
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
+        throw new Error(`Unexpected Spark Connect failure request: ${request.kind}`);
+      });
+      const coordinator = new SessionCoordinator();
+      const bridge = coordinator.createBridge({ request: delegateRequest });
+      const opened = await bridge.request({ ...openRequest, source, backend: "pyspark", mode: "viewing" });
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the PySpark session to open.");
+      await bridge.updateViewState?.(opened.metadata.sessionId, {
+        selectedColumnId: "c:value",
+        columnWidths: { "c:value": 240 },
+        viewport: { firstVisibleRow: 12, scrollLeft: 40 }
+      });
+      const confirmed = coordinator.activeSession();
+
+      const response = await bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        offset: 100,
+        limit: 100,
+        columnOffset: 0,
+        columnLimit: 16,
+        filterModel: {
+          filters: [],
+          sort: [{ column: "value", direction: "desc", nulls: "last" }]
+        },
+        viewRequestId: `spark-connect-${code}`
+      });
+
+      expect(response).toMatchObject({
+        kind: "error",
+        code,
+        recoverable: true,
+        sessionId: opened.metadata.sessionId,
+        viewRequestId: `spark-connect-${code}`
+      });
+      expect(coordinator.activeSession()).toEqual(confirmed);
+      expect(delegateRequest.mock.calls.map(([request]) => request.kind)).toEqual(["openSession", "getPage"]);
+    }
+  );
+
   it("commits a terminal PySpark page's exact shape without a filter, revision, or plan change", async () => {
     const source = {
       kind: "notebookVariable" as const,
