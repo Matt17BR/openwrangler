@@ -62,6 +62,22 @@ class LiveSourceInvalidatedError(_SourceChangedError):
         super().__init__(message)
 
 
+class PySparkConnectUnavailableError(EngineError):
+    """A Spark Connect request exhausted its transport retries."""
+
+    def __init__(self, session_id: str, message: str) -> None:
+        self.session_id = session_id
+        super().__init__(message)
+
+
+class PySparkConnectStateLostError(EngineError):
+    """The Spark Connect server no longer owns the live session or dataframe."""
+
+    def __init__(self, session_id: str, message: str) -> None:
+        self.session_id = session_id
+        super().__init__(message)
+
+
 class SessionCleanupError(EngineError):
     """Terminal cleanup failure for a session already removed from the manager."""
 
@@ -308,8 +324,31 @@ class SessionManager:
             yield
             return
         session = self._session(session_id)
-        with session.engine.request_scope(request_id):
-            yield
+        try:
+            with session.engine.request_scope(request_id):
+                yield
+        except Exception as error:
+            try:
+                failure = session.engine.classify_request_failure(error)
+            except Exception:
+                failure = None
+            label = session.source.get("label") or session.source.get("variableName") or "PySpark dataframe"
+            if failure == "temporarily_unavailable":
+                raise PySparkConnectUnavailableError(
+                    session.session_id,
+                    f"Spark Connect is temporarily unavailable for {label!r}. "
+                    "The current Open Wrangler view is unchanged. Wait for the existing "
+                    "Spark Connect endpoint to recover, then retry.",
+                ) from error
+            if failure == "state_lost":
+                session.clear_page_cache()
+                raise PySparkConnectStateLostError(
+                    session.session_id,
+                    f"The Spark Connect session or dataframe for {label!r} no longer exists on the server. "
+                    "The current Open Wrangler view is unchanged. Rerun the cell that defines this "
+                    "variable, then choose Reconnect in Open Wrangler.",
+                ) from error
+            raise
 
     def open_session(
         self,

@@ -286,6 +286,97 @@ describe("App column projection", () => {
     expect(scroller.scrollLeft).toBeGreaterThan(0);
     expect(screen.getByRole("columnheader", { name: /column-40/u })).toBeVisible();
   });
+
+  it("offers Reconnect instead of retrying a lost Spark Connect dataframe", async () => {
+    const pysparkMetadata: SessionMetadata = {
+      ...metadata,
+      backend: "pyspark",
+      mode: "viewing",
+      source: {
+        kind: "notebookVariable",
+        label: "spark_orders",
+        variableName: "spark_orders",
+        uri: "file:///workspace/orders.ipynb"
+      },
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      }
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: pysparkMetadata, page: projectedPage(0, 0), summaries: [] });
+    const confirmedCell = await screen.findByRole("cell", { name: "value-0-row-0" });
+    expect(confirmedCell).toBeVisible();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      confirmedCell.focus();
+      postMessage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+      const request = await onlyRuntimeRequest("getPage");
+      dispatch({
+        kind: "error",
+        code: "pyspark_connect_state_lost",
+        message: "Run the cell that creates spark_orders, then choose Reconnect.",
+        recoverable: true,
+        sessionId: pysparkMetadata.sessionId,
+        viewRequestId: String(request.viewRequestId)
+      });
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("choose Reconnect");
+      expect(screen.getByRole("cell", { name: "value-0-row-0" })).toBeVisible();
+      await waitFor(() => {
+        expect(document.activeElement).toHaveAttribute("data-grid-row", "0");
+        expect(document.activeElement).toHaveAttribute("data-grid-column", "0");
+      });
+    } finally {
+      hasFocus.mockRestore();
+    }
+    expect(screen.queryByRole("button", { name: "Retry page" })).toBeNull();
+
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    expect(postMessage).toHaveBeenCalledWith({ kind: "reconnectLiveSource" });
+    expect(screen.getByRole("button", { name: "Reconnecting…" })).toBeDisabled();
+
+    dispatch({ kind: "sessionOpened", metadata: pysparkMetadata, page: projectedPage(0, 0), summaries: [] });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(await screen.findByRole("cell", { name: "value-0-row-0" })).toBeVisible();
+  });
+
+  it("keeps ordinary page retry for a temporary Spark Connect outage", async () => {
+    const pysparkMetadata: SessionMetadata = {
+      ...metadata,
+      backend: "pyspark",
+      mode: "viewing",
+      source: {
+        kind: "notebookVariable",
+        label: "spark_orders",
+        variableName: "spark_orders",
+        uri: "file:///workspace/orders.ipynb"
+      },
+      capabilities: { ...metadata.capabilities, editable: false, cancel: false }
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: pysparkMetadata, page: projectedPage(0, 0), summaries: [] });
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    const request = await onlyRuntimeRequest("getPage");
+    dispatch({
+      kind: "error",
+      code: "pyspark_connect_unavailable",
+      message: "Spark Connect is temporarily unavailable.",
+      recoverable: true,
+      sessionId: pysparkMetadata.sessionId,
+      viewRequestId: String(request.viewRequestId)
+    });
+
+    expect(await screen.findByRole("button", { name: "Retry page" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
+  });
 });
 
 function projectedPage(offset: number, columnOffset: number): GridPage {

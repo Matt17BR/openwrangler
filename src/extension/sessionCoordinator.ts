@@ -69,6 +69,8 @@ interface CoordinatedSession extends RuntimeSessionState {
   cancelledActiveViewRequestIds: Set<string>;
   closing: boolean;
   reconfiguring: boolean;
+  reconnecting: boolean;
+  liveReconnectRequired: boolean;
   recoveryRequired: boolean;
   /** Host-detached runtime work that must settle before this session may issue more work. */
   runtimeSettlementBarrier?: Promise<void>;
@@ -169,6 +171,8 @@ export class SessionCoordinator implements vscode.Disposable {
         this.listExcelSheets(delegate, sessionId, source, backend, options),
       reconfigureFileSession: (sessionId, revision, source, options) =>
         this.reconfigureFileSession(delegate, sessionId, revision, source, options),
+      reconnectLiveSession: (sessionId, revision, options) =>
+        this.reconnectLiveSession(delegate, sessionId, revision, options),
       cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
       setViewContext: (sessionId, viewContextId) => this.setViewContext(sessionId, viewContextId),
       getViewState: (sessionId) => this.gridViewState(sessionId),
@@ -199,6 +203,90 @@ export class SessionCoordinator implements vscode.Disposable {
       return undefined;
     }
     return delegate.listExcelSheets?.(session.runtimeId, session.openRequest.source, session.metadata.backend, options);
+  }
+
+  private async reconnectLiveSession(
+    delegate: OpenWranglerBridge,
+    sessionId: string,
+    revision: number,
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(sessionId);
+    const unavailable = (message: string): ErrorResponse =>
+      protocolError("pyspark_connect_state_lost", message, true, sessionId);
+    if (
+      this.disposed ||
+      !session ||
+      session.delegate !== delegate ||
+      session.metadata.backend !== "pyspark" ||
+      session.openRequest.source.kind !== "notebookVariable"
+    ) {
+      return unavailable("This live PySpark dataframe is no longer available to reconnect.");
+    }
+    if (revision !== session.publicRevision) {
+      return unavailable(
+        "The Open Wrangler view changed before reconnecting. Try Reconnect again from the current view."
+      );
+    }
+    if (!session.liveReconnectRequired) {
+      return protocolError(
+        "pyspark_connect_reconnect_not_required",
+        "This live PySpark dataframe does not need to reconnect.",
+        true,
+        session.publicId
+      );
+    }
+    if (session.closing || session.reconfiguring || session.reconnecting) {
+      return unavailable("Open Wrangler is already closing or reconnecting this dataframe.");
+    }
+
+    session.reconnecting = true;
+    this.cancelQueuedBackgroundOperations(session);
+    try {
+      await this.waitForSessionIdle(session);
+      if (
+        !this.isLiveSession(session) ||
+        session.closing ||
+        session.publicRevision !== revision ||
+        !session.liveReconnectRequired
+      ) {
+        return unavailable("The Open Wrangler view changed before the dataframe could reconnect.");
+      }
+
+      const failedRuntimeId = session.runtimeId;
+      let restoredPage: PageResponse | undefined;
+      const recovered = await this.replayAfterRuntimeLoss(
+        session,
+        failedRuntimeId,
+        automaticRecoveryOptions(options, failedRuntimeId),
+        session.metadata.schema,
+        undefined,
+        (page) => {
+          restoredPage = page;
+        }
+      );
+      if (!recovered || !restoredPage) {
+        return unavailable(
+          `Open Wrangler could not reconnect ${session.openRequest.source.variableName}. ` +
+            "Run the cell that creates it, then choose Reconnect again."
+        );
+      }
+
+      session.liveReconnectRequired = false;
+      return {
+        kind: "sessionOpened",
+        metadata: publicMetadata(
+          session.metadata,
+          session.publicId,
+          session.publicRevision,
+          session.openRequest.source
+        ),
+        page: restoredPage.page,
+        summaries: []
+      };
+    } finally {
+      session.reconnecting = false;
+    }
   }
 
   setActive(sessionId: string | undefined): void {
@@ -429,6 +517,24 @@ export class SessionCoordinator implements vscode.Disposable {
         requestViewId(request)
       );
     }
+    if (request.kind !== "closeSession" && session.reconnecting) {
+      return protocolError(
+        "session_reconnecting",
+        `Open Wrangler is reconnecting ${session.openRequest.source.label}.`,
+        true,
+        session.publicId,
+        requestViewId(request)
+      );
+    }
+    if (request.kind !== "closeSession" && session.liveReconnectRequired) {
+      return protocolError(
+        "pyspark_connect_state_lost",
+        `The Spark server no longer has ${session.openRequest.source.label}. Run the cell that creates it, then choose Reconnect.`,
+        true,
+        session.publicId,
+        requestViewId(request)
+      );
+    }
     if (request.kind === "closeSession") {
       session.closing = true;
       this.cancelQueuedBackgroundOperations(session);
@@ -522,6 +628,8 @@ export class SessionCoordinator implements vscode.Disposable {
       viewState: initialViewingState(response.metadata),
       closing: false,
       reconfiguring: false,
+      reconnecting: false,
+      liveReconnectRequired: false,
       recoveryRequired: false
     };
     const staleNotebookOrigin = notebookDocument ? notebookOriginMismatch(request, notebookDocument) : undefined;
@@ -1156,6 +1264,15 @@ export class SessionCoordinator implements vscode.Disposable {
         requestViewId(publicRequest)
       );
     }
+    if (publicRequest.kind !== "closeSession" && session.liveReconnectRequired) {
+      return protocolError(
+        "pyspark_connect_state_lost",
+        `The Spark server no longer has ${session.openRequest.source.label}. Run the cell that creates it, then choose Reconnect.`,
+        true,
+        session.publicId,
+        requestViewId(publicRequest)
+      );
+    }
     if (publicRequest.kind !== "closeSession" && session.recoveryRequired) {
       const recovered = !this.disposed && !session.closing && (await this.replay(session, runtimeRecoveryOptions()));
       if (!recovered) {
@@ -1356,6 +1473,10 @@ export class SessionCoordinator implements vscode.Disposable {
         session.publicId,
         requestViewId(publicRequest)
       );
+    }
+    if (isPySparkConnectStateLost(response, requestRuntimeId)) {
+      session.liveReconnectRequired = true;
+      this.cancelQueuedBackgroundOperations(session);
     }
 
     if (publicRequest.kind === "inspectStep" && response.kind === "stepInspection") {
@@ -2073,13 +2194,14 @@ export class SessionCoordinator implements vscode.Disposable {
     failedRuntimeId: string,
     options?: BridgeRequestOptions,
     requiredSchema?: readonly ColumnSchema[],
-    isStillCurrent?: () => boolean
+    isStillCurrent?: () => boolean,
+    onRestoredPage?: (page: PageResponse) => void
   ): Promise<boolean> {
     return this.serializeSessionEstablishment(session.delegate, async () => {
       if (!this.isLiveSession(session) || session.closing) return false;
       if (session.runtimeId !== failedRuntimeId) return true;
       if (isStillCurrent && !isStillCurrent()) return false;
-      return this.replayExclusive(session, options, true, requiredSchema, isStillCurrent);
+      return this.replayExclusive(session, options, true, requiredSchema, isStillCurrent, onRestoredPage);
     });
   }
 
@@ -2102,7 +2224,8 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions,
     publishActive = true,
     requiredSchema?: readonly ColumnSchema[],
-    isStillCurrent?: () => boolean
+    isStillCurrent?: () => boolean,
+    onRestoredPage?: (page: PageResponse) => void
   ): Promise<boolean> {
     if (!this.isLiveSession(session) || session.closing) return false;
     if (isStillCurrent && !isStillCurrent()) return false;
@@ -2123,6 +2246,7 @@ export class SessionCoordinator implements vscode.Disposable {
       viewState: session.viewState
     };
     let candidate: RuntimeSessionState | undefined;
+    let restoredPage: PageResponse | undefined;
     try {
       const response = await session.delegate.request(session.openRequest, options);
       if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
@@ -2144,7 +2268,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (requiredSchema && !isDeepStrictEqual(response.metadata.schema, requiredSchema)) {
         throw new Error("The recreated live dataframe schema no longer matches the confirmed Open Wrangler view.");
       }
-      await this.restoreRuntimeState(
+      restoredPage = await this.restoreRuntimeState(
         candidate,
         persisted,
         session.metadata.backend === "pyspark" ? session.openRequest.pageSize : 1,
@@ -2192,6 +2316,7 @@ export class SessionCoordinator implements vscode.Disposable {
     this.clearPublishedStepInspection(session);
     if (publishActive && this.activeSessionId === session.publicId)
       this.activeSessionEmitter.fire(activeSnapshot(session));
+    if (restoredPage) onRestoredPage?.(restoredPage);
     this.trackDetachedCleanup(previous, "retired runtime");
     return true;
   }
@@ -2801,6 +2926,18 @@ function isLiveSourceInvalidated(
   return (
     response.kind === "error" &&
     response.code === "live_source_invalidated" &&
+    response.recoverable &&
+    response.sessionId === expectedSessionId
+  );
+}
+
+function isPySparkConnectStateLost(
+  response: OpenWranglerResponse,
+  expectedSessionId: string
+): response is ErrorResponse & { code: "pyspark_connect_state_lost" } {
+  return (
+    response.kind === "error" &&
+    response.code === "pyspark_connect_state_lost" &&
     response.recoverable &&
     response.sessionId === expectedSessionId
   );

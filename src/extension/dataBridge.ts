@@ -97,6 +97,15 @@ export interface OpenWranglerBridge {
     source: SessionSource,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse>;
+  /**
+   * Rebinds a live notebook variable after its remote Spark Connect state was
+   * lost. This is a host-only, user-initiated recovery operation.
+   */
+  reconnectLiveSession?(
+    sessionId: string,
+    revision: number,
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse>;
   /** Drops queued profiling/value work for views the webview no longer needs. Active work is left alone. */
   cancelViewRequests?(sessionId: string, viewRequestIds: readonly string[]): void;
   /** Confirms the opaque logical view currently shown by a webview. */

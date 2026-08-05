@@ -79,6 +79,7 @@ export function App() {
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
+  const [liveSessionReconnectPending, setLiveSessionReconnectPending] = useState(false);
   const [sessionOpenProgress, setSessionOpenProgress] = useState<SessionOpenProgressStage | undefined>();
   const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
   const goToColumnRequestSequence = useRef(0);
@@ -820,12 +821,52 @@ export function App() {
   );
 
   const restoreViewAfterPageFailure = useCallback(
-    (pendingPage: PendingPageRequest) => {
+    (pendingPage: PendingPageRequest, restoreConfirmedViewport = false) => {
       const previous = pendingPage.previousConfirmedState;
-      if (!pendingPage.changesView || !previous) return;
-      restoreConfirmedViewState(previous);
+      if (pendingPage.changesView && previous) {
+        restoreConfirmedViewState(previous);
+        return;
+      }
+      if (!restoreConfirmedViewport) return;
+      const confirmedPage = pageRef.current;
+      if (!confirmedPage) return;
+      const focusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+      const focusedRow = focusedElement?.getAttribute("data-grid-row");
+      const focusedColumn = focusedElement?.getAttribute("data-grid-column");
+      const focusedViewContextId = confirmedView.current?.viewContextId;
+      const focusedCell =
+        focusedRow !== null &&
+        focusedRow !== undefined &&
+        focusedColumn !== null &&
+        focusedColumn !== undefined &&
+        /^\d+$/u.test(focusedRow) &&
+        /^\d+$/u.test(focusedColumn)
+          ? { row: focusedRow, column: focusedColumn }
+          : undefined;
+      const restoreGridFocus = focusedCell !== undefined || focusedElement === document.body;
+      publishGridViewState({
+        ...gridViewStateRef.current,
+        viewport: {
+          firstVisibleRow: confirmedPage.offset,
+          scrollLeft: gridViewStateRef.current.viewport.scrollLeft
+        }
+      });
+      setViewStateRestoreVersion((current) => current + 1);
+      if (restoreGridFocus) {
+        scheduleWebviewFocusRestoration(() => {
+          scheduleWebviewFocusRestoration(() => {
+            if (confirmedView.current?.viewContextId !== focusedViewContextId) return;
+            const target = focusedCell
+              ? document.querySelector<HTMLElement>(
+                  `[data-grid-row="${focusedCell.row}"][data-grid-column="${focusedCell.column}"]`
+                )
+              : document.querySelector<HTMLElement>('[data-testid="data-grid-scroller"] [tabindex="0"]');
+            target?.focus({ preventScroll: true });
+          });
+        });
+      }
     },
-    [restoreConfirmedViewState]
+    [publishGridViewState, restoreConfirmedViewState]
   );
 
   useEffect(() => {
@@ -1074,7 +1115,7 @@ export function App() {
               if (pendingPage.reason === "projection") setProjectionLoading(false);
               else setLoading(importOptionsPendingRef.current);
             }
-            restoreViewAfterPageFailure(pendingPage);
+            restoreViewAfterPageFailure(pendingPage, response.code === "pyspark_connect_state_lost");
             storeFailedPageRequest(pendingPage);
             setForegroundError(response.message);
             return;
@@ -1084,6 +1125,10 @@ export function App() {
           if (!pending) return;
           pendingBackgroundRequests.current.delete(response.viewRequestId);
           releaseBackgroundRequest(response.viewRequestId, pending);
+          if (response.code === "pyspark_connect_state_lost") {
+            setForegroundError(response.message);
+            return;
+          }
           if (canProfileConfirmedView(pending.viewContextId)) {
             storeBackgroundDiagnostics((current) => {
               const next = new Map(current);
@@ -1115,6 +1160,7 @@ export function App() {
           setProjectionLoading(false);
           setRuntimeDependencyInstallPending(false);
         }
+        if (response.code === "pyspark_connect_state_lost") setLiveSessionReconnectPending(false);
         setForegroundError(response.message);
         return;
       }
@@ -1198,6 +1244,7 @@ export function App() {
         setLoading(false);
         setProjectionLoading(false);
         setRuntimeDependencyInstallPending(false);
+        setLiveSessionReconnectPending(false);
         setForegroundError(undefined);
         setForegroundErrorCode(undefined);
         storeFailedPageRequest(undefined);
@@ -1236,6 +1283,7 @@ export function App() {
           else setLoading(importOptionsPendingRef.current);
         }
         setForegroundError(undefined);
+        setForegroundErrorCode(undefined);
         storeFailedPageRequest(undefined);
 
         const previousView = confirmedView.current;
@@ -1973,6 +2021,13 @@ export function App() {
     });
   };
 
+  const reconnectLiveSession = () => {
+    if (liveSessionReconnectPending) return;
+    cancelBackgroundRequests();
+    setLiveSessionReconnectPending(true);
+    vscode.postMessage({ kind: "reconnectLiveSource" });
+  };
+
   const backgroundDiagnosticMessages = [...backgroundDiagnostics.values()].map((diagnostic) => diagnostic.message);
   const projectionStatusId = projectionLoading ? "column-projection-status" : undefined;
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
@@ -2317,7 +2372,20 @@ export function App() {
             {foregroundError && (
               <div className="errorBanner" role="alert">
                 <span>{foregroundError}</span>
-                {failedPageRequest && (
+                {foregroundErrorCode === "pyspark_connect_state_lost" &&
+                  metadata?.backend === "pyspark" &&
+                  metadata.source.kind === "notebookVariable" && (
+                    <button
+                      type="button"
+                      className="secondaryButton"
+                      disabled={liveSessionReconnectPending}
+                      aria-busy={liveSessionReconnectPending || undefined}
+                      onClick={reconnectLiveSession}
+                    >
+                      {liveSessionReconnectPending ? "Reconnecting…" : "Reconnect"}
+                    </button>
+                  )}
+                {failedPageRequest && foregroundErrorCode !== "pyspark_connect_state_lost" && (
                   <button type="button" className="secondaryButton" onClick={retryFailedPage}>
                     Retry page
                   </button>

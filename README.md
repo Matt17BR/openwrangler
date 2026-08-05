@@ -157,7 +157,9 @@ sequentially. The toolbar says **Source order** until you add a sort, then **Sor
 can reorder: source order can change, and rows tied across every sort key can move when Spark reruns the dataframe.
 Open Wrangler does not count or cache the whole dataframe before showing the first page; the row total appears after
 the final page. If the data changes while you page through it, Open Wrangler asks you to reopen the variable. It does
-not install PySpark, handle cluster authentication, or stop your Spark session.
+not install PySpark, handle cluster authentication, or stop your Spark session. A temporary Spark Connect outage
+leaves the current grid in place and shows **Retry page**. If the server has lost the session or dataframe, rerun the
+cell that creates the same variable and choose **Reconnect**. The old grid stays visible unless that reconnect works.
 
 ## Export
 
