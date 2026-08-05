@@ -18,7 +18,9 @@ assert_error <- function(expression, pattern) {
     },
     error = identity
   )
-  if (is.null(error) || !grepl(pattern, conditionMessage(error), fixed = TRUE)) {
+  matches_code <- inherits(error, "openwrangler_r_frame_error") && identical(error$code, pattern)
+  matches_message <- !is.null(error) && grepl(pattern, conditionMessage(error), fixed = TRUE)
+  if (is.null(error) || (!matches_code && !matches_message)) {
     stop(sprintf("Expected an error containing %s", pattern), call. = FALSE)
   }
 }
@@ -57,7 +59,10 @@ base_page <- openwrangler_r_frame_contract$materialize_page(
   column_limit = 20L
 )
 assert_identical(base_page$dataframeFlavor, "r.data.frame", "base data.frame flavor changed")
+assert_identical(base_page$contractVersion, 2L, "R frame contract version changed")
 assert_identical(base_page$shape, list(rows = 3L, columns = 10L), "base frame shape changed")
+assert_identical(base_page$frameSemantics$rowNames, "positional", "automatic row names were not positional")
+assert_true(is.null(base_page$page$rows[[1L]]$rowLabel), "automatic row names leaked into the page")
 assert_identical(vapply(base_page$schema, `[[`, character(1L), "id"), sprintf("r:c:%d", 0:9), "IDs are positional")
 assert_identical(
   vapply(base_page$schema, `[[`, character(1L), "name"),
@@ -153,6 +158,171 @@ table_snapshot <- get("snapshot", envir = table_capture, inherits = FALSE)
 table_snapshot[, value := "changed"]
 assert_true(identical(table_frame, table_before), "data.table snapshot mutation reached the source frame")
 
+profile_reference <- function(capture, position) {
+  schema <- capture$descriptor$schema[[position]]
+  list(id = schema$id, name = schema$name)
+}
+
+profile_source_before <- unserialize(serialize(base_frame, NULL, version = 3L))
+base_summaries <- openwrangler_r_frame_contract$materialize_summaries(
+  base_capture,
+  lapply(seq_len(ncol(base_frame)), function(position) profile_reference(base_capture, position))
+)
+assert_identical(
+  vapply(base_summaries, `[[`, character(1L), "columnId"),
+  sprintf("r:c:%d", 0:9),
+  "R profiles did not preserve stable positional column identities"
+)
+assert_identical(base_summaries[[1L]]$visualization$trueCount, 1L, "logical TRUE counts changed")
+assert_identical(base_summaries[[1L]]$visualization$falseCount, 1L, "logical FALSE counts changed")
+assert_identical(base_summaries[[3L]]$nullCount, 0L, "double NA was miscounted")
+assert_identical(base_summaries[[3L]]$nanCount, 1L, "double NaN was not counted separately")
+assert_identical(base_summaries[[4L]]$text$minLength, 4L, "UTF-8 text minimum length changed")
+assert_identical(base_summaries[[4L]]$text$maxLength, 5L, "UTF-8 text maximum length changed")
+assert_identical(base_summaries[[6L]]$rawType, "ordered factor", "ordered-factor profile metadata changed")
+assert_identical(base_summaries[[7L]]$visualization$min, "2026-01-01", "Date profile minimum changed")
+assert_identical(base_summaries[[7L]]$visualization$max, "2026-01-03", "Date profile maximum changed")
+assert_identical(
+  base_summaries[[8L]]$visualization$min,
+  "2026-01-01T12:00:00.000000",
+  "POSIXct profile minimum changed"
+)
+assert_identical(base_summaries[[9L]]$numeric$min, 1, "difftime profile minimum changed")
+assert_identical(base_summaries[[9L]]$numeric$max, 3, "difftime profile maximum changed")
+assert_identical(
+  base_summaries[[10L]]$numeric$exactMin$raw,
+  "-9223372036854775807",
+  "integer64 profile minimum lost precision"
+)
+assert_identical(
+  base_summaries[[10L]]$numeric$exactMax$raw,
+  "9223372036854775806",
+  "integer64 profile maximum lost precision"
+)
+assert_identical(base_frame, profile_source_before, "profiling mutated the source data.frame")
+
+base_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(base_capture)
+assert_identical(base_stats$missingCells, 10, "dataset missing-cell count changed")
+assert_identical(base_stats$missingRows, 2L, "dataset missing-row count changed")
+assert_identical(base_stats$duplicateRows, 0L, "dataset duplicate-row count changed")
+assert_identical(
+  vapply(base_stats$missingValuesByColumn, `[[`, character(1L), "column"),
+  names(base_frame),
+  "dataset missing counts lost duplicate or non-syntactic names"
+)
+
+tibble_profile <- openwrangler_r_frame_contract$materialize_summaries(
+  tibble_capture,
+  list(profile_reference(tibble_capture, 4L))
+)
+assert_identical(tibble_profile[[1L]]$text$minLength, 4L, "tibble profiling changed text semantics")
+table_profile <- openwrangler_r_frame_contract$materialize_summaries(
+  table_capture,
+  list(profile_reference(table_capture, 1L))
+)
+assert_identical(table_profile[[1L]]$distinctCount, 2L, "data.table profiling changed distinct values")
+assert_true(identical(table_frame, table_before), "profiling mutated the source data.table")
+
+empty_profile_frame <- data.frame(
+  text = character(),
+  amount = double(),
+  all_missing = logical()
+)
+empty_profile_capture <- openwrangler_r_frame_contract$capture_frame(empty_profile_frame)
+empty_summaries <- openwrangler_r_frame_contract$materialize_summaries(
+  empty_profile_capture,
+  lapply(seq_len(ncol(empty_profile_frame)), function(position) profile_reference(empty_profile_capture, position))
+)
+assert_identical(empty_summaries[[1L]]$text, list(emptyCount = 0L), "empty text profile invented bounds")
+assert_identical(empty_summaries[[2L]]$topValues, I(list()), "empty numeric profile invented values")
+
+duplicate_profile_frame <- data.frame(value = c(1L, 1L, NA_integer_), flag = c(TRUE, TRUE, NA))
+duplicate_profile_capture <- openwrangler_r_frame_contract$capture_frame(duplicate_profile_frame)
+duplicate_profile_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(duplicate_profile_capture)
+assert_identical(duplicate_profile_stats$missingCells, 2, "all-null counts changed")
+assert_identical(duplicate_profile_stats$missingRows, 1L, "all-null row count changed")
+assert_identical(duplicate_profile_stats$duplicateRows, 1L, "duplicate-row count changed")
+all_null_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = c(NA_character_, NA_character_)))
+all_null_summary <- openwrangler_r_frame_contract$materialize_summaries(
+  all_null_capture,
+  list(profile_reference(all_null_capture, 1L))
+)[[1L]]
+assert_identical(all_null_summary$nullCount, 2L, "all-null column count changed")
+assert_identical(all_null_summary$distinctCount, 0L, "all-null column invented a distinct value")
+assert_identical(all_null_summary$text, list(emptyCount = 0L), "all-null text profile invented length bounds")
+bounded_profile_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = seq_len(40L)))
+bounded_profile <- openwrangler_r_frame_contract$materialize_summaries(
+  bounded_profile_capture,
+  list(profile_reference(bounded_profile_capture, 1L))
+)[[1L]]
+assert_identical(length(bounded_profile$topValues), 10L, "R profiles exceeded the top-value limit")
+assert_identical(length(bounded_profile$visualization$bins), 20L, "R profiles exceeded the histogram-bin limit")
+extreme_profile_capture <- openwrangler_r_frame_contract$capture_frame(
+  data.frame(value = c(-1e308, 0, 1e308))
+)
+extreme_profile <- openwrangler_r_frame_contract$materialize_summaries(
+  extreme_profile_capture,
+  list(profile_reference(extreme_profile_capture, 1L))
+)[[1L]]
+assert_identical(length(extreme_profile$visualization$bins), 3L, "an extreme finite range lost its histogram")
+assert_identical(
+  sum(vapply(extreme_profile$visualization$bins, `[[`, integer(1L), "count")),
+  3L,
+  "an extreme finite histogram lost values"
+)
+too_wide_profile_frame <- as.data.frame(
+  setNames(rep(list(1L), openwrangler_r_frame_contract$limits$profileColumns + 1L),
+           sprintf("profile_%d", seq_len(openwrangler_r_frame_contract$limits$profileColumns + 1L))),
+  optional = TRUE
+)
+too_wide_profile_capture <- openwrangler_r_frame_contract$capture_frame(too_wide_profile_frame)
+assert_error(
+  openwrangler_r_frame_contract$materialize_summaries(
+    too_wide_profile_capture,
+    lapply(seq_len(ncol(too_wide_profile_frame)), function(position) {
+      profile_reference(too_wide_profile_capture, position)
+    })
+  ),
+  "profile-too-large"
+)
+work_column_count <- 50L
+work_row_count <- floor(openwrangler_r_frame_contract$limits$profileCells / work_column_count) + 1L
+shared_work_column <- rep(1L, work_row_count)
+bounded_work_frame <- structure(
+  setNames(rep(list(shared_work_column), work_column_count), sprintf("work_%d", seq_len(work_column_count))),
+  class = "data.frame",
+  row.names = c(NA_integer_, -work_row_count)
+)
+bounded_work_capture <- openwrangler_r_frame_contract$capture_live_frame(function() bounded_work_frame)
+bounded_work_references <- lapply(
+  seq_len(work_column_count),
+  function(position) profile_reference(bounded_work_capture, position)
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_summaries(bounded_work_capture, bounded_work_references),
+  "profile-too-large"
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_dataset_stats(bounded_work_capture),
+  "profile-too-large"
+)
+too_tall_frame <- structure(
+  list(value = rep(FALSE, openwrangler_r_frame_contract$limits$profileRows + 1L)),
+  class = "data.frame",
+  row.names = c(NA_integer_, -(openwrangler_r_frame_contract$limits$profileRows + 1L))
+)
+too_tall_capture <- openwrangler_r_frame_contract$capture_live_frame(function() too_tall_frame)
+assert_error(
+  openwrangler_r_frame_contract$materialize_summaries(
+    too_tall_capture,
+    list(profile_reference(too_tall_capture, 1L))
+  ),
+  "profile-too-large"
+)
+profile_metrics <- openwrangler_r_frame_contract$capture_metrics(base_capture)
+assert_identical(profile_metrics$profileColumns, 10, "projected profile work scanned the wrong number of columns")
+assert_identical(profile_metrics$datasetProfiles, 1, "dataset profiling ran an unexpected number of times")
+
 sort_rule <- function(id, name, direction = "asc", nulls = "last") {
   list(column = list(id = id, name = name), direction = direction, nulls = nulls)
 }
@@ -175,8 +345,8 @@ sort_page <- openwrangler_r_frame_contract$materialize_view_page(
 )
 assert_identical(
   vapply(sort_page$page$rows, `[[`, integer(1L), "rowNumber"),
-  c(5L, 6L, 1L, 2L, 0L, 3L, 4L),
-  "native R multi-sort priority or stable tie ordering changed"
+  0:6,
+  "sorted row numbers did not describe the logical view order"
 )
 assert_identical(
   vapply(sort_page$page$rows, `[[`, character(1L), "id"),
@@ -199,7 +369,12 @@ duplicate_sort_page <- openwrangler_r_frame_contract$materialize_view_page(
 )
 assert_identical(
   vapply(duplicate_sort_page$page$rows, `[[`, integer(1L), "rowNumber"),
-  c(1L, 0L),
+  0:1,
+  "duplicate-name sorting did not retain logical row numbers"
+)
+assert_identical(
+  vapply(duplicate_sort_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:1", "r:r:0"),
   "a duplicate column name was not resolved by positional ID"
 )
 
@@ -215,8 +390,226 @@ assert_identical(sort_window$page$offset, 1, "sorted page offset changed")
 assert_identical(sort_window$page$columnIds, I("r:c:2"), "sorted page projection changed")
 assert_identical(
   vapply(sort_window$page$rows, `[[`, integer(1L), "rowNumber"),
-  c(2L, 5L, 6L),
+  1:3,
+  "sorted pagination did not number the logical page window"
+)
+assert_identical(
+  vapply(sort_window$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", c(2L, 5L, 6L)),
   "sorted pagination did not slice the logical order"
+)
+
+large_row_count <- 250000L
+large_source <- new.env(parent = emptyenv())
+large_source$frame <- data.frame(
+  order_key = rev(seq_len(large_row_count)),
+  payload = seq_len(large_row_count),
+  bucket = seq_len(large_row_count) %% 17L
+)
+large_capture <- openwrangler_r_frame_contract$capture_live_frame(function() large_source$frame)
+large_open_metrics <- openwrangler_r_frame_contract$capture_metrics(large_capture)
+assert_true(is.null(large_capture$snapshot), "a live capture retained an isolated dataframe snapshot")
+assert_identical(large_open_metrics$nullableScans, 0, "live capture scanned columns for missing values")
+assert_true(
+  all(vapply(large_capture$descriptor$schema, `[[`, logical(1L), "nullable")),
+  "live capture metadata was not conservatively nullable"
+)
+
+large_direct_page <- openwrangler_r_frame_contract$materialize_view_page(
+  large_capture,
+  row_offset = large_row_count - 5L,
+  row_limit = 5L,
+  column_offset = 1L,
+  column_limit = 2L
+)
+assert_identical(
+  vapply(large_direct_page$page$rows, `[[`, integer(1L), "rowNumber"),
+  (large_row_count - 5L):(large_row_count - 1L),
+  "a large unsorted page did not slice the requested source rows directly"
+)
+large_direct_metrics <- openwrangler_r_frame_contract$capture_metrics(large_capture)
+assert_identical(large_direct_metrics$directPageSlices, 1, "the unsorted page did not use the direct path")
+assert_identical(large_direct_metrics$directRowPositions, 5, "the unsorted page built more than its five rows")
+assert_identical(large_direct_metrics$sortOrderBuilds, 0, "the unsorted page built a full row order")
+assert_identical(large_direct_metrics$cachedSortRows, 0L, "the unsorted page retained a full row order")
+
+large_sort_ascending <- list(sort_rule("r:c:0", "order_key", "asc", "last"))
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  large_capture,
+  large_sort_ascending,
+  row_limit = 4L,
+  column_offset = 0L,
+  column_limit = 1L
+))
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  large_capture,
+  large_sort_ascending,
+  row_limit = 4L,
+  column_offset = 1L,
+  column_limit = 1L
+))
+large_cached_metrics <- openwrangler_r_frame_contract$capture_metrics(large_capture)
+assert_identical(large_cached_metrics$sortOrderBuilds, 1, "repeated column blocks rebuilt the same sort order")
+assert_identical(
+  large_cached_metrics$sortOrderRows,
+  as.double(large_row_count),
+  "the sorted path did not account for exactly one full order"
+)
+assert_identical(
+  large_cached_metrics$cachedSortRows,
+  large_row_count,
+  "the sorted session did not retain exactly one complete order"
+)
+assert_identical(large_cached_metrics$cachedSortColumns, 1L, "the live sort cache retained the wrong columns")
+assert_identical(large_cached_metrics$sortColumnSnapshots, 1, "the cacheable sort copied its key more than once")
+assert_true(
+  large_cached_metrics$cachedSortBytes <= openwrangler_r_frame_contract$limits$sortCacheBytes,
+  "the live sort cache exceeded its byte limit"
+)
+
+cache_key_count <- openwrangler_r_frame_contract$limits$cachedSortColumns + 1L
+bounded_cache_source <- new.env(parent = emptyenv())
+bounded_cache_source$frame <- as.data.frame(setNames(
+  lapply(seq_len(cache_key_count), function(index) rev(seq_len(32L)) + index),
+  sprintf("key_%d", seq_len(cache_key_count))
+))
+bounded_cache_capture <- openwrangler_r_frame_contract$capture_live_frame(function() bounded_cache_source$frame)
+bounded_cache_rules <- lapply(seq_len(cache_key_count), function(index) {
+  sort_rule(sprintf("r:c:%d", index - 1L), sprintf("key_%d", index), "asc", "last")
+})
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  bounded_cache_capture,
+  bounded_cache_rules,
+  row_limit = 1L,
+  column_limit = 1L
+))
+bounded_cache_first <- openwrangler_r_frame_contract$capture_metrics(bounded_cache_capture)
+assert_identical(bounded_cache_first$cachedSortRows, 0L, "too many sort keys were retained in the cache")
+assert_identical(bounded_cache_first$cachedSortColumns, 0L, "an over-limit sort retained key columns")
+assert_identical(bounded_cache_first$cachedSortBytes, 0, "an over-limit sort retained cache bytes")
+assert_identical(
+  bounded_cache_first$sortColumnSnapshots,
+  0,
+  "an over-limit sort copied key columns before rejecting the cache"
+)
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  bounded_cache_capture,
+  bounded_cache_rules,
+  row_limit = 1L,
+  column_limit = 1L
+))
+assert_identical(
+  openwrangler_r_frame_contract$capture_metrics(bounded_cache_capture)$sortOrderBuilds,
+  2,
+  "an uncached sort reused a stale order"
+)
+
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  large_capture,
+  list(sort_rule("r:c:0", "order_key", "desc", "last")),
+  row_limit = 1L,
+  column_limit = 1L
+))
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  large_capture,
+  large_sort_ascending,
+  row_limit = 1L,
+  column_limit = 1L
+))
+large_replaced_metrics <- openwrangler_r_frame_contract$capture_metrics(large_capture)
+assert_identical(large_replaced_metrics$sortOrderBuilds, 3, "a changed sort model did not replace the cached order")
+assert_identical(large_replaced_metrics$nullableScans, 0, "live pages scanned columns for missing values")
+assert_identical(
+  large_replaced_metrics$cachedSortRows,
+  large_row_count,
+  "changing sort priority retained more than the current order"
+)
+
+names(large_source$frame)[1L] <- "renamed_order_key"
+assert_error(
+  openwrangler_r_frame_contract$materialize_view_page(large_capture, row_limit = 1L, column_limit = 1L),
+  "source-changed"
+)
+names(large_source$frame)[1L] <- "order_key"
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  large_capture,
+  row_limit = 1L,
+  column_limit = 1L
+))
+large_source$frame <- large_source$frame[, c("order_key", "payload"), drop = FALSE]
+assert_error(
+  openwrangler_r_frame_contract$materialize_view_page(large_capture, row_limit = 1L, column_limit = 1L),
+  "source-changed"
+)
+
+mutable_source <- new.env(parent = emptyenv())
+mutable_source$frame <- data.frame(order_key = c(3L, 1L, 2L), payload = letters[1:3])
+mutable_capture <- openwrangler_r_frame_contract$capture_live_frame(function() mutable_source$frame)
+mutable_rule <- list(sort_rule("r:c:0", "order_key", "asc", "last"))
+mutable_first <- openwrangler_r_frame_contract$materialize_view_page(
+  mutable_capture,
+  mutable_rule,
+  row_limit = 3L,
+  column_limit = 1L
+)
+assert_identical(
+  vapply(mutable_first$page$rows, function(row) row$values[[1L]]$display, character(1L)),
+  c("1", "2", "3"),
+  "the initial live sort order was incorrect"
+)
+mutable_source$frame$order_key <- c(0L, 10L, 5L)
+mutable_second <- openwrangler_r_frame_contract$materialize_view_page(
+  mutable_capture,
+  mutable_rule,
+  row_limit = 3L,
+  column_limit = 1L
+)
+assert_identical(
+  vapply(mutable_second$page$rows, function(row) row$values[[1L]]$display, character(1L)),
+  c("0", "5", "10"),
+  "a same-schema source mutation reused a stale sort order"
+)
+assert_identical(
+  openwrangler_r_frame_contract$capture_metrics(mutable_capture)$sortOrderBuilds,
+  2,
+  "a changed live sort column did not rebuild its cached order"
+)
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  mutable_capture,
+  row_limit = 1L,
+  column_limit = 1L
+))
+assert_identical(
+  openwrangler_r_frame_contract$capture_metrics(mutable_capture)$cachedSortRows,
+  0L,
+  "clearing the live sort retained its row-order cache"
+)
+
+mutable_table_source <- new.env(parent = emptyenv())
+mutable_table_source$frame <- data.table::data.table(order_key = c(3L, 1L, 2L), payload = letters[1:3])
+mutable_table_capture <- openwrangler_r_frame_contract$capture_live_frame(function() mutable_table_source$frame)
+invisible(openwrangler_r_frame_contract$materialize_view_page(
+  mutable_table_capture,
+  mutable_rule,
+  row_limit = 3L,
+  column_limit = 1L
+))
+mutable_table_source$frame[1L, order_key := 0L]
+mutable_table_page <- openwrangler_r_frame_contract$materialize_view_page(
+  mutable_table_capture,
+  mutable_rule,
+  row_limit = 3L,
+  column_limit = 1L
+)
+assert_identical(
+  vapply(mutable_table_page$page$rows, function(row) row$values[[1L]]$display, character(1L)),
+  c("0", "1", "2"),
+  "a by-reference data.table mutation reused a stale sort order"
+)
+assert_identical(
+  openwrangler_r_frame_contract$capture_metrics(mutable_table_capture)$sortOrderBuilds,
+  2,
+  "a by-reference data.table mutation did not rebuild its cached order"
 )
 
 wide_sort_frame <- data.frame(
@@ -239,7 +632,12 @@ wide_sort_ascending <- openwrangler_r_frame_contract$materialize_view_page(
 )
 assert_identical(
   vapply(wide_sort_ascending$page$rows, `[[`, integer(1L), "rowNumber"),
-  c(1L, 3L, 2L, 4L, 0L, 5L, 6L),
+  0:6,
+  "integer64 ascending rows were not numbered in logical order"
+)
+assert_identical(
+  vapply(wide_sort_ascending$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", c(1L, 3L, 2L, 4L, 0L, 5L, 6L)),
   "integer64 ascending order lost precision or stability"
 )
 wide_sort_descending <- openwrangler_r_frame_contract$materialize_view_page(
@@ -250,7 +648,12 @@ wide_sort_descending <- openwrangler_r_frame_contract$materialize_view_page(
 )
 assert_identical(
   vapply(wide_sort_descending$page$rows, `[[`, integer(1L), "rowNumber"),
-  c(6L, 0L, 5L, 4L, 2L, 3L, 1L),
+  0:6,
+  "integer64 descending rows were not numbered in logical order"
+)
+assert_identical(
+  vapply(wide_sort_descending$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", c(6L, 0L, 5L, 4L, 2L, 3L, 1L)),
   "integer64 descending order lost precision, null placement, or stability"
 )
 
@@ -297,10 +700,76 @@ assert_error(
   "unnamed list"
 )
 
-explicit_names <- data.frame(value = 1:2, row.names = c("left", "right"))
-assert_error(openwrangler_r_frame_contract$capture_frame(explicit_names), "unsupported-row-names")
+explicit_names <- data.frame(value = c(2L, 1L, 3L), row.names = c("left", "right", "tail"))
+explicit_names_capture <- openwrangler_r_frame_contract$capture_frame(explicit_names)
+assert_identical(
+  explicit_names_capture$descriptor$frameSemantics$rowNames,
+  "explicit",
+  "explicit row names were not advertised"
+)
+explicit_names_page <- openwrangler_r_frame_contract$materialize_view_page(
+  explicit_names_capture,
+  list(sort_rule("r:c:0", "value", "asc", "last")),
+  row_offset = 1L,
+  row_limit = 2L,
+  column_limit = 1L
+)
+assert_identical(
+  vapply(explicit_names_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:0", "r:r:2"),
+  "sorted explicit names lost their source row identities"
+)
+assert_identical(
+  vapply(explicit_names_page$page$rows, `[[`, integer(1L), "rowNumber"),
+  1:2,
+  "sorted explicit names did not use logical row numbers"
+)
+assert_identical(
+  vapply(explicit_names_page$page$rows, `[[`, character(1L), "rowLabel"),
+  c("left", "tail"),
+  "sorted explicit row labels did not follow their source rows"
+)
+stopifnot(identical(explicit_names_capture$snapshot$value, c(2L, 1L, 3L)))
 numeric_explicit_names <- data.frame(value = 1:2, row.names = c("1", "2"))
-assert_error(openwrangler_r_frame_contract$capture_frame(numeric_explicit_names), "unsupported-row-names")
+numeric_explicit_names_capture <- openwrangler_r_frame_contract$capture_frame(numeric_explicit_names)
+assert_identical(
+  numeric_explicit_names_capture$descriptor$frameSemantics$rowNames,
+  "explicit",
+  "numeric-looking explicit row names were mistaken for automatic names"
+)
+numeric_explicit_names_page <- openwrangler_r_frame_contract$materialize_page(
+  numeric_explicit_names_capture,
+  row_limit = 2L,
+  column_limit = 1L
+)
+assert_identical(
+  vapply(numeric_explicit_names_page$page$rows, `[[`, character(1L), "rowLabel"),
+  c("1", "2"),
+  "numeric-looking explicit row labels changed"
+)
+
+oversized_row_name <- paste(rep("x", openwrangler_r_frame_contract$limits$nameBytes + 1L), collapse = "")
+bounded_row_names <- data.frame(value = 1:2, row.names = c("small", oversized_row_name))
+bounded_row_names_capture <- openwrangler_r_frame_contract$capture_frame(bounded_row_names)
+bounded_row_names_first_page <- openwrangler_r_frame_contract$materialize_page(
+  bounded_row_names_capture,
+  row_limit = 1L,
+  column_limit = 1L
+)
+assert_identical(
+  bounded_row_names_first_page$page$rows[[1L]]$rowLabel,
+  "small",
+  "an unrequested row label affected a bounded page"
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_page(
+    bounded_row_names_capture,
+    row_offset = 1L,
+    row_limit = 1L,
+    column_limit = 1L
+  ),
+  "text-too-large"
+)
 
 grouped_tibble <- tibble::tibble(value = 1:2)
 class(grouped_tibble) <- c("grouped_df", class(grouped_tibble))

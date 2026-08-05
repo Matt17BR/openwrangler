@@ -128,6 +128,88 @@ describe("DataGrid", () => {
     expect(screen.getByText("Paris")).toBeTruthy();
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "3");
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "58px" });
+  });
+
+  it("keeps explicit row labels readable without hiding keyboard-focused columns in a narrow grid", async () => {
+    const labeledPage: GridPage = {
+      ...page,
+      rows: page.rows.map((row, index) => ({
+        ...row,
+        rowLabel: index === 0 ? "Mazda RX4" : "Hornet Sportabout"
+      }))
+    };
+
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={labeledPage}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const firstLabel = screen.getByRole("rowheader", { name: "Row 1, label Mazda RX4" });
+    expect(firstLabel).toHaveTextContent("Mazda RX4");
+    expect(firstLabel).toHaveAttribute("title", "Mazda RX4 (row 1)");
+    expect(screen.getByRole("columnheader", { name: "Row label" })).toHaveTextContent("Row");
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "156px" });
+
+    const scroller = screen.getByTestId("data-grid-scroller");
+    let physicalScrollLeft = 0;
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 300 },
+      scrollLeft: {
+        configurable: true,
+        get: () => physicalScrollLeft,
+        set: (value: number) => {
+          physicalScrollLeft = value;
+        }
+      }
+    });
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "156px" }));
+
+    const city = screen.getByRole("cell", { name: "Milan" });
+    const sales = screen.getByRole("cell", { name: "10.5" });
+    act(() => city.focus());
+    fireEvent.keyDown(city, { key: "ArrowRight" });
+    await waitFor(() => expect(document.activeElement).toBe(sales));
+    expect(scroller.scrollLeft).toBe(190);
+  });
+
+  it("keeps the row-label gutter compact and stable while paging", () => {
+    const labeledPage = (labels: readonly string[]): GridPage => ({
+      ...page,
+      rows: page.rows.map((row, index) => ({ ...row, rowLabel: labels[index] ?? "" }))
+    });
+    const props = {
+      metadata,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage: () => undefined,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={labeledPage(["1", "2"])} />);
+
+    expect(screen.getByRole("columnheader", { name: "Row label" })).toBeVisible();
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "58px" });
+
+    rerender(<DataGrid {...props} page={labeledPage(["Mazda RX4", "Hornet Sportabout"])} />);
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "156px" });
+
+    rerender(<DataGrid {...props} page={labeledPage(["3", "4"])} />);
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "156px" });
   });
 
   it("hides floating-point noise in grid text while preserving the exact value on hover", () => {
@@ -1267,6 +1349,66 @@ describe("DataGrid", () => {
     );
   });
 
+  it("keeps a terminal partial block visible when native scrolling starts before its offset", async () => {
+    const totalRows = 1_205;
+    const finalOffset = 1_200;
+    const viewportHeight = 20 * 29;
+    const onPage = vi.fn();
+    const props = {
+      metadata: {
+        ...metadata,
+        shape: { rows: totalRows, columns: 2 },
+        filteredShape: { rows: totalRows, columns: 2 }
+      },
+      summaries: [],
+      pageSize: largeGridPageSize,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(
+      <DataGrid
+        {...props}
+        page={pageAt(1_000, totalRows)}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: 1_000, scrollLeft: 0 } }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: viewportHeight });
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: totalRows * 29 });
+    let physicalScrollTop = scroller.scrollTop;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => physicalScrollTop,
+      set: (value: number) => {
+        physicalScrollTop = Math.min(value, totalRows * 29 - viewportHeight);
+      }
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    expect(onPage).toHaveBeenCalledOnce();
+    expect(onPage).toHaveBeenLastCalledWith(finalOffset);
+    rerender(
+      <DataGrid
+        {...props}
+        page={pageAt(finalOffset, totalRows)}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: finalOffset, scrollLeft: 0 } }}
+        viewStateRestoreVersion={1}
+      />
+    );
+
+    fireEvent.scroll(scroller);
+
+    await waitFor(() => expect(document.querySelector('[data-grid-row="1204"]')).not.toBeNull());
+    expect(onPage).toHaveBeenCalledOnce();
+    const topSpacer = document.querySelector<HTMLTableCellElement>("tbody > .virtualRowSpacer:first-child > td");
+    expect(topSpacer).toHaveStyle({ height: `${finalOffset * 29}px` });
+  });
+
   it("prefers lossless typed extrema in compact headers without hiding the full value from assistive text", async () => {
     const minimum = "-900719925474099312345678901";
     const maximum = "900719925474099312345678902";
@@ -1872,6 +2014,34 @@ describe("DataGrid", () => {
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
   });
 
+  it("keeps R header profiles explicit even when insights-on-open is configured", async () => {
+    const onVisibleSummaryColumnsChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={{ ...metadata, backend: "r", mode: "viewing", rDataframeFlavor: "r.data.frame" }}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
+      />
+    );
+
+    const headerProfiles = screen.getByRole("button", { name: "Header profiles" });
+    expect(headerProfiles).toBeEnabled();
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
+    expect(headerProfiles).toHaveAttribute("title", "Runs R profiling queries for the visible columns.");
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
+
+    fireEvent.click(headerProfiles);
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
+  });
+
   it("maps a projected page by stable column ID while preserving full-schema grid coordinates", async () => {
     const projectedPage: GridPage = {
       offset: 0,
@@ -2142,6 +2312,109 @@ describe("App file import options", () => {
     expect(screen.queryByText(/^viewing$/iu)).not.toBeInTheDocument();
   });
 
+  it("does not issue unsupported viewing requests when capabilities are explicitly disabled", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        capabilities: {
+          ...metadata.capabilities,
+          filter: false,
+          sort: false,
+          profile: false,
+          columnValues: false
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    expect(await screen.findByRole("cell", { name: "Milan" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Profiles and filters unavailable" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Profiles unavailable" })).toBeDisabled();
+
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    fireEvent.click(within(cityHeader).getByLabelText("Column actions for city"));
+    expect(within(cityHeader).getByRole("button", { name: "Filter…" })).toBeDisabled();
+    expect(within(cityHeader).getByRole("button", { name: "Sort ascending" })).toBeDisabled();
+
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
+    dispatchAppMessage({ kind: "editorAction", action: "clearFilterColumn", column: "city" });
+    expect(screen.queryByRole("complementary", { name: "Column profiles and filters" })).not.toBeInTheDocument();
+    expect(
+      webviewPostMessage.mock.calls.some(
+        ([message]) =>
+          message?.kind === "runtimeRequest" &&
+          ["getPage", "getSummary", "getDatasetStats", "getColumnValues"].includes(message.request?.kind)
+      )
+    ).toBe(false);
+  });
+
+  it("labels a sort-only dataframe without advertising filters or profiles", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        backend: "r",
+        rDataframeFlavor: "r.data.frame",
+        mode: "viewing",
+        capabilities: {
+          ...metadata.capabilities,
+          editable: false,
+          filter: false,
+          sort: true,
+          profile: false,
+          columnValues: false
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    expect(await screen.findByRole("cell", { name: "Milan" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Sorts" }));
+
+    const drawer = screen.getByRole("complementary", { name: "Sorts" });
+    expect(within(drawer).getByRole("tablist", { name: "Sorts view" })).toHaveStyle({
+      gridTemplateColumns: "repeat(1, minmax(0, 1fr))"
+    });
+    expect(within(drawer).getByRole("tab", { name: "Sorts" })).toBeVisible();
+    expect(within(drawer).getByRole("heading", { name: "Sorts" })).toBeVisible();
+    expect(within(drawer).getByRole("combobox", { name: "Sort column" })).toBeEnabled();
+    expect(within(drawer).queryByText("Filtering is unavailable for this dataframe.")).toBeNull();
+  });
+
+  it("describes a profiles-and-sorts panel without claiming that filters are available", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        capabilities: {
+          ...metadata.capabilities,
+          filter: false,
+          sort: true,
+          profile: true,
+          columnValues: false
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    expect(await screen.findByRole("cell", { name: "Milan" })).toBeVisible();
+    const toggle = screen.getByRole("button", { name: "Column profiles and sorts" });
+    expect(toggle).toBeEnabled();
+    fireEvent.click(toggle);
+    const drawer = screen.getByRole("complementary", { name: "Column profiles and sorts" });
+    expect(drawer).toBeVisible();
+    expect(within(drawer).getByRole("tablist", { name: "Column profiles and sorts view" })).toBeVisible();
+  });
+
   it("warns that rows tied across every PySpark sort key may move on rerun", async () => {
     render(<App />);
     dispatchAppMessage({
@@ -2272,7 +2545,7 @@ describe("App file import options", () => {
     );
 
     dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
-    expect(await screen.findByRole("tab", { name: "Filters" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("tab", { name: "Filters / Sorts" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: 'Remove equals "Milan" filter from city' })).toBeVisible();
     expect(screen.getByRole("button", { name: 'Remove contains "il" filter from city' })).toBeVisible();
     const sortOrder = screen.getByRole("list", { name: "Active sort order" });
@@ -2352,7 +2625,7 @@ describe("App file import options", () => {
     dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "sales" });
 
     expect(await screen.findByRole("complementary", { name: "Column profiles and filters" })).toBeVisible();
-    expect(screen.getByRole("tab", { name: "Filters" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Filters / Sorts" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("combobox", { name: "Sort column" })).toHaveValue("c:1");
 
     webviewPostMessage.mockClear();
@@ -3008,7 +3281,7 @@ describe("App file import options", () => {
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
     await screen.findByRole("cell", { name: "Milan" });
     fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Filters" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Filters / Sorts" }));
     const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
     expect(cityHeader).not.toBeNull();
     const cityControls = within(cityHeader!);

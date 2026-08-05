@@ -133,7 +133,8 @@ describe("filter model", () => {
 });
 
 describe("data backend labels", () => {
-  it("uses the public PySpark spelling in editor UI", () => {
+  it("uses public engine names in editor UI", () => {
     expect(dataBackendLabel("pyspark")).toBe("PySpark");
+    expect(dataBackendLabel("r")).toBe("R");
   });
 });

@@ -2404,9 +2404,9 @@ function sessionRequestPriority(
 function isPersistentSession(source: SessionSource, backend: SessionMetadata["backend"]): boolean {
   // Saved notebook outputs are bounded value snapshots, not reopenable source
   // data. Their rows and viewing state stay in memory only for the owning panel.
-  // A PySpark dataframe and Spark session belong to one exact live notebook
+  // Distributed Spark and native R frames belong to one exact live notebook
   // kernel, so ordinary workspace replay must never try to reacquire them.
-  return source.kind !== "notebookOutput" && backend !== "pyspark";
+  return source.kind !== "notebookOutput" && backend !== "pyspark" && backend !== "r";
 }
 
 function sameFileSourceIdentity(current: SessionSource, replacement: SessionSource): boolean {

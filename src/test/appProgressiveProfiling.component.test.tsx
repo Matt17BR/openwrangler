@@ -173,16 +173,15 @@ describe("App progressive profiling and view correlation", () => {
     expect(within(headers[0]!).getByText("Min 1")).toBeVisible();
     expect(within(headers[1]!).getByText("Distinct 100%")).toBeVisible();
     expect(within(headers[1]!).getByText("Max 20")).toBeVisible();
+    const duplicateRestriction =
+      'View filters, sorts, and values are unavailable because 2 columns share the displayed name "duplicate". Rename one column in a cleaning step first.';
     for (const header of headers) {
       fireEvent.click(within(header).getByLabelText("Column actions for duplicate"));
-      expect(
-        within(header).getByText(
-          'View filters, sorts, and values are unavailable because 2 columns share the displayed name "duplicate". Rename one column in a cleaning step first.'
-        )
-      ).toBeVisible();
-      expect(within(header).getByRole("button", { name: "Filter…" })).toBeDisabled();
-      expect(within(header).getByRole("button", { name: "Sort ascending" })).toBeDisabled();
-      expect(within(header).getByRole("button", { name: "Sort descending" })).toBeDisabled();
+      for (const action of ["Filter…", "Sort ascending", "Sort descending"]) {
+        const button = within(header).getByRole("button", { name: action });
+        expect(button).toBeDisabled();
+        expect(button).toHaveAttribute("title", duplicateRestriction);
+      }
       expect(within(header).getByRole("button", { name: "Resize duplicate column" })).toBeEnabled();
     }
 
@@ -210,12 +209,8 @@ describe("App progressive profiling and view correlation", () => {
     expect(within(drawer).getByText("Max").nextElementSibling).toHaveTextContent("20");
     expect(within(drawer).queryByRole("heading", { name: "duplicate (column 1)" })).toBeNull();
 
-    fireEvent.click(within(drawer).getByRole("tab", { name: "Filters" }));
-    expect(
-      within(drawer).getAllByText(
-        'View filters, sorts, and values are unavailable because 2 columns share the displayed name "duplicate". Rename one column in a cleaning step first.'
-      ).length
-    ).toBeGreaterThan(0);
+    fireEvent.click(within(drawer).getByRole("tab", { name: "Filters / Sorts" }));
+    expect(within(drawer).getAllByText(duplicateRestriction).length).toBeGreaterThan(0);
     expect(within(drawer).getByRole("button", { name: "Values" })).toBeDisabled();
     expect(within(drawer).getByRole("button", { name: "Add to sort" })).toBeDisabled();
     expect(requestsOfKind("getColumnValues")).toHaveLength(0);
@@ -460,7 +455,7 @@ describe("App progressive profiling and view correlation", () => {
     postMessage.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
-    selectInsightsView("Filters");
+    selectInsightsView("Filters / Sorts");
     sortCityAscending();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
 
@@ -563,7 +558,7 @@ describe("App progressive profiling and view correlation", () => {
       expect(envelope.viewContextId).toBe(confirmedContext);
     }
     expect(screen.getByText("Berlin")).toBeInTheDocument();
-    selectInsightsView("Filters");
+    selectInsightsView("Filters / Sorts");
     expect(screen.getByText("Restored value")).toBeInTheDocument();
     expect(screen.getByText("The sorted view failed")).toBeInTheDocument();
   });
@@ -1179,7 +1174,7 @@ describe("App progressive profiling and view correlation", () => {
     postMessage.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
-    selectInsightsView("Filters");
+    selectInsightsView("Filters / Sorts");
     sortCityAscending();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
     const [viewB, viewAAgain] = runtimeEnvelopes("getPage");
@@ -1249,7 +1244,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(await screen.findByText("Confirmed candidate")).toBeInTheDocument();
     selectInsightsView("Dataset");
     expect(screen.getByText("No missing values.")).toBeInTheDocument();
-    selectInsightsView("Filters");
+    selectInsightsView("Filters / Sorts");
     const originalContext = setViewContextMessages().at(-1)?.viewContextId;
 
     postMessage.mockClear();
@@ -1332,7 +1327,7 @@ function openCityFilter(): void {
   fireEvent.click(within(cityHeader).getByRole("button", { name: "Filter…" }));
 }
 
-function selectInsightsView(view: "Column" | "Dataset" | "Filters"): void {
+function selectInsightsView(view: "Column" | "Dataset" | "Filters / Sorts"): void {
   fireEvent.click(screen.getByRole("tab", { name: view }));
 }
 

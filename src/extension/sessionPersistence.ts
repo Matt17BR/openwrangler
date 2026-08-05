@@ -105,7 +105,7 @@ function decodePersistedView(value: unknown): PersistedViewingState | undefined 
   return gridViewState ? { ...gridViewState, filterModel: value.filterModel } : undefined;
 }
 
-function isPersistableDataBackend(value: unknown): value is Exclude<DataBackend, "pyspark"> {
+function isPersistableDataBackend(value: unknown): value is Extract<DataBackend, "pandas" | "polars" | "duckdb"> {
   return value === "polars" || value === "duckdb" || value === "pandas";
 }
 

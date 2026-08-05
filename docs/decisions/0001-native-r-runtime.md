@@ -19,21 +19,17 @@ identify the R process that owns an object.
 Open Wrangler 2 will run R dataframes in R. It will not convert them through Python or use a Python compatibility
 layer.
 
-The shared architecture will keep three facts separate:
-
-1. **Runtime language** identifies the process that executes a request, initially Python or R.
-2. **Dataframe flavor** identifies the object and its semantics, such as Pandas, Polars, DuckDB, PySpark,
-   `data.frame`, tibble, or `data.table`.
-3. **Code dialect** identifies the code Open Wrangler previews and inserts, such as engine-specific Python, base R,
-   dplyr, or data.table code.
-
-These are separate properties rather than aliases for one `backend` value. Shared types will be introduced with the
-runtime slice that uses them, not ahead of an implementation.
+The host exposes a `RuntimeIdentity` derived from confirmed session metadata. The protocol keeps `backend` as its
+engine discriminator. R sessions add an explicit dataframe flavor (`data.frame`, tibble, or `data.table`) so the UI
+can describe the object without guessing from `backend`. Their `RuntimeIdentity.codeDialect` is `null` until generated
+R code exists.
 
 The first implementation slice is a transport-neutral frame/page contract. It has these invariants:
 
 - The producer runs in R and accepts only canonical base `data.frame`, tibble, and `data.table` classes.
-- Every capture owns an isolated R snapshot. `data.table` snapshots use `data.table::copy()`.
+- Standalone contract captures own an isolated R snapshot. `data.table` snapshots use `data.table::copy()`.
+- A live IRkernel session keeps the verified variable binding instead. Each page, sort, or profile reads the current
+  object through that binding and rejects a changed shape, schema, class, or row-name mode.
 - Column identity is positional, so duplicate and non-syntactic names remain usable without rewriting the source.
 - R-specific factor, ordered-factor, Date, POSIXct, difftime, and integer64 metadata crosses the boundary explicitly.
 - Plain-double `NA`, `NaN`, positive infinity, and negative infinity remain distinct typed values. Non-finite
@@ -46,11 +42,15 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
 - Row, column, cell, factor-level, text, and encoded-payload limits are checked by the R producer and again by the
   TypeScript decoder. The producer accounts for metadata and cells while building a page and stops before allocating
   a complete oversized page or JSON string.
-- Unsupported classes, explicit row names, nested columns, and unrecognized attributes fail before a page is
-  published. The contract does not silently flatten them.
+- Bounded explicit row names cross as row labels and remain attached to their source rows after sorting. Unsupported
+  classes, nested columns, and unrecognized attributes fail before a page is published. The contract does not
+  silently flatten them.
 
-This contract is internal groundwork. It does not add R to the Python `DataBackend` union, Python protocol v2, the
-session coordinator, commands, or the public support matrix.
+The live notebook slice now connects this contract to the shared workbench. `DataBackend` includes `r`, session
+metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v2 and the
+shared session coordinator. The notebook command discovers supported R variables and opens the same grid, Activity
+Bar views, and profile drawer used by Python-backed sessions. The Python runtime does not decode or execute the
+private R transport.
 
 IRkernel is the first supported R transport. A notebook launch must stay bound to the exact `NotebookDocument` and
 kernel captured when the user starts it. Kernel lookup, dispatch, recovery, and cleanup may not retarget through the
@@ -63,10 +63,12 @@ against a replacement. A kernel restart ends that kernel's sessions and invalida
 never settles may detach from the UI, but its ownership record remains until the kernel ends or the continuation can
 perform that close.
 
-The live R object is immutable from Open Wrangler's point of view. Each session works from an isolated snapshot. Before
-any draft, apply, generated-code check, or custom-code evaluation that could mutate an object, the runtime makes a
-fresh isolated copy; `data.table` uses `data.table::copy()`. Acceptance tests must prove that success, failure,
-cancellation, undo, and disposal leave the originating notebook object unchanged.
+The current notebook viewer does not copy the complete dataframe when a session opens. It records the source binding
+and structural descriptor, then reads current values for pages, sorts, and profiles without writing to the object.
+Same-schema changes made in the notebook are therefore visible; structural changes ask the user to reopen the frame.
+Before any future draft, apply, generated-code check, or custom-code evaluation that could mutate an object, the
+runtime must make a fresh isolated copy; `data.table` must use `data.table::copy()`. Acceptance tests for editing must
+prove that success, failure, cancellation, undo, and disposal leave the notebook object unchanged.
 
 Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration helper that owns all of the following:
 

@@ -254,6 +254,9 @@ const RELEASED_JUPYTER_PYSPARK_REBIND_RESULT = "__OW_RELEASED_PYSPARK_REBIND__";
 const RELEASED_JUPYTER_PYSPARK_SCHEMA_REBIND_RESULT = "__OW_RELEASED_PYSPARK_SCHEMA_REBIND__";
 const RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT = "__OW_RELEASED_PYSPARK_CLOSE__";
 const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)";
+const RELEASED_JUPYTER_R_KERNEL_LABEL = "R (Open Wrangler)";
+const RELEASED_JUPYTER_R_KERNEL_NAME = "openwrangler-r-acceptance";
+const RELEASED_JUPYTER_R_SETUP_RESULT = "__OW_RELEASED_R_SETUP__";
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
 const RELEASED_JUPYTER_REMOTE_KERNEL_LABEL = "Open Wrangler Remote Acceptance";
@@ -748,12 +751,15 @@ export async function run(): Promise<void> {
     phase === "jupyter-deny" ||
     phase === "jupyter-allow" ||
     phase === "jupyter-pyspark" ||
-    phase === "jupyter-remote"
+    phase === "jupyter-remote" ||
+    phase === "jupyter-r"
   ) {
     assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected host Python environment.");
     recordAcceptanceProgress(`${phase}:start`);
     if (phase === "jupyter-pyspark") {
       await exerciseReleasedPySparkJupyterExtension(testing, extension, testPython);
+    } else if (phase === "jupyter-r") {
+      await exerciseReleasedRJupyterExtension(testing, extension);
     } else {
       await exerciseReleasedJupyterExtension(testing, extension, phase, testPython);
     }
@@ -766,7 +772,9 @@ export async function run(): Promise<void> {
             ? "remote"
             : phase === "jupyter-pyspark"
               ? "PySpark"
-              : "allow"
+              : phase === "jupyter-r"
+                ? "R"
+                : "allow"
       } acceptance passed.`
     );
     return;
@@ -1032,7 +1040,7 @@ type DataWranglerCoexistencePhase =
   | "jupyter-coexist-data-restart";
 
 type ReleasedJupyterPhase =
-  "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote" | DataWranglerCoexistencePhase;
+  "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote" | "jupyter-r" | DataWranglerCoexistencePhase;
 
 interface ReleasedJupyterKernelTarget {
   readonly label: string;
@@ -1049,9 +1057,10 @@ interface ReleasedJupyterKernelTarget {
 interface ReleasedVariableExpectation {
   readonly name: string;
   readonly type: string;
-  readonly backend: "pandas" | "polars" | "duckdb" | "pyspark";
+  readonly backend: "pandas" | "polars" | "duckdb" | "pyspark" | "r";
   readonly firstValue: string;
   readonly notebookInsert?: boolean;
+  readonly rDataframeFlavor?: "r.data.frame" | "r.tibble" | "r.data.table";
 }
 
 interface ReleasedDuckDbRecoverySession {
@@ -1408,6 +1417,443 @@ function writeDataWranglerCoexistenceNotebook(notebookPath: string, target: Rele
       nbformat: 4,
       nbformat_minor: 5
     })
+  );
+}
+
+function writeReleasedRNotebook(notebookPath: string): void {
+  const target = releasedJupyterKernelTarget("jupyter-r");
+  const source = [
+    "row_count <- 1205L",
+    "base_frame <- data.frame(",
+    "  row_id = seq_len(row_count),",
+    "  group = c(rep('A', 602L), rep('B', row_count - 602L)),",
+    "  score = as.numeric(seq_len(row_count)),",
+    "  label = sprintf('row-%04d', seq_len(row_count)),",
+    "  check.names = FALSE,",
+    "  stringsAsFactors = FALSE",
+    ")",
+    "for (column_index in seq_len(20L)) {",
+    "  base_frame[[sprintf('extra_%02d', column_index)]] <- sprintf('value-%02d-%04d', column_index, seq_len(row_count))",
+    "}",
+    "row.names(base_frame) <- sprintf('case-%04d', seq_len(row_count))",
+    "orders_tibble <- tibble::as_tibble(base_frame, .name_repair = 'minimal')",
+    "orders_table <- data.table::as.data.table(base_frame)",
+    `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
+    "  pid = Sys.getpid(), rows = nrow(base_frame), columns = ncol(base_frame)",
+    "), auto_unbox = TRUE)), '\\n', sep = '')"
+  ];
+  writeFileSync(
+    notebookPath,
+    JSON.stringify({
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: source.map((line) => `${line}\n`)
+        }
+      ],
+      metadata: {
+        kernelspec: { display_name: target.label, language: "R", name: target.name },
+        language_info: { name: "R" }
+      },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
+}
+
+async function exerciseReleasedRJupyterExtension(
+  testing: TestApi,
+  extension: vscode.Extension<ExtensionApi>
+): Promise<void> {
+  const phase: ReleasedJupyterPhase = "jupyter-r";
+  assert.equal(testing.diagnostics().sessionCount, 0);
+  const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+  assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
+  assert.equal(jupyterExtension.packageJSON.version, RELEASED_JUPYTER_EXTENSION_VERSION);
+  assert.ok(
+    !((extension.packageJSON.extensionDependencies as string[] | undefined) ?? []).includes("ms-toolsai.jupyter"),
+    "Native R notebook support must not make Jupyter a hard dependency."
+  );
+
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-released-jupyter-r-"));
+  const notebookPath = path.join(directory, "r-dataframes.ipynb");
+  const notebookUri = vscode.Uri.file(notebookPath);
+  writeReleasedRNotebook(notebookPath);
+  const configuration = vscode.workspace.getConfiguration("openWrangler");
+  const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
+    "notebookPreviewProvider"
+  )?.workspaceValue;
+  let notebook: vscode.NotebookDocument | undefined;
+  let acceptanceError: { readonly value: unknown } | undefined;
+  try {
+    await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
+    notebook = await vscode.workspace.openNotebookDocument(notebookUri);
+    const notebookEditor = await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
+    const workbench = await connectToEditorWorkbench();
+    await jupyterExtension.activate();
+    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, releasedJupyterKernelTarget(phase));
+    await executeReleasedNotebookCell(notebook, 0, RELEASED_JUPYTER_R_SETUP_RESULT, "jupyter-r:setup", notebookEditor);
+    const setup = releasedNotebookJsonResult(notebook.cellAt(0), RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
+    assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 24 });
+
+    const picker = await activateReleasedNotebookVariableAction(workbench, notebook, async () => {
+      const consent = await waitForReleasedJupyterConsent(workbench, testing);
+      await consent.allow.click();
+      await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    });
+    for (const [name, flavor] of [
+      ["base_frame", "data.frame"],
+      ["orders_tibble", "tibble"],
+      ["orders_table", "data.table"]
+    ] as const) {
+      const row = await releasedJupyterQuickPickRow(picker, name);
+      assert.ok(row, `The real R variable picker must expose ${name}.`);
+      assert.match((await row.innerText()).replace(/\s+/gu, " "), new RegExp(`R · ${flavor}.*Viewing only`, "u"));
+    }
+    const baseRow = await releasedJupyterQuickPickRow(picker, "base_frame");
+    assert.ok(baseRow);
+    await baseRow.click();
+
+    const base = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      {
+        name: "base_frame",
+        type: "data.frame",
+        backend: "r",
+        rDataframeFlavor: "r.data.frame",
+        firstValue: "1",
+        notebookInsert: false
+      },
+      "the base R data.frame opened from the notebook picker"
+    );
+    await assertReleasedSessionPage(testing, base, "1", "jupyter-r-base-page");
+    assert.deepEqual(base.metadata.capabilities, {
+      editable: false,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      notebookInsert: false,
+      filter: false,
+      sort: true,
+      profile: true,
+      columnValues: false
+    });
+    await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
+    await disposePackagedSessionPanel(testing, base.sessionId, "the base R data.frame session");
+
+    for (const expected of [
+      {
+        name: "orders_tibble",
+        type: "tbl_df",
+        backend: "r" as const,
+        rDataframeFlavor: "r.tibble" as const,
+        firstValue: "1",
+        notebookInsert: false
+      },
+      {
+        name: "orders_table",
+        type: "data.table",
+        backend: "r" as const,
+        rDataframeFlavor: "r.data.table" as const,
+        firstValue: "1",
+        notebookInsert: false
+      }
+    ]) {
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+      const session = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        expected,
+        `the native ${expected.rDataframeFlavor} session`
+      );
+      await assertReleasedSessionPage(testing, session, "1", `jupyter-r-${expected.name}-page`);
+      await disposePackagedSessionPanel(testing, session.sessionId, `the native ${expected.rDataframeFlavor} session`);
+    }
+
+    await showExactReleasedNotebook(notebook);
+    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "base_frame");
+    const beforeRestart = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      {
+        name: "base_frame",
+        type: "data.frame",
+        backend: "r",
+        rDataframeFlavor: "r.data.frame",
+        firstValue: "1",
+        notebookInsert: false
+      },
+      "the R restart session"
+    );
+    await restartReleasedJupyterKernelAndWait(notebook);
+    const stale = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: beforeRestart.sessionId,
+      revision: beforeRestart.metadata.revision,
+      viewRequestId: "jupyter-r-restarted-session",
+      offset: 0,
+      limit: 10,
+      filterModel: beforeRestart.metadata.filterModel
+    });
+    assert.equal(stale.kind, "error");
+    if (stale.kind !== "error") throw new Error("The restarted R session unexpectedly returned data.");
+    assert.equal(stale.code, "r_kernel_changed");
+    assert.equal(stale.recoverable, true);
+    await disposePackagedSessionPanel(testing, beforeRestart.sessionId, "the invalidated R session");
+
+    const replacementEditor = await showExactReleasedNotebook(notebook);
+    await executeReleasedNotebookCell(
+      notebook,
+      0,
+      RELEASED_JUPYTER_R_SETUP_RESULT,
+      "jupyter-r:replacement-setup",
+      replacementEditor
+    );
+    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "base_frame");
+    const recovered = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      {
+        name: "base_frame",
+        type: "data.frame",
+        backend: "r",
+        rDataframeFlavor: "r.data.frame",
+        firstValue: "1",
+        notebookInsert: false
+      },
+      "the reopened R session after kernel restart"
+    );
+    assert.notEqual(recovered.sessionId, beforeRestart.sessionId);
+    await assertReleasedSessionPage(testing, recovered, "1", "jupyter-r-recovered-page");
+    await disposePackagedSessionPanel(testing, recovered.sessionId, "the recovered R session");
+    assert.equal(testing.diagnostics().sessionCount, 0);
+  } catch (error) {
+    acceptanceError = { value: error };
+  } finally {
+    try {
+      await configuration.update("notebookPreviewProvider", originalProvider, vscode.ConfigurationTarget.Workspace);
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+    try {
+      await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+    try {
+      rmSync(directory, { recursive: true, force: true });
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+  }
+  if (acceptanceError) throw acceptanceError.value;
+}
+
+async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R renderer must acknowledge its first complete host snapshot."
+  );
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The native R journey requires its exact production webview.");
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+  assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING ONLY");
+  await app
+    .getByRole("rowheader", { name: "Row 1, label case-0001", exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await app.getByRole("button", { name: "Add step", exact: true }).count(), 0);
+  assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+  const active = testing.activeSession();
+  assert.ok(active, "The native R profile journey requires an active session.");
+  assert.equal(active.sessionId, sessionId, "The native R profile journey must stay on its exact session.");
+
+  const profiles = app.getByRole("button", { name: "Header profiles", exact: true });
+  await profiles.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await profiles.isEnabled(), true);
+  assert.equal(await profiles.getAttribute("aria-pressed"), "false", "R header profiles must start off.");
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill("score");
+  await app
+    .getByRole("option", { name: /^score,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await columnSearch.press("Enter");
+
+  const profileToggle = app.getByRole("button", { name: "Column profiles and sorts", exact: true });
+  await profileToggle.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await profileToggle.isEnabled(), true);
+  await profileToggle.click();
+  const drawer = app.getByRole("complementary", { name: "Column profiles and sorts", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  const columnProfile = drawer.getByRole("tabpanel");
+  await columnProfile.getByRole("heading", { name: "score", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await columnProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 30_000
+  });
+  await assertReleasedProfileStat(columnProfile, "Rows", "1,205");
+  await assertReleasedProfileStat(columnProfile, "Distinct", "1,205");
+  await assertReleasedProfileStat(columnProfile, "Min", "1");
+  await assertReleasedProfileStat(columnProfile, "Max", "1,205");
+  await drawer.getByRole("tab", { name: "Dataset", exact: true }).click();
+  const datasetProfile = drawer.getByRole("tabpanel");
+  await datasetProfile.getByRole("heading", { name: "Dataset", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await datasetProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 30_000
+  });
+  await assertReleasedProfileStat(datasetProfile, "Rows", "1,205");
+  await assertReleasedProfileStat(datasetProfile, "Columns", "24");
+  await assertReleasedProfileStat(datasetProfile, "Missing cells", "0");
+  await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "0");
+  await assertReleasedProfileStat(datasetProfile, "Duplicate rows", "0");
+  await drawer.getByRole("tab", { name: "Sorts", exact: true }).click();
+  await drawer.getByRole("heading", { name: "Sorts", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  assert.equal(await drawer.getByText("Filtering is unavailable for this dataframe.", { exact: true }).count(), 0);
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+
+  const visibleRows = app.getByRole("status", { name: "Visible rows" });
+  const next = app.getByRole("button", { name: "Next block", exact: true });
+  for (const expected of [
+    "Rows 201–400 of 1,205",
+    "Rows 401–600 of 1,205",
+    "Rows 601–800 of 1,205",
+    "Rows 801–1,000 of 1,205",
+    "Rows 1,001–1,200 of 1,205",
+    "Rows 1,201–1,205 of 1,205"
+  ]) {
+    await next.click();
+    await waitForLocatorText(visibleRows, (text) => text.trim() === expected, 10_000, expected);
+  }
+  assert.equal(await next.isDisabled(), true);
+
+  await columnSearch.fill("extra_20");
+  await app
+    .getByRole("option", { name: /^extra_20,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await columnSearch.press("Enter");
+  const finalColumn = app.locator('th[data-column="extra_20"]');
+  await finalColumn.waitFor({ state: "visible", timeout: 10_000 });
+  await app
+    .locator('td[data-grid-row="1204"][data-grid-column="23"]')
+    .filter({ hasText: "value-20-1205" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+
+  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  const scoreFirst = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    sessionId,
+    revision: testing.activeSession()!.metadata.revision,
+    viewRequestId: "jupyter-r-score-priority",
+    offset: 0,
+    limit: 1,
+    filterModel: testing.activeSession()!.viewState.filterModel
+  });
+  assert.equal(scoreFirst.kind, "page");
+  if (scoreFirst.kind === "page") assert.equal(scoreFirst.page.rows[0]?.values[0]?.display, "1205");
+
+  await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+  const sidebar = workbench.locator(".part.sidebar:visible");
+  const filtersTree = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
+  if (!(await filtersTree.isVisible().catch(() => false))) {
+    await sidebar.getByText("Filters / Sorts", { exact: true }).first().click();
+  }
+  const groupPriorityTwo = filtersTree
+    .getByRole("treeitem", { name: /^group, Priority 2 · Ascending · nulls last/u })
+    .first();
+  await groupPriorityTwo.waitFor({ state: "visible", timeout: 10_000 });
+  await groupPriorityTwo.hover();
+  await groupPriorityTwo.getByRole("button", { name: /Move View Sort Up$/u }).click();
+  await waitFor(
+    () =>
+      testing
+        .activeSession()
+        ?.viewState.filterModel.sort.map((rule) => rule.column)
+        .join(",") === "group,score",
+    10_000,
+    "the native R sort priority to move through the Activity Bar"
+  );
+  const groupFirst = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    sessionId,
+    revision: testing.activeSession()!.metadata.revision,
+    viewRequestId: "jupyter-r-group-priority",
+    offset: 0,
+    limit: 1,
+    filterModel: testing.activeSession()!.viewState.filterModel
+  });
+  assert.equal(groupFirst.kind, "page");
+  if (groupFirst.kind === "page") assert.equal(groupFirst.page.rows[0]?.values[0]?.display, "602");
+}
+
+async function assertReleasedProfileStat(panel: Locator, label: string, expected: string): Promise<void> {
+  const term = panel.getByText(label, { exact: true });
+  await term.waitFor({ state: "visible", timeout: 30_000 });
+  assert.equal(await term.evaluate((element) => element.tagName), "DT");
+  await waitForLocatorText(
+    term.locator("xpath=following-sibling::dd[1]"),
+    (text) => text.trim() === expected,
+    30_000,
+    `${label} to render as ${expected} in the native R profile`
+  );
+}
+
+async function applyReleasedRQuickSort(
+  app: Locator,
+  testing: TestApi,
+  column: string,
+  direction: "ascending" | "descending",
+  expectedPriority: readonly string[]
+): Promise<void> {
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill(column);
+  await app
+    .getByRole("option", { name: new RegExp(`^${column},`, "u") })
+    .first()
+    .waitFor({
+      state: "visible",
+      timeout: 10_000
+    });
+  await columnSearch.press("Enter");
+  const header = app.locator(`th[data-column=${JSON.stringify(column)}]`).first();
+  const menu = header.locator("details.columnMenu").first();
+  await menu.getByLabel(`Column actions for ${column}`).click();
+  await menu.getByRole("button", { name: `Sort ${direction}`, exact: true }).click();
+  assert.equal(await menu.evaluate((element) => element.hasAttribute("open")), false);
+  await waitFor(
+    () =>
+      testing
+        .activeSession()
+        ?.viewState.filterModel.sort.map((rule) => rule.column)
+        .join(",") === expectedPriority.join(","),
+    10_000,
+    `${column} to join the native R compound sort`
   );
 }
 
@@ -3094,6 +3540,13 @@ function readReleasedRemoteJupyterDescriptor(runId: string): {
 }
 
 function releasedJupyterKernelTarget(phase: ReleasedJupyterPhase): ReleasedJupyterKernelTarget {
+  if (phase === "jupyter-r") {
+    return {
+      label: RELEASED_JUPYTER_R_KERNEL_LABEL,
+      name: RELEASED_JUPYTER_R_KERNEL_NAME,
+      routeLabels: ["Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."]
+    };
+  }
   if (phase !== "jupyter-remote") {
     return {
       label: RELEASED_JUPYTER_LOCAL_KERNEL_LABEL,
@@ -4507,6 +4960,9 @@ async function waitForReleasedVariableSession(
   const active = testing.activeSession();
   assert.ok(active, `${description} must publish an active session.`);
   assert.equal(active.metadata.backend, expected.backend);
+  if (expected.rDataframeFlavor !== undefined) {
+    assert.equal(active.metadata.rDataframeFlavor, expected.rDataframeFlavor);
+  }
   assert.equal(active.metadata.source.kind, "notebookVariable");
   assert.equal(active.metadata.source.variableName, expected.name);
   assert.equal(active.metadata.source.uri, notebook.uri.toString());

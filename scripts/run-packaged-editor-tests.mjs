@@ -21,6 +21,7 @@ import {
   resolveDataWranglerExtensionAcceptanceInstallTarget,
   resolveJupyterExtensionAcceptanceInstallTarget,
   resolvePythonExtensionAcceptanceInstallTarget,
+  runBoundedEditorCommand,
   runBoundedEditorCliCommand,
   runEditorAcceptancePhase,
   stageJupyterExtensionAcceptanceVsix,
@@ -58,6 +59,7 @@ import {
   acceptancePythonForPhase,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
+  prepareJupyterAcceptanceREnvironment,
   writeJupyterAcceptanceEnvironment,
   writeRemoteJupyterAcceptanceDescriptor,
   writeRemoteJupyterAcceptanceEnvironment
@@ -119,7 +121,8 @@ try {
   hostHomes = collectEditorAcceptancePrivateDiagnosticPaths([
     resolve(root, process.argv[2] ?? "openwrangler.vsix"),
     process.env.OPEN_WRANGLER_PYTHON_EXTENSION_VSIX,
-    process.env.OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX
+    process.env.OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX,
+    process.env.OPEN_WRANGLER_TEST_RSCRIPT
   ]);
   evidenceStagingReceipt = createEditorAcceptanceEvidenceStagingRoot(resolve(root, "tmp", "editor-acceptance-staging"));
   evidenceRoot = evidenceStagingReceipt.root;
@@ -200,10 +203,11 @@ try {
           if (
             acceptanceMode !== "full" &&
             acceptanceMode !== "platform-smoke" &&
-            acceptanceMode !== "data-wrangler-coexistence"
+            acceptanceMode !== "data-wrangler-coexistence" &&
+            acceptanceMode !== "r-jupyter"
           ) {
             throw new Error(
-              'OPEN_WRANGLER_PACKAGED_MODE must be "full", "platform-smoke", or "data-wrangler-coexistence".'
+              'OPEN_WRANGLER_PACKAGED_MODE must be "full", "platform-smoke", "data-wrangler-coexistence", or "r-jupyter".'
             );
           }
           if (
@@ -221,6 +225,37 @@ try {
             throw new Error(
               'OPEN_WRANGLER_PACKAGED_MODE="data-wrangler-coexistence" requires VS Code plus both real Jupyter and real Data Wrangler opt-ins.'
             );
+          }
+          const rscript = process.env.OPEN_WRANGLER_TEST_RSCRIPT;
+          if (acceptanceMode === "r-jupyter") {
+            if (process.env.CI) {
+              throw new Error('OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" is a local manual release check, not a CI job.');
+            }
+            if (
+              !requested?.length ||
+              requested.length > 2 ||
+              new Set(requested).size !== requested.length ||
+              requested.some((key) => !["vscode", "cursor"].includes(key))
+            ) {
+              throw new Error(
+                'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" requires an explicit, duplicate-free VS Code/Cursor list in OPEN_WRANGLER_PACKAGED_EDITORS.'
+              );
+            }
+            if (!jupyterExtensionInstallTarget) {
+              throw new Error(
+                'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" requires the released Jupyter extension opt-in.'
+              );
+            }
+            if (remoteJupyterEnabled || dataWranglerExtensionInstallTarget) {
+              throw new Error(
+                'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" cannot be combined with remote-Jupyter or Data Wrangler coexistence opt-ins.'
+              );
+            }
+            if (typeof rscript !== "string" || !isAbsolute(rscript) || !existsSync(rscript)) {
+              throw new Error(
+                'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" requires OPEN_WRANGLER_TEST_RSCRIPT to name an existing absolute Rscript executable.'
+              );
+            }
           }
           const supportedEditorKeys = new Set(["vscode", "cursor"]);
           const unknownRequested = requested?.filter((key) => !supportedEditorKeys.has(key)) ?? [];
@@ -323,17 +358,59 @@ try {
                   ? "python"
                   : "python3");
           process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-          if (jupyterExtensionInstallTarget && (!isAbsolute(testPython) || !existsSync(testPython))) {
+          if (
+            jupyterExtensionInstallTarget &&
+            acceptanceMode !== "r-jupyter" &&
+            (!isAbsolute(testPython) || !existsSync(testPython))
+          ) {
             throw new Error(
               "Real Jupyter-extension acceptance requires OPEN_WRANGLER_TEST_PYTHON to resolve to an existing absolute interpreter."
             );
           }
-          if (acceptanceMode !== "data-wrangler-coexistence") {
+          if (acceptanceMode !== "data-wrangler-coexistence" && acceptanceMode !== "r-jupyter") {
             writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:preflight-python");
             preflightPackagedEditorPython(testPython);
           }
           let jupyterKernelPython;
-          if (jupyterExtensionInstallTarget) {
+          let rAcceptanceEnvironment;
+          if (acceptanceMode === "r-jupyter") {
+            writeCorrelatedProgress(
+              orchestrationProgressPath,
+              orchestrationRunId,
+              "setup",
+              "setup:prepare-r-jupyter-environment"
+            );
+            rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(resolve(temporaryRoot, "rv"), rscript, {
+              containedBy: temporaryRoot
+            });
+            try {
+              await runBoundedEditorCommand(
+                rAcceptanceEnvironment.dependencyProbe.input,
+                rAcceptanceEnvironment.dependencyProbe.options
+              );
+            } catch (error) {
+              if (
+                !(error instanceof Error) ||
+                !/Released-Jupyter private R dependency probe exited with code 10 and signal none/u.test(error.message)
+              ) {
+                throw error;
+              }
+              await runBoundedEditorCommand(
+                rAcceptanceEnvironment.dependencyInstall.input,
+                rAcceptanceEnvironment.dependencyInstall.options
+              );
+              await runBoundedEditorCommand(
+                rAcceptanceEnvironment.dependencyProbe.input,
+                rAcceptanceEnvironment.dependencyProbe.options
+              );
+            }
+            writeCorrelatedProgress(
+              orchestrationProgressPath,
+              orchestrationRunId,
+              "setup",
+              "setup:r-jupyter-environment-ready"
+            );
+          } else if (jupyterExtensionInstallTarget) {
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
@@ -390,6 +467,7 @@ try {
             const jupyterDenyUserData = resolve(profile, "jd");
             const jupyterPySparkUserData = resolve(profile, "js");
             const jupyterRemoteUserData = resolve(profile, "jr");
+            const jupyterRUserData = resolve(profile, "jz");
             const coexistOpenUserData = resolve(profile, "co");
             const coexistDataUserData = resolve(profile, "cd");
             const restrictedUserData = resolve(profile, "r");
@@ -400,6 +478,7 @@ try {
             let jupyterDenyEnvironment;
             let jupyterPySparkEnvironment;
             let jupyterRemoteEnvironment;
+            let jupyterREnvironment;
             let coexistOpenEnvironment;
             let coexistDataEnvironment;
             const workspace = resolve(profile, "Open Wrangler Demo");
@@ -407,6 +486,7 @@ try {
             const jupyterDenyWorkspace = resolve(profile, "Open Wrangler Jupyter Deny");
             const jupyterPySparkWorkspace = resolve(profile, "Open Wrangler Jupyter PySpark");
             const jupyterRemoteWorkspace = resolve(profile, "Open Wrangler Jupyter Remote");
+            const jupyterRWorkspace = resolve(profile, "Open Wrangler Jupyter R");
             const coexistOpenWorkspace = resolve(profile, "Open Wrangler Coexist Open");
             const coexistDataWorkspace = resolve(profile, "Open Wrangler Coexist Data");
             const acceptanceHarness = resolve(profile, "acceptance-harness");
@@ -423,21 +503,25 @@ try {
                   ? { "platform-smoke": resolve(profile, "platform-smoke-result.json") }
                   : {}),
               ...(pythonExtensionInstallTarget
-                ? { "python-environment": resolve(profile, "python-environment-result.json") }
+                ? acceptanceMode === "full"
+                  ? { "python-environment": resolve(profile, "python-environment-result.json") }
+                  : {}
                 : {}),
               ...(jupyterExtensionInstallTarget
-                ? {
-                    "jupyter-deny": resolve(profile, "jupyter-deny-result.json"),
-                    "jupyter-allow": resolve(profile, "jupyter-allow-result.json"),
-                    "jupyter-pyspark": resolve(profile, "jupyter-pyspark-result.json"),
-                    ...(remoteJupyterEnabled
-                      ? {
-                          "jupyter-remote-setup": resolve(profile, "jupyter-remote-setup-result.json"),
-                          "jupyter-remote": resolve(profile, "jupyter-remote-result.json"),
-                          "jupyter-remote-cleanup": resolve(profile, "jupyter-remote-cleanup-result.json")
-                        }
-                      : {})
-                  }
+                ? acceptanceMode === "r-jupyter"
+                  ? { "jupyter-r": resolve(profile, "jupyter-r-result.json") }
+                  : {
+                      "jupyter-deny": resolve(profile, "jupyter-deny-result.json"),
+                      "jupyter-allow": resolve(profile, "jupyter-allow-result.json"),
+                      "jupyter-pyspark": resolve(profile, "jupyter-pyspark-result.json"),
+                      ...(remoteJupyterEnabled
+                        ? {
+                            "jupyter-remote-setup": resolve(profile, "jupyter-remote-setup-result.json"),
+                            "jupyter-remote": resolve(profile, "jupyter-remote-result.json"),
+                            "jupyter-remote-cleanup": resolve(profile, "jupyter-remote-cleanup-result.json")
+                          }
+                        : {})
+                    }
                 : {}),
               ...(dataWranglerCoexistenceEnabled
                 ? {
@@ -455,20 +539,24 @@ try {
                 : acceptanceMode === "platform-smoke"
                   ? { "platform-smoke": randomUUID() }
                   : {}),
-              ...(pythonExtensionInstallTarget ? { "python-environment": randomUUID() } : {}),
+              ...(pythonExtensionInstallTarget && acceptanceMode === "full"
+                ? { "python-environment": randomUUID() }
+                : {}),
               ...(jupyterExtensionInstallTarget
-                ? {
-                    "jupyter-deny": randomUUID(),
-                    "jupyter-allow": randomUUID(),
-                    "jupyter-pyspark": randomUUID(),
-                    ...(remoteJupyterEnabled
-                      ? {
-                          "jupyter-remote-setup": randomUUID(),
-                          "jupyter-remote": randomUUID(),
-                          "jupyter-remote-cleanup": randomUUID()
-                        }
-                      : {})
-                  }
+                ? acceptanceMode === "r-jupyter"
+                  ? { "jupyter-r": randomUUID() }
+                  : {
+                      "jupyter-deny": randomUUID(),
+                      "jupyter-allow": randomUUID(),
+                      "jupyter-pyspark": randomUUID(),
+                      ...(remoteJupyterEnabled
+                        ? {
+                            "jupyter-remote-setup": randomUUID(),
+                            "jupyter-remote": randomUUID(),
+                            "jupyter-remote-cleanup": randomUUID()
+                          }
+                        : {})
+                    }
                 : {}),
               ...(dataWranglerCoexistenceEnabled
                 ? {
@@ -508,13 +596,17 @@ try {
                 mkdirSync(workspace, { recursive: true });
                 cpSync(resolve(root, "fixtures"), resolve(workspace, "fixtures"), { recursive: true });
                 if (jupyterExtensionInstallTarget) {
-                  for (const jupyterWorkspace of [
-                    jupyterAllowWorkspace,
-                    jupyterDenyWorkspace,
-                    jupyterPySparkWorkspace,
-                    ...(remoteJupyterEnabled ? [jupyterRemoteWorkspace] : []),
-                    ...(dataWranglerCoexistenceEnabled ? [coexistOpenWorkspace, coexistDataWorkspace] : [])
-                  ]) {
+                  const jupyterWorkspaces =
+                    acceptanceMode === "r-jupyter"
+                      ? [jupyterRWorkspace]
+                      : [
+                          jupyterAllowWorkspace,
+                          jupyterDenyWorkspace,
+                          jupyterPySparkWorkspace,
+                          ...(remoteJupyterEnabled ? [jupyterRemoteWorkspace] : []),
+                          ...(dataWranglerCoexistenceEnabled ? [coexistOpenWorkspace, coexistDataWorkspace] : [])
+                        ];
+                  for (const jupyterWorkspace of jupyterWorkspaces) {
                     mkdirSync(jupyterWorkspace, { recursive: true });
                     cpSync(resolve(root, "fixtures"), resolve(jupyterWorkspace, "fixtures"), {
                       recursive: true
@@ -536,7 +628,7 @@ try {
                   "window.menuStyle": "custom",
                   "files.simpleDialog.enable": true
                 });
-                if (pythonExtensionInstallTarget) {
+                if (acceptanceMode === "full" && pythonExtensionInstallTarget) {
                   writeEditorSettings(pythonEnvironmentUserData, {
                     "window.dialogStyle": "custom",
                     "window.menuStyle": "custom",
@@ -545,39 +637,46 @@ try {
                   });
                 }
                 if (jupyterExtensionInstallTarget) {
-                  jupyterAllowEnvironment = writeJupyterAcceptanceEnvironment(
-                    resolve(profile, "ka"),
-                    jupyterKernelPython
-                  );
-                  jupyterDenyEnvironment = writeJupyterAcceptanceEnvironment(
-                    resolve(profile, "kd"),
-                    jupyterKernelPython
-                  );
-                  jupyterPySparkEnvironment = writeJupyterAcceptanceEnvironment(
-                    resolve(profile, "ks"),
-                    jupyterKernelPython
-                  );
-                  if (dataWranglerCoexistenceEnabled) {
-                    coexistOpenEnvironment = writeJupyterAcceptanceEnvironment(
-                      resolve(profile, "ko"),
+                  let jupyterUserData;
+                  if (acceptanceMode === "r-jupyter") {
+                    jupyterREnvironment = rAcceptanceEnvironment.jupyterEnvironment;
+                    jupyterUserData = [jupyterRUserData];
+                  } else {
+                    jupyterAllowEnvironment = writeJupyterAcceptanceEnvironment(
+                      resolve(profile, "ka"),
                       jupyterKernelPython
                     );
-                    coexistDataEnvironment = writeJupyterAcceptanceEnvironment(
-                      resolve(profile, "kw"),
+                    jupyterDenyEnvironment = writeJupyterAcceptanceEnvironment(
+                      resolve(profile, "kd"),
                       jupyterKernelPython
                     );
+                    jupyterPySparkEnvironment = writeJupyterAcceptanceEnvironment(
+                      resolve(profile, "ks"),
+                      jupyterKernelPython
+                    );
+                    if (dataWranglerCoexistenceEnabled) {
+                      coexistOpenEnvironment = writeJupyterAcceptanceEnvironment(
+                        resolve(profile, "ko"),
+                        jupyterKernelPython
+                      );
+                      coexistDataEnvironment = writeJupyterAcceptanceEnvironment(
+                        resolve(profile, "kw"),
+                        jupyterKernelPython
+                      );
+                    }
+                    if (remoteJupyterEnabled) {
+                      jupyterRemoteEnvironment = writeRemoteJupyterAcceptanceEnvironment(resolve(profile, "kr"));
+                    }
+                    jupyterUserData = [
+                      jupyterAllowUserData,
+                      jupyterDenyUserData,
+                      jupyterPySparkUserData,
+                      ...(remoteJupyterEnabled ? [jupyterRemoteUserData] : []),
+                      ...(dataWranglerCoexistenceEnabled ? [coexistOpenUserData, coexistDataUserData] : [])
+                    ];
                   }
-                  if (remoteJupyterEnabled) {
-                    jupyterRemoteEnvironment = writeRemoteJupyterAcceptanceEnvironment(resolve(profile, "kr"));
-                  }
-                  for (const jupyterUserData of [
-                    jupyterAllowUserData,
-                    jupyterDenyUserData,
-                    jupyterPySparkUserData,
-                    ...(remoteJupyterEnabled ? [jupyterRemoteUserData] : []),
-                    ...(dataWranglerCoexistenceEnabled ? [coexistOpenUserData, coexistDataUserData] : [])
-                  ]) {
-                    writeEditorSettings(jupyterUserData, {
+                  for (const jupyterUserDataDirectory of jupyterUserData) {
+                    writeEditorSettings(jupyterUserDataDirectory, {
                       "window.dialogStyle": "custom",
                       "window.menuStyle": "custom",
                       "files.simpleDialog.enable": true,
@@ -646,7 +745,7 @@ try {
                   },
                   { timeoutMs: 60_000 }
                 );
-                if (pythonExtensionInstallTarget) {
+                if (acceptanceMode === "full" && pythonExtensionInstallTarget) {
                   writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-python-extension");
                   await runBoundedEditorCliCommand(
                     {
@@ -668,6 +767,8 @@ try {
                   );
                 }
                 if (jupyterExtensionInstallTarget) {
+                  const jupyterInstallUserData =
+                    acceptanceMode === "r-jupyter" ? jupyterRUserData : jupyterAllowUserData;
                   writeCorrelatedProgress(
                     progressPaths.setup,
                     runIds.setup,
@@ -683,7 +784,7 @@ try {
                         editor,
                         args: [
                           "--user-data-dir",
-                          jupyterAllowUserData,
+                          jupyterInstallUserData,
                           "--extensions-dir",
                           jupyterExtensions,
                           "--install-extension",
@@ -712,7 +813,7 @@ try {
                       editor: isAbsolute(jupyterExtensionInstallTarget) ? editor : jupyterMarketplaceInstaller,
                       args: [
                         "--user-data-dir",
-                        jupyterAllowUserData,
+                        jupyterInstallUserData,
                         "--extensions-dir",
                         jupyterExtensions,
                         "--install-extension",
@@ -826,6 +927,7 @@ try {
                   );
                 }
                 if (
+                  acceptanceMode === "full" &&
                   pythonExtensionInstallTarget &&
                   !installed
                     .split(/\r?\n/u)
@@ -837,12 +939,14 @@ try {
                   );
                 }
                 if (jupyterExtensionInstallTarget) {
+                  const jupyterInstallUserData =
+                    acceptanceMode === "r-jupyter" ? jupyterRUserData : jupyterAllowUserData;
                   const { stdout: jupyterInstalled } = await runBoundedEditorCliCommand(
                     {
                       editor,
                       args: [
                         "--user-data-dir",
-                        jupyterAllowUserData,
+                        jupyterInstallUserData,
                         "--extensions-dir",
                         jupyterExtensions,
                         "--list-extensions",
@@ -958,7 +1062,24 @@ try {
                     progressPath: progressPaths["python-environment"]
                   });
                 }
-                if (jupyterExtensionInstallTarget && acceptanceMode !== "data-wrangler-coexistence") {
+                if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter") {
+                  activePhase = "jupyter-r";
+                  await runEditorAcceptancePhase({
+                    editor: identifiedEditor,
+                    workspace: jupyterRWorkspace,
+                    userData: jupyterRUserData,
+                    extensions: jupyterExtensions,
+                    developmentPaths: [],
+                    testModule,
+                    python: acceptancePythonForPhase("jupyter-r", testPython, jupyterKernelPython),
+                    phase: "jupyter-r",
+                    resultPath: resultPaths["jupyter-r"],
+                    runId: runIds["jupyter-r"],
+                    progressPath: progressPaths["jupyter-r"],
+                    requiresWorkbenchCdp: true,
+                    jupyterEnvironment: jupyterREnvironment
+                  });
+                } else if (jupyterExtensionInstallTarget && acceptanceMode !== "data-wrangler-coexistence") {
                   for (const phase of ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"]) {
                     const phaseWorkspace =
                       phase === "jupyter-deny"
