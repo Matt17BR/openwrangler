@@ -347,6 +347,11 @@ describe("public readiness oracles", () => {
         index: 89,
         text: "session_duration_ms Duration Missing 2% Distinct 98% 2 days 00:00:00 1400000"
       },
+      {
+        column: "fulfillment_duration_ms",
+        index: 90,
+        text: "fulfillment_duration_ms Duration Missing 2% Distinct 98% 2 days, 0:00:00 1400000"
+      },
       { column: "is_active", index: 92, text: "is_active Boolean Missing 2% Distinct 2 True 5000000 False 5000000" }
     ]) {
       expect(mixedProfileTextReady(input)).toBe(true);

@@ -45,13 +45,14 @@ Each product run records:
 4. the profiling action to completed summaries for all 100 columns; and
 5. peak process-tree PSS during the UI part of the run.
 
-Each repetition also runs one native `read_parquet` in a separate Python process for its engine: five Pandas loads
-and five Polars loads in total. Those results are grouped by engine, not attributed to either extension. The notebook
-kernel then loads the same dataframe before the UI measurement, which matches the common case where a dataframe
-already exists and the user evaluates its name. Data Wrangler accepts a Polars input through its Pandas conversion
-path. That conversion can happen between the inline and launch milestones, so the Run Cell-to-grid measurement keeps
-the complete cost visible even if either shorter timing cannot localize it. The native-load processes do not flush
-the operating-system file cache, so they measure a warm source rather than cold-disk I/O.
+For each engine and repetition, one of the two product journeys is paired with a native `read_parquet` in a separate
+Python process. That produces five Pandas reads and five Polars reads, or ten native reads in total. Those results are
+grouped by engine, not attributed to either extension. The notebook kernel then loads the same dataframe before the UI
+measurement, which matches the common case where a dataframe already exists and the user evaluates its name. Data
+Wrangler accepts a Polars input through its Pandas conversion path. That conversion can happen between the inline and
+launch milestones, so the Run Cell-to-grid measurement keeps the complete cost visible even if either shorter timing
+cannot localize it. The native-load processes do not flush the operating-system file cache, so they measure a warm
+source rather than cold-disk I/O.
 
 The report gives the minimum, median, and maximum for each measurement. A run contributes to every measurement whose
 end point it reached, so a later profiling timeout does not throw away a valid inline or grid time. A usable
