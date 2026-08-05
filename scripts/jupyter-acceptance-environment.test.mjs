@@ -227,7 +227,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     assert.match(prepared.dependencyProbe.input.args.at(-1), /find\.package\(.+lib\.loc = \.ow_library/su);
     assert.match(prepared.dependencyProbe.input.args.at(-1), /packageVersion\(.+lib\.loc = \.ow_library/su);
     assert.deepEqual(prepared.dependencyProbe.options, { timeoutMs: 30_000 });
-    assert.match(prepared.dependencyInstall.input.args.at(-1), /https:\/\/cloud\.r-project\.org/u);
+    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes("https://cloud.r-project.org"), true);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /lib = \.ow_library/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /dependencies = NA/u);
     assert.deepEqual(prepared.dependencyInstall.options, { timeoutMs: 240_000 });
