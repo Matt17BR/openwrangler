@@ -2111,7 +2111,7 @@ describe("App file import options", () => {
     expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
   });
 
-  it("labels PySpark sessions as experimental and viewing-only", async () => {
+  it("explains PySpark source order through a keyboard-accessible disclosure", async () => {
     render(<App />);
     dispatchAppMessage({
       kind: "sessionOpened",
@@ -2126,9 +2126,48 @@ describe("App file import options", () => {
     });
 
     expect(await screen.findByText("Experimental")).toHaveAttribute("title", "PySpark support is experimental.");
+    const orderingBadge = screen.getByText("Source order").closest("summary");
+    expect(orderingBadge).toHaveAttribute("data-session-badge", "ordering");
+    expect(orderingBadge).toHaveAttribute("aria-describedby", "pyspark-ordering-help");
+    const help = screen.getByText("Spark does not guarantee source order. Add a sort to define the order you need.");
+    expect(help).not.toBeVisible();
+    fireEvent.click(orderingBadge!);
+    expect(help).toBeVisible();
+    orderingBadge?.focus();
+    expect(orderingBadge).toHaveFocus();
     expect(screen.getByText("Viewing only")).toBeVisible();
     expect(screen.getByText("PySpark")).toBeVisible();
     expect(screen.queryByText(/^viewing$/iu)).not.toBeInTheDocument();
+  });
+
+  it("warns that rows tied across every PySpark sort key may move on rerun", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        backend: "pyspark",
+        mode: "viewing",
+        capabilities: { ...metadata.capabilities, editable: false },
+        filterModel: {
+          ...metadata.filterModel,
+          sort: [{ column: "city", direction: "asc", nulls: "last" }]
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    expect(await screen.findByText("PySpark")).toBeVisible();
+    expect(screen.queryByText("Source order")).not.toBeInTheDocument();
+    const orderingBadge = screen.getByText("Sorted").closest("summary");
+    expect(orderingBadge).toHaveAttribute("data-session-badge", "ordering");
+    const help = screen.getByText(
+      "Rows tied across every sort key may move when Spark reruns this dataframe. Add another sort key to break the tie."
+    );
+    expect(help).not.toBeVisible();
+    fireEvent.click(orderingBadge!);
+    expect(help).toBeVisible();
   });
 
   it("removes one native-tree column filter while preserving sibling filters and all sorts", async () => {

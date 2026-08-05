@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- PySpark sessions now label unsorted rows as **Source order** and explicitly sorted rows as **Sorted**. The ordering
+  badge explains Spark's behavior for unsorted rows and for rows tied across every sort key.
 - Future stable and preview releases now ship from `main`. Releases through v1.2.2 can still be recovered from their
   immutable tags, but the old v1 maintenance branch is no longer part of normal development or publishing.
 

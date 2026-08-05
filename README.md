@@ -144,16 +144,18 @@ Choose Notebook Preview Provider**.
   </tr>
   <tr>
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png" width="872" height="700"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Source Order, Experimental, Viewing Only, and PySpark badges" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/3c512a6ed5ef645eb780ce0e01ea6c6e0f346dc2/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
   </tr>
   <tr>
     <td>DuckDB relations are view-only and do not require dataframe conversion.</td>
-    <td>Experimental PySpark 4.2.x support provides viewing, filtering, sorting, paging, and profiles.</td>
+    <td>Experimental PySpark 4.2.x support stays native for viewing, filtering, sorting, paging, and profiles.</td>
   </tr>
 </table>
 
-DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's existing Spark session and reads pages
-in order. It does not count or cache the whole dataframe before showing the first page; the row total appears after
+DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's existing Spark session and loads pages
+sequentially. The toolbar says **Source order** until you add a sort, then **Sorted**. Open the badge to see what Spark
+can reorder: source order can change, and rows tied across every sort key can move when Spark reruns the dataframe.
+Open Wrangler does not count or cache the whole dataframe before showing the first page; the row total appears after
 the final page. If the data changes while you page through it, Open Wrangler asks you to reopen the variable. It does
 not install PySpark, handle cluster authentication, or stop your Spark session.
 
