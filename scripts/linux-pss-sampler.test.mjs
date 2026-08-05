@@ -46,6 +46,22 @@ test("reads PSS for the root and descendants without counting unrelated processe
   );
 });
 
+test("ignores unrelated kernel processes whose process group is zero", () => {
+  const proc = fakeProc();
+  const sample = readLinuxPssTree(10, {
+    ...proc,
+    expectedRootStartTimeTicks: "100",
+    readDirectory: () => [...proc.readDirectory(), "2"],
+    readFile: (path) => (path === "/proc/2/stat" ? stat(2, 0, 0, 50) : proc.readFile(path))
+  });
+
+  assert.equal(sample.processGroupId, 10);
+  assert.deepEqual(
+    sample.processes.map(({ pid }) => pid),
+    [10, 11, 12]
+  );
+});
+
 test("keeps sampling a reparented owned process group after the launcher exits", () => {
   const files = new Map([
     ["/proc/11/stat", stat(11, 1, 10, 101)],
