@@ -2175,16 +2175,47 @@ export function App() {
                 onSelect={requestColumnReveal}
               />
               {metadata.backend === "pyspark" && (
-                <span className="experimentalBadge" title="PySpark support is experimental.">
+                <span
+                  className="sessionBadge experimentalBadge"
+                  data-session-badge="experimental"
+                  title="PySpark support is experimental."
+                >
                   Experimental
                 </span>
               )}
-              <span className="modeBadge">{metadata.backend === "pyspark" ? "Viewing only" : metadata.mode}</span>
-              <span className="backendBadge">
+              {metadata.backend === "pyspark" && (
+                <details className="orderingHelp">
+                  <summary
+                    aria-describedby="pyspark-ordering-help"
+                    className="sessionBadge modeBadge orderingBadge"
+                    data-session-badge="ordering"
+                  >
+                    {filterModel.sort.length === 0 ? "Source order" : "Sorted"}
+                    <span className="codicon codicon-info" aria-hidden="true" />
+                  </summary>
+                  <span id="pyspark-ordering-help" className="orderingHelpText" role="note">
+                    {filterModel.sort.length === 0
+                      ? "Spark does not guarantee source order. Add a sort to define the order you need."
+                      : "Rows tied across every sort key may move when Spark reruns this dataframe. Add another sort key to break the tie."}
+                  </span>
+                </details>
+              )}
+              <span className="sessionBadge modeBadge" data-session-badge="mode">
+                {metadata.backend === "pyspark" ? "Viewing only" : metadata.mode}
+              </span>
+              <span className="sessionBadge backendBadge" data-session-badge="backend">
                 {metadata.backend === "pyspark" ? dataBackendLabel(metadata.backend) : metadata.backend}
               </span>
-              {snapshotMode && <span className="modeBadge">Snapshot</span>}
-              {inspectionMode && <span className="inspectionBadge">Step inspection</span>}
+              {snapshotMode && (
+                <span className="sessionBadge modeBadge" data-session-badge="snapshot">
+                  Snapshot
+                </span>
+              )}
+              {inspectionMode && (
+                <span className="sessionBadge inspectionBadge" data-session-badge="inspection">
+                  Step inspection
+                </span>
+              )}
             </div>
           )}
         </header>

@@ -2617,7 +2617,7 @@ async function exerciseReleasedPySparkJupyterExtension(
         },
         "the realistic PySpark Classic orders DataFrame opened from the real Jupyter Variables view"
       );
-      assert.deepEqual(orders.metadata.shape, { rows: 100_000, columns: 15 });
+      assert.deepEqual(orders.metadata.shape, { rows: null, columns: 15 });
       assert.equal(orders.metadata.mode, "viewing");
       assert.equal(orders.metadata.capabilities.editable, false);
       assert.equal(orders.metadata.capabilities.exportCsv, false);
@@ -9629,14 +9629,16 @@ async function captureReleasedJupyterPolarsDraft(
   const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, "The Polars notebook screenshot requires the exact live Open Wrangler renderer.");
-  const backendBadge = app.locator(".backendBadge").first();
-  const modeBadge = app.locator(".modeBadge").first();
+  const backendBadge = app.locator('[data-session-badge="backend"]');
+  const modeBadge = app.locator('[data-session-badge="mode"]');
   await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
   await modeBadge.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal((await backendBadge.innerText()).trim(), "POLARS");
   assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "EDITING");
   const toolbarBox = await app.locator(".toolbar").boundingBox();
-  const badgeBoxes = await Promise.all([modeBadge.boundingBox(), backendBadge.boundingBox()]);
+  const allBadges = app.locator("[data-session-badge]");
+  assert.equal(await allBadges.count(), 2, "The Polars notebook scene must expose only its mode and backend badges.");
+  const badgeBoxes = await Promise.all((await allBadges.all()).map((badge) => badge.boundingBox()));
   assert.ok(toolbarBox, "The Polars notebook media scene requires a measurable workbench toolbar.");
   assert.ok(
     badgeBoxes.every(
@@ -9930,14 +9932,16 @@ async function captureReleasedJupyterDuckDbRelation(
     const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
     const app = await exactSessionApp(target.frame, sessionId);
     assert.ok(app, "The synchronized DuckDB screenshot requires the exact current renderer generation.");
-    const backendBadge = app.locator(".backendBadge").first();
-    const modeBadge = app.locator(".modeBadge").first();
+    const backendBadge = app.locator('[data-session-badge="backend"]');
+    const modeBadge = app.locator('[data-session-badge="mode"]');
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
     await modeBadge.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "DUCKDB");
     assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "VIEWING");
     const toolbarBox = await app.locator(".toolbar").boundingBox();
-    const badgeBoxes = await Promise.all([modeBadge.boundingBox(), backendBadge.boundingBox()]);
+    const allBadges = app.locator("[data-session-badge]");
+    assert.equal(await allBadges.count(), 2, "The DuckDB notebook scene must expose only its mode and backend badges.");
+    const badgeBoxes = await Promise.all((await allBadges.all()).map((badge) => badge.boundingBox()));
     assert.ok(toolbarBox, "The DuckDB notebook media scene requires a measurable workbench toolbar.");
     assert.ok(
       badgeBoxes.every(
@@ -10201,7 +10205,7 @@ async function captureReleasedJupyterPySparkLive(
   assert.equal(active.metadata.backend, "pyspark");
   assert.equal(active.metadata.source.kind, "notebookVariable");
   assert.equal(active.metadata.source.variableName, "spark_orders_frame");
-  assert.deepEqual(active.metadata.shape, { rows: 100_000, columns: 15 });
+  assert.deepEqual(active.metadata.shape, { rows: null, columns: 15 });
 
   const previousViewport = await workbench.evaluate(() => {
     const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
@@ -10292,26 +10296,40 @@ async function captureReleasedJupyterPySparkLive(
     const target = await waitForOpenWranglerGridTarget(workbench, testing, active.sessionId);
     const app = await exactSessionApp(target.frame, active.sessionId);
     assert.ok(app, "The PySpark screenshot requires the exact live Open Wrangler renderer.");
-    const backendBadge = app.locator(".backendBadge").first();
+    const backendBadge = app.locator('[data-session-badge="backend"]');
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "PYSPARK");
-    const experimentalBadge = app.locator(".experimentalBadge").first();
-    const modeBadge = app.locator(".modeBadge").first();
+    const experimentalBadge = app.locator('[data-session-badge="experimental"]');
+    const orderingBadge = app.locator('[data-session-badge="ordering"]');
+    const modeBadge = app.locator('[data-session-badge="mode"]');
     assert.equal((await experimentalBadge.innerText()).trim(), "EXPERIMENTAL");
+    assert.equal((await orderingBadge.innerText()).trim(), "SOURCE ORDER");
     assert.equal((await modeBadge.innerText()).trim(), "VIEWING ONLY");
+    await orderingBadge.focus();
+    await orderingBadge.press("Enter");
+    const orderingHelp = app.getByRole("note");
+    await orderingHelp.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(
+      (await orderingHelp.innerText()).trim(),
+      "Spark does not guarantee source order. Add a sort to define the order you need."
+    );
+    await orderingBadge.press("Enter");
+    await orderingHelp.waitFor({ state: "hidden", timeout: 10_000 });
     const toolbarBox = await app.locator(".toolbar").boundingBox();
-    const badgeBoxes = await Promise.all([
-      experimentalBadge.boundingBox(),
-      modeBadge.boundingBox(),
-      backendBadge.boundingBox()
-    ]);
+    const allBadges = app.locator("[data-session-badge]");
+    assert.equal(
+      await allBadges.count(),
+      4,
+      "The PySpark notebook scene must expose maturity, ordering, mode, and backend badges."
+    );
+    const badgeBoxes = await Promise.all((await allBadges.all()).map((badge) => badge.boundingBox()));
     assert.ok(toolbarBox, "The PySpark media scene requires a measurable workbench toolbar.");
     assert.ok(
       badgeBoxes.every(
         (badge) =>
           badge !== null && badge.x >= toolbarBox.x && badge.x + badge.width <= toolbarBox.x + toolbarBox.width + 1
       ),
-      "The PySpark engine, maturity, and viewing-only badges must remain fully inside the workbench toolbar."
+      "Every PySpark session badge must remain fully inside the workbench toolbar."
     );
     assert.equal(await app.getByRole("button", { name: "Add step" }).count(), 0);
     assert.equal(await app.getByRole("button", { name: "Apply step" }).count(), 0);
@@ -17241,7 +17259,7 @@ async function visiblePersistedPanelSnapshot(
   assert.equal(active.viewState.viewport.firstVisibleRow, PERSISTED_PANEL_FIRST_VISIBLE_ROW);
   assert.ok(active.viewState.viewport.scrollLeft > 0, "The restored horizontal viewport must remain nonzero.");
 
-  assert.equal((await app.locator(".backendBadge").first().innerText()).trim(), "POLARS");
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "POLARS");
   const cleaningPlan = app.getByRole("group", { name: "Cleaning plan" });
   await cleaningPlan.waitFor({ state: "visible", timeout: 10_000 });
   const appliedStepText = (await cleaningPlan.innerText()).replace(/\s+/gu, " ").trim();

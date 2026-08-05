@@ -500,7 +500,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /DuckDB relations are view-only and do not require dataframe conversion/u);
   assert.match(
     readme,
-    /Experimental PySpark 4\.2\.x support provides viewing, filtering, sorting, paging, and profiles/u
+    /Experimental PySpark 4\.2\.x support stays native for viewing, filtering, sorting, paging, and profiles/u
   );
   assert.match(
     readme,
@@ -508,7 +508,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels"/u
+    /alt="PySpark dataframe grid beside the revenue profile, with Source Order, Experimental, Viewing Only, and PySpark badges"/u
   );
   assert.match(readme, /Larger datasets can work, but the\s+practical limit depends on the engine and machine/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
@@ -537,7 +537,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /does not count or cache the whole dataframe before showing the first page; the row total appears after\s+the final page/u
   );
-  assert.match(readme, /PySpark uses the notebook's existing Spark session and reads pages\s+in order/u);
+  assert.match(readme, /PySpark uses the notebook's existing Spark session and loads pages\s+sequentially/u);
+  assert.match(readme, /toolbar says \*\*Source order\*\* until you add a sort, then \*\*Sorted\*\*/u);
+  assert.match(readme, /rows tied across every sort key can move when Spark reruns the dataframe/u);
   assert.match(readme, /does\s+not install PySpark, handle cluster authentication, or stop your Spark session/u);
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   assert.match(readme, /Microsoft Data\s+Wrangler 1\.24\.2/u);
@@ -640,7 +642,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels"/u
+    /alt="PySpark dataframe grid beside the revenue profile, with Source Order, Experimental, Viewing Only, and PySpark badges"/u
   );
   assert.match(
     gallery,
@@ -650,6 +652,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     gallery,
     /first page loads\s+without counting or caching the entire dataframe[\s\S]{0,120}exact row total appears after the last page/u
   );
+  assert.match(gallery, /ordering\s+badge distinguishes Spark source order from an explicit sort/u);
   assert.doesNotMatch(gallery, /expensive to open|scan and index|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   assert.doesNotMatch(
     gallery,

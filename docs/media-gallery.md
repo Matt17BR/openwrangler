@@ -143,17 +143,17 @@ Select any applied step to inspect that point in history, then return to confirm
   </tr>
   <tr>
     <td width="50%"><a href="images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="images/readme/v1.2/gallery/notebook-duckdb-detail.png" width="872" height="700"></a></td>
-    <td width="50%"><a href="images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Experimental and Viewing Only labels" src="images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Source Order, Experimental, Viewing Only, and PySpark badges" src="images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
   </tr>
   <tr>
     <td>Experimental DuckDB relations are view-only and do not require dataframe conversion.</td>
-    <td>Experimental PySpark 4.2.x support provides viewing, filtering, sorting, paging, and profiles.</td>
+    <td>Experimental PySpark 4.2.x support stays native for viewing, filtering, sorting, paging, and profiles.</td>
   </tr>
 </table>
 
 DuckDB and PySpark notebook sessions are view-only. PySpark uses the notebook's Spark session. The first page loads
-without counting or caching the entire dataframe, and the exact row total appears after the last page. Pages must be
-visited in order because Spark does not guarantee a global row order for an unordered dataframe.
+without counting or caching the entire dataframe, and the exact row total appears after the last page. The ordering
+badge distinguishes Spark source order from an explicit sort and explains what can move when Spark reruns the frame.
 
 ## DuckDB nested and temporal values
 
