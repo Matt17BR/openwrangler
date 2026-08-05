@@ -180,6 +180,10 @@ For a local profiling check, run:
 npm run benchmark:pyspark-profile -- --json-out tmp/performance/pyspark-profile.json
 ```
 
+To collect the same report away from a developer laptop, manually dispatch the `Performance gates` workflow with
+`Run the 1M-row PySpark profiling measurement` selected. That job is opt-in: pull requests and the weekly schedule do
+not run it. It uses the normal public Linux runner, Java 17, Python 3.12, and PySpark 4.2, then uploads the JSON report.
+
 This command does not run in pull requests. By default, it creates the same ten-column dataframe in local Classic and
 Connect, using 1,000,000 rows and 32 source partitions. The data includes skewed text, nulls, NaN, numeric extrema, a
 UTC timestamp, decimals, binary values, arrays, maps, and structs. After one untimed warm-up for each mode, the command

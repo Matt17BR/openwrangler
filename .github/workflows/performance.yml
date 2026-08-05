@@ -2,6 +2,12 @@ name: Performance gates
 
 on:
   workflow_dispatch:
+    inputs:
+      pyspark_profile:
+        description: Run the 1M-row PySpark profiling measurement
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "41 5 * * 2"
 
@@ -26,3 +32,28 @@ jobs:
         with:
           name: polars-runtime-performance
           path: performance.json
+
+  pyspark-profile:
+    if: github.event_name == 'workflow_dispatch' && inputs.pyspark_profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"
+      - run: python python/benchmarks/pyspark_profile.py --json-out pyspark-profile.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: pyspark-profile
+          path: pyspark-profile.json
+          retention-days: 14
