@@ -13,6 +13,7 @@ import {
   DATA_WRANGLER_VERSION,
   LARGE_COLUMNS,
   LARGE_FIXTURE_PROTOCOL,
+  LARGE_MAX_REALIZED_FIXTURE_BYTES,
   LARGE_MIN_AVAILABLE_MEMORY_BYTES,
   LARGE_MIN_REALIZED_FIXTURE_BYTES,
   LARGE_ROWS,
@@ -399,13 +400,19 @@ test("large schedule covers its pilot and marks a four-run UI group inconclusive
   assert.doesNotThrow(() => assertCompleteLargeReport(report));
 });
 
-test("large manifest records realized bytes and rejects a fixture below its calibrated floor", () => {
+test("large manifest accepts only the calibrated local fixture size", () => {
   const manifest = largeManifestFixture();
   assert.equal(LARGE_ROWS, 1_000_000);
   assert.equal(LARGE_MIN_REALIZED_FIXTURE_BYTES, 400 * 1024 ** 2);
+  assert.equal(LARGE_MAX_REALIZED_FIXTURE_BYTES, 640 * 1024 ** 2);
   assert.equal(manifest.provenance.fixture.bytes, LARGE_MIN_REALIZED_FIXTURE_BYTES + 123);
   const provenance = largeProvenanceFixture();
   provenance.fixture.bytes = LARGE_MIN_REALIZED_FIXTURE_BYTES - 1;
+  assert.throws(
+    () => buildLargeStudyManifest({ createdAtUtc: "2026-08-05T10:00:00.000Z", ...provenance }),
+    /fixture manifest is malformed/u
+  );
+  provenance.fixture.bytes = LARGE_MAX_REALIZED_FIXTURE_BYTES + 1;
   assert.throws(
     () => buildLargeStudyManifest({ createdAtUtc: "2026-08-05T10:00:00.000Z", ...provenance }),
     /fixture manifest is malformed/u

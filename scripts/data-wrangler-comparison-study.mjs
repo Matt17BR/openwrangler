@@ -40,6 +40,7 @@ export const LARGE_REPETITIONS = 5;
 export const LARGE_MIN_SUCCESSFUL_REPETITIONS = 4;
 export const LARGE_MIN_AVAILABLE_MEMORY_BYTES = 36 * 1024 ** 3;
 export const LARGE_MIN_REALIZED_FIXTURE_BYTES = 400 * 1024 ** 2;
+export const LARGE_MAX_REALIZED_FIXTURE_BYTES = 640 * 1024 ** 2;
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
@@ -845,6 +846,7 @@ function validateLargeFixtureManifest(fixture) {
     fixture.rowGroupRows !== 100_000 ||
     !Number.isSafeInteger(fixture.bytes) ||
     fixture.bytes < LARGE_MIN_REALIZED_FIXTURE_BYTES ||
+    fixture.bytes > LARGE_MAX_REALIZED_FIXTURE_BYTES ||
     !HASH.test(fixture.sha256 ?? "") ||
     names.length !== LARGE_COLUMNS ||
     new Set(names).size !== LARGE_COLUMNS ||

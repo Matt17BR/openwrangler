@@ -26,14 +26,14 @@ type, the seed, file hash, actual byte size, compression settings, and row-group
 compressed result smaller than 400 MiB, so a highly compressible accidental fixture cannot enter the study. No user
 data is read.
 
-A 100,000 × 100 sizing run with the same generator produced a 50,381,441-byte Parquet file. A later 2,000,000-row
-fixture was 1,007,388,294 bytes. With Python 3.14.4, the
+A 100,000 × 100 sizing run with the same generator produced a 50,381,441-byte Parquet file. With Python 3.14.4, the
 Pandas 3.0.3 read call took 0.085 seconds (0.36 seconds for the process) and reached 523,088 KiB peak RSS; its
 import-only process reached 108,336 KiB. The Polars 1.42.1 read call took 0.112 seconds (0.21 seconds for the process)
 and reached 204,600 KiB peak RSS; its import-only process reached 39,884 KiB. Scaling the file bytes and RSS above the
 import baseline by 10 puts the 1-million-row file near 480 MiB, with about 4.1 GiB peak RSS for Pandas and 1.6 GiB for
 Polars. The 400 MiB floor leaves room for normal variation while still catching an accidentally compressible file.
-These sizing runs chose the fixture size; they are not part of the product comparison.
+The generator also rejects more than 1,000,000 rows or a file above 640 MiB. This sizing run chose the fixture size;
+it is not part of the product comparison.
 
 Generation and every editor run require at least 36 GiB of currently available memory. This is a conservative guard
 for running the study on a local workstation. The runner stops before launching an editor when the machine falls

@@ -87,17 +87,23 @@ def test_small_fixture_is_deterministic_mixed_and_profileable(tmp_path: Path) ->
 def test_full_fixture_requires_the_calibrated_realized_size() -> None:
     full = large_fixture.LargeFixtureSpec()
     floor = large_fixture.MIN_REALIZED_FIXTURE_BYTES
+    ceiling = large_fixture.MAX_REALIZED_FIXTURE_BYTES
     assert full.rows == 1_000_000
     assert floor == 400 * 1024**2
+    assert ceiling == 640 * 1024**2
     assert large_fixture.MIN_AVAILABLE_MEMORY_BYTES == 36 * 1024**3
     assert large_fixture.MIN_GENERATION_FREE_DISK_BYTES == 6 * 1024**3
     assert large_fixture.MIN_STUDY_FREE_DISK_BYTES == 4 * 1024**3
     large_fixture.assert_realized_fixture_size(floor, full)
     with pytest.raises(AssertionError, match="at least 400 MiB"):
         large_fixture.assert_realized_fixture_size(floor - 1, full)
+    with pytest.raises(AssertionError, match="must not exceed 640 MiB"):
+        large_fixture.assert_realized_fixture_size(ceiling + 1, full)
 
     small = large_fixture.LargeFixtureSpec(rows=512, row_group_rows=128)
     large_fixture.assert_realized_fixture_size(1, small)
+    with pytest.raises(ValueError, match="between 1 and 1,000,000 rows"):
+        large_fixture.LargeFixtureSpec(rows=1_000_001).validate()
 
 
 def test_generation_stops_before_replacement_or_low_capacity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

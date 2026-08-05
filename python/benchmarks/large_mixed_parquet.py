@@ -21,6 +21,7 @@ MIN_AVAILABLE_MEMORY_BYTES = 36 * 1024**3
 MIN_GENERATION_FREE_DISK_BYTES = 6 * 1024**3
 MIN_STUDY_FREE_DISK_BYTES = 4 * 1024**3
 MIN_REALIZED_FIXTURE_BYTES = 400 * 1024**2
+MAX_REALIZED_FIXTURE_BYTES = 640 * 1024**2
 NUMERIC_MIN, NUMERIC_MAX = -900_000_000, 900_000_000
 DATETIME_MIN_NS, DATETIME_MAX_NS = 946_684_800_000_000_000, 4_102_358_400_000_000_000
 DATE_MIN_DAYS, DATE_MAX_DAYS = 10_957, 47_481
@@ -107,8 +108,8 @@ class LargeFixtureSpec:
     seed: int = DEFAULT_SEED
 
     def validate(self) -> None:
-        if self.rows < 1:
-            raise ValueError("The mixed Parquet fixture requires a positive row count.")
+        if not 1 <= self.rows <= DEFAULT_ROWS:
+            raise ValueError("The mixed Parquet fixture must contain between 1 and 1,000,000 rows.")
         if not 1 <= self.row_group_rows <= self.rows:
             raise ValueError("The row-group size must be between one and the fixture row count.")
         if not 0 <= self.seed <= 2**32 - 1:
@@ -219,6 +220,8 @@ def build_row_group(start: int, count: int, spec: LargeFixtureSpec) -> pa.Table:
 def assert_realized_fixture_size(size_bytes: int, spec: LargeFixtureSpec) -> None:
     if spec.rows == DEFAULT_ROWS and size_bytes < MIN_REALIZED_FIXTURE_BYTES:
         raise AssertionError("The full large-comparison fixture must be at least 400 MiB after compression.")
+    if size_bytes > MAX_REALIZED_FIXTURE_BYTES:
+        raise AssertionError("The large-comparison fixture must not exceed 640 MiB after compression.")
 
 
 def validate_fixture(path: Path, spec: LargeFixtureSpec) -> None:
