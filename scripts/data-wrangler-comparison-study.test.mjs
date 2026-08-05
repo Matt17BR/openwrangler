@@ -86,10 +86,10 @@ test("large runs accept stable VM states but still require AC on battery hosts",
   );
   assert.throws(
     () =>
-      assertLargeRunEnvironment({ machine, capacity: { ...capacity, availableMemoryBytes: 35 * 1024 ** 3 } }, machine),
+      assertLargeRunEnvironment({ machine, capacity: { ...capacity, availableMemoryBytes: 11 * 1024 ** 3 } }, machine),
     /memory or disk space/u
   );
-  assert.equal(LARGE_MIN_AVAILABLE_MEMORY_BYTES, 36 * 1024 ** 3);
+  assert.equal(LARGE_MIN_AVAILABLE_MEMORY_BYTES, 12 * 1024 ** 3);
   assert.throws(
     () => assertLargeRunEnvironment({ machine, capacity: { ...capacity, freeDiskBytes: 3 * 1024 ** 3 } }, machine),
     /memory or disk space/u

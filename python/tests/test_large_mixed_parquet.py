@@ -91,7 +91,7 @@ def test_full_fixture_requires_the_calibrated_realized_size() -> None:
     assert full.rows == 1_000_000
     assert floor == 400 * 1024**2
     assert ceiling == 640 * 1024**2
-    assert large_fixture.MIN_AVAILABLE_MEMORY_BYTES == 36 * 1024**3
+    assert large_fixture.MIN_AVAILABLE_MEMORY_BYTES == 12 * 1024**3
     assert large_fixture.MIN_GENERATION_FREE_DISK_BYTES == 6 * 1024**3
     assert large_fixture.MIN_STUDY_FREE_DISK_BYTES == 4 * 1024**3
     large_fixture.assert_realized_fixture_size(floor, full)
@@ -122,8 +122,8 @@ def test_generation_stops_before_replacement_or_low_capacity(monkeypatch: pytest
         large_fixture.assert_large_study_capacity(output)
     assert not output.exists()
 
-    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 35 * 1024**3)
-    with pytest.raises(RuntimeError, match="36 GiB of available memory"):
+    monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 11 * 1024**3)
+    with pytest.raises(RuntimeError, match="12 GiB of available memory"):
         large_fixture.assert_large_study_capacity(output)
 
     monkeypatch.setattr(large_fixture, "available_memory_bytes", lambda: 40 * 1024**3)

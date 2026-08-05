@@ -569,8 +569,8 @@ The current manual method is in [`docs/performance-comparison.md`](performance-c
 - `npm run comparison:large:study` to run the 20 independent notebook sessions; and
 - `npm run comparison:large:report` to calculate minimum, median, and maximum values.
 
-The large commands require the literal `--confirm-large-study` flag. They use a conservative local floor of 36 GiB
-of currently available memory and do not count swap toward it. Fixture generation needs 6 GiB free and keeps the file
+The large commands require the literal `--confirm-large-study` flag. They require 12 GiB of currently available
+memory and do not count swap toward it. Fixture generation needs 6 GiB free and keeps the file
 only when at least 4 GiB remains for the study. The manifest records the realized Parquet byte size, and the production
 generator rejects a compressed file below 400 MiB. Pull requests, releases, scheduled tasks, and normal local checks
 do not call these commands. Tests use small row counts through the Python API and fake editor runners; they never

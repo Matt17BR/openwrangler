@@ -35,10 +35,11 @@ Polars. The 400 MiB floor leaves room for normal variation while still catching 
 The generator also rejects more than 1,000,000 rows or a file above 640 MiB. This sizing run chose the fixture size;
 it is not part of the product comparison.
 
-Generation and every editor run require at least 36 GiB of currently available memory. This is a conservative guard
-for running the study on a local workstation. The runner stops before launching an editor when the machine falls
-below that floor instead of relying on swap. Generation also requires 6 GiB of free disk space, and it keeps the
-finished fixture only if at least 4 GiB remains. A machine with a battery must
+Generation and every editor run require at least 12 GiB of currently available memory. The local pilot peaked at
+6.64 GiB of proportional set size, so the guard leaves several GiB for the editor, kernel, and desktop without
+requiring an unusually large workstation. The runner stops before launching an editor when the machine falls below
+that floor instead of relying on swap. Generation also requires 6 GiB of free disk space, and it keeps the finished
+fixture only if at least 4 GiB remains. A machine with a battery must
 be on AC power. A battery-less host records `not-applicable`. A host without a cpufreq governor records `not-exposed`.
 The runner checks the recorded machine, power, governor, memory, and disk both before and after every editor run. The
 generator refuses to replace an existing file.
