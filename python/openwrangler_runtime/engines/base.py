@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, localcontext
 from importlib import import_module
 from math import isfinite, isinf, isnan
 from numbers import Integral, Real
@@ -291,6 +291,105 @@ def coerce_typed_view_value(value: Any, column_type: str | None) -> Any:
     except (TypeError, ValueError, ArithmeticError) as error:
         raise EngineError(f"Invalid {column_type or 'unknown'} view-filter value {value!r}: {error}") from error
     raise EngineError(f"View comparisons are unavailable for {column_type or 'unknown'} columns.")
+
+
+def decode_fill_replacement(replacement: Mapping[str, Any]) -> Any:
+    """Decode one validated, explicitly typed fill value into a native Python scalar."""
+
+    kind = replacement.get("kind")
+    if kind == "median":
+        raise EngineError("A median fill does not contain an explicit replacement value.")
+    if kind not in {"string", "integer", "float", "decimal", "boolean", "date", "datetime"}:
+        raise EngineError(f"Unsupported fill replacement type: {kind!r}.")
+    try:
+        return coerce_typed_view_value(replacement.get("value"), str(kind))
+    except EngineError as error:
+        raise EngineError(f"Invalid {kind} fill replacement: {error}") from error
+
+
+def generated_fill_replacement_expression(replacement: Mapping[str, Any]) -> str:
+    """Return a standalone Python expression for one validated fill value."""
+
+    kind = replacement.get("kind")
+    value = replacement.get("value")
+    if kind in {"string", "boolean"}:
+        return repr(value)
+    if kind == "integer":
+        return f"int({value!r})"
+    if kind == "float":
+        return f"float({value!r})"
+    if kind == "decimal":
+        return f"Decimal({value!r})"
+    if kind == "date":
+        return f"date.fromisoformat({value!r})"
+    if kind == "datetime":
+        return f"datetime.fromisoformat({value!r}.replace('Z', '+00:00'))"
+    raise EngineError(f"Unsupported fill replacement type: {kind!r}.")
+
+
+def datetime_is_aware(value: datetime) -> bool:
+    return value.tzinfo is not None and value.utcoffset() is not None
+
+
+def require_datetime_fill_awareness(value: datetime, column_aware: bool) -> datetime:
+    if datetime_is_aware(value) != column_aware:
+        expected = "timezone-aware" if column_aware else "timezone-naive"
+        raise EngineError(f"The replacement datetime must be {expected} to match the selected column.")
+    return value
+
+
+def decimal_at_scale(value: Decimal, precision: int, scale: int) -> Decimal:
+    if not value.is_finite() or precision < 1 or scale < 0 or scale > precision:
+        raise EngineError(f"The replacement value does not fit DECIMAL({precision}, {scale}).")
+    quantum = Decimal((0, (1,), -scale))
+    try:
+        with localcontext() as context:
+            context.prec = max(80, precision + scale + 4, len(value.as_tuple().digits) + scale + 4)
+            normalized = value.quantize(quantum)
+    except InvalidOperation as error:
+        raise EngineError(f"The replacement value does not fit DECIMAL({precision}, {scale}).") from error
+    if normalized != value:
+        raise EngineError(f"The replacement value cannot be represented exactly at decimal scale {scale}.")
+    if normalized != 0 and normalized.adjusted() >= precision - scale:
+        raise EngineError(f"The replacement value does not fit DECIMAL({precision}, {scale}).")
+    return normalized
+
+
+def exact_integer_median(lower: Any, upper: Any) -> int:
+    total = int(lower) + int(upper)
+    if total % 2:
+        raise EngineError(
+            "The integer median is fractional. Cast the column to float or decimal before filling missing values."
+        )
+    return total // 2
+
+
+def exact_decimal_median(lower: Any, upper: Any, precision: int, scale: int) -> Decimal:
+    left = Decimal(lower)
+    right = Decimal(upper)
+    try:
+        with localcontext() as context:
+            context.prec = max(
+                80,
+                precision + scale + 4,
+                len(left.as_tuple().digits) + len(right.as_tuple().digits) + scale + 4,
+            )
+            median = (left + right) / Decimal(2)
+    except InvalidOperation as error:
+        raise EngineError(f"The median does not fit DECIMAL({precision}, {scale}).") from error
+    return decimal_at_scale(median, precision, scale)
+
+
+def safe_float_midpoint(lower: Any, upper: Any) -> float:
+    left = float(lower)
+    right = float(upper)
+    if left == right:
+        return left
+    if isfinite(left) and isfinite(right):
+        if (left < 0) == (right < 0):
+            return left + ((right - left) / 2.0)
+        return (left / 2.0) + (right / 2.0)
+    return (left + right) / 2.0
 
 
 def typed_selection_value(value: Any, column_type: str) -> dict[str, Any] | None:

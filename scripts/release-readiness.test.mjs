@@ -574,12 +574,12 @@ test("binds the primary parity table to the exact ordered release scope", () => 
   const missing = inspectStableReleaseReadiness(
     ready({ featureParity: parity("Done", PRIMARY_PARITY_SCOPE.slice(1)) })
   );
-  assert.ok(missing.some((problem) => problem.includes("must contain exactly 30 release rows; found 29")));
+  assert.ok(missing.some((problem) => problem.includes("must contain exactly 31 release rows; found 30")));
   assert.ok(missing.some((problem) => problem.includes('must be "CSV/TSV/Parquet/Excel/JSONL entry points"')));
 
   const duplicatedScope = [PRIMARY_PARITY_SCOPE[0], PRIMARY_PARITY_SCOPE[0], ...PRIMARY_PARITY_SCOPE.slice(1)];
   const duplicated = inspectStableReleaseReadiness(ready({ featureParity: parity("Done", duplicatedScope) }));
-  assert.ok(duplicated.some((problem) => problem.includes("must contain exactly 30 release rows; found 31")));
+  assert.ok(duplicated.some((problem) => problem.includes("must contain exactly 31 release rows; found 32")));
   assert.ok(
     duplicated.some((problem) => problem.includes('Parity row 2 must be "Notebook variable viewer and toolbar"'))
   );
@@ -595,15 +595,15 @@ test("binds the primary parity table to the exact ordered release scope", () => 
 
   const extraScope = [...PRIMARY_PARITY_SCOPE, ["Unexpected surface", "Yes", "Yes"]];
   const extra = inspectStableReleaseReadiness(ready({ featureParity: parity("Done", extraScope) }));
-  assert.ok(extra.some((problem) => problem.includes("must contain exactly 30 release rows; found 31")));
-  assert.ok(extra.includes('Unexpected parity row "Unexpected surface" at position 31.'));
+  assert.ok(extra.some((problem) => problem.includes("must contain exactly 31 release rows; found 32")));
+  assert.ok(extra.includes('Unexpected parity row "Unexpected surface" at position 32.'));
 
   const wrongScope = PRIMARY_PARITY_SCOPE.map((row) => [...row]);
-  wrongScope[26] = [wrongScope[26][0], "Yes", "Yes"];
+  wrongScope[27] = [wrongScope[27][0], "Yes", "Yes"];
   const wrongEngines = inspectStableReleaseReadiness(ready({ featureParity: parity("Done", wrongScope) }));
   assert.ok(
     wrongEngines.some((problem) =>
-      problem.includes('Parity row 27 must be "Duplicate/non-string Pandas column operations" (Yes/N/A)')
+      problem.includes('Parity row 28 must be "Duplicate/non-string Pandas column operations" (Yes/N/A)')
     )
   );
 });

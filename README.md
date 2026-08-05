@@ -95,8 +95,9 @@ changing the source._
 
 ## Transformations
 
-Choose from 27 built-in operations, custom Pandas or Polars code, or transformations inferred from examples. A draft
-stays separate until you apply it, and applied steps can be inspected, edited, or undone.
+Choose from 28 built-in operations, including filling missing values with a median or a value of the same type. You
+can also write custom Pandas or Polars code or infer a transformation from examples. A draft stays separate until you
+apply it, and applied steps can be inspected, edited, or undone.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png" width="1440" height="870"></a>
 

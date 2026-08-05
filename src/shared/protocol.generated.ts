@@ -51,6 +51,7 @@ export type TransformStep =
   | SortRowsTransformStep
   | FilterRowsTransformStep
   | DropMissingRowsTransformStep
+  | FillMissingValuesTransformStep
   | DropDuplicatesTransformStep
   | SelectColumnsTransformStep
   | DropColumnsTransformStep
@@ -84,6 +85,7 @@ export type OperationKind =
   | "sortRows"
   | "filterRows"
   | "dropMissingRows"
+  | "fillMissingValues"
   | "dropDuplicates"
   | "selectColumns"
   | "dropColumns"
@@ -118,6 +120,43 @@ export type DropMissingRowsTransformStep = TransformStepTemplate & {
   params: DropMissingRowsParams;
   [k: string]: unknown;
 };
+export type FillMissingValuesTransformStep = TransformStepTemplate & {
+  kind: "fillMissingValues";
+  params: FillMissingParams;
+  [k: string]: unknown;
+};
+export type FillMissingReplacement =
+  | {
+      kind: "median";
+    }
+  | {
+      kind: "string";
+      value: string;
+    }
+  | {
+      kind: "integer";
+      value: string;
+    }
+  | {
+      kind: "float";
+      value: string;
+    }
+  | {
+      kind: "decimal";
+      value: string;
+    }
+  | {
+      kind: "boolean";
+      value: boolean;
+    }
+  | {
+      kind: "date";
+      value: string;
+    }
+  | {
+      kind: "datetime";
+      value: string;
+    };
 export type DropDuplicatesTransformStep = TransformStepTemplate & {
   kind: "dropDuplicates";
   params: DropDuplicatesParams;
@@ -540,6 +579,10 @@ export interface TransformColumnFilter {
 export interface DropMissingRowsParams {
   columns?: ColumnReference[];
   how?: "any" | "all";
+}
+export interface FillMissingParams {
+  column: ColumnReference;
+  replacement: FillMissingReplacement;
 }
 export interface DropDuplicatesParams {
   columns?: NonEmptyColumnReferenceArray;

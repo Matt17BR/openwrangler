@@ -57,6 +57,7 @@ const OPERATION_KINDS = new Set([
   "sortRows",
   "filterRows",
   "dropMissingRows",
+  "fillMissingValues",
   "dropDuplicates",
   "selectColumns",
   "dropColumns",
@@ -802,6 +803,97 @@ function isTransformFilterModel(value: unknown): boolean {
   );
 }
 
+const FILL_INTEGER_TEXT = /^-?(?:0|[1-9][0-9]*)$/u;
+const FILL_NUMBER_TEXT = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/u;
+const FILL_DATE_TEXT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
+const FILL_DATETIME_TEXT =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?$/u;
+const MAX_FILL_INTEGER = 10n ** 38n - 1n;
+
+function isFillMissingReplacement(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.kind === "median") return exactRecord(value, ["kind"]) !== undefined;
+  const decoded = exactRecord(value, ["kind", "value"]);
+  if (decoded === undefined) return false;
+  switch (decoded.kind) {
+    case "string":
+      return isString(decoded.value) && hasAtMostViewValueTextCodePoints(decoded.value);
+    case "boolean":
+      return isBoolean(decoded.value);
+    case "integer": {
+      if (!isString(decoded.value) || decoded.value.length > 40 || !FILL_INTEGER_TEXT.test(decoded.value)) return false;
+      try {
+        const parsed = BigInt(decoded.value);
+        return parsed >= -MAX_FILL_INTEGER && parsed <= MAX_FILL_INTEGER;
+      } catch {
+        return false;
+      }
+    }
+    case "float":
+      return (
+        isString(decoded.value) &&
+        decoded.value.length <= 64 &&
+        FILL_NUMBER_TEXT.test(decoded.value) &&
+        Number.isFinite(Number(decoded.value))
+      );
+    case "decimal":
+      return isPortableFillDecimal(decoded.value);
+    case "date":
+      return isString(decoded.value) && FILL_DATE_TEXT.test(decoded.value) && isValidFillDate(decoded.value);
+    case "datetime":
+      return (
+        isString(decoded.value) &&
+        decoded.value.length <= 64 &&
+        FILL_DATETIME_TEXT.test(decoded.value) &&
+        isValidFillDatetime(decoded.value)
+      );
+    default:
+      return false;
+  }
+}
+
+function isPortableFillDecimal(value: unknown): boolean {
+  if (!isString(value) || value.length > 128 || !FILL_NUMBER_TEXT.test(value)) return false;
+  const unsigned = value.startsWith("-") ? value.slice(1) : value;
+  const [coefficient, exponentText] = unsigned.toLowerCase().split("e");
+  const [whole, fraction = ""] = coefficient.split(".");
+  const digits = `${whole}${fraction}`.replace(/^0+/u, "");
+  if (digits.length === 0) return true;
+  if (digits.length > 38) return false;
+  const exponent = exponentText === undefined ? 0 : Number(exponentText);
+  if (!Number.isSafeInteger(exponent)) return false;
+  const adjusted =
+    whole.replace(/^0+/u, "").length > 0
+      ? whole.replace(/^0+/u, "").length - 1 + exponent
+      : -fraction.search(/[1-9]/u) - 1 + exponent;
+  return adjusted >= -38 && adjusted <= 37;
+}
+
+function isValidFillDate(value: string): boolean {
+  const [year, month, day] = value.split("-").map(Number);
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= days[month - 1];
+}
+
+function isValidFillDatetime(value: string): boolean {
+  if (!isValidFillDate(value.slice(0, 10))) return false;
+  const time = value.slice(11);
+  const match = time.match(
+    /^([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.[0-9]{1,6})?)?(?:Z|([+-])([0-9]{2}):?([0-9]{2}))?$/u
+  );
+  if (!match) return false;
+  const [, hours, minutes, seconds = "0", , offsetHours = "0", offsetMinutes = "0"] = match;
+  return (
+    Number(hours) <= 23 &&
+    Number(minutes) <= 59 &&
+    Number(seconds) <= 59 &&
+    Number(offsetHours) <= 23 &&
+    Number(offsetMinutes) <= 59
+  );
+}
+
 export function isTransformStep(value: unknown): value is TransformStep {
   const candidate = exactRecord(value, ["id", "kind", "params"]);
   if (
@@ -829,6 +921,12 @@ export function isTransformStep(value: unknown): value is TransformStep {
         decoded !== undefined &&
         optional(decoded, "columns", (columns) => isUniqueColumnReferenceArray(columns, true)) &&
         optional(decoded, "how", (how) => isOneOf(how, ["any", "all"]))
+      );
+    }
+    case "fillMissingValues": {
+      const decoded = exactRecord(params, ["column", "replacement"]);
+      return (
+        decoded !== undefined && isColumnReference(decoded.column) && isFillMissingReplacement(decoded.replacement)
       );
     }
     case "dropDuplicates": {

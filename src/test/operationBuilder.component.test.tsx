@@ -43,7 +43,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(operationCatalog).toHaveLength(27);
+    expect(operationCatalog).toHaveLength(28);
     for (const operation of operationCatalog) {
       expect(screen.getByText(operation.title, { selector: "strong" })).toBeInTheDocument();
     }
@@ -442,6 +442,88 @@ describe("OperationBuilder", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0].params).toEqual({ columns: [], how: "any" });
+  });
+
+  it("fills a numeric column with its median by default", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Fill with")).toHaveValue("median");
+    expect(screen.getByLabelText("Numeric column")).toHaveValue("c:1");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onPreview.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        kind: "fillMissingValues",
+        params: { column: { id: "c:1", name: "sales" }, replacement: { kind: "median" } }
+      })
+    );
+  });
+
+  it("keeps an empty text replacement when editing a fill step", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "fill-city",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "c:0", name: "city" },
+        replacement: { kind: "string", value: "" }
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [initialStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Fill with")).toHaveValue("value");
+    expect(screen.getByLabelText("Column")).toHaveValue("c:0");
+    expect(screen.getByLabelText("Replacement value")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+  });
+
+  it("normalizes common numeric fill values before preview", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Fill with"), { target: { value: "value" } });
+    const input = screen.getByLabelText("Replacement number");
+    for (const [entered, normalized] of [
+      [".5", "0.5"],
+      ["1.", "1.0"],
+      ["+1", "1"]
+    ]) {
+      fireEvent.change(input, { target: { value: entered } });
+      fireEvent.blur(input);
+      expect(input).toHaveValue(normalized);
+      fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+      expect(onPreview.mock.calls.at(-1)?.[0].params).toEqual({
+        column: { id: "c:1", name: "sales" },
+        replacement: { kind: "float", value: normalized }
+      });
+    }
   });
 
   it("uses stable duplicate-safe references for drop-duplicates columns", () => {
