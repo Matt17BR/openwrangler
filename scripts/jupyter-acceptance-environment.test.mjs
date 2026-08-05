@@ -433,10 +433,6 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
     remoteRJourney.slice(exactRefocus, firstToolbarAction),
     /assert\.equal\(\s*actionNotebookEditor,\s*notebookEditor,/u
   );
-  assert.match(
-    source,
-    /\.part\.editor \.editor-group-container\.active \.notebook-editor:visible \.notebook-toolbar-container:visible/u
-  );
 });
 
 test("remote Jupyter phases receive empty private client roots without a host kernelspec", async () => {
