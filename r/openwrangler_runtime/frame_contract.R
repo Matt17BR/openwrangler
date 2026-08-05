@@ -1,10 +1,13 @@
 openwrangler_r_frame_contract <- local({
-  contract_version <- 2L
+  contract_version <- 3L
   maximum_rows <- .Machine$integer.max
   maximum_columns <- 2048L
   maximum_page_rows <- 1000L
   maximum_page_columns <- 256L
   maximum_page_cells <- 100000L
+  maximum_filters <- 64L
+  maximum_predicates_per_filter <- 64L
+  maximum_selected_values_per_filter <- 10000L
   maximum_sort_rules <- 64L
   maximum_profile_columns <- 64L
   maximum_profile_rows <- 1000000L
@@ -170,6 +173,11 @@ openwrangler_r_frame_contract <- local({
 
   exact_double <- function(value) {
     sprintf("%.17g", as.double(value))
+  }
+
+  canonical_double_key <- function(value) {
+    numeric_value <- as.double(value)
+    exact_double(if (!is.na(numeric_value) && numeric_value == 0) 0 else numeric_value)
   }
 
   display_double <- function(value) {
@@ -532,6 +540,557 @@ openwrangler_r_frame_contract <- local({
     resolved
   }
 
+  exact_named_list_optional <- function(value, required, optional, label) {
+    if (!is.list(value) || is.object(value)) {
+      abort("invalid-view-query", sprintf("%s must be a plain named list", label))
+    }
+    attribute_names <- names(attributes(value)) %||% character()
+    if (!identical(attribute_names, "names")) {
+      abort("invalid-view-query", sprintf("%s has unsupported attributes", label))
+    }
+    field_names <- names(value)
+    if (
+      anyNA(field_names) ||
+        any(field_names == "") ||
+        anyDuplicated(field_names) ||
+        !all(required %in% field_names) ||
+        any(!field_names %in% c(required, optional))
+    ) {
+      abort("invalid-view-query", sprintf("%s has missing or unknown fields", label))
+    }
+    value
+  }
+
+  resolve_column_reference <- function(reference, descriptor, label) {
+    reference <- exact_named_list(reference, c("id", "name"), label)
+    column_id <- bounded_utf8(reference$id, paste0(label, "$id"), maximum_name_bytes)
+    column_name <- bounded_utf8(reference$name, paste0(label, "$name"), maximum_name_bytes)
+    schema_ids <- vapply(descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    position <- match(column_id, schema_ids)
+    if (is.na(position) || !identical(descriptor$schema[[position]]$name, column_name)) {
+      abort("stale-column", sprintf("%s does not match the captured schema", label))
+    }
+    list(position = position, columnId = column_id, name = column_name)
+  }
+
+  predicate_operators <- list(
+    string = c(
+      "contains", "startsWith", "endsWith", "equals", "notEquals", "gt", "gte", "lt", "lte", "between",
+      "isNull", "isNotNull"
+    ),
+    integer = c("equals", "notEquals", "gt", "gte", "lt", "lte", "between", "isNull", "isNotNull"),
+    float = c(
+      "equals", "notEquals", "gt", "gte", "lt", "lte", "between", "isNull", "isNotNull", "isNaN",
+      "isNotNaN"
+    ),
+    boolean = c("equals", "notEquals", "isNull", "isNotNull"),
+    datetime = c("equals", "notEquals", "gt", "gte", "lt", "lte", "between", "isNull", "isNotNull"),
+    date = c("equals", "notEquals", "gt", "gte", "lt", "lte", "between", "isNull", "isNotNull"),
+    duration = c("equals", "notEquals", "gt", "gte", "lt", "lte", "between", "isNull", "isNotNull")
+  )
+
+  normalize_integer_text <- function(value, label) {
+    text <- if (is.character(value) && length(value) == 1L && !is.na(value)) {
+      value
+    } else if (is.numeric(value) && length(value) == 1L && is.finite(value) && value == floor(value)) {
+      format(value, scientific = FALSE, trim = TRUE)
+    } else {
+      abort("invalid-view-value", sprintf("%s must be a decimal integer", label))
+    }
+    if (!grepl("^[+-]?[0-9]+$", text, perl = TRUE)) {
+      abort("invalid-view-value", sprintf("%s must be a decimal integer", label))
+    }
+    negative <- startsWith(text, "-")
+    digits <- sub("^[+-]", "", text)
+    digits <- sub("^0+(?=[0-9])", "", digits, perl = TRUE)
+    if (identical(digits, "0")) negative <- FALSE
+    paste0(if (negative) "-" else "", digits)
+  }
+
+  integer_text_compare <- function(left, right) {
+    left_negative <- startsWith(left, "-")
+    right_negative <- startsWith(right, "-")
+    if (left_negative != right_negative) return(if (left_negative) -1L else 1L)
+    left_digits <- if (left_negative) substring(left, 2L) else left
+    right_digits <- if (right_negative) substring(right, 2L) else right
+    magnitude <- if (nchar(left_digits, type = "bytes") != nchar(right_digits, type = "bytes")) {
+      if (nchar(left_digits, type = "bytes") < nchar(right_digits, type = "bytes")) -1L else 1L
+    } else if (identical(left_digits, right_digits)) {
+      0L
+    } else if (left_digits < right_digits) {
+      -1L
+    } else {
+      1L
+    }
+    if (left_negative) -magnitude else magnitude
+  }
+
+  validate_integer64_text <- function(text, label) {
+    if (
+      integer_text_compare(text, "-9223372036854775808") < 0L ||
+        integer_text_compare(text, "9223372036854775807") > 0L
+    ) {
+      abort("invalid-view-value", sprintf("%s is outside the signed 64-bit range", label))
+    }
+    text
+  }
+
+  parse_finite_number <- function(value, label, allow_infinity = FALSE) {
+    text <- if (is.character(value) && length(value) == 1L && !is.na(value)) {
+      value
+    } else if (is.numeric(value) && length(value) == 1L && !is.na(value)) {
+      as.character(value)
+    } else {
+      abort("invalid-view-value", sprintf("%s must be a decimal number", label))
+    }
+    if (allow_infinity && grepl("^[+-]?Infinity$", text, perl = TRUE)) {
+      return(if (startsWith(text, "-")) -Inf else Inf)
+    }
+    if (!grepl("^[+-]?(?:(?:[0-9]+(?:\\.[0-9]*)?)|(?:\\.[0-9]+))(?:[eE][+-]?[0-9]+)?$", text, perl = TRUE)) {
+      abort("invalid-view-value", sprintf("%s must be a decimal number", label))
+    }
+    number <- suppressWarnings(as.double(text))
+    if (!is.finite(number)) abort("invalid-view-value", sprintf("%s is outside the finite numeric range", label))
+    number
+  }
+
+  parse_boolean <- function(value, label) {
+    if (is.logical(value) && length(value) == 1L && !is.na(value)) return(value)
+    if (!is.character(value) || length(value) != 1L || is.na(value)) {
+      abort("invalid-view-value", sprintf("%s must be true or false", label))
+    }
+    normalized <- tolower(trimws(value))
+    if (!normalized %in% c("true", "false")) {
+      abort("invalid-view-value", sprintf("%s must be true or false", label))
+    }
+    identical(normalized, "true")
+  }
+
+  parse_date_key <- function(value, label) {
+    text <- bounded_utf8(as.character(value), label)
+    if (!grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", text, perl = TRUE)) {
+      abort("invalid-view-value", sprintf("%s must use YYYY-MM-DD", label))
+    }
+    if (identical(substring(text, 1L, 4L), "0000")) {
+      abort("invalid-view-value", sprintf("%s is outside the supported date range", label))
+    }
+    parsed <- suppressWarnings(as.Date(text, format = "%Y-%m-%d"))
+    if (is.na(parsed)) abort("invalid-view-value", sprintf("%s is not a valid date", label))
+    exact_double(as.double(parsed))
+  }
+
+  parse_datetime_key <- function(value, semantics, label) {
+    text <- bounded_utf8(as.character(value), label)
+    match <- regexec(
+      "^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(\\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?$",
+      text,
+      perl = TRUE
+    )
+    parts <- regmatches(text, match)[[1L]]
+    if (length(parts) == 0L) {
+      abort("invalid-view-value", sprintf("%s must be an ISO datetime", label))
+    }
+    if (identical(substring(parts[[2L]], 1L, 4L), "0000")) {
+      abort("invalid-view-value", sprintf("%s is outside the supported datetime range", label))
+    }
+    hours <- as.integer(parts[[3L]])
+    minutes <- as.integer(parts[[4L]])
+    seconds <- if (identical(parts[[5L]], "")) 0L else as.integer(parts[[5L]])
+    zone <- parts[[7L]]
+    if (hours > 23L || minutes > 59L || seconds > 59L) {
+      abort("invalid-view-value", sprintf("%s has invalid time fields", label))
+    }
+    has_zone <- !identical(zone, "")
+    if (has_zone && !identical(zone, "Z")) {
+      zone_digits <- gsub(":", "", substring(zone, 2L), fixed = TRUE)
+      if (as.integer(substring(zone_digits, 1L, 2L)) > 23L || as.integer(substring(zone_digits, 3L, 4L)) > 59L) {
+        abort("invalid-view-value", sprintf("%s has invalid timezone fields", label))
+      }
+    }
+    timezone <- if (has_zone) "UTC" else (semantics$timezone %||% "UTC")
+    if (identical(timezone, "")) timezone <- "UTC"
+    fraction <- parts[[6L]]
+    normalized_zone <- if (!has_zone) "" else if (identical(zone, "Z")) "+0000" else gsub(":", "", zone, fixed = TRUE)
+    normalized <- sprintf(
+      "%sT%02d:%02d:%02d%s%s",
+      parts[[2L]],
+      hours,
+      minutes,
+      seconds,
+      fraction,
+      normalized_zone
+    )
+    format <- if (has_zone) "%Y-%m-%dT%H:%M:%OS%z" else "%Y-%m-%dT%H:%M:%OS"
+    parsed <- suppressWarnings(as.POSIXct(strptime(normalized, format = format, tz = timezone)))
+    if (length(parsed) != 1L || is.na(parsed)) {
+      abort("invalid-view-value", sprintf("%s is not a valid datetime", label))
+    }
+    exact_double(as.double(parsed))
+  }
+
+  duration_microseconds_text <- function(text) {
+    negative <- startsWith(text, "-")
+    unsigned <- sub("^[+-]", "", text)
+    parts <- strsplit(unsigned, ".", fixed = TRUE)[[1L]]
+    whole <- if (length(parts) == 0L || identical(parts[[1L]], "")) "0" else parts[[1L]]
+    fraction <- if (length(parts) < 2L) "" else parts[[2L]]
+    fraction <- paste0(fraction, strrep("0", 6L - nchar(fraction, type = "bytes")))
+    digits <- paste0(whole, fraction)
+    digits <- sub("^0+(?=[0-9])", "", digits, perl = TRUE)
+    if (negative && !identical(digits, "0")) paste0("-", digits) else digits
+  }
+
+  validate_duration_microseconds <- function(text, label) {
+    microseconds <- duration_microseconds_text(text)
+    if (
+      integer_text_compare(microseconds, "-86399999913600000000") < 0L ||
+        integer_text_compare(microseconds, "86399999999999999999") > 0L
+    ) {
+      abort("invalid-view-value", sprintf("%s is outside the supported duration range", label))
+    }
+    invisible(NULL)
+  }
+
+  parse_duration_seconds <- function(value, label) {
+    text <- bounded_utf8(as.character(value), label)
+    if (grepl("^[+-]?(?:[0-9]+(?:\\.[0-9]{0,6})?|\\.[0-9]{1,6})$", text, perl = TRUE)) {
+      validate_duration_microseconds(text, label)
+      return(parse_finite_number(text, label))
+    }
+    match <- regexec("^(?:(-?[0-9]+) days?, )?([0-9]{1,2}):([0-9]{2}):([0-9]{2})(?:\\.([0-9]{1,6}))?$", text, perl = TRUE)
+    parts <- regmatches(text, match)[[1L]]
+    if (length(parts) == 0L) abort("invalid-view-value", sprintf("%s is not a valid duration", label))
+    hours <- as.integer(parts[[3L]])
+    minutes <- as.integer(parts[[4L]])
+    seconds <- as.integer(parts[[5L]])
+    if (hours > 23L || minutes > 59L || seconds > 59L) {
+      abort("invalid-view-value", sprintf("%s has invalid duration fields", label))
+    }
+    days_text <- if (identical(parts[[2L]], "")) "0" else normalize_integer_text(parts[[2L]], label)
+    if (
+      integer_text_compare(days_text, "-999999999") < 0L ||
+        integer_text_compare(days_text, "999999999") > 0L
+    ) {
+      abort("invalid-view-value", sprintf("%s is outside the supported duration range", label))
+    }
+    days <- as.double(days_text)
+    fraction <- if (length(parts) < 6L || identical(parts[[6L]], "")) 0 else as.double(paste0("0.", parts[[6L]]))
+    days * 86400 + hours * 3600 + minutes * 60 + seconds + fraction
+  }
+
+  duration_unit_seconds <- c(secs = 1, mins = 60, hours = 3600, days = 86400, weeks = 604800)
+
+  primitive_view_key <- function(value, descriptor, label) {
+    semantics <- descriptor$semantics
+    type <- descriptor$type
+    if (type == "string") return(bounded_utf8(as.character(value), label))
+    if (type == "integer") {
+      text <- normalize_integer_text(value, label)
+      if (semantics$kind == "integer64") return(validate_integer64_text(text, label))
+      number <- suppressWarnings(as.double(text))
+      if (!is.finite(number) || number < -2147483647 || number > 2147483647) {
+        abort("invalid-view-value", sprintf("%s is outside the R integer range", label))
+      }
+      return(as.character(as.integer(number)))
+    }
+    if (type == "float") return(canonical_double_key(parse_finite_number(value, label, allow_infinity = TRUE)))
+    if (type == "boolean") return(if (parse_boolean(value, label)) "TRUE" else "FALSE")
+    if (type == "date") return(parse_date_key(value, label))
+    if (type == "datetime") return(parse_datetime_key(value, semantics, label))
+    if (type == "duration") {
+      seconds <- parse_duration_seconds(value, label)
+      return(exact_double(seconds / duration_unit_seconds[[semantics$units]]))
+    }
+    abort("invalid-view-value", sprintf("%s targets an unsupported R column type", label))
+  }
+
+  typed_selection_key <- function(token, descriptor, label) {
+    token <- exact_named_list(token, c("kind", "version", "columnType", "cell"), label)
+    if (!identical(token$kind, "typedSelection") || !identical(token$version, 1L)) {
+      abort("invalid-view-value", sprintf("%s is not a versioned typed selection", label))
+    }
+    if (!identical(token$columnType, descriptor$type)) {
+      abort("invalid-view-value", sprintf("%s does not match the R column type", label))
+    }
+    cell <- exact_named_list_optional(
+      token$cell,
+      c("kind", "raw", "display", "isNull", "isNaN"),
+      "sign",
+      paste0(label, "$cell")
+    )
+    if (!identical(cell$isNull, FALSE) || !identical(cell$isNaN, FALSE)) {
+      abort("invalid-view-value", sprintf("%s must represent a present scalar", label))
+    }
+    expected_kind <- switch(
+      descriptor$semantics$kind,
+      logical = "boolean",
+      integer = "integer",
+      integer64 = "integer",
+      double = c("number", "infinity"),
+      character = "string",
+      factor = "string",
+      date = "date",
+      datetime = "datetime",
+      difftime = "duration"
+    )
+    if (!cell$kind %in% expected_kind) abort("invalid-view-value", sprintf("%s has an incompatible cell kind", label))
+    if (identical(cell$kind, "infinity")) {
+      if (!is.null(cell$raw) || !cell$sign %in% c(-1L, 1L)) {
+        abort("invalid-view-value", sprintf("%s has invalid infinity data", label))
+      }
+      return(if (cell$sign < 0L) "-Inf" else "Inf")
+    }
+    if (descriptor$semantics$kind == "datetime") {
+      return(exact_double(parse_finite_number(cell$raw, label)))
+    }
+    if (descriptor$semantics$kind == "difftime") {
+      return(exact_double(parse_finite_number(cell$raw, label)))
+    }
+    primitive_view_key(cell$raw, descriptor, label)
+  }
+
+  view_value_key <- function(value, descriptor, label) {
+    if (is.list(value) && !is.null(names(value))) return(typed_selection_key(value, descriptor, label))
+    primitive_view_key(value, descriptor, label)
+  }
+
+  resolve_view_query <- function(view_query, descriptor) {
+    view_query <- exact_named_list_optional(view_query, c("filters", "sorts"), "logic", "view_query")
+    logic <- if ("logic" %in% names(view_query)) {
+      scalar_choice(view_query$logic, c("and", "or"), "view_query$logic")
+    } else {
+      "and"
+    }
+    if (
+      !is.list(view_query$filters) || is.object(view_query$filters) || !is.null(attributes(view_query$filters)) ||
+        length(view_query$filters) > maximum_filters
+    ) {
+      abort("invalid-view-query", sprintf("view_query$filters may contain at most %d filters", maximum_filters))
+    }
+    filters <- lapply(seq_along(view_query$filters), function(index) {
+      label <- sprintf("view_query$filters[[%d]]", index)
+      filter <- exact_named_list_optional(
+        view_query$filters[[index]],
+        c("column", "type", "predicates"),
+        c("logic", "valueFilter"),
+        label
+      )
+      resolved <- resolve_column_reference(filter$column, descriptor, paste0(label, "$column"))
+      column_descriptor <- descriptor$schema[[resolved$position]]
+      if (!identical(filter$type, column_descriptor$type)) {
+        abort("invalid-view-query", sprintf("%s$type does not match the captured schema", label))
+      }
+      filter_logic <- if ("logic" %in% names(filter)) {
+        scalar_choice(filter$logic, c("and", "or"), paste0(label, "$logic"))
+      } else {
+        "and"
+      }
+      if (
+        !is.list(filter$predicates) || is.object(filter$predicates) || !is.null(attributes(filter$predicates)) ||
+          length(filter$predicates) > maximum_predicates_per_filter
+      ) {
+        abort("invalid-view-query", sprintf("%s$predicates is too large", label))
+      }
+      predicates <- lapply(seq_along(filter$predicates), function(predicate_index) {
+        predicate_label <- sprintf("%s$predicates[[%d]]", label, predicate_index)
+        predicate <- exact_named_list_optional(
+          filter$predicates[[predicate_index]],
+          c("kind", "operator"),
+          c("value", "secondValue"),
+          predicate_label
+        )
+        if (!identical(predicate$kind, "predicate") || !predicate$operator %in% predicate_operators[[filter$type]]) {
+          abort("invalid-view-query", sprintf("%s has an unsupported operator", predicate_label))
+        }
+        nullary <- predicate$operator %in% c("isNull", "isNotNull", "isNaN", "isNotNaN")
+        if (!nullary && !"value" %in% names(predicate)) {
+          abort("invalid-view-query", sprintf("%s requires value", predicate_label))
+        }
+        if (identical(predicate$operator, "between") && !"secondValue" %in% names(predicate)) {
+          abort("invalid-view-query", sprintf("%s requires secondValue", predicate_label))
+        }
+        if ("value" %in% names(predicate)) {
+          predicate$valueKey <- view_value_key(predicate$value, column_descriptor, paste0(predicate_label, "$value"))
+        }
+        if ("secondValue" %in% names(predicate)) {
+          predicate$secondValueKey <- view_value_key(
+            predicate$secondValue,
+            column_descriptor,
+            paste0(predicate_label, "$secondValue")
+          )
+        }
+        predicate
+      })
+      value_filter <- NULL
+      if ("valueFilter" %in% names(filter)) {
+        value_filter <- exact_named_list_optional(
+          filter$valueFilter,
+          c("kind", "selectedValues", "includeNulls", "includeNaN"),
+          "search",
+          paste0(label, "$valueFilter")
+        )
+        if (!identical(value_filter$kind, "values")) {
+          abort("invalid-view-query", sprintf("%s$valueFilter has an invalid kind", label))
+        }
+        if (
+          !is.list(value_filter$selectedValues) || is.object(value_filter$selectedValues) ||
+            !is.null(attributes(value_filter$selectedValues)) ||
+            length(value_filter$selectedValues) > maximum_selected_values_per_filter ||
+            !is.logical(value_filter$includeNulls) || length(value_filter$includeNulls) != 1L ||
+            !is.logical(value_filter$includeNaN) || length(value_filter$includeNaN) != 1L
+        ) {
+          abort("invalid-view-query", sprintf("%s$valueFilter is invalid", label))
+        }
+        value_filter$selectedKeys <- vapply(
+          seq_along(value_filter$selectedValues),
+          function(value_index) view_value_key(
+            value_filter$selectedValues[[value_index]],
+            column_descriptor,
+            sprintf("%s$valueFilter$selectedValues[[%d]]", label, value_index)
+          ),
+          character(1L),
+          USE.NAMES = FALSE
+        )
+      }
+      list(
+        position = resolved$position,
+        columnId = resolved$columnId,
+        logic = filter_logic,
+        predicates = predicates,
+        valueFilter = value_filter
+      )
+    })
+    list(logic = logic, filters = filters, sorts = resolve_sort_rules(view_query$sorts, descriptor))
+  }
+
+  ascii_fold <- function(value) {
+    chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", value)
+  }
+
+  compare_integer_keys <- function(keys, target, operator) {
+    comparisons <- vapply(keys, integer_text_compare, integer(1L), right = target, USE.NAMES = FALSE)
+    switch(
+      operator,
+      equals = comparisons == 0L,
+      notEquals = comparisons != 0L,
+      gt = comparisons > 0L,
+      gte = comparisons >= 0L,
+      lt = comparisons < 0L,
+      lte = comparisons <= 0L
+    )
+  }
+
+  predicate_mask <- function(column, descriptor, predicate) {
+    semantics <- descriptor$semantics
+    missing <- profile_missing_masks(column, semantics)
+    operator <- predicate$operator
+    if (identical(operator, "isNull")) return(missing$null)
+    if (identical(operator, "isNotNull")) return(!missing$null)
+    if (identical(operator, "isNaN")) return(missing$nan)
+    if (identical(operator, "isNotNaN")) return(!missing$nan)
+
+    present <- !missing$null & !missing$nan
+    keys <- rep("", length(column))
+    present_indices <- which(present)
+    keys[present_indices] <- profile_value_keys(column, semantics, present_indices)
+    result <- rep(FALSE, length(column))
+    if (length(present_indices) == 0L) return(result)
+    if (operator %in% c("contains", "startsWith", "endsWith")) {
+      values <- if (semantics$kind == "factor") as.character(column[present_indices]) else column[present_indices]
+      target <- predicate$valueKey
+      result[present_indices] <- if (identical(operator, "contains")) {
+        grepl(ascii_fold(target), ascii_fold(values), fixed = TRUE)
+      } else if (identical(operator, "startsWith")) {
+        startsWith(values, target)
+      } else {
+        endsWith(values, target)
+      }
+      return(result)
+    }
+    compare <- function(target, comparison_operator) {
+      if (semantics$kind == "integer64") {
+        compare_integer_keys(keys[present_indices], target, comparison_operator)
+      } else if (descriptor$type %in% c("integer", "float", "date", "datetime", "duration")) {
+        left <- suppressWarnings(as.double(keys[present_indices]))
+        right <- suppressWarnings(as.double(target))
+        switch(
+          comparison_operator,
+          equals = left == right,
+          notEquals = left != right,
+          gt = left > right,
+          gte = left >= right,
+          lt = left < right,
+          lte = left <= right
+        )
+      } else {
+        switch(
+          comparison_operator,
+          equals = keys[present_indices] == target,
+          notEquals = keys[present_indices] != target,
+          gt = keys[present_indices] > target,
+          gte = keys[present_indices] >= target,
+          lt = keys[present_indices] < target,
+          lte = keys[present_indices] <= target
+        )
+      }
+    }
+    result[present_indices] <- if (identical(operator, "between")) {
+      compare(predicate$valueKey, "gte") & compare(predicate$secondValueKey, "lte")
+    } else {
+      compare(predicate$valueKey, operator)
+    }
+    result
+  }
+
+  filter_row_positions <- function(frame, descriptor, resolved) {
+    row_count <- descriptor$shape$rows
+    column_masks <- list()
+    for (filter in resolved$filters) {
+      column <- frame[[filter$position]]
+      semantics <- descriptor$schema[[filter$position]]$semantics
+      missing <- profile_missing_masks(column, semantics)
+      conditions <- list()
+      value_filter <- filter$valueFilter
+      if (!is.null(value_filter) && (
+        length(value_filter$selectedKeys) > 0L || isTRUE(value_filter$includeNulls) || isTRUE(value_filter$includeNaN)
+      )) {
+        current <- rep(FALSE, row_count)
+        present_indices <- which(!missing$null & !missing$nan)
+        if (length(value_filter$selectedKeys) > 0L && length(present_indices) > 0L) {
+          keys <- profile_value_keys(column, semantics, present_indices)
+          current[present_indices] <- keys %in% value_filter$selectedKeys
+        }
+        if (isTRUE(value_filter$includeNulls)) current <- current | missing$null
+        if (isTRUE(value_filter$includeNaN)) current <- current | missing$nan
+        conditions[[length(conditions) + 1L]] <- current
+      }
+      for (predicate in filter$predicates) {
+        conditions[[length(conditions) + 1L]] <- predicate_mask(
+          column,
+          descriptor$schema[[filter$position]],
+          predicate
+        )
+      }
+      if (length(conditions) > 0L) {
+        combined <- conditions[[1L]]
+        if (length(conditions) > 1L) {
+          for (index in 2:length(conditions)) {
+            combined <- if (identical(filter$logic, "or")) combined | conditions[[index]] else combined & conditions[[index]]
+          }
+        }
+        column_masks[[length(column_masks) + 1L]] <- combined
+      }
+    }
+    if (length(column_masks) == 0L) return(seq_len(row_count))
+    combined <- column_masks[[1L]]
+    if (length(column_masks) > 1L) {
+      for (index in 2:length(column_masks)) {
+        combined <- if (identical(resolved$logic, "or")) combined | column_masks[[index]] else combined & column_masks[[index]]
+      }
+    }
+    which(combined)
+  }
+
   resolve_profile_columns <- function(column_references, descriptor) {
     maximum_columns_for_frame <- min(maximum_profile_columns, descriptor$shape$columns)
     if (
@@ -616,7 +1175,7 @@ openwrangler_r_frame_contract <- local({
     if (kind == "logical") return(ifelse(values, "TRUE", "FALSE"))
     if (kind %in% c("integer", "integer64")) return(as.character(values))
     if (kind == "double") {
-      return(vapply(values, function(value) exact_double(if (value == 0) 0 else value), character(1L)))
+      return(vapply(values, canonical_double_key, character(1L)))
     }
     if (kind == "character") {
       return(vapply(
@@ -1082,9 +1641,10 @@ openwrangler_r_frame_contract <- local({
     row_offset,
     row_limit,
     column_offset,
-    column_limit
+    column_limit,
+    visible_rows = descriptor$shape$rows
   ) {
-    total_rows <- descriptor$shape$rows
+    total_rows <- whole_number(visible_rows, "visible row count", descriptor$shape$rows)
     total_columns <- descriptor$shape$columns
     row_offset <- whole_number(row_offset, "row_offset", total_rows)
     row_limit <- whole_number(row_limit, "row_limit", maximum_page_rows)
@@ -1147,9 +1707,9 @@ openwrangler_r_frame_contract <- local({
     ))
   }
 
-  build_sorted_row_positions <- function(capture, sort_columns, resolved) {
+  build_sorted_row_positions <- function(capture, sort_columns, resolved, row_positions = NULL) {
     descriptor <- capture$descriptor
-    row_positions <- seq_len(descriptor$shape$rows)
+    if (is.null(row_positions)) row_positions <- seq_len(descriptor$shape$rows)
     add_metric(capture$metrics, "sortOrderBuilds")
     add_metric(capture$metrics, "sortOrderRows", length(row_positions))
 
@@ -1214,15 +1774,41 @@ openwrangler_r_frame_contract <- local({
     row_positions
   }
 
+  view_row_positions <- function(capture, frame, view_query, apply_sorts) {
+    resolved <- resolve_view_query(view_query, capture$descriptor)
+    if (length(resolved$filters) == 0L && (!isTRUE(apply_sorts) || length(resolved$sorts) == 0L)) {
+      if (length(resolved$sorts) == 0L) clear_sort_cache(capture$sortCache)
+      return(list(rows = NULL, totalRows = capture$descriptor$shape$rows, resolved = resolved))
+    }
+    row_positions <- filter_row_positions(frame, capture$descriptor, resolved)
+    if (!isTRUE(apply_sorts) || length(resolved$sorts) == 0L || length(row_positions) == 0L) {
+      if (length(resolved$sorts) == 0L) clear_sort_cache(capture$sortCache)
+      return(list(rows = row_positions, totalRows = length(row_positions), resolved = resolved))
+    }
+    if (length(resolved$filters) == 0L) {
+      row_positions <- cached_sorted_row_positions(capture, frame, resolved$sorts)
+    } else {
+      clear_sort_cache(capture$sortCache)
+      row_positions <- build_sorted_row_positions(
+        capture,
+        referenced_sort_columns(frame, resolved$sorts),
+        resolved$sorts,
+        row_positions
+      )
+    }
+    list(rows = row_positions, totalRows = length(row_positions), resolved = resolved)
+  }
+
   materialize_rows <- function(
     capture,
     frame,
     row_positions,
-    window
+    window,
+    total_rows = capture$descriptor$shape$rows
   ) {
     validate_capture(capture)
     descriptor <- capture$descriptor
-    total_rows <- descriptor$shape$rows
+    source_rows <- descriptor$shape$rows
     if (length(row_positions) != window$rowCount) {
       abort("internal-error", "the R page row window is inconsistent")
     }
@@ -1241,7 +1827,7 @@ openwrangler_r_frame_contract <- local({
     }
     explicit_row_names <- if (identical(descriptor$frameSemantics$rowNames, "explicit")) {
       stored <- attr(frame, "row.names", exact = TRUE)
-      if (length(stored) != total_rows) source_changed()
+      if (length(stored) != source_rows) source_changed()
       stored
     } else {
       NULL
@@ -1291,34 +1877,45 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  materialize_summaries <- function(capture, column_references) {
+  materialize_summaries <- function(
+    capture,
+    column_references,
+    view_query = list(filters = list(), sorts = list())
+  ) {
     validate_capture(capture)
     resolved <- resolve_profile_columns(column_references, capture$descriptor)
+    frame <- read_capture_frame(capture)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
     validate_profile_work(
-      capture$descriptor$shape$rows,
+      view$totalRows,
       length(resolved),
       maximum_profile_cells,
       "The requested R column profiles"
     )
-    frame <- read_capture_frame(capture)
     add_metric(capture$metrics, "profileColumns", length(resolved))
     budget <- new_payload_budget(capture$metadataBytes)
-    summaries <- lapply(resolved, function(column) column_summary(capture, frame, column, budget))
+    filtered <- if (is.null(view$rows)) frame else frame[view$rows, , drop = FALSE]
+    summaries <- lapply(resolved, function(column) column_summary(capture, filtered, column, budget))
     json_array(summaries)
   }
 
-  materialize_dataset_stats <- function(capture) {
+  materialize_dataset_stats <- function(
+    capture,
+    view_query = list(filters = list(), sorts = list())
+  ) {
     validate_capture(capture)
     descriptor <- capture$descriptor
-    row_count <- descriptor$shape$rows
     column_count <- descriptor$shape$columns
+    frame <- read_capture_frame(capture)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
+    row_count <- view$totalRows
     validate_profile_work(
       row_count,
       column_count,
       maximum_dataset_profile_cells,
       "The requested R dataset profile"
     )
-    frame <- read_capture_frame(capture)
+    if (!is.null(view$rows)) frame <- frame[view$rows, , drop = FALSE]
     add_metric(capture$metrics, "datasetProfiles")
     budget <- new_payload_budget(capture$metadataBytes)
     spend_payload_budget(budget, summary_fixed_bytes, "R dataset profile")
@@ -1341,10 +1938,86 @@ openwrangler_r_frame_contract <- local({
       as.integer(sum(duplicated(frame)))
     }
     list(
-      missingCells = as.double(sum(vapply(missing_by_column, `[[`, integer(1L), "count"))),
-      missingRows = as.integer(sum(missing_rows)),
-      duplicateRows = duplicate_rows,
-      missingValuesByColumn = json_array(missing_by_column)
+      totalRows = as.double(row_count),
+      stats = list(
+        missingCells = as.double(sum(vapply(missing_by_column, `[[`, integer(1L), "count"))),
+        missingRows = as.integer(sum(missing_rows)),
+        duplicateRows = duplicate_rows,
+        missingValuesByColumn = json_array(missing_by_column)
+      )
+    )
+  }
+
+  materialize_column_values <- function(
+    capture,
+    column_reference,
+    view_query = list(filters = list(), sorts = list()),
+    search = NULL,
+    limit = 100L
+  ) {
+    validate_capture(capture)
+    descriptor <- capture$descriptor
+    resolved_column <- resolve_column_reference(column_reference, descriptor, "column_reference")
+    limit <- whole_number(limit, "limit", maximum_selected_values_per_filter)
+    if (limit < 1L) abort("invalid-view-query", "limit must be positive")
+    if (!is.null(search)) search <- bounded_utf8(search, "search", maximum_text_bytes)
+    frame <- read_capture_frame(capture)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
+    validate_profile_work(view$totalRows, 1L, maximum_profile_cells, "The requested R column values")
+    source_column <- frame[[resolved_column$position]]
+    column <- if (is.null(view$rows)) source_column else source_column[view$rows]
+    column_descriptor <- descriptor$schema[[resolved_column$position]]
+    semantics <- column_descriptor$semantics
+    validate_profile_column(column, semantics, "column values")
+    missing <- profile_missing_masks(column, semantics)
+    present_indices <- which(!missing$null & !missing$nan)
+    budget <- new_payload_budget(capture$metadataBytes)
+    spend_payload_budget(budget, summary_fixed_bytes, "R column values")
+    if (length(present_indices) == 0L) {
+      return(list(column = column_descriptor$name, values = json_array(list()), hasMore = FALSE))
+    }
+    keys <- profile_value_keys(column, semantics, present_indices)
+    if (!is.null(search) && !identical(search, "")) {
+      displays <- vapply(seq_along(present_indices), function(index) {
+        encode_value(column, semantics, present_indices[[index]], "column value search", new_payload_budget())$display
+      }, character(1L), USE.NAMES = FALSE)
+      keep <- grepl(ascii_fold(search), ascii_fold(displays), fixed = TRUE)
+      present_indices <- present_indices[keep]
+      keys <- keys[keep]
+    }
+    if (length(present_indices) == 0L) {
+      return(list(column = column_descriptor$name, values = json_array(list()), hasMore = FALSE))
+    }
+    first <- !duplicated(keys)
+    unique_keys <- keys[first]
+    first_indices <- present_indices[first]
+    counts <- tabulate(match(keys, unique_keys), nbins = length(unique_keys))
+    displays <- vapply(seq_along(first_indices), function(index) {
+      encode_value(column, semantics, first_indices[[index]], "column value order", new_payload_budget())$display
+    }, character(1L), USE.NAMES = FALSE)
+    priority <- base::order(-counts, displays, seq_along(counts), method = "radix")
+    selected <- utils::head(priority, limit)
+    values <- lapply(seq_along(selected), function(result_index) {
+      source_index <- first_indices[[selected[[result_index]]]]
+      encoded <- encode_value(column, semantics, source_index, sprintf("column value %d", result_index), budget)
+      if (identical(semantics$kind, "double") && identical(unique_keys[[selected[[result_index]]]], "0")) {
+        encoded <- ordinary_cell("number", "0", "0")
+      }
+      list(
+        value = encoded$display,
+        count = as.integer(counts[[selected[[result_index]]]]),
+        selectionValue = list(
+          kind = "typedSelection",
+          version = 1L,
+          columnType = column_descriptor$type,
+          cell = encoded
+        )
+      )
+    })
+    list(
+      column = column_descriptor$name,
+      values = json_array(values),
+      hasMore = length(priority) > limit
     )
   }
 
@@ -1369,7 +2042,7 @@ openwrangler_r_frame_contract <- local({
 
   materialize_view_page <- function(
     capture,
-    sort_rules = list(),
+    view_query = list(filters = list(), sorts = list()),
     row_offset = 0L,
     row_limit = 100L,
     column_offset = 0L,
@@ -1377,25 +2050,25 @@ openwrangler_r_frame_contract <- local({
   ) {
     validate_capture(capture)
     frame <- read_capture_frame(capture)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = TRUE)
+    total_rows <- view$totalRows
     window <- resolve_page_window(
       capture$descriptor,
       row_offset,
       row_limit,
       column_offset,
-      column_limit
+      column_limit,
+      visible_rows = total_rows
     )
-    resolved <- resolve_sort_rules(sort_rules, capture$descriptor)
-    if (length(resolved) == 0L) {
-      clear_sort_cache(capture$sortCache)
-      row_positions <- direct_row_positions(capture, window)
-    } else if (window$rowCount == 0L) {
-      row_positions <- integer()
+    row_positions <- if (window$rowCount == 0L) {
+      integer()
+    } else if (is.null(view$rows)) {
+      direct_row_positions(capture, window)
     } else {
-      row_order <- cached_sorted_row_positions(capture, frame, resolved)
       logical_rows <- seq.int(as.integer(window$rowOffset) + 1L, length.out = window$rowCount)
-      row_positions <- row_order[logical_rows]
+      view$rows[logical_rows]
     }
-    materialize_rows(capture, frame, row_positions, window)
+    materialize_rows(capture, frame, row_positions, window, total_rows)
   }
 
   capture_metrics <- function(capture) {
@@ -1451,6 +2124,7 @@ openwrangler_r_frame_contract <- local({
     materialize_view_page = materialize_view_page,
     materialize_summaries = materialize_summaries,
     materialize_dataset_stats = materialize_dataset_stats,
+    materialize_column_values = materialize_column_values,
     encode_page = encode_page,
     encode_view_page = encode_view_page,
     limits = list(
@@ -1459,6 +2133,9 @@ openwrangler_r_frame_contract <- local({
       pageRows = maximum_page_rows,
       pageColumns = maximum_page_columns,
       pageCells = maximum_page_cells,
+      filters = maximum_filters,
+      predicatesPerFilter = maximum_predicates_per_filter,
+      selectedValuesPerFilter = maximum_selected_values_per_filter,
       sortRules = maximum_sort_rules,
       profileColumns = maximum_profile_columns,
       profileRows = maximum_profile_rows,

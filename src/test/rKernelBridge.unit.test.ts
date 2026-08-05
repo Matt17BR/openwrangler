@@ -43,7 +43,7 @@ describe("canonical R kernel bridge", () => {
         rowLimit: 20,
         columnOffset: 0,
         columnLimit: 8,
-        sorts: []
+        view: { filters: [], sorts: [] }
       },
       expect.objectContaining({ requestedSessionId: sessionId })
     );
@@ -136,10 +136,13 @@ describe("canonical R kernel bridge", () => {
     expect(transport.getPage).toHaveBeenCalledWith(
       sessionId,
       expect.objectContaining({
-        sorts: [
-          { column: { id: "r:c:1", name: "count" }, direction: "desc", nulls: "last" },
-          { column: { id: "r:c:3", name: "when" }, direction: "asc", nulls: "first" }
-        ]
+        view: {
+          filters: [],
+          sorts: [
+            { column: { id: "r:c:1", name: "count" }, direction: "desc", nulls: "last" },
+            { column: { id: "r:c:3", name: "when" }, direction: "asc", nulls: "first" }
+          ]
+        }
       }),
       expect.any(Object)
     );
@@ -189,6 +192,105 @@ describe("canonical R kernel bridge", () => {
     expect(transport.getPage).not.toHaveBeenCalled();
   });
 
+  it("binds value search and its complete filter model to stable R columns", async () => {
+    const transport = fakeTransport(frameContract());
+    transport.getColumnValues.mockResolvedValueOnce({
+      column: "count",
+      values: [
+        {
+          value: "9223372036854775807",
+          count: 1,
+          selectionValue: {
+            kind: "typedSelection",
+            version: 1,
+            columnType: "integer",
+            cell: {
+              kind: "integer",
+              raw: "9223372036854775807",
+              display: "9223372036854775807",
+              isNull: false,
+              isNaN: false
+            }
+          }
+        }
+      ],
+      hasMore: false
+    });
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest());
+
+    const response = await bridge.request({
+      kind: "getColumnValues",
+      sessionId,
+      revision: 0,
+      viewRequestId: "values-1",
+      column: "count",
+      search: "9223",
+      limit: 10,
+      filterModel: {
+        logic: "or",
+        filters: [
+          {
+            column: "value",
+            type: "float",
+            logic: "or",
+            valueFilter: { kind: "values", selectedValues: [12.5], includeNulls: true, includeNaN: true },
+            predicates: [{ kind: "predicate", operator: "between", value: 1, secondValue: 20 }]
+          }
+        ],
+        sort: [{ column: "when", direction: "desc", nulls: "first" }]
+      }
+    });
+
+    expect(transport.getColumnValues).toHaveBeenCalledWith(
+      sessionId,
+      { id: "r:c:1", name: "count" },
+      expect.objectContaining({
+        logic: "or",
+        filters: [expect.objectContaining({ column: { id: "r:c:0", name: "value" }, type: "float" })],
+        sorts: [expect.objectContaining({ column: { id: "r:c:3", name: "when" } })]
+      }),
+      "9223",
+      10,
+      expect.any(Object)
+    );
+    expect(response).toMatchObject({
+      kind: "columnValues",
+      viewRequestId: "values-1",
+      column: "count",
+      values: [{ value: "9223372036854775807", count: 1 }],
+      hasMore: false
+    });
+
+    transport.getColumnValues.mockResolvedValueOnce({
+      column: "count",
+      values: [
+        {
+          value: "1",
+          count: 1,
+          selectionValue: {
+            kind: "typedSelection",
+            version: 1,
+            columnType: "float",
+            cell: { kind: "number", raw: 1, display: "1", isNull: false, isNaN: false }
+          }
+        }
+      ],
+      hasMore: false
+    });
+    await expect(
+      bridge.request({
+        kind: "getColumnValues",
+        sessionId,
+        revision: 0,
+        viewRequestId: "values-wrong-type",
+        column: "count",
+        limit: 10,
+        filterModel: { filters: [], sort: [] }
+      })
+    ).rejects.toThrow("incompatible typed selections");
+  });
+
   it("maps projected native R profiles and dataset statistics to the current view", async () => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
@@ -205,7 +307,12 @@ describe("canonical R kernel bridge", () => {
       },
       columnIds: ["r:c:0"]
     });
-    expect(transport.getSummary).toHaveBeenCalledWith(sessionId, [{ id: "r:c:0", name: "value" }], expect.any(Object));
+    expect(transport.getSummary).toHaveBeenCalledWith(
+      sessionId,
+      [{ id: "r:c:0", name: "value" }],
+      expect.objectContaining({ sorts: [expect.objectContaining({ column: { id: "r:c:1", name: "count" } })] }),
+      expect.any(Object)
+    );
     expect(summary).toMatchObject({
       kind: "summary",
       revision: 0,
@@ -220,7 +327,7 @@ describe("canonical R kernel bridge", () => {
       viewRequestId: "stats-1",
       filterModel: { filters: [], sort: [] }
     });
-    expect(transport.getDatasetStats).toHaveBeenCalledWith(sessionId, expect.any(Object));
+    expect(transport.getDatasetStats).toHaveBeenCalledWith(sessionId, { filters: [], sorts: [] }, expect.any(Object));
     expect(stats).toMatchObject({
       kind: "datasetStats",
       revision: 0,
@@ -229,7 +336,7 @@ describe("canonical R kernel bridge", () => {
     });
   });
 
-  it("rejects filtered and mis-correlated R profile work", async () => {
+  it("binds filtered R profile work to stable column identities and rejects mis-correlation", async () => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
     await bridge.request(openRequest());
@@ -252,8 +359,21 @@ describe("canonical R kernel bridge", () => {
         },
         columnIds: ["r:c:0"]
       })
-    ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation", viewRequestId: "filtered-summary" });
-    expect(transport.getSummary).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ kind: "summary", viewRequestId: "filtered-summary" });
+    expect(transport.getSummary).toHaveBeenCalledWith(
+      sessionId,
+      [{ id: "r:c:0", name: "value" }],
+      expect.objectContaining({
+        filters: [
+          expect.objectContaining({
+            column: { id: "r:c:0", name: "value" },
+            type: "float",
+            predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+          })
+        ]
+      }),
+      expect.any(Object)
+    );
 
     transport.getSummary.mockResolvedValueOnce([
       {
@@ -273,8 +393,11 @@ describe("canonical R kernel bridge", () => {
     ).rejects.toThrow("active dataframe");
 
     transport.getDatasetStats.mockResolvedValueOnce({
-      ...datasetStatsFor(frameContract()),
-      duplicateRows: 1
+      totalRows: 1,
+      stats: {
+        ...datasetStatsFor(frameContract()),
+        duplicateRows: 1
+      }
     });
     await expect(
       bridge.request({
@@ -287,20 +410,31 @@ describe("canonical R kernel bridge", () => {
     ).rejects.toThrow("active dataframe shape");
   });
 
-  it("keeps unsupported filtering, mutation, and export requests out of IRkernel", async () => {
-    const transport = fakeTransport(frameContract());
+  it("rejects dataset statistics that exceed their correlated filtered row count", async () => {
+    const contract = frameContract({ totalRows: 3 });
+    const transport = fakeTransport(contract);
     const bridge = createBridge(transport);
     await bridge.request(openRequest());
-    const requests: OpenWranglerRequest[] = [
-      {
-        kind: "getPage",
+    const stats = datasetStatsFor(contract);
+    transport.getDatasetStats.mockResolvedValueOnce({
+      totalRows: 1,
+      stats: {
+        ...stats,
+        missingCells: 2,
+        missingRows: 2,
+        missingValuesByColumn: stats.missingValuesByColumn.map((entry, index) => ({
+          ...entry,
+          count: index === 0 ? 2 : 0
+        }))
+      }
+    });
+
+    await expect(
+      bridge.request({
+        kind: "getDatasetStats",
         sessionId,
         revision: 0,
-        viewRequestId: "filtered",
-        offset: 0,
-        limit: 20,
-        columnOffset: 0,
-        columnLimit: 8,
+        viewRequestId: "filtered-stats",
         filterModel: {
           filters: [
             {
@@ -311,7 +445,15 @@ describe("canonical R kernel bridge", () => {
           ],
           sort: []
         }
-      },
+      })
+    ).rejects.toThrow("active dataframe shape");
+  });
+
+  it("keeps mutation and export requests out of IRkernel", async () => {
+    const transport = fakeTransport(frameContract());
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest());
+    const requests: OpenWranglerRequest[] = [
       {
         kind: "applyDraft",
         sessionId,
@@ -502,6 +644,7 @@ interface FakeRTransport extends RKernelBridgeTransport {
   getPage: ReturnType<typeof vi.fn<RKernelBridgeTransport["getPage"]>>;
   getSummary: ReturnType<typeof vi.fn<RKernelBridgeTransport["getSummary"]>>;
   getDatasetStats: ReturnType<typeof vi.fn<RKernelBridgeTransport["getDatasetStats"]>>;
+  getColumnValues: ReturnType<typeof vi.fn<RKernelBridgeTransport["getColumnValues"]>>;
   close: ReturnType<typeof vi.fn<RKernelBridgeTransport["close"]>>;
   isSessionMapped: ReturnType<typeof vi.fn<RKernelBridgeTransport["isSessionMapped"]>>;
   dispose: ReturnType<typeof vi.fn<RKernelBridgeTransport["dispose"]>>;
@@ -515,7 +658,8 @@ function fakeTransport(contract: RFramePageContract, openedSessionId = sessionId
     open: vi.fn(async () => ({ sessionId: openedSessionId, page: contract })),
     getPage: vi.fn(async () => contract),
     getSummary: vi.fn(async (_sessionId, columns) => columns.map((column) => summaryFor(contract, column))),
-    getDatasetStats: vi.fn(async () => datasetStatsFor(contract)),
+    getDatasetStats: vi.fn(async () => ({ totalRows: contract.shape.rows, stats: datasetStatsFor(contract) })),
+    getColumnValues: vi.fn(async (_sessionId, column) => ({ column: column.name, values: [], hasMore: false })),
     close: vi.fn(async () => undefined),
     isSessionMapped: vi.fn(() => true),
     dispose: vi.fn(async () => undefined),
@@ -564,7 +708,7 @@ function deferred<T>(): { promise: Promise<T>; resolve(value?: T): void } {
 }
 
 function frameContract(
-  options: Readonly<{ duplicateFirstName?: boolean; explicitRowLabel?: string }> = {}
+  options: Readonly<{ duplicateFirstName?: boolean; explicitRowLabel?: string; totalRows?: number }> = {}
 ): RFramePageContract {
   const names = [
     "value",
@@ -597,9 +741,9 @@ function frameContract(
     { kind: "infinity", raw: null, display: "Inf", isNull: false, isNaN: false, sign: 1 }
   ];
   return {
-    contractVersion: 2,
+    contractVersion: 3,
     dataframeFlavor: "r.data.frame",
-    shape: { rows: 1, columns: 8 },
+    shape: { rows: options.totalRows ?? 1, columns: 8 },
     frameSemantics: {
       classes: ["data.frame"],
       rowNames: options.explicitRowLabel === undefined ? "positional" : "explicit",
@@ -609,7 +753,7 @@ function frameContract(
     page: {
       offset: 0,
       limit: 20,
-      totalRows: 1,
+      totalRows: options.totalRows ?? 1,
       columnOffset: 0,
       columnLimit: 8,
       columnIds: schemas.map((column) => column.id),
@@ -670,9 +814,9 @@ function rCapabilities(): Record<string, boolean> {
     exportCsv: false,
     exportParquet: false,
     notebookInsert: false,
-    filter: false,
+    filter: true,
     sort: true,
     profile: true,
-    columnValues: false
+    columnValues: true
   };
 }

@@ -7,7 +7,7 @@ function decodeCandidate(candidate: Record<string, unknown>) {
 
 function minimalContract(): Record<string, unknown> {
   return {
-    contractVersion: 2,
+    contractVersion: 3,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -132,6 +132,25 @@ describe("native R frame contract decoder", () => {
       { id: "r:r:2", rowNumber: 0 },
       { id: "r:r:0", rowNumber: 1 }
     ]);
+  });
+
+  it("accepts a filtered logical row count while keeping source row identities", () => {
+    const candidate = minimalContract();
+    candidate.shape = { rows: 5, columns: 1 };
+    const page = candidate.page as Record<string, unknown>;
+    page.totalRows = 2;
+    page.rows = [
+      {
+        id: "r:r:4",
+        rowNumber: 0,
+        values: [{ kind: "integer", raw: "5", display: "5", isNull: false, isNaN: false }]
+      }
+    ];
+
+    expect(decodeCandidate(candidate).page).toMatchObject({
+      totalRows: 2,
+      rows: [{ id: "r:r:4", rowNumber: 0 }]
+    });
   });
 
   it.each([
