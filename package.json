@@ -124,6 +124,7 @@
     "benchmark:pyspark-profile": "node scripts/run-python.mjs python/benchmarks/pyspark_profile.py",
     "comparison:smoke": "node scripts/data-wrangler-comparison-study.mjs smoke",
     "comparison:study": "node scripts/data-wrangler-comparison-study.mjs run",
+    "comparison:local": "node scripts/data-wrangler-comparison-study.mjs local",
     "comparison:report": "node scripts/data-wrangler-comparison-study.mjs report",
     "benchmark:installed": "node scripts/run-installed-performance.mjs",
     "package": "npm run package:run --",

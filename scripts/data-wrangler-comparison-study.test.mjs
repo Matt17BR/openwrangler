@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { DATA_WRANGLER_STUDY_TOOL_NAMES, summarizeStudyPssSamples } from "./data-wrangler-comparison-report.mjs";
 import {
   DATA_WRANGLER_VERSION,
+  LOCAL_MIXED_CELLS,
+  LOCAL_REPETITIONS,
   SMOKE_REPETITIONS,
   STUDY_CELLS,
   STUDY_PROTOCOL,
@@ -20,6 +22,7 @@ import {
   removeStaleTrialDirectories,
   runDataWranglerComparisonSmoke,
   runDataWranglerComparisonStudy,
+  runLocalDataWranglerComparison,
   runOneTrial,
   terminalTrialIds,
   writeDataWranglerComparisonStudyReport
@@ -61,6 +64,94 @@ test("schedule has one ten-sample session per product and workload and no cold l
     schedule.filter(({ order }) => order % 2 === 0).map(({ product }) => product),
     ["open-wrangler", "data-wrangler", "data-wrangler", "open-wrangler"]
   );
+});
+
+test("local mixed Parquet schedule has four three-sample sessions", () => {
+  const schedule = createDataWranglerComparisonSchedule(LOCAL_MIXED_CELLS);
+  assert.equal(schedule.length, 4);
+  assert.equal(new Set(schedule.map(({ id }) => id)).size, 4);
+  assert.equal(
+    schedule.every(({ rows, columns, format }) => rows === 1_000_000 && columns === 100 && format === "parquet"),
+    true
+  );
+  for (const engine of ["pandas", "polars"]) {
+    assert.deepEqual(
+      new Set(schedule.filter((entry) => entry.engine === engine).map(({ product }) => product)),
+      new Set(["open-wrangler", "data-wrangler"])
+    );
+  }
+  assert.equal(LOCAL_REPETITIONS, 3);
+});
+
+test("local comparison requires confirmation and removes its generated fixture", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-local-wrapper-"));
+  const options = { ...studyOptions(join(root, "results")), confirmLocalComparison: "yes" };
+  let fixtureRoot;
+  try {
+    await assert.rejects(runLocalDataWranglerComparison({ ...options, confirmLocalComparison: undefined }), /confirm/u);
+    const result = await runLocalDataWranglerComparison(options, {
+      generateLocalFixture: async (_python, parquet) => {
+        fixtureRoot = dirname(parquet);
+        writeFileSync(parquet, "small fake parquet");
+      },
+      runStudy: async (localOptions) => {
+        assert.equal(existsSync(localOptions.parquet), true);
+        assert.deepEqual(localOptions.cells, LOCAL_MIXED_CELLS);
+        assert.equal(localOptions.repetitionsPerSession, 3);
+        return { completed: 4, manifest: { schedule: createDataWranglerComparisonSchedule(localOptions.cells) } };
+      }
+    });
+    assert.equal(result.completed, 4);
+    assert.equal(existsSync(fixtureRoot), false);
+    assert.deepEqual(readdirSync(root), ["results"]);
+
+    await assert.rejects(
+      runLocalDataWranglerComparison(
+        { ...options, output: join(root, "failed-results") },
+        {
+          generateLocalFixture: async (_python, parquet) => {
+            fixtureRoot = dirname(parquet);
+            writeFileSync(parquet, "small fake parquet");
+          },
+          runStudy: async () => {
+            throw new Error("simulated study failure");
+          }
+        }
+      ),
+      /simulated study failure/u
+    );
+    assert.equal(existsSync(fixtureRoot), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("local profile records all four arms through the existing study runner", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-local-study-"));
+  const calls = [];
+  try {
+    const manifest = localManifestFixture();
+    const result = await runDataWranglerComparisonStudy(
+      {
+        ...studyOptions(root),
+        cells: LOCAL_MIXED_CELLS,
+        repetitionsPerSession: LOCAL_REPETITIONS
+      },
+      fakeDependencies(calls, manifest)
+    );
+    assert.equal(result.completed, 4);
+    assert.equal(result.remaining, 0);
+    assert.deepEqual(
+      calls,
+      result.manifest.schedule.map(({ id }) => id)
+    );
+    assert.equal(
+      loadStudyResults(root).trials.every(({ samples }) => samples.length === 3),
+      true
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("manifest records eight sessions, ten repetitions, fixed workloads, and public provenance", () => {
@@ -242,8 +333,7 @@ test("stale temporary session roots are removed without touching unrelated entri
   }
 });
 
-function fakeDependencies(calls) {
-  const manifest = manifestFixture();
+function fakeDependencies(calls, manifest = manifestFixture()) {
   return {
     now: () => manifest.createdAtUtc,
     prepareTools: async () => {},
@@ -263,6 +353,21 @@ function fakeDependencies(calls) {
       return sessionResult(entry, manifest, request.repetitions);
     }
   };
+}
+
+function localManifestFixture() {
+  const release = manifestFixture();
+  return buildStudyManifest({
+    createdAtUtc: release.createdAtUtc,
+    candidate: release.provenance.openWrangler,
+    editor: release.provenance.editor,
+    python: release.provenance.python,
+    fixtures: { parquet: { rows: 1_000_000, columns: 100, valuesValidated: true, sha256: SHA } },
+    machine: release.provenance.machine,
+    toolHashes: release.provenance.tools,
+    repetitionsPerSession: LOCAL_REPETITIONS,
+    cells: LOCAL_MIXED_CELLS
+  });
 }
 
 function studyOptions(output) {

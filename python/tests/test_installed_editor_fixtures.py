@@ -34,6 +34,7 @@ benchmark_directory = Path(__file__).parents[1] / "benchmarks"
 sys.path.insert(0, str(benchmark_directory))
 try:
     fixture_contract = import_module("fixture_contract")
+    local_mixed_parquet = import_module("local_mixed_parquet")
     FixtureSpec = cast(_FixtureSpecFactory, fixture_contract.FixtureSpec)
     assert_fixture_contract = cast(
         Callable[[Path, _FixtureSpec], None],
@@ -41,6 +42,41 @@ try:
     )
 finally:
     sys.path.remove(str(benchmark_directory))
+
+
+def test_local_mixed_fixture_fails_early_when_resources_are_too_small(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="available memory"):
+        local_mixed_parquet.require_local_resources(
+            tmp_path,
+            available_memory=local_mixed_parquet.MIN_AVAILABLE_MEMORY - 1,
+            free_disk=local_mixed_parquet.MIN_FREE_DISK,
+        )
+    with pytest.raises(RuntimeError, match="free disk"):
+        local_mixed_parquet.require_local_resources(
+            tmp_path,
+            available_memory=local_mixed_parquet.MIN_AVAILABLE_MEMORY,
+            free_disk=local_mixed_parquet.MIN_FREE_DISK - 1,
+        )
+
+
+def test_local_mixed_fixture_removes_an_oversized_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "mixed.parquet"
+
+    def write_oversized(path: Path, *, rows: int, columns: int) -> None:
+        del rows, columns
+        path.write_bytes(b"x" * 129)
+
+    monkeypatch.setattr(local_mixed_parquet, "_write_mixed_parquet", write_oversized)
+    with pytest.raises(RuntimeError, match="local cap"):
+        local_mixed_parquet.create_local_mixed_parquet(
+            destination,
+            rows=10,
+            columns=10,
+            max_bytes=128,
+            check_resources=False,
+        )
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 class _FixtureEvidence(TypedDict):

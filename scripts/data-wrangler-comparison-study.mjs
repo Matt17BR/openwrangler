@@ -13,7 +13,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { arch, cpus, platform, release, totalmem } from "node:os";
+import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -31,6 +31,7 @@ export const TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 export const DATA_WRANGLER_VERSION = "1.24.2";
 export const WARM_REPETITIONS = 10;
 export const SMOKE_REPETITIONS = 2;
+export const LOCAL_REPETITIONS = 3;
 export const STUDY_TIMEOUTS_MS = Object.freeze({
   preAction: 75_000,
   inlinePreview: 30_000,
@@ -45,15 +46,38 @@ export const STUDY_CELLS = Object.freeze([
   Object.freeze({ id: "pandas-parquet", engine: "pandas", format: "parquet", rows: 1_000_000, columns: 20 }),
   Object.freeze({ id: "polars-parquet", engine: "polars", format: "parquet", rows: 1_000_000, columns: 20 })
 ]);
+export const LOCAL_MIXED_CELLS = Object.freeze([
+  Object.freeze({ id: "pandas-parquet-local", engine: "pandas", format: "parquet", rows: 1_000_000, columns: 100 }),
+  Object.freeze({ id: "polars-parquet-local", engine: "polars", format: "parquet", rows: 1_000_000, columns: 100 })
+]);
 const PRODUCTS = Object.freeze(["open-wrangler", "data-wrangler"]);
 const HASH = /^[0-9a-f]{64}$/u;
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 
-export function createDataWranglerComparisonSchedule() {
+function validateComparisonCells(cells) {
+  if (!sameCells(cells, STUDY_CELLS) && !sameCells(cells, LOCAL_MIXED_CELLS)) {
+    throw new TypeError("Comparison cells must match the release study or capped local Parquet profile.");
+  }
+}
+
+function sameCells(actual, expected) {
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function sampleCountWord(value) {
+  return new Map([
+    [SMOKE_REPETITIONS, "two"],
+    [LOCAL_REPETITIONS, "three"],
+    [WARM_REPETITIONS, "ten"]
+  ]).get(value);
+}
+
+export function createDataWranglerComparisonSchedule(cells = STUDY_CELLS) {
+  validateComparisonCells(cells);
   const schedule = [];
   const productOrders = [PRODUCTS, [...PRODUCTS].reverse(), [...PRODUCTS].reverse(), PRODUCTS];
-  for (const [cellIndex, cell] of STUDY_CELLS.entries()) {
+  for (const [cellIndex, cell] of cells.entries()) {
     for (const product of productOrders[cellIndex]) {
       schedule.push(
         Object.freeze({
@@ -81,7 +105,8 @@ export function buildStudyManifest({
   fixtures,
   machine,
   toolHashes,
-  repetitionsPerSession = WARM_REPETITIONS
+  repetitionsPerSession = WARM_REPETITIONS,
+  cells = STUDY_CELLS
 }) {
   canonicalUtc(createdAtUtc);
   validateVersionedFile(candidate, "Open Wrangler candidate");
@@ -99,13 +124,14 @@ export function buildStudyManifest({
   }
   validateMachine(machine);
   validateToolHashes(toolHashes);
-  if (![SMOKE_REPETITIONS, WARM_REPETITIONS].includes(repetitionsPerSession)) {
-    throw new TypeError("A comparison session requires either two smoke samples or ten release samples.");
+  validateComparisonCells(cells);
+  if (![SMOKE_REPETITIONS, LOCAL_REPETITIONS, WARM_REPETITIONS].includes(repetitionsPerSession)) {
+    throw new TypeError("A comparison session requires two smoke, three local, or ten release samples.");
   }
   if (candidate.version === DATA_WRANGLER_VERSION) {
     throw new TypeError("The candidate version must be independent from the Data Wrangler baseline version.");
   }
-  for (const cell of STUDY_CELLS) {
+  for (const cell of cells) {
     const fixture = fixtures[cell.format];
     if (
       !fixture ||
@@ -117,12 +143,12 @@ export function buildStudyManifest({
       throw new TypeError(`${cell.format} fixture does not match the fixed study dimensions.`);
     }
   }
-  const schedule = createDataWranglerComparisonSchedule();
+  const schedule = createDataWranglerComparisonSchedule(cells);
   const manifest = {
     protocol: STUDY_PROTOCOL,
     createdAtUtc,
     method: {
-      cells: STUDY_CELLS.map((cell) => ({ ...cell })),
+      cells: cells.map((cell) => ({ ...cell })),
       repetitionsPerSession,
       regressionLimits: structuredClone(DATA_WRANGLER_REGRESSION_LIMITS),
       timingBoundaries: {
@@ -131,7 +157,7 @@ export function buildStudyManifest({
         firstProfile: "public profiling action to the first completed column summary",
         completeProfile: "public profiling action to final summaries for every column"
       },
-      statistics: `${repetitionsPerSession === WARM_REPETITIONS ? "ten" : "two"} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
+      statistics: `${sampleCountWord(repetitionsPerSession)} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
       memory: "highest observed absolute process-tree PSS during each measured notebook workflow"
     },
     provenance: {
@@ -189,16 +215,22 @@ export async function runDataWranglerComparisonStudy(options, dependencies = {})
   await prepareTools();
   const observed = await captureProvenance(options, dependencies);
   const repetitionsPerSession = options.repetitionsPerSession ?? WARM_REPETITIONS;
+  const cells = options.cells ?? STUDY_CELLS;
   const manifestPath = join(output, "manifest.json");
   let manifest;
   if (existsSync(manifestPath)) {
     manifest = readJson(manifestPath);
-    const expected = buildStudyManifest({ ...observed, createdAtUtc: manifest.createdAtUtc, repetitionsPerSession });
+    const expected = buildStudyManifest({
+      ...observed,
+      createdAtUtc: manifest.createdAtUtc,
+      repetitionsPerSession,
+      cells
+    });
     if (digest(manifest) !== digest(expected)) {
       throw new Error("Study inputs changed since manifest creation. Start a new output directory.");
     }
   } else {
-    manifest = buildStudyManifest({ ...observed, createdAtUtc: now(), repetitionsPerSession });
+    manifest = buildStudyManifest({ ...observed, createdAtUtc: now(), repetitionsPerSession, cells });
     writeJsonAtomic(manifestPath, manifest);
   }
 
@@ -267,6 +299,32 @@ export async function runDataWranglerComparisonStudy(options, dependencies = {})
     completed: completed.size,
     remaining: remainingCount
   });
+}
+
+export async function runLocalDataWranglerComparison(options, dependencies = {}) {
+  if (options.confirmLocalComparison !== "yes") {
+    throw new Error("Pass --confirm-local-comparison yes to run the four local comparison sessions.");
+  }
+  const output = resolve(options.output);
+  mkdirSync(output, { recursive: true, mode: 0o700 });
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "ow-local-comparison-"));
+  const parquet = join(fixtureRoot, "mixed-1000000-100.parquet");
+  const generateFixture = dependencies.generateLocalFixture ?? generateLocalMixedFixture;
+  const runStudy = dependencies.runStudy ?? runDataWranglerComparisonStudy;
+  try {
+    await generateFixture(options.python, parquet);
+    return await runStudy(
+      {
+        ...options,
+        parquet,
+        cells: LOCAL_MIXED_CELLS,
+        repetitionsPerSession: LOCAL_REPETITIONS
+      },
+      dependencies
+    );
+  } finally {
+    rmSync(fixtureRoot, { force: true, recursive: true });
+  }
 }
 
 export async function runDataWranglerComparisonSmoke(options, dependencies = {}) {
@@ -470,15 +528,20 @@ async function captureProvenance(options, dependencies) {
   const candidate = await inspectCandidate(options.candidate);
   const editor = await inspectEditor(options.editor, options.editorCli);
   const python = { ...(await inspectPython(options.python)), sha256: hashFile(options.python) };
-  const fixtureContract = await validateFixtures(options.python, options.csv, options.parquet);
+  const cells = options.cells ?? STUDY_CELLS;
+  const fixtureContract = await validateFixtures(options.python, options.csv, options.parquet, cells);
+  const fixturePaths = { csv: options.csv, parquet: options.parquet };
+  const fixtures = Object.fromEntries(
+    [...new Set(cells.map(({ format }) => format))].map((format) => [
+      format,
+      { ...fixtureContract[format], sha256: hashFile(fixturePaths[format]) }
+    ])
+  );
   return {
     candidate,
     editor,
     python,
-    fixtures: {
-      csv: { ...fixtureContract.csv, sha256: hashFile(options.csv) },
-      parquet: { ...fixtureContract.parquet, sha256: hashFile(options.parquet) }
-    },
+    fixtures,
     machine: inspectMachine(),
     toolHashes: Object.fromEntries(Object.entries(comparisonToolFiles()).map(([name, path]) => [name, hashFile(path)]))
   };
@@ -553,7 +616,21 @@ async function inspectPythonEnvironment(python) {
   return value;
 }
 
-async function validateFixtureInputs(python, csv, parquet) {
+async function validateFixtureInputs(python, csv, parquet, cells = STUDY_CELLS) {
+  if (sameCells(cells, LOCAL_MIXED_CELLS)) {
+    const script = resolve("python/benchmarks/local_mixed_parquet.py");
+    const program = [
+      "import json, sys",
+      "from pathlib import Path",
+      "sys.path.insert(0, sys.argv[1])",
+      "from local_mixed_parquet import validate_local_mixed_parquet",
+      "print(json.dumps({'parquet': validate_local_mixed_parquet(Path(sys.argv[2]))}))"
+    ].join("; ");
+    const { stdout } = await spawnCommand(python, ["-I", "-c", program, dirname(script), parquet], {
+      timeoutMs: 180_000
+    });
+    return JSON.parse(stdout);
+  }
   const benchmarkDirectory = resolve("python/benchmarks");
   const program = [
     "import json, sys",
@@ -579,6 +656,14 @@ async function validateFixtureInputs(python, csv, parquet) {
     throw new Error("The comparison fixtures did not satisfy the deterministic fixture contract.");
   }
   return value;
+}
+
+async function generateLocalMixedFixture(python, output) {
+  const script = resolve("python/benchmarks/local_mixed_parquet.py");
+  await spawnCommand(python, ["-I", script, "--out", output], {
+    cwd: resolve(import.meta.dirname, ".."),
+    timeoutMs: 900_000
+  });
 }
 
 function inspectMachineEnvironment() {
@@ -893,7 +978,9 @@ function sanitizeError(error) {
 
 function parseArguments(arguments_) {
   const command = arguments_[0];
-  if (!["run", "smoke", "report"].includes(command)) throw new Error("Expected run, smoke, or report.");
+  if (!["run", "smoke", "local", "report"].includes(command)) {
+    throw new Error("Expected run, smoke, local, or report.");
+  }
   const values = new Map();
   for (let index = 1; index < arguments_.length; index += 2) {
     const flag = arguments_[index];
@@ -904,13 +991,15 @@ function parseArguments(arguments_) {
     values.set(flag, value);
   }
   if (command === "report") return { command, study: required(values, "--study"), output: required(values, "--out") };
-  const paths = ["--candidate", "--python", "--editor", "--editor-cli", "--csv", "--parquet"];
+  const paths = ["--candidate", "--python", "--editor", "--editor-cli"];
+  if (command !== "local") paths.push("--csv", "--parquet");
   for (const flag of paths) {
     const value = required(values, flag);
     if (!isAbsolute(value)) throw new Error(`${flag} must be an absolute path.`);
   }
   const limit = values.has("--limit") ? Number(values.get("--limit")) : undefined;
   if (command === "smoke" && limit !== undefined) throw new Error("Smoke always runs exactly one complete pair.");
+  if (command === "local" && limit !== undefined) throw new Error("Local comparison always runs all four sessions.");
   if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 8)) {
     throw new Error("--limit must be between 1 and 8.");
   }
@@ -923,6 +1012,7 @@ function parseArguments(arguments_) {
     csv: values.get("--csv"),
     parquet: values.get("--parquet"),
     output: required(values, "--out"),
+    confirmLocalComparison: values.get("--confirm-local-comparison"),
     limit
   };
 }
@@ -943,6 +1033,11 @@ async function main() {
   if (options.command === "smoke") {
     const status = await runDataWranglerComparisonSmoke(options);
     console.log(`${status.completed} paired smoke sessions complete.`);
+    return;
+  }
+  if (options.command === "local") {
+    const status = await runLocalDataWranglerComparison(options);
+    console.log(`${status.completed} of ${status.manifest.schedule.length} local comparison sessions complete.`);
     return;
   }
   const { manifest, trials } = loadStudyResults(options.study);
