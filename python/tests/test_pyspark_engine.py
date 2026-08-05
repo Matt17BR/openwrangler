@@ -290,11 +290,11 @@ def test_capabilities_are_explicitly_read_only_and_not_file_backed() -> None:
     engine = PySparkEngine()
     with pytest.raises(EngineError, match="live notebook variables only"):
         engine.read_file("sample.parquet")
-    with pytest.raises(EngineError, match="read-only"):
+    with pytest.raises(EngineError, match="viewing-only"):
         engine.apply_transform(object(), {})
-    with pytest.raises(EngineError, match="does not generate"):
+    with pytest.raises(EngineError, match="do not generate"):
         engine.compile_plan(())
-    with pytest.raises(EngineError, match="does not export"):
+    with pytest.raises(EngineError, match="do not export"):
         engine.export_data(object(), "cleaned.parquet", "parquet")
 
 
@@ -881,7 +881,7 @@ def test_rejects_variant_before_open_without_blanket_rejecting_unknown_types(
             "kind": "error",
             "code": "engine_error",
             "message": (
-                "The experimental PySpark backend cannot open this dataframe because required viewing profiles "
+                "Open Wrangler cannot open this PySpark dataframe because required viewing profiles "
                 "are unavailable for 'payload' (variant). Convert these columns in Spark to strings or another "
                 "orderable Spark SQL type before opening them in Open Wrangler."
             ),

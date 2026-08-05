@@ -158,17 +158,6 @@ textarea {
   text-transform: uppercase;
 }
 
-.experimentalBadge {
-  background: var(--vscode-inputValidation-warningBackground);
-  border: 1px solid var(--vscode-inputValidation-warningBorder);
-  border-radius: 999px;
-  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  padding: 1px 7px;
-  text-transform: uppercase;
-}
-
 .backendBadge {
   border: 1px solid var(--vscode-panel-border);
   border-radius: 999px;
