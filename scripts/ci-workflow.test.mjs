@@ -635,7 +635,7 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
   assert.match(lockValidation?.if ?? "", /draft_pull_request == 'false'/u);
   assert.deepEqual(
     lockValidation?.steps?.filter((step) => typeof step?.run === "string").map((step) => step.run),
-    ["npm ci", "npm ls", "npm audit"]
+    ["npm ci", "npm ls", "npm audit", "npm run test:ts -- --exclude src/test/notebookVariableDiscovery.python.test.ts"]
   );
 
   for (const [relativePath, classifierName, expectedJobs] of [
