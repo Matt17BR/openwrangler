@@ -300,14 +300,12 @@ async function runComparisonStudy(options, dependencies, large) {
       }
       rmSync(trialRoot, { force: true, recursive: true });
     }
-    if (large) {
-      try {
-        await checkEnvironment();
-      } catch (error) {
-        trialError = trialError
-          ? new AggregateError([trialError, error], `${sanitizeError(trialError)}; ${sanitizeError(error)}`)
-          : error;
-      }
+    try {
+      await checkEnvironment();
+    } catch (error) {
+      trialError = trialError
+        ? new AggregateError([trialError, error], `${sanitizeError(trialError)}; ${sanitizeError(error)}`)
+        : error;
     }
     if (trialError) {
       result = buildComparisonFailureResult(

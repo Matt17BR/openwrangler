@@ -171,6 +171,22 @@ test("study resumes at session granularity without replacing completed samples",
   }
 });
 
+test("ordinary study checks the machine before and after each session", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-batched-environment-"));
+  const dependencies = fakeDependencies([]);
+  let inspections = 0;
+  dependencies.inspectMachine = () => {
+    inspections += 1;
+    return manifestFixture().provenance.machine;
+  };
+  try {
+    await runDataWranglerComparisonStudy({ ...studyOptions(root), limit: 1 }, dependencies);
+    assert.equal(inspections, 3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("smoke runs the two product sessions for one workload", async () => {
   const root = join(tmpdir(), `ow-batched-smoke-${process.pid}-${Date.now()}`);
   const calls = [];
