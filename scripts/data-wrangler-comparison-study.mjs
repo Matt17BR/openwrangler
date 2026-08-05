@@ -518,26 +518,39 @@ export function loadStudyResults(output) {
 
 async function captureProvenance(options, dependencies) {
   const hashFile = dependencies.hashFile ?? sha256File;
-  const inspectCandidate = dependencies.inspectCandidate ?? inspectCandidateVsix;
-  const inspectEditor = dependencies.inspectEditor ?? inspectEditorEnvironment;
-  const inspectPython = dependencies.inspectPython ?? inspectPythonEnvironment;
   const inspectMachine = dependencies.inspectMachine ?? inspectMachineEnvironment;
   const validateFixtures = dependencies.validateFixtures ?? validateFixtureInputs;
-  const candidate = await inspectCandidate(options.candidate);
-  const editor = await inspectEditor(options.editor, options.editorCli);
-  const python = { ...(await inspectPython(options.python)), sha256: hashFile(options.python) };
+  const { tools, ...environment } = await inspectComparisonEnvironment(options, {
+    hashFile,
+    inspectCandidate: dependencies.inspectCandidate,
+    inspectEditor: dependencies.inspectEditor,
+    inspectPython: dependencies.inspectPython,
+    toolFiles: comparisonToolFiles()
+  });
   const fixtureContract = await validateFixtures(options.python, options.csv, options.parquet);
   return {
-    candidate,
-    editor,
-    python,
+    ...environment,
     fixtures: {
       csv: { ...fixtureContract.csv, sha256: hashFile(options.csv) },
       parquet: { ...fixtureContract.parquet, sha256: hashFile(options.parquet) }
     },
     machine: inspectMachine(),
-    toolHashes: Object.fromEntries(Object.entries(comparisonToolFiles()).map(([name, path]) => [name, hashFile(path)]))
+    toolHashes: tools
   };
+}
+
+export async function inspectComparisonEnvironment(
+  options,
+  { hashFile = sha256File, inspectCandidate, inspectEditor, inspectPython, toolFiles }
+) {
+  const candidate = await (inspectCandidate ?? inspectCandidateVsix)(options.candidate);
+  const editor = await (inspectEditor ?? inspectEditorEnvironment)(options.editor, options.editorCli);
+  const python = {
+    ...(await (inspectPython ?? inspectPythonEnvironment)(options.python)),
+    sha256: hashFile(options.python)
+  };
+  const tools = Object.fromEntries(Object.entries(toolFiles).map(([name, path]) => [name, hashFile(path)]));
+  return { candidate, editor, python, tools };
 }
 
 export async function inspectCandidateVsix(path) {
@@ -947,28 +960,75 @@ export function sanitizeError(error) {
     .slice(0, 500);
 }
 
-function parseArguments(arguments_) {
+export function parseComparisonFlags(arguments_, { commands, valueFlags, booleanFlags = [] }) {
   const command = arguments_[0];
-  if (!["run", "smoke", "report"].includes(command)) throw new Error("Expected run, smoke, or report.");
+  if (!commands.includes(command)) throw new Error(`Expected ${commands.join(", ")}.`);
+  const acceptedValues = new Set(valueFlags);
+  const acceptedBooleans = new Set(booleanFlags);
   const values = new Map();
-  for (let index = 1; index < arguments_.length; index += 2) {
+  for (let index = 1; index < arguments_.length; index += 1) {
     const flag = arguments_[index];
+    if (acceptedBooleans.has(flag)) {
+      if (values.has(flag)) throw new Error(`Duplicate ${flag}.`);
+      values.set(flag, true);
+      continue;
+    }
     const value = arguments_[index + 1];
-    if (!flag?.startsWith("--") || !value || value.startsWith("--") || values.has(flag)) {
+    if (!acceptedValues.has(flag) || !value || value.startsWith("--") || values.has(flag)) {
       throw new Error(`Invalid argument near ${flag ?? "end of command"}.`);
     }
     values.set(flag, value);
+    index += 1;
   }
-  if (command === "report") return { command, study: required(values, "--study"), output: required(values, "--out") };
-  const paths = ["--candidate", "--python", "--editor", "--editor-cli", "--csv", "--parquet"];
+  return { command, values };
+}
+
+export function requiredComparisonFlag(values, flag) {
+  const value = values.get(flag);
+  if (!value) throw new Error(`Missing ${flag}.`);
+  return value;
+}
+
+function parseArguments(arguments_) {
+  const { command, values } = parseComparisonFlags(arguments_, {
+    commands: ["run", "smoke", "report", "large-run", "large-report"],
+    valueFlags: [
+      "--candidate",
+      "--python",
+      "--editor",
+      "--editor-cli",
+      "--csv",
+      "--parquet",
+      "--out",
+      "--study",
+      "--limit"
+    ],
+    booleanFlags: ["--confirm-large-study"]
+  });
+  if (command !== "large-run" && values.has("--confirm-large-study")) {
+    throw new Error("--confirm-large-study is only valid for the large study.");
+  }
+  if (["report", "large-report"].includes(command)) {
+    return {
+      command,
+      study: requiredComparisonFlag(values, "--study"),
+      output: requiredComparisonFlag(values, "--out")
+    };
+  }
+  const paths = ["--candidate", "--python", "--editor", "--editor-cli", "--parquet"];
+  if (command !== "large-run") paths.push("--csv");
   for (const flag of paths) {
-    const value = required(values, flag);
+    const value = requiredComparisonFlag(values, flag);
     if (!isAbsolute(value)) throw new Error(`${flag} must be an absolute path.`);
+  }
+  if (command === "large-run" && !isAbsolute(requiredComparisonFlag(values, "--out"))) {
+    throw new Error("--out must be an absolute path.");
   }
   const limit = values.has("--limit") ? Number(values.get("--limit")) : undefined;
   if (command === "smoke" && limit !== undefined) throw new Error("Smoke always runs exactly one complete pair.");
-  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 8)) {
-    throw new Error("--limit must be between 1 and 8.");
+  const maximum = command === "large-run" ? 20 : 8;
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > maximum)) {
+    throw new Error(`--limit must be between 1 and ${maximum}.`);
   }
   return {
     command,
@@ -978,19 +1038,31 @@ function parseArguments(arguments_) {
     editorCli: values.get("--editor-cli"),
     csv: values.get("--csv"),
     parquet: values.get("--parquet"),
-    output: required(values, "--out"),
-    limit
+    output: requiredComparisonFlag(values, "--out"),
+    limit,
+    confirmLargeStudy: values.get("--confirm-large-study") === true
   };
-}
-
-function required(values, flag) {
-  const value = values.get(flag);
-  if (!value) throw new Error(`Missing ${flag}.`);
-  return value;
 }
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
+  if (options.command === "large-run") {
+    const { runLargeComparisonStudy } = await import("./data-wrangler-large-comparison-study.mjs");
+    const status = await runLargeComparisonStudy(options);
+    console.log(`${status.completed} of 20 fresh comparison sessions complete.`);
+    return;
+  }
+  if (options.command === "large-report") {
+    const { assertCompleteLargeReport, buildLargeComparisonReport, loadLargeTrials } =
+      await import("./data-wrangler-large-comparison-study.mjs");
+    const manifest = readJson(join(resolve(options.study), "manifest.json"));
+    const { trials } = loadLargeTrials(options.study, manifest);
+    const report = buildLargeComparisonReport({ generatedAtUtc: new Date().toISOString(), manifest, trials });
+    writeJsonAtomic(resolve(options.output), report);
+    assertCompleteLargeReport(report);
+    console.log(`Large comparison report written to ${options.output}.`);
+    return;
+  }
   if (options.command === "run") {
     const status = await runDataWranglerComparisonStudy(options);
     console.log(`${status.completed} of ${status.manifest.schedule.length} study sessions complete.`);

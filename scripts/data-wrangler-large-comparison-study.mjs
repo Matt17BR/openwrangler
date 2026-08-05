@@ -9,27 +9,22 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { basename, join, resolve } from "node:path";
 import {
   DATA_WRANGLER_VERSION,
   TRIAL_REQUEST_PROTOCOL,
   buildComparisonNotebook,
   buildComparisonTestExtension,
   digest,
-  inspectCandidateVsix,
-  inspectEditorEnvironment,
+  inspectComparisonEnvironment,
   inspectMachineEnvironment,
-  inspectPythonEnvironment,
   prepareComparisonStudyRun,
   readJson,
   removePreparedExtensionDirectories,
   runComparisonSchedule,
   runNeutralDriver,
   sanitizeError,
-  sha256File,
-  spawnCommand,
-  writeJsonAtomic
+  spawnCommand
 } from "./data-wrangler-comparison-study.mjs";
 
 export const LARGE_STUDY_PROTOCOL = "openwrangler-large-data-wrangler-study-v1";
@@ -73,6 +68,11 @@ export function createLargeComparisonSchedule() {
             id: `fresh.r${String(repetition).padStart(2, "0")}.${engine}.${product}`,
             product,
             engine,
+            kind: "warm",
+            cellId: `${engine}-parquet`,
+            format: "parquet",
+            rows: LARGE_ROWS,
+            columns: LARGE_COLUMNS,
             repetition,
             order: schedule.length
           })
@@ -226,16 +226,10 @@ export function prepareLargeTrial({ entry, manifest, options, trialRoot }) {
     throw new Error("The large fixture size changed before the trial.");
   }
   const notebookPath = join(trialRoot, `${entry.id}.ipynb`);
-  const cellId = `${entry.engine}-parquet`;
-  writeFileSync(
-    notebookPath,
-    `${JSON.stringify(
-      buildComparisonNotebook({ engine: entry.engine, format: "parquet", cellId }, source),
-      null,
-      2
-    )}\n`,
-    { flag: "wx", mode: 0o600 }
-  );
+  writeFileSync(notebookPath, `${JSON.stringify(buildComparisonNotebook(entry, source), null, 2)}\n`, {
+    flag: "wx",
+    mode: 0o600
+  });
   const request = Object.freeze({
     protocol: TRIAL_REQUEST_PROTOCOL,
     trialId: entry.id,
@@ -244,11 +238,11 @@ export function prepareLargeTrial({ entry, manifest, options, trialRoot }) {
     order: entry.order,
     repetitions: 1,
     cell: {
-      id: cellId,
+      id: entry.cellId,
       engine: entry.engine,
-      format: "parquet",
-      rows: LARGE_ROWS,
-      columns: LARGE_COLUMNS,
+      format: entry.format,
+      rows: entry.rows,
+      columns: entry.columns,
       source,
       sourceSha256: manifest.provenance.fixture.sha256,
       sourceIdentity,
@@ -288,25 +282,43 @@ export function prepareLargeTrial({ entry, manifest, options, trialRoot }) {
 }
 
 export async function measureNativeLoad(request) {
-  const helper = resolve("python/benchmarks/measure_large_parquet_load.py");
+  const program = [
+    "import json, resource, sys, time",
+    "engine, source = sys.argv[1], sys.argv[2]",
+    "expected = (int(sys.argv[3]), int(sys.argv[4]))",
+    "if engine == 'pandas':",
+    "    import pandas as library",
+    "elif engine == 'polars':",
+    "    import polars as library",
+    "else:",
+    "    raise ValueError('Expected pandas or polars')",
+    "reader = library.read_parquet",
+    "rss = lambda: int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024",
+    "baseline = rss()",
+    "started = time.perf_counter_ns()",
+    "frame = reader(source)",
+    "elapsed = round((time.perf_counter_ns() - started) / 1_000_000, 3)",
+    "shape = tuple(frame.shape)",
+    "if shape != expected:",
+    "    raise RuntimeError(f'Loaded {shape}; expected {expected}')",
+    "peak = rss()",
+    "print(json.dumps({'protocol': 'openwrangler-large-parquet-load-v1', 'engine': engine, 'elapsedMs': elapsed, 'rows': shape[0], 'columns': shape[1], 'baselinePeakRssBytes': baseline, 'peakRssBytes': peak, 'peakRssIncreaseBytes': peak - baseline}))"
+  ].join("\n");
   const { stdout } = await spawnCommand(
     request.python.path,
     [
       "-I",
-      helper,
-      "--engine",
+      "-c",
+      program,
       request.cell.engine,
-      "--source",
       request.cell.source,
-      "--rows",
       String(request.cell.rows),
-      "--columns",
       String(request.cell.columns)
     ],
     { cwd: resolve(import.meta.dirname, ".."), timeoutMs: LOAD_TIMEOUT_MS }
   );
   const result = JSON.parse(stdout);
-  validateLoadResult(result, request.cell.engine);
+  validateLoadResult(result, request.cell.engine, request.cell.rows, request.cell.columns);
   return result;
 }
 
@@ -449,11 +461,8 @@ async function captureLargeProvenance(options) {
   await validateLargeFixtureFile(options.python, options.parquet);
   const environment = await inspectLargeRunEnvironment(options.python, options.parquet);
   assertLargeRunEnvironment(environment, environment.machine);
-  const candidate = await inspectCandidateVsix(options.candidate);
-  const editor = await inspectEditorEnvironment(options.editor, options.editorCli);
-  const python = { ...(await inspectPythonEnvironment(options.python)), sha256: sha256File(options.python) };
-  const tools = Object.fromEntries(Object.entries(largeToolFiles()).map(([name, path]) => [name, sha256File(path)]));
-  return { candidate, editor, python, fixture, machine: environment.machine, tools };
+  const comparison = await inspectComparisonEnvironment(options, { toolFiles: largeToolFiles() });
+  return { ...comparison, fixture, machine: environment.machine };
 }
 
 export async function hashLargeFile(path) {
@@ -522,7 +531,6 @@ function largeToolFiles() {
     coordinator: resolve("scripts/data-wrangler-comparison-study.mjs"),
     driver: resolve("scripts/data-wrangler-comparison-neutral-driver.mjs"),
     generator: resolve("python/benchmarks/large_mixed_parquet.py"),
-    load: resolve("python/benchmarks/measure_large_parquet_load.py"),
     host: resolve("dist-test/test/extensionHost/dataWranglerComparisonNotebookTrial.js"),
     dependencyLock: resolve("package-lock.json")
   };
@@ -581,13 +589,13 @@ function validateLargeTrial(trial, entry) {
   return trial;
 }
 
-function validateLoadResult(load, engine) {
+function validateLoadResult(load, engine, rows = LARGE_ROWS, columns = LARGE_COLUMNS) {
   if (
     !load ||
     load.protocol !== "openwrangler-large-parquet-load-v1" ||
     load.engine !== engine ||
-    load.rows !== LARGE_ROWS ||
-    load.columns !== LARGE_COLUMNS ||
+    load.rows !== rows ||
+    load.columns !== columns ||
     !["elapsedMs", "baselinePeakRssBytes", "peakRssBytes", "peakRssIncreaseBytes"].every(
       (name) => typeof load[name] === "number" && Number.isFinite(load[name]) && load[name] >= 0
     ) ||
@@ -648,73 +656,4 @@ function regularFileIdentity(path) {
     size: metadata.size.toString(),
     mtimeNs: metadata.mtimeNs.toString()
   };
-}
-
-function parseArguments(arguments_) {
-  const command = arguments_[0];
-  if (!["run", "report"].includes(command)) throw new Error("Expected run or report.");
-  const values = new Map();
-  for (let index = 1; index < arguments_.length; index += 1) {
-    const flag = arguments_[index];
-    if (flag === "--confirm-large-study") {
-      if (values.has(flag)) throw new Error("Duplicate --confirm-large-study.");
-      values.set(flag, true);
-      continue;
-    }
-    const value = arguments_[index + 1];
-    if (!flag?.startsWith("--") || !value || value.startsWith("--") || values.has(flag)) {
-      throw new Error(`Invalid argument near ${flag ?? "end of command"}.`);
-    }
-    values.set(flag, value);
-    index += 1;
-  }
-  if (command === "report") {
-    return { command, study: required(values, "--study"), output: required(values, "--out") };
-  }
-  for (const flag of ["--candidate", "--python", "--editor", "--editor-cli", "--parquet", "--out"]) {
-    if (!isAbsolute(required(values, flag))) throw new Error(`${flag} must be an absolute path.`);
-  }
-  const limit = values.has("--limit") ? Number(values.get("--limit")) : undefined;
-  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 20)) {
-    throw new Error("--limit must be between 1 and 20.");
-  }
-  return {
-    command,
-    candidate: values.get("--candidate"),
-    python: values.get("--python"),
-    editor: values.get("--editor"),
-    editorCli: values.get("--editor-cli"),
-    parquet: values.get("--parquet"),
-    output: values.get("--out"),
-    limit,
-    confirmLargeStudy: values.get("--confirm-large-study") === true
-  };
-}
-
-function required(values, flag) {
-  const value = values.get(flag);
-  if (!value) throw new Error(`Missing ${flag}.`);
-  return value;
-}
-
-async function main() {
-  const options = parseArguments(process.argv.slice(2));
-  if (options.command === "run") {
-    const status = await runLargeComparisonStudy(options);
-    console.log(`${status.completed} of 20 fresh comparison sessions complete.`);
-    return;
-  }
-  const manifest = readJson(join(resolve(options.study), "manifest.json"));
-  const { trials } = loadLargeTrials(options.study, manifest);
-  const report = buildLargeComparisonReport({ generatedAtUtc: new Date().toISOString(), manifest, trials });
-  writeJsonAtomic(resolve(options.output), report);
-  assertCompleteLargeReport(report);
-  console.log(`Large comparison report written to ${options.output}.`);
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch((error) => {
-    console.error(`Large Data Wrangler comparison failed: ${sanitizeError(error)}`);
-    process.exitCode = 1;
-  });
 }

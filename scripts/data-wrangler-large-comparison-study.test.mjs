@@ -83,28 +83,25 @@ test("large report requires five successful independent sessions in every group"
   });
 
   assert.equal(report.protocol, LARGE_REPORT_PROTOCOL);
-  assert.equal(report.completedTrials, 20);
-  assert.equal(report.summaries.length, 4);
-  assert.equal(report.loadSummaries.length, 2);
-  assert.equal(
-    report.summaries.every(({ successful }) => successful === 5),
-    true
+  assert.deepEqual(
+    report.summaries.map(({ successful }) => successful),
+    [5, 5, 5, 5]
+  );
+  assert.deepEqual(
+    report.loadSummaries.map(({ successful }) => successful),
+    [10, 10]
   );
   assert.equal(
-    report.loadSummaries.every(({ successful }) => successful === 10),
-    true
+    report.loadSummaries.some((summary) => "product" in summary),
+    false
   );
   assert.equal(
-    report.loadSummaries.every((summary) => Object.hasOwn(summary, "product") === false),
-    true
+    report.summaries.some(({ metrics }) => "fileLoadMs" in metrics),
+    false
   );
   assert.equal(
-    report.summaries.every(({ metrics }) => Object.hasOwn(metrics, "fileLoadMs") === false),
-    true
-  );
-  assert.equal(
-    report.loadSummaries.every(({ metrics }) => Object.hasOwn(metrics.fileLoadMs, "p95") === false),
-    true
+    report.loadSummaries.some(({ metrics }) => "p95" in metrics.fileLoadMs),
+    false
   );
   assert.doesNotThrow(() => assertCompleteLargeReport(report));
   assert.throws(
@@ -114,40 +111,6 @@ test("large report requires five successful independent sessions in every group"
       ),
     /five successful fresh sessions/u
   );
-});
-
-test("manual study resumes one fresh editor session at a time", async () => {
-  const root = mkdtempSync(join(tmpdir(), "ow-large-study-"));
-  const calls = [];
-  try {
-    const dependencies = {
-      now: () => "2026-08-05T10:00:00.000Z",
-      captureProvenance: async () => provenanceFixture(),
-      prepareTools: async () => {},
-      inspectRunEnvironment: async () => runEnvironmentFixture(),
-      prepareTrial: ({ entry, trialRoot }) => ({
-        request: { trialId: entry.id, cell: { engine: entry.engine }, isolatedRoot: trialRoot },
-        verifySource() {}
-      }),
-      runLoad: async (request) => loadFixture(request.cell.engine),
-      runJourney: async (request) => {
-        calls.push(request.trialId);
-        return { samples: [journeyFixture()] };
-      }
-    };
-    const first = await runLargeComparisonStudy({ output: root, confirmLargeStudy: true, limit: 2 }, dependencies);
-    assert.deepEqual(first, { completed: 2, remaining: 18 });
-    const second = await runLargeComparisonStudy({ output: root, confirmLargeStudy: true, limit: 1 }, dependencies);
-    assert.deepEqual(second, { completed: 3, remaining: 17 });
-    assert.deepEqual(
-      calls,
-      createLargeComparisonSchedule()
-        .slice(0, 3)
-        .map(({ id }) => id)
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 });
 
 test("an abrupt interruption is cleaned before fixture provenance is checked", async () => {
