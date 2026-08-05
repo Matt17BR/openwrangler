@@ -13,19 +13,24 @@ matrix for release candidates or changes that cross all of its boundaries.
   isolation, `data.table` by-reference mutation, duplicate and non-syntactic names, factors, ordered factors, dates,
   time zones, durations, exact `bit64::integer64` values, `NA`/`NaN`/infinity, unsupported semantics, factor-level and
   page bounds, and rejection before an oversized page is fully allocated, including JSON escape amplification. It also
-  covers stable multi-column viewing sorts, per-key direction and missing-value placement, exact integer64 ordering,
-  duplicate-name references, sorted pagination, source immutability, malformed or stale rules, and source row IDs in
-  logical view order. Ambient `OutDec` and `TZ` settings must not change a cell, including POSIXct columns with null or
-  empty-string timezone metadata. The TypeScript decoder rejects the reserved R integer and bit64 integer64 NA
-  sentinels when they are mislabeled as ordinary values. Profile tests cover stable column references, `NA` versus
+  covers stable-reference compound filters and multi-column sorts, AND/OR logic, typed predicates and selections,
+  value search, per-key direction and missing-value placement, exact integer64 ordering, duplicate-name references,
+  filtered and sorted pagination, source immutability, malformed or stale rules, and source row IDs in logical view
+  order. The date, datetime, and duration cases are read from `fixtures/view-literal-contract.json`; signed-zero tests
+  require one emitted selection to match both `-0` and `+0`. Ambient `OutDec` and `TZ` settings must not change a cell,
+  including POSIXct columns with null or empty-string timezone metadata. The TypeScript decoder rejects the reserved R
+  integer and bit64 integer64 NA sentinels when they are mislabeled as ordinary values. Profile tests cover stable
+  column references, `NA` versus
   `NaN` and infinity, exact integer64 extrema, factors, Unicode text lengths, logical counts, Date/POSIXct ranges,
   difftime statistics, numeric histograms, common-value limits, empty and all-missing columns, duplicate rows, and
-  source immutability. They also check extreme finite histogram ranges, the row and cell work limits, the 64-column
-  request limit, and strict count relationships in R profile and dataset-statistics messages. The cross-language
+  source immutability. They also check filtered profiles and dataset statistics, extreme finite histogram ranges, the
+  row and cell work limits, the 64-column request limit, and strict count relationships in R profile and
+  dataset-statistics messages. Dataset-statistics responses include the filtered row count from the correlated
+  request; the R encoder, TypeScript decoder, and bridge each reject impossible counts. The cross-language
   cases run only when
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix. It
-  also runs the native read-only kernel agent through open, sorted page, profile, dataset-statistics, variable
-  replacement, malformed request, and close cases. The R tests check the fixed diagnostics for unsupported frames,
+  also runs the native read-only kernel agent through open, filtered and sorted pages, profiles, dataset statistics,
+  column values, variable replacement, malformed requests, and close cases. The R tests check the fixed diagnostics for unsupported frames,
   missing packages, oversized pages or profiles, and stale columns. Focused TypeScript tests cover the embedded
   remote-kernel bootstrap, response decoder, sole-open notebook checks, exact-kernel paging and profiling, restart
   handling, late close completion, repeated disposal, and delayed
@@ -33,11 +38,12 @@ matrix for release candidates or changes that cross all of its boundaries.
   request waits for the original execution to finish. Variable-discovery tests cover exact base `data.frame`, tibble,
   and `data.table` class vectors, active and delayed bindings, missing `jsonlite` or `rlang`, malformed output, and
   notebook/kernel replacement. Host and webview tests cover the native picker, read-only coordinator route, disabled
-  unsupported controls, and bounded two-dimensional pages. The production-browser accessibility journey covers the
-  exact R capability set: profiles and sorts enabled, filters disabled, explicit row labels, keyboard tab/menu use,
-  and focus restoration. The local packaged IRkernel journey passes in isolated VS Code and Cursor profiles with R
-  4.5.2. The native contract also runs on R 4.4; only the remote IRkernel journey is still missing before an R
-  preview. Ordinary CI does not install R in packaging, Python, browser, or ordinary editor jobs.
+  editing/export controls, bounded two-dimensional pages, and enabled viewing filters, sorts, profiles, and value
+  selection. The production-browser accessibility journey covers explicit row labels, keyboard tab/menu use, and
+  focus restoration. The R 4.4 and 4.5 contract lanes pass, and the local packaged IRkernel journey passes in isolated
+  VS Code and Cursor profiles with R 4.5.2. The remote IRkernel journey passes in VS Code. A packaged filter/value
+  journey still needs to pass before an R preview. CI does not install R in packaging, Python, browser, or ordinary
+  editor jobs.
 - `npm run test:scripts` runs the focused cross-platform contracts for editor environment isolation, private home/config/runtime trees, fresh correlated phase outcomes, progress-aware deadlines, classified failures, sanitized evidence retention, POSIX process-group cleanup, the Windows Job Object supervisor and parent lease, genuine Restricted Mode launches, the explicit visible-debug opt-out, pinned private-Xvfb preparation and lifecycle, Remote SSH child-error latching, exact Xvfb socket/lock identity receipts, candidate provenance, exact staged-file receipts, bounded staged-tree manifests, fail-fast Jupyter VSIX target/native-payload compatibility, the container-isolated remote-Jupyter runner, and structural release readiness. Release-document fixtures include fenced, commented, raw-HTML, duplicate, placeholder, future-action, untracked-reference, empty-changelog, and contradictory-README decoys. Crafted VSIX fixtures cover omitted legal files, symlink-mode entries, missing manifest-referenced assets, oversized expansion, encrypted flags, and CRC corruption through the same streaming validator used by both package verification and stable readiness. Descriptor-bound VSIX file fixtures reject hard links, symbolic links, empty or sparse oversized inputs, and named-path inode swaps around the read. Pinned Cursor and Remote SSH acquisition additionally read product metadata, package metadata, runtime files, and licenses through bounded no-follow descriptors whose named path, containment, identity, and complete snapshot must remain stable; their adversarial fixtures cover replacement, in-place mutation, and hard links. Cursor network bytes enter only a random mode-`0600` quarantine descriptor and cannot be published until exact status, one unambiguous length, SHA-256, descriptor identity, and named-path identity all agree; a rejected status, header, or body is explicitly disposed. Stable-publication fixtures also require immutable Git-commit source reads and reject content or parent-identity changes in either final output, including a same-size first-output mutation while the second output is read. Parsed-YAML fixtures bind the complete dispatch and job graph through a bounded, cycle-safe canonical digest in addition to semantic validation; they move or duplicate readiness/upload steps, remove the event-commit binding, alter shell/failure/condition controls, add workflow/job execution overrides or permission escalation, insert post-readiness mutations, weaken commands, change runners or action inputs, remove required evidence, add broad uploads, expose publisher credentials, remove the locked CLI guard, add a preview registry flag, or place mutations between canonical verification and a publisher boundary. None may satisfy the canonical stable workflow. Stable-tag fixtures require the exact protected `origin/main` source, require canonical version binding, one non-force atomic single-ref push, a private credential that never enters arguments or child environment, cleanup after success or failure, exact recognition and scrubbing of Git credential-store's atomic approval and rejection rewrites, rejection of any other replacement, and exact lightweight post-push verification; conflicting, annotated, ambiguous, stale, dirty, wildcard, force, and delete forms fail. GitHub publication tests accept absent, exact partial, and exact complete releases while rejecting conflicting tags, metadata, assets, digests, and bytes. Publisher unit tests retain the migration-false compatibility case, while the checked-in stable and preview workflows require exact `immutable: true`; false or missing state blocks registry promotion. Open VSX tests require the exact stable identity, publisher login, public checksum, and downloaded VSIX; retry is bounded to missing or transient post-publish metadata, and the default contract proves all ninety-one attempts in the fifteen-minute window. Marketplace tests separately enforce the pipeline's explicit maximum reviewed forty-attempt public-verification bound. Stable-candidate fixtures additionally require the complete pinned ordered step allowlists, reject every removal plus inserted/replaced/mutable actions, exercise the producer's real package-source composition, accept only the expected post-write directory-link-count transition while every owned file receipt stays fixed, and prove stable consume mode cannot fall back to a moving editor download. Platform-specific cases are skipped only where the host cannot provide the primitive under test.
   Release-document fixtures also require the preview and stable README sections to retain the same editor-support matrix.
   This local command remains the complete superset of the four disjoint CI groups below.
@@ -484,7 +490,8 @@ start off; the journey does not turn them on. The temporary R library is deleted
 `3860685db0e9e9a49f120fdbc039bb8367414e28` on 2026-08-05. It covered local R 4.5.2 in VS Code 1.132.0 and
 Cursor 3.14.7, plus the containerized R kernel in VS Code. The remote path restarted the kernel, recreated the
 variables, reopened the frame, and finished with no Open Wrangler session or private R binding left behind. This run
-does not cover the unfinished R filters, editing, Quarto, or R Markdown work.
+does not cover the unfinished packaged filter/value journey, editing, Quarto, or R Markdown work. Native filter and
+value-search contracts are already part of the R 4.4/4.5 lanes.
 
 ```bash
 OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
