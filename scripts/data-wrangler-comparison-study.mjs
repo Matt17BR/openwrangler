@@ -433,13 +433,46 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
   chmodSync(source, 0o444);
   const notebookPath = join(trialRoot, `${entry.id}.ipynb`);
   writeFileSync(notebookPath, `${JSON.stringify(buildComparisonNotebook(entry, source), null, 2)}\n`, { mode: 0o600 });
-  const request = {
+  const request = buildComparisonTrialRequest({
+    entry,
+    manifest,
+    options,
+    trialRoot,
+    source,
+    sourceSha256: expectedSourceHash,
+    repetitions: manifest.method.repetitionsPerSession,
+    profileContract: "integer-sentinel",
+    notebookPath,
+    timeoutsMs: STUDY_TIMEOUTS_MS
+  });
+  const verifySources = () => {
+    if (sha256File(sourceInput) !== expectedSourceHash || sha256File(source) !== expectedSourceHash) {
+      throw new Error(`${entry.format} fixture changed during the trial.`);
+    }
+  };
+  return Object.freeze({ request, verifySources });
+}
+
+export function buildComparisonTrialRequest({
+  entry,
+  manifest,
+  options,
+  trialRoot,
+  source,
+  sourceSha256,
+  sourceIdentity,
+  repetitions,
+  profileContract,
+  notebookPath,
+  timeoutsMs
+}) {
+  return Object.freeze({
     protocol: TRIAL_REQUEST_PROTOCOL,
     trialId: entry.id,
     product: entry.product,
     kind: entry.kind,
     order: entry.order,
-    repetitions: manifest.method.repetitionsPerSession,
+    repetitions,
     cell: {
       id: entry.cellId,
       engine: entry.engine,
@@ -447,9 +480,10 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
       rows: entry.rows,
       columns: entry.columns,
       source,
-      sourceSha256: expectedSourceHash,
+      sourceSha256,
+      ...(sourceIdentity ? { sourceIdentity } : {}),
       variableName: "study_frame",
-      profileContract: "integer-sentinel"
+      profileContract
     },
     notebookPath,
     candidate: {
@@ -471,20 +505,14 @@ export function prepareTrial({ entry, manifest, options, trialRoot }) {
       sha256: manifest.provenance.python.sha256
     },
     timeoutsMs: {
-      preAction: STUDY_TIMEOUTS_MS.preAction,
-      inlinePreview: STUDY_TIMEOUTS_MS.inlinePreview,
-      workbenchOpen: STUDY_TIMEOUTS_MS.workbenchOpen,
-      completeProfile: STUDY_TIMEOUTS_MS.completeProfile,
-      editorPhase: STUDY_TIMEOUTS_MS.editorPhase
+      preAction: timeoutsMs.preAction,
+      inlinePreview: timeoutsMs.inlinePreview,
+      workbenchOpen: timeoutsMs.workbenchOpen,
+      completeProfile: timeoutsMs.completeProfile,
+      editorPhase: timeoutsMs.editorPhase
     },
     isolatedRoot: trialRoot
-  };
-  const verifySources = () => {
-    if (sha256File(sourceInput) !== expectedSourceHash || sha256File(source) !== expectedSourceHash) {
-      throw new Error(`${entry.format} fixture changed during the trial.`);
-    }
-  };
-  return Object.freeze({ request: Object.freeze(request), verifySources });
+  });
 }
 
 export async function runNeutralDriver(

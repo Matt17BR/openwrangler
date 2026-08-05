@@ -574,8 +574,9 @@ scheduled, or local default workflow. Tests use small row counts through the Pyt
 never generate the full fixture.
 
 The study times native file loading separately from the resident-dataframe notebook UI. Each editor run measures
-inline preview, usable workbench grid, all-column profiling, and process-tree PSS. Native file loads are grouped by
-engine rather than product. The fixture contains numeric, categorical, high-cardinality text, timestamp, date,
+inline preview, usable workbench grid, Run Cell to that grid, all-column profiling, and process-tree PSS. One trial
+per engine and repetition owns the native load, for five Pandas and five Polars loads grouped by engine rather than
+product. The fixture contains numeric, categorical, high-cardinality text, timestamp, date,
 duration, and boolean columns with nulls and known per-type profile markers. It is written in bounded 100,000-row
 groups. Profile completion requires the matching marker for every column family; durations use a frequent two-day
 value that both products render in their bounded top-values profile. The fixture and output must share a filesystem so
@@ -584,8 +585,8 @@ the session runner can use read-only hard links rather than copy several gigabyt
 Before checking fixture provenance, the runner removes a private trial directory left by an interrupted process. It
 then resumes at the first missing result. A failed editor run uses its fixed slot, stays in the raw report, and does
 not stop or get retried. The report needs all 20 slots, at least four successes in each five-run product/engine group,
-and at least eight native-load successes per engine. Every failure must be explained and checked before publication;
-all successful runs are included in the summary.
+and at least four of five native-load successes per engine. Each measurement includes every run that reached its end
+point, even if a later step failed. Every failure must be explained and checked before publication.
 
 Immediately before every new editor session the runner checks available memory, free disk, AC power, and the recorded
 CPU governor. A failed check creates no trial result and starts no editor.

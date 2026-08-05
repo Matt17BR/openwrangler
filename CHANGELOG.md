@@ -7,8 +7,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Added
 
 - The optional Data Wrangler comparison now has a manual 10M × 100 mixed-type Parquet study. It uses five fresh
-  editor and kernel sessions per product/engine pair, times native file loading separately, and reports median and
-  range instead of calculating p95 from too few samples. Normal CI keeps the existing small regression benchmark.
+  editor and kernel sessions per product/engine pair, five native loads per engine, and reports median and range
+  instead of calculating p95 from too few samples. Normal CI keeps the existing small regression benchmark.
 
 ### Changed
 

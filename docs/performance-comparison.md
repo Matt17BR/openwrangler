@@ -37,27 +37,28 @@ Every repetition gets a new headless VS Code window, private profile, notebook, 
 That is 20 editor runs in total. A failed run still uses its assigned slot: it is kept in the raw report, is not
 retried, and does not stop the remaining runs.
 
-Each run records:
+Each product run records:
 
-1. a native `read_parquet` in a separate new Python process;
-2. Run Cell to a usable inline preview;
-3. the viewer button to a usable, scrollable grid;
+1. Run Cell to a usable inline preview;
+2. the viewer button to a usable, scrollable grid;
+3. Run Cell to that usable grid, so input conversion and the complete launch path stay in one timing;
 4. the profiling action to completed summaries for all 100 columns; and
 5. the first, highest, and increase in process-tree PSS during the UI part of the run.
 
-The native read is timed separately so disk and decoder work are not mixed into renderer time. Native-load results
-are grouped only by engine; they are not attributed to either editor extension. The notebook kernel then loads the
-same dataframe before the UI measurement. This matches the common case where a dataframe already exists in a
-notebook and the user evaluates its name. Data Wrangler accepts a Polars input through its Pandas conversion path;
-the report keeps that input labelled Polars so the conversion cost stays visible in its UI timings. Each native load
-uses a new Python process, but the test does not flush the operating-system file cache, so these are warm-source loads
-rather than cold-disk timings.
+Each repetition also runs one native `read_parquet` in a separate Python process for its engine: five Pandas loads
+and five Polars loads in total. Those results are grouped by engine, not attributed to either extension. The notebook
+kernel then loads the same dataframe before the UI measurement, which matches the common case where a dataframe
+already exists and the user evaluates its name. Data Wrangler accepts a Polars input through its Pandas conversion
+path. That conversion can happen between the inline and launch milestones, so the Run Cell-to-grid measurement keeps
+the complete cost visible even if either shorter timing cannot localize it. The native-load processes do not flush
+the operating-system file cache, so they measure a warm source rather than cold-disk I/O.
 
-The report gives the minimum, median, and maximum over every successful run. A usable comparison requires all 20
-assigned runs to have been attempted, at least four successful runs in each five-run UI group, and at least eight
-successful native loads per engine. There are no replacement runs. Any failure needs a written explanation and a
-second-person check before numbers are published. The detailed report keeps those failures; a short README table may
-show the successful-run summaries without repeating the diagnostics.
+The report gives the minimum, median, and maximum for each measurement. A run contributes to every measurement whose
+end point it reached, so a later profiling timeout does not throw away a valid inline or grid time. A usable
+comparison requires all 20 assigned runs to have been attempted, at least four complete runs in each five-run UI
+group, and at least four of the five native loads for each engine. There are no replacement runs. Any failure needs a
+written explanation and a second-person check before numbers are published. The detailed report keeps those
+failures; a short README table may show the usable summaries without repeating the diagnostics.
 
 Five values are enough for a practical manual comparison but not for a useful p95, so the report does not calculate
 one. It is a release review, not a job in normal pull-request CI and not a scheduled task on a developer laptop.
@@ -102,7 +103,8 @@ npm run comparison:large:report -- \
 
 The report command writes the detailed result and then checks the minimum counts above. Before publishing numbers, a
 second person should explain every failed run, check the exact product, editor, Python, package, fixture, and tool
-hashes, recalculate the four UI groups, and recalculate the two engine-only native-load groups from the raw trials.
+hashes, verify that product order alternates within each engine, recalculate the four UI groups, and recalculate the
+two five-load engine-only groups from the raw trials.
 
 ## Fast regression tests
 

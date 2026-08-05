@@ -1,20 +1,10 @@
-import { createHash } from "node:crypto";
-import {
-  createReadStream,
-  existsSync,
-  linkSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  statSync,
-  writeFileSync
-} from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
   DATA_WRANGLER_VERSION,
-  TRIAL_REQUEST_PROTOCOL,
   buildComparisonNotebook,
   buildComparisonTestExtension,
+  buildComparisonTrialRequest,
   digest,
   inspectComparisonEnvironment,
   inspectMachineEnvironment,
@@ -62,9 +52,10 @@ export function createLargeComparisonSchedule() {
   const schedule = [];
   for (let repetition = 1; repetition <= LARGE_REPETITIONS; repetition += 1) {
     const engines = repetition % 2 === 1 ? ENGINES : [...ENGINES].reverse();
-    for (const [engineOffset, engine] of engines.entries()) {
-      const products = (repetition + engineOffset) % 2 === 1 ? PRODUCTS : [...PRODUCTS].reverse();
-      for (const product of products) {
+    for (const engine of engines) {
+      const engineIndex = ENGINES.indexOf(engine);
+      const products = (repetition + engineIndex) % 2 === 1 ? PRODUCTS : [...PRODUCTS].reverse();
+      for (const [productIndex, product] of products.entries()) {
         schedule.push(
           Object.freeze({
             id: `fresh.r${String(repetition).padStart(2, "0")}.${engine}.${product}`,
@@ -76,6 +67,7 @@ export function createLargeComparisonSchedule() {
             rows: LARGE_ROWS,
             columns: LARGE_COLUMNS,
             repetition,
+            measureNativeLoad: productIndex === 0,
             order: schedule.length
           })
         );
@@ -116,16 +108,17 @@ export function buildLargeStudyManifest({ createdAtUtc, candidate, editor, pytho
       sessionPolicy: "one new headless VS Code window and one new Jupyter kernel per measurement",
       fixture: { rows: LARGE_ROWS, columns: LARGE_COLUMNS, format: "parquet" },
       measurements: {
-        fileLoad: "native dataframe load in a separate new Python process immediately before the editor journey",
+        fileLoad: "one native dataframe load per engine and repetition in a separate new Python process",
         inlinePreview: "Run Cell click to usable inline dataframe preview",
         workbenchOpen: "viewer launch click to usable scrollable grid",
+        runCellToWorkbench: "Run Cell click to usable scrollable grid",
         allProfiles: "profiling action to completed summaries for every column",
         memory: "first, peak, and increase in sampled editor-process-tree PSS during the UI journey"
       },
-      statistics: "fixed five-attempt schedule; minimum, median, and maximum over every successful attempt",
+      statistics: "fixed five-attempt schedule; each metric uses every attempt that reached its endpoint",
       resultRule: {
         minimumSuccessfulAttemptsPerProductAndEngine: LARGE_MIN_SUCCESSFUL_REPETITIONS,
-        minimumSuccessfulNativeLoadsPerEngine: LARGE_MIN_SUCCESSFUL_REPETITIONS * PRODUCTS.length,
+        minimumSuccessfulNativeLoadsPerEngine: LARGE_MIN_SUCCESSFUL_REPETITIONS,
         retries: 0,
         includeEverySuccessfulAttempt: true,
         reviewEveryFailure: true
@@ -195,9 +188,13 @@ export async function runLargeComparisonStudy(options, dependencies = {}) {
     executeTrial: async ({ entry, trialRoot }) => {
       const prepared = makeTrial({ entry, manifest, options, trialRoot });
       try {
-        const load = await runLoad(prepared.request);
-        const journey = await runJourney(prepared.request);
-        return buildLargeTrialResult(entry, load, journey.samples[0]);
+        const load = entry.measureNativeLoad ? await runLoad(prepared.request) : null;
+        try {
+          const journey = await runJourney(prepared.request);
+          return buildLargeTrialResult(entry, load, journey.samples[0]);
+        } catch (error) {
+          return buildLargeTrialFailure(entry, error, load);
+        }
       } finally {
         prepared.verifySource();
       }
@@ -232,46 +229,18 @@ export function prepareLargeTrial({ entry, manifest, options, trialRoot }) {
     flag: "wx",
     mode: 0o600
   });
-  const request = Object.freeze({
-    protocol: TRIAL_REQUEST_PROTOCOL,
-    trialId: entry.id,
-    product: entry.product,
-    kind: "warm",
-    order: entry.order,
+  const request = buildComparisonTrialRequest({
+    entry,
+    manifest,
+    options,
+    trialRoot,
+    source,
+    sourceSha256: manifest.provenance.fixture.sha256,
+    sourceIdentity,
     repetitions: 1,
-    cell: {
-      id: entry.cellId,
-      engine: entry.engine,
-      format: entry.format,
-      rows: entry.rows,
-      columns: entry.columns,
-      source,
-      sourceSha256: manifest.provenance.fixture.sha256,
-      sourceIdentity,
-      variableName: "study_frame",
-      profileContract: "mixed-sentinels-v1"
-    },
+    profileContract: "mixed-sentinels-v1",
     notebookPath,
-    candidate: {
-      path: resolve(options.candidate),
-      version: manifest.provenance.openWrangler.version,
-      sha256: manifest.provenance.openWrangler.sha256
-    },
-    dataWranglerVersion: DATA_WRANGLER_VERSION,
-    editor: {
-      path: resolve(options.editor),
-      cliPath: resolve(options.editorCli),
-      version: manifest.provenance.editor.version,
-      sha256: manifest.provenance.editor.sha256,
-      cliSha256: manifest.provenance.editor.cliSha256
-    },
-    python: {
-      path: resolve(options.python),
-      version: manifest.provenance.python.version,
-      sha256: manifest.provenance.python.sha256
-    },
-    timeoutsMs: { ...TRIAL_TIMEOUTS_MS },
-    isolatedRoot: trialRoot
+    timeoutsMs: TRIAL_TIMEOUTS_MS
   });
   return Object.freeze({
     request,
@@ -325,7 +294,8 @@ export async function measureNativeLoad(request) {
 }
 
 export function buildLargeTrialResult(entry, load, journey) {
-  validateLoadResult(load, entry.engine);
+  if (entry.measureNativeLoad) validateLoadResult(load, entry.engine);
+  else if (load !== null) throw new TypeError("Only the scheduled native-load owner may publish a load result.");
   if (!journey || journey.index !== 1) throw new TypeError("The fresh editor journey returned the wrong sample.");
   return Object.freeze({
     protocol: LARGE_TRIAL_PROTOCOL,
@@ -358,7 +328,7 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials })
     for (const product of PRODUCTS) {
       const group = [...observed.values()].filter((trial) => trial.engine === engine && trial.product === product);
       const successful = group.filter((trial) => trial.error === null && trial.journey.status === "success");
-      const metrics = successful.map(trialUiMetrics);
+      const usable = group.filter((trial) => trial.error === null && trial.journey !== null);
       summaries.push({
         engine,
         product,
@@ -369,21 +339,27 @@ export function buildLargeComparisonReport({ generatedAtUtc, manifest, trials })
           [
             "inlinePreviewMs",
             "workbenchOpenMs",
+            "runCellToWorkbenchMs",
             "allProfilesMs",
             "baselinePssBytes",
             "peakPssBytes",
             "pssIncreaseBytes"
-          ].map((name) => [name, summarizeLargeValues(metrics.map((metric) => metric[name]))])
+          ].map((name) => [
+            name,
+            summarizeLargeValues(usable.map((trial) => trialUiMetric(trial, name)).filter((value) => value !== null))
+          ])
         )
       });
     }
   }
   const loadSummaries = ENGINES.map((engine) => {
-    const group = [...observed.values()].filter((trial) => trial.engine === engine);
+    const group = [...observed.values()].filter(
+      (trial) => trial.engine === engine && schedule.get(trial.trialId)?.measureNativeLoad === true
+    );
     const successful = group.filter((trial) => trial.load !== null);
     return {
       engine,
-      planned: LARGE_REPETITIONS * PRODUCTS.length,
+      planned: LARGE_REPETITIONS,
       completed: group.length,
       successful: successful.length,
       metrics: Object.fromEntries(
@@ -416,16 +392,14 @@ export function assertCompleteLargeReport(report) {
     report.completedTrials !== 20 ||
     report.incompleteTrialIds?.length !== 0 ||
     resultRule?.minimumSuccessfulAttemptsPerProductAndEngine !== LARGE_MIN_SUCCESSFUL_REPETITIONS ||
-    resultRule?.minimumSuccessfulNativeLoadsPerEngine !== LARGE_MIN_SUCCESSFUL_REPETITIONS * PRODUCTS.length ||
+    resultRule?.minimumSuccessfulNativeLoadsPerEngine !== LARGE_MIN_SUCCESSFUL_REPETITIONS ||
     resultRule?.retries !== 0 ||
     resultRule?.includeEverySuccessfulAttempt !== true ||
     resultRule?.reviewEveryFailure !== true ||
     !Array.isArray(report.loadSummaries) ||
     report.loadSummaries.length !== ENGINES.length ||
     report.loadSummaries.some(
-      ({ completed, successful }) =>
-        completed !== LARGE_REPETITIONS * PRODUCTS.length ||
-        successful < LARGE_MIN_SUCCESSFUL_REPETITIONS * PRODUCTS.length
+      ({ completed, successful }) => completed !== LARGE_REPETITIONS || successful < LARGE_MIN_SUCCESSFUL_REPETITIONS
     ) ||
     !Array.isArray(report.summaries) ||
     report.summaries.some(
@@ -467,39 +441,31 @@ async function captureLargeProvenance(options) {
   }
   const fixture = readJson(`${resolve(options.parquet)}.json`);
   validateFixtureManifest(fixture);
-  if (fixture.sha256 !== (await hashLargeFile(options.parquet)) || fixture.bytes !== statSync(options.parquet).size) {
+  const checkedFixture = await validateLargeFixtureFile(options.python, options.parquet);
+  if (fixture.sha256 !== checkedFixture.sha256 || fixture.bytes !== checkedFixture.bytes) {
     throw new Error("The large fixture does not match its manifest.");
   }
-  await validateLargeFixtureFile(options.python, options.parquet);
   const environment = await inspectLargeRunEnvironment(options.python, options.parquet);
   assertLargeRunEnvironment(environment, environment.machine);
   const comparison = await inspectComparisonEnvironment(options, { toolFiles: largeToolFiles() });
   return { ...comparison, fixture, machine: environment.machine };
 }
 
-export async function hashLargeFile(path) {
-  const before = regularFileIdentity(path);
-  const digest = createHash("sha256");
-  for await (const chunk of createReadStream(path, { highWaterMark: 8 * 1024 * 1024 })) digest.update(chunk);
-  if (JSON.stringify(regularFileIdentity(path)) !== JSON.stringify(before)) {
-    throw new Error("The large fixture changed while it was hashed.");
-  }
-  return digest.digest("hex");
-}
-
 async function validateLargeFixtureFile(python, parquet) {
   const program = [
-    "import sys",
+    "import json, sys",
     "from pathlib import Path",
     "sys.path.insert(0, sys.argv[1])",
-    "from large_mixed_parquet import LargeFixtureSpec, validate_fixture",
+    "from large_mixed_parquet import LargeFixtureSpec, _sha256, validate_fixture",
     "path = Path(sys.argv[2])",
-    `validate_fixture(path, LargeFixtureSpec(rows=${LARGE_ROWS}, columns=${LARGE_COLUMNS}, row_group_rows=100000))`
+    `validate_fixture(path, LargeFixtureSpec(rows=${LARGE_ROWS}, columns=${LARGE_COLUMNS}, row_group_rows=100000))`,
+    "print(json.dumps({'bytes': path.stat().st_size, 'sha256': _sha256(path)}))"
   ].join("; ");
-  await spawnCommand(python, ["-I", "-c", program, resolve("python/benchmarks"), resolve(parquet)], {
+  const { stdout } = await spawnCommand(python, ["-I", "-c", program, resolve("python/benchmarks"), resolve(parquet)], {
     cwd: resolve(import.meta.dirname, ".."),
-    timeoutMs: 180_000
+    timeoutMs: LOAD_TIMEOUT_MS
   });
+  return JSON.parse(stdout);
 }
 
 export async function inspectLargeRunEnvironment(python, parquet) {
@@ -548,17 +514,32 @@ function largeToolFiles() {
   };
 }
 
-function trialUiMetrics(trial) {
+function trialUiMetric(trial, name) {
+  if (name === "inlinePreviewMs") return finiteMetric(trial.journey.metrics.inlinePreviewMs);
+  if (name === "workbenchOpenMs") return finiteMetric(trial.journey.metrics.workbenchOpenMs);
+  if (name === "allProfilesMs") return finiteMetric(trial.journey.metrics.completeProfileMs);
+  if (name === "runCellToWorkbenchMs") {
+    return milestoneDuration(trial.journey.milestones, "run-cell-click", "workbench-ready");
+  }
   const memory = trial.journey.memory;
+  if (!memory?.samples?.length) return null;
   const baseline = memory.samples[0].pssBytes;
-  return {
-    inlinePreviewMs: trial.journey.metrics.inlinePreviewMs,
-    workbenchOpenMs: trial.journey.metrics.workbenchOpenMs,
-    allProfilesMs: trial.journey.metrics.completeProfileMs,
-    baselinePssBytes: baseline,
-    peakPssBytes: memory.peakPssBytes,
-    pssIncreaseBytes: Math.max(0, memory.peakPssBytes - baseline)
-  };
+  if (name === "baselinePssBytes") return baseline;
+  if (name === "peakPssBytes") return memory.peakPssBytes;
+  if (name === "pssIncreaseBytes") return Math.max(0, memory.peakPssBytes - baseline);
+  throw new TypeError(`Unknown large comparison metric ${name}.`);
+}
+
+function finiteMetric(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function milestoneDuration(milestones, startName, endName) {
+  const start = milestones?.find(({ name }) => name === startName)?.monotonicNs;
+  const end = milestones?.find(({ name }) => name === endName)?.monotonicNs;
+  if (!/^[1-9]\d*$/u.test(start ?? "") || !/^[1-9]\d*$/u.test(end ?? "")) return null;
+  const duration = BigInt(end) - BigInt(start);
+  return duration >= 0n ? Number(duration) / 1_000_000 : null;
 }
 
 function nativeLoadMetrics(load) {
@@ -569,7 +550,7 @@ function nativeLoadMetrics(load) {
   };
 }
 
-function buildLargeTrialFailure(entry, error) {
+function buildLargeTrialFailure(entry, error, load = null) {
   return {
     protocol: LARGE_TRIAL_PROTOCOL,
     trialId: entry.id,
@@ -577,7 +558,7 @@ function buildLargeTrialFailure(entry, error) {
     engine: entry.engine,
     repetition: entry.repetition,
     order: entry.order,
-    load: null,
+    load,
     journey: null,
     error: sanitizeError(error)
   };
@@ -592,7 +573,8 @@ function validateLargeTrial(trial, entry) {
     trial.engine !== entry.engine ||
     trial.repetition !== entry.repetition ||
     trial.order !== entry.order ||
-    (trial.error === null && (trial.load === null || trial.journey?.index !== 1)) ||
+    (trial.error === null &&
+      (trial.journey?.index !== 1 || (entry.measureNativeLoad ? trial.load === null : trial.load !== null))) ||
     (trial.error !== null && (typeof trial.error !== "string" || trial.error.length < 1 || trial.error.length > 500))
   ) {
     throw new TypeError(`Large comparison trial ${entry.id} is malformed.`);
@@ -632,26 +614,10 @@ function validateFixtureManifest(fixture) {
     !Array.isArray(fixture.schema) ||
     fixture.schema.length !== LARGE_COLUMNS ||
     fixture.schema.some(({ name }, index) => name !== expectedNames[index]) ||
-    !validMixedProfileSentinels(fixture.profileSentinels)
+    digest(fixture.profileSentinels) !== digest(MIXED_PROFILE_SENTINELS)
   ) {
     throw new TypeError("The large Parquet fixture manifest is malformed.");
   }
-}
-
-function validMixedProfileSentinels(value) {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).sort()) === JSON.stringify(Object.keys(MIXED_PROFILE_SENTINELS).sort()) &&
-    value?.categoricalTopValue === MIXED_PROFILE_SENTINELS.categoricalTopValue &&
-    value.highCardinalityTopValueTemplate === MIXED_PROFILE_SENTINELS.highCardinalityTopValueTemplate &&
-    JSON.stringify(value.numericExtrema) === JSON.stringify(MIXED_PROFILE_SENTINELS.numericExtrema) &&
-    JSON.stringify(value.datetimeExtrema) === JSON.stringify(MIXED_PROFILE_SENTINELS.datetimeExtrema) &&
-    JSON.stringify(value.durationExtremaMs) === JSON.stringify(MIXED_PROFILE_SENTINELS.durationExtremaMs) &&
-    value.durationTopValueMs === MIXED_PROFILE_SENTINELS.durationTopValueMs &&
-    JSON.stringify(value.booleanValues) === JSON.stringify(MIXED_PROFILE_SENTINELS.booleanValues)
-  );
 }
 
 function validateArtifact(value, label) {
