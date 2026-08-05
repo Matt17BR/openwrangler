@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      benchmark_harness_only: ${{ steps.classify.outputs.benchmark_harness_only }}
       dependency_lock_only: ${{ steps.classify.outputs.dependency_lock_only }}
       documentation_only: ${{ steps.classify.outputs.documentation_only }}
       draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
@@ -69,9 +70,48 @@ jobs:
       - name: Workflow contracts
         run: npm run test:scripts:workflow
 
+  benchmark-harness:
+    name: Benchmark harness
+    needs: classify
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event_name == 'pull_request' &&
+        needs.classify.result == 'success' &&
+        needs.classify.outputs.benchmark_harness_only == 'true' &&
+        needs.classify.outputs.draft_pull_request == 'false'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - name: Comparison script contracts
+        run: >-
+          node --test
+          scripts/data-wrangler-comparison-study.test.mjs
+          scripts/data-wrangler-comparison-neutral-driver.test.mjs
+          scripts/linux-pss-sampler.test.mjs
+      - name: Comparison notebook trial
+        run: npx vitest run src/test/dataWranglerComparisonNotebookTrial.unit.test.ts
+      - name: Installed fixture contract
+        run: python -m pytest python/tests/test_installed_editor_fixtures.py -q
+      - name: Extension-host build
+        run: npm run build:test-extension
+
   canonical-vsix:
     needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.lightweight_only != 'true') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -552,6 +592,7 @@ jobs:
     needs:
       - classify
       - fast-feedback
+      - benchmark-harness
       - contract-tests
       - visual-accessibility
       - production-audits
@@ -575,6 +616,7 @@ jobs:
         run: node scripts/require-ci-results.mjs
         env:
           DEPENDENCY_LOCK_ONLY: ${{ needs.classify.outputs.dependency_lock_only }}
+          BENCHMARK_HARNESS_ONLY: ${{ needs.classify.outputs.benchmark_harness_only }}
           DOCUMENTATION_ONLY: ${{ needs.classify.outputs.documentation_only }}
           DRAFT_PULL_REQUEST: ${{ needs.classify.outputs.draft_pull_request }}
           LIGHTWEIGHT_ONLY: ${{ needs.classify.outputs.lightweight_only }}
@@ -582,6 +624,7 @@ jobs:
           FULL_MATRIX_REQUIRED: ${{ needs.classify.outputs.full_matrix_required }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           FAST_FEEDBACK_RESULT: ${{ needs.fast-feedback.result }}
+          BENCHMARK_HARNESS_RESULT: ${{ needs.benchmark-harness.result }}
           CONTRACT_TESTS_RESULT: ${{ needs.contract-tests.result }}
           VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
           PRODUCTION_AUDITS_RESULT: ${{ needs.production-audits.result }}
