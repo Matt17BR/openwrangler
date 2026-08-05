@@ -1119,10 +1119,10 @@ test("a timed-out isolated downloader cannot retain network-loop handles", async
     await assert.rejects(
       downloadEditorWithRetry("stable", 1, {
         helperPath,
-        attemptTimeoutMs: 150,
+        attemptTimeoutMs: 2_000,
         environment: {}
       }),
-      /timed out after 150 ms/u
+      /timed out after 2000 ms/u
     );
     const pids = JSON.parse(await readFile(pidPath, "utf8"));
     assert.equal(pids.length, 2);

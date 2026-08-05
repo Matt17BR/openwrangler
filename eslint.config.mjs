@@ -32,7 +32,11 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       "@typescript-eslint/no-explicit-any": "error",
-      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }]
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+      // Cleanup code deliberately clears owned handles and combines caught errors with AggregateError.
+      // ESLint 10's generic checks treat both patterns as mistakes even though they are intentional here.
+      "no-useless-assignment": "off",
+      "preserve-caught-error": "off"
     }
   }
 );
