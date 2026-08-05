@@ -1271,7 +1271,7 @@ describe("protocol-v2 request validation", () => {
         notebookInsert: false,
         filter: false,
         sort: true,
-        profile: false,
+        profile: true,
         columnValues: false
       },
       filterModel: { logic: "and" as const, filters: [], sort: [] },
@@ -1284,11 +1284,18 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerRequest({ ...request, source: metadata.source })).toBe(false);
     expect(isOpenWranglerResponse(opened)).toBe(true);
     expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-open", response: opened })).toBe(true);
-    expect(isOpenWranglerResponse({ ...opened, metadata: { ...rMetadata, rDataframeFlavor: undefined } })).toBe(false);
-    expect(isOpenWranglerResponse({ ...opened, metadata: { ...rMetadata, mode: "editing" } })).toBe(false);
-    expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...metadata, rDataframeFlavor: "r.tibble" } })).toBe(
+    const { rDataframeFlavor: _rDataframeFlavor, ...rMetadataWithoutFlavor } = rMetadata;
+    const rWithoutFlavor = { ...opened, metadata: rMetadataWithoutFlavor };
+    expect(isOpenWranglerResponse(rWithoutFlavor)).toBe(false);
+    expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-no-flavor", response: rWithoutFlavor })).toBe(
       false
     );
+    expect(isOpenWranglerResponse({ ...opened, metadata: { ...rMetadata, mode: "editing" } })).toBe(false);
+    const nonRWithFlavor = { ...responses[1], metadata: { ...metadata, rDataframeFlavor: "r.tibble" as const } };
+    expect(isOpenWranglerResponse(nonRWithFlavor)).toBe(false);
+    expect(
+      validateTransportSchema({ protocolVersion: 2, requestId: "python-r-flavor", response: nonRWithFlavor })
+    ).toBe(false);
   });
 
   it("accepts only unique, non-empty stable IDs in summary projections", () => {

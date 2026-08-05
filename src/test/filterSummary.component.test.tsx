@@ -1063,6 +1063,9 @@ describe("SummaryPanel", () => {
       selectedColumnId?: string;
       metadataValue?: SessionMetadata;
       summaries?: ColumnSummary[];
+      profileSupported?: boolean;
+      filtersSupported?: boolean;
+      filtersLabel?: string;
       onSelectView?: (view: "column" | "dataset" | "filters") => void;
     } = {}
   ) => {
@@ -1074,6 +1077,9 @@ describe("SummaryPanel", () => {
         schemaById={new Map(metadataValue.schema.map((column) => [column.id, column]))}
         selectedColumnId={options.selectedColumnId}
         activeView={options.activeView ?? "column"}
+        profileSupported={options.profileSupported}
+        filtersSupported={options.filtersSupported}
+        filtersLabel={options.filtersLabel}
         onSelectView={options.onSelectView ?? (() => undefined)}
       />
     );
@@ -1096,6 +1102,27 @@ describe("SummaryPanel", () => {
     fireEvent.keyDown(tabs[1]!, { key: "End" });
     expect(onSelectView).toHaveBeenLastCalledWith("filters");
     expect(tabs[2]).toHaveFocus();
+  });
+
+  it("keeps keyboard navigation inside the visible sort-only tab", () => {
+    const onSelectView = vi.fn();
+    renderSummary({
+      activeView: "filters",
+      profileSupported: false,
+      filtersSupported: true,
+      filtersLabel: "Sorts",
+      onSelectView
+    });
+
+    const sorts = screen.getByRole("tab", { name: "Sorts" });
+    sorts.focus();
+    for (const key of ["ArrowRight", "ArrowLeft", "Home", "End"]) {
+      fireEvent.keyDown(sorts, { key });
+      expect(onSelectView).toHaveBeenLastCalledWith("filters");
+      expect(sorts).toHaveFocus();
+    }
+    expect(screen.queryByRole("tab", { name: "Column" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Dataset" })).not.toBeInTheDocument();
   });
 
   it("renders only the selected column with exact scalar and sampled-distribution provenance", () => {

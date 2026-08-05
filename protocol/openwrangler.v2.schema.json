@@ -1518,6 +1518,19 @@
         "filterModel",
         "steps"
       ],
+      "not": {
+        "anyOf": [
+          {
+            "required": ["backend"],
+            "properties": { "backend": { "const": "r" } },
+            "not": { "required": ["rDataframeFlavor"] }
+          },
+          {
+            "required": ["backend", "rDataframeFlavor"],
+            "properties": { "backend": { "not": { "const": "r" } } }
+          }
+        ]
+      },
       "properties": {
         "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
         "sessionId": { "type": "string" },

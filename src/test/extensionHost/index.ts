@@ -1676,67 +1676,56 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     .waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await app.getByRole("button", { name: "Add step", exact: true }).count(), 0);
   assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
-  const profiles = app.getByRole("button", { name: "Header profiles", exact: true });
-  await profiles.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(await profiles.isEnabled(), true);
-
   const active = testing.activeSession();
   assert.ok(active, "The native R profile journey requires an active session.");
   assert.equal(active.sessionId, sessionId, "The native R profile journey must stay on its exact session.");
-  const scoreColumn = active.metadata.schema.find((column) => column.name === "score");
-  assert.ok(scoreColumn, "The native R profile journey requires the score column.");
-  const summary = await testing.request({
-    kind: "getSummary",
-    sessionId,
-    revision: active.metadata.revision,
-    viewRequestId: "jupyter-r-score-summary",
-    filterModel: active.viewState.filterModel,
-    columnIds: [scoreColumn.id]
+
+  const profiles = app.getByRole("button", { name: "Header profiles", exact: true });
+  await profiles.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await profiles.isEnabled(), true);
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill("score");
+  await app
+    .getByRole("option", { name: /^score,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await columnSearch.press("Enter");
+
+  const profileToggle = app.getByRole("button", { name: "Column profiles and sorts", exact: true });
+  await profileToggle.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await profileToggle.isEnabled(), true);
+  await profileToggle.click();
+  const drawer = app.getByRole("complementary", { name: "Column profiles and sorts", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  const columnProfile = drawer.getByRole("tabpanel");
+  await columnProfile.getByRole("heading", { name: "score", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
   });
-  assert.equal(summary.kind, "summary", "The native R column profile must complete through IRkernel.");
-  if (summary.kind !== "summary") throw new Error("The native R column profile did not resolve.");
-  assert.deepEqual(
-    summary.summaries.map((entry) => ({
-      columnId: entry.columnId,
-      column: entry.column,
-      totalCount: entry.totalCount,
-      distinctCount: entry.distinctCount,
-      min: entry.numeric?.min,
-      max: entry.numeric?.max
-    })),
-    [
-      {
-        columnId: scoreColumn.id,
-        column: "score",
-        totalCount: 1_205,
-        distinctCount: 1_205,
-        min: 1,
-        max: 1_205
-      }
-    ]
-  );
-  const datasetStats = await testing.request({
-    kind: "getDatasetStats",
-    sessionId,
-    revision: active.metadata.revision,
-    viewRequestId: "jupyter-r-dataset-stats",
-    filterModel: active.viewState.filterModel
+  await columnProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 30_000
   });
-  assert.equal(datasetStats.kind, "datasetStats", "The native R dataset profile must complete through IRkernel.");
-  if (datasetStats.kind !== "datasetStats") throw new Error("The native R dataset profile did not resolve.");
-  assert.deepEqual(
-    {
-      missingCells: datasetStats.stats.missingCells,
-      missingRows: datasetStats.stats.missingRows,
-      duplicateRows: datasetStats.stats.duplicateRows,
-      profiledColumns: datasetStats.stats.missingValuesByColumn.length
-    },
-    { missingCells: 0, missingRows: 0, duplicateRows: 0, profiledColumns: 24 }
-  );
-  const sorts = app.getByRole("button", { name: "Sorts", exact: true });
-  assert.equal(await sorts.isEnabled(), true);
-  await sorts.click();
-  const drawer = app.getByRole("complementary", { name: "Sorts", exact: true });
+  await assertReleasedProfileStat(columnProfile, "Rows", "1,205");
+  await assertReleasedProfileStat(columnProfile, "Distinct", "1,205");
+  await assertReleasedProfileStat(columnProfile, "Min", "1");
+  await assertReleasedProfileStat(columnProfile, "Max", "1,205");
+  await drawer.getByRole("tab", { name: "Dataset", exact: true }).click();
+  const datasetProfile = drawer.getByRole("tabpanel");
+  await datasetProfile.getByRole("heading", { name: "Dataset", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await datasetProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 30_000
+  });
+  await assertReleasedProfileStat(datasetProfile, "Rows", "1,205");
+  await assertReleasedProfileStat(datasetProfile, "Columns", "24");
+  await assertReleasedProfileStat(datasetProfile, "Missing cells", "0");
+  await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "0");
+  await assertReleasedProfileStat(datasetProfile, "Duplicate rows", "0");
+  await drawer.getByRole("tab", { name: "Sorts", exact: true }).click();
   await drawer.getByRole("heading", { name: "Sorts", exact: true }).waitFor({
     state: "visible",
     timeout: 10_000
@@ -1759,7 +1748,6 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   }
   assert.equal(await next.isDisabled(), true);
 
-  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill("extra_20");
   await app
     .getByRole("option", { name: /^extra_20,/u })
@@ -1821,6 +1809,18 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   });
   assert.equal(groupFirst.kind, "page");
   if (groupFirst.kind === "page") assert.equal(groupFirst.page.rows[0]?.values[0]?.display, "602");
+}
+
+async function assertReleasedProfileStat(panel: Locator, label: string, expected: string): Promise<void> {
+  const term = panel.getByText(label, { exact: true });
+  await term.waitFor({ state: "visible", timeout: 30_000 });
+  assert.equal(await term.evaluate((element) => element.tagName), "DT");
+  await waitForLocatorText(
+    term.locator("xpath=following-sibling::dd[1]"),
+    (text) => text.trim() === expected,
+    30_000,
+    `${label} to render as ${expected} in the native R profile`
+  );
 }
 
 async function applyReleasedRQuickSort(

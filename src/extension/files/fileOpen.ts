@@ -8,6 +8,7 @@ import { confirmedFileConfiguration } from "./confirmedFileConfigurations";
 import { detectImportOptions } from "./importOptions";
 
 const CUSTOM_EDITOR_ID = "openWrangler.viewer";
+type FileDataBackend = Extract<DataBackend, "polars" | "duckdb" | "pandas">;
 
 export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
   constructor(
@@ -120,9 +121,17 @@ const fileSource = (uri: vscode.Uri, importOptions?: SessionSource["importOption
   importOptions
 });
 
-const getConfiguredBackend = (): DataBackend | "auto" => getSetting<DataBackend | "auto">("defaultBackend", "auto");
+const fileDataBackends = new Set<FileDataBackend>(["polars", "duckdb", "pandas"]);
 
-const backendPin = (configured: DataBackend | "auto"): DataBackend | undefined =>
+const getConfiguredBackend = (): FileDataBackend | "auto" => {
+  const configured = getSetting<unknown>("defaultBackend", "auto");
+  return configured === "auto" ||
+    (typeof configured === "string" && fileDataBackends.has(configured as FileDataBackend))
+    ? (configured as FileDataBackend | "auto")
+    : "auto";
+};
+
+const backendPin = (configured: FileDataBackend | "auto"): FileDataBackend | undefined =>
   configured === "auto" ? undefined : configured;
 
 const allFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"] as const;

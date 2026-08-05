@@ -60,7 +60,7 @@ export function SummaryPanel({
             tabIndex={activeView === view ? 0 : -1}
             data-summary-view={view}
             onClick={() => onSelectView(view)}
-            onKeyDown={(event) => moveTabSelection(event, view, onSelectView)}
+            onKeyDown={(event) => moveTabSelection(event, view, visibleViews, onSelectView)}
           >
             {viewLabel(view, filtersLabel)}
           </button>
@@ -383,18 +383,20 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
 function moveTabSelection(
   event: ReactKeyboardEvent<HTMLButtonElement>,
   currentView: SummaryPanelView,
+  visibleViews: readonly SummaryPanelView[],
   onSelectView: (view: SummaryPanelView) => void
 ): void {
-  const currentIndex = summaryViews.indexOf(currentView);
+  const currentIndex = visibleViews.indexOf(currentView);
+  if (currentIndex < 0 || visibleViews.length === 0) return;
   let nextIndex: number;
-  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % summaryViews.length;
-  else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + summaryViews.length) % summaryViews.length;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % visibleViews.length;
+  else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + visibleViews.length) % visibleViews.length;
   else if (event.key === "Home") nextIndex = 0;
-  else if (event.key === "End") nextIndex = summaryViews.length - 1;
+  else if (event.key === "End") nextIndex = visibleViews.length - 1;
   else return;
 
   event.preventDefault();
-  const nextView = summaryViews[nextIndex];
+  const nextView = visibleViews[nextIndex];
   event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-summary-view="${nextView}"]`)?.focus();
   onSelectView(nextView);
 }

@@ -19,16 +19,10 @@ identify the R process that owns an object.
 Open Wrangler 2 will run R dataframes in R. It will not convert them through Python or use a Python compatibility
 layer.
 
-The shared architecture will keep three facts separate:
-
-1. **Runtime language** identifies the process that executes a request, initially Python or R.
-2. **Dataframe flavor** identifies the object and its semantics, such as Pandas, Polars, DuckDB, PySpark,
-   `data.frame`, tibble, or `data.table`.
-3. **Code dialect** identifies the code Open Wrangler previews and inserts, such as engine-specific Python, base R,
-   dplyr, or data.table code.
-
-These are separate properties rather than aliases for one `backend` value. Shared types will be introduced with the
-runtime slice that uses them, not ahead of an implementation.
+The host exposes a `RuntimeIdentity` derived from confirmed session metadata. The protocol keeps `backend` as its
+engine discriminator. R sessions add an explicit dataframe flavor (`data.frame`, tibble, or `data.table`) so the UI
+can describe the object without guessing from `backend`. They have no code dialect yet; that field stays absent until
+generated R code exists.
 
 The first implementation slice is a transport-neutral frame/page contract. It has these invariants:
 
@@ -52,8 +46,11 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
   classes, nested columns, and unrecognized attributes fail before a page is published. The contract does not
   silently flatten them.
 
-This contract is internal groundwork. It does not add R to the Python `DataBackend` union, Python protocol v2, the
-session coordinator, commands, or the public support matrix.
+The live notebook slice now connects this contract to the shared workbench. `DataBackend` includes `r`, session
+metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v2 and the
+shared session coordinator. The notebook command discovers supported R variables and opens the same grid, Activity
+Bar views, and profile drawer used by Python-backed sessions. The Python runtime does not decode or execute the
+private R transport.
 
 IRkernel is the first supported R transport. A notebook launch must stay bound to the exact `NotebookDocument` and
 kernel captured when the user starts it. Kernel lookup, dispatch, recovery, and cleanup may not retarget through the

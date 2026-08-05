@@ -2,14 +2,16 @@
 
 ## Product boundaries
 
-Open Wrangler has three cooperating processes:
+Open Wrangler has three cooperating parts:
 
 1. The VS Code extension host owns commands, trusted-workspace enforcement, editor and view providers, session coordination, filesystem prompts, runtime processes, and Jupyter access.
-2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute Python directly.
-3. The bundled Python runtime executes dataframe queries and transformation plans in either a standalone selected interpreter or the active Jupyter kernel.
+2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute dataframe code directly.
+3. A language runtime owns dataframe work. Python sessions use the bundled runtime in a selected interpreter or active
+   Jupyter kernel. R notebook sessions use the bundled R reader inside the selected IRkernel.
 
-These sections describe the shipped Python runtime. Open Wrangler 2 adds R as a separate runtime language; the
-[native R decision](decisions/0001-native-r-runtime.md) defines its IRkernel-first ownership model and keeps runtime
+Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects a read-only R
+viewer to the shared protocol, coordinator, notebook command, grid, and profiles. The
+[native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
@@ -70,7 +72,8 @@ explicit row-name frames must send one bounded label for every returned row. The
 columns, 64 sort rules, 100,000 factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per
 text value, and 16 MiB per encoded page. A running metadata-and-cell budget stops an oversized page before the
 complete object or JSON string is built. The canonical grid protocol carries row labels independently from logical
-row numbers. This R contract remains separate from the Python runtime protocol.
+row numbers. The kernel agent uses a small R-only transport, which `RKernelBridge` validates and maps to the shared
+host protocol; the Python runtime never reads those messages.
 
 `r/openwrangler_runtime/kernel_agent.R` owns the first read-only R sessions. The host creates a UUID before an open,
 and the agent records the named object's shape, schema, and source binding. Later page, sort, and profile requests read
@@ -95,8 +98,9 @@ missing variables or sessions, and unexpected runtime failures also use a fixed 
 selected kernel. It recognizes exact base `data.frame`, tibble, and `data.table` class vectors without evaluating
 active or delayed bindings. The notebook command routes those variables through a read-only coordinator session and
 enables native column and dataset profiles. Filters, value search, cleaning, exports, and generated code stay disabled
-until their R implementations exist. Packaged VS Code and Cursor acceptance for the new profile path is still
-pending.
+until their R implementations exist. The packaged VS Code/Cursor journey now selects a real R column and checks its
+rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
+duplicate-row statistics. Green local runs on R 4.4 and 4.5 plus remote IRkernel remain preview gates.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 
