@@ -441,9 +441,7 @@ def test_real_local_request_scope_isolated_by_classic_job_group_or_connect_opera
             def current_task_job_group(_value: int) -> str | None:
                 # Spark workers cannot import pytest's top-level test module.
                 # Keep the probe local so cloudpickle sends its small body.
-                from pyspark import TaskContext
-
-                task_context = TaskContext.get()
+                task_context = import_module("pyspark").TaskContext.get()
                 assert task_context is not None
                 return task_context.getLocalProperty("spark.jobGroup.id")
 
