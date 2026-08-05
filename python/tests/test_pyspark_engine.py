@@ -261,10 +261,12 @@ class _ClosablePySparkSession:
 
 
 class _FailureClassifyingSession:
-    def __init__(self, session_id: str, engine: PySparkEngine) -> None:
+    def __init__(self, session_id: str, engine: PySparkEngine, live_source_value: Any | None = None) -> None:
         self.session_id = session_id
         self.engine = engine
+        self.backend = "pyspark"
         self.source = {"kind": "notebookVariable", "variableName": "orders", "label": "orders"}
+        self.live_source_value = live_source_value
         self.page_cache = {"confirmed": object()}
         self.page_cache_bytes = 128
         self.disposed = False
@@ -568,6 +570,43 @@ def test_manager_preserves_connect_session_and_reports_structured_failure(
     assert session.disposed is False
     assert (session.page_cache == {}) is cache_cleared
     assert session.page_cache_bytes == (0 if cache_cleared else 128)
+
+
+def test_rebound_classic_source_is_checked_before_request_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = object()
+    replacement = object()
+    monkeypatch.setattr(__main__, "orders", replacement, raising=False)
+
+    spark_context = _StoppedSparkContext()
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeClassicFrame(spark_context)
+    session = _FailureClassifyingSession("classic-session", engine, original)
+    manager = SessionManager()
+    manager.sessions[session.session_id] = session  # type: ignore[assignment]
+
+    with pytest.raises(LiveSourceInvalidatedError, match="was replaced") as invalidated:
+        server.dispatch(
+            manager,
+            {
+                "kind": "getPage",
+                "sessionId": session.session_id,
+                "revision": 0,
+                "viewRequestId": "classic-rebound-view",
+                "offset": 0,
+                "limit": 20,
+                "columnOffset": 0,
+                "columnLimit": 64,
+                "filterModel": _empty_view(),
+            },
+            "classic-rebound-request",
+        )
+
+    assert invalidated.value.session_id == session.session_id
+    assert spark_context.ownership_calls == 0
+    assert session.page_cache == {}
+    assert session.page_cache_bytes == 0
 
 
 def test_real_local_request_scope_isolated_by_classic_job_group_or_connect_operation(

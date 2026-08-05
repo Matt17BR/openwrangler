@@ -11,6 +11,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - PySpark Classic work now has a separate Spark job group for each Open Wrangler request and restores the notebook's
   previous job properties afterward. Spark Connect keeps its own per-operation interrupt behavior. This does not add
   request cancellation or change user job tags, scheduler pools, or signal handlers.
+- Recreating a PySpark Classic variable after stopping its old Spark session now reopens the live notebook data
+  instead of failing while Open Wrangler reads request properties from the stopped Spark context.
 - Spark Connect now tells temporary endpoint failures apart from a server session or DataFrame that no longer exists.
   Both leave the confirmed grid in place. Lost server state also drops runtime page blocks so stale data is not served;
   Open Wrangler does not create a replacement Spark session or DataFrame. After rerunning the notebook cell, users can
