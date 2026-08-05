@@ -297,6 +297,12 @@ class SessionManager:
     def request_scope(self, request_id: str, request: Mapping[str, Any]) -> Iterator[None]:
         """Bind a protocol request to the engine that owns its live session."""
 
+        if request.get("kind") == "closeSession":
+            # Terminal cleanup does not schedule engine work. In particular,
+            # it must still remove a PySpark session when its Spark context is
+            # stopped or its request properties can no longer be restored.
+            yield
+            return
         session_id = request.get("sessionId")
         if not isinstance(session_id, str):
             yield
