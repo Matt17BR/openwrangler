@@ -97,6 +97,7 @@ class PySparkEngine(DataFrameEngine):
         request_token = _ACTIVE_PYSPARK_REQUEST_ID.set(request_id)
         spark_context: Any | None = None
         previous_properties: dict[str, str | None] | None = None
+        request_failed = False
         try:
             frame = self._indexed_frame
             if frame is not None and not _is_connect_frame(frame):
@@ -117,10 +118,17 @@ class PySparkEngine(DataFrameEngine):
             # Its public API has no request-ID override, so the protocol ID
             # remains local state until a safe transport hook exists.
             yield
+        except BaseException:
+            request_failed = True
+            raise
         finally:
             try:
                 if spark_context is not None and previous_properties is not None:
-                    _restore_spark_job_properties(spark_context, previous_properties)
+                    try:
+                        _restore_spark_job_properties(spark_context, previous_properties)
+                    except Exception:
+                        if not request_failed:
+                            raise
             finally:
                 _ACTIVE_PYSPARK_REQUEST_ID.reset(request_token)
 

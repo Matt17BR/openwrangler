@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import signal
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from decimal import Decimal
 from importlib import import_module
@@ -231,6 +231,24 @@ def test_classic_request_scope_restores_the_caller_after_partial_setup_failure()
         raise AssertionError("the request body must not run")
 
     assert spark_context.properties == caller_properties
+    assert pyspark_engine_module._current_pyspark_request_id() is None
+
+
+def test_classic_request_scope_does_not_mask_an_earlier_failure_during_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spark_context = _FakeSparkContext()
+    engine = PySparkEngine()
+    engine._indexed_frame = _FakeClassicFrame(spark_context)
+
+    def fail_restore(_spark_context: Any, _properties: Mapping[str, str | None]) -> None:
+        raise EngineError("restore failed")
+
+    monkeypatch.setattr(pyspark_engine_module, "_restore_spark_job_properties", fail_restore)
+
+    with pytest.raises(RuntimeError, match="profile failed"), engine.request_scope("failed-request"):
+        raise RuntimeError("profile failed")
+
     assert pyspark_engine_module._current_pyspark_request_id() is None
 
 
