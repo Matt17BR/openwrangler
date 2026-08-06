@@ -1018,6 +1018,7 @@ export interface SourceCapabilities {
   sort?: boolean;
   profile?: boolean;
   columnValues?: boolean;
+  supportedOperations?: OperationKind[];
 }
 export interface SessionOpenedResponse {
   kind: "sessionOpened";

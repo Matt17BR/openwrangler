@@ -2436,6 +2436,40 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toEqual([]);
   });
 
+  it("rejects a valid preview outside the session's advertised operation set", async () => {
+    const limitedOpened: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: {
+        ...openedResponse.metadata,
+        capabilities: {
+          ...openedResponse.metadata.capabilities,
+          supportedOperations: ["renameColumn"]
+        }
+      }
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") return limitedOpened;
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+    const harness = createPanelHarness({ request }, { openResponse: limitedOpened });
+    await harness.open();
+    request.mockClear();
+
+    await harness.send({
+      kind: "runtimeRequest",
+      request: {
+        kind: "previewStep",
+        step: { id: "custom", kind: "customCode", params: { code: "result = df" } },
+        offset: 0,
+        limit: 200,
+        columnOffset: 0,
+        columnLimit: 16
+      }
+    });
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("decodes only the exact change-import-options message shape", async () => {
     const source: SessionSource = {
       kind: "file",

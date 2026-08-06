@@ -10,6 +10,7 @@ import {
   type FilterModel,
   type GridPage,
   type OpenSessionRequest,
+  type OperationKind,
   type OpenWranglerRequest,
   type OpenWranglerResponse,
   type PageRequest,
@@ -60,7 +61,8 @@ const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   filter: true,
   sort: true,
   profile: true,
-  columnValues: true
+  columnValues: true,
+  supportedOperations: ["renameColumn"] as OperationKind[]
 });
 
 /** Narrow transport surface used by the canonical bridge and its contract tests. */

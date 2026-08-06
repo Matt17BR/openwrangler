@@ -187,7 +187,12 @@
         "filter": { "type": "boolean" },
         "sort": { "type": "boolean" },
         "profile": { "type": "boolean" },
-        "columnValues": { "type": "boolean" }
+        "columnValues": { "type": "boolean" },
+        "supportedOperations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/OperationKind" }
+        }
       }
     },
     "ColumnType": {

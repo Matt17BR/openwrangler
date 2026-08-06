@@ -1,6 +1,12 @@
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
-import type { ColumnSummary, DatasetStats, OpenSessionRequest, OpenWranglerRequest } from "../shared/protocol";
+import type {
+  ColumnSummary,
+  DatasetStats,
+  OpenSessionRequest,
+  OpenWranglerRequest,
+  SourceCapabilities
+} from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { RKernelBridge, type RKernelBridgeTransport } from "../extension/r/rKernelBridge";
 import type { RColumnSchema, RFrameCell, RFramePageContract } from "../extension/r/rFrameContract";
@@ -806,7 +812,7 @@ function cell(kind: string, raw: unknown, display: string, isNull = false, isNaN
   return { kind, raw, display, isNull, isNaN };
 }
 
-function rCapabilities(): Record<string, boolean> {
+function rCapabilities(): SourceCapabilities {
   return {
     editable: false,
     lazy: false,
@@ -817,6 +823,7 @@ function rCapabilities(): Record<string, boolean> {
     filter: true,
     sort: true,
     profile: true,
-    columnValues: true
+    columnValues: true,
+    supportedOperations: ["renameColumn"]
   };
 }

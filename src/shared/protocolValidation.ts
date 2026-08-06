@@ -641,7 +641,7 @@ function isSourceCapabilities(value: unknown): boolean {
   const candidate = exactRecord(
     value,
     ["editable", "lazy", "cancel", "exportCsv", "exportParquet", "notebookInsert"],
-    ["filter", "sort", "profile", "columnValues"]
+    ["filter", "sort", "profile", "columnValues", "supportedOperations"]
   );
   return (
     candidate !== undefined &&
@@ -654,8 +654,15 @@ function isSourceCapabilities(value: unknown): boolean {
     optional(candidate, "filter", isBoolean) &&
     optional(candidate, "sort", isBoolean) &&
     optional(candidate, "profile", isBoolean) &&
-    optional(candidate, "columnValues", isBoolean)
+    optional(candidate, "columnValues", isBoolean) &&
+    optional(candidate, "supportedOperations", isUniqueOperationKindArray)
   );
+}
+
+function isUniqueOperationKindArray(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  if (!value.every((kind) => isEnumMember(kind, OPERATION_KINDS))) return false;
+  return new Set(value).size === value.length;
 }
 
 function isDataShape(value: unknown): boolean {

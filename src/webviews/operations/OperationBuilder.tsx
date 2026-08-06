@@ -13,7 +13,12 @@ import type {
   TransformFilterModel,
   TransformStep
 } from "../../shared/protocol";
-import { operationCatalog, operationGroups, operationByKind } from "../../shared/operations";
+import {
+  operationGroups,
+  operationByKind,
+  supportedOperationCatalog,
+  supportsOperation
+} from "../../shared/operations";
 import { isTransformStep } from "../../shared/protocolValidation";
 
 interface OperationBuilderProps {
@@ -357,19 +362,25 @@ export function OperationBuilder({
   onClose,
   onPreview
 }: OperationBuilderProps) {
-  const [selectedKind, setSelectedKind] = useState<OperationKind | undefined>(initialKind ?? initialStep?.kind);
+  const requestedInitialKind = initialKind ?? initialStep?.kind;
+  const [selectedKind, setSelectedKind] = useState<OperationKind | undefined>(() =>
+    requestedInitialKind && supportsOperation(metadata.capabilities, requestedInitialKind)
+      ? requestedInitialKind
+      : undefined
+  );
   const [search, setSearch] = useState("");
   const [formError, setFormError] = useState<string>();
   const dialogRef = useRef<HTMLElement | null>(null);
+  const availableCatalog = useMemo(() => supportedOperationCatalog(metadata.capabilities), [metadata.capabilities]);
   const filteredCatalog = useMemo(() => {
     const query = search.trim().toLowerCase();
     return query
-      ? operationCatalog.filter(
+      ? availableCatalog.filter(
           (operation) =>
             operation.title.toLowerCase().includes(query) || operation.description.toLowerCase().includes(query)
         )
-      : operationCatalog;
-  }, [search]);
+      : availableCatalog;
+  }, [availableCatalog, search]);
   const activeInitial = initialStep?.kind === selectedKind ? initialStep : undefined;
   const availableColumns = initialStep ? (metadata.latestStepInputSchema ?? []) : metadata.schema;
   const editPreflightError = initialStep ? savedStepEditError(initialStep, metadata.latestStepInputSchema) : undefined;
@@ -389,7 +400,7 @@ export function OperationBuilder({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (busy || !selectedKind || editPreflightError) return;
+    if (busy || !selectedKind || editPreflightError || !supportsOperation(metadata.capabilities, selectedKind)) return;
     try {
       const form = new FormData(event.currentTarget);
       const params = buildParams(selectedKind, form, filterModel, availableColumns, savedFilterModel);
