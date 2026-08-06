@@ -284,7 +284,13 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).not.toContain('"base_frame <- data.frame("');
     expect(rJourney).toContain("prepareReleasedRNotebookScreenshotWorkbench(workbench, notebook, notebookEditor)");
     expect(rJourney).toContain("captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput)");
-    expect(rJourney).toContain("captureReleasedRJupyterWorkbench(workbench, testing, sessionId, screenshotOutput)");
+    expect(rJourney).toContain(
+      "captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput)"
+    );
+    expect(extensionHost).toContain('"regional_orders <- data.frame("');
+    expect(extensionHost).toContain('"  order_id = 2400000L + media_index,"');
+    expect(extensionHost).toContain("\"  market = rep(c('DACH', 'Nordics', 'France', 'Iberia')");
+    expect(extensionHost).toContain('"  revenue = media_revenue,"');
     expect(extensionHost).toContain(
       'packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-picker", "dark")'
     );
@@ -296,9 +302,15 @@ describe("packaged editor screenshot evidence", () => {
     expect(rJourney).toContain('recordAcceptanceProgress("jupyter-r:screenshot:workbench")');
     expect(rJourney).toContain('selectOption("gte")');
     expect(rJourney).toContain('selectOption("equals")');
-    expect(rJourney).toContain('await assertReleasedProfileStat(profile, "Min", "1,200")');
-    expect(rJourney).toContain("/^group, Priority 1 · Ascending · nulls last/u");
-    expect(rJourney).toContain("/^score, Priority 2 · Descending · nulls last/u");
+    expect(rJourney).toContain('await assertReleasedProfileStat(profile, "Min", "20,000")');
+    expect(rJourney).toContain("/^priority, Priority 1 · Ascending · nulls last/u");
+    expect(rJourney).toContain("/^revenue, Priority 2 · Descending · nulls last/u");
+    expect(rJourney).toContain('fitReleasedRMediaColumns(testing, app, sessionId, ["order_id", "market", "revenue"])');
+    expect(rJourney).toContain(
+      'assertOnlyCompleteMediaColumnsVisible(app, ["order_id", "market", "revenue"], "The R notebook media scene")'
+    );
+    expect(rJourney).toContain("const alignedViewport = await alignPackagedSceneRowBoundary(workbench, app)");
+    expect(rJourney).toContain("alignedViewport\n    );");
     expect(extensionHost).toContain("assertReleasedRPrivateNotebookContentHidden(workbench)");
   });
 

@@ -259,6 +259,7 @@ const RELEASED_JUPYTER_R_KERNEL_LABEL = "R (Open Wrangler)";
 const RELEASED_JUPYTER_R_KERNEL_NAME = "openwrangler-r-acceptance";
 const RELEASED_JUPYTER_R_SETUP_RESULT = "__OW_RELEASED_R_SETUP__";
 const RELEASED_JUPYTER_R_BINDING_RESULT = "__OW_RELEASED_R_BINDING__";
+const RELEASED_JUPYTER_R_MEDIA_RESULT = "__OW_RELEASED_R_MEDIA__";
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
 const RELEASED_JUPYTER_REMOTE_KERNEL_LABEL = "Open Wrangler Remote Acceptance";
@@ -1463,7 +1464,48 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
   const bindingProbe = [
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_BINDING_RESULT)}, as.character(jsonlite::toJSON(list(`,
     `  runtimeBindingPresent = exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE),`,
-    "  sourceUnchanged = isTRUE(identical(serialize(orders_frame, NULL, version = 3L), orders_frame_before))",
+    "  sourceUnchanged = isTRUE(identical(serialize(orders_frame, NULL, version = 3L), orders_frame_before)),",
+    "  mediaSourceUnchanged = !exists('regional_orders', envir = .GlobalEnv, inherits = FALSE) ||",
+    "    isTRUE(identical(serialize(regional_orders, NULL, version = 3L), regional_orders_before))",
+    "), auto_unbox = TRUE)), '\\n', sep = '')"
+  ];
+  const mediaSource = [
+    "media_row_count <- 2400L",
+    "media_index <- seq_len(media_row_count)",
+    "media_revenue <- as.numeric(500 + media_index * 10)",
+    "regional_orders <- data.frame(",
+    "  order_id = 2400000L + media_index,",
+    "  market = rep(c('DACH', 'Nordics', 'France', 'Iberia'), length.out = media_row_count),",
+    "  revenue = media_revenue,",
+    "  fulfilled = media_index %% 5L != 0L,",
+    "  order_date = as.Date('2026-01-01') + ((media_index - 1L) %% 365L),",
+    "  segment = rep(c('Enterprise', 'Mid-market', 'Public sector', 'Small business'), length.out = media_row_count),",
+    "  channel = rep(c('Direct', 'Partner', 'Online'), length.out = media_row_count),",
+    "  product_family = rep(c('Analytics', 'Automation', 'Data platform', 'Planning'), length.out = media_row_count),",
+    "  units = 1L + (media_index %% 12L),",
+    "  unit_price = round(45 + (media_index %% 250L) * 1.25, 2L),",
+    "  discount_pct = round((media_index %% 15L) * 0.5, 1L),",
+    "  gross_margin = round(media_revenue * (0.18 + (media_index %% 7L) / 100), 2L),",
+    "  priority = rep(c('Standard', 'High', 'Strategic'), length.out = media_row_count),",
+    "  renewal_date = as.Date('2027-01-01') + ((media_index - 1L) %% 365L),",
+    "  account_status = rep(c('Active', 'Expansion', 'Renewal review'), length.out = media_row_count),",
+    "  currency = rep(c('EUR', 'GBP', 'CHF'), length.out = media_row_count),",
+    "  sales_rep = sprintf('Rep %02d', 1L + (media_index %% 36L)),",
+    "  region = rep(c('Central Europe', 'Northern Europe', 'Southern Europe'), length.out = media_row_count),",
+    "  country_code = rep(c('DE', 'SE', 'FR', 'ES'), length.out = media_row_count),",
+    "  customer_tier = rep(c('Gold', 'Silver', 'Platinum'), length.out = media_row_count),",
+    "  payment_terms = rep(c('Net 30', 'Net 45', 'Net 60'), length.out = media_row_count),",
+    "  risk_score = round((media_index %% 100L) / 100, 2L),",
+    "  account_name = sprintf('Account %04d', 1L + ((media_index - 1L) %% 850L)),",
+    "  notes = sprintf('Renewal wave %02d', 1L + (media_index %% 24L)),",
+    "  check.names = FALSE,",
+    "  stringsAsFactors = FALSE",
+    ")",
+    "regional_orders$notes[17L] <- NA_character_",
+    "row.names(regional_orders) <- sprintf('OW-%07d', regional_orders$order_id)",
+    "regional_orders_before <- serialize(regional_orders, NULL, version = 3L)",
+    `cat(${JSON.stringify(RELEASED_JUPYTER_R_MEDIA_RESULT)}, as.character(jsonlite::toJSON(list(`,
+    "  rows = nrow(regional_orders), columns = ncol(regional_orders)",
     "), auto_unbox = TRUE)), '\\n', sep = '')"
   ];
   writeFileSync(
@@ -1483,6 +1525,13 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
           metadata: {},
           outputs: [],
           source: bindingProbe.map((line) => `${line}\n`)
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: mediaSource.map((line) => `${line}\n`)
         },
         {
           cell_type: "code",
@@ -1575,6 +1624,7 @@ async function assertReleasedRRuntimeBinding(
     `The R runtime binding must be ${expectedBinding ? "present" : "absent"} during ${checkpoint}.`
   );
   assert.equal(result.sourceUnchanged, true, `The source data.frame changed during ${checkpoint}.`);
+  assert.equal(result.mediaSourceUnchanged, true, `The R media data.frame changed during ${checkpoint}.`);
 }
 
 async function exerciseReleasedRJupyterExtension(
@@ -1688,9 +1738,45 @@ async function exerciseReleasedRJupyterExtension(
       columnValues: true
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
-    await exerciseReleasedRGridJourney(testing, workbench, base.sessionId, screenshotOutput);
+    await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
+
+    if (screenshotOutput) {
+      const mediaEditor = await showExactReleasedNotebook(notebook);
+      await executeReleasedNotebookCell(
+        notebook,
+        2,
+        RELEASED_JUPYTER_R_MEDIA_RESULT,
+        `${phase}:media-setup`,
+        mediaEditor
+      );
+      const mediaSetup = releasedNotebookJsonResult(
+        notebook.cellAt(2),
+        RELEASED_JUPYTER_R_MEDIA_RESULT,
+        "R media setup"
+      );
+      assert.deepEqual({ rows: mediaSetup.rows, columns: mediaSetup.columns }, { rows: 2_400, columns: 24 });
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, "regional_orders");
+      const mediaSession = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "regional_orders",
+          type: "data.frame",
+          backend: "r",
+          rDataframeFlavor: "r.data.frame",
+          firstValue: "2400001",
+          notebookInsert: false
+        },
+        "the representative R orders session"
+      );
+      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-before-capture`);
+      await captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput);
+      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-after-capture`);
+      await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
+    }
 
     for (const expected of [
       {
@@ -1823,12 +1909,7 @@ async function exerciseReleasedRJupyterExtension(
   if (acceptanceError) throw acceptanceError.value;
 }
 
-async function exerciseReleasedRGridJourney(
-  testing: TestApi,
-  workbench: Page,
-  sessionId: string,
-  screenshotOutput?: string
-): Promise<void> {
+async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -2166,9 +2247,6 @@ async function exerciseReleasedRGridJourney(
   });
   assert.equal(groupFirst.kind, "page");
   if (groupFirst.kind === "page") assert.equal(groupFirst.page.rows[0]?.values[0]?.display, "602");
-  if (screenshotOutput) {
-    await captureReleasedRJupyterWorkbench(workbench, testing, sessionId, screenshotOutput);
-  }
 }
 
 async function captureReleasedRJupyterWorkbench(
@@ -2248,13 +2326,10 @@ async function captureReleasedRJupyterWorkbench(
     assert.equal(active.metadata.backend, "r");
     assert.equal(active.metadata.mode, "viewing");
     assert.equal(active.metadata.source.kind, "notebookVariable");
-    assert.equal(active.metadata.source.variableName, "orders_frame");
-    assert.deepEqual(active.metadata.shape, { rows: 1_205, columns: 24 });
+    assert.equal(active.metadata.source.variableName, "regional_orders");
+    assert.deepEqual(active.metadata.shape, { rows: 2_400, columns: 24 });
     assert.deepEqual(active.metadata.filterModel.filters, []);
-    assert.deepEqual(active.metadata.filterModel.sort, [
-      { column: "group", direction: "asc", nulls: "last" },
-      { column: "score", direction: "desc", nulls: "last" }
-    ]);
+    assert.deepEqual(active.metadata.filterModel.sort, []);
     assert.deepEqual(active.metadata.steps, []);
     assert.equal(active.metadata.draftStep, undefined);
 
@@ -2266,20 +2341,9 @@ async function captureReleasedRJupyterWorkbench(
       10_000,
       "the R screenshot renderer to complete its host handshake"
     );
-    const score = columnReference(active.metadata, "score");
-    const captureWidths = {
-      ...active.viewState.columnWidths,
-      ...Object.fromEntries(
-        active.metadata.schema.slice(0, 4).map((column, index) => [column.id, index === 3 ? 210 : 155])
-      )
-    };
-    await testing.updateViewState(sessionId, {
-      ...active.viewState,
-      columnWidths: captureWidths,
-      selectedColumnId: score.id,
-      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
-    });
-    assert.equal(await testing.synchronizePanel(sessionId), true, "The R screenshot view must synchronize.");
+    const revenue = columnReference(active.metadata, "revenue");
+    await applyReleasedRQuickSort(readyApp, testing, "revenue", "descending", ["revenue"]);
+    await applyReleasedRQuickSort(readyApp, testing, "priority", "ascending", ["priority", "revenue"]);
 
     let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
     let app = await exactSessionApp(target.frame, sessionId);
@@ -2293,22 +2357,22 @@ async function captureReleasedRJupyterWorkbench(
     await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
     const advancedMode = filterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
     if ((await advancedMode.count()) > 0 && (await advancedMode.isVisible())) await advancedMode.click();
-    await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "score" });
+    await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "revenue" });
     await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("gte");
-    await filterPanel.getByLabel("gte predicate value", { exact: true }).fill("1200");
+    await filterPanel.getByLabel("gte predicate value", { exact: true }).fill("20000");
     await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
     filterPanel = drawer.locator(".filterSortPanel").first();
-    await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+    await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "market" });
     await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
-    await filterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+    await filterPanel.getByLabel("equals predicate value", { exact: true }).fill("Nordics");
     await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
     await waitFor(
       () => {
         const current = testing.activeSession();
         return (
-          current?.metadata.filteredShape.rows === 6 &&
+          current?.metadata.filteredShape.rows === 113 &&
           current.viewState.filterModel.filters.length === 2 &&
-          current.viewState.filterModel.sort.map((rule) => rule.column).join(",") === "group,score"
+          current.viewState.filterModel.sort.map((rule) => rule.column).join(",") === "priority,revenue"
         );
       },
       30_000,
@@ -2324,42 +2388,42 @@ async function captureReleasedRJupyterWorkbench(
     app = await exactSessionApp(target.frame, sessionId);
     assert.ok(app, "The filtered R screenshot must retain its exact renderer.");
     const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
-    await columnSearch.fill("score");
+    await columnSearch.fill("revenue");
     await app
-      .getByRole("option", { name: /^score,/u })
+      .getByRole("option", { name: /^revenue,/u })
       .first()
       .waitFor({ state: "visible", timeout: 10_000 });
     await columnSearch.press("Enter");
     await waitFor(
-      () => testing.activeSession()?.viewState.selectedColumnId === score.id,
+      () => testing.activeSession()?.viewState.selectedColumnId === revenue.id,
       10_000,
-      "the R media scene to select its numeric score column"
+      "the R media scene to select its revenue column"
     );
     await requireFreshExactSessionPanelHydration(
       testing,
       sessionId,
-      "The R media score selection must be acknowledged before profiling."
+      "The R media revenue selection must be acknowledged before profiling."
     );
     drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
     await drawer.getByRole("tab", { name: "Column", exact: true }).click();
     const profile = drawer.getByRole("tabpanel");
-    await profile.getByRole("heading", { name: "score", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await profile.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     await profile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
       state: "visible",
       timeout: 30_000
     });
-    await assertReleasedProfileStat(profile, "Rows", "6");
-    await assertReleasedProfileStat(profile, "Distinct", "6");
-    await assertReleasedProfileStat(profile, "Min", "1,200");
-    await assertReleasedProfileStat(profile, "Max", "1,205");
+    await assertReleasedProfileStat(profile, "Rows", "113");
+    await assertReleasedProfileStat(profile, "Distinct", "113");
+    await assertReleasedProfileStat(profile, "Min", "20,000");
+    await assertReleasedProfileStat(profile, "Max", "24,480");
 
     const sidebar = await arrangePackagedProductSidebar(workbench, "filter-result");
     const filtersTree = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
     for (const item of [
-      /^score, 1 condition/u,
-      /^group, 1 condition/u,
-      /^group, Priority 1 · Ascending · nulls last/u,
-      /^score, Priority 2 · Descending · nulls last/u
+      /^revenue, 1 condition/u,
+      /^market, 1 condition/u,
+      /^priority, Priority 1 · Ascending · nulls last/u,
+      /^revenue, Priority 2 · Descending · nulls last/u
     ]) {
       await filtersTree.getByRole("treeitem", { name: item }).first().waitFor({ state: "visible", timeout: 10_000 });
     }
@@ -2372,12 +2436,22 @@ async function captureReleasedRJupyterWorkbench(
     assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
     await app
       .getByRole("status", { name: "Visible rows", exact: true })
-      .filter({ hasText: "Rows 1–6 of 6" })
+      .filter({ hasText: "Rows 1–113 of 113" })
       .waitFor({ state: "visible", timeout: 10_000 });
     await app
-      .getByRole("rowheader", { name: "Row 1, label case-1205", exact: true })
+      .getByRole("rowheader", { name: "Row 1, label OW-2402390", exact: true })
       .waitFor({ state: "visible", timeout: 10_000 });
-    await assertMediaColumnTitlesUnclipped(app, ["row_id", "group", "score"], "The R notebook media scene");
+    await fitReleasedRMediaColumns(testing, app, sessionId, ["order_id", "market", "revenue"]);
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "The fitted R screenshot must retain its exact renderer.");
+    await assertMediaColumnTitlesUnclipped(app, ["order_id", "market", "revenue"], "The R notebook media scene");
+    await assertOnlyCompleteMediaColumnsVisible(app, ["order_id", "market", "revenue"], "The R notebook media scene");
+    const alignedViewport = await alignPackagedSceneRowBoundary(workbench, app);
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "The row-aligned R screenshot must retain its exact renderer.");
+    await assertOnlyCompleteMediaColumnsVisible(app, ["order_id", "market", "revenue"], "The R notebook media scene");
 
     const commands = new Set(await vscode.commands.getCommands(true));
     if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
@@ -2404,7 +2478,8 @@ async function captureReleasedRJupyterWorkbench(
       path.resolve(
         outputDirectory,
         packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r", "dark")
-      )
+      ),
+      alignedViewport
     );
   } finally {
     for (const { configuration, key, value } of previousSettings.reverse()) {
@@ -10085,7 +10160,11 @@ async function captureWorkbenchScreenshot(page: Page, destination: string, maxim
   );
 }
 
-async function captureNotebookWorkbenchScreenshot(page: Page, destination: string): Promise<void> {
+async function captureNotebookWorkbenchScreenshot(
+  page: Page,
+  destination: string,
+  expectedViewport: Readonly<{ width: number; height: number }> = PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT
+): Promise<void> {
   await page.bringToFront();
   const expectedPixelRatio = publicMediaPixelRatio();
   const viewport = await page.evaluate(() => {
@@ -10102,8 +10181,10 @@ async function captureNotebookWorkbenchScreenshot(page: Page, destination: strin
   });
   assert.deepEqual(
     { width: viewport.width, height: viewport.height },
-    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
-    "A notebook workbench media scene requires the standard 1440 by 900 editor viewport."
+    expectedViewport,
+    expectedViewport === PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT
+      ? "A notebook workbench media scene requires the standard 1440 by 900 editor viewport."
+      : "An aligned notebook workbench media scene requires its exact measured editor viewport."
   );
   assert.equal(viewport.scale >= 1, true, "The notebook workbench must expose one valid initial device-pixel ratio.");
   await capturePublicEditorPixels(page, destination, expectedPixelRatio);
@@ -10111,12 +10192,12 @@ async function captureNotebookWorkbenchScreenshot(page: Page, destination: strin
   assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
   assert.equal(
     image.readUInt32BE(16),
-    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.width * expectedPixelRatio,
+    expectedViewport.width * expectedPixelRatio,
     "A notebook workbench media scene must retain twice its logical editor width."
   );
   assert.equal(
     image.readUInt32BE(20),
-    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.height * expectedPixelRatio,
+    expectedViewport.height * expectedPixelRatio,
     "A notebook workbench media scene must retain twice its logical editor height."
   );
 }
@@ -10383,7 +10464,7 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
     for (const command of requiredCommands) {
       assert.ok(commands.has(command), `R notebook media requires the built-in ${command} command.`);
     }
-    for (const privateIndex of [0, 1]) {
+    for (const privateIndex of [0, 1, 2]) {
       const privateCell = new vscode.NotebookRange(privateIndex, privateIndex + 1);
       editor.selection = privateCell;
       editor.selections = [privateCell];
@@ -10391,12 +10472,12 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
       await vscode.commands.executeCommand(requiredCommands[0]);
       await vscode.commands.executeCommand(requiredCommands[1]);
     }
-    const publicCell = new vscode.NotebookRange(2, 3);
+    const publicCell = new vscode.NotebookRange(3, 4);
     editor.selection = publicCell;
     editor.selections = [publicCell];
     editor.revealRange(publicCell, vscode.NotebookEditorRevealType.AtTop);
     await waitFor(
-      () => editor.visibleRanges.some((visible) => visible.start <= 2 && visible.end > 2),
+      () => editor.visibleRanges.some((visible) => visible.start <= 3 && visible.end > 3),
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the public R notebook cell to be visible before picker capture"
     );
@@ -10478,7 +10559,9 @@ async function assertReleasedRPrivateNotebookContentHidden(workbench: Page): Pro
     [
       RELEASED_JUPYTER_R_SETUP_RESULT,
       RELEASED_JUPYTER_R_BINDING_RESULT,
+      RELEASED_JUPYTER_R_MEDIA_RESULT,
       "orders_frame_before",
+      "regional_orders_before",
       R_KERNEL_RUNTIME_BINDING
     ]
   );
@@ -11869,6 +11952,104 @@ async function captureReleasedJupyterPySparkLive(
     );
     await workbench.waitForTimeout(500);
   }
+}
+
+async function fitReleasedRMediaColumns(
+  testing: TestApi,
+  app: Locator,
+  sessionId: string,
+  columnNames: readonly [string, string, string]
+): Promise<void> {
+  const scroller = app.locator(".tableScroller").first();
+  await scroller.waitFor({ state: "visible", timeout: 10_000 });
+  const drawerLeft = await app
+    .getByRole("complementary", { name: "Column profiles and filters", exact: true })
+    .evaluate((element) => element.getBoundingClientRect().left);
+  const geometry = await scroller.evaluate((element) => {
+    const target = element as unknown as {
+      clientWidth: number;
+      getBoundingClientRect(): { left: number };
+      querySelector(selector: string): { getBoundingClientRect(): { width: number } } | null;
+    };
+    const rowHeader = target.querySelector("th.rowHeader");
+    if (!rowHeader) throw new Error("The R media grid has no row header.");
+    return {
+      clientWidth: target.clientWidth,
+      left: target.getBoundingClientRect().left,
+      rowHeaderWidth: rowHeader.getBoundingClientRect().width
+    };
+  });
+  const visibleWidth = Math.min(geometry.clientWidth, drawerLeft - geometry.left);
+  const leadingWidth = 155;
+  const trailingWidth = Math.floor(visibleWidth - geometry.rowHeaderWidth - leadingWidth * 2);
+  assert.ok(
+    trailingWidth >= 140 && trailingWidth <= 240,
+    `The R media grid cannot fit three complete columns: ${JSON.stringify({ ...geometry, drawerLeft, visibleWidth, trailingWidth })}.`
+  );
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, "The R media column fit requires the exact active session.");
+  assert.ok(active);
+  const fittedWidths = { ...active.viewState.columnWidths };
+  for (const [index, name] of columnNames.entries()) {
+    fittedWidths[columnReference(active.metadata, name).id] = index === 2 ? trailingWidth : leadingWidth;
+  }
+  await testing.updateViewState(sessionId, {
+    ...active.viewState,
+    columnWidths: fittedWidths,
+    viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+  });
+  assert.equal(await testing.synchronizePanel(sessionId), true, "The fitted R media grid must synchronize.");
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The fitted R media grid must be acknowledged before capture."
+  );
+}
+
+async function assertOnlyCompleteMediaColumnsVisible(
+  app: Locator,
+  expectedNames: readonly string[],
+  scene: string
+): Promise<void> {
+  const drawerLeft = await app
+    .getByRole("complementary", { name: "Column profiles and filters", exact: true })
+    .evaluate((element) => element.getBoundingClientRect().left);
+  const visible = await app
+    .locator(".tableScroller")
+    .first()
+    .evaluate((element, clipRight) => {
+      type HeaderElement = {
+        getAttribute(name: string): string | null;
+        getBoundingClientRect(): { left: number; right: number };
+      };
+      type ScrollerElement = HeaderElement & { querySelectorAll(selector: string): ArrayLike<HeaderElement> };
+      const scroller = element as unknown as ScrollerElement;
+      const bounds = scroller.getBoundingClientRect();
+      const viewportRight = Math.min(bounds.right, clipRight);
+      return Array.from(scroller.querySelectorAll("th[data-column]")).flatMap((header) => {
+        const rectangle = header.getBoundingClientRect();
+        if (rectangle.right <= bounds.left + 0.5 || rectangle.left >= viewportRight - 0.5) return [];
+        return [
+          {
+            name: header.getAttribute("data-column"),
+            complete: rectangle.left >= bounds.left - 0.5 && rectangle.right <= viewportRight + 0.5,
+            left: rectangle.left,
+            right: rectangle.right,
+            viewportLeft: bounds.left,
+            viewportRight
+          }
+        ];
+      });
+    }, drawerLeft);
+  assert.deepEqual(
+    visible.map((header) => header.name),
+    expectedNames,
+    `${scene} must show exactly three complete columns.`
+  );
+  assert.ok(
+    visible.every((header) => header.complete),
+    `${scene} contains a clipped column: ${JSON.stringify(visible)}.`
+  );
 }
 
 async function assertMediaColumnTitlesUnclipped(
@@ -13283,7 +13464,10 @@ async function capturePackagedFilterResultScene(
   }
 }
 
-async function alignPackagedSceneRowBoundary(workbench: Page, app: Locator): Promise<void> {
+async function alignPackagedSceneRowBoundary(
+  workbench: Page,
+  app: Locator
+): Promise<{ width: number; height: number }> {
   const maximumAttempts = 4;
   let lastMeasurement: Awaited<ReturnType<typeof measurePackagedSceneRowBoundary>> | undefined;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
@@ -13298,7 +13482,7 @@ async function alignPackagedSceneRowBoundary(workbench: Page, app: Locator): Pro
       0,
       "A packaged product screenshot may align only a bottom partial row, never hide a clipped top row."
     );
-    if (measurement.partialBottomRows.length === 0) return;
+    if (measurement.partialBottomRows.length === 0) return viewport;
     assert.equal(
       measurement.partialBottomRows.length,
       1,
