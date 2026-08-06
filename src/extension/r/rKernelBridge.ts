@@ -1,20 +1,27 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import {
   PROTOCOL_VERSION,
   type CellValue,
   type ColumnSchema,
   type ColumnSummary,
+  type DataDiff,
   type DatasetStatsRequest,
   type ErrorResponse,
   type FilterModel,
   type GridPage,
+  type InspectStepRequest,
   type OpenSessionRequest,
   type OperationKind,
   type OpenWranglerRequest,
   type OpenWranglerResponse,
   type PageRequest,
+  type PreviewStepRequest,
+  type RenameColumnTransformStep,
+  type RetainedTransformStep,
   type SessionMetadata,
+  type SessionMode,
   type SessionSource,
   type SummaryRequest,
   type SourceCapabilities,
@@ -33,7 +40,11 @@ import type {
   RKernelColumnReference,
   RKernelDatasetStatsResult,
   RKernelPageWindow,
+  RKernelPlanUpdatedResult,
+  RKernelRenameColumnStep,
   RKernelSortRule,
+  RKernelStepInspectionResult,
+  RKernelStepPreviewResult,
   RKernelViewQuery
 } from "./rKernelProtocol";
 import {
@@ -50,9 +61,10 @@ import {
 } from "./rNotebookVariableDiscovery";
 
 const CLOSED_SESSION_LIMIT = 1_024;
+const R_SUPPORTED_OPERATIONS: OperationKind[] = Object.freeze(["renameColumn"]);
 
 const R_CAPABILITIES: SourceCapabilities = Object.freeze({
-  editable: false,
+  editable: true,
   lazy: false,
   cancel: false,
   exportCsv: false,
@@ -62,7 +74,7 @@ const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   sort: true,
   profile: true,
   columnValues: true,
-  supportedOperations: ["renameColumn"] as OperationKind[]
+  supportedOperations: R_SUPPORTED_OPERATIONS
 });
 
 /** Narrow transport surface used by the canonical bridge and its contract tests. */
@@ -89,6 +101,39 @@ export interface RKernelBridgeTransport {
     limit: number,
     options?: RKernelRequestOptions
   ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>>;
+  previewStep(
+    sessionId: string,
+    revision: number,
+    step: RKernelRenameColumnStep,
+    page: RKernelPageWindow,
+    replaceStepId?: string,
+    options?: RKernelRequestOptions
+  ): Promise<RKernelStepPreviewResult>;
+  applyDraft(
+    sessionId: string,
+    revision: number,
+    page: RKernelPageWindow,
+    options?: RKernelRequestOptions
+  ): Promise<RKernelPlanUpdatedResult>;
+  discardDraft(
+    sessionId: string,
+    revision: number,
+    page: RKernelPageWindow,
+    options?: RKernelRequestOptions
+  ): Promise<RKernelPlanUpdatedResult>;
+  undoStep(
+    sessionId: string,
+    revision: number,
+    page: RKernelPageWindow,
+    options?: RKernelRequestOptions
+  ): Promise<RKernelPlanUpdatedResult>;
+  inspectStep(
+    sessionId: string,
+    revision: number,
+    stepId: string,
+    page: RKernelPageWindow,
+    options?: RKernelRequestOptions
+  ): Promise<RKernelStepInspectionResult>;
   close(sessionId: string, options?: RKernelRequestOptions): Promise<void>;
   isSessionMapped(sessionId: string): boolean;
   dispose(): Promise<void>;
@@ -99,17 +144,33 @@ interface RBridgeSession {
   readonly source: SessionSource;
   readonly dataframeFlavor: RDataframeFlavor;
   readonly shape: Readonly<{ rows: number; columns: number }>;
-  readonly schema: readonly ColumnSchema[];
+  readonly sourceSchema: readonly ColumnSchema[];
   readonly rowNames: RFramePageContract["frameSemantics"]["rowNames"];
+  mode: SessionMode;
+  revision: number;
+  schema: readonly ColumnSchema[];
+  committedSchema: readonly ColumnSchema[];
+  filterModel: FilterModel;
+  steps: readonly RetainedTransformStep[];
+  planInputSchemas: readonly (readonly ColumnSchema[])[];
+  draftStep?: RenameColumnTransformStep;
+  draftReplacesStepId?: string;
+  draftInputSchema?: readonly ColumnSchema[];
+  draftBaseFilterModel?: FilterModel;
+  draftBaseViewChangeEpoch?: number;
+  viewChangeEpoch: number;
+  lastAppliedViewRestore?: Readonly<{
+    stepId: string;
+    before: FilterModel;
+    after: FilterModel;
+    viewChangeEpoch: number;
+  }>;
   invalidated: boolean;
 }
 
 /**
- * Adapts the deliberately small native-R kernel contract to protocol v2.
- *
- * The first R slice is read-only. Keeping unsupported requests out of the
- * kernel makes that boundary explicit and prevents accidental Python-style
- * fallbacks while the R operation surface is still being built.
+ * Adapts the native-R kernel contract to protocol v2 without converting the
+ * dataframe through Python.
  */
 export class RKernelBridge implements OpenWranglerBridge {
   private readonly transport: RKernelBridgeTransport;
@@ -181,6 +242,14 @@ export class RKernelBridge implements OpenWranglerBridge {
         return this.getDatasetStats(request, options);
       case "getColumnValues":
         return this.getColumnValues(request, options);
+      case "previewStep":
+        return this.previewStep(request, options);
+      case "applyDraft":
+      case "discardDraft":
+      case "undoStep":
+        return this.updatePlan(request, options);
+      case "inspectStep":
+        return this.inspectStep(request, options);
       case "closeSession":
         return this.closeSession(request.sessionId, options);
       default:
@@ -248,11 +317,11 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (this.verifiedVariable && result.page.dataframeFlavor !== this.verifiedVariable.dataframeFlavor) {
         throw new Error("The selected R dataframe changed before Open Wrangler opened it.");
       }
-      const session = sessionFromContract(sessionId, request.source, result.page);
+      const session = sessionFromContract(sessionId, request.source, request.mode ?? "viewing", result.page);
       this.sessions.set(sessionId, session);
       return {
         kind: "sessionOpened",
-        metadata: metadataFor(session, emptyFilterModel()),
+        metadata: metadataFor(session),
         page: gridPageFromContract(result.page),
         summaries: []
       };
@@ -269,15 +338,10 @@ export class RKernelBridge implements OpenWranglerBridge {
     const session = this.sessions.get(request.sessionId);
     if (!session) return unknownSessionError(request.sessionId, request.viewRequestId);
     if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-    if (request.revision !== 0) {
-      return errorResponse(
-        "stale_revision",
-        "This R session is read-only and has revision 0.",
-        true,
-        request.sessionId,
-        request.viewRequestId
-      );
-    }
+    const stale = staleRevisionError(session, request.revision, request.viewRequestId);
+    if (stale) return stale;
+    const expectedRevision = session.revision;
+    const expectedSchema = session.schema;
     let view: RKernelViewQuery;
     try {
       view = resolveViewQuery(request.filterModel, session.schema);
@@ -299,13 +363,19 @@ export class RKernelBridge implements OpenWranglerBridge {
         transportOptions(options)
       );
       if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      assertSameSessionContract(session, contract, request);
+      if (session.revision !== expectedRevision || session.schema !== expectedSchema) {
+        return staleResponseError(request.sessionId, request.viewRequestId);
+      }
+      assertSessionContract(session, contract, request, expectedSchema);
+      const nextFilterModel = copyFilterModel(request.filterModel);
+      if (!isDeepStrictEqual(session.filterModel, nextFilterModel)) session.viewChangeEpoch += 1;
+      session.filterModel = nextFilterModel;
       return {
         kind: "page",
-        revision: 0,
+        revision: session.revision,
         viewRequestId: request.viewRequestId,
         page: gridPageFromContract(contract),
-        metadata: metadataFor(session, copyFilterModel(request.filterModel), contract.page.totalRows)
+        metadata: metadataFor(session, contract.page.totalRows)
       };
     } catch (error) {
       if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
@@ -321,9 +391,11 @@ export class RKernelBridge implements OpenWranglerBridge {
     const invalid = validateProfileRequest(request, session);
     if (invalid) return invalid;
     const confirmed = session as RBridgeSession;
+    const expectedRevision = confirmed.revision;
+    const expectedSchema = confirmed.schema;
     const requestedIds = request.columnIds ?? confirmed.schema.map((column) => column.id);
     if (requestedIds.length === 0) {
-      return { kind: "summary", revision: 0, viewRequestId: request.viewRequestId, summaries: [] };
+      return { kind: "summary", revision: confirmed.revision, viewRequestId: request.viewRequestId, summaries: [] };
     }
     if (requestedIds.length > R_FRAME_CONTRACT_LIMITS.profileColumns) {
       return errorResponse(
@@ -353,10 +425,13 @@ export class RKernelBridge implements OpenWranglerBridge {
     try {
       const summaries = await this.transport.getSummary(request.sessionId, columns, view, transportOptions(options));
       if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      if (confirmed.revision !== expectedRevision || confirmed.schema !== expectedSchema) {
+        return staleResponseError(request.sessionId, request.viewRequestId);
+      }
       assertSummaryContract(confirmed, columns, summaries);
       return {
         kind: "summary",
-        revision: 0,
+        revision: confirmed.revision,
         viewRequestId: request.viewRequestId,
         summaries: summaries.map((summary) => ({ ...summary }))
       };
@@ -377,6 +452,8 @@ export class RKernelBridge implements OpenWranglerBridge {
     const invalid = validateProfileRequest(request, session);
     if (invalid) return invalid;
     const confirmed = session as RBridgeSession;
+    const expectedRevision = confirmed.revision;
+    const expectedSchema = confirmed.schema;
     let view: RKernelViewQuery;
     try {
       view = resolveViewQuery(request.filterModel, confirmed.schema);
@@ -393,10 +470,13 @@ export class RKernelBridge implements OpenWranglerBridge {
     try {
       const result = await this.transport.getDatasetStats(request.sessionId, view, transportOptions(options));
       if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      if (confirmed.revision !== expectedRevision || confirmed.schema !== expectedSchema) {
+        return staleResponseError(request.sessionId, request.viewRequestId);
+      }
       assertDatasetStatsContract(confirmed, result, view);
       return {
         kind: "datasetStats",
-        revision: 0,
+        revision: confirmed.revision,
         viewRequestId: request.viewRequestId,
         stats: {
           ...result.stats,
@@ -416,15 +496,10 @@ export class RKernelBridge implements OpenWranglerBridge {
     const session = this.sessions.get(request.sessionId);
     if (!session) return unknownSessionError(request.sessionId, request.viewRequestId);
     if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-    if (request.revision !== 0) {
-      return errorResponse(
-        "stale_revision",
-        "This R session is read-only and has revision 0.",
-        true,
-        request.sessionId,
-        request.viewRequestId
-      );
-    }
+    const stale = staleRevisionError(session, request.revision, request.viewRequestId);
+    if (stale) return stale;
+    const expectedRevision = session.revision;
+    const expectedSchema = session.schema;
 
     let column: RKernelColumnReference;
     let view: RKernelViewQuery;
@@ -451,10 +526,13 @@ export class RKernelBridge implements OpenWranglerBridge {
         transportOptions(options)
       );
       if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      if (session.revision !== expectedRevision || session.schema !== expectedSchema) {
+        return staleResponseError(request.sessionId, request.viewRequestId);
+      }
       assertColumnValuesContract(session, column, result, request.limit);
       return {
         kind: "columnValues",
-        revision: 0,
+        revision: session.revision,
         viewRequestId: request.viewRequestId,
         column: result.column,
         values: result.values.map((entry) => ({ ...entry })),
@@ -465,6 +543,334 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (error instanceof RKernelDiagnosticError) {
         return diagnosticResponse(error, request.sessionId, request.viewRequestId);
       }
+      throw error;
+    }
+  }
+
+  private async previewStep(request: PreviewStepRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    const invalid = validateMutationRequest(session, request.revision, request);
+    if (invalid) return invalid;
+    const confirmed = session as RBridgeSession;
+    if (confirmed.draftStep) {
+      return errorResponse(
+        "invalid_request",
+        "Apply or discard the current R draft before previewing another step.",
+        true,
+        request.sessionId
+      );
+    }
+    if (request.step.kind !== "renameColumn") {
+      return errorResponse(
+        "unsupported_operation",
+        `The native R runtime does not support ${request.step.kind}.`,
+        true,
+        request.sessionId
+      );
+    }
+
+    let inputSchema: readonly ColumnSchema[];
+    if (request.replaceStepId !== undefined) {
+      const latest = confirmed.steps.at(-1);
+      if (!latest || latest.id !== request.replaceStepId || request.step.id !== request.replaceStepId) {
+        return errorResponse(
+          "invalid_request",
+          "Only the latest applied R step can be edited, and it must retain its step ID.",
+          true,
+          request.sessionId
+        );
+      }
+      inputSchema = confirmed.planInputSchemas.at(-1) ?? confirmed.committedSchema;
+    } else {
+      if (confirmed.steps.some((step) => step.id === request.step.id)) {
+        return errorResponse("invalid_request", "Applied R step IDs must be unique.", true, request.sessionId);
+      }
+      inputSchema = confirmed.committedSchema;
+    }
+
+    let targetSchema: readonly ColumnSchema[];
+    let nextFilterModel: FilterModel;
+    let view: RKernelViewQuery;
+    try {
+      targetSchema = schemaAfterRename(inputSchema, request.step);
+      nextFilterModel = reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
+      view = resolveViewQuery(nextFilterModel, targetSchema);
+      validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
+    } catch (error) {
+      return errorResponse(
+        "invalid_request",
+        error instanceof Error ? error.message : String(error),
+        true,
+        request.sessionId
+      );
+    }
+
+    const expectedRevision = confirmed.revision;
+    const expectedSchema = confirmed.schema;
+    const draftBaseFilterModel = copyFilterModel(confirmed.filterModel);
+    const draftBaseViewChangeEpoch = confirmed.viewChangeEpoch;
+    const rStep = rRenameStep(request.step);
+    try {
+      const result = await this.transport.previewStep(
+        request.sessionId,
+        expectedRevision,
+        rStep,
+        pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, view),
+        request.replaceStepId,
+        transportOptions(options)
+      );
+      if (confirmed.invalidated) return kernelChangedError(request.sessionId);
+      if (result.sessionId !== request.sessionId || result.revision !== expectedRevision + 1) {
+        throw new Error("The R kernel returned a mismatched step preview.");
+      }
+      if (confirmed.revision !== expectedRevision || confirmed.schema !== expectedSchema) {
+        confirmed.invalidated = true;
+        return staleResponseError(request.sessionId);
+      }
+      assertMutationContract(confirmed, result.page, request, targetSchema);
+
+      confirmed.revision = result.revision;
+      confirmed.schema = schemaFromContract(result.page);
+      confirmed.filterModel = nextFilterModel;
+      confirmed.draftStep = copyRenameStep(request.step);
+      confirmed.draftReplacesStepId = request.replaceStepId;
+      confirmed.draftInputSchema = copySchema(inputSchema);
+      confirmed.draftBaseFilterModel = draftBaseFilterModel;
+      confirmed.draftBaseViewChangeEpoch = draftBaseViewChangeEpoch;
+      return {
+        kind: "stepPreview",
+        revision: confirmed.revision,
+        metadata: metadataFor(confirmed, result.page.page.totalRows),
+        page: gridPageFromContract(result.page),
+        diff: copyDiff(result.diff),
+        code: result.code,
+        warnings: []
+      };
+    } catch (error) {
+      if (confirmed.invalidated) return kernelChangedError(request.sessionId);
+      if (error instanceof RKernelDiagnosticError) return diagnosticResponse(error, request.sessionId);
+      confirmed.invalidated = true;
+      throw error;
+    }
+  }
+
+  private async updatePlan(
+    request: Extract<OpenWranglerRequest, { kind: "applyDraft" | "discardDraft" | "undoStep" }>,
+    options: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    const invalid = validateMutationRequest(session, request.revision, request);
+    if (invalid) return invalid;
+    const confirmed = session as RBridgeSession;
+
+    let targetSchema: readonly ColumnSchema[];
+    let nextFilterModel: FilterModel;
+    if (request.kind === "applyDraft") {
+      if (!confirmed.draftStep || !confirmed.draftInputSchema) {
+        return errorResponse("invalid_request", "There is no R draft step to apply.", true, request.sessionId);
+      }
+      targetSchema = confirmed.schema;
+      nextFilterModel = copyFilterModel(confirmed.filterModel);
+    } else if (request.kind === "discardDraft") {
+      if (!confirmed.draftStep || !confirmed.draftInputSchema) {
+        return errorResponse("invalid_request", "There is no R draft step to discard.", true, request.sessionId);
+      }
+      targetSchema = confirmed.committedSchema;
+      nextFilterModel =
+        confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel
+          ? copyFilterModel(confirmed.draftBaseFilterModel)
+          : reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
+    } else {
+      if (confirmed.draftStep) {
+        return errorResponse(
+          "invalid_request",
+          "Discard the R draft before undoing an applied step.",
+          true,
+          request.sessionId
+        );
+      }
+      if (confirmed.steps.length === 0) {
+        return errorResponse("invalid_request", "There is no applied R step to undo.", true, request.sessionId);
+      }
+      targetSchema = confirmed.planInputSchemas.at(-1) ?? confirmed.sourceSchema;
+      const latest = confirmed.steps.at(-1) as RetainedTransformStep;
+      const restore = confirmed.lastAppliedViewRestore;
+      nextFilterModel =
+        restore?.stepId === latest.id &&
+        restore.viewChangeEpoch === confirmed.viewChangeEpoch &&
+        isDeepStrictEqual(restore.after, confirmed.filterModel)
+          ? copyFilterModel(restore.before)
+          : reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
+    }
+
+    let view: RKernelViewQuery;
+    try {
+      view = resolveViewQuery(nextFilterModel, targetSchema);
+      validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
+    } catch (error) {
+      return errorResponse(
+        "invalid_request",
+        error instanceof Error ? error.message : String(error),
+        true,
+        request.sessionId
+      );
+    }
+
+    const expectedRevision = confirmed.revision;
+    const page = pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, view);
+    try {
+      const result = await (request.kind === "applyDraft"
+        ? this.transport.applyDraft(request.sessionId, expectedRevision, page, transportOptions(options))
+        : request.kind === "discardDraft"
+          ? this.transport.discardDraft(request.sessionId, expectedRevision, page, transportOptions(options))
+          : this.transport.undoStep(request.sessionId, expectedRevision, page, transportOptions(options)));
+      if (confirmed.invalidated) return kernelChangedError(request.sessionId);
+      const expectedAction =
+        request.kind === "applyDraft" ? "apply" : request.kind === "discardDraft" ? "discard" : "undo";
+      if (
+        result.sessionId !== request.sessionId ||
+        result.revision !== expectedRevision + 1 ||
+        result.action !== expectedAction
+      ) {
+        throw new Error("The R kernel returned a mismatched cleaning-plan update.");
+      }
+      if (confirmed.revision !== expectedRevision) {
+        confirmed.invalidated = true;
+        return staleResponseError(request.sessionId);
+      }
+      assertMutationContract(confirmed, result.page, request, targetSchema);
+
+      const priorRestore = confirmed.lastAppliedViewRestore;
+      if (request.kind === "applyDraft") {
+        const draftStep = confirmed.draftStep as RenameColumnTransformStep;
+        const draftInputSchema = confirmed.draftInputSchema as readonly ColumnSchema[];
+        if (confirmed.draftReplacesStepId === undefined) {
+          confirmed.steps = [...confirmed.steps, copyRenameStep(draftStep)];
+          confirmed.planInputSchemas = [...confirmed.planInputSchemas, copySchema(draftInputSchema)];
+        } else {
+          confirmed.steps = [...confirmed.steps.slice(0, -1), copyRenameStep(draftStep)];
+          confirmed.planInputSchemas = [...confirmed.planInputSchemas.slice(0, -1), copySchema(draftInputSchema)];
+        }
+        confirmed.committedSchema = schemaFromContract(result.page);
+        if (confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel) {
+          let before = copyFilterModel(confirmed.draftBaseFilterModel);
+          if (
+            confirmed.draftReplacesStepId === draftStep.id &&
+            priorRestore?.stepId === draftStep.id &&
+            priorRestore.viewChangeEpoch === confirmed.viewChangeEpoch &&
+            isDeepStrictEqual(priorRestore.after, confirmed.draftBaseFilterModel)
+          ) {
+            before = copyFilterModel(priorRestore.before);
+          }
+          confirmed.lastAppliedViewRestore = {
+            stepId: draftStep.id,
+            before,
+            after: copyFilterModel(nextFilterModel),
+            viewChangeEpoch: confirmed.viewChangeEpoch
+          };
+        } else {
+          confirmed.lastAppliedViewRestore = undefined;
+        }
+      } else if (request.kind === "undoStep") {
+        confirmed.steps = confirmed.steps.slice(0, -1);
+        confirmed.planInputSchemas = confirmed.planInputSchemas.slice(0, -1);
+        confirmed.committedSchema = schemaFromContract(result.page);
+        confirmed.lastAppliedViewRestore = undefined;
+      }
+
+      confirmed.revision = result.revision;
+      confirmed.schema = schemaFromContract(result.page);
+      confirmed.filterModel = nextFilterModel;
+      clearDraft(confirmed);
+      return {
+        kind: "planUpdated",
+        action: result.action,
+        revision: confirmed.revision,
+        metadata: metadataFor(confirmed, result.page.page.totalRows),
+        page: gridPageFromContract(result.page),
+        code: result.code
+      };
+    } catch (error) {
+      if (confirmed.invalidated) return kernelChangedError(request.sessionId);
+      if (error instanceof RKernelDiagnosticError) return diagnosticResponse(error, request.sessionId);
+      confirmed.invalidated = true;
+      throw error;
+    }
+  }
+
+  private async inspectStep(request: InspectStepRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) return unknownSessionError(request.sessionId);
+    if (session.invalidated) return kernelChangedError(request.sessionId);
+    const stale = staleRevisionError(session, request.revision);
+    if (stale) return stale;
+    const stepIndex = session.steps.findIndex((step) => step.id === request.stepId);
+    if (stepIndex < 0 || session.steps.filter((step) => step.id === request.stepId).length !== 1) {
+      return errorResponse("invalid_request", "The requested R cleaning step is not applied.", true, request.sessionId);
+    }
+    try {
+      validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
+    } catch (error) {
+      return errorResponse(
+        "invalid_request",
+        error instanceof Error ? error.message : String(error),
+        true,
+        request.sessionId
+      );
+    }
+    const inputSchema = session.planInputSchemas[stepIndex] as readonly ColumnSchema[];
+    const outputSchema =
+      session.planInputSchemas[stepIndex + 1] ??
+      (stepIndex === session.steps.length - 1 ? session.committedSchema : undefined);
+    if (!outputSchema) throw new Error("The R bridge is missing an applied-step output schema.");
+    const expectedRevision = session.revision;
+    const page = pageWindow(
+      request.offset,
+      request.limit,
+      request.columnOffset,
+      request.columnLimit,
+      emptyRViewQuery()
+    );
+    try {
+      const result = await this.transport.inspectStep(
+        request.sessionId,
+        expectedRevision,
+        request.stepId,
+        page,
+        transportOptions(options)
+      );
+      if (session.invalidated) return kernelChangedError(request.sessionId);
+      if (
+        result.sessionId !== request.sessionId ||
+        result.revision !== expectedRevision ||
+        result.stepId !== request.stepId
+      ) {
+        throw new Error("The R kernel returned a mismatched applied-step inspection.");
+      }
+      if (session.revision !== expectedRevision) return staleResponseError(request.sessionId);
+      if (result.stepIndex !== stepIndex || result.stepId !== request.stepId) {
+        throw new Error("The R kernel inspected a different cleaning step.");
+      }
+      assertMutationContract(session, result.inputPage, request, inputSchema);
+      assertMutationContract(session, result.outputPage, request, outputSchema);
+      if (!sameSchema(inputSchema, result.inputSchema) || !sameSchema(outputSchema, result.outputSchema)) {
+        throw new Error("The R kernel returned mismatched applied-step schemas.");
+      }
+      return {
+        kind: "stepInspection",
+        revision: session.revision,
+        stepId: request.stepId,
+        stepIndex,
+        inputPage: gridPageFromContract(result.inputPage),
+        outputPage: gridPageFromContract(result.outputPage),
+        inputSchema: copySchema(inputSchema),
+        outputSchema: copySchema(outputSchema),
+        diff: copyDiff(result.diff),
+        code: result.code
+      };
+    } catch (error) {
+      if (session.invalidated) return kernelChangedError(request.sessionId);
+      if (error instanceof RKernelDiagnosticError) return diagnosticResponse(error, request.sessionId);
       throw error;
     }
   }
@@ -588,9 +994,6 @@ function validateOpenRequest(request: OpenSessionRequest): ErrorResponse | undef
   }
   if (request.backend !== undefined && request.backend !== "r") {
     return errorResponse("unsupported_backend", "An R notebook session requires the R backend.", true, sessionId);
-  }
-  if (request.mode !== undefined && request.mode !== "viewing") {
-    return errorResponse("unsupported_mode", "R notebook sessions are currently read-only.", true, sessionId);
   }
   if (typeof sessionId !== "string" || sessionId.length === 0) {
     return errorResponse(
@@ -755,16 +1158,7 @@ function validateProfileRequest(
 ): ErrorResponse | undefined {
   if (!session) return unknownSessionError(request.sessionId, request.viewRequestId);
   if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-  if (request.revision !== 0) {
-    return errorResponse(
-      "stale_revision",
-      "This R session is read-only and has revision 0.",
-      true,
-      request.sessionId,
-      request.viewRequestId
-    );
-  }
-  return undefined;
+  return staleRevisionError(session, request.revision, request.viewRequestId);
 }
 
 function resolveProfileColumns(
@@ -855,49 +1249,52 @@ function assertDatasetStatsContract(
   }
 }
 
-function sessionFromContract(sessionId: string, source: SessionSource, contract: RFramePageContract): RBridgeSession {
-  const schema = Object.freeze(
-    contract.schema.map<ColumnSchema>((column) =>
-      Object.freeze({
-        id: column.id,
-        name: column.name,
-        position: column.position,
-        rawType: column.rawType,
-        type: column.type,
-        nullable: column.nullable
-      })
-    )
-  );
+function sessionFromContract(
+  sessionId: string,
+  source: SessionSource,
+  mode: SessionMode,
+  contract: RFramePageContract
+): RBridgeSession {
+  const schema = schemaFromContract(contract);
   return {
     sessionId,
     source: copySource(source),
     dataframeFlavor: contract.dataframeFlavor,
     shape: Object.freeze({ ...contract.shape }),
+    sourceSchema: schema,
+    committedSchema: schema,
     schema,
     rowNames: contract.frameSemantics.rowNames,
+    mode,
+    revision: 0,
+    filterModel: emptyFilterModel(),
+    steps: Object.freeze([]),
+    planInputSchemas: Object.freeze([]),
+    viewChangeEpoch: 0,
     invalidated: false
   };
 }
 
-function metadataFor(
-  session: RBridgeSession,
-  filterModel: FilterModel,
-  filteredRows: number = session.shape.rows
-): SessionMetadata {
+function metadataFor(session: RBridgeSession, filteredRows: number = session.shape.rows): SessionMetadata {
   return {
     protocolVersion: PROTOCOL_VERSION,
     sessionId: session.sessionId,
-    revision: 0,
+    revision: session.revision,
     backend: "r",
     rDataframeFlavor: session.dataframeFlavor,
-    mode: "viewing",
+    mode: session.mode,
     source: copySource(session.source),
     capabilities: R_CAPABILITIES,
     shape: { ...session.shape },
-    filteredShape: { rows: filteredRows, columns: session.shape.columns },
-    schema: session.schema.map((column) => ({ ...column })),
-    filterModel,
-    steps: []
+    filteredShape: { rows: filteredRows, columns: session.schema.length },
+    schema: copySchema(session.schema),
+    filterModel: copyFilterModel(session.filterModel),
+    steps: session.steps.map(copyRetainedStep),
+    ...(session.planInputSchemas.length > 0
+      ? { latestStepInputSchema: copySchema(session.planInputSchemas.at(-1) as readonly ColumnSchema[]) }
+      : {}),
+    ...(session.draftStep ? { draftStep: copyRenameStep(session.draftStep) } : {}),
+    ...(session.draftReplacesStepId ? { draftReplacesStepId: session.draftReplacesStepId } : {})
   };
 }
 
@@ -925,21 +1322,46 @@ function cellValueFromR(cell: RFrameCell): CellValue {
   return { ...cell };
 }
 
-function assertSameSessionContract(session: RBridgeSession, contract: RFramePageContract, request: PageRequest): void {
+type PageWindowCoordinates = Readonly<{
+  offset: number;
+  limit: number;
+  columnOffset: number;
+  columnLimit: number;
+}>;
+
+function assertSessionContract(
+  session: RBridgeSession,
+  contract: RFramePageContract,
+  request: PageWindowCoordinates,
+  expectedSchema: readonly ColumnSchema[]
+): void {
+  const expectedColumnIds = expectedSchema
+    .slice(request.columnOffset, request.columnOffset + request.columnLimit)
+    .map((column) => column.id);
   if (
     contract.dataframeFlavor !== session.dataframeFlavor ||
     contract.shape.rows !== session.shape.rows ||
-    contract.shape.columns !== session.shape.columns ||
+    contract.shape.columns !== expectedSchema.length ||
     contract.frameSemantics.rowNames !== session.rowNames ||
     contract.page.offset !== request.offset ||
     contract.page.limit !== request.limit ||
     contract.page.totalRows > session.shape.rows ||
     contract.page.columnOffset !== request.columnOffset ||
     contract.page.columnLimit !== request.columnLimit ||
-    !sameSchema(session.schema, contract.schema)
+    !sameSchema(expectedSchema, contract.schema) ||
+    !isDeepStrictEqual(contract.page.columnIds, expectedColumnIds)
   ) {
-    throw new Error("The R dataframe contract changed during a read-only session.");
+    throw new Error("The R dataframe contract did not match the requested session state.");
   }
+}
+
+function assertMutationContract(
+  session: RBridgeSession,
+  contract: RFramePageContract,
+  request: PageWindowCoordinates,
+  expectedSchema: readonly ColumnSchema[]
+): void {
+  assertSessionContract(session, contract, request, expectedSchema);
 }
 
 function sameSchema(expected: readonly ColumnSchema[], actual: RFramePageContract["schema"]): boolean {
@@ -957,6 +1379,202 @@ function sameSchema(expected: readonly ColumnSchema[], actual: RFramePageContrac
         candidate.nullable === column.nullable
       );
     })
+  );
+}
+
+function schemaFromContract(contract: RFramePageContract): readonly ColumnSchema[] {
+  return Object.freeze(
+    contract.schema.map<ColumnSchema>((column) =>
+      Object.freeze({
+        id: column.id,
+        name: column.name,
+        position: column.position,
+        rawType: column.rawType,
+        type: column.type,
+        nullable: column.nullable
+      })
+    )
+  );
+}
+
+function copySchema(schema: readonly ColumnSchema[]): ColumnSchema[] {
+  return schema.map((column) => ({ ...column }));
+}
+
+function schemaAfterRename(
+  inputSchema: readonly ColumnSchema[],
+  step: RenameColumnTransformStep
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The rename column reference no longer matches the active R dataframe.");
+  }
+  if (step.params.newName.length === 0) throw new TypeError("The new R column name may not be empty.");
+  const target = matches[0] as ColumnSchema;
+  if (inputSchema.some((column) => column.id !== target.id && column.name === step.params.newName)) {
+    throw new TypeError(`The R column name ${JSON.stringify(step.params.newName)} already exists.`);
+  }
+  return Object.freeze(
+    inputSchema.map((column) =>
+      Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
+    )
+  );
+}
+
+function reconcileFilterModelById(
+  model: FilterModel,
+  previousSchema: readonly ColumnSchema[],
+  nextSchema: readonly ColumnSchema[]
+): FilterModel {
+  const uniquePreviousByName = uniqueColumnsByName(previousSchema);
+  const nextById = new Map(nextSchema.map((column) => [column.id, column]));
+  const uniqueNextByName = uniqueColumnsByName(nextSchema);
+  const filters = model.filters.flatMap((filter) => {
+    const previous = uniquePreviousByName.get(filter.column);
+    const next = previous ? nextById.get(previous.id) : undefined;
+    if (
+      !previous ||
+      !next ||
+      uniqueNextByName.get(next.name)?.id !== next.id ||
+      previous.type !== filter.type ||
+      next.type !== filter.type
+    ) {
+      return [];
+    }
+    return [
+      {
+        ...filter,
+        column: next.name,
+        predicates: filter.predicates.map((predicate) => ({ ...predicate })),
+        ...(filter.valueFilter
+          ? { valueFilter: { ...filter.valueFilter, selectedValues: [...filter.valueFilter.selectedValues] } }
+          : {})
+      }
+    ];
+  });
+  const sort = model.sort.flatMap((rule) => {
+    const previous = uniquePreviousByName.get(rule.column);
+    const next = previous ? nextById.get(previous.id) : undefined;
+    if (!previous || !next || uniqueNextByName.get(next.name)?.id !== next.id || previous.type !== next.type) return [];
+    return [{ ...rule, column: next.name }];
+  });
+  return {
+    ...(model.logic ? { logic: model.logic } : {}),
+    filters,
+    sort
+  };
+}
+
+function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, ColumnSchema> {
+  const grouped = new Map<string, ColumnSchema[]>();
+  for (const column of schema) grouped.set(column.name, [...(grouped.get(column.name) ?? []), column]);
+  return new Map(
+    [...grouped.entries()].flatMap(([name, columns]) =>
+      columns.length === 1 ? [[name, columns[0] as ColumnSchema]] : []
+    )
+  );
+}
+
+function rRenameStep(step: RenameColumnTransformStep): RKernelRenameColumnStep {
+  return Object.freeze({
+    id: step.id,
+    kind: "renameColumn" as const,
+    params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newName: step.params.newName })
+  });
+}
+
+function copyRenameStep(step: RenameColumnTransformStep): RenameColumnTransformStep {
+  return {
+    id: step.id,
+    kind: "renameColumn",
+    params: { column: { ...step.params.column }, newName: step.params.newName }
+  };
+}
+
+function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
+  if (step.kind !== "renameColumn") throw new TypeError("The R bridge retained an unsupported cleaning step.");
+  return copyRenameStep(step);
+}
+
+function copyDiff(diff: DataDiff): DataDiff {
+  return {
+    addedRows: diff.addedRows,
+    removedRows: diff.removedRows,
+    addedColumns: [...diff.addedColumns],
+    removedColumns: [...diff.removedColumns],
+    changedCells: diff.changedCells,
+    cells: diff.cells.map((cell) => ({
+      ...cell,
+      before: cell.before ? { ...cell.before } : null,
+      after: cell.after ? { ...cell.after } : null
+    })),
+    truncated: diff.truncated
+  };
+}
+
+function clearDraft(session: RBridgeSession): void {
+  session.draftStep = undefined;
+  session.draftReplacesStepId = undefined;
+  session.draftInputSchema = undefined;
+  session.draftBaseFilterModel = undefined;
+  session.draftBaseViewChangeEpoch = undefined;
+}
+
+function validateMutationRequest(
+  session: RBridgeSession | undefined,
+  revision: number,
+  request: PageWindowCoordinates & Readonly<{ sessionId: string }>
+): ErrorResponse | undefined {
+  if (!session) return unknownSessionError(request.sessionId);
+  if (session.invalidated) return kernelChangedError(request.sessionId);
+  if (session.mode !== "editing") {
+    return errorResponse(
+      "unsupported_mode",
+      "Change this R session to Editing mode before adding cleaning steps.",
+      true,
+      request.sessionId
+    );
+  }
+  const stale = staleRevisionError(session, revision);
+  if (stale) return stale;
+  try {
+    validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
+  } catch (error) {
+    return errorResponse(
+      "invalid_request",
+      error instanceof Error ? error.message : String(error),
+      true,
+      request.sessionId
+    );
+  }
+  return undefined;
+}
+
+function staleRevisionError(
+  session: RBridgeSession,
+  revision: number,
+  viewRequestId?: string
+): ErrorResponse | undefined {
+  return revision === session.revision
+    ? undefined
+    : errorResponse(
+        "stale_revision",
+        `This R session is at revision ${session.revision}, not ${revision}.`,
+        true,
+        session.sessionId,
+        viewRequestId
+      );
+}
+
+function staleResponseError(sessionId: string, viewRequestId?: string): ErrorResponse {
+  return errorResponse(
+    "stale_response",
+    "Ignored an R kernel response for an older session state.",
+    true,
+    sessionId,
+    viewRequestId
   );
 }
 
@@ -998,7 +1616,7 @@ function unsupportedRequest(request: OpenWranglerRequest): ErrorResponse {
   const viewRequestId = "viewRequestId" in request ? request.viewRequestId : undefined;
   return errorResponse(
     "unsupported_operation",
-    "This operation is not available for read-only R sessions yet.",
+    "This operation is not available for R sessions yet.",
     true,
     sessionId,
     viewRequestId

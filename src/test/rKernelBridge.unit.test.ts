@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import type {
   ColumnSummary,
+  DataDiff,
   DatasetStats,
   OpenSessionRequest,
   OpenWranglerRequest,
@@ -455,7 +456,7 @@ describe("canonical R kernel bridge", () => {
     ).rejects.toThrow("active dataframe shape");
   });
 
-  it("keeps mutation and export requests out of IRkernel", async () => {
+  it("keeps mutations out of viewing sessions and unsupported exports out of IRkernel", async () => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
     await bridge.request(openRequest());
@@ -478,17 +479,362 @@ describe("canonical R kernel bridge", () => {
       }
     ];
 
-    for (const request of requests) {
-      await expect(bridge.request(request)).resolves.toMatchObject({
-        kind: "error",
-        code: "unsupported_operation",
-        sessionId
-      });
-    }
+    await expect(bridge.request(requests[0] as OpenWranglerRequest)).resolves.toMatchObject({
+      kind: "error",
+      code: "unsupported_mode",
+      sessionId
+    });
+    await expect(bridge.request(requests[1] as OpenWranglerRequest)).resolves.toMatchObject({
+      kind: "error",
+      code: "unsupported_operation",
+      sessionId
+    });
     expect(transport.getPage).not.toHaveBeenCalled();
     expect(transport.getSummary).not.toHaveBeenCalled();
     expect(transport.getDatasetStats).not.toHaveBeenCalled();
     expect(transport.open).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes one native R rename draft, applied plan, inspection, and undo atomically", async () => {
+    const source = frameContract();
+    const renamed = renameContract(source, "r:c:0", "amount");
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    const opened = await bridge.request(openRequest("editing"));
+    expect(opened).toMatchObject({
+      kind: "sessionOpened",
+      metadata: { mode: "editing", capabilities: { editable: true, supportedOperations: ["renameColumn"] } }
+    });
+
+    transport.getPage.mockResolvedValueOnce(source);
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 0,
+        viewRequestId: "filtered-before-draft",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: {
+          filters: [
+            {
+              column: "value",
+              type: "float",
+              predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+            }
+          ],
+          sort: [{ column: "value", direction: "desc", nulls: "last" }]
+        }
+      })
+    ).resolves.toMatchObject({ kind: "page", revision: 0 });
+
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: renamed,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+    const preview = await bridge.request(renamePreviewRequest(0));
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      {
+        id: "r-step-1",
+        kind: "renameColumn",
+        params: { column: { id: "r:c:0", name: "value" }, newName: "amount" }
+      },
+      expect.objectContaining({
+        view: {
+          filters: [expect.objectContaining({ column: { id: "r:c:0", name: "amount" } })],
+          sorts: [expect.objectContaining({ column: { id: "r:c:0", name: "amount" } })]
+        }
+      }),
+      undefined,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      metadata: {
+        revision: 1,
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:0", name: "amount" })]),
+        filterModel: {
+          filters: expect.arrayContaining([expect.objectContaining({ column: "amount" })]),
+          sort: expect.arrayContaining([expect.objectContaining({ column: "amount" })])
+        },
+        steps: [],
+        draftStep: { id: "r-step-1", kind: "renameColumn" }
+      },
+      code: "open_wrangler_result <- orders"
+    });
+
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: renamed,
+      code: "open_wrangler_result <- orders"
+    });
+    const applied = await bridge.request(planRequest("applyDraft", 1));
+    expect(applied).toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2,
+      metadata: {
+        revision: 2,
+        steps: [{ id: "r-step-1", kind: "renameColumn" }],
+        latestStepInputSchema: expect.arrayContaining([expect.objectContaining({ id: "r:c:0", name: "value" })]),
+        filterModel: {
+          filters: expect.arrayContaining([expect.objectContaining({ column: "amount" })]),
+          sort: expect.arrayContaining([expect.objectContaining({ column: "amount" })])
+        }
+      }
+    });
+
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 2,
+      stepId: "r-step-1",
+      stepIndex: 0,
+      inputPage: source,
+      outputPage: renamed,
+      inputSchema: source.schema,
+      outputSchema: renamed.schema,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+    const inspection = await bridge.request({
+      kind: "inspectStep",
+      sessionId,
+      revision: 2,
+      stepId: "r-step-1",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(transport.inspectStep).toHaveBeenCalledWith(
+      sessionId,
+      2,
+      "r-step-1",
+      expect.objectContaining({ view: { filters: [], sorts: [] } }),
+      expect.any(Object)
+    );
+    expect(inspection).toMatchObject({
+      kind: "stepInspection",
+      revision: 2,
+      stepId: "r-step-1",
+      stepIndex: 0,
+      inputSchema: expect.arrayContaining([expect.objectContaining({ name: "value" })]),
+      outputSchema: expect.arrayContaining([expect.objectContaining({ name: "amount" })])
+    });
+
+    transport.undoStep.mockResolvedValueOnce({
+      sessionId,
+      action: "undo",
+      revision: 3,
+      page: source,
+      code: ""
+    });
+    const undone = await bridge.request(planRequest("undoStep", 2));
+    expect(transport.undoStep).toHaveBeenCalledWith(
+      sessionId,
+      2,
+      expect.objectContaining({
+        view: {
+          filters: [expect.objectContaining({ column: { id: "r:c:0", name: "value" } })],
+          sorts: [expect.objectContaining({ column: { id: "r:c:0", name: "value" } })]
+        }
+      }),
+      expect.any(Object)
+    );
+    expect(undone).toMatchObject({
+      kind: "planUpdated",
+      action: "undo",
+      revision: 3,
+      metadata: {
+        steps: [],
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:0", name: "value" })]),
+        filterModel: {
+          filters: expect.arrayContaining([expect.objectContaining({ column: "value" })]),
+          sort: expect.arrayContaining([expect.objectContaining({ column: "value" })])
+        }
+      }
+    });
+  });
+
+  it("keeps a view changed during an R draft and reconciles it back by stable column ID", async () => {
+    const source = frameContract();
+    const renamed = renameContract(source, "r:c:0", "amount");
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: renamed,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+    await bridge.request(renamePreviewRequest(0));
+
+    transport.getPage.mockResolvedValueOnce(renamed);
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 1,
+        viewRequestId: "draft-view",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: {
+          filters: [
+            {
+              column: "amount",
+              type: "float",
+              predicates: [{ kind: "predicate", operator: "gte", value: 10 }]
+            }
+          ],
+          sort: [{ column: "amount", direction: "asc", nulls: "first" }]
+        }
+      })
+    ).resolves.toMatchObject({ kind: "page", revision: 1 });
+
+    transport.discardDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "discard",
+      revision: 2,
+      page: source,
+      code: ""
+    });
+    const discarded = await bridge.request(planRequest("discardDraft", 1));
+    expect(transport.discardDraft).toHaveBeenCalledWith(
+      sessionId,
+      1,
+      expect.objectContaining({
+        view: {
+          filters: [expect.objectContaining({ column: { id: "r:c:0", name: "value" } })],
+          sorts: [expect.objectContaining({ column: { id: "r:c:0", name: "value" } })]
+        }
+      }),
+      expect.any(Object)
+    );
+    expect(discarded).toMatchObject({
+      kind: "planUpdated",
+      action: "discard",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ name: "value" })]),
+        filterModel: {
+          filters: expect.arrayContaining([expect.objectContaining({ column: "value" })]),
+          sort: expect.arrayContaining([expect.objectContaining({ column: "value" })])
+        }
+      }
+    });
+    if (discarded.kind !== "planUpdated") throw new Error("Expected an R plan update.");
+    expect(discarded.metadata).not.toHaveProperty("draftStep");
+  });
+
+  it("edits only the latest R step while retaining its ID and original input schema", async () => {
+    const source = frameContract();
+    const amount = renameContract(source, "r:c:0", "amount");
+    const netAmount = renameContract(source, "r:c:0", "net_amount");
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: amount,
+      diff: renameDiff(),
+      code: "amount"
+    });
+    await bridge.request(renamePreviewRequest(0));
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: amount,
+      code: "amount"
+    });
+    await bridge.request(planRequest("applyDraft", 1));
+
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 3,
+      page: netAmount,
+      diff: renameDiff(),
+      code: "net_amount"
+    });
+    const replacement = await bridge.request({
+      ...renamePreviewRequest(2),
+      replaceStepId: "r-step-1",
+      step: {
+        id: "r-step-1",
+        kind: "renameColumn",
+        params: { column: { id: "r:c:0", name: "value" }, newName: "net_amount" }
+      }
+    });
+    expect(transport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      2,
+      expect.objectContaining({ id: "r-step-1", params: expect.objectContaining({ newName: "net_amount" }) }),
+      expect.any(Object),
+      "r-step-1",
+      expect.any(Object)
+    );
+    expect(replacement).toMatchObject({
+      kind: "stepPreview",
+      revision: 3,
+      metadata: {
+        steps: [{ id: "r-step-1", params: expect.objectContaining({ newName: "amount" }) }],
+        draftStep: { id: "r-step-1", params: expect.objectContaining({ newName: "net_amount" }) },
+        draftReplacesStepId: "r-step-1",
+        latestStepInputSchema: expect.arrayContaining([expect.objectContaining({ id: "r:c:0", name: "value" })]),
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:0", name: "net_amount" })])
+      }
+    });
+  });
+
+  it("rejects stale R mutations before dispatch and invalidates an uncorrelated committed response", async () => {
+    const source = frameContract();
+    const renamed = renameContract(source, "r:c:0", "amount");
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    await expect(bridge.request(renamePreviewRequest(1))).resolves.toMatchObject({
+      kind: "error",
+      code: "stale_revision",
+      sessionId
+    });
+    expect(transport.previewStep).not.toHaveBeenCalled();
+
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 7,
+      page: renamed,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(bridge.request(renamePreviewRequest(0))).rejects.toThrow("mismatched step preview");
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 0,
+        viewRequestId: "after-uncorrelated-mutation",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel: { filters: [], sort: [] }
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
   });
 
   it("does not migrate an invalidated session and performs terminal cleanup once", async () => {
@@ -627,7 +973,7 @@ function createBridge(
   );
 }
 
-function openRequest(): OpenSessionRequest {
+function openRequest(mode: OpenSessionRequest["mode"] = "viewing"): OpenSessionRequest {
   return {
     kind: "openSession",
     source: {
@@ -638,11 +984,35 @@ function openRequest(): OpenSessionRequest {
     },
     requestedSessionId: sessionId,
     backend: "r",
-    mode: "viewing",
+    mode,
     pageSize: 20,
     columnOffset: 0,
     columnLimit: 8
   };
+}
+
+function renamePreviewRequest(revision: number): Extract<OpenWranglerRequest, { kind: "previewStep" }> {
+  return {
+    kind: "previewStep",
+    sessionId,
+    revision,
+    step: {
+      id: "r-step-1",
+      kind: "renameColumn",
+      params: { column: { id: "r:c:0", name: "value" }, newName: "amount" }
+    },
+    offset: 0,
+    limit: 20,
+    columnOffset: 0,
+    columnLimit: 8
+  };
+}
+
+function planRequest(
+  kind: "applyDraft" | "discardDraft" | "undoStep",
+  revision: number
+): Extract<OpenWranglerRequest, { kind: "applyDraft" | "discardDraft" | "undoStep" }> {
+  return { kind, sessionId, revision, offset: 0, limit: 20, columnOffset: 0, columnLimit: 8 };
 }
 
 interface FakeRTransport extends RKernelBridgeTransport {
@@ -651,6 +1021,11 @@ interface FakeRTransport extends RKernelBridgeTransport {
   getSummary: ReturnType<typeof vi.fn<RKernelBridgeTransport["getSummary"]>>;
   getDatasetStats: ReturnType<typeof vi.fn<RKernelBridgeTransport["getDatasetStats"]>>;
   getColumnValues: ReturnType<typeof vi.fn<RKernelBridgeTransport["getColumnValues"]>>;
+  previewStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["previewStep"]>>;
+  applyDraft: ReturnType<typeof vi.fn<RKernelBridgeTransport["applyDraft"]>>;
+  discardDraft: ReturnType<typeof vi.fn<RKernelBridgeTransport["discardDraft"]>>;
+  undoStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["undoStep"]>>;
+  inspectStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["inspectStep"]>>;
   close: ReturnType<typeof vi.fn<RKernelBridgeTransport["close"]>>;
   isSessionMapped: ReturnType<typeof vi.fn<RKernelBridgeTransport["isSessionMapped"]>>;
   dispose: ReturnType<typeof vi.fn<RKernelBridgeTransport["dispose"]>>;
@@ -666,6 +1041,21 @@ function fakeTransport(contract: RFramePageContract, openedSessionId = sessionId
     getSummary: vi.fn(async (_sessionId, columns) => columns.map((column) => summaryFor(contract, column))),
     getDatasetStats: vi.fn(async () => ({ totalRows: contract.shape.rows, stats: datasetStatsFor(contract) })),
     getColumnValues: vi.fn(async (_sessionId, column) => ({ column: column.name, values: [], hasMore: false })),
+    previewStep: vi.fn(async () => {
+      throw new Error("Unexpected R step preview.");
+    }),
+    applyDraft: vi.fn(async () => {
+      throw new Error("Unexpected R draft apply.");
+    }),
+    discardDraft: vi.fn(async () => {
+      throw new Error("Unexpected R draft discard.");
+    }),
+    undoStep: vi.fn(async () => {
+      throw new Error("Unexpected R undo.");
+    }),
+    inspectStep: vi.fn(async () => {
+      throw new Error("Unexpected R step inspection.");
+    }),
     close: vi.fn(async () => undefined),
     isSessionMapped: vi.fn(() => true),
     dispose: vi.fn(async () => undefined),
@@ -775,6 +1165,36 @@ function frameContract(
   };
 }
 
+function renameContract(source: RFramePageContract, columnId: string, name: string): RFramePageContract {
+  const position = source.schema.findIndex((column) => column.id === columnId);
+  if (position < 0) throw new Error("Unknown fake R rename column.");
+  const schema = source.schema.map((column) => (column.id === columnId ? { ...column, name } : { ...column }));
+  return {
+    ...source,
+    schema,
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((value) => ({ ...value }))
+      }))
+    }
+  };
+}
+
+function renameDiff(): DataDiff {
+  return {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: false
+  };
+}
+
 function column(
   position: number,
   name: string,
@@ -814,7 +1234,7 @@ function cell(kind: string, raw: unknown, display: string, isNull = false, isNaN
 
 function rCapabilities(): SourceCapabilities {
   return {
-    editable: false,
+    editable: true,
     lazy: false,
     cancel: false,
     exportCsv: false,
