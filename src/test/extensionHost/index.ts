@@ -2772,7 +2772,11 @@ async function exerciseReleasedREditingJourney(
   );
   const selectInspection = testing.activeSession()?.stepInspection;
   assert.ok(selectInspection, "Selecting the applied R Select Columns step must publish its inspection.");
-  assert.deepEqual(selectInspection.diff.removedColumns, ["group"]);
+  const selectedColumnIds = new Set(selectInspection.outputSchema.map((column) => column.id));
+  assert.deepEqual(
+    selectInspection.diff.removedColumns,
+    selectInspection.inputSchema.filter((column) => !selectedColumnIds.has(column.id)).map((column) => column.name)
+  );
   assert.deepEqual(
     selectInspection.outputSchema.map((column) => column.name),
     ["score", "row_id", "label"]
