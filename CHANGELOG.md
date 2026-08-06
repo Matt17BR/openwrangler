@@ -60,6 +60,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- README and gallery screenshots now use width-only display caps. Narrow Marketplace pages keep the PNG aspect ratio,
+  while wider Open VSX pages stop at 960 CSS pixels; the original high-resolution files are unchanged.
 - Applied R step inspection now fetches its code, input page, and output page separately. Large pages no longer fail
   because two valid blocks were combined into one oversized kernel response.
 - Renamed **Export Python Script** to **Export Generated Script**. Python sessions keep the `.clean.py` default;

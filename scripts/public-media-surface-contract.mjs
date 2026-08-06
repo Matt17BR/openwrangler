@@ -1,4 +1,4 @@
-import { PUBLIC_MEDIA_PIXEL_RATIO, publicMediaPhysicalLength } from "./public-media-contract.mjs";
+import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
 import {
   PUBLIC_MEDIA_MAX_INVENTORY_ENTRIES,
   PUBLIC_MEDIA_ROOT_PATH,
@@ -20,6 +20,8 @@ export const PUBLIC_MEDIA_RENDER_ATTEMPT_TIMEOUT_MS = 3 * 60_000;
 export const PUBLIC_MEDIA_FETCH_TIMEOUT_MS = 60_000;
 export const PUBLIC_MEDIA_CONTEXT_CLEANUP_TIMEOUT_MS = 10_000;
 export const PUBLIC_MEDIA_FIRST_REQUIRED_VERSION = "1.2.1";
+export const PUBLIC_MEDIA_MAX_DISPLAY_WIDTH = 960;
+export const PUBLIC_MEDIA_RESPONSIVE_WIDTHS = Object.freeze([760, 1_400]);
 
 export const PUBLIC_SURFACE_CONTENT = [
   "A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks.",
@@ -158,11 +160,13 @@ export function extractImmutableProductReferences(readme) {
     if (alt === undefined || alt.trim() === "") {
       throw new Error("README public product media requires a non-empty alt attribute.");
     }
+    if (htmlAttribute(tag, "height") !== undefined) {
+      throw new Error("README public product media must let the PNG aspect ratio determine its height.");
+    }
     references.push({
       ...reference,
       alt,
-      logicalWidth: logicalDimension(tag, "width"),
-      logicalHeight: logicalDimension(tag, "height")
+      displayWidth: displayWidth(tag)
     });
     if (references.length > PUBLIC_README_IMAGE_COUNT) {
       throw new Error(`README may declare at most ${PUBLIC_README_IMAGE_COUNT} public product images.`);
@@ -232,12 +236,10 @@ export function assertRenderedProductImage(surfaceName, image, expected) {
   if (image.devicePixelRatio !== PUBLIC_MEDIA_PIXEL_RATIO) {
     throw new Error(`${surfaceName} did not run at the required DPR ${PUBLIC_MEDIA_PIXEL_RATIO}.`);
   }
-  const expectedNaturalWidth = publicMediaPhysicalLength(expected.logicalWidth);
-  const expectedNaturalHeight = publicMediaPhysicalLength(expected.logicalHeight);
-  if (image.naturalWidth !== expectedNaturalWidth || image.naturalHeight !== expectedNaturalHeight) {
+  if (image.naturalWidth !== expected.naturalWidth || image.naturalHeight !== expected.naturalHeight) {
     throw new Error(
       `${surfaceName} renders ${JSON.stringify(expected.alt)} at ${image.naturalWidth}x${image.naturalHeight} natural ` +
-        `pixels instead of the declared ${expectedNaturalWidth}x${expectedNaturalHeight}.`
+        `pixels instead of the reviewed ${expected.naturalWidth}x${expected.naturalHeight}.`
     );
   }
   const minimumWidth = Math.ceil(image.clientWidth * PUBLIC_MEDIA_PIXEL_RATIO);
@@ -245,13 +247,30 @@ export function assertRenderedProductImage(surfaceName, image, expected) {
   if (
     image.clientWidth <= 0 ||
     image.clientHeight <= 0 ||
+    image.viewportWidth <= 0 ||
+    image.containerWidth <= 0 ||
+    image.clientWidth > expected.displayWidth + 1 ||
+    image.clientWidth > image.containerWidth + 1 ||
+    image.clientLeft < -1 ||
+    image.clientRight > image.viewportWidth + 1 ||
+    image.clientLeft < image.containerLeft - 1 ||
+    image.clientRight > image.containerRight + 1 ||
     image.naturalWidth < minimumWidth ||
     image.naturalHeight < minimumHeight
   ) {
     throw new Error(
-      `${surfaceName} would upscale ${JSON.stringify(expected.alt)} at DPR ${PUBLIC_MEDIA_PIXEL_RATIO}: ` +
+      `${surfaceName} would upscale or overflow ${JSON.stringify(expected.alt)} at DPR ${PUBLIC_MEDIA_PIXEL_RATIO}: ` +
         `${image.naturalWidth}x${image.naturalHeight} natural for ` +
-        `${image.clientWidth}x${image.clientHeight} CSS pixels.`
+        `${image.clientWidth}x${image.clientHeight} CSS pixels in a ${image.containerWidth}px container and ` +
+        `${image.viewportWidth}px viewport ` +
+        `(declared cap ${expected.displayWidth}px).`
+    );
+  }
+  const expectedClientHeight = (image.clientWidth * image.naturalHeight) / image.naturalWidth;
+  if (Math.abs(image.clientHeight - expectedClientHeight) > 1) {
+    throw new Error(
+      `${surfaceName} distorts ${JSON.stringify(expected.alt)}: rendered ${image.clientWidth}x${image.clientHeight} ` +
+        `CSS pixels, expected height ${expectedClientHeight.toFixed(2)} from its natural aspect ratio.`
     );
   }
 }
@@ -297,12 +316,18 @@ function htmlAttribute(tag, name) {
   return expression.exec(tag)?.[1];
 }
 
-function logicalDimension(tag, name) {
-  const value = htmlAttribute(tag, name);
+function displayWidth(tag) {
+  const value = htmlAttribute(tag, "width");
   if (value === undefined || !/^[1-9]\d*$/u.test(value) || !Number.isSafeInteger(Number(value))) {
-    throw new Error(`README public product media requires one positive integer ${name} attribute.`);
+    throw new Error("README public product media requires one positive integer width attribute.");
   }
-  return Number(value);
+  const width = Number(value);
+  if (width > PUBLIC_MEDIA_MAX_DISPLAY_WIDTH) {
+    throw new Error(
+      `README public product media may render at most ${PUBLIC_MEDIA_MAX_DISPLAY_WIDTH} CSS pixels wide.`
+    );
+  }
+  return width;
 }
 
 function repositoryProductMediaPath(value) {

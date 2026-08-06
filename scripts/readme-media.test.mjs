@@ -10,6 +10,7 @@ import {
   publicMediaPhysicalLength,
   publicMediaPhysicalRect
 } from "./public-media-contract.mjs";
+import { PUBLIC_MEDIA_MAX_DISPLAY_WIDTH, PUBLIC_MEDIA_RESPONSIVE_WIDTHS } from "./public-media-surface-contract.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -224,6 +225,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const editorAcceptance = readFileSync(resolve(root, "scripts", "editor-acceptance.mjs"), "utf8");
   const publicSurfaceVerifier = readFileSync(resolve(root, "scripts", "verify-public-media-surfaces.mjs"), "utf8");
   const publicSurfaceContract = readFileSync(resolve(root, "scripts", "public-media-surface-contract.mjs"), "utf8");
+  const responsiveRenderVerifier = readFileSync(
+    resolve(root, "scripts", "verify-readme-responsive-render.mjs"),
+    "utf8"
+  );
   const packagedEditorRunner = readFileSync(resolve(root, "scripts", "run-packaged-editor-tests.mjs"), "utf8");
   const buildWebviews = readFileSync(resolve(root, "scripts", "build-webviews.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
@@ -241,6 +246,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.equal(packageJson.scripts?.["verify:public-media-surfaces"], "node scripts/verify-public-media-surfaces.mjs");
   assert.equal(packageJson.scripts?.["test:webview-acceptance"], "npm run test:webview-acceptance:run");
   assert.match(packageJson.scripts?.["test:webview-acceptance:run"] ?? "", /npm run verify:readme-media/u);
+  assert.match(packageJson.scripts?.["test:webview-acceptance:run"] ?? "", /npm run verify:readme-responsive-render/u);
+  assert.equal(
+    packageJson.scripts?.["verify:readme-responsive-render"],
+    "node scripts/verify-readme-responsive-render.mjs"
+  );
   assert.doesNotMatch(packageJson.scripts?.["test:scripts:portable:run"] ?? "", /scripts\/readme-media\.test\.mjs/u);
   assert.match(packageJson.scripts?.["test:scripts:portable:run"] ?? "", /&& npm run test:scripts:media$/u);
   assert.equal(packageJson.scripts?.["test:scripts:media"], "npm run test:scripts:media:run");
@@ -295,8 +305,14 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(extensionHost, /scale: "css"/u);
   assert.match(extensionHost, /y: logicalCaptureY,[\s\S]{0,100}width: logicalCaptureWidth/u);
   assert.match(publicSurfaceVerifier, /deviceScaleFactor: PUBLIC_MEDIA_PIXEL_RATIO/u);
+  assert.match(publicSurfaceVerifier, /for \(const width of PUBLIC_MEDIA_RESPONSIVE_WIDTHS\)/u);
+  assert.match(publicSurfaceVerifier, /containerBounds = container\.getBoundingClientRect\(\)/u);
+  assert.match(responsiveRenderVerifier, /PUBLIC_MEDIA_RESPONSIVE_WIDTHS/u);
+  assert.match(responsiveRenderVerifier, /scrollWidth <= result\.clientWidth \+ 1/u);
+  assert.match(responsiveRenderVerifier, /assertRenderedProductImage/u);
   assert.match(publicSurfaceContract, /naturalWidth < minimumWidth/u);
   assert.match(publicSurfaceContract, /naturalHeight < minimumHeight/u);
+  assert.match(publicSurfaceContract, /Math\.abs\(image\.clientHeight - expectedClientHeight\) > 1/u);
   assert.match(publicSurfaceVerifier, /remote\.equals\(local\)/u);
   assert.match(publicSurfaceVerifier, /for \(const expected of displayedImages\)/u);
   assert.match(publicSurfaceVerifier, /PUBLIC_MEDIA_PROPAGATION_ATTEMPTS/u);
@@ -362,8 +378,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
       { width: asset.outputWidth, height: asset.outputHeight }
     ])
   );
-  assertProductImageDimensions(readme, "README", declaredProductDimensions);
-  assertProductImageDimensions(gallery, "product gallery", declaredProductDimensions);
+  assertProductImagePresentation(readme, "README", declaredProductDimensions);
+  assertProductImagePresentation(gallery, "product gallery", declaredProductDimensions);
+  assertGalleryScreenshotPresentation(gallery);
+  assertReadmeLogoPresentation(readme);
 
   assert.match(captureScript, /regional-orders-rich\.parquet/u);
   assert.match(captureScript, /backend="duckdb"/u);
@@ -510,7 +528,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Unsaved editor changes are included\./u);
   assert.match(
     readme,
-    /The R workbench supports paging, filters, multi-column sorts, value search, profiles, and nine cleaning operations:\s+\*\*Filter Rows\*\*, \*\*Sort Rows\*\*, \*\*Rename Column\*\*, \*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Convert\s+type\*\*, \*\*Text Length\*\*, and \*\*Lowercase\*\*/u
+    /The R workbench supports paging, filters, multi-column sorts, value search, profiles, and eleven cleaning operations:\s+\*\*Filter Rows\*\*, \*\*Sort Rows\*\*, \*\*Drop Missing Rows\*\*, \*\*Drop Duplicates\*\*, \*\*Rename Column\*\*, \*\*Drop Columns\*\*,\s+\*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Convert type\*\*, \*\*Text Length\*\*, and \*\*Lowercase\*\*/u
   );
   assert.match(readme, /inserted into the notebook or `\.R` document that opened the\s+dataframe/u);
   assert.match(readme, /The default outputs from `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
@@ -606,7 +624,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     v2Roadmap,
     /finish native R support for data frames, tibbles, and `data\.table`, then add Quarto and R Markdown/u
   );
-  assert.match(v2Roadmap, /Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase are available now/u);
+  assert.match(
+    v2Roadmap,
+    /Drop Missing Rows, Drop Duplicates, Rename, Drop, Select, Clone, Convert type, Text Length,\s+and Lowercase are available now/u
+  );
   assert.match(
     v2Roadmap,
     /\[R architecture decision\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/decisions\/0001-native-r-runtime\.md\)/u
@@ -679,11 +700,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /Direct `\.R` execution currently requires macOS or Linux/u);
   assert.match(
     gallery,
-    /Editing mode currently supports Filter Rows, Sort Rows, Rename Column, Drop Columns, Select Columns, Clone Column,\s+Convert type, Text Length, and Lowercase\.[\s\S]{0,420}All nine use draft preview, generated R,\s+apply, discard, inspection, latest-step editing, and undo/u
+    /Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Drop Duplicates, Rename Column, Drop\s+Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase\.[\s\S]{0,720}All eleven use draft preview, generated R,\s+apply, discard, inspection, latest-step editing, and undo/u
   );
   assert.match(
     gallery,
-    /The image shows Rename Column in VS Code\. Filter Rows, Sort Rows, Drop Columns, ordered Select Columns, Clone Column,\s+Convert type, Text Length, and Lowercase use the same editing controls in VS Code and Cursor/u
+    /The image shows Rename Column in VS Code\. Filter Rows, Sort Rows, Drop Missing Rows, Drop Duplicates, Drop Columns,\s+ordered Select Columns, Clone Column, Convert type, Text Length, and Lowercase use the same editing controls in VS\s+Code and Cursor/u
   );
   assert.match(
     gallery,
@@ -784,7 +805,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(mediaSpec, /inventory test rejects both\s+missing and orphaned public PNGs/u);
   assert.match(mediaSpec, /2× physical density/u);
   assert.match(mediaSpec, /ordinary\s+visual-regression baselines remain at 1×/u);
-  assert.match(mediaSpec, /explicit logical `width` and `height`/u);
+  assert.match(mediaSpec, /width-only presentation/u);
+  assert.match(mediaSpec, /960 CSS pixels/u);
+  assert.match(mediaSpec, /aspect ratio/u);
+  assert.deepEqual(PUBLIC_MEDIA_RESPONSIVE_WIDTHS, [760, 1_400]);
   assert.match(mediaSpec, /2 MiB per PNG and 32 MiB for the complete inventory/u);
   assert.match(mediaSpec, /Private setup, restart-probe, and runtime-transfer cells are collapsed/u);
   assert.match(mediaSpec, /setup cell is too implementation-focused for product documentation/u);
@@ -796,7 +820,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(testing, /ordinary visual baselines remain 1×/u);
 });
 
-function assertProductImageDimensions(document, label, declaredDimensions) {
+function assertProductImagePresentation(document, label, declaredDimensions) {
   const productImages = [...document.matchAll(/<img\b([^>]*)>/giu)]
     .map((match) => parseHtmlAttributes(match[1]))
     .map((attributes) => ({ attributes, assetPath: parseProductImageAssetPath(attributes.get("src") ?? "") }))
@@ -805,17 +829,47 @@ function assertProductImageDimensions(document, label, declaredDimensions) {
   for (const { attributes, assetPath } of productImages) {
     const dimensions = declaredDimensions.get(assetPath);
     assert.ok(dimensions, `${label} references undeclared product image ${assetPath}.`);
-    assert.equal(
-      attributes.get("width"),
-      String(dimensions.width),
-      `${label} must render ${assetPath} at its logical width.`
+    const displayWidth = Number(attributes.get("width"));
+    assert.ok(
+      Number.isSafeInteger(displayWidth) && displayWidth > 0 && displayWidth <= PUBLIC_MEDIA_MAX_DISPLAY_WIDTH,
+      `${label} must render ${assetPath} at a positive width no greater than ${PUBLIC_MEDIA_MAX_DISPLAY_WIDTH}px.`
     );
-    assert.equal(
-      attributes.get("height"),
-      String(dimensions.height),
-      `${label} must render ${assetPath} at its logical height.`
+    assert.equal(attributes.has("height"), false, `${label} must let ${assetPath} keep its natural aspect ratio.`);
+    assert.ok(
+      publicMediaPhysicalLength(dimensions.width) >= displayWidth * PUBLIC_MEDIA_PIXEL_RATIO,
+      `${label} must give ${assetPath} at least two source pixels per declared CSS pixel.`
     );
   }
+}
+
+function assertGalleryScreenshotPresentation(gallery) {
+  const screenshots = [...gallery.matchAll(/<img\b([^>]*)>/giu)]
+    .map((match) => parseHtmlAttributes(match[1]))
+    .filter((attributes) => (attributes.get("src") ?? "").startsWith("images/"));
+  assert.ok(screenshots.length > 0, "The product gallery must contain screenshots.");
+  for (const attributes of screenshots) {
+    const source = attributes.get("src");
+    const displayWidth = Number(attributes.get("width"));
+    assert.ok(
+      Number.isSafeInteger(displayWidth) && displayWidth > 0 && displayWidth <= PUBLIC_MEDIA_MAX_DISPLAY_WIDTH,
+      `The product gallery must render ${source} at a positive width no greater than ${PUBLIC_MEDIA_MAX_DISPLAY_WIDTH}px.`
+    );
+    assert.equal(attributes.has("height"), false, `The product gallery must not fix the height of ${source}.`);
+    const png = readFileSync(resolve(root, "docs", source));
+    assert.ok(
+      png.readUInt32BE(16) >= displayWidth * PUBLIC_MEDIA_PIXEL_RATIO,
+      `The product gallery must give ${source} at least two source pixels per declared CSS pixel.`
+    );
+  }
+}
+
+function assertReadmeLogoPresentation(readme) {
+  const logos = [...readme.matchAll(/<img\b([^>]*)>/giu)]
+    .map((match) => parseHtmlAttributes(match[1]))
+    .filter((attributes) => (attributes.get("src") ?? "").endsWith("/assets/icon.png"));
+  assert.equal(logos.length, 1, "README must contain one gallery logo.");
+  assert.equal(logos[0].get("width"), "128");
+  assert.equal(logos[0].get("height"), "128");
 }
 
 function parseHtmlAttributes(source) {

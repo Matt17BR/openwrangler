@@ -435,8 +435,12 @@ A standard sRGB PNG chunk is added only
 when needed. `npm run verify:readme-media` requires pixel-exact decoded output for every copy or crop; the browser
 visual lane runs that check before README media can change. The rich DuckDB Parquet image and focused UI states
 still come from the lockfile-pinned Chromium capture harness and the same production webview bundle.
-The same contract requires explicit logical image dimensions, lossless PNG plus sRGB output, no resize path, a
-2 MiB per-file ceiling, and a 32 MiB complete-inventory ceiling. After a release README reaches GitHub, Visual
+The same contract requires a width-only screenshot presentation capped at 960 CSS pixels, lossless PNG plus sRGB
+output, no resize path, a 2 MiB per-file ceiling, and a 32 MiB complete-inventory ceiling. After a release README
+change, `npm run verify:readme-responsive-render` renders the actual README and gallery markup at 760px and 1400px
+inside the existing visual lane. It checks every screenshot's cap, aspect ratio, source density, full-size link, and
+document-level horizontal overflow before publication. After a release README
+reaches GitHub, Visual
 Studio Marketplace, and Open VSX, check out its exact source and run this one-attempt diagnostic:
 
 ```bash
@@ -448,11 +452,12 @@ npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --ver
 The check rejects a mutable GitHub branch, source/version mismatch, undeclared media series, missing or orphaned
 inventory entries, stale registry versions or README content, and any displayed image whose rendered `src` or
 `currentSrc` is not the exact immutable raw URL in the reviewed README. Before reading a PNG, traversal caps the
-inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 46
-declared PNGs then require valid chunk CRCs, one ordered IHDR/sRGB/IDAT/IEND structure, a successful full decode, exact
-dimensions, sRGB, and immutable remote equality. All 18 README images are checked at DPR 2 on each of the three public
-surfaces. The hero and histogram remain explicitly named representative requirements in addition to the exact
-18-image contract.
+inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 45
+declared PNGs then require valid chunk CRCs, one ordered IHDR/sRGB/IDAT/IEND structure, a successful full decode,
+reviewed natural dimensions, sRGB, and immutable remote equality. All 18 README images are checked at DPR 2 on each
+of the three public surfaces. They must stay within their declared width, rendered container, and viewport, preserve their
+natural aspect ratio within one CSS pixel of height rounding, and retain at least two natural pixels per rendered CSS
+pixel. The hero, histogram, and PySpark workbench repeat those checks near 760px and 1400px viewport widths.
 
 The versioned gate begins with `1.2.1`; older recovery runs skip browser installation and public-media verification.
 For protected versions, the workflow runs the verifier from the exact release checkout with

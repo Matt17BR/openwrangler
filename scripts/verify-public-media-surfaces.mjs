@@ -45,6 +45,7 @@ import {
   PUBLIC_MEDIA_PROPAGATION_DELAY_MS,
   PUBLIC_MEDIA_PROPAGATION_TIMEOUT_MS,
   PUBLIC_MEDIA_RENDER_ATTEMPT_TIMEOUT_MS,
+  PUBLIC_MEDIA_RESPONSIVE_WIDTHS,
   publicMediaVerificationRequired,
   publicSurfaceDefinitions
 } from "./public-media-surface-contract.mjs";
@@ -125,14 +126,16 @@ export function verifyLocalPublicMedia(productImageRoot, readme, gallery) {
   const seenAlts = new Set();
   const seenPaths = new Set();
   const mediaSourceShas = new Set();
+  const displayed = [];
   for (const reference of references) {
     const asset = assetByPath.get(reference.relativePath);
-    if (
-      asset === undefined ||
-      asset.logicalWidth !== reference.logicalWidth ||
-      asset.logicalHeight !== reference.logicalHeight
-    ) {
-      throw new Error(`${reference.relativePath} differs from its declared public-media dimensions.`);
+    if (asset === undefined) {
+      throw new Error(`${reference.relativePath} is absent from the declared public-media inventory.`);
+    }
+    const naturalWidth = publicMediaPhysicalLength(asset.logicalWidth);
+    const naturalHeight = publicMediaPhysicalLength(asset.logicalHeight);
+    if (naturalWidth < reference.displayWidth * PUBLIC_MEDIA_PIXEL_RATIO) {
+      throw new Error(`${reference.relativePath} does not supply two source pixels per declared CSS pixel.`);
     }
     if (seenAlts.has(reference.alt) || seenPaths.has(reference.relativePath)) {
       throw new Error("README public product images require unique alt text and source paths.");
@@ -140,14 +143,15 @@ export function verifyLocalPublicMedia(productImageRoot, readme, gallery) {
     seenAlts.add(reference.alt);
     seenPaths.add(reference.relativePath);
     mediaSourceShas.add(reference.sourceSha);
+    displayed.push({ ...reference, naturalWidth, naturalHeight });
   }
   if (mediaSourceShas.size !== 1) {
     throw new Error("README public product images must share one immutable reviewed media commit.");
   }
   console.log(
-    `Verified ${PUBLIC_MEDIA_ASSETS.length} declared sRGB PNGs at exact 2x dimensions within the media budgets.`
+    `Verified ${PUBLIC_MEDIA_ASSETS.length} declared sRGB PNGs and width-only README presentations within the media budgets.`
   );
-  return { displayed: references, localBytes, mediaSourceSha: [...mediaSourceShas][0] };
+  return { displayed, localBytes, mediaSourceSha: [...mediaSourceShas][0] };
 }
 
 async function verifyExactSource(root, sourceSha, version, localReadme) {
@@ -193,20 +197,18 @@ async function verifyImmutablePublicBytes(references) {
 }
 
 async function verifyRenderedSurfaces(sourceSha, version, readme, references, waitForPropagation) {
-  const representatives = expectedRepresentativeReferences(readme);
-  for (const representative of representatives) {
-    if (
-      !references.displayed.some(
-        (image) =>
-          image.alt === representative.alt &&
-          image.url === representative.url &&
-          image.logicalWidth === representative.logicalWidth &&
-          image.logicalHeight === representative.logicalHeight
-      )
-    ) {
+  const representatives = expectedRepresentativeReferences(readme).map((representative) => {
+    const displayed = references.displayed.find(
+      (image) =>
+        image.alt === representative.alt &&
+        image.url === representative.url &&
+        image.displayWidth === representative.displayWidth
+    );
+    if (displayed === undefined) {
       throw new Error("Rendered public-media verification omitted one required representative image.");
     }
-  }
+    return displayed;
+  });
   const browser = await chromium.launch({ headless: true });
   const attempts = waitForPropagation ? PUBLIC_MEDIA_PROPAGATION_ATTEMPTS : 1;
   try {
@@ -217,14 +219,15 @@ async function verifyRenderedSurfaces(sourceSha, version, readme, references, wa
           attemptTimeoutMilliseconds,
           createContext: async () => {
             const context = await browser.newContext({
-              viewport: { width: 1_440, height: 1_000 },
+              viewport: { width: Math.max(...PUBLIC_MEDIA_RESPONSIVE_WIDTHS), height: 1_000 },
               deviceScaleFactor: PUBLIC_MEDIA_PIXEL_RATIO
             });
             context.setDefaultTimeout(30_000);
             context.setDefaultNavigationTimeout(60_000);
             return context;
           },
-          verifyContext: (context) => verifyRenderedSurfacesInContext(context, sourceSha, version, references.displayed)
+          verifyContext: (context) =>
+            verifyRenderedSurfacesInContext(context, sourceSha, version, references.displayed, representatives)
         })
     });
   } finally {
@@ -320,9 +323,10 @@ export async function runFreshPublicMediaContextAttempt({
   }
 }
 
-async function verifyRenderedSurfacesInContext(context, sourceSha, version, displayedImages) {
+async function verifyRenderedSurfacesInContext(context, sourceSha, version, displayedImages, representativeImages) {
   const page = await context.newPage();
   for (const surface of publicSurfaceDefinitions(sourceSha)) {
+    await page.setViewportSize({ width: Math.max(...PUBLIC_MEDIA_RESPONSIVE_WIDTHS), height: 1_000 });
     await observeRegistryPropagation(surface, "is unavailable", () =>
       page.goto(surface.url, { waitUntil: "domcontentloaded", timeout: 60_000 })
     );
@@ -355,52 +359,74 @@ async function verifyRenderedSurfacesInContext(context, sourceSha, version, disp
     );
 
     for (const expected of displayedImages) {
-      const image = page.locator(`img[alt=${JSON.stringify(expected.alt)}]`);
-      const dimensions = await observeRegistryPropagation(
-        surface,
-        "has not rendered the complete README image set",
-        async () => {
-          if ((await image.count()) !== 1) {
-            throw new Error(
-              `${surface.name} must render exactly one README image with alt ${JSON.stringify(expected.alt)}.`
-            );
-          }
-          await image.waitFor({ state: "attached", timeout: 30_000 });
-          await image.scrollIntoViewIfNeeded();
-          await image.waitFor({ state: "visible", timeout: 30_000 });
-          await page.waitForFunction(
-            (expectedAlt) => {
-              const matches = [...document.querySelectorAll("img")].filter((element) => element.alt === expectedAlt);
-              return matches.length === 1 && matches[0].complete && matches[0].naturalWidth > 0;
-            },
-            expected.alt,
-            { timeout: 30_000 }
-          );
-          return image.evaluate((element) => {
-            const bounds = element.getBoundingClientRect();
-            return {
-              alt: element.alt,
-              sourceUrl: element.getAttribute("src"),
-              currentUrl: element.currentSrc,
-              clientWidth: bounds.width,
-              clientHeight: bounds.height,
-              naturalWidth: element.naturalWidth,
-              naturalHeight: element.naturalHeight,
-              devicePixelRatio: globalThis.devicePixelRatio
-            };
-          });
-        }
-      );
+      const dimensions = await measureRenderedImage(page, surface, expected);
       await observeRegistryPropagation(surface, "still exposes stale README image sources", () =>
         assertRepresentativeImageSource(surface.name, dimensions, expected.url)
       );
       assertRenderedProductImage(surface.name, dimensions, expected);
     }
+    for (const width of PUBLIC_MEDIA_RESPONSIVE_WIDTHS) {
+      await page.setViewportSize({ width, height: 1_000 });
+      for (const expected of representativeImages) {
+        const dimensions = await measureRenderedImage(page, surface, expected);
+        assertRenderedProductImage(`${surface.name} at ${width}px`, dimensions, expected);
+      }
+    }
     console.log(
       `Verified version, content, immutable sources, and ${displayedImages.length} DPR ${PUBLIC_MEDIA_PIXEL_RATIO} ` +
-        `README images on ${surface.name}.`
+        `README images on ${surface.name}, including responsive checks at ${PUBLIC_MEDIA_RESPONSIVE_WIDTHS.join("/")}px.`
     );
   }
+}
+
+async function measureRenderedImage(page, surface, expected) {
+  const image = page.locator(`img[alt=${JSON.stringify(expected.alt)}]`);
+  return observeRegistryPropagation(surface, "has not rendered the complete README image set", async () => {
+    if ((await image.count()) !== 1) {
+      throw new Error(`${surface.name} must render exactly one README image with alt ${JSON.stringify(expected.alt)}.`);
+    }
+    await image.waitFor({ state: "attached", timeout: 30_000 });
+    await image.scrollIntoViewIfNeeded();
+    await image.waitFor({ state: "visible", timeout: 30_000 });
+    await page.waitForFunction(
+      (expectedAlt) => {
+        const matches = [...document.querySelectorAll("img")].filter((element) => element.alt === expectedAlt);
+        return matches.length === 1 && matches[0].complete && matches[0].naturalWidth > 0;
+      },
+      expected.alt,
+      { timeout: 30_000 }
+    );
+    return image.evaluate((element) => {
+      let container = element.closest("td");
+      for (
+        let candidate = element.parentElement;
+        container === null && candidate !== null;
+        candidate = candidate.parentElement
+      ) {
+        const display = globalThis.getComputedStyle(candidate).display;
+        if (["block", "flex", "grid", "table-cell"].includes(display)) container = candidate;
+      }
+      container ??= document.body;
+      const bounds = element.getBoundingClientRect();
+      const containerBounds = container.getBoundingClientRect();
+      return {
+        alt: element.alt,
+        sourceUrl: element.getAttribute("src"),
+        currentUrl: element.currentSrc,
+        clientWidth: bounds.width,
+        clientHeight: bounds.height,
+        clientLeft: bounds.left,
+        clientRight: bounds.right,
+        viewportWidth: globalThis.innerWidth,
+        containerWidth: containerBounds.width,
+        containerLeft: containerBounds.left,
+        containerRight: containerBounds.right,
+        naturalWidth: element.naturalWidth,
+        naturalHeight: element.naturalHeight,
+        devicePixelRatio: globalThis.devicePixelRatio
+      };
+    });
+  });
 }
 
 export function assertPngContract(bytes, asset) {

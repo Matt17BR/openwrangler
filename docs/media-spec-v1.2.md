@@ -21,8 +21,9 @@ user, match the packaged extension, and remain readable at its rendered width.
   webview harness, converts each logical crop to physical pixels exactly once, and the inventory test rejects both
   missing and orphaned public PNGs.
 - Add only the standard sRGB PNG chunk when preparing portable copies.
-- Every README and gallery product `<img>` declares its explicit logical `width` and `height`. Its PNG therefore
-  supplies two physical pixels per declared CSS pixel before a host applies responsive `max-width` constraints.
+- Every README and gallery screenshot uses a width-only presentation capped at 960 CSS pixels. The browser derives
+  height from the PNG's aspect ratio, and the PNG supplies at least two physical pixels per rendered CSS pixel after
+  a host applies responsive `max-width` constraints.
 - Keep the lossless inventory within 2 MiB per PNG and 32 MiB for the complete inventory. Do not satisfy either
   budget through lossy encoding, image resizing, or a lower capture density.
 
@@ -148,10 +149,14 @@ After GitHub and both registries have rendered a release README, install the loc
 exact released source checkout. The SHA must be lowercase 40-hex and the version must be semantic without a leading
 `v`. Starting with `1.2.1`, the verifier byte-compares the exact source README and package version; rejects an
 undeclared media series; pre-stats a bounded inventory before any full file read; checks all 45 PNGs for chunk CRC,
-ordered structure, complete decode, exact 2× dimensions, standard sRGB, per-file and total budgets, and immutable
-remote bytes; and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. Every one of the 18 rendered README
-images must retain its exact reviewed `src`/`currentSrc`, natural dimensions, and at least two natural pixels per
-rendered CSS pixel. A promotion with the contract on protected `main` runs this after registry
+ordered structure, complete decode, reviewed natural dimensions, standard sRGB, per-file and total budgets, and
+immutable remote bytes; and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. Every one of the 18
+rendered README images must retain its exact reviewed `src`/`currentSrc` and natural dimensions. Their width-only
+presentation may not exceed 960 CSS pixels, its container, or the viewport, must preserve the natural aspect ratio, and must retain
+at least two natural pixels per rendered CSS pixel. Three representative images repeat those checks near 760px and
+1400px viewport widths. Before publication, `npm run verify:readme-responsive-render` renders the actual local README
+and gallery at both widths, checks every screenshot and full-size link, and rejects document-level horizontal
+overflow. A promotion with the contract on protected `main` runs the public check after registry
 verification, with forty fresh-context attempts at thirty-second intervals inside a thirty-minute public-propagation
 window. Only typed stale/unavailable registry observations retry; deterministic contract failures stop immediately.
 The check can fail workflow success but cannot undo the public writes it observes. The same reviewed `main` contract
