@@ -52,6 +52,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   and logical columns can use the most common non-missing value; supported columns can use a specific typed value.
   Factors and `integer64` values stay native. Key columns are blocked because changing one could invalidate a
   data-table key, and the form checks R's 8 KiB text limit before preview.
+- Added **Uppercase** and **Find and replace** for native R sessions. Both accept character and factor columns, keep
+  `NA`, and can update the source or create a character column. Find and replace supports literal text and regular
+  expressions. Active data-table key columns cannot be changed in place.
 - R notebook sessions can now insert generated cleaning code into the notebook that opened the dataframe. Open
   Wrangler adds one `r` cell and confirms the exact edit before reporting success.
 - Trusted `.R` files can now run in an Open Wrangler-owned R process. The variable picker lists base data frames,
@@ -62,7 +65,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   R is inserted as a new fenced cell. This command is for dataframe discovery and does not render the document or
   attach to an existing R session; unsupported YAML, chunk-engine, and raw-container syntax is rejected.
 - Default frames created with `collapse::qDF()`, `qTBL()`, or `qDT()` use the existing base-data-frame, tibble, or data-table
-  path. Open Wrangler does not add `collapse` as a runtime dependency. Grouped `GRP_df` objects are not supported.
+  path. Open Wrangler does not add `collapse` as a runtime dependency. Grouped `GRP_df` and indexed
+  `indexed_frame` objects are not supported.
 - Direct R-document execution is available on macOS and Linux. R notebooks still work on Windows; direct document
   execution stays disabled there until Open Wrangler can own and stop the complete R process tree.
 
@@ -82,13 +86,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   to the notebook's source object.
 - Added a real VS Code screenshot of R editing. The installed extension now exercises Filter Rows, Sort Rows, Drop
   Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type, Text Length, and
-  Lowercase against IRkernel in both VS Code and Cursor. The base-data-frame journey runs all twelve operations.
-  Across the sequence it covers
+  Lowercase against IRkernel in both VS Code and Cursor. The local VS Code path also opens the real Find and replace
+  form and applies Uppercase, bringing that base-data-frame run to all fourteen operations. Across the sequence it
+  covers
   preview, apply, inspection, discard, latest-step editing, and undo; Convert type is applied and undone. Drop Missing
   Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The journey also checks
   generated R, copies and saves Rename code, and verifies that the notebook objects are unchanged. Separate tibble and
-  keyed-data-table sessions preview and discard Rename and Drop Columns; direct R tests cover all twelve operations for
-  all three flavors.
+  keyed-data-table sessions preview and discard Rename and Drop Columns; direct R tests cover all fourteen operations
+  for all three flavors.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and

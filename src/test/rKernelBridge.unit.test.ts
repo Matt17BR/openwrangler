@@ -1442,7 +1442,9 @@ describe("canonical R kernel bridge", () => {
             "cloneColumn",
             "castColumn",
             "textLength",
-            "lowerText"
+            "findReplace",
+            "lowerText",
+            "upperText"
           ]
         }
       }
@@ -3413,6 +3415,303 @@ describe("canonical R kernel bridge", () => {
     ).rejects.toThrow("mutation diff");
   });
 
+  it("uppercases R factors in place and retains an isolated draft", async () => {
+    const original = replaceContractCell(frameContract(), "r:c:6", {
+      kind: "string",
+      raw: "MiXeD élan",
+      display: "MiXeD élan",
+      isNull: false,
+      isNaN: false
+    });
+    const source = factorContract(original, "r:c:6", ["MiXeD élan"]);
+    const output = upperTextContract(source, "r:c:6", "r-upper-in-place");
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: output,
+      diff: lowerDiff("r:c:6", "missing", "MiXeD élan", "MIXED ÉLAN"),
+      code: "open_wrangler_result <- orders"
+    });
+    const step: {
+      id: string;
+      kind: "upperText";
+      params: { column: { id: string; name: string }; newColumn?: string };
+    } = {
+      id: "r-upper-in-place",
+      kind: "upperText",
+      params: { column: { id: "r:c:6", name: "missing" } }
+    };
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      {
+        id: "r-upper-in-place",
+        kind: "upperText",
+        params: { column: { id: "r:c:6", name: "missing" } }
+      },
+      expect.any(Object),
+      expect.any(Array),
+      undefined,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "r:c:6", name: "missing", rawType: "character", type: "string" })
+        ]),
+        draftStep: {
+          id: "r-upper-in-place",
+          kind: "upperText",
+          params: { column: { id: "r:c:6", name: "missing" } }
+        }
+      },
+      diff: { addedColumns: [], changedCells: 1 }
+    });
+
+    step.params.column.name = "mutated outside bridge";
+    step.params.newColumn = "also mutated";
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: output,
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(bridge.request(planRequest("applyDraft", 1))).resolves.toMatchObject({
+      kind: "planUpdated",
+      metadata: {
+        steps: [
+          {
+            id: "r-upper-in-place",
+            kind: "upperText",
+            params: { column: { id: "r:c:6", name: "missing" } }
+          }
+        ]
+      }
+    });
+  });
+
+  it("passes literal, regex, and blank native R replacements without changing their parameters", async () => {
+    const source = replaceContractCell(factorContract(frameContract(), "r:c:6", ["a.b 42"]), "r:c:6", {
+      kind: "string",
+      raw: "a.b 42",
+      display: "a.b 42",
+      isNull: false,
+      isNaN: false
+    });
+    const cases: ReadonlyArray<{
+      readonly id: string;
+      readonly params: Readonly<{ find: string; replacement: string; regex?: boolean; newColumn?: string }>;
+      readonly after: string;
+    }> = [
+      {
+        id: "r-replace-literal",
+        params: { find: ".", replacement: "!", regex: false, newColumn: "literal result" },
+        after: "a!b 42"
+      },
+      {
+        id: "r-replace-regex",
+        params: { find: "[0-9]+", replacement: "#", regex: true, newColumn: "regex result" },
+        after: "a.b #"
+      },
+      {
+        id: "r-replace-blank",
+        params: { find: "", replacement: "_" },
+        after: "_a_._b_ _4_2_"
+      }
+    ];
+
+    for (const candidate of cases) {
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      const output = findReplaceContract(
+        source,
+        "r:c:6",
+        candidate.id,
+        candidate.params.find,
+        candidate.params.replacement,
+        candidate.params.regex ?? false,
+        candidate.params.newColumn
+      );
+      const outputName = candidate.params.newColumn;
+      const inPlace = outputName === undefined;
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: output,
+        diff: inPlace ? lowerDiff("r:c:6", "missing", "a.b 42", candidate.after) : cloneDiff(outputName),
+        code: "open_wrangler_result <- orders"
+      });
+      const preview = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: candidate.id,
+          kind: "findReplace",
+          params: { column: { id: "r:c:6", name: "missing" }, ...candidate.params }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      });
+      expect(transport.previewStep).toHaveBeenCalledWith(
+        sessionId,
+        0,
+        {
+          id: candidate.id,
+          kind: "findReplace",
+          params: { column: { id: "r:c:6", name: "missing" }, ...candidate.params }
+        },
+        expect.any(Object),
+        expect.any(Array),
+        undefined,
+        expect.any(Object)
+      );
+      expect(preview).toMatchObject({
+        kind: "stepPreview",
+        metadata: {
+          draftStep: {
+            id: candidate.id,
+            kind: "findReplace",
+            params: { column: { id: "r:c:6", name: "missing" }, ...candidate.params }
+          }
+        },
+        diff: inPlace ? { addedColumns: [], changedCells: 1 } : { addedColumns: [outputName], changedCells: 0 }
+      });
+    }
+  });
+
+  it("rejects unsafe native R uppercase and find-and-replace schemas and diffs", async () => {
+    for (const step of [
+      {
+        id: "r-upper-keyed",
+        kind: "upperText" as const,
+        params: { column: { id: "r:c:6", name: "missing" } }
+      },
+      {
+        id: "r-replace-keyed",
+        kind: "findReplace" as const,
+        params: { column: { id: "r:c:6", name: "missing" }, find: "x", replacement: "y" }
+      }
+    ]) {
+      const keyedTransport = fakeTransport(dataTableContract(frameContract(), ["r:c:6"]));
+      const keyedBridge = createBridge(keyedTransport);
+      await keyedBridge.request(openRequest("editing"));
+      await expect(
+        keyedBridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request", message: expect.stringContaining("keyed") });
+      expect(keyedTransport.previewStep).not.toHaveBeenCalled();
+    }
+
+    const source = replaceContractCell(frameContract(), "r:c:6", {
+      kind: "string",
+      raw: "MiXeD",
+      display: "MiXeD",
+      isNull: false,
+      isNaN: false
+    });
+    const collisionTransport = fakeTransport(source);
+    const collisionBridge = createBridge(collisionTransport);
+    await collisionBridge.request(openRequest("editing"));
+    await expect(
+      collisionBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-upper-collision",
+          kind: "upperText",
+          params: { column: { id: "r:c:6", name: "missing" }, newColumn: "flag" }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "invalid_request", message: expect.stringContaining("exists") });
+    expect(collisionTransport.previewStep).not.toHaveBeenCalled();
+
+    const identityCollision = cloneContract(source, "r:c:5", "existing", "r-replace-id-collision");
+    const identityTransport = fakeTransport(identityCollision);
+    const identityBridge = createBridge(identityTransport);
+    await identityBridge.request(openRequest("editing"));
+    await expect(
+      identityBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-replace-id-collision",
+          kind: "findReplace",
+          params: {
+            column: { id: "r:c:6", name: "missing" },
+            find: "x",
+            replacement: "y",
+            newColumn: "replaced"
+          }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 9
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "invalid_request", message: expect.stringContaining("identity") });
+    expect(identityTransport.previewStep).not.toHaveBeenCalled();
+
+    const diffTransport = fakeTransport(source);
+    const diffBridge = createBridge(diffTransport);
+    await diffBridge.request(openRequest("editing"));
+    diffTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: upperTextContract(source, "r:c:6", "r-upper-wrong-diff"),
+      diff: lowerDiff("r:c:5", "flag", "MiXeD", "MIXED"),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      diffBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-upper-wrong-diff",
+          kind: "upperText",
+          params: { column: { id: "r:c:6", name: "missing" } }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).rejects.toThrow("mutation diff");
+  });
+
   it("rejects Select Columns responses with the wrong retained data-table key prefix", async () => {
     const source = dataTableContract(frameContract(), ["r:c:0", "r:c:1"]);
     const selected = selectContract(source, ["r:c:3", "r:c:1", "r:c:0"]);
@@ -4295,10 +4594,43 @@ function lowerTextContract(
   stepId: string,
   newColumn?: string
 ): RFramePageContract {
+  return textTransformContract(source, columnId, stepId, newColumn, (value) => value.toLowerCase());
+}
+
+function upperTextContract(
+  source: RFramePageContract,
+  columnId: string,
+  stepId: string,
+  newColumn?: string
+): RFramePageContract {
+  return textTransformContract(source, columnId, stepId, newColumn, (value) => value.toUpperCase());
+}
+
+function findReplaceContract(
+  source: RFramePageContract,
+  columnId: string,
+  stepId: string,
+  find: string,
+  replacement: string,
+  regex: boolean,
+  newColumn?: string
+): RFramePageContract {
+  return textTransformContract(source, columnId, stepId, newColumn, (value) =>
+    regex ? value.replace(new RegExp(find, "gu"), replacement) : value.replaceAll(find, replacement)
+  );
+}
+
+function textTransformContract(
+  source: RFramePageContract,
+  columnId: string,
+  stepId: string,
+  newColumn: string | undefined,
+  transform: (value: string) => string
+): RFramePageContract {
   const sourceColumn = source.schema.find((column) => column.id === columnId);
-  if (!sourceColumn) throw new Error(`Unknown fake R lowercase column ${columnId}.`);
+  if (!sourceColumn) throw new Error(`Unknown fake R text column ${columnId}.`);
   const inPlace = newColumn === undefined || newColumn === sourceColumn.name;
-  const loweredColumn: RColumnSchema = {
+  const transformedColumn: RColumnSchema = {
     id: inPlace ? sourceColumn.id : `c:step:${stepId}:0`,
     name: inPlace ? sourceColumn.name : newColumn,
     position: inPlace ? sourceColumn.position : source.schema.length,
@@ -4310,16 +4642,16 @@ function lowerTextContract(
   const pagePosition = source.page.columnIds.indexOf(columnId);
   const rows = source.page.rows.map((row) => {
     const sourceValue = pagePosition < 0 ? undefined : row.values[pagePosition];
-    const lowered =
+    const transformed =
       sourceValue?.kind === "string"
-        ? ({ ...sourceValue, raw: sourceValue.raw.toLowerCase(), display: sourceValue.display.toLowerCase() } as const)
+        ? ({ ...sourceValue, raw: transform(sourceValue.raw), display: transform(sourceValue.display) } as const)
         : sourceValue
           ? { ...sourceValue }
           : undefined;
-    if (inPlace && pagePosition >= 0 && lowered) {
+    if (inPlace && pagePosition >= 0 && transformed) {
       return {
         ...row,
-        values: row.values.map((value, index) => ({ ...(index === pagePosition ? lowered : value) }))
+        values: row.values.map((value, index) => ({ ...(index === pagePosition ? transformed : value) }))
       };
     }
     return { ...row, values: row.values.map((value) => ({ ...value })) };
@@ -4328,9 +4660,36 @@ function lowerTextContract(
     ...source,
     shape: { ...source.shape, columns: source.schema.length + (inPlace ? 0 : 1) },
     schema: inPlace
-      ? source.schema.map((column) => (column.id === columnId ? loweredColumn : { ...column }))
-      : [...source.schema.map((column) => ({ ...column })), loweredColumn],
+      ? source.schema.map((column) => (column.id === columnId ? transformedColumn : { ...column }))
+      : [...source.schema.map((column) => ({ ...column })), transformedColumn],
     page: { ...source.page, columnIds: [...source.page.columnIds], rows }
+  };
+}
+
+function factorContract(source: RFramePageContract, columnId: string, levels: readonly string[]): RFramePageContract {
+  return {
+    ...source,
+    schema: source.schema.map((column) =>
+      column.id === columnId
+        ? {
+            ...column,
+            rawType: "factor",
+            type: "string" as const,
+            semantics: {
+              kind: "factor" as const,
+              storageMode: "integer" as const,
+              classes: ["factor"],
+              levels: [...levels],
+              ordered: false
+            }
+          }
+        : { ...column }
+    ),
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({ ...row, values: row.values.map((value) => ({ ...value })) }))
+    }
   };
 }
 
@@ -4502,7 +4861,9 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "cloneColumn",
       "castColumn",
       "textLength",
-      "lowerText"
+      "findReplace",
+      "lowerText",
+      "upperText"
     ]
   };
 }

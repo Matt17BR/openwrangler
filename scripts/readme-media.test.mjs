@@ -530,7 +530,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /unsaved changes are included/u);
   assert.match(
     readme,
-    /The R workbench supports paging, filters, multi-column sorts, value search, profiles, and twelve cleaning operations:\s+\*\*Filter Rows\*\*, \*\*Sort Rows\*\*, \*\*Drop Missing Rows\*\*, \*\*Fill Missing Values\*\*, \*\*Drop Duplicates\*\*, \*\*Rename Column\*\*,\s+\*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Convert type\*\*, \*\*Text Length\*\*, and \*\*Lowercase\*\*/u
+    /The R workbench supports paging, filters, multi-column sorts, value search, profiles, and fourteen cleaning operations:\s+\*\*Filter Rows\*\*, \*\*Sort Rows\*\*, \*\*Drop Missing Rows\*\*, \*\*Fill Missing Values\*\*, \*\*Drop Duplicates\*\*, \*\*Rename Column\*\*,\s+\*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Convert type\*\*, \*\*Text Length\*\*, \*\*Lowercase\*\*, \*\*Uppercase\*\*,\s+and \*\*Find and replace\*\*/u
   );
   assert.match(readme, /inserted into the notebook or R document that opened the dataframe/u);
   assert.match(readme, /The default outputs from `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
@@ -631,7 +631,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     v2Roadmap,
-    /Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,\s+Convert type, Text Length, and Lowercase are available now/u
+    /Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,\s+Convert type, Text Length, Lowercase, Uppercase, and Find and replace are available now/u
   );
   assert.match(
     v2Roadmap,
@@ -708,11 +708,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /Direct R-document execution currently requires macOS or Linux/u);
   assert.match(
     gallery,
-    /Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop\s+Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase\.[\s\S]{0,1100}All twelve use draft preview, generated R,\s+apply, discard,\s+inspection, latest-step editing, and undo/u
+    /Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates,\s+Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, and Find\s+and replace\.[\s\S]{0,1100}All fourteen use draft preview, generated R, apply, discard,\s+inspection, latest-step editing, and undo/u
   );
   assert.match(
     gallery,
-    /The image shows Rename Column in VS Code\. Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Drop Columns,\s+ordered Select Columns, Clone Column, Convert type, Text Length, and Lowercase use the same editing controls in VS\s+Code and Cursor/u
+    /The image shows Rename Column in VS Code\.[\s\S]{0,1100}The local VS Code journey also opens the real Find and replace form and applies\s+Uppercase\.[\s\S]{0,240}All fourteen are available for base data frames, tibbles, and keyed data tables/u
   );
   assert.match(
     gallery,

@@ -67,6 +67,7 @@ openwrangler_r_kernel_agent <- local({
         "invalid-column-name",
         "invalid-view-query",
         "invalid-view-value",
+        "operation-output-too-large",
         "reserved-column-name"
       )
     ) {
@@ -651,7 +652,7 @@ openwrangler_r_kernel_agent <- local({
         )
       ))
     }
-    if (identical(kind, "lowerText")) {
+    if (kind %in% c("lowerText", "upperText")) {
       params <- exact_record(
         step$params,
         "column",
@@ -684,7 +685,58 @@ openwrangler_r_kernel_agent <- local({
         } else {
           bounded_text(
             paste0("c:step:", step_id, ":0"),
-            "the derived R lowercase column identity",
+            sprintf("the derived R %s column identity", if (identical(kind, "lowerText")) "lowercase" else "uppercase"),
+            limits$columnIdBytes
+          )
+        }
+      ))
+    }
+    if (identical(kind, "findReplace")) {
+      params <- exact_record(
+        step$params,
+        c("column", "find", "replacement"),
+        "request.payload.step.params",
+        optional_fields = c("regex", "newColumn")
+      )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      find <- bounded_text(params$find, "request.payload.step.params.find", 8192L)
+      replacement <- bounded_text(params$replacement, "request.payload.step.params.replacement", 8192L)
+      regex <- if ("regex" %in% names(params)) params$regex else FALSE
+      if (!is.logical(regex) || length(regex) != 1L || is.na(regex)) {
+        abort("invalid_request", "request.payload.step.params.regex must be true or false")
+      }
+      new_column <- NULL
+      if ("newColumn" %in% names(params)) {
+        new_column <- bounded_text(
+          params$newColumn,
+          "request.payload.step.params.newColumn",
+          maximum_variable_name_bytes
+        )
+        if (identical(new_column, "")) {
+          abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+        }
+      }
+      in_place <- is.null(new_column) || identical(new_column, column$name)
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(
+          column = column,
+          find = find,
+          replacement = replacement,
+          regex = regex,
+          newColumn = new_column
+        ),
+        outputId = if (in_place) {
+          column$id
+        } else {
+          bounded_text(
+            paste0("c:step:", step_id, ":0"),
+            "the derived R find-and-replace column identity",
             limits$columnIdBytes
           )
         }
@@ -739,6 +791,8 @@ openwrangler_r_kernel_agent <- local({
       "selectColumns",
       "textLength",
       "lowerText",
+      "upperText",
+      "findReplace",
       "fillMissingValues",
       "castColumn"
     )) {
@@ -803,17 +857,17 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  bind_lower_text_step <- function(capture, step) {
+  bind_text_transform_step <- function(capture, step) {
     schema <- capture$descriptor$schema
     matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
     if (
       length(matches) != 1L ||
         !identical(schema[[matches[[1L]]]]$name, step$params$column$name)
     ) {
-      abort("stale_column", "The lowercase column reference no longer matches the active R dataframe", TRUE)
+      abort("stale_column", "The text-transform column reference no longer matches the active R dataframe", TRUE)
     }
     in_place <- is.null(step$params$newColumn) || identical(step$params$newColumn, step$params$column$name)
-    list(
+    bound <- list(
       id = step$id,
       kind = step$kind,
       position = as.integer(matches[[1L]]),
@@ -822,6 +876,12 @@ openwrangler_r_kernel_agent <- local({
       inPlace = in_place,
       outputId = step$outputId
     )
+    if (identical(step$kind, "findReplace")) {
+      bound$find <- step$params$find
+      bound$replacement <- step$params$replacement
+      bound$regex <- step$params$regex
+    }
+    bound
   }
 
   bind_fill_missing_step <- function(capture, step) {
@@ -1122,25 +1182,34 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
-    if (identical(step$kind, "lowerText")) {
-      bound <- bind_lower_text_step(capture, step)
-      result <- frame_contract$lower_text_column_at(
-        source,
-        bound$position,
-        bound$oldName,
-        if (isTRUE(bound$inPlace)) NULL else bound$newName
+    if (step$kind %in% c("lowerText", "upperText", "findReplace")) {
+      bound <- bind_text_transform_step(capture, step)
+      new_name <- if (isTRUE(bound$inPlace)) NULL else bound$newName
+      result <- switch(
+        step$kind,
+        lowerText = frame_contract$lower_text_column_at(source, bound$position, bound$oldName, new_name),
+        upperText = frame_contract$upper_text_column_at(source, bound$position, bound$oldName, new_name),
+        findReplace = frame_contract$find_replace_column_at(
+          source,
+          bound$position,
+          bound$oldName,
+          bound$find,
+          bound$replacement,
+          bound$regex,
+          new_name
+        )
       )
       if (isTRUE(bound$inPlace)) {
         source_positions <- seq_along(capture$descriptor$schema)
         output_ids <- vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
-        lower_position <- bound$position
+        transform_position <- bound$position
       } else {
         source_positions <- c(seq_along(capture$descriptor$schema), bound$position)
         output_ids <- c(
           vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
           bound$outputId
         )
-        lower_position <- length(output_ids)
+        transform_position <- length(output_ids)
       }
       return(list(
         capture = frame_contract$capture_frame(
@@ -1148,7 +1217,7 @@ openwrangler_r_kernel_agent <- local({
           nullability_source = capture,
           source_positions = source_positions,
           output_ids = output_ids,
-          lower_text_positions = lower_position
+          text_transform_positions = transform_position
         ),
         bound = bound
       ))
@@ -1926,57 +1995,206 @@ openwrangler_r_kernel_agent <- local({
           "    names(.ow_result) <- c(.ow_text_length_existing_names, .ow_text_length_name)",
           "  }"
         )
-      } else if (identical(step$kind, "lowerText")) {
+      } else if (step$kind %in% c("lowerText", "upperText", "findReplace")) {
+        operation_name <- switch(
+          step$kind,
+          lowerText = "Lowercase",
+          upperText = "Uppercase",
+          findReplace = "Find and Replace"
+        )
         lines <- c(
           lines,
-          sprintf("  .ow_lower_position <- %dL", step$position),
-          sprintf("  .ow_lower_source_name <- %s", r_string(step$oldName)),
-          sprintf("  .ow_lower_name <- %s", r_string(step$newName)),
-          "  if (ncol(.ow_result) < .ow_lower_position || !identical(names(.ow_result)[[.ow_lower_position]], .ow_lower_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
-          "  if (!is.character(.ow_result[[.ow_lower_position]]) && !is.factor(.ow_result[[.ow_lower_position]])) stop(\"Open Wrangler Lowercase requires a character or factor column\", call. = FALSE)",
-          "  .ow_lower_source <- as.character(.ow_result[[.ow_lower_position]])",
-          "  .ow_lower_values <- vapply(seq_along(.ow_lower_source), function(.ow_index) {",
-          "    .ow_value <- .ow_lower_source[[.ow_index]]",
+          sprintf("  .ow_text_position <- %dL", step$position),
+          sprintf("  .ow_text_source_name <- %s", r_string(step$oldName)),
+          sprintf("  .ow_text_name <- %s", r_string(step$newName)),
+          "  if (ncol(.ow_result) < .ow_text_position || !identical(names(.ow_result)[[.ow_text_position]], .ow_text_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          sprintf(
+            "  if (!is.character(.ow_result[[.ow_text_position]]) && !is.factor(.ow_result[[.ow_text_position]])) stop(\"Open Wrangler %s requires a character or factor column\", call. = FALSE)",
+            operation_name
+          ),
+          "  .ow_text_source <- as.character(.ow_result[[.ow_text_position]])"
+        )
+        if (identical(step$kind, "findReplace")) {
+          lines <- c(
+            lines,
+            sprintf("  .ow_text_find <- %s", r_string(step$find)),
+            sprintf("  .ow_text_replacement <- %s", r_string(step$replacement)),
+            sprintf("  .ow_text_regex <- %s", if (isTRUE(step$regex)) "TRUE" else "FALSE")
+          )
+          if (isTRUE(step$regex)) {
+            lines <- c(
+              lines,
+              "  .ow_replacement_characters <- strsplit(.ow_text_replacement, \"\", fixed = TRUE)[[1L]]",
+              "  .ow_plain_literal_bytes <- 0",
+              "  .ow_case_literal_bytes <- 0",
+              "  .ow_plain_references <- integer(9L)",
+              "  .ow_case_references <- integer(9L)",
+              "  .ow_case_conversion <- FALSE",
+              "  .ow_add_literal <- function(.ow_character) {",
+              "    .ow_bytes <- as.double(nchar(.ow_character, type = \"bytes\"))",
+              "    if (.ow_case_conversion) .ow_case_literal_bytes <<- .ow_case_literal_bytes + .ow_bytes else .ow_plain_literal_bytes <<- .ow_plain_literal_bytes + .ow_bytes",
+              "  }",
+              "  .ow_replacement_index <- 1L",
+              "  while (.ow_replacement_index <= length(.ow_replacement_characters)) {",
+              "    .ow_character <- .ow_replacement_characters[[.ow_replacement_index]]",
+              "    if (!identical(.ow_character, \"\\\\\")) {",
+              "      .ow_add_literal(.ow_character)",
+              "      .ow_replacement_index <- .ow_replacement_index + 1L",
+              "      next",
+              "    }",
+              "    if (.ow_replacement_index == length(.ow_replacement_characters)) {",
+              "      .ow_add_literal(\"\\\\\")",
+              "      break",
+              "    }",
+              "    .ow_escaped <- .ow_replacement_characters[[.ow_replacement_index + 1L]]",
+              "    if (identical(.ow_escaped, \"\\\\\")) {",
+              "      .ow_add_literal(\"\\\\\")",
+              "    } else if (.ow_escaped %in% as.character(seq_len(9L))) {",
+              "      .ow_reference <- as.integer(.ow_escaped)",
+              "      if (.ow_case_conversion) .ow_case_references[[.ow_reference]] <- .ow_case_references[[.ow_reference]] + 1L else .ow_plain_references[[.ow_reference]] <- .ow_plain_references[[.ow_reference]] + 1L",
+              "    } else if (.ow_escaped %in% c(\"U\", \"L\")) {",
+              "      .ow_case_conversion <- TRUE",
+              "    } else if (identical(.ow_escaped, \"E\")) {",
+              "      .ow_case_conversion <- FALSE",
+              "    } else {",
+              "      .ow_add_literal(\"\\\\\")",
+              "      .ow_add_literal(.ow_escaped)",
+              "    }",
+              "    .ow_replacement_index <- .ow_replacement_index + 2L",
+              "  }",
+              "  .ow_capture_bytes <- function(.ow_match_vector, .ow_capture_index, .ow_byte_prefix) {",
+              "    .ow_capture_starts <- attr(.ow_match_vector, \"capture.start\", exact = TRUE)",
+              "    .ow_capture_lengths <- attr(.ow_match_vector, \"capture.length\", exact = TRUE)",
+              "    if (is.null(.ow_capture_starts) || is.null(.ow_capture_lengths) || !is.matrix(.ow_capture_starts) || !is.matrix(.ow_capture_lengths) || ncol(.ow_capture_starts) < .ow_capture_index || ncol(.ow_capture_lengths) < .ow_capture_index) return(0)",
+              "    .ow_starts <- .ow_capture_starts[, .ow_capture_index]",
+              "    .ow_lengths <- .ow_capture_lengths[, .ow_capture_index]",
+              "    if (isTRUE(attr(.ow_match_vector, \"useBytes\", exact = TRUE))) return(sum(as.double(.ow_lengths[.ow_starts >= 0L & .ow_lengths > 0L])))",
+              "    sum(vapply(seq_along(.ow_starts), function(.ow_capture_ordinal) {",
+              "      .ow_start <- .ow_starts[[.ow_capture_ordinal]]",
+              "      .ow_length <- .ow_lengths[[.ow_capture_ordinal]]",
+              "      if (.ow_start < 0L || .ow_length <= 0L) return(0)",
+              "      .ow_end <- .ow_start + .ow_length",
+              "      if (.ow_start < 1L || .ow_end > length(.ow_byte_prefix)) return(8192)",
+              "      .ow_byte_prefix[[.ow_end]] - .ow_byte_prefix[[.ow_start]]",
+              "    }, numeric(1L), USE.NAMES = FALSE))",
+              "  }"
+            )
+          }
+        }
+        lines <- c(
+          lines,
+          "  .ow_text_values <- vapply(seq_along(.ow_text_source), function(.ow_index) {",
+          "    .ow_value <- .ow_text_source[[.ow_index]]",
           "    if (is.na(.ow_value)) return(NA_character_)",
-          "    if (identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Lowercase requires valid UTF-8 text\", call. = FALSE)",
+          sprintf(
+            "    if (identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler %s requires valid UTF-8 text\", call. = FALSE)",
+            operation_name
+          ),
           "    .ow_encoding <- Encoding(.ow_value)",
           "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
           "    .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
-          "    if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Lowercase requires bounded valid UTF-8 text\", call. = FALSE)",
-          "    .ow_utf8",
-          "  }, character(1L), USE.NAMES = FALSE)",
-          "  .ow_lower_values <- tolower(.ow_lower_values)",
-          "  .ow_lower_values <- vapply(seq_along(.ow_lower_values), function(.ow_index) {",
-          "    .ow_value <- .ow_lower_values[[.ow_index]]",
-          "    if (is.na(.ow_value)) return(NA_character_)",
-          "    if (identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Lowercase produced invalid UTF-8 text\", call. = FALSE)",
-          "    .ow_encoding <- Encoding(.ow_value)",
+          sprintf(
+            "    if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler %s requires bounded valid UTF-8 text\", call. = FALSE)",
+            operation_name
+          )
+        )
+        if (identical(step$kind, "lowerText")) {
+          lines <- c(lines, "    .ow_output <- tolower(.ow_utf8)")
+        } else if (identical(step$kind, "upperText")) {
+          lines <- c(lines, "    .ow_output <- toupper(.ow_utf8)")
+        } else {
+          lines <- c(
+            lines,
+            "    .ow_input_bytes <- as.double(nchar(.ow_utf8, type = \"bytes\"))",
+            "    .ow_replacement_bytes <- as.double(nchar(.ow_text_replacement, type = \"bytes\"))",
+            "    if (.ow_text_regex) {",
+            "      .ow_matches <- tryCatch(",
+            "        withCallingHandlers(",
+            "          gregexpr(.ow_text_find, .ow_utf8, perl = TRUE),",
+            "          warning = function(.ow_warning) stop(\"regex evaluation failed\", call. = FALSE)",
+            "        ),",
+            "        error = function(.ow_error) stop(\"Open Wrangler Find and Replace could not apply the requested regular expression\", call. = FALSE)",
+            "      )",
+            "      .ow_positions <- .ow_matches[[1L]]",
+            "      if (length(.ow_positions) == 1L && identical(as.integer(.ow_positions[[1L]]), -1L)) {",
+            "        .ow_output <- .ow_utf8",
+            "      } else {",
+            "        .ow_matched_values <- regmatches(.ow_utf8, .ow_matches)[[1L]]",
+            "        .ow_matched_bytes <- sum(as.double(nchar(.ow_matched_values, type = \"bytes\")))",
+            "        .ow_capture_byte_prefix <- if (isTRUE(attr(.ow_positions, \"useBytes\", exact = TRUE))) NULL else c(0, cumsum(as.double(nchar(strsplit(.ow_utf8, \"\", fixed = TRUE)[[1L]], type = \"bytes\"))))",
+            "        .ow_replacement_bound <- length(.ow_matched_values) * (.ow_plain_literal_bytes + .ow_case_literal_bytes * 16)",
+            "        for (.ow_capture_index in seq_len(9L)) {",
+            "          .ow_capture_size <- .ow_capture_bytes(.ow_positions, .ow_capture_index, .ow_capture_byte_prefix)",
+            "          .ow_replacement_bound <- .ow_replacement_bound + .ow_plain_references[[.ow_capture_index]] * .ow_capture_size + .ow_case_references[[.ow_capture_index]] * .ow_capture_size * 16",
+            "        }",
+            "        .ow_projected_bytes <- .ow_input_bytes - .ow_matched_bytes + .ow_replacement_bound",
+            "        if (!is.finite(.ow_projected_bytes) || .ow_projected_bytes > 8192L) stop(\"Open Wrangler Find and Replace would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
+            "        .ow_output <- tryCatch(",
+            "          withCallingHandlers(",
+            "            gsub(.ow_text_find, .ow_text_replacement, .ow_utf8, perl = TRUE),",
+            "            warning = function(.ow_warning) stop(\"regex evaluation failed\", call. = FALSE)",
+            "          ),",
+            "          error = function(.ow_error) stop(\"Open Wrangler Find and Replace could not apply the requested regular expression\", call. = FALSE)",
+            "        )",
+            "      }",
+            "    } else if (identical(.ow_text_find, \"\")) {",
+            "      .ow_projected_bytes <- .ow_input_bytes + (nchar(.ow_utf8, type = \"chars\") + 1) * .ow_replacement_bytes",
+            "      if (!is.finite(.ow_projected_bytes) || .ow_projected_bytes > 8192L) stop(\"Open Wrangler Find and Replace would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
+            "      .ow_text_literal_replacement <- gsub(\"\\\\\", \"\\\\\\\\\", .ow_text_replacement, fixed = TRUE)",
+            "      .ow_output <- gsub(\"\", .ow_text_literal_replacement, .ow_utf8, perl = TRUE)",
+            "    } else {",
+            "      .ow_literal_matches <- gregexpr(.ow_text_find, .ow_utf8, fixed = TRUE)[[1L]]",
+            "      .ow_match_count <- if (length(.ow_literal_matches) == 1L && identical(as.integer(.ow_literal_matches[[1L]]), -1L)) 0 else length(.ow_literal_matches)",
+            "      .ow_projected_bytes <- .ow_input_bytes + .ow_match_count * (.ow_replacement_bytes - nchar(.ow_text_find, type = \"bytes\"))",
+            "      if (!is.finite(.ow_projected_bytes) || .ow_projected_bytes > 8192L) stop(\"Open Wrangler Find and Replace would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
+            "      .ow_output <- if (.ow_match_count == 0L) .ow_utf8 else gsub(.ow_text_find, .ow_text_replacement, .ow_utf8, fixed = TRUE)",
+            "    }"
+          )
+        }
+        lines <- c(
+          lines,
+          "    if (!is.character(.ow_output) || length(.ow_output) != 1L || is.na(.ow_output)) stop(\"Open Wrangler text transform returned an invalid result\", call. = FALSE)",
+          sprintf(
+            "    if (identical(Encoding(.ow_output), \"bytes\")) stop(\"Open Wrangler %s produced invalid UTF-8 text\", call. = FALSE)",
+            operation_name
+          ),
+          "    .ow_encoding <- Encoding(.ow_output)",
           "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
-          "    .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
-          "    if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Lowercase produced invalid or oversized UTF-8 text\", call. = FALSE)",
-          "    .ow_utf8",
+          "    .ow_output_utf8 <- iconv(.ow_output, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+          sprintf(
+            "    if (is.na(.ow_output_utf8)) stop(\"Open Wrangler %s produced invalid UTF-8 text\", call. = FALSE)",
+            operation_name
+          ),
+          sprintf(
+            "    if (nchar(.ow_output_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler %s would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
+            operation_name
+          ),
+          "    .ow_output_utf8",
           "  }, character(1L), USE.NAMES = FALSE)"
         )
         if (isTRUE(step$inPlace)) {
           lines <- c(
             lines,
-            "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_lower_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Lowercase cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
-            "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_lower_position, value = .ow_lower_values) else .ow_result[[.ow_lower_position]] <- .ow_lower_values"
+            sprintf(
+              "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_text_source_name %%in%% data.table::key(.ow_result)) stop(\"Open Wrangler %s cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
+              operation_name
+            ),
+            "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_text_position, value = .ow_text_values) else .ow_result[[.ow_text_position]] <- .ow_text_values"
           )
         } else {
           lines <- c(
             lines,
-            "  if (.ow_lower_name == \"\" || any(names(.ow_result) == .ow_lower_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+            "  if (.ow_text_name == \"\" || any(names(.ow_result) == .ow_text_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
             sprintf(
               "  if (ncol(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
               maximum_columns
             ),
             "  if (inherits(.ow_result, \"data.table\")) {",
-            "    data.table::set(.ow_result, j = .ow_lower_name, value = .ow_lower_values)",
+            "    data.table::set(.ow_result, j = .ow_text_name, value = .ow_text_values)",
             "  } else {",
-            "    .ow_lower_existing_names <- names(.ow_result)",
-            "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_lower_values",
-            "    names(.ow_result) <- c(.ow_lower_existing_names, .ow_lower_name)",
+            "    .ow_text_existing_names <- names(.ow_result)",
+            "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_text_values",
+            "    names(.ow_result) <- c(.ow_text_existing_names, .ow_text_name)",
             "  }"
           )
         }
@@ -2068,7 +2286,7 @@ openwrangler_r_kernel_agent <- local({
   ) {
     added_columns <- if (
       bound$kind %in% c("cloneColumn", "textLength") ||
-        (identical(bound$kind, "lowerText") && !isTRUE(bound$inPlace))
+        (bound$kind %in% c("lowerText", "upperText", "findReplace") && !isTRUE(bound$inPlace))
     ) {
       bound$newName
     } else {
@@ -2105,7 +2323,10 @@ openwrangler_r_kernel_agent <- local({
           after_page$page$totalRows == after_rows &&
           length(after_page$page$rows) == after_rows
       truncated <- !(before_complete && after_complete)
-    } else if (bound$kind %in% c("lowerText", "fillMissingValues", "castColumn") && isTRUE(bound$inPlace)) {
+    } else if (
+      bound$kind %in% c("lowerText", "upperText", "findReplace", "fillMissingValues", "castColumn") &&
+        isTRUE(bound$inPlace)
+    ) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R in-place transform diff is missing its bounded page context")
       }
@@ -2203,6 +2424,8 @@ openwrangler_r_kernel_agent <- local({
       "clone_column_at",
       "text_length_column_at",
       "lower_text_column_at",
+      "upper_text_column_at",
+      "find_replace_column_at",
       "fill_missing_column_at",
       "cast_column_at",
       "drop_columns_at",

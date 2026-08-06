@@ -1452,6 +1452,243 @@ ${close.code}
     expect(applied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
   });
 
+  it("chains native R uppercase with literal, regex, and blank replacements", () => {
+    const editingSessionId = "51100000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "51100000-0000-4000-8000-000000000002",
+      upperPreview: "51100000-0000-4000-8000-000000000003",
+      upperApply: "51100000-0000-4000-8000-000000000004",
+      literalPreview: "51100000-0000-4000-8000-000000000005",
+      literalApply: "51100000-0000-4000-8000-000000000006",
+      regexPreview: "51100000-0000-4000-8000-000000000007",
+      regexApply: "51100000-0000-4000-8000-000000000008",
+      blankPreview: "51100000-0000-4000-8000-000000000009",
+      close: "51100000-0000-4000-8000-00000000000a"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const upperPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.upperPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: "uppercase-derived",
+          kind: "upperText",
+          params: { column: { id: "r:c:0", name: "label" }, newColumn: "upper" }
+        },
+        page: pageWindow()
+      }
+    });
+    const upperApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.upperApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const literalPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.literalPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 2,
+        step: {
+          id: "replace-literal-derived",
+          kind: "findReplace",
+          params: {
+            column: { id: "r:c:0", name: "label" },
+            find: ".",
+            replacement: "!",
+            regex: false,
+            newColumn: "literal"
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const literalApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.literalApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
+    });
+    const regexPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.regexPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 4,
+        step: {
+          id: "replace-regex-derived",
+          kind: "findReplace",
+          params: {
+            column: { id: "r:c:0", name: "label" },
+            find: "[[:digit:]]+",
+            replacement: "#",
+            regex: true,
+            newColumn: "regex"
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const regexApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.regexApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 5, page: pageWindow() }
+    });
+    const blankPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.blankPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 6,
+        step: {
+          id: "replace-blank-in-place",
+          kind: "findReplace",
+          params: { column: { id: "r:c:0", name: "label" }, find: "", replacement: "_" }
+        },
+        page: pageWindow()
+      }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(
+  label = factor(c("a.b 42", "naive2", NA_character_)),
+  stringsAsFactors = TRUE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${upperPreview.code}
+${upperApply.code}
+${literalPreview.code}
+${literalApply.code}
+${regexPreview.code}
+${regexApply.code}
+${blankPreview.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    if (opened.kind !== "page") throw new Error("Expected an opened native R text-cleaning session.");
+    const upperPreviewed = decodeRKernelResponseJson(marked(result.stdout, upperPreview.marker), ids.upperPreview, {
+      inputSchema: opened.page.schema
+    });
+    expect(upperPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      page: {
+        schema: [
+          expect.objectContaining({ id: "r:c:0", rawType: "factor" }),
+          expect.objectContaining({ id: "c:step:uppercase-derived:0", name: "upper", rawType: "character" })
+        ]
+      },
+      diff: { addedColumns: ["upper"], changedCells: 0 }
+    });
+    const upperApplied = decodeRKernelResponseJson(marked(result.stdout, upperApply.marker), ids.upperApply);
+    if (upperApplied.kind !== "planUpdated") throw new Error("Expected the native R uppercase apply.");
+
+    const literalPreviewed = decodeRKernelResponseJson(
+      marked(result.stdout, literalPreview.marker),
+      ids.literalPreview,
+      { inputSchema: upperApplied.page.schema }
+    );
+    expect(literalPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 3,
+      page: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "c:step:replace-literal-derived:0", name: "literal" })
+        ])
+      },
+      diff: { addedColumns: ["literal"], changedCells: 0 }
+    });
+    const literalApplied = decodeRKernelResponseJson(marked(result.stdout, literalApply.marker), ids.literalApply);
+    if (literalApplied.kind !== "planUpdated") throw new Error("Expected the literal replacement apply.");
+
+    const regexPreviewed = decodeRKernelResponseJson(marked(result.stdout, regexPreview.marker), ids.regexPreview, {
+      inputSchema: literalApplied.page.schema
+    });
+    expect(regexPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 5,
+      page: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "c:step:replace-regex-derived:0", name: "regex" })
+        ])
+      },
+      diff: { addedColumns: ["regex"], changedCells: 0 }
+    });
+    const regexApplied = decodeRKernelResponseJson(marked(result.stdout, regexApply.marker), ids.regexApply);
+    if (regexApplied.kind !== "planUpdated") throw new Error("Expected the regex replacement apply.");
+
+    const blankPreviewed = decodeRKernelResponseJson(marked(result.stdout, blankPreview.marker), ids.blankPreview, {
+      inputSchema: regexApplied.page.schema
+    });
+    expect(blankPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 7,
+      page: {
+        schema: [
+          expect.objectContaining({ id: "r:c:0", name: "label", rawType: "character", type: "string" }),
+          expect.objectContaining({ name: "upper" }),
+          expect.objectContaining({ name: "literal" }),
+          expect.objectContaining({ name: "regex" })
+        ]
+      },
+      diff: { addedColumns: [], changedCells: 2, truncated: false }
+    });
+    if (blankPreviewed.kind !== "stepPreview") throw new Error("Expected the blank replacement preview.");
+    expect(blankPreviewed.page.page.rows.map((row) => row.values[0])).toMatchObject([
+      { kind: "string", raw: "_a_._b_ _4_2_", display: "_a_._b_ _4_2_" },
+      { kind: "string", raw: "_n_a_i_v_e_2_", display: "_n_a_i_v_e_2_" },
+      { kind: "null", raw: null, display: "NA", isNull: true }
+    ]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+    expect(blankPreviewed.code).toContain("toupper");
+    expect(blankPreviewed.code).toContain("gsub");
+    expect(blankPreviewed.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+
+    const generated = runR(`
+frame <- data.frame(
+  label = factor(c("a.b 42", "naive2", NA_character_)),
+  stringsAsFactors = TRUE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${blankPreviewed.code}
+stopifnot(identical(names(open_wrangler_result), c("label", "upper", "literal", "regex")))
+stopifnot(identical(open_wrangler_result$label, c("_a_._b_ _4_2_", "_n_a_i_v_e_2_", NA_character_)))
+stopifnot(identical(open_wrangler_result$literal, c("a!b 42", "naive2", NA_character_)))
+stopifnot(identical(open_wrangler_result$regex, c("a.b #", "naive#", NA_character_)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("runs native R type conversion through preview, history, undo, and generated code", () => {
     const editingSessionId = "52000000-0000-4000-8000-000000000001";
     const stepId = "cast-text-to-integer";

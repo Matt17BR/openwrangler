@@ -145,6 +145,27 @@ export interface RKernelLowerTextStep {
   }>;
 }
 
+export interface RKernelUpperTextStep {
+  readonly id: string;
+  readonly kind: "upperText";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    readonly newColumn?: string;
+  }>;
+}
+
+export interface RKernelFindReplaceStep {
+  readonly id: string;
+  readonly kind: "findReplace";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    find: string;
+    replacement: string;
+    readonly regex?: boolean;
+    readonly newColumn?: string;
+  }>;
+}
+
 export interface RKernelFillMissingValuesStep {
   readonly id: string;
   readonly kind: "fillMissingValues";
@@ -214,6 +235,8 @@ export type RKernelTransformStep =
   | RKernelCastColumnStep
   | RKernelTextLengthStep
   | RKernelLowerTextStep
+  | RKernelUpperTextStep
+  | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
   | RKernelDropColumnsStep
   | RKernelSelectColumnsStep;
@@ -879,6 +902,32 @@ function validateTransformStep(value: unknown): void {
   if (step.kind === "lowerText") {
     const params = exactRecord(step.params, ["column"], ["newColumn"], "R kernel lowercase parameters");
     validateColumnReference(params.column, "request.payload.step.params.column");
+    if (params.newColumn !== undefined) {
+      boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    }
+    return;
+  }
+  if (step.kind === "upperText") {
+    const params = exactRecord(step.params, ["column"], ["newColumn"], "R kernel uppercase parameters");
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    if (params.newColumn !== undefined) {
+      boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    }
+    return;
+  }
+  if (step.kind === "findReplace") {
+    const params = exactRecord(
+      step.params,
+      ["column", "find", "replacement"],
+      ["regex", "newColumn"],
+      "R kernel find-and-replace parameters"
+    );
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    boundedText(params.find, "request.payload.step.params.find", R_FRAME_CONTRACT_LIMITS.textBytes, true);
+    boundedText(params.replacement, "request.payload.step.params.replacement", R_FRAME_CONTRACT_LIMITS.textBytes, true);
+    if (params.regex !== undefined && typeof params.regex !== "boolean") {
+      fail("R kernel find-and-replace parameters contain an invalid regex flag.");
+    }
     if (params.newColumn !== undefined) {
       boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     }

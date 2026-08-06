@@ -94,6 +94,28 @@ openwrangler_r_frame_contract <- local({
     converted
   }
 
+  bounded_operation_output <- function(value, operation_name) {
+    if (!is.character(value) || length(value) != 1L || is.na(value)) {
+      abort("internal-error", sprintf("%s returned an invalid R text result", operation_name))
+    }
+    encoding <- Encoding(value)
+    if (identical(encoding, "bytes")) {
+      abort("invalid-view-query", sprintf("%s produced invalid UTF-8 text", operation_name))
+    }
+    source_encoding <- if (identical(encoding, "latin1")) "latin1" else "UTF-8"
+    converted <- iconv(value, from = source_encoding, to = "UTF-8", sub = NA_character_)
+    if (is.na(converted)) {
+      abort("invalid-view-query", sprintf("%s produced invalid UTF-8 text", operation_name))
+    }
+    if (nchar(converted, type = "bytes") > maximum_text_bytes) {
+      abort(
+        "operation-output-too-large",
+        sprintf("%s would produce text longer than %d UTF-8 bytes", operation_name, maximum_text_bytes)
+      )
+    }
+    converted
+  }
+
   is_canonical_column_id <- function(value) {
     source_match <- regexec("^r:c:(0|[1-9][0-9]*)$", value, perl = TRUE)
     source_parts <- regmatches(value, source_match)[[1L]]
@@ -1587,7 +1609,7 @@ openwrangler_r_frame_contract <- local({
     source_row_positions = NULL,
     output_ids = NULL,
     text_length_positions = NULL,
-    lower_text_positions = NULL,
+    text_transform_positions = NULL,
     fill_missing_positions = NULL,
     cast_positions = NULL,
     cast_dtypes = NULL
@@ -1603,7 +1625,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(source_row_positions) ||
             !is.null(output_ids) ||
             !is.null(text_length_positions) ||
-            !is.null(lower_text_positions) ||
+            !is.null(text_transform_positions) ||
             !is.null(fill_missing_positions) ||
             !is.null(cast_positions) ||
             !is.null(cast_dtypes)
@@ -1617,8 +1639,8 @@ openwrangler_r_frame_contract <- local({
     if (!is.null(text_length_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R text-length outputs require explicit source mappings and identities")
     }
-    if (!is.null(lower_text_positions) && is.null(source_positions)) {
-      abort("internal-error", "R lowercase outputs require explicit source mappings")
+    if (!is.null(text_transform_positions) && is.null(source_positions)) {
+      abort("internal-error", "R text-transform outputs require explicit source mappings")
     }
     if (!is.null(fill_missing_positions) && is.null(source_positions)) {
       abort("internal-error", "R fill-missing outputs require explicit source mappings")
@@ -1726,21 +1748,21 @@ openwrangler_r_frame_contract <- local({
         }
         text_length_positions <- as.integer(text_length_positions)
       }
-      if (is.null(lower_text_positions)) {
-        lower_text_positions <- integer()
+      if (is.null(text_transform_positions)) {
+        text_transform_positions <- integer()
       } else {
         if (
-          !is.numeric(lower_text_positions) ||
-            anyNA(lower_text_positions) ||
-            any(!is.finite(lower_text_positions)) ||
-            any(lower_text_positions != floor(lower_text_positions)) ||
-            any(lower_text_positions < 1L) ||
-            any(lower_text_positions > length(output_schema)) ||
-            anyDuplicated(lower_text_positions)
+          !is.numeric(text_transform_positions) ||
+            anyNA(text_transform_positions) ||
+            any(!is.finite(text_transform_positions)) ||
+            any(text_transform_positions != floor(text_transform_positions)) ||
+            any(text_transform_positions < 1L) ||
+            any(text_transform_positions > length(output_schema)) ||
+            anyDuplicated(text_transform_positions)
         ) {
-          abort("internal-error", "a derived R frame has invalid lowercase output positions")
+          abort("internal-error", "a derived R frame has invalid text-transform output positions")
         }
-        lower_text_positions <- as.integer(lower_text_positions)
+        text_transform_positions <- as.integer(text_transform_positions)
       }
       if (is.null(cast_positions)) {
         cast_positions <- integer()
@@ -1781,7 +1803,7 @@ openwrangler_r_frame_contract <- local({
       }
       transformed_positions <- c(
         text_length_positions,
-        lower_text_positions,
+        text_transform_positions,
         fill_missing_positions,
         cast_positions
       )
@@ -1851,12 +1873,12 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid text-length output")
           }
-        } else if (index %in% lower_text_positions) {
+        } else if (index %in% text_transform_positions) {
           if (
             !source_column$semantics$kind %in% c("character", "factor") ||
               !identical(output_column$semantics$kind, "character")
           ) {
-            abort("internal-error", "a derived R frame has an invalid lowercase output")
+            abort("internal-error", "a derived R frame has an invalid text-transform output")
           }
         } else if (index %in% cast_positions) {
           cast_index <- match(index, cast_positions)
@@ -2177,7 +2199,14 @@ openwrangler_r_frame_contract <- local({
     text_length_column_at(value, resolved$position, resolved$name, new_name)
   }
 
-  lower_text_column_at <- function(value, position, old_name, new_name = NULL) {
+  transform_text_column_at <- function(value, position, old_name, new_name, operation, transform) {
+    operation_name <- switch(
+      operation,
+      lowerText = "Lowercase",
+      upperText = "Uppercase",
+      findReplace = "Find and Replace",
+      abort("internal-error", "the R text transform is unsupported")
+    )
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -2187,19 +2216,19 @@ openwrangler_r_frame_contract <- local({
     column_count <- inspected$descriptor$shape$columns
     position <- whole_number(position, "column position", column_count)
     if (position < 1L || position > column_count) {
-      abort("stale-column", "the lowercase column position no longer matches the R dataframe")
+      abort("stale-column", sprintf("the %s column position no longer matches the R dataframe", operation))
     }
     position <- as.integer(position)
     old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
     source_column <- inspected$descriptor$schema[[position]]
     if (!identical(source_column$name, old_name)) {
-      abort("stale-column", "the lowercase column name no longer matches the R dataframe")
+      abort("stale-column", sprintf("the %s column name no longer matches the R dataframe", operation))
     }
     if (is_private_column_name(old_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
     if (!source_column$semantics$kind %in% c("character", "factor")) {
-      abort("invalid-view-query", "lowerText requires a character or factor column")
+      abort("invalid-view-query", sprintf("%s requires a character or factor column", operation))
     }
 
     in_place <- is.null(new_name)
@@ -2217,7 +2246,7 @@ openwrangler_r_frame_contract <- local({
       abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
     }
     if (!in_place && column_count >= maximum_columns) {
-      abort("invalid-view-query", "lowerText exceeds the supported R column limit")
+      abort("invalid-view-query", sprintf("%s exceeds the supported R column limit", operation))
     }
     if (
       in_place &&
@@ -2226,35 +2255,35 @@ openwrangler_r_frame_contract <- local({
     ) {
       abort(
         "invalid-view-query",
-        "lowerText cannot replace a data.table key column; choose a new output column"
+        sprintf("%s cannot replace a data.table key column; choose a new output column", operation)
       )
     }
 
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- as.character(result[[position]])
-    validated <- vapply(seq_along(source_values), function(index) {
+    transformed <- vapply(seq_along(source_values), function(index) {
       if (is.na(source_values[[index]])) return(NA_character_)
-      bounded_utf8(source_values[[index]], sprintf("lowerText value %d", index))
-    }, character(1L), USE.NAMES = FALSE)
-    lowered <- tolower(validated)
-    lowered <- vapply(seq_along(lowered), function(index) {
-      if (is.na(lowered[[index]])) return(NA_character_)
-      bounded_utf8(lowered[[index]], sprintf("lowerText result %d", index))
+      source_value <- bounded_utf8(source_values[[index]], sprintf("%s value %d", operation, index))
+      bounded_operation_output(transform(source_value), operation_name)
     }, character(1L), USE.NAMES = FALSE)
     if (in_place) {
       if (identical(inspected$flavor, "r.data.table")) {
-        data.table::set(result, j = position, value = lowered)
+        data.table::set(result, j = position, value = transformed)
       } else {
-        result[[position]] <- lowered
+        result[[position]] <- transformed
       }
     } else if (identical(inspected$flavor, "r.data.table")) {
-      data.table::set(result, j = new_name, value = lowered)
+      data.table::set(result, j = new_name, value = transformed)
     } else {
       original_names <- names(result)
-      result[[length(result) + 1L]] <- lowered
+      result[[length(result) + 1L]] <- transformed
       names(result) <- c(original_names, new_name)
     }
     result
+  }
+
+  lower_text_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_text_column_at(value, position, old_name, new_name, "lowerText", tolower)
   }
 
   lower_text_column <- function(value, column_reference, new_name = NULL) {
@@ -2266,6 +2295,216 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     lower_text_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  upper_text_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_text_column_at(value, position, old_name, new_name, "upperText", toupper)
+  }
+
+  upper_text_column <- function(value, column_reference, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    upper_text_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  find_replace_column_at <- function(
+    value,
+    position,
+    old_name,
+    find,
+    replacement,
+    regex = FALSE,
+    new_name = NULL
+  ) {
+    find <- bounded_utf8(find, "find")
+    replacement <- bounded_utf8(replacement, "replacement")
+    if (!is.logical(regex) || length(regex) != 1L || is.na(regex)) {
+      abort("invalid-view-query", "findReplace.regex must be TRUE or FALSE")
+    }
+    operation_name <- "Find and Replace"
+    reject_oversized_output <- function() {
+      abort(
+        "operation-output-too-large",
+        sprintf("%s would produce text longer than %d UTF-8 bytes", operation_name, maximum_text_bytes)
+      )
+    }
+    require_bounded_size <- function(bytes) {
+      if (!is.finite(bytes) || bytes > maximum_text_bytes) reject_oversized_output()
+    }
+    checked_regex <- function(expression) {
+      tryCatch(
+        withCallingHandlers(
+          force(expression),
+          warning = function(warning) stop("regex evaluation failed", call. = FALSE)
+        ),
+        error = function(error) {
+          abort("invalid-view-query", "Find and Replace could not apply the requested regular expression")
+        }
+      )
+    }
+    parse_regex_replacement <- function(value) {
+      characters <- strsplit(value, "", fixed = TRUE)[[1L]]
+      plain_literal_bytes <- 0
+      case_literal_bytes <- 0
+      plain_references <- integer(9L)
+      case_references <- integer(9L)
+      case_conversion <- FALSE
+      add_literal <- function(character) {
+        bytes <- as.double(nchar(character, type = "bytes"))
+        if (case_conversion) {
+          case_literal_bytes <<- case_literal_bytes + bytes
+        } else {
+          plain_literal_bytes <<- plain_literal_bytes + bytes
+        }
+      }
+      index <- 1L
+      while (index <= length(characters)) {
+        character <- characters[[index]]
+        if (!identical(character, "\\")) {
+          add_literal(character)
+          index <- index + 1L
+          next
+        }
+        if (index == length(characters)) {
+          add_literal("\\")
+          break
+        }
+        escaped <- characters[[index + 1L]]
+        if (identical(escaped, "\\")) {
+          add_literal("\\")
+        } else if (escaped %in% as.character(seq_len(9L))) {
+          reference <- as.integer(escaped)
+          if (case_conversion) {
+            case_references[[reference]] <- case_references[[reference]] + 1L
+          } else {
+            plain_references[[reference]] <- plain_references[[reference]] + 1L
+          }
+        } else if (escaped %in% c("U", "L")) {
+          case_conversion <- TRUE
+        } else if (identical(escaped, "E")) {
+          case_conversion <- FALSE
+        } else {
+          add_literal("\\")
+          add_literal(escaped)
+        }
+        index <- index + 2L
+      }
+      list(
+        plainLiteralBytes = plain_literal_bytes,
+        caseLiteralBytes = case_literal_bytes,
+        plainReferences = plain_references,
+        caseReferences = case_references
+      )
+    }
+    capture_bytes <- function(match_vector, capture_index, byte_prefix) {
+      starts <- attr(match_vector, "capture.start", exact = TRUE)
+      lengths <- attr(match_vector, "capture.length", exact = TRUE)
+      if (
+        is.null(starts) ||
+          is.null(lengths) ||
+          !is.matrix(starts) ||
+          !is.matrix(lengths) ||
+          ncol(starts) < capture_index ||
+          ncol(lengths) < capture_index
+      ) {
+        return(0)
+      }
+      capture_starts <- starts[, capture_index]
+      capture_lengths <- lengths[, capture_index]
+      if (isTRUE(attr(match_vector, "useBytes", exact = TRUE))) {
+        return(sum(as.double(capture_lengths[capture_starts >= 0L & capture_lengths > 0L])))
+      }
+      sum(vapply(seq_along(capture_starts), function(index) {
+        start <- capture_starts[[index]]
+        capture_length <- capture_lengths[[index]]
+        if (start < 0L || capture_length <= 0L) return(0)
+        end <- start + capture_length
+        if (start < 1L || end > length(byte_prefix)) return(as.double(maximum_text_bytes))
+        byte_prefix[[end]] - byte_prefix[[start]]
+      }, numeric(1L), USE.NAMES = FALSE))
+    }
+    parsed_regex_replacement <- if (isTRUE(regex)) parse_regex_replacement(replacement) else NULL
+    replace_value <- function(value) {
+      input_bytes <- as.double(nchar(value, type = "bytes"))
+      replacement_bytes <- as.double(nchar(replacement, type = "bytes"))
+      if (isTRUE(regex)) {
+        matches <- checked_regex(gregexpr(find, value, perl = TRUE))
+        positions <- matches[[1L]]
+        if (length(positions) == 1L && identical(as.integer(positions[[1L]]), -1L)) return(value)
+        matched_values <- regmatches(value, matches)[[1L]]
+        matched_bytes <- sum(as.double(nchar(matched_values, type = "bytes")))
+        capture_byte_prefix <- if (isTRUE(attr(positions, "useBytes", exact = TRUE))) {
+          NULL
+        } else {
+          c(0, cumsum(as.double(nchar(strsplit(value, "", fixed = TRUE)[[1L]], type = "bytes"))))
+        }
+        replacement_bound <- length(matched_values) * (
+          parsed_regex_replacement$plainLiteralBytes +
+            parsed_regex_replacement$caseLiteralBytes * 16
+        )
+        for (capture_index in seq_len(9L)) {
+          capture_size <- capture_bytes(positions, capture_index, capture_byte_prefix)
+          replacement_bound <- replacement_bound +
+            parsed_regex_replacement$plainReferences[[capture_index]] * capture_size +
+            parsed_regex_replacement$caseReferences[[capture_index]] * capture_size * 16
+        }
+        require_bounded_size(input_bytes - matched_bytes + replacement_bound)
+        return(checked_regex(gsub(find, replacement, value, perl = TRUE)))
+      }
+      if (identical(find, "")) {
+        require_bounded_size(input_bytes + (nchar(value, type = "chars") + 1) * replacement_bytes)
+        literal_replacement <- gsub("\\", "\\\\", replacement, fixed = TRUE)
+        return(gsub("", literal_replacement, value, perl = TRUE))
+      }
+      matches <- gregexpr(find, value, fixed = TRUE)[[1L]]
+      match_count <- if (
+        length(matches) == 1L && identical(as.integer(matches[[1L]]), -1L)
+      ) 0 else length(matches)
+      require_bounded_size(
+        input_bytes + match_count * (replacement_bytes - nchar(find, type = "bytes"))
+      )
+      if (match_count == 0L) return(value)
+      gsub(find, replacement, value, fixed = TRUE)
+    }
+    transform_text_column_at(
+      value,
+      position,
+      old_name,
+      new_name,
+      "findReplace",
+      replace_value
+    )
+  }
+
+  find_replace_column <- function(
+    value,
+    column_reference,
+    find,
+    replacement,
+    regex = FALSE,
+    new_name = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    find_replace_column_at(
+      value,
+      resolved$position,
+      resolved$name,
+      find,
+      replacement,
+      regex,
+      new_name
+    )
   }
 
   integer64_fill_value <- function(text, label) {
@@ -3563,6 +3802,10 @@ openwrangler_r_frame_contract <- local({
     text_length_column_at = text_length_column_at,
     lower_text_column = lower_text_column,
     lower_text_column_at = lower_text_column_at,
+    upper_text_column = upper_text_column,
+    upper_text_column_at = upper_text_column_at,
+    find_replace_column = find_replace_column,
+    find_replace_column_at = find_replace_column_at,
     fill_missing_column = fill_missing_column,
     fill_missing_column_at = fill_missing_column_at,
     cast_column = cast_column,

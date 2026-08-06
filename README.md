@@ -185,15 +185,17 @@ This document command does not render the document or attach to an existing Quar
 It accepts the common first-line YAML and fenced-cell form and rejects ambiguous chunk engines, indented cells, raw
 HTML/TeX containers, and other document syntax that could change which text is R code.
 
-The R workbench supports paging, filters, multi-column sorts, value search, profiles, and twelve cleaning operations:
+The R workbench supports paging, filters, multi-column sorts, value search, profiles, and fourteen cleaning operations:
 **Filter Rows**, **Sort Rows**, **Drop Missing Rows**, **Fill Missing Values**, **Drop Duplicates**, **Rename Column**,
-**Drop Columns**, **Select Columns**, **Clone Column**, **Convert type**, **Text Length**, and **Lowercase**. A viewing
-filter or sort can be copied into a cleaning step without changing the original dataframe. Drop Missing Rows treats
-`NA` and `NaN` as missing and can check any or all selected columns. Drop Duplicates can compare selected columns or
-the whole row and keep the first, last, or none of the repeated rows. Fill Missing Values offers exact medians for
-numeric columns, the most common value for character, factor, and logical columns, and specific typed values. It keeps
-`integer64`, factors, dates, and datetimes in their R types. Each operation uses the same preview, apply,
-discard, inspection, edit, and undo flow.
+**Drop Columns**, **Select Columns**, **Clone Column**, **Convert type**, **Text Length**, **Lowercase**, **Uppercase**,
+and **Find and replace**. A viewing filter or sort can be copied into a cleaning step without changing the original
+dataframe. Drop Missing Rows treats `NA` and `NaN` as missing and can check any or all selected columns. Drop
+Duplicates can compare selected columns or the whole row and keep the first, last, or none of the repeated rows. Fill
+Missing Values offers exact medians for numeric columns, the most common value for character, factor, and logical
+columns, and specific typed values. It keeps `integer64`, factors, dates, and datetimes in their R types. Each
+operation uses the same preview, apply, discard, inspection, edit, and undo flow.
+The text operations accept character and factor columns. They keep `NA`, and can replace the source column or create
+a new character column. Find and replace supports literal text and regular expressions.
 Generated R can be copied, saved as a script, or inserted into the notebook or R document that opened the dataframe.
 
 Convert type does not change an active `data.table` key column. Clone that column first, then convert the copy.
@@ -284,8 +286,8 @@ before v2 ships.
 - **v2:** finish native R support for data frames, tibbles, and `data.table`. IRkernel notebooks and isolated `.R`,
   `.Rmd`, and `.qmd` document runs are available on the development branch.
   Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
-  Convert type, Text Length, and Lowercase are available now. Generated R can be inserted into its originating notebook or R document. The rest
-  of the cleaning catalog and data export are still planned. The
+  Convert type, Text Length, Lowercase, Uppercase, and Find and replace are available now. Generated R can be inserted
+  into its originating notebook or R document. The rest of the cleaning catalog and data export are still planned. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).

@@ -1975,7 +1975,9 @@ async function exerciseReleasedRJupyterExtension(
         "cloneColumn",
         "castColumn",
         "textLength",
-        "lowerText"
+        "findReplace",
+        "lowerText",
+        "upperText"
       ]
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
@@ -2112,7 +2114,9 @@ async function exerciseReleasedRJupyterExtension(
         "cloneColumn",
         "castColumn",
         "textLength",
-        "lowerText"
+        "findReplace",
+        "lowerText",
+        "upperText"
       ]);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
@@ -2368,7 +2372,9 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
         "cloneColumn",
         "castColumn",
         "textLength",
-        "lowerText"
+        "findReplace",
+        "lowerText",
+        "upperText"
       ],
       notebookInsert: false,
       documentInsert: true
@@ -4256,7 +4262,9 @@ async function exerciseReleasedREditingJourney(
       "cloneColumn",
       "castColumn",
       "textLength",
-      "lowerText"
+      "findReplace",
+      "lowerText",
+      "upperText"
     ]
   });
   assert.deepEqual(
@@ -5161,6 +5169,118 @@ async function exerciseReleasedREditingJourney(
   assert.equal(lowercaseUndo.page.rows[0]?.values[1]?.display, "A");
   await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:lowercase-source-after-undo`);
 
+  if (phase === "jupyter-r") {
+    recordAcceptanceProgress(`${phase}:editing:find-replace-picker-preview-apply-undo`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Find and replace");
+    const replaced = await previewReleasedRFindReplace(testing, workbench, app, sessionId, "group", "A", "Alpha");
+    app = replaced.app;
+    const replaceReview = app.getByRole("region", { name: "Draft review" });
+    await replaceReview.getByText("Find and replace", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await replaceReview.getByRole("button", { name: "Apply step", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "findReplace" &&
+          step.id === replaced.stepId &&
+          step.params.column.name === "group" &&
+          step.params.find === "A" &&
+          step.params.replacement === "Alpha" &&
+          step.params.regex === false
+        );
+      },
+      30_000,
+      "applying native R Find and replace"
+    );
+    const findApplied = testing.activeSession();
+    assert.ok(findApplied, "The applied native R Find and replace step must retain its session.");
+    const groupAfterReplace = findApplied.metadata.schema.find((column) => column.name === "group");
+    assert.ok(groupAfterReplace, "The native R Find and replace journey must retain group.");
+    const replacedPage = await testing.request({
+      kind: "getPage",
+      sessionId,
+      revision: findApplied.metadata.revision,
+      viewRequestId: `${phase}-editing-find-replace-page`,
+      offset: 0,
+      limit: 1,
+      filterModel: findApplied.viewState.filterModel,
+      columnOffset: groupAfterReplace.position,
+      columnLimit: 1
+    });
+    assert.equal(replacedPage.kind, "page");
+    if (replacedPage.kind !== "page") throw new Error("The applied R Find and replace step did not return a page.");
+    assert.equal(replacedPage.page.rows[0]?.values[0]?.display, "Alpha");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Find and replace session before undo");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          (active.code ?? "") === ""
+        );
+      },
+      30_000,
+      "undoing native R Find and replace"
+    );
+
+    recordAcceptanceProgress(`${phase}:editing:uppercase-preview-apply-undo`);
+    const uppercaseBase = testing.activeSession();
+    assert.ok(uppercaseBase, "The restored R session must remain available for Uppercase.");
+    const labelColumn = uppercaseBase.metadata.schema.find((column) => column.name === "label");
+    assert.ok(labelColumn, "The packaged R Uppercase journey requires the label column.");
+    const uppercasePreview = await testing.request({
+      kind: "previewStep",
+      sessionId,
+      revision: uppercaseBase.metadata.revision,
+      step: {
+        id: "released-r-uppercase-label",
+        kind: "upperText",
+        params: { column: { id: labelColumn.id, name: labelColumn.name } }
+      },
+      offset: 0,
+      limit: 20,
+      columnOffset: labelColumn.position,
+      columnLimit: 1
+    });
+    assert.equal(uppercasePreview.kind, "stepPreview", "Packaged native R Uppercase must preview in place.");
+    if (uppercasePreview.kind !== "stepPreview") throw new Error("The packaged R Uppercase preview failed.");
+    assert.equal(uppercasePreview.page.rows[0]?.values[0]?.display, "ROW-0001");
+    assert.match(uppercasePreview.code, /toupper/u);
+    assert.ok(uppercasePreview.diff.changedCells > 0);
+    const uppercaseApplied = await testing.request({
+      kind: "applyDraft",
+      sessionId,
+      revision: uppercasePreview.revision,
+      offset: 0,
+      limit: 20,
+      columnOffset: labelColumn.position,
+      columnLimit: 1
+    });
+    assert.equal(uppercaseApplied.kind, "planUpdated", "Packaged native R Uppercase must apply.");
+    if (uppercaseApplied.kind !== "planUpdated") throw new Error("The packaged R Uppercase apply failed.");
+    assert.equal(uppercaseApplied.page.rows[0]?.values[0]?.display, "ROW-0001");
+    const uppercaseUndo = await testing.request({
+      kind: "undoStep",
+      sessionId,
+      revision: uppercaseApplied.revision,
+      offset: 0,
+      limit: 20,
+      columnOffset: labelColumn.position,
+      columnLimit: 1
+    });
+    assert.equal(uppercaseUndo.kind, "planUpdated", "Packaged native R Uppercase must undo.");
+    if (uppercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Uppercase undo failed.");
+    assert.equal(uppercaseUndo.page.rows[0]?.values[0]?.display, "row-0001");
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:text-cleaning-source-after-undo`);
+  }
+
   if (phase === "jupyter-r" && screenshotOutput) {
     await captureReleasedJupyterCodeInsertion(
       workbench,
@@ -5401,6 +5521,62 @@ async function previewReleasedRTextLength(
   return {
     app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Text Length preview"),
     stepId
+  };
+}
+
+async function previewReleasedRFindReplace(
+  testing: TestApi,
+  workbench: Page,
+  app: Locator,
+  sessionId: string,
+  sourceName: string,
+  find: string,
+  replacement: string
+): Promise<Readonly<{ app: Locator; stepId: string }>> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Find and replace/u }).click();
+  await dialog.getByLabel("Text column", { exact: true }).selectOption({ label: sourceName });
+  await dialog.getByLabel("Find (blank matches empty boundaries)", { exact: true }).fill(find);
+  await dialog.getByLabel("Replace with", { exact: true }).fill(replacement);
+  await dialog.getByRole("checkbox", { name: "Use regular expression", exact: true }).uncheck();
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "findReplace" &&
+        draft.params.column.name === sourceName &&
+        draft.params.find === find &&
+        draft.params.replacement === replacement &&
+        draft.params.regex === false &&
+        draft.params.newColumn === undefined &&
+        active.metadata.steps.length === 0
+      );
+    },
+    30_000,
+    "the native R Find and replace preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  const active = testing.activeSession();
+  assert.ok(
+    active?.metadata.draftStep?.kind === "findReplace",
+    "The native R Find and replace preview must retain its draft."
+  );
+  assertReleasedRFindReplaceGeneratedCode(active.code ?? "", sourceName, find, replacement, false);
+  const codePreview = await waitForCodePreview(workbench, replacement, "R");
+  assertReleasedRFindReplaceGeneratedCode(await codePreview.innerText(), sourceName, find, replacement, false);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Find and replace preview must be acknowledged by its exact renderer."
+  );
+  return {
+    app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Find and replace preview"),
+    stepId: active.metadata.draftStep.id
   };
 }
 
@@ -5747,6 +5923,25 @@ function assertReleasedRTextLengthGeneratedCode(
   assert.ok(code.includes("nchar("));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.ok(code.includes(JSON.stringify(newColumn)));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+function assertReleasedRFindReplaceGeneratedCode(
+  code: string,
+  sourceName: string,
+  find: string,
+  replacement: string,
+  regex: boolean,
+  variableName = "orders_frame"
+): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
+  assert.ok(code.includes(".ow_text_position"));
+  assert.ok(code.includes("gsub("));
+  assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.ok(code.includes(`.ow_text_find <- ${JSON.stringify(find)}`));
+  assert.ok(code.includes(`.ow_text_replacement <- ${JSON.stringify(replacement)}`));
+  assert.ok(code.includes(`.ow_text_regex <- ${regex ? "TRUE" : "FALSE"}`));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 

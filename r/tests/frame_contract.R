@@ -657,7 +657,7 @@ lower_derived_capture <- openwrangler_r_frame_contract$capture_frame(
   nullability_source = lower_capture,
   source_positions = c(1L, 2L, 3L, 1L),
   output_ids = c("r:c:0", "r:c:1", "r:c:2", "c:step:lower-step:0"),
-  lower_text_positions = 4L
+  text_transform_positions = 4L
 )
 assert_identical(
   lower_derived[[4L]],
@@ -687,7 +687,7 @@ lower_tibble_capture <- openwrangler_r_frame_contract$capture_frame(
   lower_tibble_result,
   nullability_source = openwrangler_r_frame_contract$capture_frame(lower_tibble),
   source_positions = 1:3,
-  lower_text_positions = 2L
+  text_transform_positions = 2L
 )
 assert_identical(class(lower_tibble_result), c("tbl_df", "tbl", "data.frame"), "lowerText changed tibble class")
 assert_identical(lower_tibble_result[[2L]], c("alpha", NA_character_, "b\u00e9ta"), "lowerText did not lower factor labels")
@@ -760,6 +760,214 @@ assert_error(
 )
 assert_identical(invalid_lower_frame, invalid_lower_before, "failed lowerText mutated invalid source text")
 assert_identical(lower_frame, lower_before, "lowerText mutated its source data.frame")
+
+upper_result <- openwrangler_r_frame_contract$upper_text_column(
+  lower_frame,
+  list(id = "r:c:0", name = "duplicate"),
+  "upper copy"
+)
+upper_capture <- openwrangler_r_frame_contract$capture_frame(
+  upper_result,
+  nullability_source = lower_capture,
+  source_positions = c(1L, 2L, 3L, 1L),
+  output_ids = c("r:c:0", "r:c:1", "r:c:2", "c:step:upper-step:0"),
+  text_transform_positions = 4L
+)
+assert_identical(
+  upper_result[[4L]],
+  c("CAFÉ", "MIXED", NA_character_),
+  "upperText changed Unicode or NA behavior"
+)
+assert_identical(row.names(upper_result), row.names(lower_frame), "upperText changed explicit row names")
+assert_identical(upper_capture$descriptor$schema[[4L]]$id, "c:step:upper-step:0", "upperText lost output lineage")
+assert_identical(upper_capture$descriptor$schema[[4L]]$rawType, "character", "upperText returned the wrong type")
+
+text_cleanup_frame <- data.frame(
+  text = c("alpha-12", "béta-34", NA_character_, ""),
+  category = factor(c("alpha", NA, "béta", "alpha"), levels = c("alpha", "béta")),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b", "row-c", "row-d")
+)
+text_cleanup_before <- unserialize(serialize(text_cleanup_frame, NULL, version = 3L))
+literal_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  text_cleanup_frame,
+  list(id = "r:c:0", name = "text"),
+  "-",
+  "/"
+)
+assert_identical(
+  literal_replaced$text,
+  c("alpha/12", "béta/34", NA_character_, ""),
+  "literal findReplace returned the wrong values"
+)
+regex_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  text_cleanup_frame,
+  list(id = "r:c:0", name = "text"),
+  "^(.+)-([0-9]+)$",
+  "\\2:\\1",
+  TRUE,
+  "regex result"
+)
+assert_identical(
+  regex_replaced$`regex result`,
+  c("12:alpha", "34:béta", NA_character_, ""),
+  "regex findReplace lost captures, Unicode, or NA"
+)
+assert_identical(row.names(regex_replaced), row.names(text_cleanup_frame), "findReplace changed explicit row names")
+factor_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  text_cleanup_frame,
+  list(id = "r:c:1", name = "category"),
+  "a",
+  "A",
+  FALSE,
+  "category result"
+)
+assert_identical(
+  factor_replaced$`category result`,
+  c("AlphA", NA_character_, "bétA", "AlphA"),
+  "findReplace did not convert factor labels to character"
+)
+assert_identical(typeof(factor_replaced$`category result`), "character", "findReplace retained factor storage")
+
+blank_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  data.frame(text = c("ab", "", NA_character_)),
+  list(id = "r:c:0", name = "text"),
+  "",
+  "\\1"
+)
+assert_identical(
+  blank_replaced$text,
+  c("\\1a\\1b\\1", "\\1", NA_character_),
+  "literal blank findReplace did not preserve replacement text at character boundaries"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    text_cleanup_frame,
+    list(id = "r:c:0", name = "text"),
+    "(",
+    "x",
+    TRUE
+  ),
+  "could not apply"
+)
+regex_warning_error <- tryCatch(
+  withCallingHandlers(
+    openwrangler_r_frame_contract$find_replace_column(
+      data.frame(text = paste0(strrep("a", 100L), "b")),
+      list(id = "r:c:0", name = "text"),
+      "(*LIMIT_MATCH=1)(a+)+$",
+      "x",
+      TRUE
+    ),
+    warning = function(warning) stop("a raw regex warning escaped the R frame contract", call. = FALSE)
+  ),
+  error = identity
+)
+assert_identical(
+  regex_warning_error$code,
+  "invalid-view-query",
+  "a regex resource warning did not fail the R draft as an invalid request"
+)
+assert_identical(
+  conditionMessage(regex_warning_error),
+  "Find and Replace could not apply the requested regular expression",
+  "the R regex-warning diagnostic exposed engine details"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = paste(rep("x", 8192L), collapse = "")),
+    list(id = "r:c:0", name = "text"),
+    "",
+    "x"
+  ),
+  "operation-output-too-large"
+)
+for (escaped_replacement in c("\\\\1", "\\\\U", "\\\\L")) {
+  escaped_result <- openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = strrep("a", 4000L)),
+    list(id = "r:c:0", name = "text"),
+    "(a)",
+    escaped_replacement,
+    TRUE
+  )
+  assert_identical(
+    as.integer(nchar(escaped_result$text, type = "bytes")),
+    8000L,
+    "an escaped literal replacement was misclassified as a backreference or case directive"
+  )
+}
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = strrep("a", 4096L)),
+    list(id = "r:c:0", name = "text"),
+    "a",
+    "xxx"
+  ),
+  "operation-output-too-large"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = strrep("a", 2700L)),
+    list(id = "r:c:0", name = "text"),
+    "(?=(a+))",
+    "\\1",
+    TRUE
+  ),
+  "operation-output-too-large"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = strrep("a", 4096L)),
+    list(id = "r:c:0", name = "text"),
+    "(a)",
+    "\\1\\1\\1",
+    TRUE
+  ),
+  "operation-output-too-large"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    text_cleanup_frame,
+    list(id = "r:c:0", name = "text"),
+    "alpha",
+    "omega",
+    FALSE,
+    "category"
+  ),
+  "column-name-collision"
+)
+
+text_cleanup_table <- data.table::data.table(primary_key = c("b", "a"), payload = c("old-2", "old-1"))
+data.table::setkey(text_cleanup_table, primary_key)
+text_cleanup_table_before <- data.table::copy(text_cleanup_table)
+assert_error(
+  openwrangler_r_frame_contract$upper_text_column(
+    text_cleanup_table,
+    list(id = "r:c:0", name = "primary_key")
+  ),
+  "choose a new output column"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    text_cleanup_table,
+    list(id = "r:c:0", name = "primary_key"),
+    "a",
+    "A"
+  ),
+  "choose a new output column"
+)
+table_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  text_cleanup_table,
+  list(id = "r:c:0", name = "primary_key"),
+  "a",
+  "A",
+  FALSE,
+  "clean key"
+)
+assert_identical(data.table::key(table_replaced), "primary_key", "derived findReplace lost a data.table key")
+assert_identical(table_replaced$`clean key`, c("A", "b"), "derived findReplace changed keyed source order")
+assert_identical(text_cleanup_table, text_cleanup_table_before, "text transforms mutated their source data.table")
+assert_identical(text_cleanup_frame, text_cleanup_before, "text transforms mutated their source data.frame")
 
 fill_frame <- data.frame(
   duplicate = c(1L, NA_integer_, 3L),

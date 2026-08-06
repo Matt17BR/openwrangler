@@ -79,8 +79,9 @@ tibble, and `data.table` variables through IRkernel. A trusted `.R`, `.Rmd`, or 
 Open Wrangler-owned R process, after which the user chooses one of the dataframes it created. R Markdown and Quarto
 use top-level lexical `{r}` cells rather than a document render. Pages, compound filters, ordered sorts,
 value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Editing mode
-currently supports exactly twelve cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates,
-Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. They follow the
+currently supports exactly fourteen cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
+Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
+Uppercase, and Find and replace. They follow the
 same draft, code preview, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. A
 viewing filter or sort can be copied into a cleaning draft. Filters preserve the typed distinction between `NA` and
 `NaN`; sorts keep their compound priority, and both keep stable source-row identities through history and diffs.
@@ -90,7 +91,8 @@ default, and can keep the first, last, or no row in each repeated group without 
 keeps the user's chosen order, and Clone Column gives the copy its own stable identity. Text Length accepts character
 and factor input, keeps `NA`, and adds an integer column containing Unicode character counts under a stable derived
 identity. Lowercase accepts character and factor input, keeps `NA`, and can update the source column or append a
-character column with a stable derived identity. Convert type replaces one column under the same identity and supports
+character column with a stable derived identity. Uppercase follows the same column rules. Find and replace supports
+literal text and regular expressions. It can update the source or append a character column. Convert type replaces one column under the same identity and supports
 string, integer, float, boolean, date, and datetime targets. Failed parses become `NA`. It rejects active data-table
 keys and conversions that would lose units or `integer64` precision. Generated R can be copied, saved as a `.R`
 script, or inserted into the notebook or R document that opened the dataframe.
@@ -102,7 +104,7 @@ blocked.
 
 The default `collapse::qDF()` output follows the base `data.frame` path. Default `collapse::qTBL()` and `qDT()` output
 follows the existing tibble and `data.table` paths. Open Wrangler does not require `collapse`, and grouped `GRP_df`
-objects are not supported.
+and indexed `indexed_frame` objects are not supported.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) is the earlier viewing and
 recovery baseline from `6742255`. It used R 4.5.2 in VS Code and Cursor and a containerized IRkernel in VS Code,
@@ -110,15 +112,17 @@ covering filters, profiles, sort priority, kernel restart, source preservation, 
 support and does not cover the editing claims below.
 
 The [product gallery](media-gallery.md#r-notebooks-open-wrangler-2) shows the packaged IRkernel picker, viewing
-workbench, Rename Column draft, and generated R inserted into the originating notebook. The current packaged VS Code
-and Cursor journey runs all twelve operations on a base data frame. Across the sequence it covers preview, apply,
-inspection, discard, latest-step editing, and undo; Convert type is applied and undone. Drop Missing Rows and Drop
+workbench, Rename Column draft, and generated R inserted into the originating notebook. The packaged VS Code and
+Cursor paths run the twelve earlier operations on a base data frame. The local VS Code path also opens the real Find
+and replace form and applies Uppercase. Across the sequence it covers preview, apply, inspection, discard, latest-step
+editing, and undo; Convert type is applied and undone. Drop Missing Rows and Drop
 Duplicates each cover preview, apply, returning from step inspection, and undo. The journey also opens editable
 tibbles and keyed `data.table` objects and previews and discards Rename and Drop Columns on each. Native R and
-cross-language tests cover all twelve operations across the three dataframe flavors, including row identity, compound
+cross-language tests cover all fourteen operations across the three dataframe flavors, including row identity,
+compound
 sort priority, typed filtering, mixed plans, ordered selection, type conversion, Unicode character counts, native R
-lowercase behavior, `NA` preservation, stable retained and derived identities, duplicate names, non-syntactic names,
-and executable generated R.
+text casing and replacement, `NA` preservation, stable retained and derived identities, duplicate names,
+non-syntactic names, and executable generated R.
 The packaged R journey also inserts the current Rename code as one `r` cell without changing any existing cell. A
 second macOS/Linux journey runs a real `.R` file from its editor, opens a discovered dataframe, inserts generated code back into
 that exact unsaved document, and reruns the result without changing a decoy editor or either source file on disk.
@@ -129,25 +133,25 @@ journeys still need a recorded VS Code/Cursor run before the preview can ship. D
 disabled on Windows until the extension can own the complete spawned process tree. The remaining R cleaning
 operations and cleaned-data export are not available yet.
 
-| Surface                                       | Availability  | Status  | Recorded evidence                                        | Remaining acceptance gate       |
-| --------------------------------------------- | ------------- | ------- | -------------------------------------------------------- | ------------------------------- |
-| Native R frame paging and typed cells         | v2 branch     | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                 |
-| Native R compound viewing filters             | v2 branch     | Partial | R contracts and packaged value/predicate path            | Preview release                 |
-| Native R value search and selections          | v2 branch     | Partial | Typed selection contracts and packaged value path        | Preview release                 |
-| Native R ordered viewing sorts                | v2 branch     | Partial | Pure-R tests and local/remote packaged tests             | Preview release                 |
-| Native R column and dataset profiles          | v2 branch     | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                 |
-| Base `data.frame`, tibble, and `data.table`   | v2 branch     | Partial | Native discovery, paging, queries, and profile tests     | Preview release                 |
-| Exact IRkernel session transport              | v2 branch     | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                               |
-| Owned `.R` source process                     | v2 branch     | Partial | Real process contracts and packaged VS Code/Cursor path  | Preview release                 |
-| Owned `.Rmd` and `.qmd` cell process          | v2 branch     | Partial | Parser and real-R process contracts                      | Packaged VS Code/Cursor journey |
-| Notebook workbench                            | v2 branch     | Partial | Packaged viewing/editing, screenshots, production axe    | Preview release                 |
-| R cleaning operations and generated code      | 12 operations | Partial | Native tests and packaged VS Code/Cursor journey         | Remaining operations            |
-| Copy or save generated R                      | 12 operations | Partial | Native generated-code tests and packaged R script path   | Preview release                 |
-| Insert generated R into its IRkernel notebook | v2 branch     | Partial | Shared exact-document helper and packaged editor journey | Preview release                 |
-| Insert generated R into its source `.R` file  | v2 branch     | Partial | Exact-document helper and packaged rerun                 | Preview release                 |
-| Insert generated R into `.Rmd` and `.qmd`     | v2 branch     | Partial | Exact-document and fenced-cell unit tests                | Packaged VS Code/Cursor journey |
-| Cleaned-data export                           | No            | Planned | No public R path                                         | Native export                   |
-| Quarto and R Markdown lexical R-cell run      | v2 branch     | Partial | Owned process and fail-closed parser tests               | Packaged VS Code/Cursor journey |
+| Surface                                       | Availability  | Status  | Recorded evidence                                                 | Remaining acceptance gate       |
+| --------------------------------------------- | ------------- | ------- | ----------------------------------------------------------------- | ------------------------------- |
+| Native R frame paging and typed cells         | v2 branch     | Partial | Projected pages, row labels, local/remote packaged tests          | Preview release                 |
+| Native R compound viewing filters             | v2 branch     | Partial | R contracts and packaged value/predicate path                     | Preview release                 |
+| Native R value search and selections          | v2 branch     | Partial | Typed selection contracts and packaged value path                 | Preview release                 |
+| Native R ordered viewing sorts                | v2 branch     | Partial | Pure-R tests and local/remote packaged tests                      | Preview release                 |
+| Native R column and dataset profiles          | v2 branch     | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts              | Preview release                 |
+| Base `data.frame`, tibble, and `data.table`   | v2 branch     | Partial | Native discovery, paging, queries, and profile tests              | Preview release                 |
+| Exact IRkernel session transport              | v2 branch     | Done    | Local VS Code/Cursor and remote VS Code restart test              | —                               |
+| Owned `.R` source process                     | v2 branch     | Partial | Real process contracts and packaged VS Code/Cursor path           | Preview release                 |
+| Owned `.Rmd` and `.qmd` cell process          | v2 branch     | Partial | Parser and real-R process contracts                               | Packaged VS Code/Cursor journey |
+| Notebook workbench                            | v2 branch     | Partial | Packaged viewing/editing, screenshots, production axe             | Preview release                 |
+| R cleaning operations and generated code      | 14 operations | Partial | Native tests; 12-op VS Code/Cursor path; 14-op local VS Code path | Remaining operations            |
+| Copy or save generated R                      | 14 operations | Partial | Native generated-code tests and packaged R script path            | Preview release                 |
+| Insert generated R into its IRkernel notebook | v2 branch     | Partial | Shared exact-document helper and packaged editor journey          | Preview release                 |
+| Insert generated R into its source `.R` file  | v2 branch     | Partial | Exact-document helper and packaged rerun                          | Preview release                 |
+| Insert generated R into `.Rmd` and `.qmd`     | v2 branch     | Partial | Exact-document and fenced-cell unit tests                         | Packaged VS Code/Cursor journey |
+| Cleaned-data export                           | No            | Planned | No public R path                                                  | Native export                   |
+| Quarto and R Markdown lexical R-cell run      | v2 branch     | Partial | Owned process and fail-closed parser tests                        | Packaged VS Code/Cursor journey |
 
 ## DuckDB file-backed preview matrix
 

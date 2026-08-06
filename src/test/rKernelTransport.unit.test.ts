@@ -879,6 +879,93 @@ describe("native R kernel protocol", () => {
     ).toThrow("outside the returned page projection");
   });
 
+  it("strictly validates native R uppercase and find-and-replace parameters", () => {
+    const uppercase: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "upper-step",
+          kind: "upperText",
+          params: { column: { id: "r:c:0", name: "value" }, newColumn: "VALUE" }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(uppercase))).toEqual(uppercase);
+
+    const findReplaceSteps = [
+      {
+        id: "replace-literal",
+        kind: "findReplace",
+        params: {
+          column: { id: "r:c:0", name: "value" },
+          find: ".",
+          replacement: "!",
+          regex: false,
+          newColumn: "literal result"
+        }
+      },
+      {
+        id: "replace-regex",
+        kind: "findReplace",
+        params: { column: { id: "r:c:0", name: "value" }, find: "[[:digit:]]+", replacement: "#", regex: true }
+      },
+      {
+        id: "replace-blank",
+        kind: "findReplace",
+        params: { column: { id: "r:c:0", name: "value" }, find: "", replacement: "_" }
+      }
+    ] as const;
+    for (const step of findReplaceSteps) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step, page: pageWindow() }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const malformedRegex = structuredClone(findReplaceSteps[0]) as unknown as {
+      params: { regex: unknown };
+    };
+    malformedRegex.params.regex = "false";
+    expect(() =>
+      encodeRKernelRequest({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step: malformedRegex, page: pageWindow() }
+      } as unknown as RKernelRequest)
+    ).toThrow("invalid regex flag");
+
+    const extra = structuredClone(findReplaceSteps[0]) as unknown as { params: Record<string, unknown> };
+    extra.params.extra = true;
+    expect(() =>
+      encodeRKernelRequest({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step: extra, page: pageWindow() }
+      } as unknown as RKernelRequest)
+    ).toThrow("invalid fields");
+
+    const oversized = structuredClone(findReplaceSteps[0]) as unknown as { params: { find: string } };
+    oversized.params.find = "é".repeat(4_097);
+    expect(() =>
+      encodeRKernelRequest({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step: oversized, page: pageWindow() }
+      } as unknown as RKernelRequest)
+    ).toThrow("request.payload.step.params.find");
+  });
+
   it("strictly validates every native R Fill Missing Values replacement", () => {
     const replacements = [
       { kind: "median" },

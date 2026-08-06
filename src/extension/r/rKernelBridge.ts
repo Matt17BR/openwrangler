@@ -15,6 +15,7 @@ import {
   type DropDuplicatesTransformStep,
   type DropMissingRowsTransformStep,
   type ErrorResponse,
+  type FindReplaceTransformStep,
   type FillMissingValuesTransformStep,
   type FilterModel,
   type FilterRowsTransformStep,
@@ -36,6 +37,7 @@ import {
   type SummaryRequest,
   type SortRowsTransformStep,
   type TextLengthTransformStep,
+  type UpperTextTransformStep,
   type SourceCapabilities,
   type ValueCount,
   type ValuesRequest
@@ -88,7 +90,9 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "cloneColumn",
   "castColumn",
   "textLength",
-  "lowerText"
+  "findReplace",
+  "lowerText",
+  "upperText"
 ] as OperationKind[]) as OperationKind[];
 
 type RTransformStep =
@@ -101,7 +105,9 @@ type RTransformStep =
   | CloneColumnTransformStep
   | CastColumnTransformStep
   | TextLengthTransformStep
+  | FindReplaceTransformStep
   | LowerTextTransformStep
+  | UpperTextTransformStep
   | DropColumnsTransformStep
   | SelectColumnsTransformStep;
 
@@ -634,7 +640,9 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "cloneColumn" &&
       request.step.kind !== "castColumn" &&
       request.step.kind !== "textLength" &&
+      request.step.kind !== "findReplace" &&
       request.step.kind !== "lowerText" &&
+      request.step.kind !== "upperText" &&
       request.step.kind !== "dropColumns" &&
       request.step.kind !== "selectColumns"
     ) {
@@ -1796,7 +1804,9 @@ function schemaAfterRStep(
   if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
-  if (step.kind === "lowerText") return schemaAfterLowerText(inputSchema, step, activeKeyColumnIds);
+  if (step.kind === "findReplace" || step.kind === "lowerText" || step.kind === "upperText") {
+    return schemaAfterTextTransform(inputSchema, step, activeKeyColumnIds);
+  }
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
   );
@@ -1979,31 +1989,33 @@ function unsupportedRCast(sourceRawType: string, dtype: string): TypeError {
   return new TypeError(`Convert type cannot safely convert R ${sourceRawType} values to ${dtype}.`);
 }
 
-function schemaAfterLowerText(
+function schemaAfterTextTransform(
   inputSchema: readonly ColumnSchema[],
-  step: LowerTextTransformStep,
+  step: FindReplaceTransformStep | LowerTextTransformStep | UpperTextTransformStep,
   activeKeyColumnIds: readonly string[]
 ): readonly ColumnSchema[] {
+  const label = textTransformLabel(step);
+  const description = label.toLowerCase();
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
   );
   if (matches.length !== 1) {
-    throw new TypeError("The lowercase column reference no longer matches the active R dataframe.");
+    throw new TypeError(`The ${description} column reference no longer matches the active R dataframe.`);
   }
   const source = matches[0] as ColumnSchema;
   if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
     throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
   }
-  if (source.type !== "string") throw new TypeError("Lowercase requires an R string or factor column.");
+  if (source.type !== "string") throw new TypeError(`${label} requires an R string or factor column.`);
   const outputName = step.params.newColumn;
   if (outputName !== undefined && outputName.length === 0) {
-    throw new TypeError("The lowercase R column name may not be empty.");
+    throw new TypeError(`The ${description} R column name may not be empty.`);
   }
   const inPlace = outputName === undefined || outputName === source.name;
   if (inPlace) {
     if (activeKeyColumnIds.includes(source.id)) {
       throw new TypeError(
-        "Lowercase cannot replace a keyed data.table column in place. Choose a new output column instead."
+        `${label} cannot replace a keyed data.table column in place. Choose a new output column instead.`
       );
     }
     return Object.freeze(
@@ -2015,23 +2027,23 @@ function schemaAfterLowerText(
     );
   }
   if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
-    throw new TypeError("Lowercase exceeds the R frame contract column limit.");
+    throw new TypeError(`${label} exceeds the R frame contract column limit.`);
   }
   if (Buffer.byteLength(outputName, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
-    throw new TypeError("The lowercase R column name exceeds the frame contract limit.");
+    throw new TypeError(`The ${description} R column name exceeds the frame contract limit.`);
   }
   if (outputName.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
-    throw new TypeError("The lowercase R column name uses Open Wrangler's reserved private row-identity prefix.");
+    throw new TypeError(`The ${description} R column name uses Open Wrangler's reserved private row-identity prefix.`);
   }
   if (inputSchema.some((column) => column.name === outputName)) {
     throw new TypeError(`The R column name ${JSON.stringify(outputName)} already exists.`);
   }
   const id = `c:step:${step.id}:0`;
   if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
-    throw new TypeError("The lowercase R column identity exceeds the frame contract limit.");
+    throw new TypeError(`The ${description} R column identity exceeds the frame contract limit.`);
   }
   if (inputSchema.some((column) => column.id === id)) {
-    throw new TypeError("The lowercase R column identity already exists in the active dataframe.");
+    throw new TypeError(`The ${description} R column identity already exists in the active dataframe.`);
   }
   return Object.freeze([
     ...inputSchema.map((column) => Object.freeze({ ...column })),
@@ -2044,6 +2056,14 @@ function schemaAfterLowerText(
       nullable: source.nullable
     })
   ]);
+}
+
+function textTransformLabel(
+  step: FindReplaceTransformStep | LowerTextTransformStep | UpperTextTransformStep
+): "Find and Replace" | "Lowercase" | "Uppercase" {
+  if (step.kind === "findReplace") return "Find and Replace";
+  if (step.kind === "lowerText") return "Lowercase";
+  return "Uppercase";
 }
 
 function schemaAfterTextLength(
@@ -2359,6 +2379,29 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       })
     });
   }
+  if (step.kind === "upperText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "upperText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "findReplace") {
+    return Object.freeze({
+      id: step.id,
+      kind: "findReplace" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        find: step.params.find,
+        replacement: step.params.replacement,
+        ...(step.params.regex === undefined ? {} : { regex: step.params.regex }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
   return Object.freeze({
     id: step.id,
     kind: "renameColumn" as const,
@@ -2497,6 +2540,29 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "upperText") {
+    return {
+      id: step.id,
+      kind: "upperText",
+      params: {
+        column: { ...step.params.column },
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
+  if (step.kind === "findReplace") {
+    return {
+      id: step.id,
+      kind: "findReplace",
+      params: {
+        column: { ...step.params.column },
+        find: step.params.find,
+        replacement: step.params.replacement,
+        ...(step.params.regex === undefined ? {} : { regex: step.params.regex }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
   return {
     id: step.id,
     kind: "renameColumn",
@@ -2537,7 +2603,9 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "cloneColumn" &&
     step.kind !== "castColumn" &&
     step.kind !== "textLength" &&
+    step.kind !== "findReplace" &&
     step.kind !== "lowerText" &&
+    step.kind !== "upperText" &&
     step.kind !== "dropColumns" &&
     step.kind !== "selectColumns"
   ) {
@@ -2597,10 +2665,8 @@ function inspectionDiff(
   const outputIds = new Set(outputSchema.map((column) => column.id));
   const addedColumns = outputSchema.filter((column) => !inputIds.has(column.id)).map((column) => column.name);
   const removedColumns = inputSchema.filter((column) => !outputIds.has(column.id)).map((column) => column.name);
-  const lowerInPlace =
-    step.kind === "lowerText" &&
-    (step.params.newColumn === undefined || step.params.newColumn === step.params.column.name);
-  const changedInPlace = step.kind === "castColumn" || step.kind === "fillMissingValues" || lowerInPlace;
+  const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
+  const changedInPlace = step.kind === "castColumn" || step.kind === "fillMissingValues" || textTransformInPlace;
   if (!changedInPlace) {
     return {
       addedRows: 0,
@@ -2698,16 +2764,14 @@ function assertMutationDiff(
   const outputIdSet = new Set(outputIds);
   const inputIds = inputSchema.map((column) => column.id);
   const expectedRemoved = inputSchema.filter((column) => !outputIdSet.has(column.id)).map((column) => column.name);
-  const lowerInPlace =
-    step.kind === "lowerText" &&
-    (step.params.newColumn === undefined || step.params.newColumn === step.params.column.name);
-  const changedInPlace = lowerInPlace || step.kind === "fillMissingValues" || step.kind === "castColumn";
+  const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
+  const changedInPlace = textTransformInPlace || step.kind === "fillMissingValues" || step.kind === "castColumn";
   const expectedAdded =
     step.kind === "cloneColumn"
       ? [step.params.newName]
       : step.kind === "textLength"
         ? [step.params.newColumn]
-        : step.kind === "lowerText" && !lowerInPlace
+        : isRTextTransformStep(step) && !textTransformInPlace
           ? [step.params.newColumn as string]
           : [];
   const stepMatches =
@@ -2725,7 +2789,7 @@ function assertMutationDiff(
           ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
           : step.kind === "textLength"
             ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-            : step.kind === "lowerText" && !lowerInPlace
+            : isRTextTransformStep(step) && !textTransformInPlace
               ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
               : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
   const projectedPosition = changedInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
@@ -2762,6 +2826,18 @@ function assertMutationDiff(
     cellsMatch &&
     stepMatches;
   if (!valid) throw new Error("The R kernel returned a mutation diff for the wrong columns or cells.");
+}
+
+function isRTextTransformStep(
+  step: RTransformStep
+): step is FindReplaceTransformStep | LowerTextTransformStep | UpperTextTransformStep {
+  return step.kind === "findReplace" || step.kind === "lowerText" || step.kind === "upperText";
+}
+
+function isRTextTransformInPlace(
+  step: FindReplaceTransformStep | LowerTextTransformStep | UpperTextTransformStep
+): boolean {
+  return step.params.newColumn === undefined || step.params.newColumn === step.params.column.name;
 }
 
 function isCellCompatibleWithColumn(cell: CellValue, column: ColumnSchema): boolean {
