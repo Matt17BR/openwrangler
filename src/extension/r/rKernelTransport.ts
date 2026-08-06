@@ -22,8 +22,12 @@ import {
   type RKernelErrorResponse,
   type RKernelColumnReference,
   type RKernelPageWindow,
+  type RKernelPlanUpdatedResult,
+  type RKernelRenameColumnStep,
   type RKernelRequest,
   type RKernelResponse,
+  type RKernelStepInspectionResult,
+  type RKernelStepPreviewResult,
   type RKernelViewQuery
 } from "./rKernelProtocol";
 import {
@@ -290,6 +294,96 @@ export class RKernelSessionTransport {
     return Object.freeze({ column: response.column, values: response.values, hasMore: response.hasMore });
   }
 
+  async previewStep(
+    sessionId: string,
+    revision: number,
+    step: RKernelRenameColumnStep,
+    page: RKernelPageWindow,
+    replaceStepId?: string,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelStepPreviewResult> {
+    const request = this.request("previewStep", {
+      sessionId,
+      revision,
+      step,
+      page,
+      ...(replaceStepId === undefined ? {} : { replaceStepId })
+    });
+    encodeRKernelRequest(request);
+    const response = await this.executeMappedRequest(sessionId, request, options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "stepPreview" || response.sessionId !== sessionId || response.revision !== revision + 1) {
+      throw new Error("The R kernel returned a mismatched step preview.");
+    }
+    return Object.freeze({
+      sessionId,
+      revision: response.revision,
+      page: response.page,
+      diff: response.diff,
+      code: response.code
+    });
+  }
+
+  applyDraft(
+    sessionId: string,
+    revision: number,
+    page: RKernelPageWindow,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelPlanUpdatedResult> {
+    return this.updatePlan("applyDraft", "apply", sessionId, revision, page, options);
+  }
+
+  discardDraft(
+    sessionId: string,
+    revision: number,
+    page: RKernelPageWindow,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelPlanUpdatedResult> {
+    return this.updatePlan("discardDraft", "discard", sessionId, revision, page, options);
+  }
+
+  undoStep(
+    sessionId: string,
+    revision: number,
+    page: RKernelPageWindow,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelPlanUpdatedResult> {
+    return this.updatePlan("undoStep", "undo", sessionId, revision, page, options);
+  }
+
+  async inspectStep(
+    sessionId: string,
+    revision: number,
+    stepId: string,
+    page: RKernelPageWindow,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelStepInspectionResult> {
+    const request = this.request("inspectStep", { sessionId, revision, stepId, page });
+    encodeRKernelRequest(request);
+    const response = await this.executeMappedRequest(sessionId, request, options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (
+      response.kind !== "stepInspection" ||
+      response.sessionId !== sessionId ||
+      response.stepId !== stepId ||
+      response.revision !== revision
+    ) {
+      throw new Error("The R kernel returned a mismatched applied-step inspection.");
+    }
+    return Object.freeze({
+      sessionId,
+      revision: response.revision,
+      stepId: response.stepId,
+      stepIndex: response.stepIndex,
+      inputPage: response.inputPage,
+      outputPage: response.outputPage,
+      inputSchema: response.inputSchema,
+      outputSchema: response.outputSchema,
+      diff: response.diff,
+      code: response.code
+    });
+  }
+
   async close(sessionId: string, options: RKernelRequestOptions = {}): Promise<void> {
     this.assertActive();
     if (this.retiredSessionIds.has(sessionId)) return;
@@ -316,7 +410,21 @@ export class RKernelSessionTransport {
 
   private async executeMappedRequest(
     sessionId: string,
-    request: Extract<RKernelRequest, { kind: "getPage" | "getSummary" | "getDatasetStats" | "getColumnValues" }>,
+    request: Extract<
+      RKernelRequest,
+      {
+        kind:
+          | "getPage"
+          | "getSummary"
+          | "getDatasetStats"
+          | "getColumnValues"
+          | "previewStep"
+          | "applyDraft"
+          | "discardDraft"
+          | "undoStep"
+          | "inspectStep";
+      }
+    >,
     options: RKernelRequestOptions
   ): Promise<RKernelResponse> {
     this.assertActive();
@@ -361,6 +469,35 @@ export class RKernelSessionTransport {
     await withKernelTimeout(postflight, remainingTimeout(timeoutMs, started), () => undefined, options.cancellation);
     this.assertActive();
     return response;
+  }
+
+  private async updatePlan(
+    kind: "applyDraft" | "discardDraft" | "undoStep",
+    expectedAction: RKernelPlanUpdatedResult["action"],
+    sessionId: string,
+    revision: number,
+    page: RKernelPageWindow,
+    options: RKernelRequestOptions
+  ): Promise<RKernelPlanUpdatedResult> {
+    const request = this.request(kind, { sessionId, revision, page });
+    encodeRKernelRequest(request);
+    const response = await this.executeMappedRequest(sessionId, request, options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (
+      response.kind !== "planUpdated" ||
+      response.sessionId !== sessionId ||
+      response.action !== expectedAction ||
+      response.revision !== revision + 1
+    ) {
+      throw new Error("The R kernel returned a mismatched cleaning-plan update.");
+    }
+    return Object.freeze({
+      sessionId,
+      action: response.action,
+      revision: response.revision,
+      page: response.page,
+      code: response.code
+    });
   }
 
   private async closeMappedSession(

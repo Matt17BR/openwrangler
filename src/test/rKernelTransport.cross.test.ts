@@ -325,6 +325,191 @@ ${close.code}
     });
   });
 
+  it("runs the native R rename draft, apply, edit, undo, and generated code lifecycle", () => {
+    const editingSessionId = "10000000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "10000000-0000-4000-8000-000000000002",
+      preview: "10000000-0000-4000-8000-000000000003",
+      stale: "10000000-0000-4000-8000-000000000004",
+      discard: "10000000-0000-4000-8000-000000000005",
+      secondPreview: "10000000-0000-4000-8000-000000000006",
+      apply: "10000000-0000-4000-8000-000000000007",
+      edit: "10000000-0000-4000-8000-000000000008",
+      editApply: "10000000-0000-4000-8000-000000000009",
+      undo: "10000000-0000-4000-8000-00000000000a",
+      close: "10000000-0000-4000-8000-00000000000b",
+      inspect: "10000000-0000-4000-8000-00000000000c"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const projectedPage = {
+      ...pageWindow(),
+      columnOffset: 1,
+      columnLimit: 1
+    } as const;
+    const step = (
+      requestId: string,
+      revision: number,
+      oldName: string,
+      newName: string,
+      replaceStepId?: string
+    ): Extract<RKernelRequest, { kind: "previewStep" }> => ({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision,
+        step: {
+          id: "rename-step",
+          kind: "renameColumn",
+          params: { column: { id: "r:c:1", name: oldName }, newName }
+        },
+        page: projectedPage,
+        ...(replaceStepId === undefined ? {} : { replaceStepId })
+      }
+    });
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: projectedPage }
+    });
+    const preview = requestCode(step(ids.preview, 0, "duplicate", "second duplicate"));
+    const stale = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.stale,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 0, page: projectedPage }
+    });
+    const discard = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.discard,
+      kind: "discardDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: projectedPage }
+    });
+    const secondPreview = requestCode(step(ids.secondPreview, 2, "duplicate", "second duplicate"));
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: projectedPage }
+    });
+    const inspect = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.inspect,
+      kind: "inspectStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 4,
+        stepId: "rename-step",
+        page: projectedPage
+      }
+    });
+    const edit = requestCode(step(ids.edit, 4, "duplicate", "updated duplicate", "rename-step"));
+    const editApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.editApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 5, page: projectedPage }
+    });
+    const undo = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undo,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 6, page: projectedPage }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(duplicate = 1:2, duplicate = 3:4, label = c("a", "b"), check.names = FALSE)
+frame_before <- unserialize(serialize(frame, NULL, version = 3L))
+${bootstrap}
+${open.code}
+${preview.code}
+${stale.code}
+${discard.code}
+${secondPreview.code}
+${apply.code}
+${inspect.code}
+${edit.code}
+${editApply.code}
+${undo.code}
+stopifnot(identical(frame, frame_before))
+${close.code}
+`);
+
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview);
+    expect(previewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      diff: { changedCells: 0, cells: [] }
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R rename preview.");
+    expect(previewed.page.schema.map((column) => column.name)).toEqual(["duplicate", "second duplicate", "label"]);
+    expect(previewed.page.page.columnIds).toEqual(["r:c:1"]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, stale.marker), ids.stale)).toMatchObject({
+      kind: "error",
+      code: "stale_revision",
+      recoverable: true
+    });
+    const discarded = decodeRKernelResponseJson(marked(result.stdout, discard.marker), ids.discard);
+    expect(discarded).toMatchObject({
+      kind: "planUpdated",
+      action: "discard",
+      revision: 2,
+      code: ""
+    });
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 4 });
+    if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R rename.");
+    const inspected = decodeRKernelResponseJson(marked(result.stdout, inspect.marker), ids.inspect);
+    expect(inspected).toMatchObject({
+      kind: "stepInspection",
+      revision: 4,
+      stepId: "rename-step",
+      stepIndex: 0,
+      diff: { changedCells: 0, cells: [] }
+    });
+    if (inspected.kind !== "stepInspection") throw new Error("Expected an applied native R rename inspection.");
+    expect(inspected.inputSchema.map((column) => column.name)).toEqual(["duplicate", "duplicate", "label"]);
+    expect(inspected.outputSchema.map((column) => column.name)).toEqual(["duplicate", "second duplicate", "label"]);
+    expect(inspected.inputPage.page.columnIds).toEqual(["r:c:1"]);
+    expect(inspected.outputPage.page.columnIds).toEqual(["r:c:1"]);
+    expect(inspected.code).toContain("second duplicate");
+    const edited = decodeRKernelResponseJson(marked(result.stdout, edit.marker), ids.edit);
+    expect(edited).toMatchObject({ kind: "stepPreview", revision: 5 });
+    if (edited.kind !== "stepPreview") throw new Error("Expected an edited native R rename preview.");
+    expect(edited.page.schema.map((column) => column.name)).toEqual(["duplicate", "updated duplicate", "label"]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, editApply.marker), ids.editApply)).toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 6
+    });
+    const undone = decodeRKernelResponseJson(marked(result.stdout, undo.marker), ids.undo);
+    expect(undone).toMatchObject({ kind: "planUpdated", action: "undo", revision: 7 });
+    if (undone.kind !== "planUpdated") throw new Error("Expected an undone native R rename.");
+    expect(undone.page.schema.map((column) => column.name)).toEqual(["duplicate", "duplicate", "label"]);
+    expect(undone.code).toBe("");
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+
+    const generated = runR(`
+frame <- data.frame(duplicate = 1:2, duplicate = 3:4, label = c("a", "b"), check.names = FALSE)
+frame_before <- unserialize(serialize(frame, NULL, version = 3L))
+${applied.code}
+stopifnot(identical(names(open_wrangler_result), c("duplicate", "second duplicate", "label")))
+stopifnot(identical(frame, frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("removes only the runtime binding owned by the matching transport and bundle", () => {
     const files = readRRuntimeFiles(resolve(root, "r"));
     const owner = "transport-owner-a";

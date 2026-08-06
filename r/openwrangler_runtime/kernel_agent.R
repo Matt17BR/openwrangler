@@ -2,8 +2,11 @@ openwrangler_r_kernel_agent <- local({
   transport_version <- 2L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
+  maximum_step_id_bytes <- 1024L
   maximum_error_bytes <- 4096L
   maximum_response_bytes <- 17L * 1024L * 1024L
+  maximum_generated_code_bytes <- 4L * 1024L * 1024L
+  maximum_revision <- .Machine$integer.max
   identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 
   abort <- function(code, message, recoverable = FALSE) {
@@ -58,7 +61,15 @@ openwrangler_r_kernel_agent <- local({
     ) {
       code <- "unsupported_frame"
       recoverable <- FALSE
-    } else if (source_code %in% c("invalid-view-query", "invalid-view-value")) {
+    } else if (
+      source_code %in% c(
+        "column-name-collision",
+        "invalid-column-name",
+        "invalid-view-query",
+        "invalid-view-value",
+        "reserved-column-name"
+      )
+    ) {
       code <- "invalid_request"
       recoverable <- TRUE
     } else {
@@ -392,9 +403,199 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  active_capture <- function(session) {
+    if (isTRUE(session$editing)) {
+      if (is.null(session$draft)) session$committed else session$draft
+    } else {
+      session$source
+    }
+  }
+
+  assert_revision <- function(session, revision) {
+    revision <- whole_number(revision, "request.payload.revision", maximum_revision)
+    if (!identical(as.double(session$revision), revision)) {
+      abort(
+        "stale_revision",
+        sprintf("The R session revision is %d, not %d", session$revision, as.integer(revision)),
+        TRUE
+      )
+    }
+  }
+
+  next_revision <- function(session) {
+    if (session$revision >= maximum_revision) {
+      abort("runtime_error", "The R session revision limit was reached")
+    }
+    as.integer(session$revision + 1L)
+  }
+
+  decode_rename_step <- function(value) {
+    step <- exact_record(value, c("id", "kind", "params"), "request.payload.step")
+    step_id <- bounded_text(step$id, "request.payload.step.id", maximum_step_id_bytes)
+    if (identical(step_id, "")) abort("invalid_request", "request.payload.step.id may not be empty")
+    kind <- bounded_text(step$kind, "request.payload.step.kind", 64L)
+    if (!identical(kind, "renameColumn")) {
+      abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
+    }
+    params <- exact_record(step$params, c("column", "newName"), "request.payload.step.params")
+    new_name <- bounded_text(params$newName, "request.payload.step.params.newName", maximum_variable_name_bytes)
+    if (identical(new_name, "")) {
+      abort("invalid_request", "request.payload.step.params.newName may not be empty")
+    }
+    list(
+      id = step_id,
+      kind = kind,
+      params = list(
+        column = decode_column_reference(params$column, "request.payload.step.params.column"),
+        newName = new_name
+      )
+    )
+  }
+
+  bind_rename_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (
+      length(matches) != 1L ||
+        !identical(schema[[matches[[1L]]]]$name, step$params$column$name)
+    ) {
+      abort("stale_column", "The rename column reference no longer matches the active R dataframe", TRUE)
+    }
+    list(
+      id = step$id,
+      position = as.integer(matches[[1L]]),
+      oldName = step$params$column$name,
+      newName = step$params$newName
+    )
+  }
+
+  apply_rename <- function(frame_contract, capture, step) {
+    bound <- bind_rename_step(capture, step)
+    source <- get("snapshot", envir = capture, inherits = FALSE)
+    result <- frame_contract$rename_column(source, step$params$column, step$params$newName)
+    list(capture = frame_contract$capture_frame(result), bound = bound)
+  }
+
+  replay_plan <- function(frame_contract, original, plan) {
+    capture <- original
+    bound_plan <- vector("list", length(plan))
+    if (length(plan) != 0L) {
+      for (index in seq_along(plan)) {
+        applied <- apply_rename(frame_contract, capture, plan[[index]])
+        capture <- applied$capture
+        bound_plan[[index]] <- applied$bound
+      }
+    }
+    list(capture = capture, boundPlan = bound_plan)
+  }
+
+  begin_editing <- function(frame_contract, session) {
+    if (!is.null(session$original)) return(session)
+    original <- frame_contract$isolate_capture(session$source)
+    session$original <- original
+    session$committed <- original
+    session$editing <- TRUE
+    session
+  }
+
+  r_string <- function(value) {
+    encodeString(value, quote = "\"", justify = "none", na.encode = FALSE)
+  }
+
+  compile_plan <- function(variable_name, bound_plan) {
+    if (length(bound_plan) == 0L) return("")
+    lines <- c(
+      "open_wrangler_result <- local({",
+      sprintf("  .ow_source <- get(%s, envir = .GlobalEnv, inherits = FALSE)", r_string(variable_name)),
+      "  if (!is.data.frame(.ow_source)) stop(\"Open Wrangler expected an R dataframe\", call. = FALSE)",
+      "  .ow_result <- if (inherits(.ow_source, \"data.table\")) {",
+      "    if (!requireNamespace(\"data.table\", quietly = TRUE)) stop(\"data.table is required\", call. = FALSE)",
+      "    data.table::copy(.ow_source)",
+      "  } else {",
+      "    unserialize(serialize(.ow_source, NULL, version = 3L))",
+      "  }"
+    )
+    for (step in bound_plan) {
+      lines <- c(
+        lines,
+        sprintf(
+          "  if (ncol(.ow_result) < %dL || !identical(names(.ow_result)[[%dL]], %s)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          step$position,
+          step$position,
+          r_string(step$oldName)
+        ),
+        sprintf(
+          "  if (any(names(.ow_result)[-%dL] == %s)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+          step$position,
+          r_string(step$newName)
+        ),
+        sprintf(
+          "  if (inherits(.ow_result, \"data.table\")) data.table::setnames(.ow_result, old = %dL, new = %s) else names(.ow_result)[[%dL]] <- %s",
+          step$position,
+          r_string(step$newName),
+          step$position,
+          r_string(step$newName)
+        )
+      )
+    }
+    code <- paste(c(lines, "  .ow_result", "})", ""), collapse = "\n")
+    if (nchar(code, type = "bytes") > maximum_generated_code_bytes) {
+      abort("runtime_error", "The generated R cleaning code is too large")
+    }
+    code
+  }
+
+  rename_diff <- function() {
+    list(
+      addedRows = 0L,
+      removedRows = 0L,
+      addedColumns = I(character()),
+      removedColumns = I(character()),
+      changedCells = 0L,
+      cells = I(list()),
+      truncated = FALSE
+    )
+  }
+
+  encode_response <- function(response) {
+    encoded <- jsonlite::toJSON(
+      response,
+      auto_unbox = TRUE,
+      digits = NA,
+      na = "null",
+      null = "null",
+      pretty = FALSE
+    )
+    if (nchar(encoded, type = "bytes") > maximum_response_bytes) {
+      abort("runtime_error", "The R kernel response is too large")
+    }
+    enc2utf8(as.character(encoded))
+  }
+
+  preflight_response <- function(response) {
+    encode_response(response)
+    invisible(NULL)
+  }
+
+  plan_response <- function(request_id, session_id, action, session, page, frame_contract) {
+    list(
+      transportVersion = transport_version,
+      requestId = request_id,
+      kind = "planUpdated",
+      sessionId = session_id,
+      action = action,
+      revision = session$revision,
+      page = materialize(frame_contract, active_capture(session), page),
+      code = compile_plan(session$variableName, session$boundPlan)
+    )
+  }
+
   new_agent <- function(frame_contract, source_environment = .GlobalEnv) {
     required_functions <- c(
+      "capture_frame",
       "capture_live_frame",
+      "isolate_capture",
+      "rename_column",
       "materialize_view_page",
       "materialize_summaries",
       "materialize_dataset_stats",
@@ -452,16 +653,32 @@ openwrangler_r_kernel_agent <- local({
             get(source_name, envir = source, inherits = FALSE)
           }
         })
-        capture <- frame_contract$capture_live_frame(source_reader)
-        result <- materialize(frame_contract, capture, page)
-        assign(session_id, capture, envir = sessions)
-        return(list(
+        source_capture <- frame_contract$capture_live_frame(source_reader)
+        result <- materialize(frame_contract, source_capture, page)
+        session <- list(
+          variableName = variable_name,
+          source = source_capture,
+          original = NULL,
+          committed = NULL,
+          draft = NULL,
+          draftStep = NULL,
+          draftBound = NULL,
+          replaceStepId = NULL,
+          plan = list(),
+          boundPlan = list(),
+          revision = 0L,
+          editing = FALSE
+        )
+        response <- list(
           transportVersion = transport_version,
           requestId = request_id,
           kind = "page",
           sessionId = session_id,
           page = result
-        ))
+        )
+        preflight_response(response)
+        assign(session_id, session, envir = sessions)
+        return(response)
       }
 
       if (identical(kind, "getPage")) {
@@ -471,13 +688,13 @@ openwrangler_r_kernel_agent <- local({
           abort("unknown_session", "The requested R session is no longer available", TRUE)
         }
         page <- decode_page(payload$page, frame_contract$limits)
-        capture <- get(session_id, envir = sessions, inherits = FALSE)
+        session <- get(session_id, envir = sessions, inherits = FALSE)
         return(list(
           transportVersion = transport_version,
           requestId = request_id,
           kind = "page",
           sessionId = session_id,
-          page = materialize(frame_contract, capture, page)
+          page = materialize(frame_contract, active_capture(session), page)
         ))
       }
 
@@ -489,13 +706,13 @@ openwrangler_r_kernel_agent <- local({
         }
         columns <- decode_column_references(payload$columns, frame_contract$limits)
         view <- decode_view(payload$view, frame_contract$limits)
-        capture <- get(session_id, envir = sessions, inherits = FALSE)
+        session <- get(session_id, envir = sessions, inherits = FALSE)
         return(list(
           transportVersion = transport_version,
           requestId = request_id,
           kind = "summary",
           sessionId = session_id,
-          summaries = frame_contract$materialize_summaries(capture, columns, view)
+          summaries = frame_contract$materialize_summaries(active_capture(session), columns, view)
         ))
       }
 
@@ -505,10 +722,10 @@ openwrangler_r_kernel_agent <- local({
         if (!exists(session_id, envir = sessions, inherits = FALSE)) {
           abort("unknown_session", "The requested R session is no longer available", TRUE)
         }
-        capture <- get(session_id, envir = sessions, inherits = FALSE)
+        session <- get(session_id, envir = sessions, inherits = FALSE)
         view <- decode_view(payload$view, frame_contract$limits)
         result <- validate_dataset_stats_result(
-          frame_contract$materialize_dataset_stats(capture, view),
+          frame_contract$materialize_dataset_stats(active_capture(session), view),
           frame_contract$limits
         )
         return(list(
@@ -540,8 +757,8 @@ openwrangler_r_kernel_agent <- local({
         }
         limit <- whole_number(payload$limit, "request.payload.limit", 10000L)
         if (limit < 1L) abort("invalid_request", "request.payload.limit must be positive")
-        capture <- get(session_id, envir = sessions, inherits = FALSE)
-        result <- frame_contract$materialize_column_values(capture, column, view, search, limit)
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        result <- frame_contract$materialize_column_values(active_capture(session), column, view, search, limit)
         return(list(
           transportVersion = transport_version,
           requestId = request_id,
@@ -553,19 +770,218 @@ openwrangler_r_kernel_agent <- local({
         ))
       }
 
+      if (identical(kind, "previewStep")) {
+        payload <- exact_record(
+          request$payload,
+          c("sessionId", "revision", "step", "page"),
+          "request.payload",
+          optional_fields = "replaceStepId"
+        )
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        assert_revision(session, payload$revision)
+        if (!is.null(session$draft)) {
+          abort("invalid_request", "Apply or discard the current R draft before previewing another step", TRUE)
+        }
+        page <- decode_page(payload$page, frame_contract$limits)
+        step <- decode_rename_step(payload$step)
+        replace_step_id <- if ("replaceStepId" %in% names(payload)) {
+          value <- bounded_text(payload$replaceStepId, "request.payload.replaceStepId", maximum_step_id_bytes)
+          if (identical(value, "")) abort("invalid_request", "request.payload.replaceStepId may not be empty")
+          value
+        } else {
+          NULL
+        }
+
+        session <- begin_editing(frame_contract, session)
+
+        retained_plan <- session$plan
+        retained_bound_plan <- session$boundPlan
+        base <- session$committed
+        if (!is.null(replace_step_id)) {
+          if (
+            length(session$plan) == 0L ||
+              !identical(session$plan[[length(session$plan)]]$id, replace_step_id)
+          ) {
+            abort("invalid_request", "Only the latest applied R step can be edited", TRUE)
+          }
+          if (!identical(step$id, replace_step_id)) {
+            abort("invalid_request", "An edited R step must retain its applied step ID", TRUE)
+          }
+          retained_plan <- session$plan[-length(session$plan)]
+          replayed <- replay_plan(frame_contract, session$original, retained_plan)
+          base <- replayed$capture
+          retained_bound_plan <- replayed$boundPlan
+        }
+        if (length(retained_plan) >= frame_contract$limits$columns) {
+          abort("invalid_request", "The R cleaning plan has reached its supported step limit", TRUE)
+        }
+        if (any(vapply(retained_plan, function(applied) identical(applied$id, step$id), logical(1L)))) {
+          abort("invalid_request", "Applied R step IDs must be unique", TRUE)
+        }
+
+        applied <- apply_rename(frame_contract, base, step)
+        candidate <- session
+        candidate$draft <- applied$capture
+        candidate$draftStep <- step
+        candidate$draftBound <- applied$bound
+        candidate$replaceStepId <- replace_step_id
+        candidate$editing <- TRUE
+        candidate$revision <- next_revision(session)
+        candidate_bound_plan <- c(retained_bound_plan, list(applied$bound))
+        response <- list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "stepPreview",
+          sessionId = session_id,
+          revision = candidate$revision,
+          page = materialize(frame_contract, candidate$draft, page),
+          diff = rename_diff(),
+          code = compile_plan(candidate$variableName, candidate_bound_plan)
+        )
+        preflight_response(response)
+        assign(session_id, candidate, envir = sessions)
+        return(response)
+      }
+
+      if (identical(kind, "inspectStep")) {
+        payload <- exact_record(request$payload, c("sessionId", "revision", "stepId", "page"), "request.payload")
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        assert_revision(session, payload$revision)
+        step_id <- bounded_text(payload$stepId, "request.payload.stepId", maximum_step_id_bytes)
+        if (identical(step_id, "")) abort("invalid_request", "request.payload.stepId may not be empty")
+        matches <- which(vapply(session$plan, function(step) identical(step$id, step_id), logical(1L)))
+        if (length(matches) != 1L) {
+          abort("invalid_request", sprintf("Unknown or repeated applied R step: %s", step_id), TRUE)
+        }
+        page <- decode_page(payload$page, frame_contract$limits)
+        step_index <- matches[[1L]]
+        before <- replay_plan(frame_contract, session$original, utils::head(session$plan, step_index - 1L))
+        after <- replay_plan(frame_contract, session$original, utils::head(session$plan, step_index))
+        input_page <- materialize(frame_contract, before$capture, page)
+        output_page <- materialize(frame_contract, after$capture, page)
+        return(list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "stepInspection",
+          sessionId = session_id,
+          revision = session$revision,
+          stepId = step_id,
+          stepIndex = as.integer(step_index - 1L),
+          inputPage = input_page,
+          outputPage = output_page,
+          inputSchema = input_page$schema,
+          outputSchema = output_page$schema,
+          diff = rename_diff(),
+          code = compile_plan(session$variableName, after$boundPlan)
+        ))
+      }
+
+      if (identical(kind, "applyDraft")) {
+        payload <- exact_record(request$payload, c("sessionId", "revision", "page"), "request.payload")
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        assert_revision(session, payload$revision)
+        if (is.null(session$draft) || is.null(session$draftStep) || is.null(session$draftBound)) {
+          abort("invalid_request", "There is no R draft step to apply", TRUE)
+        }
+        page <- decode_page(payload$page, frame_contract$limits)
+        candidate <- session
+        if (is.null(session$replaceStepId)) {
+          candidate$plan <- c(session$plan, list(session$draftStep))
+          candidate$boundPlan <- c(session$boundPlan, list(session$draftBound))
+        } else {
+          candidate$plan[[length(candidate$plan)]] <- session$draftStep
+          candidate$boundPlan[[length(candidate$boundPlan)]] <- session$draftBound
+        }
+        candidate$committed <- session$draft
+        candidate$draft <- NULL
+        candidate$draftStep <- NULL
+        candidate$draftBound <- NULL
+        candidate$replaceStepId <- NULL
+        candidate$revision <- next_revision(session)
+        response <- plan_response(request_id, session_id, "apply", candidate, page, frame_contract)
+        preflight_response(response)
+        assign(session_id, candidate, envir = sessions)
+        return(response)
+      }
+
+      if (identical(kind, "discardDraft")) {
+        payload <- exact_record(request$payload, c("sessionId", "revision", "page"), "request.payload")
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        assert_revision(session, payload$revision)
+        if (is.null(session$draft)) abort("invalid_request", "There is no R draft step to discard", TRUE)
+        page <- decode_page(payload$page, frame_contract$limits)
+        candidate <- session
+        candidate$draft <- NULL
+        candidate$draftStep <- NULL
+        candidate$draftBound <- NULL
+        candidate$replaceStepId <- NULL
+        candidate$revision <- next_revision(session)
+        response <- plan_response(request_id, session_id, "discard", candidate, page, frame_contract)
+        preflight_response(response)
+        assign(session_id, candidate, envir = sessions)
+        return(response)
+      }
+
+      if (identical(kind, "undoStep")) {
+        payload <- exact_record(request$payload, c("sessionId", "revision", "page"), "request.payload")
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        assert_revision(session, payload$revision)
+        if (!is.null(session$draft)) {
+          abort("invalid_request", "Discard the R draft before undoing an applied step", TRUE)
+        }
+        if (length(session$plan) == 0L) {
+          abort("invalid_request", "There is no applied R step to undo", TRUE)
+        }
+        page <- decode_page(payload$page, frame_contract$limits)
+        retained_plan <- session$plan[-length(session$plan)]
+        replayed <- replay_plan(frame_contract, session$original, retained_plan)
+        candidate <- session
+        candidate$plan <- retained_plan
+        candidate$boundPlan <- replayed$boundPlan
+        candidate$committed <- replayed$capture
+        candidate$editing <- TRUE
+        candidate$revision <- next_revision(session)
+        response <- plan_response(request_id, session_id, "undo", candidate, page, frame_contract)
+        preflight_response(response)
+        assign(session_id, candidate, envir = sessions)
+        return(response)
+      }
+
       if (identical(kind, "closeSession")) {
         payload <- exact_record(request$payload, c("sessionId"), "request.payload")
         session_id <- identifier(payload$sessionId, "request.payload.sessionId")
         if (!exists(session_id, envir = sessions, inherits = FALSE)) {
           abort("unknown_session", "The requested R session is already closed", TRUE)
         }
-        rm(list = session_id, envir = sessions)
-        return(list(
+        response <- list(
           transportVersion = transport_version,
           requestId = request_id,
           kind = "closed",
           sessionId = session_id
-        ))
+        )
+        preflight_response(response)
+        rm(list = session_id, envir = sessions)
+        return(response)
       }
 
       abort("invalid_request", "request.kind is unsupported")
@@ -619,18 +1035,7 @@ openwrangler_r_kernel_agent <- local({
           )
         }
       )
-      encoded <- jsonlite::toJSON(
-        response,
-        auto_unbox = TRUE,
-        digits = NA,
-        na = "null",
-        null = "null",
-        pretty = FALSE
-      )
-      if (nchar(encoded, type = "bytes") > maximum_response_bytes) {
-        stop("Open Wrangler refused an oversized R kernel response.", call. = FALSE)
-      }
-      enc2utf8(as.character(encoded))
+      encode_response(response)
     }
 
     environment(dispatch_json) <- environment()

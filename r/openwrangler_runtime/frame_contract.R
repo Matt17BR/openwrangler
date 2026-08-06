@@ -1594,6 +1594,10 @@ openwrangler_r_frame_contract <- local({
     finish_capture(capture)
   }
 
+  isolate_capture <- function(capture) {
+    capture_frame(read_capture_frame(capture))
+  }
+
   rename_column <- function(value, column_reference, new_name) {
     metrics <- new_capture_metrics()
     inspected <- inspect_frame(
@@ -2175,6 +2179,7 @@ openwrangler_r_frame_contract <- local({
   list(
     capture_frame = capture_frame,
     capture_live_frame = capture_live_frame,
+    isolate_capture = isolate_capture,
     rename_column = rename_column,
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,

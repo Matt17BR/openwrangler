@@ -23,6 +23,11 @@ const closeRequestId = "44444444-4444-4444-8444-444444444444";
 const summaryRequestId = "55555555-5555-4555-8555-555555555555";
 const statsRequestId = "66666666-6666-4666-8666-666666666666";
 const valuesRequestId = "77777777-7777-4777-8777-777777777777";
+const previewRequestId = "88888888-8888-4888-8888-888888888888";
+const applyRequestId = "99999999-9999-4999-8999-999999999999";
+const discardRequestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const undoRequestId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const inspectRequestId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -287,6 +292,105 @@ describe("native R kernel protocol", () => {
         payload: { ...request.payload, columns: [...request.payload.columns, ...request.payload.columns] }
       })
     ).toThrow("repeated identity");
+  });
+
+  it("strictly validates native R rename lifecycle requests and responses", () => {
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: renameStep(),
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    const preview = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalFramePage(),
+      diff: minimalRenameDiff(),
+      code: "open_wrangler_result <- frame\n"
+    });
+    expect(decodeRKernelResponseJson(preview, previewRequestId)).toMatchObject({
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      diff: { changedCells: 0, truncated: false },
+      code: "open_wrangler_result <- frame\n"
+    });
+
+    const inspectionRequest: Extract<RKernelRequest, { kind: "inspectStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: inspectRequestId,
+      kind: "inspectStep",
+      payload: { sessionId, revision: 2, stepId: "rename-step", page: pageWindow() }
+    };
+    expect(JSON.parse(encodeRKernelRequest(inspectionRequest))).toEqual(inspectionRequest);
+    const inspection = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: inspectRequestId,
+      kind: "stepInspection",
+      sessionId,
+      revision: 2,
+      stepId: "rename-step",
+      stepIndex: 0,
+      inputPage: minimalFramePage(),
+      outputPage: minimalFramePage(),
+      inputSchema: minimalFramePage().schema,
+      outputSchema: minimalFramePage().schema,
+      diff: minimalRenameDiff(),
+      code: "open_wrangler_result <- frame\n"
+    });
+    expect(decodeRKernelResponseJson(inspection, inspectRequestId)).toMatchObject({
+      kind: "stepInspection",
+      stepId: "rename-step",
+      stepIndex: 0,
+      revision: 2
+    });
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify({ ...JSON.parse(inspection), outputSchema: [] }), inspectRequestId)
+    ).toThrow("must match its frame schema");
+
+    const invalidStep = structuredClone(request) as unknown as {
+      payload: { step: { kind: string; params: Record<string, unknown> } };
+    };
+    invalidStep.payload.step.kind = "formula";
+    expect(() => encodeRKernelRequest(invalidStep as unknown as RKernelRequest)).toThrow("unsupported operation");
+    invalidStep.payload.step.kind = "renameColumn";
+    invalidStep.payload.step.params.extra = true;
+    expect(() => encodeRKernelRequest(invalidStep as unknown as RKernelRequest)).toThrow("invalid fields");
+
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...JSON.parse(preview),
+          diff: { ...minimalRenameDiff(), changedCells: 1 }
+        }),
+        previewRequestId
+      )
+    ).toThrow("rename diff is invalid");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: previewRequestId,
+          kind: "planUpdated",
+          sessionId,
+          action: "replace",
+          revision: 2,
+          page: minimalFramePage(),
+          code: "open_wrangler_result <- frame\n"
+        }),
+        previewRequestId
+      )
+    ).toThrow("invalid action");
   });
 
   it("validates R filter operators, typed selections, and value limits before dispatch", () => {
@@ -609,6 +713,103 @@ describe("exact IRkernel session transport", () => {
 
     await expect(transport.open("frame", pageWindow())).rejects.toThrow("no longer the sole open document");
     expect(controller.dispatchExecutions()).toBe(0);
+  });
+
+  it("keeps native R rename mutations on the exact mapped kernel", async () => {
+    const requests: RKernelRequest[] = [];
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "previewStep") {
+        return response(request, {
+          kind: "stepPreview",
+          sessionId,
+          revision: 1,
+          page: minimalFramePage(),
+          diff: minimalRenameDiff(),
+          code: "open_wrangler_result <- frame\n"
+        });
+      }
+      if (request.kind === "applyDraft" || request.kind === "discardDraft" || request.kind === "undoStep") {
+        const action = request.kind === "applyDraft" ? "apply" : request.kind === "discardDraft" ? "discard" : "undo";
+        return response(request, {
+          kind: "planUpdated",
+          sessionId,
+          action,
+          revision: request.payload.revision + 1,
+          page: minimalFramePage(),
+          code: "open_wrangler_result <- frame\n"
+        });
+      }
+      if (request.kind === "inspectStep") {
+        const frame = minimalFramePage();
+        return response(request, {
+          kind: "stepInspection",
+          sessionId,
+          revision: request.payload.revision,
+          stepId: request.payload.stepId,
+          stepIndex: 0,
+          inputPage: frame,
+          outputPage: frame,
+          inputSchema: frame.schema,
+          outputSchema: frame.schema,
+          diff: minimalRenameDiff(),
+          code: "open_wrangler_result <- frame\n"
+        });
+      }
+      if (request.kind === "closeSession") {
+        return response(request, { kind: "closed", sessionId });
+      }
+      return response(request, { kind: "page", sessionId, page: minimalFramePage() });
+    });
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [
+      sessionId,
+      openRequestId,
+      previewRequestId,
+      applyRequestId,
+      discardRequestId,
+      undoRequestId,
+      inspectRequestId,
+      closeRequestId
+    ]);
+
+    await transport.open("frame", pageWindow());
+    await expect(transport.previewStep(sessionId, 0, renameStep(), pageWindow())).resolves.toMatchObject({
+      sessionId,
+      revision: 1,
+      diff: { changedCells: 0 }
+    });
+    await expect(transport.applyDraft(sessionId, 1, pageWindow())).resolves.toMatchObject({
+      action: "apply",
+      revision: 2
+    });
+    await expect(transport.discardDraft(sessionId, 2, pageWindow())).resolves.toMatchObject({
+      action: "discard",
+      revision: 3
+    });
+    await expect(transport.undoStep(sessionId, 3, pageWindow())).resolves.toMatchObject({
+      action: "undo",
+      revision: 4
+    });
+    await expect(transport.inspectStep(sessionId, 4, "rename-step", pageWindow())).resolves.toMatchObject({
+      stepId: "rename-step",
+      stepIndex: 0,
+      revision: 4
+    });
+    await transport.close(sessionId);
+    await transport.dispose();
+
+    expect(requests.map((request) => request.kind)).toEqual([
+      "openSession",
+      "previewStep",
+      "applyDraft",
+      "discardDraft",
+      "undoStep",
+      "inspectStep",
+      "closeSession"
+    ]);
   });
 
   it("invalidates mapped sessions when the exact IRkernel restarts", async () => {
@@ -1173,6 +1374,26 @@ function emptyView() {
 
 function sortRule() {
   return { column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" } as const;
+}
+
+function renameStep() {
+  return {
+    id: "rename-step",
+    kind: "renameColumn",
+    params: { column: { id: "r:c:0", name: "value" }, newName: "renamed value" }
+  } as const;
+}
+
+function minimalRenameDiff() {
+  return {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: false
+  } as const;
 }
 
 function minimalFramePage() {

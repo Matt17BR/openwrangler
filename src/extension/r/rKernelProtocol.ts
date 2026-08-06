@@ -1,6 +1,12 @@
-import { decodeRFramePage, R_FRAME_CONTRACT_LIMITS, type RColumnType, type RFramePageContract } from "./rFrameContract";
+import {
+  decodeRFramePage,
+  R_FRAME_CONTRACT_LIMITS,
+  type RColumnSchema,
+  type RColumnType,
+  type RFramePageContract
+} from "./rFrameContract";
 import { supportsViewPredicate } from "../../shared/filterModel";
-import type { ColumnSummary, DatasetStats, PredicateFilter, ValueCount } from "../../shared/protocol";
+import type { ColumnSummary, DataDiff, DatasetStats, PredicateFilter, ValueCount } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
 export const R_KERNEL_TRANSPORT_VERSION = 2 as const;
@@ -10,6 +16,8 @@ export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 const identifierPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const maximumVariableNameBytes = 1_024;
 const maximumDiagnosticBytes = 4_096;
+const maximumGeneratedCodeBytes = 4 * 1_024 * 1_024;
+const maximumStepIdBytes = 1_024;
 
 export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "duplicate_session",
@@ -19,8 +27,10 @@ export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "profile_too_large",
   "runtime_error",
   "stale_column",
+  "stale_revision",
   "unknown_session",
   "unknown_variable",
+  "unsupported_operation",
   "unsupported_frame"
 ] as const);
 
@@ -71,6 +81,44 @@ export interface RKernelColumnReference {
   readonly name: string;
 }
 
+export interface RKernelRenameColumnStep {
+  readonly id: string;
+  readonly kind: "renameColumn";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    newName: string;
+  }>;
+}
+
+export interface RKernelStepPreviewResult {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly page: RFramePageContract;
+  readonly diff: DataDiff;
+  readonly code: string;
+}
+
+export interface RKernelPlanUpdatedResult {
+  readonly sessionId: string;
+  readonly action: "apply" | "discard" | "undo";
+  readonly revision: number;
+  readonly page: RFramePageContract;
+  readonly code: string;
+}
+
+export interface RKernelStepInspectionResult {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly stepId: string;
+  readonly stepIndex: number;
+  readonly inputPage: RFramePageContract;
+  readonly outputPage: RFramePageContract;
+  readonly inputSchema: readonly RColumnSchema[];
+  readonly outputSchema: readonly RColumnSchema[];
+  readonly diff: DataDiff;
+  readonly code: string;
+}
+
 export type RKernelRequest =
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -110,6 +158,39 @@ export type RKernelRequest =
         view: RKernelViewQuery;
         search: string | null;
         limit: number;
+      }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "previewStep";
+      payload: Readonly<{
+        sessionId: string;
+        revision: number;
+        step: RKernelRenameColumnStep;
+        replaceStepId?: string;
+        page: RKernelPageWindow;
+      }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "applyDraft" | "discardDraft" | "undoStep";
+      payload: Readonly<{
+        sessionId: string;
+        revision: number;
+        page: RKernelPageWindow;
+      }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "inspectStep";
+      payload: Readonly<{
+        sessionId: string;
+        revision: number;
+        stepId: string;
+        page: RKernelPageWindow;
       }>;
     }>
   | Readonly<{
@@ -156,6 +237,41 @@ export type RKernelResponse =
       column: string;
       values: readonly ValueCount[];
       hasMore: boolean;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "stepPreview";
+      sessionId: string;
+      revision: number;
+      page: RFramePageContract;
+      diff: DataDiff;
+      code: string;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "planUpdated";
+      sessionId: string;
+      action: "apply" | "discard" | "undo";
+      revision: number;
+      page: RFramePageContract;
+      code: string;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "stepInspection";
+      sessionId: string;
+      revision: number;
+      stepId: string;
+      stepIndex: number;
+      inputPage: RFramePageContract;
+      outputPage: RFramePageContract;
+      inputSchema: readonly RColumnSchema[];
+      outputSchema: readonly RColumnSchema[];
+      diff: DataDiff;
+      code: string;
     }>
   | RKernelErrorResponse;
 
@@ -302,6 +418,92 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       hasMore: candidate.hasMore
     });
   }
+  if (kind === "stepPreview") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "revision",
+      "page",
+      "diff",
+      "code"
+    ]);
+    validateEnvelope(record, expected);
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "stepPreview" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
+      page: decodeRFramePage(record.page),
+      diff: validateRenameDiff(record.diff),
+      code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
+    });
+  }
+  if (kind === "planUpdated") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "action",
+      "revision",
+      "page",
+      "code"
+    ]);
+    validateEnvelope(record, expected);
+    if (record.action !== "apply" && record.action !== "discard" && record.action !== "undo") {
+      fail("R kernel plan response has an invalid action.");
+    }
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "planUpdated" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      action: record.action,
+      revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
+      page: decodeRFramePage(record.page),
+      code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, true)
+    });
+  }
+  if (kind === "stepInspection") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "revision",
+      "stepId",
+      "stepIndex",
+      "inputPage",
+      "outputPage",
+      "inputSchema",
+      "outputSchema",
+      "diff",
+      "code"
+    ]);
+    validateEnvelope(record, expected);
+    const inputPage = decodeRFramePage(record.inputPage);
+    const outputPage = decodeRFramePage(record.outputPage);
+    const inputSchema = inspectionSchema(record.inputSchema, inputPage.schema, "response.inputSchema");
+    const outputSchema = inspectionSchema(record.outputSchema, outputPage.schema, "response.outputSchema");
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "stepInspection" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
+      stepId: boundedText(record.stepId, "response.stepId", maximumStepIdBytes, false),
+      stepIndex: boundedInteger(record.stepIndex, "response.stepIndex", R_FRAME_CONTRACT_LIMITS.columns - 1),
+      inputPage,
+      outputPage,
+      inputSchema,
+      outputSchema,
+      diff: validateRenameDiff(record.diff),
+      code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
+    });
+  }
   if (kind === "closed") {
     const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId"]);
     validateEnvelope(record, expected);
@@ -384,12 +586,102 @@ function validateRequest(request: RKernelRequest): void {
     }
     return;
   }
+  if (record.kind === "previewStep") {
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "revision", "step", "page"],
+      ["replaceStepId"],
+      "R kernel preview payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
+    validateRenameStep(payload.step);
+    if (payload.replaceStepId !== undefined) {
+      boundedText(payload.replaceStepId, "request.payload.replaceStepId", maximumStepIdBytes, false);
+    }
+    validatePage(payload.page);
+    return;
+  }
+  if (record.kind === "applyDraft" || record.kind === "discardDraft" || record.kind === "undoStep") {
+    const payload = exactRecord(record.payload, ["sessionId", "revision", "page"], "R kernel plan payload");
+    identifier(payload.sessionId, "request.payload.sessionId");
+    boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
+    validatePage(payload.page);
+    return;
+  }
+  if (record.kind === "inspectStep") {
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "revision", "stepId", "page"],
+      "R kernel inspection payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
+    boundedText(payload.stepId, "request.payload.stepId", maximumStepIdBytes, false);
+    validatePage(payload.page);
+    return;
+  }
   if (record.kind === "closeSession") {
     const payload = exactRecord(record.payload, ["sessionId"], "R kernel close payload");
     identifier(payload.sessionId, "request.payload.sessionId");
     return;
   }
   fail("R kernel request has an unsupported kind.");
+}
+
+function validateRenameStep(value: unknown): void {
+  const step = exactRecord(value, ["id", "kind", "params"], "R kernel rename step");
+  boundedText(step.id, "request.payload.step.id", maximumStepIdBytes, false);
+  if (step.kind !== "renameColumn") fail("R kernel rename step has an unsupported operation.");
+  const params = exactRecord(step.params, ["column", "newName"], "R kernel rename parameters");
+  validateColumnReference(params.column, "request.payload.step.params.column");
+  boundedText(params.newName, "request.payload.step.params.newName", maximumVariableNameBytes, false);
+}
+
+function validateRenameDiff(value: unknown): DataDiff {
+  const diff = exactRecord(value, [
+    "addedRows",
+    "removedRows",
+    "addedColumns",
+    "removedColumns",
+    "changedCells",
+    "cells",
+    "truncated"
+  ]);
+  if (
+    diff.addedRows !== 0 ||
+    diff.removedRows !== 0 ||
+    diff.changedCells !== 0 ||
+    diff.truncated !== false ||
+    !Array.isArray(diff.addedColumns) ||
+    diff.addedColumns.length !== 0 ||
+    !Array.isArray(diff.removedColumns) ||
+    diff.removedColumns.length !== 0 ||
+    !Array.isArray(diff.cells) ||
+    diff.cells.length !== 0
+  ) {
+    fail("R kernel rename diff is invalid.");
+  }
+  const result: DataDiff = {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: false
+  };
+  Object.freeze(result.addedColumns);
+  Object.freeze(result.removedColumns);
+  Object.freeze(result.cells);
+  return Object.freeze(result);
+}
+
+function inspectionSchema(value: unknown, expected: readonly RColumnSchema[], label: string): readonly RColumnSchema[] {
+  if (!Array.isArray(value) || JSON.stringify(value) !== JSON.stringify(expected)) {
+    fail(`${label} must match its frame schema.`);
+  }
+  return expected;
 }
 
 function validateColumnReferences(value: unknown): void {
