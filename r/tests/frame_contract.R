@@ -158,6 +158,148 @@ table_snapshot <- get("snapshot", envir = table_capture, inherits = FALSE)
 table_snapshot[, value := "changed"]
 assert_true(identical(table_frame, table_before), "data.table snapshot mutation reached the source frame")
 
+rename_frame <- data.frame(
+  duplicate = c(1L, 2L),
+  duplicate = c(3L, 4L),
+  `non syntactic` = as.Date(c("2026-01-01", "2026-01-02")),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b")
+)
+rename_before <- unserialize(serialize(rename_frame, NULL, version = 3L))
+renamed_frame <- openwrangler_r_frame_contract$rename_column(
+  rename_frame,
+  list(id = "r:c:2", name = "non syntactic"),
+  "event date"
+)
+renamed_capture <- openwrangler_r_frame_contract$capture_frame(renamed_frame)
+assert_identical(class(renamed_frame), "data.frame", "renaming changed the base data.frame class")
+assert_identical(
+  names(renamed_frame),
+  c("duplicate", "duplicate", "event date"),
+  "renaming did not target the exact non-syntactic column position"
+)
+assert_identical(row.names(renamed_frame), row.names(rename_frame), "renaming changed explicit row names")
+assert_identical(
+  attributes(renamed_frame[[3L]]),
+  attributes(rename_frame[[3L]]),
+  "renaming changed column attributes"
+)
+assert_identical(
+  renamed_capture$descriptor$schema[[3L]]$id,
+  "r:c:2",
+  "renaming changed the stable column identity"
+)
+assert_identical(rename_frame, rename_before, "renaming mutated the source data.frame")
+renamed_frame[[1L]][[1L]] <- 99L
+assert_identical(rename_frame[[1L]][[1L]], 1L, "the renamed data.frame shared column storage with its source")
+
+rename_tibble <- tibble::as_tibble(rename_frame, .name_repair = "minimal")
+rename_tibble_before <- unserialize(serialize(rename_tibble, NULL, version = 3L))
+renamed_tibble <- openwrangler_r_frame_contract$rename_column(
+  rename_tibble,
+  list(id = "r:c:1", name = "duplicate"),
+  "second duplicate"
+)
+assert_identical(
+  class(renamed_tibble),
+  c("tbl_df", "tbl", "data.frame"),
+  "renaming changed the tibble class"
+)
+assert_identical(
+  names(renamed_tibble),
+  c("duplicate", "second duplicate", "non syntactic"),
+  "tibble renaming did not resolve a duplicate name by stable position"
+)
+assert_identical(rename_tibble, rename_tibble_before, "renaming mutated the source tibble")
+
+rename_table <- data.table::data.table(
+  `primary key` = c(2L, 1L),
+  occurred = as.Date(c("2026-01-02", "2026-01-01")),
+  check.names = FALSE
+)
+data.table::setkeyv(rename_table, "primary key")
+rename_table_before <- data.table::copy(rename_table)
+renamed_table <- openwrangler_r_frame_contract$rename_column(
+  rename_table,
+  list(id = "r:c:0", name = "primary key"),
+  "order key"
+)
+renamed_table_capture <- openwrangler_r_frame_contract$capture_frame(renamed_table)
+assert_identical(
+  class(renamed_table),
+  c("data.table", "data.frame"),
+  "renaming changed the data.table class"
+)
+assert_identical(data.table::key(renamed_table), "order key", "renaming did not preserve the data.table key")
+assert_identical(
+  renamed_table_capture$descriptor$frameSemantics$keyColumnIds,
+  I("r:c:0"),
+  "renaming changed the stable data.table key identity"
+)
+assert_identical(
+  attributes(renamed_table$occurred),
+  attributes(rename_table$occurred),
+  "renaming changed data.table column attributes"
+)
+assert_true(identical(rename_table, rename_table_before), "renaming mutated the source data.table")
+renamed_table[, occurred := as.Date("2030-01-01")]
+assert_true(identical(rename_table, rename_table_before), "the renamed data.table shared storage with its source")
+
+collision_frame <- data.frame(first = 1L, second = 2L)
+assert_error(
+  openwrangler_r_frame_contract$rename_column(
+    collision_frame,
+    list(id = "r:c:0", name = "first"),
+    "second"
+  ),
+  "column-name-collision"
+)
+assert_error(
+  openwrangler_r_frame_contract$rename_column(
+    collision_frame,
+    list(id = "r:c:0", name = "first"),
+    ""
+  ),
+  "invalid-column-name"
+)
+assert_error(
+  openwrangler_r_frame_contract$rename_column(
+    collision_frame,
+    list(id = "r:c:99", name = "first"),
+    "renamed"
+  ),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$rename_column(
+    collision_frame,
+    list(id = "r:c:0", name = "second"),
+    "renamed"
+  ),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$rename_column(
+    collision_frame,
+    list(id = "r:c:0", name = "first"),
+    "__OPEN_WRANGLER_INTERNAL_ROW_ID_user"
+  ),
+  "reserved-column-name"
+)
+private_frame <- data.frame(
+  `__open_wrangler_internal_row_id_source` = 1L,
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$rename_column(
+    private_frame,
+    list(id = "r:c:0", name = "__open_wrangler_internal_row_id_source"),
+    "public"
+  ),
+  "reserved-column-name"
+)
+assert_identical(collision_frame, data.frame(first = 1L, second = 2L), "a failed rename mutated its source")
+
 profile_reference <- function(capture, position) {
   schema <- capture$descriptor$schema[[position]]
   list(id = schema$id, name = schema$name)

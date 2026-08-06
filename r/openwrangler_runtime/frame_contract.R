@@ -21,6 +21,7 @@ openwrangler_r_frame_contract <- local({
   maximum_text_bytes <- 8192L
   maximum_name_bytes <- 1024L
   maximum_payload_bytes <- 16L * 1024L * 1024L
+  private_row_id_prefix <- "__open_wrangler_internal_row_id_"
   metadata_base_bytes <- 1024L
   column_fixed_bytes <- 512L
   page_base_bytes <- 1024L
@@ -571,6 +572,11 @@ openwrangler_r_frame_contract <- local({
       abort("stale-column", sprintf("%s does not match the captured schema", label))
     }
     list(position = position, columnId = column_id, name = column_name)
+  }
+
+  is_private_column_name <- function(value) {
+    folded <- chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", value)
+    startsWith(folded, private_row_id_prefix)
   }
 
   predicate_operators <- list(
@@ -1588,6 +1594,52 @@ openwrangler_r_frame_contract <- local({
     finish_capture(capture)
   }
 
+  rename_column <- function(value, column_reference, new_name) {
+    metrics <- new_capture_metrics()
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = metrics
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+    if (identical(new_name, "")) {
+      abort("invalid-column-name", "new_name must not be empty")
+    }
+    if (is_private_column_name(resolved$name) || is_private_column_name(new_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+
+    column_names <- names(value)
+    collisions <- which(column_names == new_name & seq_along(column_names) != resolved$position)
+    if (length(collisions) != 0L) {
+      abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::setnames(result, old = resolved$position, new = new_name)
+    } else {
+      result_names <- names(result)
+      result_names[[resolved$position]] <- new_name
+      names(result) <- result_names
+    }
+
+    renamed <- inspect_frame(
+      result,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    source_ids <- vapply(inspected$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    renamed_ids <- vapply(renamed$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    if (!identical(source_ids, renamed_ids)) {
+      abort("internal-error", "renaming a column changed its stable identity")
+    }
+    result
+  }
+
   validate_capture <- function(capture) {
     if (
       !inherits(capture, "openwrangler_r_frame_capture") ||
@@ -2123,6 +2175,7 @@ openwrangler_r_frame_contract <- local({
   list(
     capture_frame = capture_frame,
     capture_live_frame = capture_live_frame,
+    rename_column = rename_column,
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,
     materialize_view_page = materialize_view_page,
