@@ -210,8 +210,8 @@ for the complete surface.
 ## Performance and scale
 
 Open Wrangler fetches the rows and columns needed by the grid instead of loading the whole dataset into the webview.
-The published 1.2.1 benchmark uses a 100,000 × 50 CSV and a 1,000,000 × 20 Parquet file. Larger datasets can work, but
-the practical limit depends on the engine and machine.
+The 1.2.1 benchmark uses a 100,000 × 50 CSV and a 1,000,000 × 20 Parquet file. Larger datasets can work, but the
+practical limit depends on the engine and machine.
 
 We compared Open Wrangler 1.2.1 with Microsoft Data Wrangler 1.24.2 on the same machine. The table reports median
 times; the faster result is **bold**. Data Wrangler converts Polars data to Pandas for these workflows, while Open
