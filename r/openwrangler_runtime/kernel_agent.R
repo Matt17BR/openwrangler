@@ -429,27 +429,51 @@ openwrangler_r_kernel_agent <- local({
     as.integer(session$revision + 1L)
   }
 
-  decode_rename_step <- function(value) {
+  decode_transform_step <- function(value, maximum_columns) {
     step <- exact_record(value, c("id", "kind", "params"), "request.payload.step")
     step_id <- bounded_text(step$id, "request.payload.step.id", maximum_step_id_bytes)
     if (identical(step_id, "")) abort("invalid_request", "request.payload.step.id may not be empty")
     kind <- bounded_text(step$kind, "request.payload.step.kind", 64L)
-    if (!identical(kind, "renameColumn")) {
+    if (identical(kind, "renameColumn")) {
+      params <- exact_record(step$params, c("column", "newName"), "request.payload.step.params")
+      new_name <- bounded_text(params$newName, "request.payload.step.params.newName", maximum_variable_name_bytes)
+      if (identical(new_name, "")) {
+        abort("invalid_request", "request.payload.step.params.newName may not be empty")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(
+          column = decode_column_reference(params$column, "request.payload.step.params.column"),
+          newName = new_name
+        )
+      ))
+    }
+    if (identical(kind, "dropColumns")) {
+      params <- exact_record(step$params, "columns", "request.payload.step.params")
+      columns <- params$columns
+      if (
+        !is.list(columns) ||
+          is.object(columns) ||
+          !is.null(names(columns)) ||
+          length(columns) == 0L ||
+          length(columns) > maximum_columns
+      ) {
+        abort("invalid_request", "request.payload.step.params.columns must be a bounded non-empty array")
+      }
+      columns <- lapply(seq_along(columns), function(index) {
+        decode_column_reference(columns[[index]], sprintf("request.payload.step.params.columns[%d]", index))
+      })
+      column_ids <- vapply(columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (anyDuplicated(column_ids)) {
+        abort("invalid_request", "request.payload.step.params.columns contains a repeated column identity")
+      }
+      return(list(id = step_id, kind = kind, params = list(columns = columns)))
+    }
+    if (!kind %in% c("renameColumn", "dropColumns")) {
       abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
     }
-    params <- exact_record(step$params, c("column", "newName"), "request.payload.step.params")
-    new_name <- bounded_text(params$newName, "request.payload.step.params.newName", maximum_variable_name_bytes)
-    if (identical(new_name, "")) {
-      abort("invalid_request", "request.payload.step.params.newName may not be empty")
-    }
-    list(
-      id = step_id,
-      kind = kind,
-      params = list(
-        column = decode_column_reference(params$column, "request.payload.step.params.column"),
-        newName = new_name
-      )
-    )
+    abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
   }
 
   bind_rename_step <- function(capture, step) {
@@ -463,17 +487,65 @@ openwrangler_r_kernel_agent <- local({
     }
     list(
       id = step$id,
+      kind = step$kind,
       position = as.integer(matches[[1L]]),
       oldName = step$params$column$name,
       newName = step$params$newName
     )
   }
 
-  apply_rename <- function(frame_contract, capture, step) {
-    bound <- bind_rename_step(capture, step)
+  bind_drop_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    columns <- lapply(step$params$columns, function(reference) {
+      matches <- which(schema_ids == reference$id)
+      if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, reference$name)) {
+        abort("stale_column", "A drop column reference no longer matches the active R dataframe", TRUE)
+      }
+      list(
+        id = reference$id,
+        position = as.integer(matches[[1L]]),
+        name = reference$name
+      )
+    })
+    if (length(columns) >= length(schema)) {
+      abort("invalid_request", "dropColumns must leave at least one visible column", TRUE)
+    }
+    positions <- vapply(columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+    columns <- columns[order(positions)]
+    list(id = step$id, kind = step$kind, columns = columns)
+  }
+
+  apply_step <- function(frame_contract, capture, step) {
     source <- get("snapshot", envir = capture, inherits = FALSE)
-    result <- frame_contract$rename_column(source, step$params$column, step$params$newName)
-    list(capture = frame_contract$capture_frame(result, nullability_source = capture), bound = bound)
+    if (identical(step$kind, "renameColumn")) {
+      bound <- bind_rename_step(capture, step)
+      result <- frame_contract$rename_column_at(source, bound$position, bound$oldName, bound$newName)
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = seq_along(capture$descriptor$schema)
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "dropColumns")) {
+      bound <- bind_drop_step(capture, step)
+      positions <- vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+      names <- vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+      result <- frame_contract$drop_columns_at(source, positions, names)
+      keep_positions <- setdiff(seq_along(capture$descriptor$schema), positions)
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = keep_positions
+        ),
+        bound = bound
+      ))
+    }
+    abort("unsupported_operation", sprintf("The native R runtime does not support %s", step$kind))
   }
 
   replay_plan <- function(frame_contract, original, plan) {
@@ -481,7 +553,7 @@ openwrangler_r_kernel_agent <- local({
     bound_plan <- vector("list", length(plan))
     if (length(plan) != 0L) {
       for (index in seq_along(plan)) {
-        applied <- apply_rename(frame_contract, capture, plan[[index]])
+        applied <- apply_step(frame_contract, capture, plan[[index]])
         capture <- applied$capture
         bound_plan[[index]] <- applied$bound
       }
@@ -516,27 +588,49 @@ openwrangler_r_kernel_agent <- local({
       "  }"
     )
     for (step in bound_plan) {
-      lines <- c(
-        lines,
-        sprintf(
-          "  if (ncol(.ow_result) < %dL || !identical(names(.ow_result)[[%dL]], %s)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
-          step$position,
-          step$position,
-          r_string(step$oldName)
-        ),
-        sprintf(
-          "  if (any(names(.ow_result)[-%dL] == %s)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
-          step$position,
-          r_string(step$newName)
-        ),
-        sprintf(
-          "  if (inherits(.ow_result, \"data.table\")) data.table::setnames(.ow_result, old = %dL, new = %s) else names(.ow_result)[[%dL]] <- %s",
-          step$position,
-          r_string(step$newName),
-          step$position,
-          r_string(step$newName)
+      if (identical(step$kind, "renameColumn")) {
+        lines <- c(
+          lines,
+          sprintf(
+            "  if (ncol(.ow_result) < %dL || !identical(names(.ow_result)[[%dL]], %s)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+            step$position,
+            step$position,
+            r_string(step$oldName)
+          ),
+          sprintf(
+            "  if (any(names(.ow_result)[-%dL] == %s)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+            step$position,
+            r_string(step$newName)
+          ),
+          sprintf(
+            "  if (inherits(.ow_result, \"data.table\")) data.table::setnames(.ow_result, old = %dL, new = %s) else names(.ow_result)[[%dL]] <- %s",
+            step$position,
+            r_string(step$newName),
+            step$position,
+            r_string(step$newName)
+          )
         )
-      )
+      } else if (identical(step$kind, "dropColumns")) {
+        positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+        names <- vapply(step$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+        position_code <- paste(sprintf("%dL", positions), collapse = ", ")
+        name_code <- paste(vapply(names, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")
+        lines <- c(
+          lines,
+          sprintf("  .ow_drop_positions <- c(%s)", position_code),
+          sprintf("  .ow_drop_names <- c(%s)", name_code),
+          "  if (any(.ow_drop_positions > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_drop_positions], .ow_drop_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  .ow_keep_positions <- setdiff(seq_len(ncol(.ow_result)), .ow_drop_positions)",
+          "  if (length(.ow_keep_positions) == 0L) stop(\"Open Wrangler must keep at least one column\", call. = FALSE)",
+          "  if (inherits(.ow_result, \"data.table\")) {",
+          "    .ow_result <- .ow_result[, .ow_keep_positions, with = FALSE]",
+          "  } else {",
+          "    for (.ow_position in sort(.ow_drop_positions, decreasing = TRUE)) .ow_result[[.ow_position]] <- NULL",
+          "  }"
+        )
+      } else {
+        abort("runtime_error", "The R cleaning plan contains an unsupported operation")
+      }
     }
     code <- paste(c(lines, "  .ow_result", "})", ""), collapse = "\n")
     if (nchar(code, type = "bytes") > maximum_generated_code_bytes) {
@@ -545,12 +639,17 @@ openwrangler_r_kernel_agent <- local({
     code
   }
 
-  rename_diff <- function() {
+  step_diff <- function(bound) {
+    removed_columns <- if (identical(bound$kind, "dropColumns")) {
+      vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    } else {
+      character()
+    }
     list(
       addedRows = 0L,
       removedRows = 0L,
       addedColumns = I(character()),
-      removedColumns = I(character()),
+      removedColumns = I(removed_columns),
       changedCells = 0L,
       cells = I(list()),
       truncated = FALSE
@@ -596,6 +695,8 @@ openwrangler_r_kernel_agent <- local({
       "capture_live_frame",
       "isolate_capture",
       "rename_column",
+      "rename_column_at",
+      "drop_columns_at",
       "materialize_view_page",
       "materialize_summaries",
       "materialize_dataset_stats",
@@ -787,7 +888,7 @@ openwrangler_r_kernel_agent <- local({
           abort("invalid_request", "Apply or discard the current R draft before previewing another step", TRUE)
         }
         page <- decode_page(payload$page, frame_contract$limits)
-        step <- decode_rename_step(payload$step)
+        step <- decode_transform_step(payload$step, frame_contract$limits$columns)
         replace_step_id <- if ("replaceStepId" %in% names(payload)) {
           value <- bounded_text(payload$replaceStepId, "request.payload.replaceStepId", maximum_step_id_bytes)
           if (identical(value, "")) abort("invalid_request", "request.payload.replaceStepId may not be empty")
@@ -823,7 +924,7 @@ openwrangler_r_kernel_agent <- local({
           abort("invalid_request", "Applied R step IDs must be unique", TRUE)
         }
 
-        applied <- apply_rename(frame_contract, base, step)
+        applied <- apply_step(frame_contract, base, step)
         candidate <- session
         candidate$draft <- applied$capture
         candidate$draftStep <- step
@@ -839,7 +940,7 @@ openwrangler_r_kernel_agent <- local({
           sessionId = session_id,
           revision = candidate$revision,
           page = materialize(frame_contract, candidate$draft, page),
-          diff = rename_diff(),
+          diff = step_diff(applied$bound),
           code = compile_plan(candidate$variableName, candidate_bound_plan)
         )
         preflight_response(response)
@@ -879,7 +980,7 @@ openwrangler_r_kernel_agent <- local({
           outputPage = output_page,
           inputSchema = input_page$schema,
           outputSchema = output_page$schema,
-          diff = rename_diff(),
+          diff = step_diff(after$boundPlan[[step_index]]),
           code = compile_plan(session$variableName, after$boundPlan)
         ))
       }

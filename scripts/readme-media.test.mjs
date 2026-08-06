@@ -506,6 +506,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /Open Wrangler 2 development builds can also open base R `data\.frame`, tibble, and `data\.table` variables from\s+IRkernel/u
   );
+  assert.match(
+    readme,
+    /Editing mode\s+currently supports two cleaning operations: \*\*Rename Column\*\* and \*\*Drop Columns\*\*/u
+  );
+  assert.match(readme, /Native IRkernel viewing; Rename and Drop Columns in Editing mode/u);
   assert.match(readme, /\| R \(v2 development\)\s+\|/u);
   assert.match(
     readme,
@@ -596,6 +601,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     v2Roadmap,
     /finish native R notebook support for data frames, tibbles, and `data\.table`, then add Quarto and R Markdown/u
   );
+  assert.match(v2Roadmap, /Rename Column and Drop Columns are available now/u);
   assert.match(
     v2Roadmap,
     /\[R architecture decision\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/decisions\/0001-native-r-runtime\.md\)/u
@@ -665,11 +671,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /Editing mode also supports Rename Column with draft preview, generated R, apply, discard, inspection, latest-step\s+editing, and undo/u
+    /Editing mode currently supports Rename Column and Drop Columns\. Both use draft preview, generated R, apply, discard,\s+inspection, latest-step editing, and undo/u
   );
   assert.match(
     gallery,
-    /The editing image comes from the packaged VS Code journey; the same VSIX passed the matching journey in Cursor/u
+    /The editing image shows the packaged VS Code Rename Column journey; the same VSIX passed the matching journey in\s+Cursor\. Packaged acceptance also previews Drop Columns/u
   );
   assert.match(
     gallery,

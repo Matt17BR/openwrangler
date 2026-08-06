@@ -20,7 +20,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added the first native R cleaning operation for Open Wrangler 2. **Rename Column** uses the regular draft, code
   preview, apply, discard, inspection, edit-latest, and undo workflow for base data frames, tibbles, and data tables.
   It keeps the notebook object unchanged, generates executable R, and lets users copy that code or save it as a `.R`
-  script. Other R operations, cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto are
+  script.
+- Added **Drop Columns** as the second native R cleaning operation. It binds selected columns by stable identity,
+  keeps duplicate and non-syntactic names unambiguous, preserves the dataframe class and data-table keys, and
+  generates executable R without changing the notebook object. Rename Column and Drop Columns are the only R cleaning
+  operations available today; cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto are
   still in development.
 
 ### Changed
@@ -33,9 +37,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
   ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
   to the notebook's source object.
-- Added a packaged-editor R editing screenshot and acceptance journey. VS Code and Cursor now drive Rename preview,
-  discard, apply, inspection, edit-latest, copy, `.R` script export, and undo against the same VSIX. The journey also
-  checks that base data frames, tibbles, and data tables are unchanged.
+- Added a packaged-editor R editing screenshot and expanded the acceptance journey. VS Code and Cursor preview and
+  discard Rename Column and Drop Columns for base data frames, tibbles, and keyed data tables. The base-data-frame
+  journey also applies, inspects, and undoes both operations, checks generated R, copies and saves the Rename code,
+  and verifies that the notebook objects are unchanged.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and

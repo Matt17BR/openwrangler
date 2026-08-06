@@ -15,6 +15,7 @@ rename_session_id <- "55555555-5555-4555-8555-555555555555"
 tibble_rename_session_id <- "66666666-6666-4666-8666-666666666666"
 table_rename_session_id <- "77777777-7777-4777-8777-777777777777"
 atomic_rename_session_id <- "88888888-8888-4888-8888-888888888888"
+drop_session_id <- "99999999-9999-4999-8999-999999999999"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -325,7 +326,7 @@ named_rows <- dispatch(
   list(sessionId = second_session_id, variableName = "named_rows", page = page_window())
 )
 assert_identical(named_rows$kind, "page", "a dataframe with explicit row names could not be opened")
-assert_identical(named_rows$page$contractVersion, 3L, "the R kernel agent emitted the wrong frame contract")
+assert_identical(named_rows$page$contractVersion, 4L, "the R kernel agent emitted the wrong frame contract")
 assert_identical(named_rows$page$frameSemantics$rowNames, "explicit", "explicit R row names were hidden")
 assert_identical(named_rows$page$page$rows[[1L]]$rowLabel, "named-row", "the explicit R row label changed")
 named_rows_closed <- dispatch("closeSession", list(sessionId = second_session_id))
@@ -544,6 +545,159 @@ assert_identical(rename_closed$kind, "closed", "a session with an R draft did no
 closed_rename_page <- dispatch("getPage", list(sessionId = rename_session_id, page = page_window()))
 assert_identical(closed_rename_page$code, "unknown_session", "R draft cleanup retained a closed session")
 
+source_environment$drop_frame <- data.frame(
+  duplicate = c(1L, 2L),
+  duplicate = c(3L, 4L),
+  `non syntactic` = as.Date(c("2026-03-01", "2026-03-02")),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b")
+)
+drop_source_before <- unserialize(serialize(source_environment$drop_frame, NULL, version = 3L))
+drop_step <- function(id = "drop-step", column_id = "r:c:1", column_name = "duplicate") {
+  list(
+    id = id,
+    kind = "dropColumns",
+    params = list(columns = I(list(list(id = column_id, name = column_name))))
+  )
+}
+drop_open <- dispatch(
+  "openSession",
+  list(sessionId = drop_session_id, variableName = "drop_frame", page = page_window())
+)
+assert_identical(drop_open$kind, "page", "the R drop session did not open")
+drop_nullability <- vapply(drop_open$page$schema, `[[`, logical(1L), "nullable")
+drop_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = drop_session_id,
+    revision = 0L,
+    step = drop_step(),
+    page = page_window(column_offset = 3L, column_limit = 1L)
+  )
+)
+assert_identical(drop_preview$kind, "stepPreview", "the R drop did not preview")
+assert_identical(drop_preview$page$shape$columns, 2L, "the R drop preview kept the old width")
+assert_identical(
+  vapply(drop_preview$page$schema, `[[`, character(1L), "id"),
+  c("r:c:0", "r:c:2"),
+  "the R drop preview renumbered retained identities"
+)
+assert_identical(
+  vapply(drop_preview$page$schema, `[[`, integer(1L), "position"),
+  0:1,
+  "the R drop preview did not reindex output positions"
+)
+assert_identical(
+  vapply(drop_preview$page$schema, `[[`, logical(1L), "nullable"),
+  drop_nullability[c(1L, 3L)],
+  "the R drop preview changed retained nullability"
+)
+assert_identical(drop_preview$page$page$columnOffset, 2L, "the R drop did not resolve an obsolete viewport")
+assert_identical(drop_preview$page$page$columnIds, list(), "an obsolete viewport returned unrelated R columns")
+assert_identical(drop_preview$diff$removedColumns, list("duplicate"), "the R drop diff lost the removed column")
+assert_identical(drop_preview$diff$addedColumns, list(), "the R drop diff reported added columns")
+assert_identical(drop_preview$diff$changedCells, 0L, "the R drop diff reported changed cells")
+drop_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = drop_session_id, revision = 1L, page = page_window())
+)
+assert_identical(drop_discard$action, "discard", "the R drop draft did not discard")
+assert_identical(drop_discard$page$shape$columns, 3L, "discarding the R drop kept its narrow schema")
+
+drop_preview <- dispatch(
+  "previewStep",
+  list(sessionId = drop_session_id, revision = 2L, step = drop_step(), page = page_window())
+)
+drop_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = drop_session_id, revision = 3L, page = page_window())
+)
+assert_identical(drop_apply$action, "apply", "the R drop draft did not apply")
+assert_identical(
+  vapply(drop_apply$page$schema, `[[`, character(1L), "id"),
+  c("r:c:0", "r:c:2"),
+  "applying the R drop changed retained identities"
+)
+drop_inspection <- dispatch(
+  "inspectStep",
+  list(sessionId = drop_session_id, revision = 4L, stepId = "drop-step", page = page_window())
+)
+assert_identical(drop_inspection$kind, "stepInspection", "the applied R drop could not be inspected")
+assert_identical(drop_inspection$inputSchema[[2L]]$id, "r:c:1", "R drop inspection lost its input schema")
+assert_identical(
+  vapply(drop_inspection$outputSchema, `[[`, character(1L), "id"),
+  c("r:c:0", "r:c:2"),
+  "R drop inspection lost its output schema"
+)
+assert_identical(drop_inspection$diff$removedColumns, list("duplicate"), "R drop inspection lost its diff")
+
+assign("drop_frame", source_environment$drop_frame, envir = .GlobalEnv)
+eval(parse(text = drop_apply$code), envir = .GlobalEnv)
+drop_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(names(drop_generated), c("duplicate", "non syntactic"), "generated R code dropped the wrong column")
+assert_identical(
+  get("drop_frame", envir = .GlobalEnv, inherits = FALSE),
+  drop_source_before,
+  "generated R drop code mutated its source dataframe"
+)
+rm("drop_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+drop_edit_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = drop_session_id,
+    revision = 4L,
+    step = drop_step(column_id = "r:c:2", column_name = "non syntactic"),
+    replaceStepId = "drop-step",
+    page = page_window()
+  )
+)
+assert_identical(
+  vapply(drop_edit_preview$page$schema, `[[`, character(1L), "id"),
+  c("r:c:0", "r:c:1"),
+  "editing the R drop did not replay its original input"
+)
+drop_edit_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = drop_session_id, revision = 5L, page = page_window())
+)
+assert_identical(drop_edit_apply$page$shape$columns, 2L, "the edited R drop did not apply")
+drop_undo <- dispatch(
+  "undoStep",
+  list(sessionId = drop_session_id, revision = 6L, page = page_window())
+)
+assert_identical(drop_undo$action, "undo", "the R drop did not undo")
+assert_identical(drop_undo$page$shape$columns, 3L, "undoing the R drop did not restore the original schema")
+assert_identical(source_environment$drop_frame, drop_source_before, "the R drop lifecycle mutated its source")
+
+named_drop_columns <- dispatch(
+  "previewStep",
+  list(
+    sessionId = drop_session_id,
+    revision = 7L,
+    step = list(
+      id = "named-drop-columns",
+      kind = "dropColumns",
+      params = list(columns = list(named = list(id = "r:c:0", name = "duplicate")))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(named_drop_columns$kind, "error", "an object-shaped R drop column list was accepted")
+assert_identical(named_drop_columns$code, "invalid_request", "the object-shaped R drop diagnostic changed")
+drop_retry <- dispatch(
+  "previewStep",
+  list(sessionId = drop_session_id, revision = 7L, step = drop_step("drop-retry"), page = page_window())
+)
+assert_identical(drop_retry$kind, "stepPreview", "a malformed R drop request changed the session revision")
+drop_retry_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = drop_session_id, revision = 8L, page = page_window())
+)
+assert_identical(drop_retry_discard$action, "discard", "the R drop retry could not be discarded")
+drop_closed <- dispatch("closeSession", list(sessionId = drop_session_id))
+assert_identical(drop_closed$kind, "closed", "the R drop session did not close")
+
 oversized_mutation_response <- FALSE
 atomic_contract <- openwrangler_r_frame_contract
 real_atomic_materialize <- atomic_contract$materialize_view_page
@@ -696,6 +850,8 @@ missing_package_contract <- list(
   },
   isolate_capture = function(...) stop("unexpected isolated capture", call. = FALSE),
   rename_column = function(...) stop("unexpected rename", call. = FALSE),
+  rename_column_at = function(...) stop("unexpected rename", call. = FALSE),
+  drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
   materialize_summaries = function(...) stop("unexpected summary materialization", call. = FALSE),
   materialize_dataset_stats = function(...) stop("unexpected dataset profile", call. = FALSE),

@@ -59,7 +59,7 @@ base_page <- openwrangler_r_frame_contract$materialize_page(
   column_limit = 20L
 )
 assert_identical(base_page$dataframeFlavor, "r.data.frame", "base data.frame flavor changed")
-assert_identical(base_page$contractVersion, 3L, "R frame contract version changed")
+assert_identical(base_page$contractVersion, 4L, "R frame contract version changed")
 assert_identical(base_page$shape, list(rows = 3L, columns = 10L), "base frame shape changed")
 assert_identical(base_page$frameSemantics$rowNames, "positional", "automatic row names were not positional")
 assert_true(is.null(base_page$page$rows[[1L]]$rowLabel), "automatic row names leaked into the page")
@@ -244,6 +244,151 @@ assert_identical(
 assert_true(identical(rename_table, rename_table_before), "renaming mutated the source data.table")
 renamed_table[, occurred := as.Date("2030-01-01")]
 assert_true(identical(rename_table, rename_table_before), "the renamed data.table shared storage with its source")
+
+drop_frame <- data.frame(
+  duplicate = c(1L, 2L),
+  duplicate = c(3L, 4L),
+  `non syntactic` = as.Date(c("2026-02-01", "2026-02-02")),
+  keep = c("alpha", NA_character_),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b")
+)
+drop_before <- unserialize(serialize(drop_frame, NULL, version = 3L))
+drop_capture <- openwrangler_r_frame_contract$capture_frame(drop_frame)
+dropped_frame <- openwrangler_r_frame_contract$drop_columns(
+  drop_frame,
+  list(list(id = "r:c:1", name = "duplicate"))
+)
+dropped_capture <- openwrangler_r_frame_contract$capture_frame(
+  dropped_frame,
+  nullability_source = drop_capture,
+  source_positions = c(1L, 3L, 4L)
+)
+assert_identical(class(dropped_frame), "data.frame", "dropping changed the base data.frame class")
+assert_identical(
+  names(dropped_frame),
+  c("duplicate", "non syntactic", "keep"),
+  "dropping did not target the exact duplicate column"
+)
+assert_identical(row.names(dropped_frame), row.names(drop_frame), "dropping changed explicit row names")
+assert_identical(
+  attributes(dropped_frame[[2L]]),
+  attributes(drop_frame[[3L]]),
+  "dropping changed retained column attributes"
+)
+assert_identical(
+  vapply(dropped_capture$descriptor$schema, `[[`, character(1L), "id"),
+  c("r:c:0", "r:c:2", "r:c:3"),
+  "dropping renumbered retained column identities"
+)
+assert_identical(
+  vapply(dropped_capture$descriptor$schema, `[[`, integer(1L), "position"),
+  0:2,
+  "dropping did not reindex public column positions"
+)
+assert_identical(
+  vapply(dropped_capture$descriptor$schema, `[[`, logical(1L), "nullable"),
+  vapply(drop_capture$descriptor$schema[c(1L, 3L, 4L)], `[[`, logical(1L), "nullable"),
+  "dropping changed retained nullability"
+)
+assert_identical(drop_frame, drop_before, "dropping mutated the source data.frame")
+dropped_frame[[1L]][1L] <- 99L
+assert_identical(drop_frame[[1L]][1L], 1L, "the dropped data.frame shared column storage with its source")
+
+kept_duplicates <- openwrangler_r_frame_contract$drop_columns(
+  drop_frame,
+  list(list(id = "r:c:2", name = "non syntactic"))
+)
+assert_identical(
+  names(kept_duplicates),
+  c("duplicate", "duplicate", "keep"),
+  "dropping repaired surviving duplicate names"
+)
+
+drop_tibble <- tibble::as_tibble(drop_frame, .name_repair = "minimal")
+drop_tibble_before <- unserialize(serialize(drop_tibble, NULL, version = 3L))
+dropped_tibble <- openwrangler_r_frame_contract$drop_columns(
+  drop_tibble,
+  list(list(id = "r:c:1", name = "duplicate"))
+)
+assert_identical(
+  class(dropped_tibble),
+  c("tbl_df", "tbl", "data.frame"),
+  "dropping changed the tibble class"
+)
+assert_identical(
+  names(dropped_tibble),
+  c("duplicate", "non syntactic", "keep"),
+  "tibble dropping did not target the exact duplicate column"
+)
+assert_identical(drop_tibble, drop_tibble_before, "dropping mutated the source tibble")
+
+drop_table <- data.table::data.table(k1 = c(1L, 1L), k2 = c(1L, 2L), value = c("a", "b"), other = 3:4)
+data.table::setkey(drop_table, k1, k2)
+drop_table_before <- data.table::copy(drop_table)
+drop_table_capture <- openwrangler_r_frame_contract$capture_frame(drop_table)
+drop_table_non_key <- openwrangler_r_frame_contract$drop_columns(
+  drop_table,
+  list(list(id = "r:c:3", name = "other"))
+)
+drop_table_non_key_capture <- openwrangler_r_frame_contract$capture_frame(
+  drop_table_non_key,
+  nullability_source = drop_table_capture,
+  source_positions = c(1L, 2L, 3L)
+)
+assert_identical(data.table::key(drop_table_non_key), c("k1", "k2"), "dropping a non-key changed the data.table key")
+assert_identical(
+  drop_table_non_key_capture$descriptor$frameSemantics$keyColumnIds,
+  I(c("r:c:0", "r:c:1")),
+  "dropping a non-key changed stable data.table key identities"
+)
+drop_table_trailing_key <- openwrangler_r_frame_contract$drop_columns(
+  drop_table,
+  list(list(id = "r:c:1", name = "k2"))
+)
+drop_table_trailing_capture <- openwrangler_r_frame_contract$capture_frame(
+  drop_table_trailing_key,
+  nullability_source = drop_table_capture,
+  source_positions = c(1L, 3L, 4L)
+)
+assert_identical(data.table::key(drop_table_trailing_key), "k1", "dropping a trailing key did not retain its key prefix")
+assert_identical(
+  drop_table_trailing_capture$descriptor$frameSemantics$keyColumnIds,
+  I("r:c:0"),
+  "dropping a trailing key changed the retained key identity"
+)
+drop_table_leading_key <- openwrangler_r_frame_contract$drop_columns(
+  drop_table,
+  list(list(id = "r:c:0", name = "k1"))
+)
+assert_identical(data.table::key(drop_table_leading_key), NULL, "dropping the first key did not clear the data.table key")
+assert_true(identical(drop_table, drop_table_before), "dropping mutated the source data.table")
+
+assert_error(
+  openwrangler_r_frame_contract$drop_columns(
+    drop_frame,
+    list(list(id = "r:c:1", name = "duplicate"), list(id = "r:c:1", name = "duplicate"))
+  ),
+  "column_references may address each column only once"
+)
+assert_error(
+  openwrangler_r_frame_contract$drop_columns(drop_frame, list(list(id = "r:c:99", name = "duplicate"))),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$drop_columns(drop_frame, list(list(id = "r:c:0", name = "wrong"))),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$drop_columns(
+    drop_frame,
+    lapply(seq_len(ncol(drop_frame)), function(position) {
+      list(id = sprintf("r:c:%d", position - 1L), name = names(drop_frame)[[position]])
+    })
+  ),
+  "dropColumns must leave at least one visible column"
+)
+assert_identical(drop_frame, drop_before, "a failed drop mutated its source")
 
 collision_frame <- data.frame(first = 1L, second = 2L)
 assert_error(

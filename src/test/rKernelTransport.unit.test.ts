@@ -375,7 +375,7 @@ describe("native R kernel protocol", () => {
         }),
         previewRequestId
       )
-    ).toThrow("rename diff is invalid");
+    ).toThrow("structural diff is invalid");
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
@@ -391,6 +391,55 @@ describe("native R kernel protocol", () => {
         previewRequestId
       )
     ).toThrow("invalid action");
+  });
+
+  it("strictly validates native R Drop Columns requests and structural diffs", () => {
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "drop-step",
+          kind: "dropColumns",
+          params: { columns: [{ id: "r:c:0", name: "value" }] }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    const duplicate = structuredClone(request) as unknown as {
+      payload: { step: { params: { columns: Array<{ id: string; name: string }> } } };
+    };
+    duplicate.payload.step.params.columns.push({
+      id: "r:c:0",
+      name: "value"
+    });
+    expect(() => encodeRKernelRequest(duplicate as unknown as RKernelRequest)).toThrow("repeated identity");
+
+    const empty = structuredClone(request) as unknown as {
+      payload: { step: { params: { columns: Array<{ id: string; name: string }> } } };
+    };
+    empty.payload.step.params.columns.length = 0;
+    expect(() => encodeRKernelRequest(empty as unknown as RKernelRequest)).toThrow("bounded non-empty array");
+
+    const response = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalFramePage(),
+      diff: { ...minimalRenameDiff(), removedColumns: ["value"] },
+      code: "open_wrangler_result <- frame\n"
+    });
+    expect(decodeRKernelResponseJson(response, previewRequestId)).toMatchObject({
+      kind: "stepPreview",
+      diff: { removedColumns: ["value"] }
+    });
   });
 
   it("validates R filter operators, typed selections, and value limits before dispatch", () => {
@@ -1435,7 +1484,7 @@ function minimalRenameDiff() {
 
 function minimalFramePage() {
   return {
-    contractVersion: 3,
+    contractVersion: 4,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },

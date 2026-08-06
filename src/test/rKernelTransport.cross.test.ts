@@ -511,6 +511,153 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
+  it("runs a native R Drop Columns then Rename Column plan with stable identities", () => {
+    const editingSessionId = "20000000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "20000000-0000-4000-8000-000000000002",
+      dropPreview: "20000000-0000-4000-8000-000000000003",
+      dropApply: "20000000-0000-4000-8000-000000000004",
+      renamePreview: "20000000-0000-4000-8000-000000000005",
+      renameApply: "20000000-0000-4000-8000-000000000006",
+      inspect: "20000000-0000-4000-8000-000000000007",
+      undoRename: "20000000-0000-4000-8000-000000000008",
+      undoDrop: "20000000-0000-4000-8000-000000000009",
+      close: "20000000-0000-4000-8000-00000000000a"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const dropPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.dropPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: "drop-step",
+          kind: "dropColumns",
+          params: { columns: [{ id: "r:c:0", name: "duplicate" }] }
+        },
+        page: pageWindow()
+      }
+    });
+    const dropApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.dropApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const renamePreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.renamePreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 2,
+        step: {
+          id: "rename-step",
+          kind: "renameColumn",
+          params: { column: { id: "r:c:1", name: "duplicate" }, newName: "remaining duplicate" }
+        },
+        page: pageWindow()
+      }
+    });
+    const renameApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.renameApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
+    });
+    const inspect = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.inspect,
+      kind: "inspectStep",
+      payload: { sessionId: editingSessionId, revision: 4, stepId: "drop-step", page: pageWindow() }
+    });
+    const undoRename = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undoRename,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 4, page: pageWindow() }
+    });
+    const undoDrop = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undoDrop,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 5, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(duplicate = 1:2, duplicate = 3:4, label = c("a", "b"), check.names = FALSE)
+frame_before <- unserialize(serialize(frame, NULL, version = 3L))
+${bootstrap}
+${open.code}
+${dropPreview.code}
+${dropApply.code}
+${renamePreview.code}
+${renameApply.code}
+${inspect.code}
+${undoRename.code}
+${undoDrop.code}
+stopifnot(identical(frame, frame_before))
+${close.code}
+`);
+
+    const dropped = decodeRKernelResponseJson(marked(result.stdout, dropPreview.marker), ids.dropPreview);
+    expect(dropped).toMatchObject({ kind: "stepPreview", diff: { removedColumns: ["duplicate"] } });
+    if (dropped.kind !== "stepPreview") throw new Error("Expected a native R drop preview.");
+    expect(dropped.page.schema.map(({ id, position }) => ({ id, position }))).toEqual([
+      { id: "r:c:1", position: 0 },
+      { id: "r:c:2", position: 1 }
+    ]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, dropApply.marker), ids.dropApply)).toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2
+    });
+    const renamed = decodeRKernelResponseJson(marked(result.stdout, renameApply.marker), ids.renameApply);
+    expect(renamed).toMatchObject({ kind: "planUpdated", action: "apply", revision: 4 });
+    if (renamed.kind !== "planUpdated") throw new Error("Expected an applied mixed R plan.");
+    expect(renamed.page.schema.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "r:c:1", name: "remaining duplicate" },
+      { id: "r:c:2", name: "label" }
+    ]);
+    const inspected = decodeRKernelResponseJson(marked(result.stdout, inspect.marker), ids.inspect);
+    expect(inspected).toMatchObject({
+      kind: "stepInspection",
+      stepId: "drop-step",
+      diff: { removedColumns: ["duplicate"] }
+    });
+    const afterRenameUndo = decodeRKernelResponseJson(marked(result.stdout, undoRename.marker), ids.undoRename);
+    expect(afterRenameUndo).toMatchObject({ kind: "planUpdated", action: "undo", revision: 5 });
+    if (afterRenameUndo.kind !== "planUpdated") throw new Error("Expected the R rename undo.");
+    expect(afterRenameUndo.page.schema.map((column) => column.id)).toEqual(["r:c:1", "r:c:2"]);
+    const afterDropUndo = decodeRKernelResponseJson(marked(result.stdout, undoDrop.marker), ids.undoDrop);
+    expect(afterDropUndo).toMatchObject({ kind: "planUpdated", action: "undo", revision: 6 });
+    if (afterDropUndo.kind !== "planUpdated") throw new Error("Expected the R drop undo.");
+    expect(afterDropUndo.page.schema.map((column) => column.id)).toEqual(["r:c:0", "r:c:1", "r:c:2"]);
+
+    const generated = runR(`
+frame <- data.frame(duplicate = 1:2, duplicate = 3:4, label = c("a", "b"), check.names = FALSE)
+frame_before <- unserialize(serialize(frame, NULL, version = 3L))
+${renamed.code}
+stopifnot(identical(names(open_wrangler_result), c("remaining duplicate", "label")))
+stopifnot(identical(frame, frame_before))
+cat("generated-ok\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("removes only the runtime binding owned by the matching transport and bundle", () => {
     const files = readRRuntimeFiles(resolve(root, "r"));
     const owner = "transport-owner-a";

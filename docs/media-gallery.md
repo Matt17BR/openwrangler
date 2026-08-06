@@ -167,13 +167,15 @@ IRkernel. Each variable stays in R.
 <img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="1440" height="881">
 
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
-Editing mode also supports Rename Column with draft preview, generated R, apply, discard, inspection, latest-step
-editing, and undo. Generated R can be copied or saved as a `.R` script.
+Editing mode currently supports Rename Column and Drop Columns. Both use draft preview, generated R, apply, discard,
+inspection, latest-step editing, and undo. Generated R can be copied or saved as a `.R` script.
 
 <img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="1440" height="900">
 
-The editing image comes from the packaged VS Code journey; the same VSIX passed the matching journey in Cursor. This
-is the complete Rename Column flow, not a claim that the other R cleaning operations are ready.
+The editing image shows the packaged VS Code Rename Column journey; the same VSIX passed the matching journey in
+Cursor. Packaged acceptance also previews Drop Columns for a base data frame, tibble, and keyed `data.table`, then
+applies, inspects, and undoes it on the base data frame. The image is not a claim that the other R cleaning operations
+are ready.
 
 Other R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` files are
 still in development.
