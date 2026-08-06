@@ -1762,6 +1762,9 @@ openwrangler_r_frame_contract <- local({
     if (!identical(names(value)[positions], expected_names)) {
       abort("stale-column", "the drop column names no longer match the R dataframe")
     }
+    if (any(vapply(expected_names, is_private_column_name, logical(1L), USE.NAMES = FALSE))) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
     if (length(positions) >= column_count) {
       abort("invalid-view-query", "dropColumns must leave at least one visible column")
     }
@@ -1805,6 +1808,81 @@ openwrangler_r_frame_contract <- local({
     positions <- vapply(resolved, `[[`, integer(1L), "position", USE.NAMES = FALSE)
     expected_names <- vapply(resolved, `[[`, character(1L), "name", USE.NAMES = FALSE)
     drop_columns_at(value, positions, expected_names)
+  }
+
+  select_columns_at <- function(value, positions, expected_names) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    if (
+      !is.numeric(positions) ||
+        anyNA(positions) ||
+        any(!is.finite(positions)) ||
+        any(positions != floor(positions)) ||
+        length(positions) == 0L ||
+        any(positions < 1L) ||
+        any(positions > column_count) ||
+        anyDuplicated(positions)
+    ) {
+      abort("stale-column", "the selected column positions no longer match the R dataframe")
+    }
+    positions <- as.integer(positions)
+    if (!is.character(expected_names) || length(expected_names) != length(positions) || anyNA(expected_names)) {
+      abort("stale-column", "the selected column names no longer match the R dataframe")
+    }
+    expected_names <- vapply(seq_along(expected_names), function(index) {
+      bounded_utf8(expected_names[[index]], sprintf("expected_names[[%d]]", index), maximum_name_bytes)
+    }, character(1L), USE.NAMES = FALSE)
+    if (!identical(names(value)[positions], expected_names)) {
+      abort("stale-column", "the selected column names no longer match the R dataframe")
+    }
+    if (any(vapply(expected_names, is_private_column_name, logical(1L), USE.NAMES = FALSE))) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      result <- result[, positions, with = FALSE]
+    } else {
+      result <- result[positions]
+      names(result) <- expected_names
+    }
+    result
+  }
+
+  select_columns <- function(value, column_references) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    if (
+      !is.list(column_references) ||
+        is.object(column_references) ||
+        !is.null(attributes(column_references)) ||
+        length(column_references) == 0L
+    ) {
+      abort("invalid-view-query", "column_references must be a non-empty unnamed list")
+    }
+    resolved <- lapply(seq_along(column_references), function(index) {
+      resolve_column_reference(
+        column_references[[index]],
+        inspected$descriptor,
+        sprintf("column_references[[%d]]", index)
+      )
+    })
+    column_ids <- vapply(resolved, `[[`, character(1L), "columnId", USE.NAMES = FALSE)
+    if (anyDuplicated(column_ids)) {
+      abort("invalid-view-query", "column_references may address each column only once")
+    }
+    positions <- vapply(resolved, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+    expected_names <- vapply(resolved, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    select_columns_at(value, positions, expected_names)
   }
 
   validate_capture <- function(capture) {
@@ -2347,6 +2425,8 @@ openwrangler_r_frame_contract <- local({
     rename_column_at = rename_column_at,
     drop_columns = drop_columns,
     drop_columns_at = drop_columns_at,
+    select_columns = select_columns,
+    select_columns_at = select_columns_at,
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,
     materialize_view_page = materialize_view_page,

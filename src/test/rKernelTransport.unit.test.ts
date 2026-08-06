@@ -8,6 +8,7 @@ import {
   encodeRKernelRequest,
   type RKernelRequest
 } from "../extension/r/rKernelProtocol";
+import { R_FRAME_CONTRACT_LIMITS } from "../extension/r/rFrameContract";
 import { RKernelSessionTransport } from "../extension/r/rKernelTransport";
 import type { RNotebookKernelSelectionBinding } from "../extension/r/rNotebookVariableDiscovery";
 import {
@@ -439,6 +440,66 @@ describe("native R kernel protocol", () => {
     expect(decodeRKernelResponseJson(response, previewRequestId)).toMatchObject({
       kind: "stepPreview",
       diff: { removedColumns: ["value"] }
+    });
+  });
+
+  it("strictly validates ordered native R Select Columns requests and structural diffs", () => {
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "select-step",
+          kind: "selectColumns",
+          params: {
+            columns: [
+              { id: "r:c:2", name: "date" },
+              { id: "r:c:0", name: "value" }
+            ]
+          }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    const duplicate = structuredClone(request) as unknown as {
+      payload: { step: { params: { columns: Array<{ id: string; name: string }> } } };
+    };
+    duplicate.payload.step.params.columns.push({ id: "r:c:2", name: "date" });
+    expect(() => encodeRKernelRequest(duplicate as unknown as RKernelRequest)).toThrow("repeated identity");
+
+    const empty = structuredClone(request) as unknown as {
+      payload: { step: { params: { columns: Array<{ id: string; name: string }> } } };
+    };
+    empty.payload.step.params.columns.length = 0;
+    expect(() => encodeRKernelRequest(empty as unknown as RKernelRequest)).toThrow("bounded non-empty array");
+
+    const oversized = structuredClone(request) as unknown as {
+      payload: { step: { params: { columns: Array<{ id: string; name: string }> } } };
+    };
+    oversized.payload.step.params.columns = Array.from({ length: R_FRAME_CONTRACT_LIMITS.columns + 1 }, (_, index) => ({
+      id: `r:c:${index}`,
+      name: `column-${index}`
+    }));
+    expect(() => encodeRKernelRequest(oversized as unknown as RKernelRequest)).toThrow("bounded non-empty array");
+
+    const response = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalFramePage(),
+      diff: { ...minimalRenameDiff(), removedColumns: ["count"] },
+      code: "open_wrangler_result <- frame\n"
+    });
+    expect(decodeRKernelResponseJson(response, previewRequestId)).toMatchObject({
+      kind: "stepPreview",
+      diff: { removedColumns: ["count"] }
     });
   });
 

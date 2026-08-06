@@ -21,6 +21,7 @@ import {
   type PreviewStepRequest,
   type RenameColumnTransformStep,
   type RetainedTransformStep,
+  type SelectColumnsTransformStep,
   type SessionMetadata,
   type SessionMode,
   type SessionSource,
@@ -62,9 +63,13 @@ import {
 } from "./rNotebookVariableDiscovery";
 
 const CLOSED_SESSION_LIMIT = 1_024;
-const R_SUPPORTED_OPERATIONS = Object.freeze(["dropColumns", "renameColumn"] as OperationKind[]) as OperationKind[];
+const R_SUPPORTED_OPERATIONS = Object.freeze([
+  "selectColumns",
+  "dropColumns",
+  "renameColumn"
+] as OperationKind[]) as OperationKind[];
 
-type RTransformStep = RenameColumnTransformStep | DropColumnsTransformStep;
+type RTransformStep = RenameColumnTransformStep | DropColumnsTransformStep | SelectColumnsTransformStep;
 
 const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   editable: true,
@@ -564,7 +569,11 @@ export class RKernelBridge implements OpenWranglerBridge {
         request.sessionId
       );
     }
-    if (request.step.kind !== "renameColumn" && request.step.kind !== "dropColumns") {
+    if (
+      request.step.kind !== "renameColumn" &&
+      request.step.kind !== "dropColumns" &&
+      request.step.kind !== "selectColumns"
+    ) {
       return errorResponse(
         "unsupported_operation",
         `The native R runtime does not support ${request.step.kind}.`,
@@ -1413,6 +1422,7 @@ function copySchema(schema: readonly ColumnSchema[]): ColumnSchema[] {
 }
 
 function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransformStep): readonly ColumnSchema[] {
+  if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
@@ -1429,6 +1439,34 @@ function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransform
     inputSchema.map((column) =>
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
+  );
+}
+
+function schemaAfterSelect(
+  inputSchema: readonly ColumnSchema[],
+  step: SelectColumnsTransformStep
+): readonly ColumnSchema[] {
+  if (
+    !Array.isArray(step.params.columns) ||
+    step.params.columns.length === 0 ||
+    step.params.columns.length > R_FRAME_CONTRACT_LIMITS.columns
+  ) {
+    throw new TypeError("Select Columns requires a bounded non-empty R column list.");
+  }
+  const inputById = new Map(inputSchema.map((column) => [column.id, column]));
+  const selectedIds = new Set<string>();
+  return Object.freeze(
+    step.params.columns.map((reference, position) => {
+      const column = inputById.get(reference.id);
+      if (!column || column.name !== reference.name) {
+        throw new TypeError("A selected column reference no longer matches the active R dataframe.");
+      }
+      if (selectedIds.has(reference.id)) {
+        throw new TypeError("Select Columns contains a repeated R column identity.");
+      }
+      selectedIds.add(reference.id);
+      return Object.freeze({ ...column, position });
+    })
   );
 }
 
@@ -1514,6 +1552,17 @@ function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, Colum
 }
 
 function rTransformStep(step: RTransformStep): RKernelTransformStep {
+  if (step.kind === "selectColumns") {
+    const columns = step.params.columns.map((column) => Object.freeze({ ...column }));
+    if (!columns[0]) throw new TypeError("Select Columns requires at least one R column.");
+    return Object.freeze({
+      id: step.id,
+      kind: "selectColumns" as const,
+      params: Object.freeze({
+        columns: Object.freeze(columns) as readonly [RKernelColumnReference, ...RKernelColumnReference[]]
+      })
+    });
+  }
   if (step.kind === "dropColumns") {
     const columns = step.params.columns.map((column) => Object.freeze({ ...column }));
     if (!columns[0]) throw new TypeError("Drop Columns requires at least one R column.");
@@ -1533,6 +1582,15 @@ function rTransformStep(step: RTransformStep): RKernelTransformStep {
 }
 
 function copyRTransformStep(step: RTransformStep): RTransformStep {
+  if (step.kind === "selectColumns") {
+    const columns = step.params.columns.map((column) => ({ ...column }));
+    if (!columns[0]) throw new TypeError("Select Columns requires at least one R column.");
+    return {
+      id: step.id,
+      kind: "selectColumns",
+      params: { columns: columns as [RKernelColumnReference, ...RKernelColumnReference[]] }
+    };
+  }
   if (step.kind === "dropColumns") {
     const columns = step.params.columns.map((column) => ({ ...column }));
     if (!columns[0]) throw new TypeError("Drop Columns requires at least one R column.");
@@ -1550,7 +1608,7 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
 }
 
 function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
-  if (step.kind !== "renameColumn" && step.kind !== "dropColumns") {
+  if (step.kind !== "renameColumn" && step.kind !== "dropColumns" && step.kind !== "selectColumns") {
     throw new TypeError("The R bridge retained an unsupported cleaning step.");
   }
   return copyRTransformStep(step);
@@ -1572,8 +1630,22 @@ function assertStructuralDiff(
   outputSchema: readonly ColumnSchema[],
   diff: DataDiff
 ): void {
-  const outputIds = new Set(outputSchema.map((column) => column.id));
-  const expectedRemoved = inputSchema.filter((column) => !outputIds.has(column.id)).map((column) => column.name);
+  const outputIds = outputSchema.map((column) => column.id);
+  const outputIdSet = new Set(outputIds);
+  const inputIds = inputSchema.map((column) => column.id);
+  const expectedRemoved = inputSchema.filter((column) => !outputIdSet.has(column.id)).map((column) => column.name);
+  const stepMatches =
+    step.kind === "selectColumns"
+      ? isDeepStrictEqual(
+          outputIds,
+          step.params.columns.map((column) => column.id)
+        ) && expectedRemoved.length === inputSchema.length - step.params.columns.length
+      : step.kind === "dropColumns"
+        ? isDeepStrictEqual(
+            outputIds,
+            inputIds.filter((id) => !step.params.columns.some((column) => column.id === id))
+          ) && expectedRemoved.length === step.params.columns.length
+        : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
   const valid =
     diff.addedRows === 0 &&
     diff.removedRows === 0 &&
@@ -1582,9 +1654,7 @@ function assertStructuralDiff(
     diff.changedCells === 0 &&
     diff.cells.length === 0 &&
     diff.truncated === false &&
-    (step.kind === "dropColumns"
-      ? expectedRemoved.length === step.params.columns.length
-      : expectedRemoved.length === 0);
+    stepMatches;
   if (!valid) throw new Error("The R kernel returned a structural diff for the wrong columns.");
 }
 

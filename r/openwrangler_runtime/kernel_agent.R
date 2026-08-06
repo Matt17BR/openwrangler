@@ -449,7 +449,7 @@ openwrangler_r_kernel_agent <- local({
         )
       ))
     }
-    if (identical(kind, "dropColumns")) {
+    if (kind %in% c("dropColumns", "selectColumns")) {
       params <- exact_record(step$params, "columns", "request.payload.step.params")
       columns <- params$columns
       if (
@@ -470,7 +470,7 @@ openwrangler_r_kernel_agent <- local({
       }
       return(list(id = step_id, kind = kind, params = list(columns = columns)))
     }
-    if (!kind %in% c("renameColumn", "dropColumns")) {
+    if (!kind %in% c("renameColumn", "dropColumns", "selectColumns")) {
       abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
     }
     abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
@@ -516,6 +516,31 @@ openwrangler_r_kernel_agent <- local({
     list(id = step$id, kind = step$kind, columns = columns)
   }
 
+  bind_select_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    columns <- lapply(step$params$columns, function(reference) {
+      matches <- which(schema_ids == reference$id)
+      if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, reference$name)) {
+        abort("stale_column", "A selected column reference no longer matches the active R dataframe", TRUE)
+      }
+      list(
+        id = reference$id,
+        position = as.integer(matches[[1L]]),
+        name = reference$name
+      )
+    })
+    selected_positions <- vapply(columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+    removed_names <- vapply(
+      schema[setdiff(seq_along(schema), selected_positions)],
+      `[[`,
+      character(1L),
+      "name",
+      USE.NAMES = FALSE
+    )
+    list(id = step$id, kind = step$kind, columns = columns, removedNames = removed_names)
+  }
+
   apply_step <- function(frame_contract, capture, step) {
     source <- get("snapshot", envir = capture, inherits = FALSE)
     if (identical(step$kind, "renameColumn")) {
@@ -541,6 +566,20 @@ openwrangler_r_kernel_agent <- local({
           result,
           nullability_source = capture,
           source_positions = keep_positions
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "selectColumns")) {
+      bound <- bind_select_step(capture, step)
+      positions <- vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+      names <- vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+      result <- frame_contract$select_columns_at(source, positions, names)
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = positions
         ),
         bound = bound
       ))
@@ -628,6 +667,23 @@ openwrangler_r_kernel_agent <- local({
           "    for (.ow_position in sort(.ow_drop_positions, decreasing = TRUE)) .ow_result[[.ow_position]] <- NULL",
           "  }"
         )
+      } else if (identical(step$kind, "selectColumns")) {
+        positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+        names <- vapply(step$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+        position_code <- paste(sprintf("%dL", positions), collapse = ", ")
+        name_code <- paste(vapply(names, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")
+        lines <- c(
+          lines,
+          sprintf("  .ow_select_positions <- c(%s)", position_code),
+          sprintf("  .ow_select_names <- c(%s)", name_code),
+          "  if (length(.ow_select_positions) == 0L || any(.ow_select_positions > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_select_positions], .ow_select_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (inherits(.ow_result, \"data.table\")) {",
+          "    .ow_result <- .ow_result[, .ow_select_positions, with = FALSE]",
+          "  } else {",
+          "    .ow_result <- .ow_result[.ow_select_positions]",
+          "    names(.ow_result) <- .ow_select_names",
+          "  }"
+        )
       } else {
         abort("runtime_error", "The R cleaning plan contains an unsupported operation")
       }
@@ -642,6 +698,8 @@ openwrangler_r_kernel_agent <- local({
   step_diff <- function(bound) {
     removed_columns <- if (identical(bound$kind, "dropColumns")) {
       vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    } else if (identical(bound$kind, "selectColumns")) {
+      bound$removedNames
     } else {
       character()
     }
@@ -697,6 +755,7 @@ openwrangler_r_kernel_agent <- local({
       "rename_column",
       "rename_column_at",
       "drop_columns_at",
+      "select_columns_at",
       "materialize_view_page",
       "materialize_summaries",
       "materialize_dataset_stats",
