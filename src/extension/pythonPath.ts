@@ -37,6 +37,16 @@ export function resolvePythonCommandPath(
   isExecutable: IsExecutable,
   platform: NodeJS.Platform = process.platform
 ): string | undefined {
+  return resolveExecutableCommand(command, environment, isExecutable, platform);
+}
+
+/** Resolve an absolute executable or a bare command from an absolute PATH. */
+export function resolveExecutableCommand(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  isExecutable: IsExecutable,
+  platform: NodeJS.Platform = process.platform
+): string | undefined {
   const pathApi = platform === "win32" ? path.win32 : path.posix;
   if (isFullyQualifiedPythonPath(command, platform)) {
     const candidate = pathApi.normalize(command);

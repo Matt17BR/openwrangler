@@ -2426,6 +2426,10 @@ grouped_tibble <- tibble::tibble(value = 1:2)
 class(grouped_tibble) <- c("grouped_df", class(grouped_tibble))
 assert_error(openwrangler_r_frame_contract$capture_frame(grouped_tibble), "unsupported-frame-class")
 
+collapse_grouped_frame <- data.frame(group = "a", value = 1L)
+class(collapse_grouped_frame) <- c("GRP_df", "grouped_df", "data.frame")
+assert_error(openwrangler_r_frame_contract$capture_frame(collapse_grouped_frame), "unsupported-frame-class")
+
 list_frame <- data.frame(value = I(list(1L, 2L)))
 assert_error(openwrangler_r_frame_contract$capture_frame(list_frame), "unsupported-column")
 matrix_frame <- data.frame(value = I(matrix(1:4, nrow = 2L)))

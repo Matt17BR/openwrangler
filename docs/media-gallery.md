@@ -162,7 +162,9 @@ final sort key.
 <a href="images/editor-acceptance/vscode-notebook-r-picker-dark.png"><img alt="An R notebook variable picker listing a base data frame, data.table, and tibble" src="images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png" width="1040" height="380"></a>
 
 Open Wrangler 2 development builds discover base `data.frame`, tibble, and `data.table` variables in the active
-IRkernel. Each variable stays in R.
+IRkernel. For a trusted `.R` file, choose **Run R File in Open Wrangler…** from Explorer or the editor. Open Wrangler
+runs the file once from its own directory and lists the dataframes it creates. Unsaved editor changes are included.
+Each variable stays in R.
 
 <img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="1440" height="881">
 
@@ -173,7 +175,7 @@ Select keeps the order in which the columns were chosen. Text Length counts Unic
 character or factor column or create a new character column. Convert type supports string, integer, float, boolean,
 date, and datetime targets. Values that cannot be converted become `NA`. All seven use draft preview, generated R,
 apply, discard, inspection, latest-step editing, and undo. Generated R can be copied, saved as a `.R` script, or
-inserted into the notebook that opened the dataframe.
+inserted into the notebook or `.R` file that opened the dataframe.
 
 <img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="1440" height="900">
 
@@ -187,8 +189,11 @@ The inserted cell comes from the current Code Preview. Existing notebook cells a
 
 Convert type does not replace an active `data.table` key column. Clone that column first, then convert the copy.
 
-Other R cleaning operations, cleaned-data export, Quarto, R Markdown, and live dataframes from plain `.R` documents
-are not supported yet. They are planned after the native notebook path is complete.
+Default frames made with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing base-data-frame, tibble, and data-table
+paths. Grouped `GRP_df` objects are not supported. Other R cleaning operations, cleaned-data export, Quarto, and R
+Markdown are not supported yet.
+
+Direct `.R` execution currently requires macOS or Linux. R notebooks remain available on Windows.
 
 ## DuckDB nested and temporal values
 

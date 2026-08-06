@@ -65,20 +65,22 @@ interface PackageManifest {
 const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8")) as PackageManifest;
 
 describe("Marketplace and walkthrough copy", () => {
-  it("states the native engines and notebook support boundaries directly", () => {
+  it("states the engine, notebook, and R source boundaries directly", () => {
     expect(manifest.description).toBe(
-      "Explore files and notebook data in VS Code and Cursor. " +
-        "Clean and export with Pandas or Polars. " +
-        "DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch viewing is supported."
+      "Explore files and live dataframes in VS Code and Cursor. " +
+        "Use Pandas, Polars, or DuckDB, view PySpark and R notebooks, and run .R files on macOS or Linux."
     );
 
     const walkthrough = manifest.contributes?.walkthroughs?.find((candidate) => candidate.id === "gettingStarted");
-    expect(walkthrough?.description).toContain("Filters and cleaning steps do not overwrite the source.");
+    expect(walkthrough?.description).toContain("R notebooks and trusted .R files support the current R cleaning set.");
     expect(walkthrough?.description).toContain(
       "DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only."
     );
     expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
-      "Pandas, Polars, DuckDB, or PySpark"
+      "Use the notebook toolbar for live Python or R dataframes."
+    );
+    expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
+      "On macOS or Linux, run a trusted .R source"
     );
     expect(walkthrough?.steps?.find((step) => step.id === "export")?.description).toContain("new CSV or Parquet file");
   });
@@ -112,11 +114,12 @@ describe("file launch contributions", () => {
   const resourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
 
-  it("uses one canonical, compact command for every file launch surface", () => {
+  it("uses compact launch commands for supported data files and R sources", () => {
     expect(manifest.contributes?.configurationDefaults?.["cursor.general.pinnedTitleActions"]).toEqual([
       "openWrangler.openFile",
       "openWrangler.changeImportOptions",
-      "openWrangler.openNotebookVariable"
+      "openWrangler.openNotebookVariable",
+      "openWrangler.runRFile"
     ]);
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openFile",
@@ -161,6 +164,38 @@ describe("file launch contributions", () => {
     expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
       command: "openWrangler.launchDataViewer",
       when: "false"
+    });
+  });
+
+  it("offers the trusted R source command on local and remote R files", () => {
+    const rSourcePredicate =
+      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.r$/i";
+
+    expect(manifest.activationEvents).toContain("onCommand:openWrangler.runRFile");
+    expect(manifest.contributes?.commands).toContainEqual({
+      command: "openWrangler.runRFile",
+      title: "Run R File in Open Wrangler…",
+      shortTitle: "Run in Open Wrangler…",
+      category: "Open Wrangler",
+      icon: {
+        light: "media/action-icon-light.svg",
+        dark: "media/action-icon-dark.svg"
+      }
+    });
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual({
+      command: "openWrangler.runRFile",
+      when: `!explorerResourceIsFolder && ${rSourcePredicate}`,
+      group: "navigation@49"
+    });
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
+      command: "openWrangler.runRFile",
+      when: rSourcePredicate,
+      group: "navigation@1"
+    });
+    expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
+      command: "openWrangler.runRFile",
+      when: rSourcePredicate,
+      group: "navigation@49"
     });
   });
 

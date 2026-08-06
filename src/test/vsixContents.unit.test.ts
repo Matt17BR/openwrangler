@@ -251,7 +251,8 @@ describe("VSIX production entry allowlist", () => {
 
     expect(inspectVsixEntries(withoutR).missing).toEqual([
       "extension/r/openwrangler_runtime/frame_contract.R",
-      "extension/r/openwrangler_runtime/kernel_agent.R"
+      "extension/r/openwrangler_runtime/kernel_agent.R",
+      "extension/r/openwrangler_runtime/process_agent.R"
     ]);
     expect(inspectVsixEntries(withoutR, { requireRFrameContract: false })).toEqual({
       forbidden: [],

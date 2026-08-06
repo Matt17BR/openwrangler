@@ -88,18 +88,23 @@ type RTransformStep =
   | DropColumnsTransformStep
   | SelectColumnsTransformStep;
 
-const R_CAPABILITIES: SourceCapabilities = Object.freeze({
+const R_BASE_CAPABILITIES = Object.freeze({
   editable: true,
   lazy: false,
   cancel: false,
   exportCsv: false,
   exportParquet: false,
-  notebookInsert: true,
   filter: true,
   sort: true,
   profile: true,
   columnValues: true,
   supportedOperations: R_SUPPORTED_OPERATIONS
+} satisfies Omit<SourceCapabilities, "notebookInsert" | "documentInsert">);
+
+const R_BRIDGE_CAPABILITIES: SourceCapabilities = Object.freeze({
+  ...R_BASE_CAPABILITIES,
+  notebookInsert: true,
+  documentInsert: true
 });
 
 /** Narrow transport surface used by the canonical bridge and its contract tests. */
@@ -229,7 +234,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     const binding = claimVerifiedRNotebookVariableSelection(notebookDocument, verifiedSelection);
     try {
       const transport = new RKernelSessionTransport(context, notebookDocument, randomUUID, randomUUID(), binding);
-      return new RKernelBridge(context, notebookDocument, transport, randomUUID, diagnosticSink, binding.variable);
+      return new RKernelBridge(context, transport, randomUUID, diagnosticSink, binding.variable);
     } catch (error) {
       binding.dispose();
       throw error;
@@ -238,7 +243,6 @@ export class RKernelBridge implements OpenWranglerBridge {
 
   constructor(
     context: vscode.ExtensionContext,
-    notebookDocument: vscode.NotebookDocument,
     transport: RKernelBridgeTransport,
     private readonly createSessionId: () => string = randomUUID,
     diagnosticSink?: (message: string) => void,
@@ -264,7 +268,7 @@ export class RKernelBridge implements OpenWranglerBridge {
           kind: "initialized",
           protocolVersion: PROTOCOL_VERSION,
           runtimeVersion: this.runtimeVersion,
-          capabilities: R_CAPABILITIES
+          capabilities: R_BRIDGE_CAPABILITIES
         };
       case "openSession":
         return this.openSession(withHostSessionIdentity(request, this.createSessionId), options);
@@ -995,7 +999,10 @@ export class RKernelBridge implements OpenWranglerBridge {
     options: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
     const sessionId = session.sessionId;
-    if (session.invalidated) {
+    // A kernel restart retires its process-local mapping, but a detached
+    // mutation only invalidates the bridge view while the transport still
+    // owns the live session. The latter must receive a real terminal close.
+    if (session.invalidated && !this.transport.isSessionMapped(sessionId)) {
       this.sessions.delete(sessionId);
       this.rememberClosedSession(sessionId);
       return { kind: "sessionClosed", sessionId };
@@ -1083,10 +1090,13 @@ function withHostSessionIdentity(request: OpenSessionRequest, createId: () => st
 
 function validateOpenRequest(request: OpenSessionRequest): ErrorResponse | undefined {
   const sessionId = request.requestedSessionId;
-  if (request.source.kind !== "notebookVariable" || !request.source.variableName) {
+  if (
+    (request.source.kind !== "notebookVariable" && request.source.kind !== "documentVariable") ||
+    !request.source.variableName
+  ) {
     return errorResponse(
       "unsupported_source",
-      "R sessions currently open named variables from an R notebook.",
+      "R sessions open named variables from an R notebook or an Open Wrangler R source session.",
       true,
       sessionId
     );
@@ -1388,7 +1398,7 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.sha
     rDataframeFlavor: session.dataframeFlavor,
     mode: session.mode,
     source: copySource(session.source),
-    capabilities: R_CAPABILITIES,
+    capabilities: rCapabilitiesForSource(session.source),
     shape: { rows: session.shape.rows, columns: session.schema.length },
     filteredShape: { rows: filteredRows, columns: session.schema.length },
     schema: copySchema(session.schema),
@@ -1399,6 +1409,14 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.sha
       : {}),
     ...(session.draftStep ? { draftStep: copyRTransformStep(session.draftStep) } : {}),
     ...(session.draftReplacesStepId ? { draftReplacesStepId: session.draftReplacesStepId } : {})
+  };
+}
+
+function rCapabilitiesForSource(source: SessionSource): SourceCapabilities {
+  return {
+    ...R_BASE_CAPABILITIES,
+    notebookInsert: source.kind === "notebookVariable",
+    ...(source.kind === "documentVariable" ? { documentInsert: true } : {})
   };
 }
 
@@ -2382,7 +2400,7 @@ function unknownSessionError(sessionId: string, viewRequestId?: string): ErrorRe
 function kernelChangedError(sessionId: string, viewRequestId?: string): ErrorResponse {
   return errorResponse(
     "r_kernel_changed",
-    "The originating R kernel changed. Reopen the variable from its notebook.",
+    "The originating R runtime changed. Reopen the variable from its source.",
     true,
     sessionId,
     viewRequestId

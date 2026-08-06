@@ -1021,7 +1021,10 @@ openwrangler_r_kernel_agent <- local({
     if (length(bound_plan) == 0L) return("")
     lines <- c(
       "open_wrangler_result <- local({",
-      sprintf("  .ow_source <- get(%s, envir = .GlobalEnv, inherits = FALSE)", r_string(variable_name)),
+      sprintf(
+        "  .ow_source <- get(%s, envir = parent.env(environment()), inherits = FALSE)",
+        r_string(variable_name)
+      ),
       "  if (!is.data.frame(.ow_source)) stop(\"Open Wrangler expected an R dataframe\", call. = FALSE)",
       "  .ow_result <- if (inherits(.ow_source, \"data.table\")) {",
       "    if (!requireNamespace(\"data.table\", quietly = TRUE)) stop(\"data.table is required\", call. = FALSE)",

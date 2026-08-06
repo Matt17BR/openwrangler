@@ -7,18 +7,25 @@ Open Wrangler has three cooperating parts:
 1. The VS Code extension host owns commands, trusted-workspace enforcement, editor and view providers, session coordination, filesystem prompts, runtime processes, and Jupyter access.
 2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute dataframe code directly.
 3. A language runtime owns dataframe work. Python sessions use the bundled runtime in a selected interpreter or active
-   Jupyter kernel. R notebook sessions use the bundled R reader inside the selected IRkernel.
+   Jupyter kernel. R notebooks use the bundled R reader inside the selected IRkernel. On macOS and Linux, a trusted `.R`
+   file runs once in its own Open Wrangler `Rscript` process.
 
-Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects native R notebook
-sessions to the shared protocol, coordinator, notebook command, grid, filters, sorts, value picker, and profiles. Its
-editing surface currently supports Rename Column, Drop Columns, ordered Select Columns, Clone Column, Convert type,
-Text Length, and Lowercase through the shared draft and cleaning-history UI.
+Most sections below describe the released Python runtime. The Open Wrangler 2 branch connects R notebook variables and
+dataframes created by trusted `.R` files to the same coordinator, grid, filters, sorts, profiles, draft review, and
+cleaning history. Its current R operations are Rename Column, Drop Columns, ordered Select Columns, Clone Column,
+Convert type, Text Length, and Lowercase.
 The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
 
 Supported file resources share one `openWrangler.openFile` command across the Explorer menu, editor-tab menu, editor-title toolbar, and Command Palette. The handler prefers the URI supplied by the invoking menu and otherwise resolves the active text, third-party custom, or modified diff tab before falling back to the file picker. Direct targets and native-picker results both pass the same URI-scheme, enabled-format, regular-file, and existence validation before automatic import detection or runtime creation; Quick Input is reserved for the explicit **Change Import Options** recovery path. Explicit **Reopen Editor With** selection applies the same resource safety checks but deliberately remains available for a format omitted from the launch-command and picker enabled-format list. The standalone runtime resolver consumes the exact persisted source URI, preserving a `vscode-remote` scheme and authority for resource-scoped Python settings and Python-extension environment selection; only absent or malformed URI metadata falls back to a concrete file path. The title and tab-menu contributions are hidden inside Open Wrangler itself and on unsupported virtual resources. Cursor intentionally hides third-party editor-title actions unless pinned, so the manifest declaratively contributes `openWrangler.openFile` to Cursor's `cursor.general.pinnedTitleActions` default. This changes no stored setting, preserves an explicit setting override, and avoids command aliases, built-in-prefix impersonation, or activation-time editor mutation; VS Code renders the same standard `navigation` contribution directly. Cursor 3.11's normal icon-visibility toggle cannot outrank this pinned default, so a user who wants the icon hidden must explicitly configure the pinned-title-action list without this command.
+
+R source files use the separate `openWrangler.runRFile` command on macOS and Linux extension hosts. It appears for trusted local and remote `.R` resources
+in Explorer, the editor title, and the tab menu, and is pinned alongside the file and notebook actions in Cursor. The
+command captures the exact open `TextDocument`, version, and in-memory text before R starts. It never substitutes a
+different active editor after an await. The document must remain the sole open object for its URI through variable
+discovery and selection.
 
 The notebook launch command uses the same **Open in Open Wrangler** primary and compact title. VS Code can render the compact title in its global notebook toolbar while Cursor renders the primary title for its pinned editor action; keeping the accessible names identical prevents host-specific command drift without adding aliases or editor-specific activation logic.
 
@@ -46,6 +53,11 @@ original null or empty-string value remains in metadata. R's reserved integer an
 sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matrix/raw/complex columns, subclasses, and
 unrecognized attributes fail instead of losing R semantics. Source positions provide stable row identity. Explicit R
 row names travel separately as row labels and appear in the grid gutter instead of becoming a data column.
+
+This class-based boundary also covers the default frames created by the `collapse` package. `collapse::qDF()` returns a
+base `data.frame`; `qTBL()` and `qDT()` return the already supported tibble and `data.table` class vectors. Open Wrangler
+does not load or depend on `collapse`. Grouped `GRP_df` objects are rejected because silently dropping their grouping
+metadata would change their meaning.
 
 The same module applies compound viewing filters and an ordered list of viewing sorts before it builds a page. Every
 filter and sort names a column by both its stable ID and captured name, which keeps duplicate names unambiguous
@@ -124,16 +136,30 @@ ends the mappings. Close uses the mapped kernel and never looks one up by URI. S
 have fixed bounds, and repeated disposal joins the same cleanup operation. Once a mutation returns its correlated
 response, a later host cancellation cannot hide the new revision.
 
+`RProcessSessionTransport` provides the same request interface for trusted `.R` files. It starts one private
+`Rscript --vanilla` process, evaluates the captured source once in a dedicated environment, and uses the source file's
+directory for relative `read.csv()` and `source()` calls. Runtime paths travel in private environment variables that
+are removed before user code runs, so `commandArgs(trailingOnly = TRUE)` behaves as it would for a normal no-argument
+script. User output cannot corrupt protocol messages: requests and responses use bounded files under one private
+temporary directory, and responses are published by atomic rename. Requests are serialized inside that process while
+different source sessions may run independently. Closing the panel closes its R session, stops the owned process, and
+removes its temporary directory.
+
+Direct `.R` execution is currently disabled on Windows. Node's ordinary child-process API cannot prove that every
+process started by user R code has exited. The command can be enabled there only after the extension owns the R
+process tree with a Windows Job Object or an equivalent mechanism. IRkernel notebook sessions are unaffected.
+
 Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
 a fixed response-code list that includes `unsupported_frame`, `missing_package`, `page_too_large`, `stale_column`,
 `stale_revision`, and `unsupported_operation`. Messages are limited to 4 KiB, and TypeScript rejects any unrecognized
-code. Native variable discovery requires `jsonlite` and `rlang` in the selected kernel. It recognizes exact base
-`data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The notebook
-command enables native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
-mode currently exposes Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. Other cleaning
-operations, cleaned-data export, Quarto, R Markdown, and live dataframes from plain `.R` documents remain unsupported.
-Generated R can be inserted into the exact IRkernel notebook captured when the session opened. The shared insertion helper
-creates an `r` cell and proves that exact cell before reporting success. R sessions open with header profiles off so opening
+code. Native variable discovery requires `jsonlite` and `rlang` in the selected R runtime. It recognizes exact base
+`data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. Notebook and `.R`
+commands enable native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
+mode currently exposes Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and
+Lowercase. Other cleaning operations, cleaned-data export, Quarto, and R Markdown remain unsupported. Generated R can
+be inserted into the exact IRkernel notebook or exact in-memory `.R` document that opened the session. Notebook
+insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the complete
+resulting document text; a stale or ambiguous document is never retried. R sessions open with header profiles off so opening
 a frame does not immediately scan every visible column. Users can enable header profiles,
 and the profile drawer still loads the selected column or dataset on request. The packaged VS Code/Cursor viewing
 journey checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and

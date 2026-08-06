@@ -49,6 +49,7 @@ vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
   })
 }));
 vi.mock("../extension/runtimeCommands", () => ({ registerRuntimeCommands: vi.fn() }));
+vi.mock("../extension/r/rDocumentCommands", () => ({ registerRDocumentCommands: vi.fn() }));
 vi.mock("../extension/nativeViews", () => ({ registerNativeViews: vi.fn(() => ({})) }));
 vi.mock("../extension/webviewPanel", () => ({
   OpenWranglerPanel: { disposePanelForSession: vi.fn() }

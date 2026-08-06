@@ -29,6 +29,7 @@ run(
     "src/test/rFrameContract.cross.test.ts",
     "src/test/rKernelTransport.unit.test.ts",
     "src/test/rKernelTransport.cross.test.ts",
+    "src/test/rProcessTransport.cross.test.ts",
     "--maxWorkers=1"
   ],
   { ...process.env, OPEN_WRANGLER_R_CONTRACT_TESTS: "1" }

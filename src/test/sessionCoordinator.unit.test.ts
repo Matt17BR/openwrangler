@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
-import type { Memento, NotebookDocument } from "vscode";
+import type { Memento, NotebookDocument, TextDocument } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { persistedSessionState, persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
@@ -1428,11 +1428,109 @@ describe("SessionCoordinator", () => {
       }
     });
 
-    expect(opened).toMatchObject({ kind: "error", code: "invalid_notebook_origin" });
+    expect(opened).toMatchObject({ kind: "error", code: "invalid_source_origin" });
     expect(delegateRequest).not.toHaveBeenCalled();
     expect(coordinator.activeNotebookDocument()).toBeUndefined();
     expect(coordinator.diagnostics().sessionCount).toBe(0);
     setOpenNotebookDocuments();
+  });
+
+  it("requires exact text-document provenance for document variables", async () => {
+    const document = rTextDocument("file:///workspace/orders.R");
+    const source = rDocumentSource(document);
+    setOpenTextDocuments(document);
+    const delegateRequest = vi.fn(async (): Promise<OpenWranglerResponse> => rDocumentOpened(source));
+    const onIdle = vi.fn();
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest, onIdle });
+
+    const opened = await bridge.request({ ...openRequest, source, backend: "r" });
+
+    expect(opened).toMatchObject({ kind: "error", code: "invalid_source_origin" });
+    expect(delegateRequest).not.toHaveBeenCalled();
+    expect(onIdle).toHaveBeenCalledOnce();
+    expect(coordinator.activeTextDocumentOrigin()).toBeUndefined();
+    setOpenTextDocuments();
+  });
+
+  it("retains an exact R text-document origin only in coordinator state", async () => {
+    const document = rTextDocument("file:///workspace/orders.R");
+    const source = rDocumentSource(document);
+    setOpenTextDocuments(document);
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(
+      { request: vi.fn(async (): Promise<OpenWranglerResponse> => rDocumentOpened(source)) },
+      { kind: "textDocument", document, version: document.version }
+    );
+
+    const opened = await bridge.request({ ...openRequest, source, backend: "r" });
+
+    expect(opened.kind).toBe("sessionOpened");
+    expect(coordinator.activeTextDocumentOrigin()).toEqual({ kind: "textDocument", document, version: 1 });
+    expect(coordinator.activeSession()).not.toHaveProperty("origin");
+    setOpenTextDocuments();
+  });
+
+  it("closes an R runtime that opened after its source document changed", async () => {
+    const document = rTextDocument("file:///workspace/orders.R");
+    const source = rDocumentSource(document);
+    setOpenTextDocuments(document);
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        (document as { version: number }).version += 1;
+        return rDocumentOpened(source);
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected R document request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(
+      { request: delegateRequest },
+      { kind: "textDocument", document, version: document.version }
+    );
+
+    const opened = await bridge.request({ ...openRequest, source, backend: "r" });
+
+    expect(opened).toMatchObject({ kind: "error", code: "invalid_source_origin" });
+    expect(delegateRequest.mock.calls.map(([request]) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(coordinator.activeSession()).toBeUndefined();
+    setOpenTextDocuments();
+  });
+
+  it("rechecks an R source origin after waiting behind another open", async () => {
+    const document = rTextDocument("file:///workspace/orders.R");
+    const source = rDocumentSource(document);
+    setOpenTextDocuments(document);
+    const firstRuntime = deferred<OpenWranglerResponse>();
+    const onIdle = vi.fn();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        if (delegateRequest.mock.calls.filter(([candidate]) => candidate.kind === "openSession").length > 1) {
+          throw new Error("A stale queued R source must not reach the runtime.");
+        }
+        return firstRuntime.promise;
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected queued R document request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(
+      { request: delegateRequest, onIdle },
+      { kind: "textDocument", document, version: document.version }
+    );
+
+    const first = bridge.request({ ...openRequest, source, backend: "r" });
+    await vi.waitFor(() => expect(delegateRequest).toHaveBeenCalledOnce());
+    const second = bridge.request({ ...openRequest, source, backend: "r" });
+    (document as { version: number }).version += 1;
+    firstRuntime.resolve(rDocumentOpened(source));
+
+    await expect(first).resolves.toMatchObject({ kind: "error", code: "invalid_source_origin" });
+    await expect(second).resolves.toMatchObject({ kind: "error", code: "invalid_source_origin" });
+    expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "openSession")).toHaveLength(1);
+    expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "closeSession")).toHaveLength(1);
+    expect(onIdle).toHaveBeenCalledOnce();
+    setOpenTextDocuments();
   });
 
   it("pins public source metadata to the immutable open request across runtime responses", async () => {
@@ -6469,6 +6567,53 @@ function setOpenNotebookDocuments(...documents: NotebookDocument[]): void {
     configurable: true,
     value: documents
   });
+}
+
+function setOpenTextDocuments(...documents: TextDocument[]): void {
+  Object.defineProperty(vscode.workspace, "textDocuments", {
+    configurable: true,
+    value: documents
+  });
+}
+
+function rTextDocument(uri: string): TextDocument {
+  return {
+    uri: vscode.Uri.parse(uri),
+    version: 1,
+    isClosed: false,
+    isUntitled: false
+  } as TextDocument;
+}
+
+function rDocumentSource(document: TextDocument) {
+  return {
+    kind: "documentVariable" as const,
+    label: "orders",
+    variableName: "orders",
+    uri: document.uri.toString()
+  };
+}
+
+function rDocumentOpened(source: ReturnType<typeof rDocumentSource>): SessionOpenedResponse {
+  const opened = openedResponse("r-document-runtime", "r");
+  return {
+    ...opened,
+    metadata: {
+      ...opened.metadata,
+      backend: "r",
+      rDataframeFlavor: "r.data.frame",
+      source,
+      capabilities: {
+        editable: true,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false,
+        documentInsert: true
+      }
+    }
+  };
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {

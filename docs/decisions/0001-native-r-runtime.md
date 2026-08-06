@@ -1,6 +1,6 @@
 # Native R runtime for Open Wrangler 2
 
-- Status: Accepted
+- Status: Accepted; amended for owned `.R` processes
 - Date: 2026-08-03
 
 ## Context
@@ -10,9 +10,9 @@ package semantics, including `data.frame`, tibble, and `data.table`. Sending tho
 categorical behavior, and generated code. It would also make a Python environment an unnecessary requirement for an R
 workflow.
 
-R notebooks already have a well-defined execution owner: the selected IRkernel. Plain `.R` files, R Markdown, and
-Quarto documents do not all share that ownership model. An active terminal or a matching document URI is not enough to
-identify the R process that owns an object.
+R notebooks already have a well-defined execution owner: the selected IRkernel. An ordinary `.R` file can use an
+Open Wrangler-owned process. R Markdown and Quarto documents do not share either ownership model. An active terminal
+or a matching document URI is not enough to identify the R process that owns an object.
 
 ## Decision
 
@@ -99,7 +99,17 @@ IRkernel sessions can insert generated R into the exact `NotebookDocument` captu
 opened. The shared notebook helper creates one `r` cell and confirms that exact cell before reporting success. It does
 not rediscover the notebook from the active editor after an await.
 
-Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration helper that owns all of the following:
+On macOS and Linux, plain `.R` files use a second supported transport. The command captures the sole open `TextDocument`, its version,
+and its complete in-memory text. It starts a private `Rscript --vanilla` process in the source directory and evaluates
+that capture once in a dedicated environment. Relative reads and `source()` therefore behave like the file itself,
+while console output stays separate from the file-based request channel. The process owns every discovered dataframe
+session and is stopped when its final panel closes. Generated code is inserted with one `WorkspaceEdit` only after the
+same document object and version are rechecked; success requires the complete resulting text to match.
+
+Direct `.R` execution remains disabled on Windows until the extension can own and stop every descendant process;
+IRkernel notebook support remains available there.
+
+Support for `.Rmd` and `.qmd` documents still requires a dedicated integration helper that owns all of the following:
 
 - the exact source document and version;
 - the R process or session in which the object exists;
@@ -108,15 +118,14 @@ Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration 
 
 Open Wrangler will not infer this ownership from the active terminal, global R state, or a document path. Attaching to
 a live variable may use only a documented stable public broker API or an Open Wrangler-owned helper and process. It may
-not inspect private Quarto or vscode-R sockets, temporary state, extension storage, or process-discovery details. Exact
-source-document code insertion can ship independently of live-variable attachment. Each document type remains
-unsupported until its helper and real-editor acceptance exist.
+not inspect private Quarto or vscode-R sockets, temporary state, extension storage, or process-discovery details. Each
+document type remains unsupported until its helper and real-editor acceptance exist.
 
 The first public R build will use the `1.99.x` preview channel. It may ship only after `data.frame`, tibble, and
 `data.table` viewing plus the advertised editing workflow pass real IRkernel tests and packaged VS Code and Cursor
 acceptance. A stable 2.0 release must have native R transformation and generated-code coverage for every R surface it
-advertises. Quarto, R Markdown, and plain R support may be advertised only after their exact-document helpers pass the
-same release gates.
+advertises. The `.R` path may be advertised after its owned-process journey passes in packaged VS Code and Cursor.
+Quarto and R Markdown may be advertised only after their document-aware helpers pass the same release gates.
 
 ## Consequences
 
@@ -125,9 +134,8 @@ same release gates.
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase with generated R code.
-  Generated R can be inserted into its originating IRkernel notebook. Other cleaning operations, cleaned-data export,
-  Quarto, R Markdown, and live dataframes from plain `.R` documents
-  remain unsupported.
+  Generated R can be inserted into its originating IRkernel notebook or `.R` source. Other cleaning operations,
+  cleaned-data export, Quarto, and R Markdown remain unsupported.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
 - R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and

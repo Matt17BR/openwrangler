@@ -154,6 +154,7 @@ interface TestApi {
     | "missing-code"
     | "unsupported-source"
     | "missing-notebook"
+    | "missing-source-document"
     | "dispatching"
     | undefined;
   viewSortDispatchStatus():
@@ -446,10 +447,10 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
-  assert.match(extension.packageJSON.description, /Explore files and notebook data in VS Code and Cursor/u);
-  assert.match(extension.packageJSON.description, /Clean and export with Pandas or Polars/u);
-  assert.match(extension.packageJSON.description, /DuckDB viewing is experimental/u);
-  assert.match(extension.packageJSON.description, /local PySpark 4\.2 Classic\/Connect batch viewing is supported/u);
+  assert.match(extension.packageJSON.description, /Explore files and live dataframes in VS Code and Cursor/u);
+  assert.match(extension.packageJSON.description, /Use Pandas, Polars, or DuckDB/u);
+  assert.match(extension.packageJSON.description, /view PySpark and R notebooks/u);
+  assert.match(extension.packageJSON.description, /run \.R files on macOS or Linux/u);
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
@@ -473,6 +474,7 @@ export async function run(): Promise<void> {
     "openWrangler.changeImportOptions",
     "openWrangler.launchDataViewer",
     "openWrangler.openNotebookVariable",
+    "openWrangler.runRFile",
     "openWrangler.chooseNotebookPreviewProvider",
     "openWrangler.checkJupyterIntegration",
     "openWrangler.changeRuntime",
@@ -488,6 +490,7 @@ export async function run(): Promise<void> {
     "openWrangler.copyCode",
     "openWrangler.exportCode",
     "openWrangler.insertNotebookCode",
+    "openWrangler.insertRDocumentCode",
     "openWrangler.exportData",
     "openWrangler.openSourceFile",
     "openWrangler.openWalkthrough",
@@ -541,6 +544,7 @@ export async function run(): Promise<void> {
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchColumnBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.filterMode"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.sessionOpenTimeoutMs"]);
+  assert.ok(contributions.configuration?.properties?.["openWrangler.rscriptPath"]);
   const enabledFileTypes = contributions.configuration?.properties?.["openWrangler.enabledFileTypes"] as
     { items?: { enum?: string[] }; default?: string[] } | undefined;
   assert.ok(enabledFileTypes?.items?.enum?.includes("xls"));
@@ -548,13 +552,27 @@ export async function run(): Promise<void> {
   assert.deepEqual(contributions.configurationDefaults?.["cursor.general.pinnedTitleActions"], [
     "openWrangler.openFile",
     "openWrangler.changeImportOptions",
-    "openWrangler.openNotebookVariable"
+    "openWrangler.openNotebookVariable",
+    "openWrangler.runRFile"
   ]);
   assert.deepEqual(
     contributions.commands?.find((command) => command.command === "openWrangler.openFile"),
     {
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
+      icon: {
+        light: "media/action-icon-light.svg",
+        dark: "media/action-icon-dark.svg"
+      }
+    }
+  );
+  assert.deepEqual(
+    contributions.commands?.find((command) => command.command === "openWrangler.runRFile"),
+    {
+      command: "openWrangler.runRFile",
+      title: "Run R File in Open Wrangler…",
+      shortTitle: "Run in Open Wrangler…",
+      category: "Open Wrangler",
       icon: {
         light: "media/action-icon-light.svg",
         dark: "media/action-icon-dark.svg"
@@ -585,7 +603,18 @@ export async function run(): Promise<void> {
   );
   const fileResourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
+  const rDocumentPredicate =
+    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.r$/i";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
+  assert.ok(
+    explorerContextItems.some(
+      (item) =>
+        item.command === "openWrangler.runRFile" &&
+        item.when === `!explorerResourceIsFolder && ${rDocumentPredicate}` &&
+        item.group === "navigation@49"
+    ),
+    `Explorer R files must expose Run in Open Wrangler. Loaded: ${JSON.stringify(explorerContextItems)}`
+  );
   assert.ok(
     explorerContextItems.some(
       (item) =>
@@ -616,6 +645,13 @@ export async function run(): Promise<void> {
   assert.ok(
     contributions.menus?.["editor/title"]?.some(
       (item) =>
+        item.command === "openWrangler.runRFile" && item.when === rDocumentPredicate && item.group === "navigation@1"
+    ),
+    "R source editors must expose the Open Wrangler title action."
+  );
+  assert.ok(
+    contributions.menus?.["editor/title"]?.some(
+      (item) =>
         item.command === "openWrangler.openFile" &&
         item.when ===
           `${fileResourcePredicate} && ` + "(!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)" &&
@@ -632,6 +668,13 @@ export async function run(): Promise<void> {
         item.group === "navigation@2"
     ),
     "Configurable Open Wrangler file editors must expose the Change Import Options title action."
+  );
+  assert.ok(
+    contributions.menus?.["editor/title/context"]?.some(
+      (item) =>
+        item.command === "openWrangler.runRFile" && item.when === rDocumentPredicate && item.group === "navigation@49"
+    ),
+    "R source tabs must expose Run in Open Wrangler in their context menu."
   );
   assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
@@ -658,6 +701,15 @@ export async function run(): Promise<void> {
       (item) => item.command === "openWrangler.launchDataViewer" && item.when === "false"
     ),
     "The argument-only Jupyter viewer command must stay out of the Command Palette."
+  );
+  assert.ok(
+    contributions.menus?.["view/title"]?.some(
+      (item) =>
+        item.command === "openWrangler.insertRDocumentCode" &&
+        item.when === "view == openWrangler.codePreview && openWrangler.canInsertRDocumentCode" &&
+        item.group === "navigation@12"
+    ),
+    "R document sessions must expose generated-code insertion only when their exact source is active."
   );
   const notebookVariableWhen = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
   const notebookVariableToolbarWhen =
@@ -1084,6 +1136,13 @@ interface ReleasedDuckDbRecoverySession {
   readonly runtimeId: string;
   readonly schema: SessionMetadata["schema"];
   readonly viewState: GridViewState;
+}
+
+interface ReleasedRDocumentFixture {
+  readonly sourceUri: vscode.Uri;
+  readonly decoyUri: vscode.Uri;
+  readonly processIdPath: string;
+  readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
 }
 
 function isDataWranglerCoexistencePhase(phase: string): phase is DataWranglerCoexistencePhase {
@@ -1556,6 +1615,71 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
   );
 }
 
+function writeReleasedRDocumentFixture(directory: string): ReleasedRDocumentFixture {
+  const fixtureDirectory = path.join(directory, "plain-r");
+  mkdirSync(fixtureDirectory, { recursive: true });
+  const sourcePath = path.join(fixtureDirectory, "orders-analysis.R");
+  const decoyPath = path.join(fixtureDirectory, "decoy.R");
+  const helperPath = path.join(fixtureDirectory, "helpers.R");
+  const csvPath = path.join(fixtureDirectory, "orders.csv");
+  const processIdPath = path.join(fixtureDirectory, "open-wrangler-r.pid");
+  const sourceBytes = Buffer.from(
+    [
+      'source("helpers.R", local = TRUE)',
+      'orders_frame <- prepare_orders(utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE))',
+      'orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = "minimal")',
+      "orders_table <- data.table::as.data.table(orders_frame)",
+      "data.table::setkey(orders_table, row_id)",
+      'writeLines(as.character(Sys.getpid()), "open-wrangler-r.pid", useBytes = TRUE)',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const helperBytes = Buffer.from(
+    [
+      "prepare_orders <- function(frame) {",
+      '  stopifnot(identical(names(frame), c("row_id", "group", "score", "label")))',
+      "  frame$score <- as.numeric(frame$score)",
+      "  frame$label <- as.character(frame$label)",
+      "  frame",
+      "}",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const csvBytes = Buffer.from(
+    [
+      "row_id,group,score,label",
+      ...Array.from({ length: 240 }, (_, index) => {
+        const row = index + 1;
+        return `${row},${row % 2 === 0 ? "B" : "A"},${row},order-${String(row).padStart(3, "0")}`;
+      }),
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const decoyBytes = Buffer.from('decoy_frame <- data.frame(value = "do not edit")\n', "utf8");
+  for (const [file, bytes] of [
+    [sourcePath, sourceBytes],
+    [decoyPath, decoyBytes],
+    [helperPath, helperBytes],
+    [csvPath, csvBytes]
+  ] as const) {
+    writeFileSync(file, bytes);
+  }
+  return {
+    sourceUri: vscode.Uri.file(sourcePath),
+    decoyUri: vscode.Uri.file(decoyPath),
+    processIdPath,
+    immutableFiles: [
+      { path: sourcePath, bytes: sourceBytes },
+      { path: decoyPath, bytes: decoyBytes },
+      { path: helperPath, bytes: helperBytes },
+      { path: csvPath, bytes: csvBytes }
+    ]
+  };
+}
+
 function assertReleasedRVersion(
   result: Readonly<Record<string, unknown>>,
   target: ReleasedJupyterKernelTarget,
@@ -1762,6 +1886,11 @@ async function exerciseReleasedRJupyterExtension(
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
+
+    if (phase === "jupyter-r") {
+      await exerciseReleasedRDocumentJourney(testing, workbench, directory);
+      assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
+    }
 
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     await showExactReleasedNotebook(notebook);
@@ -2056,6 +2185,515 @@ async function exerciseReleasedRJupyterExtension(
     }
   }
   if (acceptanceError) throw acceptanceError.value;
+}
+
+async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Page, directory: string): Promise<void> {
+  recordAcceptanceProgress("jupyter-r:document:create");
+  assert.equal(vscode.workspace.isTrusted, true, "Running a plain R file requires the trusted packaged workspace.");
+  assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must start without another session.");
+  const fixture = writeReleasedRDocumentFixture(directory);
+  const configuration = vscode.workspace.getConfiguration("openWrangler", fixture.sourceUri);
+  const filesConfiguration = vscode.workspace.getConfiguration("files", fixture.sourceUri);
+  const originalRscriptPath = configuration.inspect<string>("rscriptPath")?.workspaceValue;
+  const autoSaveInspection = filesConfiguration.inspect<string>("autoSave");
+  const originalAutoSave = autoSaveInspection?.workspaceValue;
+  const resolvedAutoSave = filesConfiguration.get<string>("autoSave", "off");
+  const exactRscript = process.env.OPEN_WRANGLER_TEST_RSCRIPT;
+  assert.ok(
+    exactRscript && path.isAbsolute(exactRscript) && !/[\0\r\n]/u.test(exactRscript),
+    "The packaged plain R journey requires the runner-owned exact Rscript path."
+  );
+  assert.equal(
+    configuration.inspect<"viewing" | "editing">("fileStartMode")?.defaultValue,
+    "editing",
+    "Plain R files must use the normal editable file-session default."
+  );
+
+  let sourceDocument: vscode.TextDocument | undefined;
+  let decoyDocument: vscode.TextDocument | undefined;
+  try {
+    await configuration.update("rscriptPath", exactRscript, vscode.ConfigurationTarget.Workspace);
+    recordAcceptanceProgress(
+      [
+        "jupyter-r:document:auto-save",
+        `default=${autoSaveInspection?.defaultValue ?? "unset"}`,
+        `global=${autoSaveInspection?.globalValue ?? "unset"}`,
+        `workspace=${autoSaveInspection?.workspaceValue ?? "unset"}`,
+        `resolved=${resolvedAutoSave}`
+      ].join(":")
+    );
+    if (resolvedAutoSave !== "off") {
+      await filesConfiguration.update("autoSave", "off", vscode.ConfigurationTarget.Workspace);
+    }
+    sourceDocument = await vscode.workspace.openTextDocument(fixture.sourceUri);
+    const sourceTextBefore = sourceDocument.getText();
+    const sourceVersionBefore = sourceDocument.version;
+    await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
+    assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
+
+    recordAcceptanceProgress("jupyter-r:document:first-run");
+    await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, "orders_frame", true);
+    const opened = await waitForReleasedRDocumentSession(
+      workbench,
+      testing,
+      sourceDocument,
+      "orders_frame",
+      "the data.frame opened from a real R source file"
+    );
+    assert.deepEqual(opened.metadata.shape, { rows: 240, columns: 4 });
+    assert.deepEqual(
+      opened.metadata.schema.map((column) => column.name),
+      ["row_id", "group", "score", "label"]
+    );
+    assert.deepEqual(opened.metadata.capabilities, {
+      editable: true,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      filter: true,
+      sort: true,
+      profile: true,
+      columnValues: true,
+      supportedOperations: [
+        "selectColumns",
+        "dropColumns",
+        "renameColumn",
+        "cloneColumn",
+        "castColumn",
+        "textLength",
+        "lowerText"
+      ],
+      notebookInsert: false,
+      documentInsert: true
+    });
+    const firstProcessId = readReleasedRDocumentProcessId(fixture.processIdPath);
+    assert.equal(
+      acceptanceProcessIsAlive(firstProcessId),
+      true,
+      "The exact R source process must own the open session."
+    );
+
+    await exerciseReleasedRDocumentGrid(testing, workbench, opened.sessionId);
+    let app = await releasedRSessionApp(workbench, testing, opened.sessionId, "the editable plain R session");
+    const previewed = await previewReleasedRRename(
+      testing,
+      workbench,
+      app,
+      opened.sessionId,
+      "row_id",
+      "record_id",
+      undefined,
+      "orders_frame"
+    );
+    app = previewed.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        return (
+          active?.sessionId === opened.sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "renameColumn" &&
+          step.id === previewed.stepId &&
+          step.params.column.name === "row_id" &&
+          step.params.newName === "record_id" &&
+          active.metadata.schema[0]?.name === "record_id"
+        );
+      },
+      30_000,
+      "applying the plain R rename"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      opened.sessionId,
+      "The applied plain R rename must reach its exact renderer before insertion."
+    );
+    const applied = testing.activeSession();
+    assert.ok(applied, "The applied plain R rename must retain its session.");
+    const generatedCode = applied.code ?? "";
+    assertReleasedRGeneratedCode(generatedCode, "record_id", "orders_frame");
+    assert.equal(applied.metadata.capabilities.documentInsert, true);
+    assert.equal(applied.metadata.capabilities.notebookInsert, false);
+
+    recordAcceptanceProgress("jupyter-r:document:insert-with-decoy-active");
+    const insertionSourceDocument = sourceDocument;
+    const insertionSourceVersion = insertionSourceDocument.version;
+    const insertionSourceText = insertionSourceDocument.getText();
+    recordAcceptanceProgress("jupyter-r:document:insert:open-decoy");
+    decoyDocument = await vscode.workspace.openTextDocument(fixture.decoyUri);
+    recordAcceptanceProgress("jupyter-r:document:insert:decoy-opened");
+    const decoyTextBefore = decoyDocument.getText();
+    await vscode.window.showTextDocument(decoyDocument, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+    recordAcceptanceProgress("jupyter-r:document:insert:decoy-shown");
+    assert.equal(
+      vscode.window.activeTextEditor?.document,
+      decoyDocument,
+      "The insertion journey must keep an unrelated R document active."
+    );
+    assert.equal(insertionSourceDocument.version, insertionSourceVersion);
+    assert.equal(insertionSourceDocument.getText(), insertionSourceText);
+    testing.setActiveSession(opened.sessionId);
+    recordAcceptanceProgress("jupyter-r:document:insert:session-active");
+    const insertionSession = testing.activeSession();
+    assert.equal(insertionSession?.sessionId, opened.sessionId);
+    assert.equal(insertionSession.metadata.capabilities.documentInsert, true);
+    assert.equal(insertionSession.metadata.capabilities.notebookInsert, false);
+    const insertion = vscode.commands.executeCommand<boolean>("openWrangler.insertRDocumentCode");
+    recordAcceptanceProgress("jupyter-r:document:insert:dispatched");
+    const pendingInsertionReceipt = setTimeout(() => {
+      recordAcceptanceProgress(
+        [
+          "jupyter-r:document:insert:pending",
+          `status=${testing.notebookInsertionStatus() ?? "unset"}`,
+          `versionDelta=${insertionSourceDocument.version - insertionSourceVersion}`,
+          `textChanged=${insertionSourceDocument.getText() !== insertionSourceText}`,
+          `documentInsert=${testing.activeSession()?.metadata.capabilities.documentInsert === true}`
+        ].join(":")
+      );
+    }, 5_000);
+    let inserted: boolean | undefined;
+    try {
+      inserted = await withBoundedAcceptancePromise(insertion, 30_000, "plain R generated-code insertion");
+    } finally {
+      clearTimeout(pendingInsertionReceipt);
+    }
+    recordAcceptanceProgress(
+      [
+        "jupyter-r:document:insert:completed",
+        `status=${testing.notebookInsertionStatus() ?? "unset"}`,
+        `versionDelta=${insertionSourceDocument.version - insertionSourceVersion}`,
+        `textChanged=${insertionSourceDocument.getText() !== insertionSourceText}`
+      ].join(":")
+    );
+    assert.equal(inserted, true, "Generated R must insert into its exact source document.");
+    assert.equal(testing.notebookInsertionStatus(), "applied");
+    recordAcceptanceProgress("jupyter-r:document:insert:verify-active-decoy");
+    assert.equal(vscode.window.activeTextEditor?.document, decoyDocument);
+    assert.equal(decoyDocument.getText(), decoyTextBefore, "The active decoy R file must not change.");
+    assert.equal(decoyDocument.isDirty, false, "The active decoy R file must remain clean.");
+    recordAcceptanceProgress("jupyter-r:document:insert:verify-disk-unchanged");
+    assertReleasedRDocumentFixtureUnchanged(fixture);
+    recordAcceptanceProgress("jupyter-r:document:insert:verify-source-edit");
+    await waitFor(
+      () => {
+        assertReleasedRDocumentFixtureUnchanged(fixture);
+        return sourceDocument?.isDirty === true;
+      },
+      5_000,
+      "the generated R source edit to become dirty"
+    );
+    assert.equal(sourceDocument.isDirty, true, "Generated R insertion must remain an unsaved source edit.");
+    assert.ok(sourceDocument.version > sourceVersionBefore);
+    assert.ok(
+      sourceDocument.getText().includes(generatedCode.trimEnd()),
+      "The exact in-memory source must contain the generated cleaning code."
+    );
+    assert.equal(
+      sourceDocument.getText().split(generatedCode.trimEnd()).length - 1,
+      1,
+      "Generated R must be inserted exactly once."
+    );
+    assert.equal(sourceDocument.getText().startsWith(sourceTextBefore), true);
+    assertReleasedRDocumentFixtureUnchanged(fixture);
+
+    recordAcceptanceProgress("jupyter-r:document:undo-from-retained-panel");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === opened.sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.schema[0]?.name === "row_id" &&
+          (active.code ?? "") === ""
+        );
+      },
+      30_000,
+      "undoing the plain R rename"
+    );
+    assert.ok(
+      sourceDocument.getText().includes(generatedCode.trimEnd()),
+      "Undoing the session plan must not rewrite the user's unsaved R document."
+    );
+
+    recordAcceptanceProgress("jupyter-r:document:first-close");
+    await disposePackagedSessionPanel(testing, opened.sessionId, "the first plain R session");
+    await waitFor(() => !acceptanceProcessIsAlive(firstProcessId), 10_000, "the first private plain R process to stop");
+    assert.equal(testing.diagnostics().sessionCount, 0);
+
+    recordAcceptanceProgress("jupyter-r:document:rerun-unsaved-source");
+    await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
+    assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
+    await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, "open_wrangler_result", false);
+    const rerun = await waitForReleasedRDocumentSession(
+      workbench,
+      testing,
+      sourceDocument,
+      "open_wrangler_result",
+      "the generated result opened after rerunning the unsaved R source"
+    );
+    assert.equal(rerun.metadata.schema[0]?.name, "record_id");
+    assert.deepEqual(rerun.metadata.shape, { rows: 240, columns: 4 });
+    const rerunPage = await assertReleasedSessionPage(testing, rerun, "1", "jupyter-r-document-rerun-page");
+    assert.equal(rerunPage.metadata.schema[0]?.name, "record_id");
+    const secondProcessId = readReleasedRDocumentProcessId(fixture.processIdPath);
+    assert.equal(acceptanceProcessIsAlive(secondProcessId), true);
+    await disposePackagedSessionPanel(testing, rerun.sessionId, "the rerun plain R session");
+    await waitFor(
+      () => !acceptanceProcessIsAlive(secondProcessId),
+      10_000,
+      "the rerun private plain R process to stop"
+    );
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    assertReleasedRDocumentFixtureUnchanged(fixture);
+    assert.equal(sourceDocument.isDirty, true, "The generated source edit must still be unsaved before cleanup.");
+  } finally {
+    try {
+      await configuration.update("rscriptPath", originalRscriptPath, vscode.ConfigurationTarget.Workspace);
+    } finally {
+      if (sourceDocument && !sourceDocument.isClosed && sourceDocument.isDirty) {
+        recordAcceptanceProgress("jupyter-r:document:cleanup:revert-source");
+        await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
+        assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
+        await withBoundedAcceptancePromise(
+          vscode.commands.executeCommand("workbench.action.files.revert"),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "reverting the synthetic R source without saving it"
+        );
+        await waitFor(
+          () => !sourceDocument?.isDirty,
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "the synthetic R source to become clean after revert"
+        );
+        const originalSource = fixture.immutableFiles.find(
+          (file) => canonicalAcceptancePath(file.path) === canonicalAcceptancePath(fixture.sourceUri.fsPath)
+        );
+        assert.ok(originalSource, "The plain R fixture must retain its immutable source bytes.");
+        assertExactBytes(
+          Buffer.from(sourceDocument.getText(), "utf8"),
+          originalSource.bytes,
+          "Plain R cleanup must restore the in-memory source from its unchanged disk bytes."
+        );
+      }
+      const tabs = [fixture.sourceUri, fixture.decoyUri]
+        .map(textDocumentTab)
+        .filter((tab): tab is vscode.Tab => tab !== undefined);
+      if (tabs.length > 0) {
+        assert.equal(
+          await vscode.window.tabGroups.close(tabs, true),
+          true,
+          "Plain R cleanup must close its clean tabs."
+        );
+      }
+      assertReleasedRDocumentFixtureUnchanged(fixture);
+      if (resolvedAutoSave !== "off") {
+        await filesConfiguration.update("autoSave", originalAutoSave, vscode.ConfigurationTarget.Workspace);
+      }
+    }
+  }
+}
+
+async function invokeReleasedRDocumentVariable(
+  workbench: Page,
+  source: vscode.Uri,
+  variableName: string,
+  assertDiscovery: boolean
+): Promise<void> {
+  const outcome = vscode.commands.executeCommand<boolean>("openWrangler.runRFile", source);
+  const title = `Open Wrangler: Choose a dataframe from ${path.basename(source.fsPath)}`;
+  const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
+  const first = await Promise.race([
+    picker.waitFor({ state: "visible", timeout: 30_000 }).then(() => ({ kind: "picker" as const })),
+    Promise.resolve(outcome).then((value) => ({ kind: "outcome" as const, value }))
+  ]);
+  assert.equal(
+    first.kind,
+    "picker",
+    `The public R-file command ended before showing its real picker: ${JSON.stringify(first)}.`
+  );
+  if (assertDiscovery) {
+    for (const [name, flavor] of [
+      ["orders_frame", "data.frame"],
+      ["orders_tibble", "tibble"],
+      ["orders_table", "data.table"]
+    ] as const) {
+      const row = await releasedJupyterQuickPickRow(picker, name);
+      assert.ok(row, `The plain R picker must expose ${name}.`);
+      assert.match((await row.innerText()).replace(/\s+/gu, " "), new RegExp(`R · ${flavor}`, "u"));
+    }
+  }
+  const input = picker.locator(".quick-input-box input:visible").first();
+  await input.fill(variableName);
+  const row = await releasedJupyterQuickPickRow(picker, variableName);
+  assert.ok(row, `The plain R picker did not expose ${JSON.stringify(variableName)}.`);
+  await row.click();
+  assert.equal(
+    await withBoundedAcceptancePromise(outcome, 30_000, `the public R-file command for ${variableName}`),
+    true
+  );
+}
+
+async function waitForReleasedRDocumentSession(
+  workbench: Page,
+  testing: TestApi,
+  document: vscode.TextDocument,
+  variableName: string,
+  description: string
+): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> {
+  try {
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.kind === "documentVariable" &&
+          active.metadata.source.variableName === variableName &&
+          active.metadata.source.uri === document.uri.toString()
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      description,
+      () => JSON.stringify(testing.diagnostics())
+    );
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} ` +
+        `Plain R panel state: ${JSON.stringify({
+          alert: await visibleOpenWranglerPanelAlert(workbench),
+          sessionTabs: releasedJupyterSessionTabs().map((tab) => tab.label),
+          coordinator: testing.diagnostics(),
+          ui: await boundedImportPromptDiagnostics(workbench)
+        })}`
+    );
+  }
+  assert.equal(
+    vscode.workspace.textDocuments.filter((candidate) => candidate.uri.toString() === document.uri.toString()).length,
+    1,
+    "The plain R session must retain one exact source document."
+  );
+  const active = testing.activeSession();
+  assert.ok(active, `${description} must publish an active session.`);
+  assert.equal(active.metadata.backend, "r");
+  assert.equal(active.metadata.rDataframeFlavor, "r.data.frame");
+  assert.equal(active.metadata.mode, "editing");
+  assert.equal(active.metadata.source.kind, "documentVariable");
+  assert.equal(active.metadata.source.variableName, variableName);
+  assert.equal(active.metadata.source.uri, document.uri.toString());
+  assert.equal(active.metadata.capabilities.notebookInsert, false);
+  assert.equal(active.metadata.capabilities.documentInsert, true);
+  return active;
+}
+
+async function exerciseReleasedRDocumentGrid(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The plain R renderer must acknowledge its first complete host snapshot."
+  );
+  const app = await releasedRSessionApp(workbench, testing, sessionId, "the plain R grid session");
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+  assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
+  const visibleRows = app.getByRole("status", { name: "Visible rows" });
+  await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–200 of 240", 10_000, "the first R block");
+  await app.getByRole("button", { name: "Next block", exact: true }).click();
+  await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 201–240 of 240", 10_000, "the second R block");
+  await app.getByRole("button", { name: "Previous block", exact: true }).click();
+  await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–200 of 240", 10_000, "the restored R block");
+
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill("score");
+  await app
+    .getByRole("option", { name: /^score,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await columnSearch.press("Enter");
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  const drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  const profile = drawer.getByRole("tabpanel");
+  await profile.getByRole("heading", { name: "score", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await profile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 30_000
+  });
+  await assertReleasedProfileStat(profile, "Rows", "240");
+  await assertReleasedProfileStat(profile, "Min", "1");
+  await assertReleasedProfileStat(profile, "Max", "240");
+
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  const filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
+  await filterPanel.getByRole("button", { name: "Use advanced filters", exact: true }).click();
+  await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+  await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
+  await filterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+  await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.filteredShape.rows === 120 &&
+        active.viewState.filterModel.filters.length === 1 &&
+        active.viewState.filterModel.filters[0]?.column === "group"
+      );
+    },
+    30_000,
+    "the plain R group filter"
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  const active = testing.activeSession();
+  assert.ok(active, "The sorted plain R session must remain active.");
+  const first = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: "jupyter-r-document-sorted-page",
+    offset: 0,
+    limit: 1,
+    filterModel: active.viewState.filterModel
+  });
+  assert.equal(first.kind, "page");
+  if (first.kind !== "page") throw new Error("The sorted plain R page did not resolve.");
+  assert.equal(first.page.totalRows, 120);
+  assert.equal(first.page.rows[0]?.values[0]?.display, "240");
+  assert.equal(first.page.rows[0]?.values[1]?.display, "B");
+  assert.equal(first.page.rows[0]?.values[2]?.display, "240");
+}
+
+function readReleasedRDocumentProcessId(processIdPath: string): number {
+  const bytes = readFileSync(processIdPath);
+  assert.ok(bytes.byteLength > 0 && bytes.byteLength <= 32, "The plain R process ID marker must stay bounded.");
+  const text = bytes.toString("utf8").trim();
+  assert.match(text, /^[1-9][0-9]*$/u);
+  const processId = Number(text);
+  assert.ok(Number.isSafeInteger(processId) && processId > 0);
+  return processId;
+}
+
+function assertReleasedRDocumentFixtureUnchanged(fixture: ReleasedRDocumentFixture): void {
+  for (const file of fixture.immutableFiles) {
+    assertExactBytes(
+      readFileSync(file.path),
+      file.bytes,
+      `Plain R acceptance must not change ${path.basename(file.path)}.`
+    );
+  }
+}
+
+function textDocumentTab(uri: vscode.Uri): vscode.Tab | undefined {
+  return vscode.window.tabGroups.all
+    .flatMap((group) => group.tabs)
+    .find((tab) => tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString());
 }
 
 async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
@@ -3729,8 +4367,8 @@ async function previewReleasedRRename(
 function assertReleasedRGeneratedCode(code: string, newName: string, variableName = "orders_frame"): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
   assert.ok(
-    code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`),
-    `Generated R code must read ${JSON.stringify(variableName)} from the notebook kernel.`
+    code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`),
+    `Generated R code must read ${JSON.stringify(variableName)} from the environment that runs the script.`
   );
   assert.ok(code.includes(JSON.stringify(newName)), `Generated R code must contain ${JSON.stringify(newName)}.`);
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
@@ -3738,7 +4376,7 @@ function assertReleasedRGeneratedCode(code: string, newName: string, variableNam
 
 function assertReleasedRDropGeneratedCode(code: string, sourceName: string, variableName = "orders_frame"): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_drop_positions"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
@@ -3751,7 +4389,7 @@ function assertReleasedRTextLengthGeneratedCode(
   variableName = "orders_frame"
 ): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_text_length_position"));
   assert.ok(code.includes("nchar("));
   assert.ok(code.includes(JSON.stringify(sourceName)));
@@ -3766,7 +4404,7 @@ function assertReleasedRCastGeneratedCode(
   variableName = "orders_frame"
 ): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_cast_position"));
   assert.ok(code.includes(".ow_cast_values"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
@@ -3781,7 +4419,7 @@ function assertReleasedRCloneGeneratedCode(
   variableName = "orders_frame"
 ): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_clone_position"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.ok(code.includes(JSON.stringify(newName)));
@@ -3794,7 +4432,7 @@ function assertReleasedRSelectGeneratedCode(
   variableName = "orders_frame"
 ): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_select_positions"));
   for (const name of selectedNames) assert.ok(code.includes(JSON.stringify(name)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);

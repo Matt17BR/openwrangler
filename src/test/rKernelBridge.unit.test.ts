@@ -48,7 +48,7 @@ describe("canonical R kernel bridge", () => {
       kind: "initialized",
       protocolVersion: 2,
       runtimeVersion: "2.0.0-preview.1",
-      capabilities: rCapabilities()
+      capabilities: rCapabilities(true)
     });
 
     const response = await bridge.request(openRequest());
@@ -91,6 +91,34 @@ describe("canonical R kernel bridge", () => {
       cell("null", null, "NA", true, false),
       { ...cell("infinity", null, "Inf"), sign: 1 }
     ]);
+  });
+
+  it("advertises source insertion instead of notebook insertion for a plain R document", async () => {
+    const transport = fakeTransport(frameContract());
+    const bridge = createBridge(transport);
+    const request: OpenSessionRequest = {
+      ...openRequest("editing"),
+      source: {
+        kind: "documentVariable",
+        label: "orders",
+        uri: "file:///workspace/orders.R",
+        variableName: "orders"
+      }
+    };
+
+    const response = await bridge.request(request);
+
+    expect(response).toMatchObject({
+      kind: "sessionOpened",
+      metadata: {
+        backend: "r",
+        source: request.source,
+        capabilities: {
+          notebookInsert: false,
+          documentInsert: true
+        }
+      }
+    });
   });
 
   it("maps explicit R row names into canonical grid row labels", async () => {
@@ -2459,11 +2487,12 @@ describe("canonical R kernel bridge", () => {
     ).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
   });
 
-  it("does not migrate an invalidated session and performs terminal cleanup once", async () => {
+  it("does not migrate a restart-invalidated session and performs terminal cleanup once", async () => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
     await bridge.request(openRequest());
 
+    transport.isSessionMapped.mockReturnValue(false);
     transport.invalidate();
     await expect(
       bridge.request({
@@ -2497,6 +2526,49 @@ describe("canonical R kernel bridge", () => {
     await Promise.all([bridge.dispose(), bridge.dispose()]);
     expect(transport.dispose).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["timeout", "cancellation"] as const)(
+    "closes the mapped R session after a detached %s mutation settles",
+    async (reason) => {
+      const source = frameContract();
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      const lateMutation = deferred<void>();
+      transport.previewStep.mockRejectedValueOnce(
+        new DetachedBridgeRequestError(`R mutation detached after ${reason}.`, reason, true, lateMutation.promise)
+      );
+
+      await expect(bridge.request(renamePreviewRequest(0))).rejects.toMatchObject({
+        name: "DetachedBridgeRequestError",
+        reason,
+        dispatched: true
+      });
+      await expect(
+        bridge.request({
+          kind: "getPage",
+          sessionId,
+          revision: 0,
+          viewRequestId: `after-detached-${reason}`,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8,
+          filterModel: { filters: [], sort: [] }
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
+
+      lateMutation.resolve();
+      await lateMutation.promise;
+      const close = { kind: "closeSession", sessionId, revision: 0 } as const;
+      await expect(bridge.request(close)).resolves.toEqual({ kind: "sessionClosed", sessionId });
+      expect(transport.close).toHaveBeenCalledTimes(1);
+      expect(transport.close).toHaveBeenCalledWith(sessionId, {
+        timeoutMs: undefined,
+        cancellation: undefined
+      });
+    }
+  );
 
   it("dispatches at most one close for concurrent requests", async () => {
     const transport = fakeTransport(frameContract());
@@ -2585,14 +2657,7 @@ function createBridge(
     extension: { packageJSON: { version: "2.0.0-preview.1" } },
     subscriptions: []
   } as unknown as vscode.ExtensionContext;
-  return new RKernelBridge(
-    context,
-    {} as vscode.NotebookDocument,
-    transport,
-    createSessionId,
-    diagnosticSink,
-    verifiedVariable
-  );
+  return new RKernelBridge(context, transport, createSessionId, diagnosticSink, verifiedVariable);
 }
 
 function openRequest(mode: OpenSessionRequest["mode"] = "viewing"): OpenSessionRequest {
@@ -3178,7 +3243,7 @@ function cell(kind: string, raw: unknown, display: string, isNull = false, isNaN
   return { kind, raw, display, isNull, isNaN };
 }
 
-function rCapabilities(): SourceCapabilities {
+function rCapabilities(bridge = false): SourceCapabilities {
   return {
     editable: true,
     lazy: false,
@@ -3186,6 +3251,7 @@ function rCapabilities(): SourceCapabilities {
     exportCsv: false,
     exportParquet: false,
     notebookInsert: true,
+    ...(bridge ? { documentInsert: true } : {}),
     filter: true,
     sort: true,
     profile: true,

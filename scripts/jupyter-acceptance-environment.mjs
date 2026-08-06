@@ -424,7 +424,14 @@ export async function prepareJupyterAcceptanceREnvironment(
     packageVersions: R_ACCEPTANCE_PACKAGE_VERSIONS,
     packageRecord: R_ACCEPTANCE_PACKAGE_RECORD,
     repository: R_ACCEPTANCE_REPOSITORY,
-    jupyterEnvironment: Object.freeze({ dataDir, runtimeDir, configDir, path: pathDir }),
+    jupyterEnvironment: Object.freeze({
+      dataDir,
+      runtimeDir,
+      configDir,
+      path: pathDir,
+      rscriptPath: canonicalRscript,
+      rLibraryDir: libraryDir
+    }),
     dependencyProbe,
     dependencyInstall
   });

@@ -4185,6 +4185,42 @@ describe("OpenWranglerPanel retained view state", () => {
     );
   });
 
+  it("opens a plain R document with the file editing-mode preference", async () => {
+    const source: SessionSource = {
+      kind: "documentVariable",
+      label: "r_frame",
+      variableName: "r_frame",
+      uri: "file:///workspace/example.R"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") {
+        return {
+          ...openedResponse,
+          metadata: {
+            ...metadata,
+            backend: "r",
+            rDataframeFlavor: "r.data.frame",
+            mode: "editing",
+            source
+          }
+        };
+      }
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+
+    createPanelHarness(
+      { request },
+      { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
+    );
+
+    await vi.waitFor(() =>
+      expect(request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0]).toMatchObject({
+        backend: "r",
+        mode: "editing"
+      })
+    );
+  });
+
   it("routes the PySpark Reconnect action through the host-only live-session recovery", async () => {
     const source: SessionSource = {
       kind: "notebookVariable",

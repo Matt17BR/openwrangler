@@ -174,12 +174,18 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       dataDir: join(privateRoot, "d"),
       runtimeDir: join(privateRoot, "r"),
       configDir: join(privateRoot, "c"),
-      path: join(privateRoot, "p")
+      path: join(privateRoot, "p"),
+      rscriptPath: rscript,
+      rLibraryDir: join(privateRoot, "l")
     });
     for (const path of [
       prepared.root,
       prepared.libraryDir,
-      ...Object.values(prepared.jupyterEnvironment),
+      prepared.jupyterEnvironment.dataDir,
+      prepared.jupyterEnvironment.runtimeDir,
+      prepared.jupyterEnvironment.configDir,
+      prepared.jupyterEnvironment.path,
+      prepared.jupyterEnvironment.rLibraryDir,
       join(privateRoot, "h"),
       join(privateRoot, "t")
     ]) {

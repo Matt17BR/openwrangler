@@ -40,7 +40,8 @@ const nativeMocks = vi.hoisted(() => ({
   activeNotebookEditor: undefined as
     | { notebook: { uri: unknown; isClosed: boolean; cellCount: number }; selections: Array<{ end: number }> }
     | undefined,
-  insertGeneratedNotebookCell: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" }))
+  insertGeneratedNotebookCell: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" })),
+  insertGeneratedRDocumentCode: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" }))
 }));
 
 vi.mock("vscode", () => {
@@ -159,6 +160,9 @@ vi.mock("../extension/webviewPanel", () => ({
 vi.mock("../extension/notebooks/notebookInsertion", () => ({
   insertGeneratedNotebookCell: nativeMocks.insertGeneratedNotebookCell
 }));
+vi.mock("../extension/r/rDocumentInsertion", () => ({
+  insertGeneratedRDocumentCode: nativeMocks.insertGeneratedRDocumentCode
+}));
 vi.mock("../extension/configuration", () => ({
   getSetting: <T>(_key: string, fallback: T): T => fallback
 }));
@@ -193,6 +197,8 @@ describe("native operation commands", () => {
     nativeMocks.activeNotebookEditor = undefined;
     nativeMocks.insertGeneratedNotebookCell.mockReset();
     nativeMocks.insertGeneratedNotebookCell.mockResolvedValue({ status: "applied" });
+    nativeMocks.insertGeneratedRDocumentCode.mockReset();
+    nativeMocks.insertGeneratedRDocumentCode.mockResolvedValue({ status: "applied" });
   });
 
   it("forwards startOperation without a kind to the generic webview operation picker", async () => {
@@ -986,6 +992,25 @@ describe("native operation commands", () => {
     });
   });
 
+  it("uses the R-file insertion command only for a document-variable session", async () => {
+    const active = rDocumentSnapshot();
+    const origin = {
+      kind: "textDocument" as const,
+      document: {
+        uri: { fsPath: "/workspace/analysis.R", toString: () => "file:///workspace/analysis.R" },
+        version: 1
+      },
+      version: 1
+    };
+    register(active, undefined, origin);
+
+    await expect(command("openWrangler.insertRDocumentCode")()).resolves.toBe(true);
+
+    expect(nativeMocks.insertGeneratedRDocumentCode).toHaveBeenCalledWith(origin, active.code);
+    expect(nativeMocks.insertGeneratedNotebookCell).not.toHaveBeenCalled();
+    expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith("Inserted generated R into analysis.R.");
+  });
+
   it("does not wait for an actionless missing-code notification", async () => {
     const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
     const active = notebookVariableSnapshot();
@@ -1056,7 +1081,8 @@ describe("native operation commands", () => {
 
 function register(
   snapshot: ActiveSessionSnapshot,
-  notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number }
+  notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number },
+  textDocumentOrigin?: unknown
 ): {
   setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void;
   setSession(snapshot: ActiveSessionSnapshot): void;
@@ -1070,6 +1096,7 @@ function register(
     | "missing-code"
     | "unsupported-source"
     | "missing-notebook"
+    | "missing-source-document"
     | "dispatching"
     | undefined;
   viewSortDispatchStatus():
@@ -1099,6 +1126,7 @@ function register(
     sessionSnapshot: (sessionId: string) => sessions.get(sessionId),
     exportData,
     activeNotebookDocument: () => notebookDocument,
+    activeTextDocumentOrigin: () => textDocumentOrigin,
     onDidChangeActiveSession: (listener: (snapshot: ActiveSessionSnapshot | undefined) => unknown) => {
       activeSessionListeners.add(listener);
       return { dispose: () => activeSessionListeners.delete(listener) };
@@ -1250,6 +1278,34 @@ function rNotebookSnapshot(): ActiveSessionSnapshot {
       exportCsv: false,
       exportParquet: false,
       notebookInsert: true,
+      supportedOperations: ["renameColumn"]
+    }
+  };
+  return result;
+}
+
+function rDocumentSnapshot(): ActiveSessionSnapshot {
+  const result = noDraftSnapshot();
+  result.code = "clean_data <- function(df) {\n  df\n}\n";
+  result.metadata = {
+    ...result.metadata,
+    backend: "r",
+    rDataframeFlavor: "r.data.frame",
+    mode: "editing",
+    source: {
+      kind: "documentVariable",
+      label: "orders",
+      variableName: "orders",
+      uri: "file:///workspace/orders.R"
+    },
+    capabilities: {
+      editable: true,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      notebookInsert: false,
+      documentInsert: true,
       supportedOperations: ["renameColumn"]
     }
   };

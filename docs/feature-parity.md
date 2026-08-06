@@ -72,8 +72,9 @@ Inline MIME v2 output shows every captured column and pages the captured rows at
 ## Native R work for Open Wrangler 2
 
 R support is not in a released package yet. On the Open Wrangler 2 branch, R notebooks can open base `data.frame`,
-tibble, and `data.table` variables through IRkernel. Pages, compound filters, ordered sorts, value search, and column
-and dataset profiles run in R; the dataframe is not passed through Python. Editing mode currently supports exactly
+tibble, and `data.table` variables through IRkernel. A trusted `.R` file can also run once in an Open Wrangler-owned
+R process, after which the user chooses one of the dataframes it created. Pages, compound filters, ordered sorts,
+value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Editing mode currently supports exactly
 seven cleaning operations: Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. They follow the
 same draft, generated-code, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. Select Columns
 keeps the user's chosen order, and Clone Column gives the copy its own stable identity. Text Length accepts character
@@ -82,7 +83,10 @@ identity. Lowercase accepts character and factor input, keeps `NA`, and can upda
 character column with a stable derived identity. Convert type replaces one column under the same identity and supports
 string, integer, float, boolean, date, and datetime targets. Failed parses become `NA`. It rejects active data-table
 keys and conversions that would lose units or `integer64` precision. Generated R can be copied, saved as a `.R`
-script, or inserted into the notebook that opened the dataframe.
+script, or inserted into the notebook or `.R` document that opened the dataframe.
+
+The default `collapse::qDF()` output follows the base `data.frame` path. Default `collapse::qTBL()` and `qDT()` output follows the existing tibble
+and `data.table` paths. Open Wrangler does not require `collapse`, and grouped `GRP_df` objects are not supported.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) is the earlier viewing and
 recovery baseline from `6742255`. It used R 4.5.2 in VS Code and Cursor and a containerized IRkernel in VS Code,
@@ -97,25 +101,29 @@ and keyed `data.table` objects and previews and discards Rename and Drop Columns
 tests cover all seven operations across the three dataframe flavors, including mixed plans, ordered selection, type
 conversion, Unicode character counts, native R lowercase behavior, `NA` preservation, stable retained and derived
 identities, duplicate names, non-syntactic names, and executable generated R.
-The packaged R journey also inserts the current Rename code as one `r` cell without changing any existing cell.
-The remaining R cleaning operations, cleaned-data export, Quarto, R Markdown, and live dataframes from plain `.R`
-documents are not available yet.
+The packaged R journey also inserts the current Rename code as one `r` cell without changing any existing cell. A
+second macOS/Linux journey runs a real `.R` file from its editor, opens a discovered dataframe, inserts generated code back into
+that exact unsaved document, and reruns the result without changing a decoy editor or either source file on disk.
+Direct `.R` execution remains disabled on Windows until the extension can own the complete spawned process tree.
+The remaining R cleaning operations, cleaned-data export, Quarto, and R Markdown are not available yet.
 
-| Surface                                       | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                   |
-| --------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | ------------------------------------------- |
-| Native R frame paging and typed cells         | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                             |
-| Native R compound viewing filters             | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                             |
-| Native R value search and selections          | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                             |
-| Native R ordered viewing sorts                | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                             |
-| Native R column and dataset profiles          | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                             |
-| Base `data.frame`, tibble, and `data.table`   | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                             |
-| Exact IRkernel session transport              | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                           |
-| Notebook workbench                            | v2 branch    | Partial | Packaged viewing/editing, screenshots, production axe    | Preview release                             |
-| R cleaning operations and generated code      | 7 operations | Partial | Native tests and packaged VS Code/Cursor journey         | Remaining operations                        |
-| Copy or save generated R                      | 7 operations | Partial | Native generated-code tests and packaged R script path   | Preview release                             |
-| Insert generated R into its IRkernel notebook | v2 branch    | Partial | Shared exact-document helper and packaged editor journey | Preview release                             |
-| Cleaned-data export                           | No           | Planned | No public R path                                         | Native export                               |
-| Quarto, R Markdown, and plain `.R` documents  | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper |
+| Surface                                       | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate          |
+| --------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | ---------------------------------- |
+| Native R frame paging and typed cells         | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                    |
+| Native R compound viewing filters             | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                    |
+| Native R value search and selections          | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                    |
+| Native R ordered viewing sorts                | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                    |
+| Native R column and dataset profiles          | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                    |
+| Base `data.frame`, tibble, and `data.table`   | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                    |
+| Exact IRkernel session transport              | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                  |
+| Owned `.R` source process                     | v2 branch    | Partial | Real process contracts and packaged VS Code/Cursor path  | Preview release                    |
+| Notebook workbench                            | v2 branch    | Partial | Packaged viewing/editing, screenshots, production axe    | Preview release                    |
+| R cleaning operations and generated code      | 7 operations | Partial | Native tests and packaged VS Code/Cursor journey         | Remaining operations               |
+| Copy or save generated R                      | 7 operations | Partial | Native generated-code tests and packaged R script path   | Preview release                    |
+| Insert generated R into its IRkernel notebook | v2 branch    | Partial | Shared exact-document helper and packaged editor journey | Preview release                    |
+| Insert generated R into its source `.R` file  | v2 branch    | Partial | Exact-document helper and packaged rerun                 | Preview release                    |
+| Cleaned-data export                           | No           | Planned | No public R path                                         | Native export                      |
+| Quarto and R Markdown                         | No           | Planned | Ownership rules accepted in the R ADR                    | Stable documented execution broker |
 
 ## DuckDB file-backed preview matrix
 

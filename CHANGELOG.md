@@ -42,6 +42,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   when the original also needs to be kept.
 - R notebook sessions can now insert generated cleaning code into the notebook that opened the dataframe. Open
   Wrangler adds one `r` cell and confirms the exact edit before reporting success.
+- Trusted `.R` files can now run in an Open Wrangler-owned R process. The variable picker lists base data frames,
+  tibbles, and data tables created by that run, and the workbench can insert generated R back into the exact unsaved
+  source document. Relative file reads use the source directory, and closing the final view stops the process.
+- Default frames created with `collapse::qDF()`, `qTBL()`, or `qDT()` use the existing base-data-frame, tibble, or data-table
+  path. Open Wrangler does not add `collapse` as a runtime dependency. Grouped `GRP_df` objects are not supported.
+- Direct `.R` execution is available on macOS and Linux. R notebooks still work on Windows; direct source execution
+  stays disabled there until Open Wrangler can own and stop the complete R process tree.
 
 ### Changed
 

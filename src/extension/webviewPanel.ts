@@ -265,7 +265,7 @@ export class OpenWranglerPanel {
     if (this.opening) return this.opening;
     if (this.disposed || this.sessionId) return;
     const { pageSize, columnLimit } = fetchGridBlockSize(this.backend);
-    const isFile = this.source.kind === "file";
+    const isFile = this.source.kind === "file" || this.source.kind === "documentVariable";
     const mode =
       this.backend === "pyspark"
         ? "viewing"

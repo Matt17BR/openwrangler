@@ -54,6 +54,7 @@ const CELL_KINDS = new Set([
 ]);
 const DATA_BACKENDS = ["polars", "duckdb", "pandas", "pyspark", "r"] as const;
 const R_DATAFRAME_FLAVORS = ["r.data.frame", "r.tibble", "r.data.table"] as const;
+const CANONICAL_SOURCE_URI = /^[a-z][a-z0-9+.-]*:(?:%[0-9A-Fa-f]{2}|[!#$&'()*+,\-./0-9:;=?@A-Z[\]_a-z~])+$/u;
 const OPERATION_KINDS = new Set([
   "sortRows",
   "filterRows",
@@ -158,7 +159,9 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
           (isRecord(candidate.source) &&
             candidate.source.kind === "notebookVariable" &&
             (candidate.mode === undefined || candidate.mode === "viewing"))) &&
-        (candidate.backend !== "r" || (isRecord(candidate.source) && candidate.source.kind === "notebookVariable")) &&
+        (candidate.backend !== "r" ||
+          (isRecord(candidate.source) &&
+            (candidate.source.kind === "notebookVariable" || candidate.source.kind === "documentVariable"))) &&
         optional(candidate, "mode", (mode) => isOneOf(mode, ["viewing", "editing"])) &&
         isBoundedPageSize(candidate.pageSize) &&
         isNonNegativeInteger(candidate.columnOffset) &&
@@ -545,13 +548,16 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     isOneOf(candidate.backend, DATA_BACKENDS) &&
     (candidate.backend !== "pyspark" ||
       (isRecord(candidate.source) && candidate.source.kind === "notebookVariable" && candidate.mode === "viewing")) &&
-    (candidate.backend !== "r" || (isRecord(candidate.source) && candidate.source.kind === "notebookVariable")) &&
+    (candidate.backend !== "r" ||
+      (isRecord(candidate.source) &&
+        (candidate.source.kind === "notebookVariable" || candidate.source.kind === "documentVariable"))) &&
     (candidate.backend === "r"
       ? isOneOf(candidate.rDataframeFlavor, R_DATAFRAME_FLAVORS)
       : !Object.prototype.hasOwnProperty.call(candidate, "rDataframeFlavor")) &&
     isOneOf(candidate.mode, ["viewing", "editing"]) &&
     isSessionSource(candidate.source) &&
     isSourceCapabilities(candidate.capabilities) &&
+    hasCompatibleInsertionCapabilities(candidate.source, candidate.capabilities) &&
     isSessionDataShape(candidate.shape) &&
     isSessionDataShape(candidate.filteredShape) &&
     (candidate.backend === "pyspark" || (candidate.shape.rows !== null && candidate.filteredShape.rows !== null)) &&
@@ -569,16 +575,30 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
 
 function isSessionSource(value: unknown): boolean {
   const candidate = exactRecord(value, ["kind", "label"], ["path", "uri", "variableName", "importOptions"]);
-  return (
-    candidate !== undefined &&
-    isOneOf(candidate.kind, ["file", "notebookVariable", "notebookOutput"]) &&
-    isNonEmptyString(candidate.label) &&
-    optional(candidate, "path", isString) &&
-    optional(candidate, "uri", isString) &&
-    optional(candidate, "variableName", isString) &&
-    optional(candidate, "importOptions", isImportOptions) &&
-    hasCompatibleImportOptions(candidate)
-  );
+  if (
+    candidate === undefined ||
+    !isOneOf(candidate.kind, ["file", "notebookVariable", "documentVariable", "notebookOutput"]) ||
+    !isNonEmptyString(candidate.label) ||
+    !optional(candidate, "path", isString) ||
+    !optional(candidate, "uri", isString) ||
+    !optional(candidate, "variableName", isString) ||
+    !optional(candidate, "importOptions", isImportOptions)
+  ) {
+    return false;
+  }
+  if (candidate.kind === "documentVariable") {
+    return (
+      isNonEmptyString(candidate.variableName) &&
+      isCanonicalSourceUri(candidate.uri) &&
+      !Object.prototype.hasOwnProperty.call(candidate, "path") &&
+      !Object.prototype.hasOwnProperty.call(candidate, "importOptions")
+    );
+  }
+  return hasCompatibleImportOptions(candidate);
+}
+
+function isCanonicalSourceUri(value: unknown): value is string {
+  return typeof value === "string" && CANONICAL_SOURCE_URI.test(value);
 }
 
 function hasCompatibleImportOptions(source: Record<string, unknown>): boolean {
@@ -637,7 +657,7 @@ function isSourceCapabilities(value: unknown): boolean {
   const candidate = exactRecord(
     value,
     ["editable", "lazy", "cancel", "exportCsv", "exportParquet", "notebookInsert"],
-    ["filter", "sort", "profile", "columnValues", "supportedOperations"]
+    ["documentInsert", "filter", "sort", "profile", "columnValues", "supportedOperations"]
   );
   return (
     candidate !== undefined &&
@@ -647,11 +667,20 @@ function isSourceCapabilities(value: unknown): boolean {
     isBoolean(candidate.exportCsv) &&
     isBoolean(candidate.exportParquet) &&
     isBoolean(candidate.notebookInsert) &&
+    optional(candidate, "documentInsert", isBoolean) &&
     optional(candidate, "filter", isBoolean) &&
     optional(candidate, "sort", isBoolean) &&
     optional(candidate, "profile", isBoolean) &&
     optional(candidate, "columnValues", isBoolean) &&
     optional(candidate, "supportedOperations", isUniqueOperationKindArray)
+  );
+}
+
+function hasCompatibleInsertionCapabilities(source: unknown, capabilities: unknown): boolean {
+  if (!isRecord(source) || !isRecord(capabilities)) return false;
+  return (
+    (capabilities.notebookInsert !== true || source.kind === "notebookVariable") &&
+    (capabilities.documentInsert !== true || source.kind === "documentVariable")
   );
 }
 

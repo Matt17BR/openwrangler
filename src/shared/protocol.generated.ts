@@ -1,7 +1,7 @@
 /* Generated from protocol/openwrangler.v2.schema.json. Do not edit. */
 
 /**
- * Canonical standalone and Jupyter transport contract for Open Wrangler protocol v2.
+ * Runtime transport contract for Open Wrangler protocol v2.
  */
 export type OpenWranglerTransportMessage = RuntimeRequestEnvelope | RuntimeResponseEnvelope;
 export type ProtocolVersion = 2;
@@ -429,7 +429,7 @@ export interface OpenSessionRequest {
   columnLimit: number;
 }
 export interface SessionSource {
-  kind: "file" | "notebookVariable" | "notebookOutput";
+  kind: "file" | "notebookVariable" | "documentVariable" | "notebookOutput";
   label: string;
   path?: string;
   uri?: string;
@@ -1014,6 +1014,7 @@ export interface SourceCapabilities {
   exportCsv: boolean;
   exportParquet: boolean;
   notebookInsert: boolean;
+  documentInsert?: boolean;
   filter?: boolean;
   sort?: boolean;
   profile?: boolean;
@@ -1032,7 +1033,7 @@ export interface SessionMetadata {
   revision: number;
   backend: DataBackend;
   /**
-   * Required only for a confirmed R notebook session; forbidden for every other backend.
+   * Required only for a confirmed live R session; forbidden for every other backend.
    */
   rDataframeFlavor?: "r.data.frame" | "r.tibble" | "r.data.table";
   mode: SessionMode;

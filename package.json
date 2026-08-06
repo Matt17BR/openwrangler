@@ -1,7 +1,7 @@
 {
   "name": "openwrangler",
   "displayName": "Open Wrangler",
-  "description": "Explore files and notebook data in VS Code and Cursor. Clean and export with Pandas or Polars. DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch viewing is supported.",
+  "description": "Explore files and live dataframes in VS Code and Cursor. Use Pandas, Polars, or DuckDB, view PySpark and R notebooks, and run .R files on macOS or Linux.",
   "version": "1.2.2",
   "publisher": "Matt17BR",
   "license": "MIT",
@@ -23,6 +23,10 @@
     "polars",
     "duckdb",
     "pandas",
+    "r",
+    "rstats",
+    "tibble",
+    "data.table",
     "openwrangler",
     "vscode",
     "cursor"
@@ -46,11 +50,11 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "Open Wrangler executes dataframe operations in the selected Python environment. Trust the workspace before opening data."
+      "description": "Open Wrangler executes dataframe operations in Python and R runtimes. Trust the workspace before opening data."
     },
     "virtualWorkspaces": {
       "supported": false,
-      "description": "Desktop file and Python runtime access require a local or remote workspace file system."
+      "description": "Desktop file and language-runtime access require a local or remote workspace file system."
     }
   },
   "main": "./dist/extension/activate.js",
@@ -140,6 +144,7 @@
     "onCommand:openWrangler.openPath",
     "onCommand:openWrangler.launchDataViewer",
     "onCommand:openWrangler.openNotebookVariable",
+    "onCommand:openWrangler.runRFile",
     "onCommand:openWrangler.chooseNotebookPreviewProvider",
     "onCommand:openWrangler.checkJupyterIntegration",
     "onCommand:openWrangler.changeRuntime",
@@ -159,6 +164,7 @@
     "onCommand:openWrangler.copyCode",
     "onCommand:openWrangler.exportCode",
     "onCommand:openWrangler.insertNotebookCode",
+    "onCommand:openWrangler.insertRDocumentCode",
     "onCommand:openWrangler.exportData",
     "onCommand:openWrangler.openSourceFile",
     "onCommand:openWrangler.openWalkthrough",
@@ -178,7 +184,8 @@
       "cursor.general.pinnedTitleActions": [
         "openWrangler.openFile",
         "openWrangler.changeImportOptions",
-        "openWrangler.openNotebookVariable"
+        "openWrangler.openNotebookVariable",
+        "openWrangler.runRFile"
       ]
     },
     "commands": [
@@ -213,6 +220,16 @@
         "command": "openWrangler.openNotebookVariable",
         "title": "Open in Open Wrangler",
         "shortTitle": "Open in Open Wrangler",
+        "category": "Open Wrangler",
+        "icon": {
+          "light": "media/action-icon-light.svg",
+          "dark": "media/action-icon-dark.svg"
+        }
+      },
+      {
+        "command": "openWrangler.runRFile",
+        "title": "Run R File in Open Wrangler…",
+        "shortTitle": "Run in Open Wrangler…",
         "category": "Open Wrangler",
         "icon": {
           "light": "media/action-icon-light.svg",
@@ -306,6 +323,11 @@
         "command": "openWrangler.insertNotebookCode",
         "title": "Open Wrangler: Insert Generated Code into Originating Notebook",
         "icon": "$(notebook)"
+      },
+      {
+        "command": "openWrangler.insertRDocumentCode",
+        "title": "Open Wrangler: Insert Generated Code into Originating R File",
+        "icon": "$(file-code)"
       },
       {
         "command": "openWrangler.exportData",
@@ -404,7 +426,7 @@
     "viewsWelcome": [
       {
         "view": "openWrangler.operations",
-        "contents": "Open a data file or notebook dataframe to start exploring.\n[Open a data file](command:openWrangler.openPath)"
+        "contents": "Open a data file, notebook dataframe, or trusted R file to start exploring.\n[Open a data file](command:openWrangler.openPath)"
       }
     ],
     "jupyterVariableViewers": [
@@ -474,12 +496,12 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Open files or notebook variables, inspect profiles, preview cleaning steps, and export code or data. Filters and cleaning steps do not overwrite the source. Pandas and Polars support cleaning and export. DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only.",
+        "description": "Open files or live dataframe variables, inspect profiles, and preview cleaning steps. Pandas and Polars support cleaning and export. R notebooks and trusted .R files support the current R cleaning set. DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only.",
         "steps": [
           {
             "id": "openData",
             "title": "Open files or notebook variables",
-            "description": "Choose [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel. In a notebook, choose a supported live Pandas, Polars, DuckDB, or PySpark variable from the toolbar."
+            "description": "Choose [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel. Use the notebook toolbar for live Python or R dataframes. On macOS or Linux, run a trusted .R source from its editor or Explorer menu."
           },
           {
             "id": "explore",
@@ -494,13 +516,18 @@
           {
             "id": "export",
             "title": "Save code or data",
-            "description": "Copy generated code, save it as a script, insert it into the originating notebook, or export cleaned data to a new CSV or Parquet file."
+            "description": "Copy generated code, save it as a script, insert it into the originating notebook or R file, or export supported cleaned data to a new CSV or Parquet file."
           }
         ]
       }
     ],
     "menus": {
       "explorer/context": [
+        {
+          "command": "openWrangler.runRFile",
+          "when": "!explorerResourceIsFolder && isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.r$/i",
+          "group": "navigation@49"
+        },
         {
           "command": "openWrangler.openFile",
           "when": "!explorerResourceIsFolder && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i",
@@ -513,6 +540,11 @@
         }
       ],
       "editor/title": [
+        {
+          "command": "openWrangler.runRFile",
+          "when": "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.r$/i",
+          "group": "navigation@1"
+        },
         {
           "command": "openWrangler.openFile",
           "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
@@ -530,6 +562,11 @@
         }
       ],
       "editor/title/context": [
+        {
+          "command": "openWrangler.runRFile",
+          "when": "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.r$/i",
+          "group": "navigation@49"
+        },
         {
           "command": "openWrangler.openFile",
           "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
@@ -584,7 +621,12 @@
         },
         {
           "command": "openWrangler.insertNotebookCode",
-          "when": "view == openWrangler.codePreview",
+          "when": "view == openWrangler.codePreview && openWrangler.canInsertNotebookCode",
+          "group": "navigation@12"
+        },
+        {
+          "command": "openWrangler.insertRDocumentCode",
+          "when": "view == openWrangler.codePreview && openWrangler.canInsertRDocumentCode",
           "group": "navigation@12"
         },
         {
@@ -753,6 +795,11 @@
           "type": "string",
           "default": "",
           "description": "Optional Python 3.10-3.14 executable override. When empty, Open Wrangler uses the selected Python extension environment, then a system interpreter."
+        },
+        "openWrangler.rscriptPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Rscript executable used for .R files on macOS or Linux. When empty, Open Wrangler resolves Rscript from PATH."
         },
         "openWrangler.sessionOpenTimeoutMs": {
           "type": "number",

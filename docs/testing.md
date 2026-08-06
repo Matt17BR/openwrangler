@@ -528,6 +528,19 @@ notebook, leaves every existing cell unchanged, and checks the source objects ag
 and keyed-data-table sessions preview and discard Rename and Drop Columns; the direct R suites cover all seven
 operations for all three flavors.
 
+On macOS and Linux, the same local R editor launch also tests one plain `.R` workflow; it does not start another VS Code or Cursor process.
+The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public
+**Run R File in Open Wrangler…** command and real variable picker. The test checks an editing session, paging, an exact
+numeric profile, a filter, two sort keys, Rename preview/apply/undo, and generated R. It keeps a different `.R` editor
+active while inserting the generated code, proving that only the captured unsaved source document changes. Both files
+on disk remain byte-for-byte unchanged. The modified in-memory source is then run again and its generated result is
+opened before the final panel and R process are closed. The phase uses the exact Rscript and temporary R library that
+already belong to the IRkernel test, including `jsonlite` and `rlang`.
+
+`collapse` is not installed as a required test or runtime dependency. Compatibility follows its public return classes:
+`qDF()` is a base data frame, while `qTBL()` and `qDT()` use the tibble and data-table paths already covered above.
+Grouped `GRP_df` objects remain outside the accepted class contract.
+
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
 viewing workbench, a separate 1,205-row Rename draft in Editing mode, and the generated R inserted into its notebook.
 The viewing image shows two filters, two

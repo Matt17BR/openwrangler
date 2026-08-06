@@ -504,14 +504,18 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /Open Wrangler 2 development builds can also open base R `data\.frame`, tibble, and `data\.table` variables from\s+IRkernel/u
+    /Open Wrangler 2 development builds can also open base R `data\.frame`, tibble, and `data\.table` variables from\s+IRkernel or a trusted `\.R` file on macOS or Linux/u
   );
+  assert.match(readme, /choose \*\*Run R File in Open Wrangler…\*\* from\s+Explorer or the editor/u);
+  assert.match(readme, /Unsaved editor changes are included\./u);
   assert.match(
     readme,
-    /Editing mode\s+currently supports \*\*Rename Column\*\*, \*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Convert type\*\*,\s+\*\*Text Length\*\*, and \*\*Lowercase\*\*/u
+    /The R workbench supports paging, filters, multi-column sorts, value search, profiles, and seven cleaning operations:\s+\*\*Rename Column\*\*, \*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Convert type\*\*, \*\*Text Length\*\*, and\s+\*\*Lowercase\*\*/u
   );
-  assert.match(readme, /Native IRkernel viewing and seven current cleaning operations/u);
-  assert.match(readme, /Text Length accepts character and factor[\s\S]{0,140}counts Unicode characters/u);
+  assert.match(readme, /inserted into the notebook or `\.R` document that opened the dataframe/u);
+  assert.match(readme, /The default outputs from `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
+  assert.match(readme, /grouped `GRP_df` objects are not supported/u);
+  assert.match(readme, /R notebooks remain available on Windows; direct `\.R` execution is not yet available there/u);
   assert.match(readme, /\| R \(v2 development\)\s+\|/u);
   assert.match(
     readme,
@@ -600,7 +604,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const v2Roadmap = readme.slice(readme.indexOf("- **v2:**"), readme.indexOf("## Contributing and support"));
   assert.match(
     v2Roadmap,
-    /finish native R notebook support for data frames, tibbles, and `data\.table`, then add Quarto and R Markdown/u
+    /finish native R support for data frames, tibbles, and `data\.table`, then add Quarto and R Markdown/u
   );
   assert.match(v2Roadmap, /Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase are available now/u);
   assert.match(
@@ -668,8 +672,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /base `data\.frame`, tibble, and `data\.table` variables in the active\s+IRkernel\. Each variable stays in R\./u
+    /base `data\.frame`, tibble, and `data\.table` variables in the active\s+IRkernel\.[\s\S]{0,360}Each variable stays in R\./u
   );
+  assert.match(gallery, /For a trusted `\.R` file, choose \*\*Run R File in Open Wrangler…\*\*/u);
+  assert.match(gallery, /Unsaved editor changes are included\./u);
+  assert.match(gallery, /Direct `\.R` execution currently requires macOS or Linux/u);
   assert.match(
     gallery,
     /Editing mode currently supports Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length,\s+and Lowercase\.[\s\S]{0,420}All seven use draft preview, generated R,\s+apply, discard, inspection, latest-step editing, and undo/u
@@ -684,7 +691,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /Other R cleaning operations, cleaned-data export, Quarto, R Markdown, and live dataframes from plain `\.R` documents\s+are not supported yet\.[\s\S]{0,100}planned after the native notebook path is complete/u
+    /Default frames made with `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`[\s\S]{0,180}Grouped `GRP_df` objects are not supported\.[\s\S]{0,160}Other R cleaning operations, cleaned-data export, Quarto, and R\s+Markdown are not supported yet/u
   );
   assert.match(gallery, /vscode-notebook-r-code-insertion-detail-dark\.png/u);
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
