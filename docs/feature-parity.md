@@ -74,19 +74,21 @@ Inline MIME v2 output shows every captured column and pages the captured rows at
 R support is not in a released package yet. On the Open Wrangler 2 branch, R notebooks can open base `data.frame`,
 tibble, and `data.table` variables through IRkernel. Pages, compound filters, ordered sorts, value search, and column
 and dataset profiles run in R; the dataframe is not passed through Python. Editing mode currently supports exactly
-three cleaning operations: Rename Column, Drop Columns, and Select Columns. They follow the same draft,
+four cleaning operations: Rename Column, Drop Columns, Select Columns, and Clone Column. They follow the same draft,
 generated-code, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. Select Columns
-keeps the user's chosen order. Generated R can be copied or saved as a `.R` script.
+keeps the user's chosen order, and Clone Column gives the copy its own stable identity. Generated R can be copied or
+saved as a `.R` script.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed at `6742255` with local
 R 4.5.2 in VS Code and Cursor and a containerized IRkernel in VS Code. It covered filters, profiles, sort priority,
 kernel restart, source preservation, and cleanup.
 
 The [product gallery](media-gallery.md#r-notebooks-open-wrangler-2) shows the packaged IRkernel picker, viewing
-workbench, and Rename Column draft with generated R. The packaged VS Code and Cursor journey previews and discards
-Rename, Drop, and Select Columns for a base data frame, tibble, and keyed `data.table`; the base-data-frame path also
-applies, inspects, and undoes all three. Native R and cross-language tests cover mixed plans, ordered selection,
-stable retained identities, duplicate names, non-syntactic names, and executable generated R.
+workbench, and Rename Column draft with generated R. The packaged VS Code and Cursor journey runs all four operations
+through preview, apply, discard, inspection, and undo on a base data frame. It also opens editable tibbles and keyed
+`data.table` objects and previews and discards Rename and Drop Columns on each. Native R and cross-language tests cover
+all four operations across the three dataframe flavors, including mixed plans, ordered selection, stable retained and
+derived identities, duplicate names, non-syntactic names, and executable generated R.
 The remaining R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R`
 files are not available yet.
 
@@ -100,8 +102,8 @@ files are not available yet.
 | Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                             |
 | Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                           |
 | Notebook workbench                           | v2 branch    | Partial | Packaged viewing/editing, screenshots, production axe    | Preview release                             |
-| R cleaning operations and generated code     | 3 operations | Partial | Native tests and packaged VS Code/Cursor journey         | Remaining operations                        |
-| Copy or save generated R                     | 3 operations | Partial | Native generated-code tests and packaged R script path   | Preview release                             |
+| R cleaning operations and generated code     | 4 operations | Partial | Native tests and packaged VS Code/Cursor journey         | Remaining operations                        |
+| Copy or save generated R                     | 4 operations | Partial | Native generated-code tests and packaged R script path   | Preview release                             |
 | Cleaned-data export and notebook insertion   | No           | Planned | No public R path                                         | Native export and exact-notebook insertion  |
 | Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper |
 

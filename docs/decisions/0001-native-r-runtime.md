@@ -72,14 +72,15 @@ the current viewing filters, and the private dataset-statistics response binds i
 from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
 user to reopen the frame.
 
-Editing currently supports Rename Column, Drop Columns, and Select Columns. The first draft takes an isolated original;
+Editing currently supports Rename Column, Drop Columns, Select Columns, and Clone Column. The first draft takes an isolated original;
 base data frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps
 committed and draft results separate, resolves every target by stable ID and captured name, and advances the session
 revision for preview, apply, discard, latest-step replacement, and undo. Applied-step inspection replays only the selected plan
 prefix. Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves
-the chosen order. Both keep compatible data-table keys. Generated R repeats the position and name checks and returns
-a copied result. Native, cross-language, and packaged-editor tests cover source isolation, executable code, keyed data
-tables, duplicate names, non-syntactic names, and mixed plans.
+the chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
+operations keep compatible data-table keys. Generated R repeats the position and name checks and returns a copied
+result. Native, cross-language, and packaged-editor tests cover source isolation, executable code, keyed data tables,
+duplicate names, non-syntactic names, and mixed plans.
 
 Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration helper that owns all of the following:
 
@@ -106,7 +107,7 @@ same release gates.
 - The grid and transformation model can be shared, but execution, object ownership, type handling, and generated code
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
-  currently adds Rename Column, Drop Columns, and Select Columns with generated R code. Other cleaning operations,
+  currently adds Rename Column, Drop Columns, Select Columns, and Clone Column with generated R code. Other cleaning operations,
   cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` documents remain unsupported.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.

@@ -841,6 +841,192 @@ cat("generated-ok\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
+  it("runs native R Clone Column then Rename Column against the derived identity", () => {
+    const editingSessionId = "40000000-0000-4000-8000-000000000001";
+    const cloneStepId = `clone-${"x".repeat(130)}`;
+    const cloneColumnId = `c:step:${cloneStepId}:0`;
+    expect(Buffer.byteLength(cloneColumnId, "utf8")).toBeGreaterThan(128);
+    const ids = {
+      open: "40000000-0000-4000-8000-000000000002",
+      clonePreview: "40000000-0000-4000-8000-000000000003",
+      cloneApply: "40000000-0000-4000-8000-000000000004",
+      renamePreview: "40000000-0000-4000-8000-000000000005",
+      renameApply: "40000000-0000-4000-8000-000000000006",
+      inspect: "40000000-0000-4000-8000-000000000007",
+      undoRename: "40000000-0000-4000-8000-000000000008",
+      undoClone: "40000000-0000-4000-8000-000000000009",
+      close: "40000000-0000-4000-8000-00000000000a"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const clonePreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.clonePreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: cloneStepId,
+          kind: "cloneColumn",
+          params: { column: { id: "r:c:2", name: "duplicate" }, newName: "copied value" }
+        },
+        page: pageWindow()
+      }
+    });
+    const cloneApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.cloneApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const renamePreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.renamePreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 2,
+        step: {
+          id: "rename-clone-step",
+          kind: "renameColumn",
+          params: {
+            column: { id: cloneColumnId, name: "copied value" },
+            newName: "renamed copy"
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const renameApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.renameApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
+    });
+    const inspect = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.inspect,
+      kind: "inspectStep",
+      payload: { sessionId: editingSessionId, revision: 4, stepId: cloneStepId, page: pageWindow() }
+    });
+    const undoRename = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undoRename,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 4, page: pageWindow() }
+    });
+    const undoClone = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undoClone,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 5, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+stopifnot(requireNamespace("data.table", quietly = TRUE))
+frame <- data.table::data.table(row_key = c(1L, 2L), duplicate = c(10, 20), duplicate = c(30, 40))
+data.table::setnames(frame, "row_key", "key")
+data.table::setkey(frame, key)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${clonePreview.code}
+${cloneApply.code}
+${renamePreview.code}
+${renameApply.code}
+${inspect.code}
+${undoRename.code}
+${undoClone.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const cloned = decodeRKernelResponseJson(marked(result.stdout, clonePreview.marker), ids.clonePreview);
+    expect(cloned).toMatchObject({
+      kind: "stepPreview",
+      diff: { addedColumns: ["copied value"], removedColumns: [] },
+      page: { frameSemantics: { keyColumnIds: ["r:c:0"] } }
+    });
+    if (cloned.kind !== "stepPreview") throw new Error("Expected a native R Clone Column preview.");
+    expect(cloned.page.schema.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "r:c:0", name: "key" },
+      { id: "r:c:1", name: "duplicate" },
+      { id: "r:c:2", name: "duplicate" },
+      { id: cloneColumnId, name: "copied value" }
+    ]);
+    expect(cloned.page.schema[3]).toMatchObject({
+      rawType: cloned.page.schema[2]?.rawType,
+      type: cloned.page.schema[2]?.type,
+      nullable: cloned.page.schema[2]?.nullable
+    });
+    expect(cloned.page.page.rows.map((row) => row.values[3])).toEqual(
+      cloned.page.page.rows.map((row) => row.values[2])
+    );
+    expect(decodeRKernelResponseJson(marked(result.stdout, cloneApply.marker), ids.cloneApply)).toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2
+    });
+
+    const renameDraft = decodeRKernelResponseJson(marked(result.stdout, renamePreview.marker), ids.renamePreview);
+    expect(renameDraft).toMatchObject({ kind: "stepPreview", revision: 3 });
+
+    const renamed = decodeRKernelResponseJson(marked(result.stdout, renameApply.marker), ids.renameApply);
+    expect(renamed).toMatchObject({ kind: "planUpdated", action: "apply", revision: 4 });
+    if (renamed.kind !== "planUpdated") throw new Error("Expected the applied R Clone then Rename plan.");
+    expect(renamed.page.schema.at(-1)).toMatchObject({ id: cloneColumnId, name: "renamed copy" });
+    expect(renamed.page.frameSemantics.keyColumnIds).toEqual(["r:c:0"]);
+
+    const inspected = decodeRKernelResponseJson(marked(result.stdout, inspect.marker), ids.inspect);
+    expect(inspected).toMatchObject({
+      kind: "stepInspection",
+      stepId: cloneStepId,
+      diff: { addedColumns: ["copied value"], removedColumns: [] }
+    });
+    if (inspected.kind !== "stepInspection") throw new Error("Expected the applied R Clone Column inspection.");
+    expect(inspected.inputSchema.map((column) => column.id)).toEqual(["r:c:0", "r:c:1", "r:c:2"]);
+    expect(inspected.outputSchema.at(-1)).toMatchObject({ id: cloneColumnId, name: "copied value" });
+
+    const afterRenameUndo = decodeRKernelResponseJson(marked(result.stdout, undoRename.marker), ids.undoRename);
+    expect(afterRenameUndo).toMatchObject({ kind: "planUpdated", action: "undo", revision: 5 });
+    if (afterRenameUndo.kind !== "planUpdated") throw new Error("Expected the R derived-column rename undo.");
+    expect(afterRenameUndo.page.schema.at(-1)).toMatchObject({
+      id: cloneColumnId,
+      name: "copied value"
+    });
+    const restored = decodeRKernelResponseJson(marked(result.stdout, undoClone.marker), ids.undoClone);
+    expect(restored).toMatchObject({ kind: "planUpdated", action: "undo", revision: 6 });
+    if (restored.kind !== "planUpdated") throw new Error("Expected the R Clone Column undo.");
+    expect(restored.page.schema.map((column) => column.id)).toEqual(["r:c:0", "r:c:1", "r:c:2"]);
+
+    expect(renamed.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+    const generated = runR(`
+stopifnot(requireNamespace("data.table", quietly = TRUE))
+frame <- data.table::data.table(row_key = c(1L, 2L), duplicate = c(10, 20), duplicate = c(30, 40))
+data.table::setnames(frame, "row_key", "key")
+data.table::setkey(frame, key)
+frame_before <- serialize(frame, NULL, version = 3L)
+${renamed.code}
+stopifnot(identical(names(open_wrangler_result), c("key", "duplicate", "duplicate", "renamed copy")))
+stopifnot(identical(open_wrangler_result[[4L]], frame[[3L]]))
+stopifnot(identical(data.table::key(open_wrangler_result), "key"))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("removes only the runtime binding owned by the matching transport and bundle", () => {
     const files = readRRuntimeFiles(resolve(root, "r"));
     const owner = "transport-owner-a";
@@ -887,7 +1073,13 @@ function runR(code: string) {
       R_ENVIRON_USER: ""
     }
   });
-  if (result.error) throw result.error;
+  if (result.error) {
+    const stderr = result.stderr.trim();
+    throw new Error(
+      `R kernel transport fixture failed before exit (${result.error.message})${stderr.length > 0 ? `: ${stderr}` : ""}`,
+      { cause: result.error }
+    );
+  }
   if (result.status !== 0) {
     throw new Error(`R kernel transport fixture failed (${result.status ?? "signal"}): ${result.stderr.trim()}`);
   }

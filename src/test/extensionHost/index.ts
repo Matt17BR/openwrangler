@@ -1748,7 +1748,7 @@ async function exerciseReleasedRJupyterExtension(
       sort: true,
       profile: true,
       columnValues: true,
-      supportedOperations: ["selectColumns", "dropColumns", "renameColumn"]
+      supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn"]
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
@@ -1777,6 +1777,7 @@ async function exerciseReleasedRJupyterExtension(
       testing,
       workbench,
       editing.sessionId,
+      notebook,
       notebookPath,
       directory,
       phase,
@@ -1869,7 +1870,8 @@ async function exerciseReleasedRJupyterExtension(
       assert.deepEqual(session.metadata.capabilities.supportedOperations, [
         "selectColumns",
         "dropColumns",
-        "renameColumn"
+        "renameColumn",
+        "cloneColumn"
       ]);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
@@ -2389,6 +2391,7 @@ async function exerciseReleasedREditingJourney(
   testing: TestApi,
   workbench: Page,
   sessionId: string,
+  notebook: vscode.NotebookDocument,
   notebookPath: string,
   outputDirectory: string,
   phase: "jupyter-r" | "jupyter-r-remote",
@@ -2418,7 +2421,7 @@ async function exerciseReleasedREditingJourney(
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: ["selectColumns", "dropColumns", "renameColumn"]
+    supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn"]
   });
   assert.deepEqual(
     opened.metadata.schema.slice(0, 4).map((column) => column.name),
@@ -2632,8 +2635,27 @@ async function exerciseReleasedREditingJourney(
   assert.equal(restoredPage.metadata.schema[0]?.name, "row_id");
   assert.equal(restoredPage.page.rows[0]?.values[0]?.display, "1");
 
-  recordAcceptanceProgress(`${phase}:editing:drop-preview-apply-inspect-undo`);
+  recordAcceptanceProgress(`${phase}:editing:drop-preview-discard`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Drop Columns");
+  const discardedDrop = await previewReleasedRDrop(testing, workbench, app, sessionId, "label");
+  app = discardedDrop.app;
+  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema.some((column) => column.name === "label")
+      );
+    },
+    30_000,
+    "discarding the native R Drop Columns preview"
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:drop-preview-apply-inspect-undo`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Drop Columns");
   const dropped = await previewReleasedRDrop(testing, workbench, app, sessionId, "label");
   app = dropped.app;
   await app
@@ -2809,6 +2831,237 @@ async function exerciseReleasedREditingJourney(
     30_000,
     "undoing the native R Select Columns step"
   );
+
+  recordAcceptanceProgress(`${phase}:editing:clone-preview-discard`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Clone Column");
+  const discardedClone = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_discarded");
+  app = discardedClone.app;
+  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        !active.metadata.schema.some((column) => column.name === "score_discarded") &&
+        active.metadata.schema
+          .slice(0, 4)
+          .map((column) => column.name)
+          .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
+      );
+    },
+    30_000,
+    "discarding the native R Clone Column preview"
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:clone-preview-apply-inspect-edit-undo`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Clone Column");
+  const cloned = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_copy");
+  app = cloned.app;
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      const sourceColumn = active?.metadata.schema.find((column) => column.name === "score");
+      const clone = active?.metadata.schema.at(-1);
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.kind === "cloneColumn" &&
+        step.id === cloned.stepId &&
+        step.params.column.name === "score" &&
+        step.params.newName === "score_copy" &&
+        clone?.id === `c:step:${cloned.stepId}:0` &&
+        clone.name === "score_copy" &&
+        clone.type === sourceColumn?.type &&
+        clone.rawType === sourceColumn.rawType &&
+        clone.nullable === sourceColumn.nullable
+      );
+    },
+    30_000,
+    "applying the native R Clone Column step"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Clone Column step must be acknowledged before inspection."
+  );
+  const firstClone = testing.activeSession();
+  assert.ok(firstClone, "The applied native R clone must retain its session.");
+  assertReleasedRCloneGeneratedCode(firstClone.code ?? "", "score", "score_copy");
+  await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
+  await vscode.commands.executeCommand("openWrangler.selectStep", cloned.stepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === cloned.stepId,
+    30_000,
+    "the applied native R Clone Column inspection"
+  );
+  const cloneInspection = testing.activeSession()?.stepInspection;
+  assert.ok(cloneInspection, "Selecting the applied R Clone Column step must publish its inspection.");
+  assert.deepEqual(cloneInspection.diff, {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns: ["score_copy"],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: false
+  });
+  assert.equal(
+    cloneInspection.inputSchema.some((column) => column.name === "score_copy"),
+    false
+  );
+  const inspectedClone = cloneInspection.outputSchema.at(-1);
+  assert.ok(inspectedClone, "The R Clone Column inspection must include its derived output.");
+  assert.equal(inspectedClone.id, `c:step:${cloned.stepId}:0`);
+  assert.equal(inspectedClone.name, "score_copy");
+  assertReleasedRCloneGeneratedCode(cloneInspection.code, "score", "score_copy");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Clone Column session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Clone Column inspection"
+  );
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the confirmed R Clone Column session");
+  const editedClone = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_duplicate", {
+    replaceStepId: cloned.stepId,
+    previousName: "score_copy"
+  });
+  assert.equal(editedClone.stepId, cloned.stepId);
+  app = editedClone.app;
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      const clone = active?.metadata.schema.at(-1);
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.kind === "cloneColumn" &&
+        step.id === cloned.stepId &&
+        step.params.newName === "score_duplicate" &&
+        clone?.id === `c:step:${cloned.stepId}:0` &&
+        clone.name === "score_duplicate"
+      );
+    },
+    30_000,
+    "applying the edited native R Clone Column step"
+  );
+  const reappliedClone = testing.activeSession();
+  assert.ok(reappliedClone, "The edited native R clone must retain its session.");
+  assertReleasedRCloneGeneratedCode(reappliedClone.code ?? "", "score", "score_duplicate");
+  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:clone-source-after-edit`);
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the edited R Clone Column session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        !active.metadata.schema.some((column) => column.id === `c:step:${cloned.stepId}:0`) &&
+        active.metadata.schema
+          .slice(0, 4)
+          .map((column) => column.name)
+          .join("\u0000") === "row_id\u0000group\u0000score\u0000label" &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the edited native R Clone Column step"
+  );
+  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:clone-source-after-undo`);
+}
+
+async function previewReleasedRClone(
+  testing: TestApi,
+  workbench: Page,
+  app: Locator,
+  sessionId: string,
+  sourceName: string,
+  newName: string,
+  replacement?: Readonly<{ replaceStepId: string; previousName: string }>,
+  variableName = "orders_frame"
+): Promise<Readonly<{ app: Locator; stepId: string }>> {
+  let dialog: Locator;
+  if (replacement) {
+    await app.getByRole("button", { name: "Edit latest", exact: true }).click();
+    dialog = app.getByRole("dialog", { name: "Edit cleaning step" });
+  } else {
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await dialog.waitFor({ state: "visible", timeout: 10_000 });
+    await dialog.getByRole("button", { name: /^Clone column/u }).click();
+  }
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const column = dialog.getByLabel("Column", { exact: true });
+  await column.waitFor({ state: "visible", timeout: 10_000 });
+  if (replacement) {
+    assert.equal((await column.locator("option:checked").innerText()).trim(), sourceName);
+  } else {
+    await column.selectOption({ label: sourceName });
+  }
+  const target = dialog.getByLabel("New name", { exact: true });
+  if (replacement) assert.equal(await target.inputValue(), replacement.previousName);
+  await target.fill(newName);
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      const clone = active?.metadata.schema.at(-1);
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "cloneColumn" &&
+        draft.params.column.name === sourceName &&
+        draft.params.newName === newName &&
+        clone?.id === `c:step:${draft.id}:0` &&
+        clone.name === newName &&
+        (replacement
+          ? active.metadata.draftReplacesStepId === replacement.replaceStepId &&
+            draft.id === replacement.replaceStepId &&
+            active.metadata.steps.length === 1
+          : active.metadata.draftReplacesStepId === undefined && active.metadata.steps.length === 0)
+      );
+    },
+    30_000,
+    `the native R ${replacement ? "replacement" : "new"} clone preview`
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  const active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep?.kind === "cloneColumn", "The native R clone preview must retain its draft.");
+  const stepId = active.metadata.draftStep.id;
+  if (replacement) assert.equal(stepId, replacement.replaceStepId);
+  assertReleasedRCloneGeneratedCode(active.code ?? "", sourceName, newName, variableName);
+  const codePreview = await waitForCodePreview(workbench, newName, "R");
+  assertReleasedRCloneGeneratedCode(await codePreview.innerText(), sourceName, newName, variableName);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Clone Column preview must be acknowledged by its exact renderer."
+  );
+  return {
+    app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Clone Column preview"),
+    stepId
+  };
 }
 
 async function previewReleasedRSelect(
@@ -3000,6 +3253,20 @@ function assertReleasedRDropGeneratedCode(code: string, sourceName: string, vari
   assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
   assert.ok(code.includes(".ow_drop_positions"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+function assertReleasedRCloneGeneratedCode(
+  code: string,
+  sourceName: string,
+  newName: string,
+  variableName = "orders_frame"
+): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(".ow_clone_position"));
+  assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.ok(code.includes(JSON.stringify(newName)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 

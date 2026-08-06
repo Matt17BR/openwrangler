@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import {
   PROTOCOL_VERSION,
   type CellValue,
+  type CloneColumnTransformStep,
   type ColumnSchema,
   type ColumnSummary,
   type DataDiff,
@@ -63,13 +64,16 @@ import {
 } from "./rNotebookVariableDiscovery";
 
 const CLOSED_SESSION_LIMIT = 1_024;
+const R_PRIVATE_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_";
 const R_SUPPORTED_OPERATIONS = Object.freeze([
   "selectColumns",
   "dropColumns",
-  "renameColumn"
+  "renameColumn",
+  "cloneColumn"
 ] as OperationKind[]) as OperationKind[];
 
-type RTransformStep = RenameColumnTransformStep | DropColumnsTransformStep | SelectColumnsTransformStep;
+type RTransformStep =
+  RenameColumnTransformStep | CloneColumnTransformStep | DropColumnsTransformStep | SelectColumnsTransformStep;
 
 const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   editable: true,
@@ -571,6 +575,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     }
     if (
       request.step.kind !== "renameColumn" &&
+      request.step.kind !== "cloneColumn" &&
       request.step.kind !== "dropColumns" &&
       request.step.kind !== "selectColumns"
     ) {
@@ -1424,6 +1429,7 @@ function copySchema(schema: readonly ColumnSchema[]): ColumnSchema[] {
 function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransformStep): readonly ColumnSchema[] {
   if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
+  if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
   );
@@ -1440,6 +1446,53 @@ function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransform
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
   );
+}
+
+function schemaAfterClone(
+  inputSchema: readonly ColumnSchema[],
+  step: CloneColumnTransformStep
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The clone column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be cloned.");
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Clone Column exceeds the R frame contract column limit.");
+  }
+  if (step.params.newName.length === 0) throw new TypeError("The cloned R column name may not be empty.");
+  if (Buffer.byteLength(step.params.newName, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The cloned R column name exceeds the frame contract limit.");
+  }
+  if (step.params.newName.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The cloned R column name uses Open Wrangler's reserved private row-identity prefix.");
+  }
+  if (inputSchema.some((column) => column.name === step.params.newName)) {
+    throw new TypeError(`The R column name ${JSON.stringify(step.params.newName)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
+    throw new TypeError("The cloned R column identity exceeds the frame contract limit.");
+  }
+  if (inputSchema.some((column) => column.id === id)) {
+    throw new TypeError("The cloned R column identity already exists in the active dataframe.");
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: step.params.newName,
+      position: inputSchema.length,
+      rawType: source.rawType,
+      type: source.type,
+      nullable: source.nullable
+    })
+  ]);
 }
 
 function schemaAfterSelect(
@@ -1574,6 +1627,13 @@ function rTransformStep(step: RTransformStep): RKernelTransformStep {
       })
     });
   }
+  if (step.kind === "cloneColumn") {
+    return Object.freeze({
+      id: step.id,
+      kind: "cloneColumn" as const,
+      params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newName: step.params.newName })
+    });
+  }
   return Object.freeze({
     id: step.id,
     kind: "renameColumn" as const,
@@ -1600,6 +1660,13 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { columns: columns as [RKernelColumnReference, ...RKernelColumnReference[]] }
     };
   }
+  if (step.kind === "cloneColumn") {
+    return {
+      id: step.id,
+      kind: "cloneColumn",
+      params: { column: { ...step.params.column }, newName: step.params.newName }
+    };
+  }
   return {
     id: step.id,
     kind: "renameColumn",
@@ -1608,7 +1675,12 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
 }
 
 function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
-  if (step.kind !== "renameColumn" && step.kind !== "dropColumns" && step.kind !== "selectColumns") {
+  if (
+    step.kind !== "renameColumn" &&
+    step.kind !== "cloneColumn" &&
+    step.kind !== "dropColumns" &&
+    step.kind !== "selectColumns"
+  ) {
     throw new TypeError("The R bridge retained an unsupported cleaning step.");
   }
   return copyRTransformStep(step);
@@ -1634,6 +1706,7 @@ function assertStructuralDiff(
   const outputIdSet = new Set(outputIds);
   const inputIds = inputSchema.map((column) => column.id);
   const expectedRemoved = inputSchema.filter((column) => !outputIdSet.has(column.id)).map((column) => column.name);
+  const expectedAdded = step.kind === "cloneColumn" ? [step.params.newName] : [];
   const stepMatches =
     step.kind === "selectColumns"
       ? isDeepStrictEqual(
@@ -1645,11 +1718,13 @@ function assertStructuralDiff(
             outputIds,
             inputIds.filter((id) => !step.params.columns.some((column) => column.id === id))
           ) && expectedRemoved.length === step.params.columns.length
-        : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+        : step.kind === "cloneColumn"
+          ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+          : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
   const valid =
     diff.addedRows === 0 &&
     diff.removedRows === 0 &&
-    diff.addedColumns.length === 0 &&
+    isDeepStrictEqual(diff.addedColumns, expectedAdded) &&
     isDeepStrictEqual(diff.removedColumns, expectedRemoved) &&
     diff.changedCells === 0 &&
     diff.cells.length === 0 &&

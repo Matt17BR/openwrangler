@@ -59,7 +59,7 @@ base_page <- openwrangler_r_frame_contract$materialize_page(
   column_limit = 20L
 )
 assert_identical(base_page$dataframeFlavor, "r.data.frame", "base data.frame flavor changed")
-assert_identical(base_page$contractVersion, 4L, "R frame contract version changed")
+assert_identical(base_page$contractVersion, 5L, "R frame contract version changed")
 assert_identical(base_page$shape, list(rows = 3L, columns = 10L), "base frame shape changed")
 assert_identical(base_page$frameSemantics$rowNames, "positional", "automatic row names were not positional")
 assert_true(is.null(base_page$page$rows[[1L]]$rowLabel), "automatic row names leaked into the page")
@@ -244,6 +244,236 @@ assert_identical(
 assert_true(identical(rename_table, rename_table_before), "renaming mutated the source data.table")
 renamed_table[, occurred := as.Date("2030-01-01")]
 assert_true(identical(rename_table, rename_table_before), "the renamed data.table shared storage with its source")
+
+clone_frame <- data.frame(
+  duplicate = c(1L, 2L),
+  duplicate = c(3L, NA_integer_),
+  `non syntactic` = as.Date(c("2026-05-01", "2026-05-02")),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b")
+)
+clone_before <- unserialize(serialize(clone_frame, NULL, version = 3L))
+clone_capture <- openwrangler_r_frame_contract$capture_frame(clone_frame)
+cloned_frame <- openwrangler_r_frame_contract$clone_column(
+  clone_frame,
+  list(id = "r:c:1", name = "duplicate"),
+  "duplicate copy"
+)
+clone_source_positions <- c(1L, 2L, 3L, 2L)
+clone_output_ids <- c("r:c:0", "r:c:1", "r:c:2", "c:step:clone-step:0")
+cloned_capture <- openwrangler_r_frame_contract$capture_frame(
+  cloned_frame,
+  nullability_source = clone_capture,
+  source_positions = clone_source_positions,
+  output_ids = clone_output_ids
+)
+assert_identical(class(cloned_frame), "data.frame", "cloning changed the base data.frame class")
+assert_identical(
+  names(cloned_frame),
+  c("duplicate", "duplicate", "non syntactic", "duplicate copy"),
+  "cloning repaired duplicate names or appended the copy in the wrong position"
+)
+assert_identical(row.names(cloned_frame), row.names(clone_frame), "cloning changed explicit row names")
+assert_identical(cloned_frame[[4L]], clone_frame[[2L]], "cloning copied the wrong duplicate column")
+assert_identical(
+  attributes(cloned_frame[[4L]]),
+  attributes(clone_frame[[2L]]),
+  "cloning changed the source column attributes"
+)
+assert_identical(
+  vapply(cloned_capture$descriptor$schema, `[[`, character(1L), "id"),
+  clone_output_ids,
+  "cloning did not publish the explicit derived identity"
+)
+assert_identical(
+  vapply(cloned_capture$descriptor$schema, `[[`, integer(1L), "position"),
+  0:3,
+  "cloning did not keep contiguous public positions"
+)
+assert_identical(
+  vapply(cloned_capture$descriptor$schema, `[[`, logical(1L), "nullable"),
+  vapply(clone_capture$descriptor$schema[clone_source_positions], `[[`, logical(1L), "nullable"),
+  "cloning changed source or derived nullability"
+)
+grammar_derived_id <- "c:step:clone:\nwith:colons:0"
+grammar_capture <- openwrangler_r_frame_contract$capture_frame(
+  cloned_frame,
+  nullability_source = clone_capture,
+  source_positions = clone_source_positions,
+  output_ids = c("r:c:0", "r:c:1", "r:c:2", grammar_derived_id)
+)
+assert_identical(
+  grammar_capture$descriptor$schema[[4L]]$id,
+  grammar_derived_id,
+  "the R producer rejected a valid colon/newline derived identity"
+)
+assert_identical(clone_frame, clone_before, "cloning mutated the source data.frame")
+cloned_frame[[4L]][1L] <- 99L
+assert_identical(clone_frame, clone_before, "the cloned data.frame shared storage with its source")
+
+clone_tibble <- tibble::as_tibble(clone_frame, .name_repair = "minimal")
+clone_tibble_before <- unserialize(serialize(clone_tibble, NULL, version = 3L))
+cloned_tibble <- openwrangler_r_frame_contract$clone_column(
+  clone_tibble,
+  list(id = "r:c:2", name = "non syntactic"),
+  "date copy"
+)
+assert_identical(
+  class(cloned_tibble),
+  c("tbl_df", "tbl", "data.frame"),
+  "cloning changed the tibble class"
+)
+assert_identical(names(cloned_tibble)[[4L]], "date copy", "tibble cloning changed the requested output name")
+assert_identical(cloned_tibble[[4L]], clone_tibble[[3L]], "tibble cloning copied the wrong column")
+assert_identical(clone_tibble, clone_tibble_before, "cloning mutated the source tibble")
+
+clone_table <- data.table::data.table(primary_key = c(2L, 1L), value = c("b", "a"))
+data.table::setkey(clone_table, primary_key)
+clone_table_before <- data.table::copy(clone_table)
+clone_table_capture <- openwrangler_r_frame_contract$capture_frame(clone_table)
+cloned_table <- openwrangler_r_frame_contract$clone_column(
+  clone_table,
+  list(id = "r:c:1", name = "value"),
+  "value copy"
+)
+cloned_table_capture <- openwrangler_r_frame_contract$capture_frame(
+  cloned_table,
+  nullability_source = clone_table_capture,
+  source_positions = c(1L, 2L, 2L),
+  output_ids = c("r:c:0", "r:c:1", "c:step:table-clone:0")
+)
+assert_identical(class(cloned_table), c("data.table", "data.frame"), "cloning changed the data.table class")
+assert_identical(data.table::key(cloned_table), "primary_key", "cloning changed the data.table key")
+assert_identical(
+  cloned_table_capture$descriptor$frameSemantics$keyColumnIds,
+  I("r:c:0"),
+  "cloning changed the stable data.table key identity"
+)
+assert_identical(cloned_table[[3L]], clone_table[[2L]], "data.table cloning copied the wrong column")
+assert_identical(clone_table, clone_table_before, "cloning mutated the source data.table")
+cloned_table[, `value copy` := "changed"]
+assert_identical(clone_table, clone_table_before, "the cloned data.table shared storage with its source")
+
+assert_error(
+  openwrangler_r_frame_contract$clone_column(
+    clone_frame,
+    list(id = "r:c:1", name = "duplicate"),
+    "duplicate"
+  ),
+  "column-name-collision"
+)
+assert_error(
+  openwrangler_r_frame_contract$clone_column(clone_frame, list(id = "r:c:1", name = "duplicate"), ""),
+  "invalid-column-name"
+)
+assert_error(
+  openwrangler_r_frame_contract$clone_column(
+    clone_frame,
+    list(id = "r:c:1", name = "duplicate"),
+    "__OPEN_WRANGLER_INTERNAL_ROW_ID_clone"
+  ),
+  "reserved-column-name"
+)
+assert_error(
+  openwrangler_r_frame_contract$clone_column(
+    clone_frame,
+    list(id = "r:c:99", name = "duplicate"),
+    "copy"
+  ),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$clone_column(
+    clone_frame,
+    list(id = "r:c:1", name = "wrong"),
+    "copy"
+  ),
+  "stale-column"
+)
+private_clone_frame <- data.frame(
+  `__open_wrangler_internal_row_id_source` = 1L,
+  public = 2L,
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$clone_column(
+    private_clone_frame,
+    list(id = "r:c:0", name = "__open_wrangler_internal_row_id_source"),
+    "copy"
+  ),
+  "reserved-column-name"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    cloned_frame,
+    nullability_source = clone_capture,
+    source_positions = clone_source_positions
+  ),
+  "invalid source-column mapping"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    cloned_frame,
+    nullability_source = clone_capture,
+    source_positions = clone_source_positions,
+    output_ids = c("r:c:1", "r:c:0", "r:c:2", "c:step:clone-step:0")
+  ),
+  "remapped an existing column identity"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    cloned_frame,
+    nullability_source = clone_capture,
+    source_positions = clone_source_positions,
+    output_ids = c("c:step:forged-retained:0", "r:c:1", "r:c:2", "c:step:clone-step:0")
+  ),
+  "replaced a retained source identity"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    cloned_frame,
+    nullability_source = clone_capture,
+    source_positions = clone_source_positions,
+    output_ids = c("r:c:0", "c:step:forged-copy-a:0", "r:c:2", "c:step:forged-copy-b:0")
+  ),
+  "replaced a retained source identity"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    cloned_frame,
+    nullability_source = clone_capture,
+    source_positions = clone_source_positions,
+    output_ids = c("r:c:0", "c:step:forged-first-copy:0", "r:c:2", "r:c:1")
+  ),
+  "replaced a retained source identity"
+)
+for (invalid_output_id in c(
+  "not-a-stable-id",
+  "c:step::0",
+  "c:step:clone:00",
+  "c:step:clone:2048",
+  paste0("c:step:", strrep("x", 1025L), ":0")
+)) {
+  assert_error(
+    openwrangler_r_frame_contract$capture_frame(
+      cloned_frame,
+      nullability_source = clone_capture,
+      source_positions = clone_source_positions,
+      output_ids = c("r:c:0", "r:c:1", "r:c:2", invalid_output_id)
+    ),
+    "invalid explicit output identities"
+  )
+}
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    cloned_frame,
+    nullability_source = clone_capture,
+    source_positions = clone_source_positions,
+    output_ids = c("r:c:0", "r:c:1", "r:c:2", paste0("c:step:", strrep("x", 2048L), ":0"))
+  ),
+  "exceeds 2048 UTF-8 bytes"
+)
+assert_identical(clone_frame, clone_before, "a failed clone mutated its source")
 
 drop_frame <- data.frame(
   duplicate = c(1L, 2L),

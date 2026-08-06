@@ -1,4 +1,4 @@
-export const R_FRAME_CONTRACT_VERSION = 4 as const;
+export const R_FRAME_CONTRACT_VERSION = 5 as const;
 
 export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   rows: 2_147_483_647,
@@ -19,6 +19,8 @@ export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   factorLevels: 100_000,
   textBytes: 8_192,
   nameBytes: 1_024,
+  stepIdBytes: 1_024,
+  columnIdBytes: 2_048,
   payloadBytes: 16 * 1_024 * 1_024
 });
 
@@ -138,6 +140,8 @@ export interface RFramePageContract {
 
 const exactIntegerPattern = /^-?(?:0|[1-9][0-9]*)$/u;
 const sourceColumnIdPattern = /^r:c:(0|[1-9][0-9]*)$/u;
+const derivedColumnIdPattern = /^c:step:([\s\S]+):(0|[1-9][0-9]*)$/u;
+const privateRowIdPrefix = "__open_wrangler_internal_row_id_";
 const finiteNumberPattern = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/iu;
 const isoDatePattern = /^(\d{4})-(\d{2})-(\d{2})$/u;
 const signedInteger64Minimum = -(1n << 63n);
@@ -239,7 +243,7 @@ export function decodeRFramePage(value: unknown): RFramePageContract {
   const keyColumnIds = decodeStringArray(
     frameRecord.keyColumnIds,
     "frameSemantics.keyColumnIds",
-    R_FRAME_CONTRACT_LIMITS.nameBytes
+    R_FRAME_CONTRACT_LIMITS.columnIdBytes
   );
   if (new Set(keyColumnIds).size !== keyColumnIds.length || keyColumnIds.some((id) => !ids.has(id))) {
     fail("R frame keyColumnIds must be unique schema IDs.");
@@ -262,13 +266,21 @@ export function decodeRFramePage(value: unknown): RFramePageContract {
 
 function decodeColumn(value: unknown, position: number): RColumnSchema {
   const record = exactRecord(value, ["id", "name", "position", "rawType", "type", "nullable", "semantics"]);
-  const id = boundedString(record.id, `schema[${position}].id`, R_FRAME_CONTRACT_LIMITS.nameBytes);
-  const idMatch = sourceColumnIdPattern.exec(id);
-  if (!idMatch || Number(idMatch[1]) >= R_FRAME_CONTRACT_LIMITS.columns) {
-    fail(`schema[${position}].id is not a stable R source-column ID.`);
+  const id = boundedString(record.id, `schema[${position}].id`, R_FRAME_CONTRACT_LIMITS.columnIdBytes);
+  const sourceIdMatch = sourceColumnIdPattern.exec(id);
+  const derivedIdMatch = id.includes("\u0000") ? null : derivedColumnIdPattern.exec(id);
+  if (derivedIdMatch && Buffer.byteLength(derivedIdMatch[1] as string, "utf8") > R_FRAME_CONTRACT_LIMITS.stepIdBytes) {
+    fail(`schema[${position}].id contains an oversized step identity.`);
+  }
+  const ordinal = sourceIdMatch ? Number(sourceIdMatch[1]) : derivedIdMatch ? Number(derivedIdMatch[2]) : -1;
+  if (ordinal < 0 || ordinal >= R_FRAME_CONTRACT_LIMITS.columns) {
+    fail(`schema[${position}].id is not a stable R column ID.`);
   }
   if (record.position !== position) fail(`schema[${position}].position is not contiguous.`);
   const name = boundedString(record.name, `schema[${position}].name`, R_FRAME_CONTRACT_LIMITS.nameBytes);
+  if (name.toLowerCase().startsWith(privateRowIdPrefix)) {
+    fail(`schema[${position}].name uses Open Wrangler's private row-identity prefix.`);
+  }
   const rawType = boundedString(record.rawType, `schema[${position}].rawType`, R_FRAME_CONTRACT_LIMITS.nameBytes);
   if (typeof record.nullable !== "boolean") fail(`schema[${position}].nullable must be boolean.`);
   const semantics = decodeColumnSemantics(record.semantics, `schema[${position}].semantics`);
@@ -368,7 +380,7 @@ function decodePage(
   const columnLimit = boundedInteger(record.columnLimit, "page.columnLimit", R_FRAME_CONTRACT_LIMITS.pageColumns);
   if (totalRows > shape.rows) fail("page.totalRows exceeds the source shape.");
   const expectedColumns = schema.slice(columnOffset, Math.min(shape.columns, columnOffset + columnLimit));
-  const columnIds = decodeStringArray(record.columnIds, "page.columnIds", R_FRAME_CONTRACT_LIMITS.nameBytes);
+  const columnIds = decodeStringArray(record.columnIds, "page.columnIds", R_FRAME_CONTRACT_LIMITS.columnIdBytes);
   if (
     !arraysEqual(
       columnIds,
