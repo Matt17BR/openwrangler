@@ -1453,6 +1453,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "row.names(orders_frame) <- sprintf('case-%04d', seq_len(row_count))",
     "orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = 'minimal')",
     "orders_table <- data.table::as.data.table(orders_frame)",
+    "data.table::setkey(orders_table, row_id)",
     "orders_frame_before <- serialize(orders_frame, NULL, version = 3L)",
     "orders_tibble_before <- serialize(orders_tibble, NULL, version = 3L)",
     "orders_table_before <- serialize(orders_table, NULL, version = 3L)",
@@ -1747,7 +1748,7 @@ async function exerciseReleasedRJupyterExtension(
       sort: true,
       profile: true,
       columnValues: true,
-      supportedOperations: ["renameColumn"]
+      supportedOperations: ["dropColumns", "renameColumn"]
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
@@ -1865,7 +1866,7 @@ async function exerciseReleasedRJupyterExtension(
         `the editable native ${expected.rDataframeFlavor} session`
       );
       assert.equal(session.metadata.mode, "editing");
-      assert.deepEqual(session.metadata.capabilities.supportedOperations, ["renameColumn"]);
+      assert.deepEqual(session.metadata.capabilities.supportedOperations, ["dropColumns", "renameColumn"]);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
       const previewed = await previewReleasedRRename(
@@ -1896,6 +1897,35 @@ async function exerciseReleasedRJupyterExtension(
         },
         30_000,
         `discarding the native ${expected.rDataframeFlavor} rename preview`
+      );
+      app = await releasedRSessionApp(workbench, testing, session.sessionId, `the restored ${expected.name}`);
+      const droppedColumn = expected.rDataframeFlavor === "r.data.table" ? "row_id" : "label";
+      const dropPreview = await previewReleasedRDrop(
+        testing,
+        workbench,
+        app,
+        session.sessionId,
+        droppedColumn,
+        expected.name
+      );
+      app = dropPreview.app;
+      assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
+      await app
+        .getByRole("region", { name: "Draft review" })
+        .getByRole("button", { name: "Discard", exact: true })
+        .click();
+      await waitFor(
+        () => {
+          const active = testing.activeSession();
+          return (
+            active?.sessionId === session.sessionId &&
+            active.metadata.draftStep === undefined &&
+            active.metadata.steps.length === 0 &&
+            active.metadata.schema.some((column) => column.name === droppedColumn)
+          );
+        },
+        30_000,
+        `discarding the native ${expected.rDataframeFlavor} Drop Columns preview`
       );
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:after-rename-discard`);
       await disposePackagedSessionPanel(
@@ -2384,7 +2414,7 @@ async function exerciseReleasedREditingJourney(
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: ["renameColumn"]
+    supportedOperations: ["dropColumns", "renameColumn"]
   });
   assert.deepEqual(
     opened.metadata.schema.slice(0, 4).map((column) => column.name),
@@ -2597,6 +2627,128 @@ async function exerciseReleasedREditingJourney(
   if (restoredPage.kind !== "page") throw new Error("The undone R session did not return its original page.");
   assert.equal(restoredPage.metadata.schema[0]?.name, "row_id");
   assert.equal(restoredPage.page.rows[0]?.values[0]?.display, "1");
+
+  recordAcceptanceProgress(`${phase}:editing:drop-preview-apply-inspect-undo`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Drop Columns");
+  const dropped = await previewReleasedRDrop(testing, workbench, app, sessionId, "label");
+  app = dropped.app;
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.kind === "dropColumns" &&
+        step.id === dropped.stepId &&
+        !active.metadata.schema.some((column) => column.name === "label")
+      );
+    },
+    30_000,
+    "applying the native R Drop Columns step"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Drop Columns step must be acknowledged before inspection."
+  );
+  await vscode.commands.executeCommand("openWrangler.selectStep", dropped.stepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === dropped.stepId,
+    30_000,
+    "the applied native R Drop Columns inspection"
+  );
+  const dropInspection = testing.activeSession()?.stepInspection;
+  assert.ok(dropInspection, "Selecting the applied R Drop Columns step must publish its inspection.");
+  assert.deepEqual(dropInspection.diff.removedColumns, ["label"]);
+  assert.equal(
+    dropInspection.inputSchema.some((column) => column.name === "label"),
+    true
+  );
+  assert.equal(
+    dropInspection.outputSchema.some((column) => column.name === "label"),
+    false
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Drop Columns session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Drop Columns inspection"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop Columns session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema.some((column) => column.name === "label")
+      );
+    },
+    30_000,
+    "undoing the native R Drop Columns step"
+  );
+}
+
+async function previewReleasedRDrop(
+  testing: TestApi,
+  workbench: Page,
+  app: Locator,
+  sessionId: string,
+  sourceName: string,
+  variableName = "orders_frame"
+): Promise<Readonly<{ app: Locator; stepId: string }>> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Drop columns/u }).click();
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog
+    .getByRole("group", { name: "Columns to drop", exact: true })
+    .getByRole("checkbox", { name: sourceName, exact: true })
+    .check();
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "dropColumns" &&
+        draft.params.columns.some((column) => column.name === sourceName) &&
+        !active.metadata.schema.some((column) => column.name === sourceName)
+      );
+    },
+    30_000,
+    "the native R Drop Columns preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  const active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep?.kind === "dropColumns", "The native R drop preview must retain its draft.");
+  const stepId = active.metadata.draftStep.id;
+  assertReleasedRDropGeneratedCode(active.code ?? "", sourceName, variableName);
+  const codePreview = await waitForCodePreview(workbench, sourceName, "R");
+  assertReleasedRDropGeneratedCode(await codePreview.innerText(), sourceName, variableName);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Drop Columns preview must be acknowledged by its exact renderer."
+  );
+  return {
+    app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Drop Columns preview"),
+    stepId
+  };
 }
 
 async function previewReleasedRRename(
@@ -2677,6 +2829,14 @@ function assertReleasedRGeneratedCode(code: string, newName: string, variableNam
     `Generated R code must read ${JSON.stringify(variableName)} from the notebook kernel.`
   );
   assert.ok(code.includes(JSON.stringify(newName)), `Generated R code must contain ${JSON.stringify(newName)}.`);
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+function assertReleasedRDropGeneratedCode(code: string, sourceName: string, variableName = "orders_frame"): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(".ow_drop_positions"));
+  assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 
