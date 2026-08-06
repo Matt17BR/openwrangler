@@ -1,13 +1,28 @@
 import assert from "node:assert/strict";
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
+  R_ACCEPTANCE_PACKAGE_VERSIONS,
+  R_ACCEPTANCE_REPOSITORY,
   acceptancePythonForPhase,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
+  prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceJava,
   probeJupyterAcceptancePython,
   writeJupyterAcceptanceEnvironment,
@@ -106,9 +121,317 @@ test("released-Jupyter phases alone receive the dedicated kernel interpreter", (
     assert.equal(acceptancePythonForPhase(phase, normalPython, kernelPython), kernelPython);
   }
   assert.equal(acceptancePythonForPhase("jupyter-remote", normalPython, kernelPython), normalPython);
+  assert.equal(acceptancePythonForPhase("jupyter-r", normalPython, kernelPython), normalPython);
+  assert.equal(acceptancePythonForPhase("jupyter-r-remote", normalPython, kernelPython), normalPython);
   assert.throws(
     () => acceptancePythonForPhase("jupyter-allow", normalPython, undefined),
     /dedicated private kernel interpreter/u
+  );
+});
+
+test("released-Jupyter R setup stays private and returns immutable probe and install commands", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-"));
+  const rscript = join(directory, "exact Rscript");
+  const rExecutable = join(directory, "exact R");
+  const privateRoot = join(directory, "private-r");
+  const inheritedEnvironment = Object.freeze({
+    PATH: "/bounded-r-path",
+    LANG: "C.UTF-8",
+    R_HOME: "/global/r-home",
+    R_LIBS_USER: "/global/r-library",
+    R_PROFILE_USER: "/global/r-profile"
+  });
+  const previousRLibrary = process.env.R_LIBS_USER;
+  try {
+    await writeFile(rscript, "fake Rscript executable\n");
+    await writeFile(rExecutable, "fake R executable\n");
+    await chmod(rscript, 0o700);
+    await chmod(rExecutable, 0o700);
+    const matchingRProbes = [];
+    const prepared = await prepareJupyterAcceptanceREnvironment(privateRoot, rscript, {
+      containedBy: directory,
+      environment: inheritedEnvironment,
+      async runCommand(input, options) {
+        assert.equal(existsSync(privateRoot), false);
+        matchingRProbes.push({ input, options });
+        return { stdout: rExecutable, stderr: "" };
+      }
+    });
+
+    assert.equal(prepared.root, privateRoot);
+    assert.equal(prepared.libraryDir, join(privateRoot, "l"));
+    assert.equal(prepared.kernelId, "openwrangler-r-acceptance");
+    assert.equal(prepared.kernelDisplayName, "R (Open Wrangler)");
+    assert.equal(prepared.rExecutable, rExecutable);
+    assert.deepEqual(prepared.packages, ["IRkernel", "jsonlite", "rlang", "tibble", "data.table"]);
+    assert.deepEqual(prepared.packageVersions, R_ACCEPTANCE_PACKAGE_VERSIONS);
+    assert.equal(prepared.repository, R_ACCEPTANCE_REPOSITORY);
+    assert.equal(
+      prepared.packageRecord,
+      "IRkernel=1.3.2\njsonlite=2.0.0\nrlang=1.1.7\ntibble=3.3.1\ndata.table=1.18.2.1"
+    );
+    assert.deepEqual(prepared.jupyterEnvironment, {
+      dataDir: join(privateRoot, "d"),
+      runtimeDir: join(privateRoot, "r"),
+      configDir: join(privateRoot, "c"),
+      path: join(privateRoot, "p")
+    });
+    for (const path of [
+      prepared.root,
+      prepared.libraryDir,
+      ...Object.values(prepared.jupyterEnvironment),
+      join(privateRoot, "h"),
+      join(privateRoot, "t")
+    ]) {
+      assert.equal(existsSync(path), true);
+      assert.equal(statSync(path).isDirectory(), true);
+      assert.equal(statSync(path).mode & 0o777, 0o700);
+    }
+
+    const kernelSpec = JSON.parse(await readFile(prepared.kernelSpecPath, "utf8"));
+    assert.deepEqual(kernelSpec, {
+      argv: [rExecutable, "--slave", "-e", "IRkernel::main()", "--args", "{connection_file}"],
+      display_name: "R (Open Wrangler)",
+      language: "R",
+      env: { R_LIBS_USER: prepared.libraryDir }
+    });
+    assert.equal(kernelSpec.argv.at(-1), "{connection_file}");
+    assert.equal(kernelSpec.argv.filter((value) => value === "{connection_file}").length, 1);
+    assert.notEqual(kernelSpec.argv[0], rscript);
+    assert.equal(kernelSpec.argv.includes("--vanilla"), false);
+    assert.equal(statSync(prepared.kernelSpecPath).mode & 0o777, 0o600);
+
+    assert.equal(matchingRProbes.length, 1);
+    assert.equal(matchingRProbes[0].input.executable, rscript);
+    assert.deepEqual(matchingRProbes[0].input.args.slice(0, 2), ["--vanilla", "-e"]);
+    assert.match(matchingRProbes[0].input.args.at(-1), /R\.home\("bin"\)/u);
+    assert.doesNotMatch(matchingRProbes[0].input.args.at(-1), /IRkernel::main/u);
+    assert.equal(matchingRProbes[0].input.environment.PATH, inheritedEnvironment.PATH);
+    assert.equal(matchingRProbes[0].input.environment.LANG, inheritedEnvironment.LANG);
+    assert.equal(matchingRProbes[0].input.environment.R_HOME, undefined);
+    assert.equal(matchingRProbes[0].input.environment.R_LIBS_USER, undefined);
+    assert.equal(matchingRProbes[0].input.environment.R_PROFILE_USER, undefined);
+    assert.deepEqual(matchingRProbes[0].options, { timeoutMs: 300_000 });
+
+    for (const invocation of [prepared.dependencyProbe, prepared.dependencyInstall]) {
+      assert.equal(invocation.input.executable, rscript);
+      assert.deepEqual(invocation.input.args.slice(0, 2), ["--vanilla", "-e"]);
+      assert.equal(invocation.input.environment.PATH, inheritedEnvironment.PATH);
+      assert.equal(invocation.input.environment.LANG, inheritedEnvironment.LANG);
+      assert.equal(invocation.input.environment.R_HOME, undefined);
+      assert.equal(invocation.input.environment.R_PROFILE_USER, undefined);
+      assert.equal(invocation.input.environment.R_LIBS_USER, prepared.libraryDir);
+      assert.equal(invocation.input.environment.R_USER, join(privateRoot, "h"));
+      assert.equal(invocation.input.environment.HOME, join(privateRoot, "h"));
+      assert.equal(invocation.input.environment.TMPDIR, join(privateRoot, "t"));
+      assert.equal(Object.isFrozen(invocation), true);
+      assert.equal(Object.isFrozen(invocation.input), true);
+      assert.equal(Object.isFrozen(invocation.input.args), true);
+      assert.equal(Object.isFrozen(invocation.input.environment), true);
+      assert.equal(Object.isFrozen(invocation.options), true);
+      for (const packageName of prepared.packages) {
+        assert.match(invocation.input.args.at(-1), new RegExp(`"${packageName.replace(".", "\\.")}"`, "u"));
+      }
+    }
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /find\.package\(.+lib\.loc = \.ow_library/su);
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /packageVersion\(.+lib\.loc = \.ow_library/su);
+    for (const [packageName, version] of Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)) {
+      assert.match(
+        prepared.dependencyProbe.input.args.at(-1),
+        new RegExp(`"${packageName.replace(".", "\\.")}" = "${version.replaceAll(".", "\\.")}"`, "u")
+      );
+    }
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /status = 11L/u);
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /collapse = "\\n"\), sep = ""\)$/u);
+    assert.deepEqual(prepared.dependencyProbe.options, { timeoutMs: 30_000 });
+    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes(R_ACCEPTANCE_REPOSITORY), true);
+    assert.match(prepared.dependencyInstall.input.args.at(-1), /lib = \.ow_library/u);
+    assert.match(prepared.dependencyInstall.input.args.at(-1), /dependencies = NA/u);
+    assert.deepEqual(prepared.dependencyInstall.options, { timeoutMs: 240_000 });
+    assert.equal(Object.isFrozen(prepared), true);
+    assert.equal(Object.isFrozen(prepared.packages), true);
+    assert.equal(Object.isFrozen(prepared.packageVersions), true);
+    assert.equal(Object.isFrozen(prepared.jupyterEnvironment), true);
+    assert.equal(process.env.R_LIBS_USER, previousRLibrary);
+    assert.deepEqual(inheritedEnvironment, {
+      PATH: "/bounded-r-path",
+      LANG: "C.UTF-8",
+      R_HOME: "/global/r-home",
+      R_LIBS_USER: "/global/r-library",
+      R_PROFILE_USER: "/global/r-profile"
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("released-Jupyter R setup rejects escaped or reused roots before writing to them", async () => {
+  const containedBy = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-contained-"));
+  const outside = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-outside-"));
+  const rscript = join(containedBy, "Rscript");
+  const rExecutable = join(containedBy, "R");
+  const escapedRoot = join(outside, "must-not-exist");
+  try {
+    await writeFile(rscript, "fake Rscript executable\n");
+    await writeFile(rExecutable, "fake R executable\n");
+    await chmod(rscript, 0o700);
+    await chmod(rExecutable, 0o700);
+    const matchingRProbe = async () => ({ stdout: rExecutable, stderr: "" });
+    await assert.rejects(
+      async () =>
+        prepareJupyterAcceptanceREnvironment(escapedRoot, rscript, {
+          containedBy,
+          environment: Object.freeze({}),
+          runCommand: matchingRProbe
+        }),
+      /must stay inside its caller-owned root/u
+    );
+    assert.equal(existsSync(escapedRoot), false);
+
+    const existingRoot = join(containedBy, "existing");
+    mkdirSync(existingRoot);
+    await assert.rejects(
+      async () =>
+        prepareJupyterAcceptanceREnvironment(existingRoot, rscript, {
+          containedBy,
+          environment: Object.freeze({}),
+          runCommand: matchingRProbe
+        }),
+      /new contained private environment/u
+    );
+    await assert.rejects(
+      async () =>
+        prepareJupyterAcceptanceREnvironment(join(containedBy, "relative-rscript"), "Rscript", {
+          containedBy,
+          environment: Object.freeze({}),
+          runCommand: matchingRProbe
+        }),
+      /existing absolute Rscript executable/u
+    );
+  } finally {
+    await rm(containedBy, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("released-Jupyter R setup rejects an ambiguous or Rscript-valued launcher before creating its root", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-launcher-"));
+  const rscript = join(directory, "Rscript");
+  const rExecutable = join(directory, "R");
+  try {
+    await writeFile(rscript, "fake Rscript executable\n");
+    await writeFile(rExecutable, "fake R executable\n");
+    await chmod(rscript, 0o700);
+    await chmod(rExecutable, 0o700);
+
+    for (const [name, stdout, message] of [
+      ["ambiguous", `${rExecutable}\n${rExecutable}`, /invalid matching R executable path/u],
+      ["rscript", rscript, /resolved Rscript instead of the matching R executable/u]
+    ]) {
+      const privateRoot = join(directory, `private-${name}`);
+      await assert.rejects(
+        prepareJupyterAcceptanceREnvironment(privateRoot, rscript, {
+          containedBy: directory,
+          environment: Object.freeze({}),
+          async runCommand() {
+            return { stdout, stderr: "" };
+          }
+        }),
+        message
+      );
+      assert.equal(existsSync(privateRoot), false);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("released-Jupyter R setup preserves probe ownership uncertainty through its cause", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-ownership-"));
+  const rscript = join(directory, "Rscript");
+  const privateRoot = join(directory, "private-r");
+  try {
+    await writeFile(rscript, "fake Rscript executable\n");
+    await chmod(rscript, 0o700);
+    const ownershipError = new Error("probe cleanup could not be verified");
+    ownershipError.details = { treeVerifiedStopped: false };
+
+    await assert.rejects(
+      prepareJupyterAcceptanceREnvironment(privateRoot, rscript, {
+        containedBy: directory,
+        environment: Object.freeze({}),
+        async runCommand() {
+          throw ownershipError;
+        }
+      }),
+      (error) => {
+        assert.equal(error.cause, ownershipError);
+        assert.equal(editorProcessTreeMayBeLive(error), true);
+        assert.match(error.message, /could not resolve the R executable matching Rscript/u);
+        return true;
+      }
+    );
+    assert.equal(existsSync(privateRoot), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("packaged-editor R acceptance wires the private R environment to local editors and one VS Code remote phase", async () => {
+  const source = await readFile(new URL("./run-packaged-editor-tests.mjs", import.meta.url), "utf8");
+  const modeStart = source.indexOf('if (acceptanceMode === "r-jupyter")');
+  const supportedEditors = source.indexOf("const supportedEditorKeys", modeStart);
+  assert.ok(modeStart >= 0 && supportedEditors > modeStart);
+  assert.doesNotMatch(source.slice(modeStart, supportedEditors), /process\.env\.CI/u);
+  assert.match(
+    source,
+    /remoteRJupyterEnabled =\s*acceptanceMode === "r-jupyter" && remoteJupyterEnabled && editor\.key === "vscode"/u
+  );
+
+  const setup = source.indexOf("rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(");
+  const display = source.indexOf("editorDisplay = await startIsolatedEditorDisplay()");
+  assert.ok(setup >= 0 && display > setup, "The private R library must be ready before an editor can start.");
+  assert.match(
+    source.slice(setup, display),
+    /dependencyProbeResult\.stdout !== rAcceptanceEnvironment\.packageRecord/u
+  );
+
+  const phaseBranch = source.indexOf('if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter")');
+  const otherJupyterBranch = source.indexOf("} else if (jupyterExtensionInstallTarget", phaseBranch);
+  assert.ok(phaseBranch >= 0 && otherJupyterBranch > phaseBranch);
+  const rPhase = source.slice(phaseBranch, otherJupyterBranch);
+  assert.match(rPhase, /phase: "jupyter-r"/u);
+  assert.match(rPhase, /editor: "jupyter-r-remote"/u);
+  assert.match(rPhase, /fixtureKind: "r"/u);
+  assert.equal((source.match(/await runRemoteJupyterPhase\(\{/gu) ?? []).length, 2);
+});
+
+test("extension-host R acceptance routes the remote kernel and does not probe a host extension path", async () => {
+  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
+  const writerStart = source.indexOf("function writeReleasedRNotebook(");
+  const start = source.indexOf("async function exerciseReleasedRJupyterExtension(");
+  const end = source.indexOf("async function exerciseReleasedRGridJourney(", start);
+  assert.ok(writerStart >= 0 && start > writerStart && end > start);
+  const writer = source.slice(writerStart, start);
+  const remoteRJourney = source.slice(start, end);
+
+  assert.match(source, /RELEASED_JUPYTER_REMOTE_R_KERNEL_LABEL = "R \(Open Wrangler Remote\)"/u);
+  assert.match(source, /phase === "jupyter-r-remote"/u);
+  assert.match(remoteRJourney, /registerReleasedRemoteJupyterServer\(jupyterApi, kernelTarget\)/u);
+  assert.match(remoteRJourney, /assert\.equal\(setup\.remoteRunId, kernelTarget\.remote\.runId\)/u);
+  assert.match(remoteRJourney, /waitForReleasedRRuntimeBindingCleanup\(notebook, cleanupEditor, phase\)/u);
+  assert.doesNotMatch(writer, /hostExtensionVisible|extension\.extensionPath/u);
+
+  const setupExecution = remoteRJourney.indexOf("await executeReleasedNotebookCell(");
+  const exactRefocus = remoteRJourney.indexOf("const actionNotebookEditor = await showExactReleasedNotebook(notebook)");
+  const firstToolbarAction = remoteRJourney.indexOf("picker = await activateReleasedNotebookVariableAction(");
+  assert.ok(
+    setupExecution >= 0 && exactRefocus > setupExecution && firstToolbarAction > exactRefocus,
+    "The first R toolbar click must refocus the exact notebook after kernel setup."
+  );
+  assert.match(
+    remoteRJourney.slice(exactRefocus, firstToolbarAction),
+    /assert\.equal\(\s*actionNotebookEditor,\s*notebookEditor,/u
   );
 });
 

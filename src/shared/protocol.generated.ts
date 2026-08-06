@@ -21,7 +21,7 @@ export type OpenWranglerRequest =
   | ExportDataRequest
   | CloseSessionRequest
   | CancelRequest;
-export type DataBackend = "polars" | "duckdb" | "pandas" | "pyspark";
+export type DataBackend = "polars" | "duckdb" | "pandas" | "pyspark" | "r";
 export type SessionMode = "viewing" | "editing";
 export type PageRequest = SessionRequestBase & {
   kind: "getPage";
@@ -1014,6 +1014,11 @@ export interface SourceCapabilities {
   exportCsv: boolean;
   exportParquet: boolean;
   notebookInsert: boolean;
+  filter?: boolean;
+  sort?: boolean;
+  profile?: boolean;
+  columnValues?: boolean;
+  supportedOperations?: OperationKind[];
 }
 export interface SessionOpenedResponse {
   kind: "sessionOpened";
@@ -1026,6 +1031,10 @@ export interface SessionMetadata {
   sessionId: string;
   revision: number;
   backend: DataBackend;
+  /**
+   * Required only for a confirmed R notebook session; forbidden for every other backend.
+   */
+  rDataframeFlavor?: "r.data.frame" | "r.tibble" | "r.data.table";
   mode: SessionMode;
   source: SessionSource;
   capabilities: SourceCapabilities;
@@ -1076,6 +1085,10 @@ export interface GridPage {
 export interface DataRow {
   id: string;
   rowNumber: number;
+  /**
+   * Optional source row label. rowNumber remains the zero-based logical grid position.
+   */
+  rowLabel?: string;
   values: CellValue[];
 }
 export interface CellValue {

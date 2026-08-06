@@ -49,6 +49,26 @@ describe("OperationBuilder", () => {
     }
   });
 
+  it("shows only operations advertised by the active dataframe", () => {
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          capabilities: { ...metadata.capabilities, supportedOperations: ["renameColumn"] }
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="customCode"
+        onClose={() => undefined}
+        onPreview={() => undefined}
+      />
+    );
+
+    expect(screen.getByText("Rename column", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.queryByText("Custom code", { selector: "strong" })).toBeNull();
+    expect(screen.queryByText("Sort rows", { selector: "strong" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Choose an operation" })).toBeInTheDocument();
+  });
+
   it("builds a validated rename step for preview", () => {
     const onPreview = vi.fn();
     render(

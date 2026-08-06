@@ -105,6 +105,7 @@ try {
   await verifyStepInspectionWorkflow(browser);
   await verifyFilterKeyboardWorkflow(browser);
   await verifyInsightsDrawerWorkflow(browser);
+  await verifyRProfileAccessibility(browser);
   await verifyGridStatusBar(browser);
   await verifyGridKeyboardWorkflow(browser);
   await verifyWideGridPerformance(browser);
@@ -746,13 +747,13 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Close panel");
     const summaryPanel = panel.locator("section.summaryPanel");
     const tabs = summaryPanel.getByRole("tab");
-    if ((await tabs.allTextContents()).map((text) => text.trim()).join(",") !== "Column,Dataset,Filters") {
-      throw new Error(`${harness} did not expose the Column, Dataset, and Filters profile tabs.`);
+    if ((await tabs.allTextContents()).map((text) => text.trim()).join(",") !== "Column,Dataset,Filters / Sorts") {
+      throw new Error(`${harness} did not expose the Column, Dataset, and Filters / Sorts profile tabs.`);
     }
 
     const columnTab = summaryPanel.getByRole("tab", { name: "Column" });
     const datasetTab = summaryPanel.getByRole("tab", { name: "Dataset" });
-    const filtersTab = summaryPanel.getByRole("tab", { name: "Filters" });
+    const filtersTab = summaryPanel.getByRole("tab", { name: "Filters / Sorts" });
     if ((await columnTab.getAttribute("aria-selected")) !== "true") {
       throw new Error(`${harness} did not open Column profiles on the selected-column view.`);
     }
@@ -775,10 +776,10 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await scanPageAccessibility(page, `${harness} (Dataset tab)`);
 
     await page.keyboard.press("ArrowRight");
-    const filtersPanel = panel.getByRole("tabpanel", { name: "Filters" });
+    const filtersPanel = panel.getByRole("tabpanel", { name: "Filters / Sorts" });
     await filtersPanel.waitFor();
     if ((await filtersTab.getAttribute("aria-selected")) !== "true" || !(await filtersTab.evaluate(isActiveTab))) {
-      throw new Error(`${harness} did not keyboard-select and focus the Filters tab.`);
+      throw new Error(`${harness} did not keyboard-select and focus the Filters / Sorts tab.`);
     }
     await filtersPanel.getByRole("heading", { name: "Filters / Sorts" }).waitFor();
     await filtersPanel.getByRole("status").filter({ hasText: '2 columns share the displayed name "value"' }).waitFor();
@@ -794,7 +795,7 @@ async function verifyInsightsDrawerWorkflow(browser) {
       .click();
     await filtersPanel.getByLabel("Sort direction").waitFor();
     await filtersPanel.getByRole("button", { name: "Add to sort" }).waitFor();
-    await scanPageAccessibility(page, `${harness} (Filters tab)`);
+    await scanPageAccessibility(page, `${harness} (Filters / Sorts tab)`);
 
     await filtersTab.focus();
     await page.keyboard.press("Home");
@@ -884,6 +885,111 @@ async function verifyInsightsDrawerWorkflow(browser) {
   console.log(
     "Column profiles drawer focus, duplicate labels, histogram pointer/keyboard inspection, numeric/text summary-family semantics, and bounded exact extrema verified."
   );
+}
+
+async function verifyRProfileAccessibility(browser) {
+  const harness = "r-profile-accessibility.html";
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
+
+  const backendBadge = page.locator('[data-session-badge="backend"]');
+  const modeBadge = page.locator('[data-session-badge="mode"]');
+  await backendBadge.waitFor();
+  await modeBadge.waitFor();
+  if ((await backendBadge.textContent())?.trim() !== "R" || (await modeBadge.textContent())?.trim() !== "viewing") {
+    throw new Error(`${harness} did not expose the R backend and viewing-mode badges.`);
+  }
+  await page.getByRole("rowheader", { name: "Row 1, label baseline" }).waitFor();
+
+  const headerProfiles = page.getByRole("button", { name: "Header profiles", exact: true });
+  if ((await headerProfiles.getAttribute("aria-pressed")) !== "false") {
+    throw new Error(`${harness} started R header profiles without an explicit request.`);
+  }
+  await headerProfiles.focus();
+  await page.keyboard.press("Space");
+  if ((await headerProfiles.getAttribute("aria-pressed")) !== "true") {
+    throw new Error(`${harness} did not let a keyboard user request R header profiles.`);
+  }
+  await page.keyboard.press("Space");
+  if ((await headerProfiles.getAttribute("aria-pressed")) !== "false") {
+    throw new Error(`${harness} did not let a keyboard user turn R header profiles off again.`);
+  }
+
+  const toggle = page.getByRole("button", { name: "Column profiles and sorts", exact: true });
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  const drawer = page.getByRole("complementary", { name: "Column profiles and sorts", exact: true });
+  await drawer.waitFor();
+  const tablist = drawer.getByRole("tablist", { name: "Column profiles and sorts view", exact: true });
+  await tablist.waitFor();
+  const tabs = tablist.getByRole("tab");
+  if ((await tabs.allTextContents()).map((text) => text.trim()).join(",") !== "Column,Dataset,Sorts") {
+    throw new Error(`${harness} did not expose the exact R profile and sort tabs.`);
+  }
+  if ((await drawer.getByRole("tab", { name: "Filters", exact: true }).count()) !== 0) {
+    throw new Error(`${harness} advertised a Filters tab for an R session without native filters.`);
+  }
+
+  const columnTab = drawer.getByRole("tab", { name: "Column", exact: true });
+  const datasetTab = drawer.getByRole("tab", { name: "Dataset", exact: true });
+  const sortsTab = drawer.getByRole("tab", { name: "Sorts", exact: true });
+  const columnPanel = drawer.getByRole("tabpanel", { name: "Column", exact: true });
+  await columnPanel.getByRole("heading", { name: "value (column 1)", exact: true }).waitFor();
+  await columnPanel.getByRole("heading", { name: "Distribution", exact: true }).waitFor();
+  await page.addScriptTag({ path: axePath });
+  await scanPageAccessibility(page, `${harness} (Column profile)`);
+
+  await columnTab.focus();
+  await page.keyboard.press("ArrowRight");
+  await drawer.getByRole("tabpanel", { name: "Dataset", exact: true }).waitFor();
+  if ((await datasetTab.getAttribute("aria-selected")) !== "true" || !(await datasetTab.evaluate(isActiveTab))) {
+    throw new Error(`${harness} did not move keyboard focus to the Dataset tab.`);
+  }
+  await page.keyboard.press("ArrowRight");
+  await drawer.getByRole("tabpanel", { name: "Sorts", exact: true }).waitFor();
+  if ((await sortsTab.getAttribute("aria-selected")) !== "true" || !(await sortsTab.evaluate(isActiveTab))) {
+    throw new Error(`${harness} did not move keyboard focus to the Sorts tab.`);
+  }
+
+  const flagHeader = page.locator('th[data-column="flag"]');
+  const menuToggle = flagHeader.getByLabel("Column actions for flag", { exact: true });
+  const filterAction = flagHeader.getByRole("button", { name: "Filter…", exact: true });
+  const sortAction = flagHeader.getByRole("button", { name: "Sort ascending", exact: true });
+  await menuToggle.focus();
+  await page.keyboard.press("Enter");
+  await filterAction.waitFor({ state: "visible" });
+  await sortAction.waitFor({ state: "visible" });
+  if (!(await filterAction.isDisabled()) || (await sortAction.isDisabled())) {
+    throw new Error(`${harness} did not disable only the unsupported R filter action.`);
+  }
+  const filterDescriptionId = await filterAction.getAttribute("aria-describedby");
+  if (
+    !filterDescriptionId ||
+    (await page.locator(`#${filterDescriptionId}`).textContent())?.trim() !==
+      "Filtering is unavailable for this dataframe."
+  ) {
+    throw new Error(`${harness} did not explain why its R filter action is unavailable.`);
+  }
+  await scanPageAccessibility(page, `${harness} (Sorts and column menu)`);
+
+  await menuToggle.focus();
+  await page.keyboard.press("Enter");
+  await filterAction.waitFor({ state: "hidden" });
+  await sortAction.waitFor({ state: "hidden" });
+  await sortsTab.focus();
+  await page.keyboard.press("Escape");
+  await drawer.waitFor({ state: "detached" });
+  await page.waitForFunction(
+    () =>
+      document.activeElement instanceof HTMLButtonElement &&
+      document.activeElement.getAttribute("aria-label") === "Column profiles and sorts"
+  );
+  if (!(await toggle.evaluate((element) => document.activeElement === element))) {
+    throw new Error(`${harness} did not restore focus to the R profile drawer opener.`);
+  }
+
+  await page.close();
+  console.log("R profile/sort capabilities, keyboard navigation, focus restoration, and axe verified.");
 }
 
 async function verifyGridStatusBar(browser) {

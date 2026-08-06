@@ -2,14 +2,17 @@
 
 ## Product boundaries
 
-Open Wrangler has three cooperating processes:
+Open Wrangler has three cooperating parts:
 
 1. The VS Code extension host owns commands, trusted-workspace enforcement, editor and view providers, session coordination, filesystem prompts, runtime processes, and Jupyter access.
-2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute Python directly.
-3. The bundled Python runtime executes dataframe queries and transformation plans in either a standalone selected interpreter or the active Jupyter kernel.
+2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute dataframe code directly.
+3. A language runtime owns dataframe work. Python sessions use the bundled runtime in a selected interpreter or active
+   Jupyter kernel. R notebook sessions use the bundled R reader inside the selected IRkernel.
 
-These sections describe the shipped Python runtime. Open Wrangler 2 adds R as a separate runtime language; the
-[native R decision](decisions/0001-native-r-runtime.md) defines its IRkernel-first ownership model and keeps runtime
+Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects native R notebook
+sessions to the shared protocol, coordinator, notebook command, grid, filters, sorts, value picker, and profiles. Its
+first editing slice supports Rename Column through the shared draft and cleaning-history UI. The
+[native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
@@ -28,34 +31,103 @@ Every request that can run work against an open PySpark session carries its prot
 
 Spark Connect transport errors are handled according to what the server reports. A temporary endpoint outage leaves the confirmed view untouched and allows the failed read to be retried. A missing server session or dataframe blocks ordinary retries and shows a user-initiated **Reconnect** action instead. Reconnect reuses the existing live-variable replay path: it looks up the same variable name in the exact notebook and kernel that opened the view, requires the same schema, and restores the confirmed filter, sort, viewport, widths, and selection before replacing the private runtime. A failed reconnect closes only its candidate and leaves the old confirmed view in place. It never starts Spark, creates a dataframe, switches kernels, loops automatically, or uses captured notebook output as a fallback.
 
-The first native R boundary is deliberately smaller than a session transport. The bundled
-`r/openwrangler_runtime/frame_contract.R` module snapshots a base `data.frame`, tibble, or `data.table` without
-calling Python and returns one bounded projected page. Base frames and tibbles use an R serialization copy;
-`data.table` uses `data.table::copy()` so later by-reference work cannot mutate the notebook object. The page keeps
+The bundled `r/openwrangler_runtime/frame_contract.R` module validates a base `data.frame`, tibble, or `data.table`
+without calling Python and returns one bounded projected page. Live kernel sessions read only the requested rows and
+columns instead of serializing the complete dataframe. They check the source shape and schema again before each read;
+the isolated contract helper still copies its input for unit-level value tests. The page keeps
 duplicate and non-syntactic names while using positional IDs for identity. Its column metadata records factors,
 ordered factors, dates, POSIXct time zones, difftime units, and `bit64::integer64`; cells distinguish `NA`, `NaN`, and
 signed infinity for plain doubles. Non-finite classed temporal values and fractional Dates fail rather than being
 silently relabeled or rounded. Numeric display always uses a dot, regardless of `options(OutDec)`. A POSIXct column
 with no `tzone` attribute or an empty `tzone` uses UTC for display instead of the process's current time zone. The
 original null or empty-string value remains in metadata. R's reserved integer and `bit64::integer64` missing-value
-sentinels can appear only as typed nulls. Explicit row names, grouped or rowwise tibbles, list/matrix/raw/complex
-columns, subclasses, and unrecognized attributes fail instead of losing R semantics.
+sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matrix/raw/complex columns, subclasses, and
+unrecognized attributes fail instead of losing R semantics. Source positions provide stable row identity. Explicit R
+row names travel separately as row labels and appear in the grid gutter instead of becoming a data column.
 
-The same module can apply an ordered list of viewing sorts before it builds a page. A rule names a column by both its
-positional ID and captured name, which keeps duplicate names unambiguous and rejects stale references. Rules are
-applied in priority order, with independent direction and missing-value placement; ties keep their previous order.
+The same module applies compound viewing filters and an ordered list of viewing sorts before it builds a page. Every
+filter and sort names a column by both its positional ID and captured name, which keeps duplicate names unambiguous
+and rejects stale references. Filters support per-column and cross-column AND/OR logic, typed predicates, null and
+NaN controls, and selected values. Public date, datetime, and duration literals follow the same fixture-backed rules
+as Python and saved notebook views. Rules are applied in priority order, with independent direction and missing-value
+placement; ties keep their previous order.
 R's `NA` and `NaN` values share the requested missing-value placement while their cell encodings remain distinct.
 Exact `bit64::integer64` values are compared without converting them to doubles. Sorting works on row positions and
-does not reorder or otherwise change the captured frame. A sorted page keeps each source row ID even though those IDs
-no longer follow the page offset.
+does not reorder or otherwise change the source frame. A sorted page keeps each source row ID and explicit row label,
+while `rowNumber` records its current logical position in the grid. A live session caches at most four sort columns
+and 32 MiB of row-order state. It rebuilds that order when those values change, including after a `data.table`
+by-reference update, and releases the cache when sorting is cleared. Larger sorts rebuild for each page instead of
+retaining an unbounded cache.
 
-`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 1, exact fields, canonical
-class/type combinations, contiguous positional column IDs, unique in-range source row IDs, matching row and column
-windows, and values valid for their R column. The current limits are 2,048 source columns, 64 sort rules, 100,000
-factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per text value, and 16 MiB per encoded
-page. A running metadata-and-cell budget stops an oversized page before the complete object or JSON string is built.
-This boundary is not part of Python protocol v2 and is not wired to commands, sessions, or webviews yet. The IRkernel
-transport will consume it in a later Open Wrangler 2 slice.
+Column profiles and value searches use the same captured schema, stable column IDs, and viewing filters as grid
+pages. A request can include up to 64
+columns. It is rejected before scanning when it exceeds 1,000,000 rows or 5,000,000 cells. Dataset profiles use the
+same row limit and a separate 5,000,000-cell limit. These caps keep an automatic profile request from monopolizing the
+user's R kernel, which the Jupyter API cannot cancel independently. The R runtime returns at most ten common values
+and twenty numeric histogram bins per column. Column-value requests return bounded counts and typed selections;
+ASCII case folding is used for search, and signed zero has one selection token that matches both `-0` and `+0`. The
+runtime keeps `NA` and `NaN` counts separate for plain doubles, preserves
+exact integer and `bit64::integer64` extrema, counts Unicode text length by code point, and reports native factor,
+logical, Date, POSIXct, and difftime statistics. Dataset statistics report missing cells, rows with a missing value,
+duplicate rows, and missing counts in source-column order. Their private response also carries the filtered row count
+from the same correlated request; the R encoder, TypeScript decoder, and bridge validate every count against it.
+Profiling reads the live R object again and rejects a changed shape, schema, or column semantics. Viewing queries do
+not modify the source object.
+
+`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 3, exact fields, canonical
+class/type combinations, contiguous positional column IDs, unique in-range source row IDs, logical row positions,
+matching row and column windows, and values valid for their R column. Positional frames may not send row labels;
+explicit row-name frames must send one bounded label for every returned row. The current limits are 2,048 source
+columns, 64 sort rules, 100,000 factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per
+text value, and 16 MiB per encoded page. A running metadata-and-cell budget stops an oversized page before the
+complete object or JSON string is built. The canonical grid protocol carries row labels independently from logical
+row numbers. The kernel agent uses a small R-only transport, which `RKernelBridge` validates and maps to the shared
+host protocol; the Python runtime never reads those messages.
+
+`r/openwrangler_runtime/kernel_agent.R` owns native R sessions. The host creates a UUID before an open,
+and the agent records the named object's shape, schema, and source binding. Later page, filter, sort, profile, dataset
+statistics, and column-value requests read through that binding and reject structural changes. These messages have a
+separate versioned schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
+request IDs, and oversized responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote
+IRkernel does not need access to the extension filesystem.
+
+Viewing does not copy the complete R object. The first editing request takes one isolated source snapshot, then keeps
+the original, committed result, and optional draft separate. Rename Column resolves its `{id, name}` reference to one
+exact position, so duplicate and non-syntactic names remain unambiguous. Base data frames and tibbles are copied with
+R serialization; `data.table` uses `data.table::copy()` before `setnames()`, preserving keys without mutating the
+notebook variable. A live session reports nullability conservatively; isolating it for editing and renaming a column
+keep that same nullability metadata instead of narrowing the schema from the current values. Preview, apply, discard,
+latest-step replacement, undo, and applied-step inspection use increasing session revisions. Each mutation builds and
+encodes its complete response before publishing the candidate state.
+Generated code repeats the positional and stale-name checks, returns a new R object, and can be copied or saved as a
+`.R` script.
+
+`RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
+session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
+again before dispatch. Host cancellation and timeouts do not interrupt the user's R kernel. If an open has already
+started, its candidate ID stays mapped to that kernel and one close is sent there after the original execution
+finishes. Page and profile requests that time out or are cancelled still retain the original execution's settlement
+promise. The transport waits for that promise before sending another request to the same IRkernel. Kernel restart
+ends the mappings. Close uses the mapped kernel and never looks one up by URI. Session IDs and pending cleanup records
+have fixed bounds, and repeated disposal joins the same cleanup operation. Once a mutation returns its correlated
+response, a later host cancellation cannot hide the new revision.
+
+Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
+a fixed response-code list that includes `unsupported_frame`, `missing_package`, `page_too_large`, `stale_column`,
+`stale_revision`, and `unsupported_operation`. Messages are limited to 4 KiB, and TypeScript rejects any unrecognized
+code. Native variable discovery requires `jsonlite` and `rlang` in the selected kernel. It recognizes exact base
+`data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The notebook
+command enables native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
+mode currently exposes only Rename Column. Other cleaning operations, cleaned-data export, R notebook insertion,
+Quarto, R Markdown, and plain `.R` documents remain unsupported. R sessions open with header profiles off so opening
+a frame does not immediately scan every visible column. Users can enable them, and the profile drawer still loads the
+selected column or dataset on request. The packaged VS Code/Cursor viewing journey selects a real R column and checks its
+rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
+duplicate-row statistics. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code
+and Cursor with R 4.5.2. The hosted gate also passes against a containerized IRkernel in VS Code, including kernel
+restart, reopening the frame, and final session cleanup. The packaged Rename journey drives preview, discard, apply,
+inspection, edit-latest, copy, script export, and undo through the real workbench in VS Code and Cursor. It covers a
+base data frame, tibble, and keyed data table and checks that each notebook object stays unchanged.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 
@@ -67,7 +139,7 @@ Before the standalone server submits an `openSession` to an executor, its proces
 
 By-example requests have two deliberately different validation phases. A new draft may omit `params.program` so the runtime can synthesize and return the canonical candidate, but any retained step in runtime metadata, notebook output, or workspace persistence must already contain that program; replay never silently synthesizes a different transform. By-example examples use strict JSON scalars. The operation editor lexically rejects integer number tokens outside JavaScript's exact safe-integer range before `JSON.parse` can round them; users can infer the same program with an in-range example, and the retained program still executes against engine-native integers throughout the shared 38-digit arithmetic envelope.
 
-The runtime exposes one protocol across standalone and notebook transports. `protocol/openwrangler.v2.schema.json` is the canonical contract; `npm run generate:protocol` produces `src/shared/protocol.generated.ts`, and CI rejects stale generated types. `src/shared/protocolValidation.ts` validates every request and response envelope plus every nested variant before the extension or coordinator can observe it. Transformation steps are a discriminated union: each operation kind has an exact parameter shape, and the same guard protects webview intents, runtime metadata, saved notebook output, and persisted replay state. The editor webview may send only the page/profile and draft/plan intents it owns, plus one exact no-argument `exportData` intent that delegates to the public extension-host export command. The extension host still owns the destination picker, source-safety checks, filesystem write, environment mutation, and close. An added-column preview uses the stable output identity already present in the confirmed schema to issue an ephemeral grid-navigation request; it changes no runtime, viewing, or persisted state. `npm run generate:reference` derives the public command, setting, operation, protocol-message, and MIME tables in `docs/reference.md` from their canonical registries; CI compares the generated document byte-for-byte. Python's explicit decoder rejects malformed versions, correlation IDs, priorities, request shapes, revisions, and import descriptors before dispatch. Standalone requests use newline-delimited envelopes on standard input/output; notebook requests use the stable `@vscode/jupyter-extension` `kernels.getKernel()` and `executeCode()` surface with a marker-delimited encoded envelope. Both transports return the canonical protocol-v2 response envelope for successes, decoder failures, engine diagnostics, cancellations, and unexpected errors, preserving an available `viewRequestId` so logical runtime failures do not masquerade as kernel transport failures. The runtime handshake and Python packaging metadata both read `python/openwrangler_runtime/version.py`; documentation checks require it to match the extension package version. Once trusted kernel access succeeds, Open Wrangler transfers its versioned pure-Python runtime through that API into a content-addressed kernel-temporary directory, then registers MIME v2 Pandas/Polars formatters. It never assumes a remote kernel can read the local extension filesystem.
+The runtime exposes one protocol across standalone and notebook transports. `protocol/openwrangler.v2.schema.json` is the canonical contract; `npm run generate:protocol` produces `src/shared/protocol.generated.ts`, and CI rejects stale generated types. `src/shared/protocolValidation.ts` validates every request and response envelope plus every nested variant before the extension or coordinator can observe it. Transformation steps are a discriminated union: each operation kind has an exact parameter shape, and the same guard protects webview intents, runtime metadata, saved notebook output, and persisted replay state. A session may narrow the shared operation registry with `capabilities.supportedOperations`; omitting the field keeps the full catalog for existing editing engines. The webview, extension host, and Activity Bar all enforce the same list. `editable` remains the separate switch that decides whether any cleaning action can run. The editor webview may send only the page/profile and draft/plan intents it owns, plus one exact no-argument `exportData` intent that delegates to the public extension-host export command. The extension host still owns the destination picker, source-safety checks, filesystem write, environment mutation, and close. An added-column preview uses the stable output identity already present in the confirmed schema to issue an ephemeral grid-navigation request; it changes no runtime, viewing, or persisted state. `npm run generate:reference` derives the public command, setting, operation, protocol-message, and MIME tables in `docs/reference.md` from their canonical registries; CI compares the generated document byte-for-byte. Python's explicit decoder rejects malformed versions, correlation IDs, priorities, request shapes, revisions, and import descriptors before dispatch. Standalone requests use newline-delimited envelopes on standard input/output; notebook requests use the stable `@vscode/jupyter-extension` `kernels.getKernel()` and `executeCode()` surface with a marker-delimited encoded envelope. Both transports return the canonical protocol-v2 response envelope for successes, decoder failures, engine diagnostics, cancellations, and unexpected errors, preserving an available `viewRequestId` so logical runtime failures do not masquerade as kernel transport failures. The runtime handshake and Python packaging metadata both read `python/openwrangler_runtime/version.py`; documentation checks require it to match the extension package version. Once trusted kernel access succeeds, Open Wrangler transfers its versioned pure-Python runtime through that API into a content-addressed kernel-temporary directory, then registers MIME v2 Pandas/Polars formatters. It never assumes a remote kernel can read the local extension filesystem.
 
 `NotebookPreviewCoordinator` prepares those formatters proactively for each trusted, exact, visible Jupyter `NotebookDocument`, rather than waiting for the first Open Wrangler command. The stable Jupyter lookup is observation-only: it can return only a kernel the user has already started, so an API-opened background notebook never starts or acquires one. Preparation is bounded, retries transiently while the same document remains visible and valid, lets a real notebook change bypass pending backoff, and runs again after that exact kernel is invalidated or restarted. Hiding the notebook disposes only its formatter-preparation bridge; showing it again creates a fresh exact-document preparation. `openWrangler.notebookPreviewProvider` owns the formatter choice: `openWrangler` prepares, while `dataWrangler` and `disabled` leave the kernel untouched. `ask` resolves directly to Open Wrangler when Microsoft Data Wrangler is absent; when it is installed, one modal provider choice is required before Open Wrangler registers anything. A later switch away from Open Wrangler applies to newly started or restarted kernels because an already installed kernel formatter cannot be removed safely from another extension's process.
 
@@ -141,13 +213,15 @@ Scope eviction has no awaited boundary. It revalidates the exact slot and every 
 
 PySpark summaries check and collect their ten displayed values in one Spark job. When their combined size exceeds the remaining allowance, Spark sends the lengths but substitutes null for the values. Oversized data stays out of Python, and an ordinary profile does not run the same grouped query twice.
 
+Optional `filter`, `sort`, `profile`, and `columnValues` wire flags can disable one viewing feature without hiding the others. Omitted flags keep the protocol-v2 behavior and mean supported.
+
 ## UI composition
 
 The operation builder is an application-modal dialog: while it is open, the surrounding workbench subtree is inert and hidden from assistive technology, Tab and Shift+Tab wrap within the dialog, and closing restores focus to the exact opener when possible or to a stable operation/grid fallback. This applies equally to toolbar, native-view, command, and latest-step edit entry points. Every focus restoration that survives a render, animation frame, page request, or virtualized-scroll commit proves that the webview document still owns host focus immediately before focusing; a workbench QuickInput or another editor surface therefore cannot be displaced by stale iframe state.
 
 The data grid is a custom readonly editor because opening and cleaning a source does not mutate that document. Its public editor type is `openWrangler.viewer`; transient command/notebook panels use the distinct internal `openWrangler.session` type so VS Code forks cannot classify one tab as the other. A session-keyed panel registry supports exact lifecycle cleanup even when focus or tab-input subclasses differ between editors. File and live notebook-variable sessions begin opening immediately; saved-output sessions wait for their renderer readiness so a late renderer event cannot replay a denied or completed open. Open Wrangler contributes native view containers for Operations, Summary, Filters/Sorts, Cleaning Steps, and Code Preview. A session coordinator publishes the active editor's state to these views and routes actions back to the correct runtime session. The active snapshot includes the confirmed filter model and stable selected-column identity, so the custom editor and native Summary/Filters views describe the same logical view; viewport and width-only updates are persisted without producing native-view refresh churn. Selecting any applied Cleaning Steps node stores one bounded, ephemeral inspection in the coordinator and presents that step's paged input/output boundary, identity-aware diff, and prefix code. Inspection has its own grid context, disables filtering/sorting/profiling, never enters persisted view state, and clears on Original Data, Escape, mutation, recovery, or active-session change so the exact confirmed view is restored. Switching between retained editor panels clears the outgoing and incoming inspection presentation, and a recreated webview receives an explicit host-side clear before its confirmed state, preventing an ephemeral selection from leaking between active tabs. A successful `postMessage` is not treated as renderer hydration; a `false` delivery result retires that renderer generation and requires a fresh ready handshake. If an active panel has already received its runtime result but never produces that initial handshake, the host retains the confirmed session and assigns fresh webview HTML exactly once after a bounded grace period; the replacement generation then pulls the complete authoritative snapshot. That one-attempt allowance lasts for the panel lifetime, while an inactive panel waits until it is active and a repeatedly failing generation cannot enter a reload loop. An empty visible webview uses one finite backoff burst to pull retained state, pauses while hidden, and starts a fresh bounded burst when shown; receiving metadata alone does not stop that recovery. After publishing the snapshot or error, presentation, view state, retained import response, and busy state, the host sends a fresh opaque completion marker. Receipt of that marker synchronously establishes a publication barrier, React commits every preceding ordered message, and a layout effect acknowledges only the exact committed session/revision before a pending recovery timer can issue another pull. Stale markers are ignored. The host rejects and corrects renderer presentation writes while that authoritative replay is locked, then unlocks them only on the exact acknowledgement. Ordinary page revisions do not acquire this lock. A configured Code Preview reveal is likewise deferred until that acknowledgement, so a workbench transition cannot hide the primary renderer before its draft exists physically. A native import-options command then uses a separate opaque action ID and runs the host fallback exactly once if the renderer does not acknowledge the prepared action within its bound. Manual and correlated intents coalesce, concurrent native commands share one request and transaction, and a busy renderer still flushes pending presentation state before host fallback, so late responses cannot duplicate the transaction or lose the current view. Once the renderer prepares the action, every coalesced native command awaits that exact transaction through prompt completion and publication; Cursor or VS Code therefore cannot restore the custom-editor iframe over an open QuickInput merely because a command returned early. Draft/history state also drives VS Code context keys, so apply/discard/edit/undo keybindings cannot run against the wrong custom editor or plan state. The sandboxed webview mirrors those shortcuts for focused keyboard use and preserves native editing keys inside text controls. The editor and Activity Bar share the same 28-operation registry. The public `openWrangler.startOperation` command accepts no operation argument and opens the unselected catalog; validated Activity Bar nodes pass one registry kind to preselect their operation. Add and edit-latest entry points remain unavailable in viewing mode or while a draft exists. Each operation opens an accessible parameter form, while the bottom Code Preview uses CodeMirror with VS Code theme tokens and switches to selected-step prefix code during inspection; copy/export use the displayed buffer. Edited preview text is isolated from the applied plan.
 
-The extension host keeps runtime language, dataframe flavor, and generated-code dialect as separate TypeScript values. It derives them only from the backend confirmed in an active session: Pandas, Polars, and DuckDB use their own Python dialect descriptors, while viewing-only PySpark has no generated-code dialect. Code Preview receives this identity in its exact-key private host message, publishes it as deterministic root data attributes, and uses the dialect to select the Python parser and label. The identity is not part of protocol v2, saved notebook MIME, session persistence, or the Python runtime contract.
+The extension host keeps runtime language, dataframe flavor, and generated-code dialect as separate TypeScript values. It derives them only from the backend confirmed in an active session: Pandas, Polars, and DuckDB use their own Python dialect descriptors, the three R dataframe flavors share `r.base`, and viewing-only PySpark has no generated-code dialect. Code Preview receives this identity in its exact-key private host message and publishes it as deterministic root data attributes. Python code uses the Python parser; R code is currently plain text and is labeled **R**. The identity is not part of protocol v2, saved notebook MIME, session persistence, or the Python runtime contract.
 
 The default `onDraft` Code Preview behavior reveals the bottom panel for only the first acknowledged draft in a session. Later drafts update the registered provider in place; they do not focus or reopen a panel the user closed. `always` reveals once when each session first synchronizes, while `never` performs no automatic reveal. Automatic reveal invokes the native Code Preview focus command with `preserveFocus: true` only after the exact renderer marker is acknowledged. The panel therefore opens without transferring keyboard focus away from the dataframe editor, invalidating its hydration marker, assigning new webview HTML, or creating a second synchronization cycle. In a multi-column viewing sort, the grid exposes `aria-sort` only on the priority-one header as required by the ARIA grid model; each secondary sort remains explicit through its accessible label, clear action, and visible priority indicator.
 

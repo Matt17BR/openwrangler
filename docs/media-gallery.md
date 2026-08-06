@@ -6,6 +6,7 @@ sizes in the images describe the example, not a row or column limit.
 [Workbench](#grid-and-sidebar) · [Files](#file-entry-points) ·
 [Explore](#filters-profiles-sorts-and-column-search) · [Clean](#cleaning-drafts-and-history) ·
 [Export](#export-code-and-cleaned-data) · [Notebooks](#notebook-dataframes) ·
+[R preview](#r-notebooks-open-wrangler-2) ·
 [Editors](#editor-and-theme-support)
 
 ## Grid and sidebar
@@ -70,7 +71,7 @@ for very wide dataframes.
     <td width="50%"><a href="images/readme/v1.2/gallery/operation-configuration.png"><img alt="Configuring a Formula column operation before preview" src="images/readme/v1.2/gallery/operation-configuration-detail.png" width="510" height="605"></a></td>
   </tr>
   <tr>
-    <td>Search or browse 27 built-in operations, custom code, and transformations inferred from examples.</td>
+    <td>Search or browse 28 operations, including custom code and transformations inferred from examples.</td>
     <td>Edit the operation parameters, then choose <strong>Preview changes</strong> to create a draft.</td>
   </tr>
 </table>
@@ -114,8 +115,8 @@ Select any applied step to inspect that point in history, then return to confirm
     <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="images/readme/v1.2/gallery/export-data-detail.png" width="995" height="344"></a></td>
   </tr>
   <tr>
-    <td>Copy generated code, insert it into a notebook, or save it as a Python script.</td>
-    <td>Export a cleaned CSV or Parquet file without overwriting the source.</td>
+    <td>Copy generated code or save it as a Python or R script. Python sessions can also insert it into the notebook.</td>
+    <td>Editing sessions backed by Pandas, Polars, or DuckDB can export a cleaned CSV or Parquet file without overwriting the source.</td>
   </tr>
 </table>
 
@@ -155,6 +156,27 @@ PySpark support is notebook-only and view-only. It uses an existing local 4.2 Cl
 page loads without counting or caching the entire DataFrame, and the exact row total appears after the last page. The
 ordering badge distinguishes Spark source order from an explicit sort and explains why repeatable rows need a unique
 final sort key.
+
+## R notebooks (Open Wrangler 2)
+
+<a href="images/editor-acceptance/vscode-notebook-r-picker-dark.png"><img alt="An R notebook variable picker listing a base data frame, data.table, and tibble" src="images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png" width="1040" height="380"></a>
+
+Open Wrangler 2 development builds discover base `data.frame`, tibble, and `data.table` variables in the active
+IRkernel. Each variable stays in R.
+
+<img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="1440" height="881">
+
+The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
+Editing mode also supports Rename Column with draft preview, generated R, apply, discard, inspection, latest-step
+editing, and undo. Generated R can be copied or saved as a `.R` script.
+
+<img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="1440" height="900">
+
+The editing image comes from the packaged VS Code journey; the same VSIX passed the matching journey in Cursor. This
+is the complete Rename Column flow, not a claim that the other R cleaning operations are ready.
+
+Other R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` files are
+still in development.
 
 ## DuckDB nested and temporal values
 

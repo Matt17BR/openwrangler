@@ -39,6 +39,38 @@ test("Cursor cleanup never inspects or launches an uninstaller under ownership u
   assert.equal(propertyReads, 0);
 });
 
+test("R notebook phases use fixed private-root identity classifiers", () => {
+  for (const cleanupOfPhase of [
+    "jupyter-r",
+    "jupyter-r-remote-setup",
+    "jupyter-r-remote",
+    "jupyter-r-remote-cleanup"
+  ]) {
+    const latch = createEditorAcceptancePrivatePathIdentityLatch({ reporter: () => undefined });
+    const identityLoss = new Error("private root changed");
+    identityLoss.code = "EDITOR_PRIVATE_ROOT_IDENTITY_LOST";
+    identityLoss.details = {
+      privateRootIdentity: "lost",
+      privateRootCheckpoint: "receipt-mismatch"
+    };
+    assert.equal(
+      latch.latch(identityLoss, {
+        scope: "orchestration-profile",
+        editor: "vscode",
+        cleanupOfPhase
+      }),
+      true
+    );
+    assert.deepEqual(latch.details(), {
+      scope: "orchestration-profile",
+      editor: "vscode",
+      phase: "cleanup",
+      cleanupOfPhase,
+      checkpoint: "receipt-mismatch"
+    });
+  }
+});
+
 test("Cursor cleanup invokes its private uninstaller once only after ownership is verified", async () => {
   let cleanups = 0;
   assert.deepEqual(

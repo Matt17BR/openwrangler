@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
+  accessSync,
   closeSync,
   constants,
   existsSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
   writeSync
 } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
 import {
   assertEditorAcceptancePrivateRootReceipt,
@@ -57,6 +58,53 @@ const REMOTE_JUPYTER_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
 const REMOTE_JUPYTER_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const REMOTE_JUPYTER_TOKEN = /^owr_[A-Za-z0-9_-]{39}$/u;
 const REMOTE_JUPYTER_DESCRIPTOR_MAX_BYTES = 2_048;
+export const R_ACCEPTANCE_REPOSITORY = "https://p3m.dev/cran/__linux__/noble/2026-03-10";
+export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
+  IRkernel: "1.3.2",
+  jsonlite: "2.0.0",
+  rlang: "1.1.7",
+  tibble: "3.3.1",
+  "data.table": "1.18.2.1"
+});
+const R_ACCEPTANCE_PACKAGES = Object.freeze(Object.keys(R_ACCEPTANCE_PACKAGE_VERSIONS));
+const R_ACCEPTANCE_PACKAGE_RECORD = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)
+  .map(([packageName, version]) => `${packageName}=${version}`)
+  .join("\n");
+const R_ACCEPTANCE_EXPECTED_VERSIONS = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)
+  .map(([packageName, version]) => `${JSON.stringify(packageName)} = ${JSON.stringify(version)}`)
+  .join(", ");
+const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
+const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
+const R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS = 300_000;
+const R_ACCEPTANCE_EXECUTABLE_PROBE = [
+  '.ow_r <- file.path(R.home("bin"), if (.Platform$OS.type == "windows") "R.exe" else "R")',
+  'cat(normalizePath(.ow_r, winslash = "/", mustWork = TRUE), sep = "")'
+].join("\n");
+const R_ACCEPTANCE_PROBE = [
+  `.ow_expected <- c(${R_ACCEPTANCE_EXPECTED_VERSIONS})`,
+  ".ow_packages <- names(.ow_expected)",
+  '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
+  ".ow_locations <- vapply(.ow_packages, function(.ow_package) {",
+  "  .ow_location <- find.package(.ow_package, lib.loc = .ow_library, quiet = TRUE)",
+  '  if (length(.ow_location) == 1L) .ow_location else ""',
+  "}, character(1L), USE.NAMES = FALSE)",
+  'if (any(!nzchar(.ow_locations))) quit(save = "no", status = 10L)',
+  ".ow_versions <- vapply(.ow_packages, function(.ow_package) {",
+  "  as.character(utils::packageVersion(.ow_package, lib.loc = .ow_library))",
+  "}, character(1L), USE.NAMES = FALSE)",
+  'if (!identical(.ow_versions, unname(.ow_expected))) quit(save = "no", status = 11L)',
+  'cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'
+].join("\n");
+const R_ACCEPTANCE_INSTALL = [
+  `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
+  '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
+  "utils::install.packages(",
+  "  .ow_packages,",
+  "  lib = .ow_library,",
+  `  repos = ${JSON.stringify(R_ACCEPTANCE_REPOSITORY)},`,
+  "  dependencies = NA",
+  ")"
+].join("\n");
 
 export function createRemoteJupyterAcceptanceToken(randomBytesImpl = randomBytes) {
   if (typeof randomBytesImpl !== "function") {
@@ -274,6 +322,216 @@ function javaSpecificationMajor(specificationVersion) {
     throw new Error("Released-Jupyter PySpark Java compatibility probe returned an invalid specification version.");
   }
   return major;
+}
+
+export async function prepareJupyterAcceptanceREnvironment(
+  directory,
+  rscript,
+  { containedBy, environment = createEditorAcceptanceEnvironment(), runCommand = runBoundedEditorCommand } = {}
+) {
+  if (
+    typeof directory !== "string" ||
+    !isAbsolute(directory) ||
+    /[\0\r\n]/u.test(directory) ||
+    existsSync(directory) ||
+    typeof containedBy !== "string" ||
+    !isAbsolute(containedBy) ||
+    /[\0\r\n]/u.test(containedBy) ||
+    typeof rscript !== "string" ||
+    !isAbsolute(rscript) ||
+    /[\0\r\n]/u.test(rscript) ||
+    !existsSync(rscript) ||
+    !environment ||
+    typeof environment !== "object" ||
+    Array.isArray(environment) ||
+    typeof runCommand !== "function"
+  ) {
+    throw new Error(
+      "Released-Jupyter R acceptance requires a new contained private environment and an existing absolute Rscript executable."
+    );
+  }
+
+  const canonicalRscript = validateRExecutable(rscript, "Rscript");
+  const root = validateNewContainedRDirectory(directory, containedBy);
+  const rExecutable = await resolveJupyterAcceptanceRExecutable(canonicalRscript, {
+    environment: Object.freeze(rIndependentCommandEnvironment(environment)),
+    runCommand
+  });
+  mkdirSync(root, { recursive: false, mode: 0o700 });
+  const directoryReceipt = createEditorAcceptancePrivateRootReceipt(root, { containedBy });
+  const libraryDir = resolve(root, "l");
+  const homeDir = resolve(root, "h");
+  const tempDir = resolve(root, "t");
+  const dataDir = resolve(root, "d");
+  const runtimeDir = resolve(root, "r");
+  const configDir = resolve(root, "c");
+  const pathDir = resolve(root, "p");
+  const kernelDirectory = resolve(dataDir, "kernels", R_ACCEPTANCE_KERNEL_ID);
+  for (const path of [libraryDir, homeDir, tempDir, dataDir, runtimeDir, configDir, pathDir, kernelDirectory]) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  }
+  assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+
+  const kernelSpecPath = resolve(kernelDirectory, "kernel.json");
+  writeFileSync(
+    kernelSpecPath,
+    `${JSON.stringify(
+      {
+        argv: [rExecutable, "--slave", "-e", "IRkernel::main()", "--args", "{connection_file}"],
+        display_name: R_ACCEPTANCE_KERNEL_DISPLAY_NAME,
+        language: "R",
+        env: { R_LIBS_USER: libraryDir }
+      },
+      null,
+      2
+    )}\n`,
+    { encoding: "utf8", flag: "wx", mode: 0o600 }
+  );
+  assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+
+  const commandEnvironment = privateRCommandEnvironment(environment, {
+    homeDir,
+    libraryDir,
+    tempDir
+  });
+  const dependencyProbe = freezeRCommandInvocation(
+    {
+      executable: canonicalRscript,
+      args: ["--vanilla", "-e", R_ACCEPTANCE_PROBE],
+      environment: commandEnvironment,
+      label: "Released-Jupyter private R dependency probe"
+    },
+    30_000
+  );
+  const dependencyInstall = freezeRCommandInvocation(
+    {
+      executable: canonicalRscript,
+      args: ["--vanilla", "-e", R_ACCEPTANCE_INSTALL],
+      environment: commandEnvironment,
+      label: "Released-Jupyter private R dependency installation"
+    },
+    240_000
+  );
+
+  return Object.freeze({
+    root,
+    libraryDir,
+    kernelId: R_ACCEPTANCE_KERNEL_ID,
+    kernelDisplayName: R_ACCEPTANCE_KERNEL_DISPLAY_NAME,
+    rExecutable,
+    kernelSpecPath,
+    packages: R_ACCEPTANCE_PACKAGES,
+    packageVersions: R_ACCEPTANCE_PACKAGE_VERSIONS,
+    packageRecord: R_ACCEPTANCE_PACKAGE_RECORD,
+    repository: R_ACCEPTANCE_REPOSITORY,
+    jupyterEnvironment: Object.freeze({ dataDir, runtimeDir, configDir, path: pathDir }),
+    dependencyProbe,
+    dependencyInstall
+  });
+}
+
+async function resolveJupyterAcceptanceRExecutable(rscript, { environment, runCommand }) {
+  let result;
+  try {
+    result = await runCommand(
+      {
+        executable: rscript,
+        args: ["--vanilla", "-e", R_ACCEPTANCE_EXECUTABLE_PROBE],
+        environment,
+        label: "Released-Jupyter matching R executable probe"
+      },
+      { timeoutMs: R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS }
+    );
+  } catch (error) {
+    throw new Error("Released-Jupyter R acceptance could not resolve the R executable matching Rscript.", {
+      cause: error
+    });
+  }
+  const stdout = result?.stdout;
+  if (
+    typeof stdout !== "string" ||
+    Buffer.byteLength(stdout, "utf8") > 4_096 ||
+    stdout.length === 0 ||
+    /[\0\r\n]/u.test(stdout) ||
+    !isAbsolute(stdout)
+  ) {
+    throw new Error("Released-Jupyter R acceptance received an invalid matching R executable path.");
+  }
+  const resolved = validateRExecutable(stdout, "R");
+  if (resolved === rscript) {
+    throw new Error("Released-Jupyter R acceptance resolved Rscript instead of the matching R executable.");
+  }
+  return resolved;
+}
+
+function validateRExecutable(executable, name) {
+  try {
+    const canonical = realpathSync(executable);
+    if (!lstatSync(canonical).isFile()) {
+      throw new Error("not a file");
+    }
+    accessSync(canonical, constants.X_OK);
+    return canonical;
+  } catch {
+    throw new Error(`Released-Jupyter R acceptance requires ${name} to be an executable file.`);
+  }
+}
+
+function validateNewContainedRDirectory(directory, containedBy) {
+  const root = resolve(directory);
+  let canonicalContainer;
+  let canonicalParent;
+  try {
+    canonicalContainer = realpathSync(resolve(containedBy));
+    canonicalParent = realpathSync(dirname(root));
+  } catch {
+    throw new Error("Released-Jupyter R acceptance requires an existing caller-owned parent directory.");
+  }
+  const parentWithinContainer = relative(canonicalContainer, canonicalParent);
+  if (
+    parentWithinContainer === ".." ||
+    parentWithinContainer.startsWith(`..${sep}`) ||
+    isAbsolute(parentWithinContainer)
+  ) {
+    throw new Error("Released-Jupyter R acceptance environment must stay inside its caller-owned root.");
+  }
+  return root;
+}
+
+function privateRCommandEnvironment(environment, { homeDir, libraryDir, tempDir }) {
+  const isolated = rIndependentCommandEnvironment(environment);
+  Object.assign(isolated, {
+    HOME: homeDir,
+    USERPROFILE: homeDir,
+    TMPDIR: tempDir,
+    TMP: tempDir,
+    TEMP: tempDir,
+    R_USER: homeDir,
+    R_LIBS_USER: libraryDir
+  });
+  return Object.freeze(isolated);
+}
+
+function rIndependentCommandEnvironment(environment) {
+  const isolated = {};
+  for (const [key, value] of Object.entries(environment)) {
+    if (typeof value !== "string" || /[\0\r\n]/u.test(key) || /[\0]/u.test(value)) {
+      throw new Error("Released-Jupyter R acceptance received an invalid command environment.");
+    }
+    if (/^R_/iu.test(key)) continue;
+    isolated[key] = value;
+  }
+  return isolated;
+}
+
+function freezeRCommandInvocation(input, timeoutMs) {
+  return Object.freeze({
+    input: Object.freeze({
+      ...input,
+      args: Object.freeze([...input.args])
+    }),
+    options: Object.freeze({ timeoutMs })
+  });
 }
 
 export function writeJupyterAcceptanceEnvironment(directory, python) {

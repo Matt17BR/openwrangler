@@ -253,6 +253,22 @@ describe("file launch command", () => {
     );
   });
 
+  it("ignores an R backend value manually written into file settings", async () => {
+    const { context, bridge } = register();
+    const menuUri = vscode.Uri.file("/workspace/menu.parquet");
+    fileMocks.defaultBackend = "r";
+
+    await command("openWrangler.openFile")(menuUri);
+
+    expect(fileMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      bridge,
+      expect.objectContaining({ uri: menuUri.toString() }),
+      undefined,
+      "auto"
+    );
+  });
+
   it("falls back to text, custom, and modified diff tab resources", async () => {
     const candidates = [
       new vscode.TabInputText(vscode.Uri.file("/workspace/text.jsonl")),

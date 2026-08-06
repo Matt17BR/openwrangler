@@ -4,7 +4,7 @@
 
 <h1 align="center">Open Wrangler</h1>
 
-<p align="center">A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks. Open, clean, and export Pandas or Polars data. DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames can be viewed from live Jupyter notebooks.</p>
+<p align="center">A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks. It supports native Pandas and Polars editing, DuckDB and PySpark viewing, and early R notebook support in Open Wrangler 2 development builds.</p>
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/explore.png" width="1440" height="870"></a>
 
@@ -37,11 +37,12 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 | Other VS Code desktop forks | Experimental   |
 | Browser-hosted `vscode.dev` | Unsupported    |
 
-Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It uses your configured Python path,
-selected environment, or a supported system interpreter. If a required Python package is missing, Open Wrangler
-lists it and asks before installing anything.
+Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
+3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package
+is missing, Open Wrangler lists it and asks before installing anything. Native R notebook sessions use the selected
+IRkernel instead of Python.
 
-Opening data or running Python requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.
+Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.
 
 <!-- open-wrangler-release-status:end -->
 
@@ -95,9 +96,8 @@ changing the source._
 
 ## Transformations
 
-Choose from 28 built-in operations, including filling missing values with a median or a value of the same type. You
-can also write custom Pandas or Polars code or infer a transformation from examples. A draft stays separate until you
-apply it, and applied steps can be inspected, edited, or undone.
+Choose from 28 operations, including filling missing values, custom Pandas or Polars code, and transformations inferred
+from examples. A draft stays separate until you apply it, and applied steps can be inspected, edited, or undone.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png" width="1440" height="870"></a>
 
@@ -170,6 +170,16 @@ grid stays visible unless that reconnect works.
 Closing the view leaves Spark work that has already started alone, so Open Wrangler cannot cancel unrelated notebook
 jobs.
 
+Open Wrangler 2 development builds can also open base R `data.frame`, tibble, and `data.table` variables from
+IRkernel. The R workbench supports paging, filters, multi-column sorts, value search, and profiles. Editing mode now
+supports **Rename Column**: preview the draft and generated R, then apply, discard, inspect, edit, or undo the step.
+Generated R can be copied or saved as a `.R` script.
+
+The rest of the R operation catalog, cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto
+are still in development. The
+[current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2)
+show the live variable picker, profiles, and a Rename draft with native generated R.
+
 ## Export
 
 <table>
@@ -178,8 +188,8 @@ jobs.
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data-detail.png" width="995" height="344"></a></td>
   </tr>
   <tr>
-    <td>Copy generated code, insert it into a notebook, or save it as a Python script.</td>
-    <td>Export a cleaned CSV or Parquet file without overwriting the source.</td>
+    <td>Copy generated code or save it as a Python or R script. Python sessions can also insert it into the notebook.</td>
+    <td>Editing sessions backed by Pandas, Polars, or DuckDB can export a cleaned CSV or Parquet file without overwriting the source.</td>
   </tr>
 </table>
 
@@ -191,6 +201,7 @@ jobs.
 | Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series                     | Native, including duplicate column labels                 |
 | DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation                      | Native; notebook relations are viewing-only               |
 | PySpark 4.2.x        | No                                     | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles |
+| R (v2 development)   | No                                     | `data.frame`, tibble, `data.table`    | Native IRkernel viewing; Rename Column in Editing mode    |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
@@ -210,7 +221,7 @@ for the complete surface.
 ## Performance and scale
 
 Open Wrangler fetches the rows and columns needed by the grid instead of loading the whole dataset into the webview.
-The release benchmark uses a 100,000 × 50 CSV and a 1,000,000 × 20 Parquet file. Larger datasets can work, but the
+The 1.2.1 benchmark uses a 100,000 × 50 CSV and a 1,000,000 × 20 Parquet file. Larger datasets can work, but the
 practical limit depends on the engine and machine.
 
 We compared Open Wrangler 1.2.1 with Microsoft Data Wrangler 1.24.2 on the same machine. The table reports median
@@ -239,11 +250,16 @@ dominates those rows. The
 [installed-editor benchmarks](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md#performance-fixtures)
 cover first-grid and scrolling performance in VS Code and Cursor.
 
+These are the current stable results. We will rerun the comparison from the exact Open Wrangler 2 release candidate
+before v2 ships.
+
 ## Roadmap
 
 - **v1:** keep improving performance, DuckDB coverage, and support for other desktop VS Code forks. Fork support is
   currently experimental.
-- **v2:** add native R data frames, tibbles, and `data.table`, then add Quarto and R Markdown workflows. The
+- **v2:** finish native R notebook support for data frames, tibbles, and `data.table`, then add Quarto and R Markdown.
+  Rename Column is the first editing operation; the rest of the cleaning catalog, data export, notebook insertion,
+  and plain `.R` workflows are still being built. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).

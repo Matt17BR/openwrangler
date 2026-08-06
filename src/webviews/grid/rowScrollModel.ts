@@ -59,8 +59,7 @@ export function renderedRowSegmentSpacers(
   renderedRowCount: number
 ): { bottom: number; top: number } {
   const renderedHeight = renderedRowCount * gridRowHeight;
-  const rowsBeforeViewport = Math.max(0, firstVisibleRow - renderedStartRow);
-  const desiredTop = scrollTop - rowsBeforeViewport * gridRowHeight;
+  const desiredTop = scrollTop + (renderedStartRow - firstVisibleRow) * gridRowHeight;
   const maximumTop = Math.max(0, model.canvasHeight - renderedHeight);
   const top = Math.max(0, Math.min(desiredTop, maximumTop));
   return {

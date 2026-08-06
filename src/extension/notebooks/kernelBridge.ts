@@ -836,9 +836,18 @@ export function withKernelSessionIdentity(
 type KernelIdentifiedRequest =
   Exclude<OpenWranglerRequest, OpenSessionRequest> | (OpenSessionRequest & { requestedSessionId: string });
 
-export async function kernelOutputsToText(output: ReturnType<Kernel["executeCode"]>): Promise<string> {
+export async function kernelOutputsToText(
+  output: ReturnType<Kernel["executeCode"]>,
+  maximumBytes = Number.POSITIVE_INFINITY
+): Promise<string> {
   const chunks: string[] = [];
-  for await (const item of output) chunks.push(outputItemToText(item));
+  let bytes = 0;
+  for await (const item of output) {
+    const chunk = outputItemToText(item);
+    bytes += Buffer.byteLength(chunk, "utf8");
+    if (bytes > maximumBytes) throw new Error("Open Wrangler kernel output exceeds the byte limit.");
+    chunks.push(chunk);
+  }
   return chunks.join("");
 }
 

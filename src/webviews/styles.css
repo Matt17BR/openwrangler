@@ -1396,6 +1396,17 @@ th:hover .columnResizeHandle,
   color: var(--vscode-descriptionForeground);
 }
 
+.rowHeader.labeledRowHeader {
+  text-align: left;
+}
+
+.rowHeaderText {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .virtualSpacer {
   border-left: 0;
   border-right: 0;

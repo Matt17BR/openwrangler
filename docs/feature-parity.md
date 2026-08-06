@@ -69,20 +69,39 @@ The released v1.1.1 notebook UX prepares automatic Pandas/Polars MIME formatters
 
 Inline MIME v2 output shows every captured column and pages the captured rows at 10, 20, 50, or 100 rows per page. When the output retains one canonical live-variable link, its single **Open in Open Wrangler** action opens the complete current dataframe through the exact originating notebook and kernel; it never substitutes the saved capture. An unlinked output stays readable inline and tells the user to run the cell again instead of exposing a misleading open action. The notebook-toolbar and Jupyter Variables workflows remain additional live entry points. Focused unit, renderer, provenance, provider-conflict, restart, and packaged-editor acceptance defined in `docs/testing.md` must be green before this candidate is released.
 
-## Native R groundwork for Open Wrangler 2
+## Native R work for Open Wrangler 2
 
-R support is not available in the extension yet. The first implementation is an internal, native-R frame contract for
-base `data.frame`, tibble, and `data.table`. It produces bounded typed pages and has a strict TypeScript decoder. It
-does not use Python or change the current Python support matrix.
+R support is not in a released package yet. On the Open Wrangler 2 branch, R notebooks can open base `data.frame`,
+tibble, and `data.table` variables through IRkernel. Pages, compound filters, ordered sorts, value search, and column
+and dataset profiles run in R; the dataframe is not passed through Python. Editing mode currently supports Rename
+Column. The operation follows the same draft, generated-code, apply, discard, inspection, edit-latest, and undo flow
+as the released Python engines. Generated R can be copied or saved as a `.R` script.
 
-| Surface                                      | Availability | Status  | Recorded evidence                           | Remaining acceptance gate                          |
-| -------------------------------------------- | ------------ | ------- | ------------------------------------------- | -------------------------------------------------- |
-| Native R frame snapshot and typed page       | Internal     | Partial | Focused producer and decoder contract suite | Hosted R 4.4/4.5 and IRkernel lifecycle gates      |
-| Native R ordered viewing sorts               | Internal     | Partial | Stable pure-R sorts and decoder fixtures    | Live-session filtering, sorting, and UI acceptance |
-| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Real cross-language fixtures for all three  | Real notebook discovery, paging, and profiling     |
-| Notebook workbench                           | No           | Planned | No command or coordinator wiring            | Packaged VS Code/Cursor IRkernel acceptance        |
-| R cleaning operations and generated code     | No           | Planned | Frame semantics only                        | Native R IR, adapters, code generation, and tests  |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR       | Stable broker or Open Wrangler-owned helper        |
+[Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed at `6742255` with local
+R 4.5.2 in VS Code and Cursor and a containerized IRkernel in VS Code. It covered filters, profiles, sort priority,
+kernel restart, source preservation, and cleanup.
+
+The [product gallery](media-gallery.md#r-notebooks-open-wrangler-2) shows the packaged IRkernel picker, viewing
+workbench, and Rename draft with generated R. The packaged VS Code and Cursor journey drives the complete Rename
+lifecycle against a base data frame and also previews and discards the same operation for a tibble and keyed
+`data.table`. Native R and cross-language tests add duplicate-name and non-syntactic-name coverage.
+The remaining R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R`
+files are not available yet.
+
+| Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                   |
+| -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | ------------------------------------------- |
+| Native R frame paging and typed cells        | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                             |
+| Native R compound viewing filters            | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                             |
+| Native R value search and selections         | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                             |
+| Native R ordered viewing sorts               | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                             |
+| Native R column and dataset profiles         | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                             |
+| Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                             |
+| Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                           |
+| Notebook workbench                           | v2 branch    | Partial | Packaged viewing/editing, screenshots, production axe    | Preview release                             |
+| R cleaning operations and generated code     | Rename only  | Partial | Native tests and packaged VS Code/Cursor journey         | Remaining operations                        |
+| Copy or save generated R                     | Rename only  | Partial | Packaged clipboard and `.R` Save-dialog journey          | Preview release                             |
+| Cleaned-data export and notebook insertion   | No           | Planned | No public R path                                         | Native export and exact-notebook insertion  |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper |
 
 ## DuckDB file-backed preview matrix
 
@@ -380,7 +399,7 @@ This makes the production-bundle grid interaction, summaries/Quick Insights, vie
 
 Editable code and runtime-selection slice, 2026-07-15:
 
-- After every packaged Pandas and Polars representative plan, acceptance replaces the Code Preview buffer with an identifiable edit, invokes the real Copy Code command, reads the editor clipboard, invokes Export Python Script with an isolated destination, and verifies both outputs byte-for-byte. The production CodeMirror bundle separately covers editing, syntax highlighting, overflow/focus behavior, and VS Code tokens under the visual/axe matrix.
+- After every packaged Pandas and Polars representative plan, acceptance replaces the Code Preview buffer with an identifiable edit, invokes the real Copy Code command, reads the editor clipboard, invokes **Export Generated Script** with an isolated destination, and verifies both outputs byte-for-byte. The production CodeMirror bundle separately covers editing, syntax highlighting, overflow/focus behavior, and VS Code tokens under the visual/axe matrix.
 - Successful copy/export notifications no longer block command completion while awaiting toast dismissal; clipboard and file writes remain awaited. The generated function before editing is still executed against both engines and compared with the native adapter result, with Polars conversion prohibited.
 - Runtime acceptance invokes Change Runtime with an executable wrapper around the same supported interpreter but isolated from site packages. A Polars open returns the structured `missing_dependencies` diagnostic before process startup, points to the explicit install command, and retains no session.
 - The Install Runtime Dependencies command receives an explicit decline and returns without running pip, changing configuration, or starting a process. Clear Runtime removes the workspace override and reveals the configured fallback. Resolver tests cover relative/absolute paths, the exact Python 3.10 to 3.14 range, and engine/format-specific modules; normal resolution still prefers explicit configuration, then the Python extension, then system interpreters.
@@ -563,7 +582,7 @@ This hardens existing **Done** runtime-selection and recovery rows; it does not 
 
 Source-safe Python-script export slice, 2026-07-17:
 
-- The public Export Python Script command is zero-argument and ignores hostile URI/object arguments. After trust and active-code checks it always asks VS Code for a destination, rechecks trust after the dialog, and returns false on cancellation or failure. The environment-gated acceptance API is the only deterministic-destination seam and calls the same production writer. A public-command filesystem test returns a real `.py` hard-link alias from the Save-dialog boundary and proves the immutable dataframe source is not changed; the installed editor flow proves a hostile argument cannot bypass the visible Save dialog, exports the edited CodeMirror buffer byte-for-byte, and cancels a second dialog without creating a file.
+- The public **Export Generated Script** command is zero-argument and ignores hostile URI/object arguments. After trust and active-code checks it always asks VS Code for a destination, rechecks trust after the dialog, and returns false on cancellation or failure. The environment-gated acceptance API is the only deterministic-destination seam and calls the same production writer. A public-command filesystem test returns a real `.py` hard-link alias from the Save-dialog boundary and proves the immutable dataframe source is not changed; the installed editor flow proves a hostile argument cannot bypass the visible Save dialog, exports the edited CodeMirror buffer byte-for-byte, and cancels a second dialog without creating a file.
 - Public session metadata now pins the exact immutable `openSession` request source across initial, page, mutation, replay, and recovery responses, so malformed runtime source metadata cannot redirect the guard. Exact `vscode-remote` URIs retain their authority, a simultaneous remote workspace must name the same host, and local/cross-remote mismatches fail before Node filesystem I/O. The authority contract is unit-tested; an actual Remote SSH/WSL host run remains part of the separate remote/cross-platform hardening gate rather than being inferred from local paths.
 - The writer checks exact, normalized, canonical, parent-symlink, direct-symlink, hard-link, platform-case, directory, virtual, and remote-host destinations. It captures usable identities for every concrete source, the selected destination, and its parent; reserves one of sixteen random sibling names exclusively; records the created file identity; writes and flushes the complete edited buffer; closes it; then revalidates source, destination, parent, and temp state immediately before one rename. Missing or all-zero source/destination identities fail closed. A source rename, appeared/replaced/deleted destination, changed parent, or substituted temp cannot be published; an unidentifiable or substituted temp is deliberately not removed by pathname.
 - Fault injection covers non-collision exclusive-open failure, post-open identity failure, exhausted and retried name collisions, partial write, sync, first/cleanup close, source/destination/parent/temp revalidation, destination replacement, cleanup removal, already-absent cleanup, and second-validation `realpath`/`stat`/`lstat` failures. Every applicable failure preserves the protected source and any concurrently changed destination, removes only a still-identified owned temp, and retains both primary and cleanup errors when cleanup itself fails.
@@ -742,8 +761,8 @@ Grid status and profile vocabulary, 2026-07-31:
   **Column profiles and filters**. Its established region and tab IDs, deterministic Close focus, Escape handling,
   exact opener restoration, and Column / Dataset / Filters ownership remain unchanged.
 - Grid-header summaries remain an independent **Header profiles** toggle with a constant name and `aria-pressed`.
-  `openWrangler.insightsOnOpen` keeps its public key and behavior; PySpark still starts this toggle off and retains
-  its Spark-query cost tooltip.
+  `openWrangler.insightsOnOpen` keeps its public key and behavior. R and PySpark start this toggle off, with a tooltip
+  explaining the profiling work that an explicit click starts.
 - React, production-bundle screenshot, axe, forced-colors, narrow-width, 200%-zoom, packaged-layout, and PySpark
   media assertions cover direct status-bar placement, exact range text, Codicon presence, pressed state, and
   unclipped controls. Dedicated 100,000,000-row terminal fixtures prove the exact
@@ -786,16 +805,16 @@ Released-Jupyter packaged acceptance harness, 2026-07-26:
 - The runner derives exact `ipykernel`, Pandas, and Polars versions from the selected interpreter, installs their binary wheels into a disposable private kernel environment, and fails if that environment can already resolve `openwrangler_runtime`. Ordinary packaged-editor phases continue using the selected project interpreter.
 - The acceptance contract drives Jupyter's actual consent dialog and Variables action plus Open Wrangler's notebook toolbar, covering Pandas and Polars DataFrame/Series values, automatic MIME v2 rendering and expansion, exact-origin generated-code insertion, restart/replay, and terminal session/kernel cleanup.
 - Every notebook cell result must follow a fresh execution-summary event. Restart recovery observes the released stable API's real kernel status transition back to idle, proves the process changed, and proves the replacement kernel again lacks the runtime before Open Wrangler retransfers and replays it. A persisted denial must reach a new terminal panel error without another consent prompt.
-- `.github/workflows/released-jupyter.yml` makes the VS Code phase manually dispatchable and weekly without adding it to required pull-request CI. Failures use the hardened exact-path sanitized-evidence handoff.
+- `.github/workflows/released-jupyter.yml` makes the VS Code phase manually dispatchable without adding it to required pull-request CI. Failures use the hardened exact-path sanitized-evidence handoff.
 
 The notebook-variable row remains **Partial** pending the real remote-kernel and remaining release-platform evidence tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). The local combined run below closes the released-Jupyter functional gate for both supported Linux desktop editors.
 
-Real remote-Jupyter acceptance harness, 2026-07-26:
+Real remote-Python Jupyter acceptance harness, 2026-07-26:
 
 - The opt-in Linux phase uses the same packaged VSIX and pinned released Jupyter extension against a real Jupyter Server in an unprivileged, read-only, resource-bounded Docker container. The image is digest-pinned, every Python wheel is hash-locked, the exact kernelspec is proven through the authenticated server API, and no checkout/runtime path is mounted into the container.
 - A run-derived hostname and public correlation ID prove remote identity. The private token has one redaction-friendly fixed shape, enters through bounded stdin and atomic private-file publication, and reaches the editor only through an owned mode-0400 descriptor under its isolated root. It is absent from Docker metadata, phase envelopes, logs, and workflow configuration.
 - The remote phase follows the released server-collection and workbench kernel-picker path, then runs the existing Pandas/Polars DataFrame/Series, MIME-v2 renderer, exact-origin insertion, runtime-transfer, kernel-restart, plan-replay, and zero-session contract. Cleanup reattests the Docker engine and exact labelled container/image; ambiguous completion or disappearance suppresses evidence and preserves the private root.
-- `.github/workflows/released-jupyter.yml` enables this phase weekly and on manual dispatch. Pull requests use the unit, renderer, and extension-host contracts; preview and stable release candidates rerun the real packaged Jupyter journey before publication. The exact hosted acceptance recorded below is the authoritative Docker-backed result.
+- `.github/workflows/released-jupyter.yml` exposes this phase through manual dispatch. Pull requests use the unit, renderer, and extension-host contracts; preview and stable release candidates rerun the real packaged Jupyter journey before publication. The exact hosted acceptance recorded below is the authoritative Docker-backed Python result.
 
 Local released-Jupyter evidence, 2026-07-26:
 

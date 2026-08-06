@@ -2,11 +2,18 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import { isActiveColumnFilter, viewSortModelSignature } from "../shared/filterModel";
-import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
-import { dataBackendLabel, formatSessionRowCount } from "../shared/protocol";
+import {
+  canEditLatestStep,
+  canStartOperation,
+  operationCatalog,
+  operationByKind,
+  supportedOperationCatalog,
+  supportsOperation
+} from "../shared/operations";
+import { dataBackendLabel, formatSessionRowCount, supportsViewingCapability } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { isCodePreviewWebviewMessage, type CodePreviewHostMessage } from "../shared/codePreviewMessages";
-import { codeDialectLanguageLabel, runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
+import { codeDialectLanguageLabel, runtimeIdentityForSessionMetadata } from "../shared/runtimeIdentity";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
@@ -15,7 +22,13 @@ import { exportFileSafely } from "./files/safeFileExport";
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 type ViewSortAction = "moveUp" | "moveDown" | "remove";
 export type ViewSortDispatchStatus =
-  "sent" | "invalid-target" | "stale-target" | "inspection-active" | "priority-boundary" | "panel-unavailable";
+  | "sent"
+  | "invalid-target"
+  | "stale-target"
+  | "inspection-active"
+  | "priority-boundary"
+  | "panel-unavailable"
+  | "unsupported";
 
 const VIEW_SORT_HANDLE_KIND = "openWrangler.viewSort";
 const VIEW_SORT_TREE_ID_PREFIX = `${VIEW_SORT_HANDLE_KIND}:`;
@@ -256,7 +269,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private render(): void {
     if (!this.view) return;
-    const runtimeIdentity = this.snapshot ? runtimeIdentityForDataBackend(this.snapshot.metadata.backend) : null;
+    const runtimeIdentity = this.snapshot ? runtimeIdentityForSessionMetadata(this.snapshot.metadata) : null;
     const message: CodePreviewHostMessage = {
       kind: "codePreview",
       code: this.displayedCode,
@@ -320,6 +333,7 @@ export function registerNativeViews(
     if (!snapshot || active?.sessionId !== target.sessionId || target.sessionId !== snapshot.sessionId) {
       return "stale-target";
     }
+    if (!supportsViewingCapability(snapshot.metadata.capabilities, "sort")) return "unsupported";
     if (isStepInspectionActive(snapshot)) return "inspection-active";
     if (target.modelSignature !== viewSortModelSignature(snapshot.viewState.filterModel)) return "stale-target";
     const matchingIndexes = snapshot.viewState.filterModel.sort.flatMap((rule, index) =>
@@ -363,6 +377,8 @@ export function registerNativeViews(
       );
     } else if (status === "panel-unavailable") {
       void vscode.window.showInformationMessage("Open the active dataframe editor before changing sort order.");
+    } else if (status === "unsupported") {
+      void vscode.window.showInformationMessage("Sorting is unavailable for this dataframe.");
     }
     return status === "sent";
   };
@@ -372,6 +388,8 @@ export function registerNativeViews(
       const snapshot = coordinator.activeSession();
       if (
         typeof column !== "string" ||
+        !snapshot ||
+        !supportsViewingCapability(snapshot.metadata.capabilities, "filter") ||
         isStepInspectionActive(snapshot) ||
         !snapshot?.viewState.filterModel.filters.some(
           (filter) => filter.column === column && isActiveColumnFilter(filter)
@@ -391,6 +409,10 @@ export function registerNativeViews(
             ? "Return to the current view before editing viewing sorts."
             : "Open a dataframe in Open Wrangler before editing viewing sorts."
         );
+        return;
+      }
+      if (!supportsViewingCapability(snapshot.metadata.capabilities, "sort")) {
+        void vscode.window.showInformationMessage("Sorting is unavailable for this dataframe.");
         return;
       }
       if (
@@ -416,7 +438,13 @@ export function registerNativeViews(
     vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
-      if (snapshot && !canStartOperation(snapshot.metadata)) {
+      if (snapshot && kind !== undefined && !supportsOperation(snapshot.metadata.capabilities, kind)) {
+        void vscode.window.showInformationMessage(
+          `${operationByKind(kind).title} is not available for this dataframe.`
+        );
+        return;
+      }
+      if (snapshot && !canStartOperation(snapshot.metadata, kind)) {
         void vscode.window.showInformationMessage(
           snapshot.metadata.draftStep
             ? "Apply or discard the current draft before adding another cleaning step."
@@ -496,12 +524,7 @@ export function registerNativeViews(
         void vscode.window.showInformationMessage("Add a cleaning step before exporting generated code.");
         return;
       }
-      const destination = await vscode.window.showSaveDialog({
-        title: "Export Open Wrangler Python Code",
-        defaultUri: defaultExportUri(snapshot, ".clean.py"),
-        filters: { "Python script": ["py"] },
-        saveLabel: "Export code"
-      });
+      const destination = await vscode.window.showSaveDialog(generatedScriptSaveOptions(snapshot));
       if (!destination) return false;
       if (!(await requireTrustedWorkspace("export code"))) return false;
       try {
@@ -673,7 +696,7 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
   if (!metadata) return [new ViewNode("Open a dataframe", "Operations appear here", "wand")];
   const editable = metadata.mode === "editing";
   const canStart = canStartOperation(metadata);
-  return operationCatalog.map(
+  return supportedOperationCatalog(metadata.capabilities).map(
     (operation) =>
       new ViewNode(
         operation.title,
@@ -737,28 +760,32 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
 function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   const { metadata, viewState } = snapshot;
   const stats = metadata.stats;
+  const profileSupported = supportsViewingCapability(metadata.capabilities, "profile");
   const selectedColumn = metadata.schema.find((column) => column.id === viewState.selectedColumnId);
   const selectedColumnLabel = selectedColumn
     ? metadata.schema.filter((column) => column.name === selectedColumn.name).length > 1
       ? `${selectedColumn.name} (column ${selectedColumn.position + 1})`
       : selectedColumn.name
     : "None";
-  return [
-    new ViewNode(
-      metadata.source.label,
-      `${metadata.backend === "pyspark" ? dataBackendLabel(metadata.backend) : metadata.backend} · ${metadata.mode}`,
-      "table"
-    ),
+  const nodes = [
+    new ViewNode(metadata.source.label, `${dataBackendLabel(metadata.backend)} · ${metadata.mode}`, "table"),
     new ViewNode(
       "Shape",
       `${formatSessionRowCount(metadata.filteredShape.rows)} × ${metadata.filteredShape.columns.toLocaleString()}`,
       "symbol-array"
     ),
     new ViewNode("Columns", metadata.schema.length.toLocaleString(), "list-tree"),
-    new ViewNode("Selected column", selectedColumnLabel, "symbol-field"),
+    new ViewNode("Selected column", selectedColumnLabel, "symbol-field")
+  ];
+  if (!profileSupported) {
+    nodes.push(new ViewNode("Profiles unavailable", "This dataframe does not support profiling", "info"));
+    return nodes;
+  }
+  nodes.push(
     new ViewNode("Missing cells", stats ? stats.missingCells.toLocaleString() : "Profiling…", "question"),
     new ViewNode("Duplicate rows", stats ? stats.duplicateRows.toLocaleString() : "Profiling…", "copy")
-  ];
+  );
+  return nodes;
 }
 
 function filterNodes(
@@ -768,7 +795,12 @@ function filterNodes(
   const model = snapshot.viewState.filterModel;
   const modelSignature = viewSortModelSignature(model);
   const inspectionMode = isStepInspectionActive(snapshot);
-  const filters = model.filters.filter(isActiveColumnFilter).map(
+  const filterSupported = supportsViewingCapability(snapshot.metadata.capabilities, "filter");
+  const sortSupported = supportsViewingCapability(snapshot.metadata.capabilities, "sort");
+  if (!filterSupported && !sortSupported) {
+    return [new ViewNode("Filters and sorts unavailable", "Not supported by this dataframe", "info")];
+  }
+  const filters = (filterSupported ? model.filters.filter(isActiveColumnFilter) : []).map(
     (filter) =>
       new ViewNode(
         filter.column,
@@ -785,7 +817,7 @@ function filterNodes(
         inspectionMode ? "Return to the current view to edit filters and sorts" : undefined
       )
   );
-  const sorts = model.sort.map((sort, index) => {
+  const sorts = (sortSupported ? model.sort : []).map((sort, index) => {
     const handle = inspectionMode
       ? undefined
       : registerViewSortTarget({
@@ -821,9 +853,13 @@ function filterNodes(
       ...sorts
     ];
   }
+  const unavailable = [
+    ...(!filterSupported ? [new ViewNode("Filtering unavailable", "Not supported by this dataframe", "info")] : []),
+    ...(!sortSupported ? [new ViewNode("Sorting unavailable", "Not supported by this dataframe", "info")] : [])
+  ];
   return filters.length || sorts.length
-    ? [...filters, ...sorts]
-    : [new ViewNode("No filters or sorts", "Current view", "filter")];
+    ? [...unavailable, ...filters, ...sorts]
+    : [...unavailable, new ViewNode("No filters or sorts", "Current view", "filter")];
 }
 
 function isStepInspectionActive(snapshot: ActiveSessionSnapshot | undefined): boolean {
@@ -868,6 +904,24 @@ export function defaultExportUri(snapshot: ActiveSessionSnapshot, suffix: string
   }
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
   return workspace ? vscode.Uri.joinPath(workspace, fileName) : vscode.Uri.file(path.join(process.cwd(), fileName));
+}
+
+function generatedScriptSaveOptions(snapshot: ActiveSessionSnapshot): vscode.SaveDialogOptions {
+  const runtimeIdentity = runtimeIdentityForSessionMetadata(snapshot.metadata);
+  if (runtimeIdentity.codeDialect === "r.base") {
+    return {
+      title: "Export Open Wrangler R Code",
+      defaultUri: defaultExportUri(snapshot, ".clean.R"),
+      filters: { "R script": ["R", "r"] },
+      saveLabel: "Export code"
+    };
+  }
+  return {
+    title: "Export Open Wrangler Python Code",
+    defaultUri: defaultExportUri(snapshot, ".clean.py"),
+    filters: { "Python script": ["py"] },
+    saveLabel: "Export code"
+  };
 }
 
 async function exportGeneratedCode(

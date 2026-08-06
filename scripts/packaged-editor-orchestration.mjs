@@ -47,9 +47,13 @@ const PRIVATE_ROOT_IDENTITY_ORIGIN_PHASES = new Set([
   "jupyter-deny",
   "jupyter-allow",
   "jupyter-pyspark",
+  "jupyter-r",
   "jupyter-remote-setup",
   "jupyter-remote",
   "jupyter-remote-cleanup",
+  "jupyter-r-remote-setup",
+  "jupyter-r-remote",
+  "jupyter-r-remote-cleanup",
   "seed",
   "verify"
 ]);

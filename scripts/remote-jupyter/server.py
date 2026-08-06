@@ -5,6 +5,7 @@ import re
 import stat
 import time
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 
 TOKEN_PATH = Path("/run/openwrangler/token")
@@ -91,9 +92,14 @@ def main() -> None:
     token = read_token()
     directories = prepare_jupyter_environment()
 
-    from IPython.paths import get_ipython_dir
     from jupyter_server.serverapp import ServerApp
     from traitlets.config import Config
+
+    ipython_directory = directories.ipython
+    if find_spec("IPython") is not None:
+        from IPython.paths import get_ipython_dir
+
+        ipython_directory = Path(get_ipython_dir())
 
     config = Config()
     config.IdentityProvider.token = token
@@ -114,7 +120,7 @@ def main() -> None:
         Path(application.config_dir) != directories.config
         or Path(application.data_dir) != directories.data
         or Path(application.runtime_dir) != directories.runtime
-        or Path(get_ipython_dir()) != directories.ipython
+        or ipython_directory != directories.ipython
     ):
         raise RuntimeError("Remote Jupyter path isolation could not be established.")
     application.initialize([])

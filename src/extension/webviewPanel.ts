@@ -9,6 +9,7 @@ import type {
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
+import { supportsOperation } from "../shared/operations";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import { decodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
@@ -263,8 +264,7 @@ export class OpenWranglerPanel {
   async open(): Promise<void> {
     if (this.opening) return this.opening;
     if (this.disposed || this.sessionId) return;
-    const pageSize = getSetting<number>("fetchBlockSize", 200);
-    const columnLimit = fetchColumnBlockSize();
+    const { pageSize, columnLimit } = fetchGridBlockSize(this.backend);
     const isFile = this.source.kind === "file";
     const mode =
       this.backend === "pyspark"
@@ -783,14 +783,14 @@ export class OpenWranglerPanel {
   }
 
   private fileOpenRequest(source: SessionSource): Extract<OpenWranglerRequest, { kind: "openSession" }> {
-    const pageSize = getSetting<number>("fetchBlockSize", 200);
+    const { pageSize, columnLimit } = fetchGridBlockSize(this.backend);
     return {
       kind: "openSession",
       source,
       ...(this.backendPreference === "auto" ? {} : { backend: this.backendPreference }),
       pageSize,
       columnOffset: 0,
-      columnLimit: fetchColumnBlockSize(),
+      columnLimit,
       mode: getSetting<"editing" | "viewing">("fileStartMode", "editing")
     };
   }
@@ -1444,6 +1444,12 @@ export class OpenWranglerPanel {
       revision: this.sessionRevision
     };
     if (!isOpenWranglerRequest(request) || !WEBVIEW_RUNTIME_REQUEST_KINDS.has(request.kind)) return undefined;
+    if (
+      request.kind === "previewStep" &&
+      (!this.snapshot || !supportsOperation(this.snapshot.metadata.capabilities, request.step.kind))
+    ) {
+      return undefined;
+    }
     return {
       kind: "runtimeRequest",
       request,
@@ -1460,8 +1466,7 @@ export class OpenWranglerPanel {
       vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.css"))
     );
     const nonce = randomNonce();
-    const fetchBlockSize = getSetting<number>("fetchBlockSize", 200);
-    const columnBlockSize = fetchColumnBlockSize();
+    const { pageSize: fetchBlockSize, columnLimit: columnBlockSize } = fetchGridBlockSize(this.backend);
     const defaultColumnWidth = getSetting<number>("defaultColumnWidth", 190);
     const insightsOnOpen = getSetting<boolean>("insightsOnOpen", true);
     const filterMode = getSetting<"basic" | "advanced">("filterMode", "basic");
@@ -1486,6 +1491,17 @@ export class OpenWranglerPanel {
 function fetchColumnBlockSize(): number {
   const configured = getSetting<number>("fetchColumnBlockSize", 16);
   return Number.isInteger(configured) ? Math.min(256, Math.max(1, configured)) : 16;
+}
+
+function fetchGridBlockSize(backend?: DataBackend): { pageSize: number; columnLimit: number } {
+  const configuredRows = getSetting<number>("fetchBlockSize", 200);
+  const pageSize = Number.isInteger(configuredRows) ? Math.min(2_000, Math.max(25, configuredRows)) : 200;
+  const columnLimit = fetchColumnBlockSize();
+  if (backend !== "r") return { pageSize, columnLimit };
+  return {
+    pageSize: Math.min(pageSize, 1_000, Math.floor(100_000 / columnLimit)),
+    columnLimit
+  };
 }
 
 function panelRuntimeCleanupOptions(): BridgeRequestOptions {

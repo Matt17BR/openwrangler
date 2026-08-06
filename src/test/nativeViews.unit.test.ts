@@ -204,6 +204,36 @@ describe("native operation commands", () => {
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({ action: "openOperation" });
   });
 
+  it("shows and dispatches only operations advertised by the active dataframe", async () => {
+    const limited = noDraftSnapshot();
+    limited.metadata = {
+      ...limited.metadata,
+      capabilities: {
+        editable: true,
+        lazy: false,
+        cancel: true,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false,
+        supportedOperations: ["renameColumn"]
+      }
+    };
+    register(limited);
+
+    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual(["Rename column"]);
+
+    await command("openWrangler.startOperation")("customCode");
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+    expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith("Custom code is not available for this dataframe.");
+
+    await command("openWrangler.startOperation")("renameColumn");
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledOnce();
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+      action: "openOperation",
+      operationKind: "renameColumn"
+    });
+  });
+
   it("makes each effective native filter node remove that column filter", async () => {
     const filtered = noDraftSnapshot();
     filtered.viewState.filterModel = {
@@ -379,6 +409,41 @@ describe("native operation commands", () => {
     expect(restoredNodes[2]?.contextValue).toBe("openWrangler.viewSortLast");
   });
 
+  it("shows unavailable native views and does not dispatch unsupported viewing actions", async () => {
+    const partial = exportableSnapshot("partial-session", "partial.csv", 1);
+    partial.metadata.capabilities = {
+      ...partial.metadata.capabilities,
+      filter: false,
+      sort: false,
+      profile: false,
+      columnValues: false
+    };
+    partial.viewState.filterModel = {
+      filters: [
+        {
+          column: "value",
+          type: "integer",
+          predicates: [{ kind: "predicate", operator: "gte", value: 1 }]
+        }
+      ],
+      sort: [{ column: "value", direction: "asc", nulls: "last" }]
+    };
+    register(partial);
+
+    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toContainEqual([
+      "Profiles unavailable",
+      "This dataframe does not support profiling"
+    ]);
+    expect(treeChildren("openWrangler.filters").map(nodePresentation)).toEqual([
+      ["Filters and sorts unavailable", "Not supported by this dataframe"]
+    ]);
+
+    await command("openWrangler.clearViewFilterColumn")("value");
+    await command("openWrangler.openViewSort")("value");
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+    expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith("Sorting is unavailable for this dataframe.");
+  });
+
   it("keeps cloned sort handles stable across unrelated updates and rejects an ABA-stale node", async () => {
     const filtered = noDraftSnapshot();
     const originalSort = [
@@ -512,7 +577,7 @@ describe("native operation commands", () => {
     expect(operations.every((node) => node.description !== "Viewing mode" && node.command === undefined)).toBe(true);
     expect(operations.every((node) => String(node.tooltip).includes("Available in editing mode"))).toBe(true);
     expect(treeChildren("openWrangler.summary").map(nodePresentation)).toEqual([
-      ["Saved sales preview", "polars · viewing"],
+      ["Saved sales preview", "Polars · viewing"],
       ["Shape", "4 × 3"],
       ["Columns", "3"],
       ["Selected column", "score"],
@@ -594,6 +659,20 @@ describe("native operation commands", () => {
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toMatchObject({ code: "def clean_data(df):\n    return df.dropna()\n" });
 
+    const rEditable = rNotebookSnapshot();
+    registered.setActiveSession(rEditable);
+    expect(posted.at(-1)).toEqual({
+      kind: "codePreview",
+      code: rEditable.code,
+      editable: true,
+      runtimeIdentity: {
+        runtimeLanguage: "r",
+        dataframeFlavor: "r.data.frame",
+        codeDialect: "r.base"
+      }
+    });
+    expect(codePreviewView.description).toBe("R");
+
     const viewingOnly = noDraftSnapshot();
     viewingOnly.metadata = { ...viewingOnly.metadata, backend: "pyspark", mode: "viewing" };
     viewingOnly.code = "# A viewing-only backend cannot expose editable generated code.";
@@ -661,6 +740,20 @@ describe("native operation commands", () => {
       })
     );
     expect(nativeMocks.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses an R script name and filter when exporting generated R code", async () => {
+    register(rNotebookSnapshot());
+
+    await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
+
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledOnce();
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith({
+      title: "Export Open Wrangler R Code",
+      defaultUri: expect.objectContaining({ fsPath: "/workspace/orders.clean.R" }),
+      filters: { "R script": ["R", "r"] },
+      saveLabel: "Export code"
+    });
   });
 
   it("exports the exact webview session even when another dataframe becomes active during the dialogs", async () => {
@@ -970,6 +1063,7 @@ function register(
     | "inspection-active"
     | "priority-boundary"
     | "panel-unavailable"
+    | "unsupported"
     | undefined;
 } {
   let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;
@@ -1114,6 +1208,33 @@ function notebookVariableSnapshot(): ActiveSessionSnapshot {
       exportCsv: true,
       exportParquet: true,
       notebookInsert: true
+    }
+  };
+  return result;
+}
+
+function rNotebookSnapshot(): ActiveSessionSnapshot {
+  const result = noDraftSnapshot();
+  result.code = "clean_data <- function(df) {\n  df\n}\n";
+  result.metadata = {
+    ...result.metadata,
+    backend: "r",
+    rDataframeFlavor: "r.data.frame",
+    mode: "editing",
+    source: {
+      kind: "notebookVariable",
+      label: "orders",
+      variableName: "orders",
+      uri: "file:///workspace/orders.ipynb"
+    },
+    capabilities: {
+      editable: true,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      notebookInsert: false,
+      supportedOperations: ["renameColumn"]
     }
   };
   return result;

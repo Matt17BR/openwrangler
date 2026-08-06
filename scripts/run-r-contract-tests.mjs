@@ -19,6 +19,7 @@ function run(command, args, environment = process.env) {
 }
 
 run(rscript, ["--vanilla", "r/tests/frame_contract.R"]);
+run(rscript, ["--vanilla", "r/tests/kernel_agent.R"]);
 run(
   process.execPath,
   [
@@ -26,6 +27,8 @@ run(
     "run",
     "src/test/rFrameContract.unit.test.ts",
     "src/test/rFrameContract.cross.test.ts",
+    "src/test/rKernelTransport.unit.test.ts",
+    "src/test/rKernelTransport.cross.test.ts",
     "--maxWorkers=1"
   ],
   { ...process.env, OPEN_WRANGLER_R_CONTRACT_TESTS: "1" }

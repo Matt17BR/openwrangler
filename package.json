@@ -74,7 +74,7 @@
     "lock:remote-jupyter": "node scripts/update-remote-jupyter-lock.mjs --write",
     "lock:remote-jupyter:check": "node scripts/update-remote-jupyter-lock.mjs --check",
     "audit:python": "node scripts/run-python.mjs -m pip_audit && npm run audit:remote-jupyter",
-    "audit:remote-jupyter": "node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.txt --disable-pip --require-hashes --progress-spinner off --strict",
+    "audit:remote-jupyter": "node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.txt --disable-pip --require-hashes --progress-spinner off --strict && node scripts/run-python.mjs -m pip_audit --requirement scripts/remote-jupyter/requirements.r.txt --disable-pip --require-hashes --progress-spinner off --strict",
     "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run typecheck && npm run docs:check && npm run brand:check && npm run check:remote-jupyter-lock && npm run license:check",
     "watch": "npm-run-all --parallel watch:extension watch:webview",
     "watch:extension": "tsc -w -p tsconfig.extension.json",
@@ -299,7 +299,7 @@
       },
       {
         "command": "openWrangler.exportCode",
-        "title": "Open Wrangler: Export Python Script",
+        "title": "Open Wrangler: Export Generated Script",
         "icon": "$(save-as)"
       },
       {
@@ -494,7 +494,7 @@
           {
             "id": "export",
             "title": "Save code or data",
-            "description": "Copy generated code, save it as a Python script, insert it into the originating notebook, or export cleaned data to a new CSV or Parquet file."
+            "description": "Copy generated code, save it as a script, insert generated Python code into the originating notebook, or export cleaned data to a new CSV or Parquet file."
           }
         ]
       }
@@ -707,7 +707,7 @@
         "openWrangler.insightsOnOpen": {
           "type": "boolean",
           "default": true,
-          "description": "Show progressive profiles in visible grid headers when a grid opens. PySpark always starts with header profiles off because each profile runs Spark work."
+          "description": "Show profiles in visible column headers when a grid opens. R and PySpark start with this off; enable it from the grid when needed."
         },
         "openWrangler.filterMode": {
           "type": "string",

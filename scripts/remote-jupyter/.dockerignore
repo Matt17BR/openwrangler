@@ -1,6 +1,9 @@
 *
 !Dockerfile
+!Dockerfile.r
 !requirements.txt
 !requirements.in
+!requirements.r.txt
+!requirements.r.in
 !inject-token.py
 !server.py

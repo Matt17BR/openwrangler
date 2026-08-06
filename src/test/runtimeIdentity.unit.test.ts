@@ -5,10 +5,13 @@ import {
   codeDialectLanguageLabel,
   isRuntimeIdentity,
   runtimeIdentityForDataBackend,
+  runtimeIdentityForSessionMetadata,
   type RuntimeIdentity
 } from "../shared/runtimeIdentity";
 
-const identities: Readonly<Record<DataBackend, RuntimeIdentity>> = {
+type PythonDataBackend = Exclude<DataBackend, "r">;
+
+const identities: Readonly<Record<PythonDataBackend, RuntimeIdentity>> = {
   polars: { runtimeLanguage: "python", dataframeFlavor: "polars", codeDialect: "python.polars" },
   duckdb: { runtimeLanguage: "python", dataframeFlavor: "duckdb", codeDialect: "python.duckdb" },
   pandas: { runtimeLanguage: "python", dataframeFlavor: "pandas", codeDialect: "python.pandas" },
@@ -16,7 +19,7 @@ const identities: Readonly<Record<DataBackend, RuntimeIdentity>> = {
 };
 
 describe("host runtime identity", () => {
-  it.each(Object.entries(identities) as Array<[DataBackend, RuntimeIdentity]>)(
+  it.each(Object.entries(identities) as Array<[PythonDataBackend, RuntimeIdentity]>)(
     "maps the confirmed %s backend without changing its engine identity",
     (backend, expected) => {
       const actual = runtimeIdentityForDataBackend(backend);
@@ -27,8 +30,23 @@ describe("host runtime identity", () => {
     }
   );
 
+  it.each(["r.data.frame", "r.tibble", "r.data.table"] as const)(
+    "keeps the native %s flavor separate from its R runtime",
+    (rDataframeFlavor) => {
+      const actual = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor });
+      expect(actual).toEqual({ runtimeLanguage: "r", dataframeFlavor: rDataframeFlavor, codeDialect: "r.base" });
+      expect(isRuntimeIdentity(actual)).toBe(true);
+    }
+  );
+
+  it("rejects R metadata without an exact dataframe flavor", () => {
+    expect(() => runtimeIdentityForSessionMetadata({ backend: "r" })).toThrow(
+      "An R session must identify its native dataframe flavor"
+    );
+  });
+
   it("does not derive an identity from an unresolved automatic backend", () => {
-    expect(() => runtimeIdentityForDataBackend("auto" as DataBackend)).toThrow(
+    expect(() => runtimeIdentityForDataBackend("auto" as PythonDataBackend)).toThrow(
       "Unsupported confirmed dataframe backend: auto"
     );
   });
@@ -37,6 +55,7 @@ describe("host runtime identity", () => {
     expect(codeDialectLanguageLabel("python.pandas")).toBe("Python");
     expect(codeDialectLanguageLabel("python.polars")).toBe("Python");
     expect(codeDialectLanguageLabel("python.duckdb")).toBe("Python");
+    expect(codeDialectLanguageLabel("r.base")).toBe("R");
     expect(codeDialectLanguageLabel(null)).toBeUndefined();
   });
 
@@ -47,6 +66,9 @@ describe("host runtime identity", () => {
     { runtimeLanguage: "python", dataframeFlavor: "polars", codeDialect: "python.pandas" },
     { runtimeLanguage: "python", dataframeFlavor: "pyspark", codeDialect: "python.polars" },
     { runtimeLanguage: "python", dataframeFlavor: "pandas", codeDialect: null },
+    { runtimeLanguage: "r", dataframeFlavor: "r.tibble", codeDialect: null },
+    { runtimeLanguage: "r", dataframeFlavor: "r.data.frame", codeDialect: "python.pandas" },
+    { runtimeLanguage: "python", dataframeFlavor: "r.data.table", codeDialect: "r.base" },
     { runtimeLanguage: "python", dataframeFlavor: "auto", codeDialect: "python.pandas" }
   ])("rejects a malformed or inconsistent identity: %j", (candidate) => {
     expect(isRuntimeIdentity(candidate)).toBe(false);
@@ -56,6 +78,7 @@ describe("host runtime identity", () => {
 describe("private Code Preview messages", () => {
   const polarsIdentity = runtimeIdentityForDataBackend("polars");
   const pysparkIdentity = runtimeIdentityForDataBackend("pyspark");
+  const rIdentity = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor: "r.tibble" });
 
   it("accepts the current private host and webview messages", () => {
     expect(
@@ -80,6 +103,14 @@ describe("private Code Preview messages", () => {
         code: "# PySpark viewing-only session.",
         editable: false,
         runtimeIdentity: pysparkIdentity
+      })
+    ).toBe(true);
+    expect(
+      isCodePreviewHostMessage({
+        kind: "codePreview",
+        code: "clean_data <- function(df) df\n",
+        editable: true,
+        runtimeIdentity: rIdentity
       })
     ).toBe(true);
     expect(isCodePreviewWebviewMessage({ kind: "ready" })).toBe(true);

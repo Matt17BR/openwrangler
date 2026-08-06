@@ -26,6 +26,9 @@ interface FilterPanelProps {
   activeColumn?: string;
   defaultAdvanced?: boolean;
   disabled?: boolean;
+  filterSupported?: boolean;
+  sortSupported?: boolean;
+  columnValuesSupported?: boolean;
   onApply(model: FilterModel): void;
   onRequestValues(column: string, search?: string): void;
 }
@@ -37,6 +40,9 @@ export function FilterPanel({
   activeColumn: requestedColumn,
   defaultAdvanced = false,
   disabled = false,
+  filterSupported = true,
+  sortSupported = true,
+  columnValuesSupported = true,
   onApply,
   onRequestValues
 }: FilterPanelProps) {
@@ -61,6 +67,7 @@ export function FilterPanel({
   const [advanced, setAdvanced] = useState(defaultAdvanced);
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata?.schema ?? []), [metadata?.schema]);
   const activeFilters = model.filters.filter(isActiveColumnFilter);
+  const panelLabel = filterSupported ? (sortSupported ? "Filters / Sorts" : "Filters") : "Sorts";
 
   useEffect(() => {
     const requestedColumnChanged = previousRequestedColumn.current !== requestedColumn;
@@ -88,7 +95,9 @@ export function FilterPanel({
   const ambiguityMessage = activeColumnAmbiguous
     ? ambiguousViewColumnMessage(activeColumn, activeColumnNameCount)
     : undefined;
-  const viewQueryControlsDisabled = disabled || activeColumnAmbiguous;
+  const filterControlsDisabled = disabled || !filterSupported || activeColumnAmbiguous;
+  const sortControlsDisabled = disabled || !sortSupported || activeColumnAmbiguous;
+  const valueControlsDisabled = filterControlsDisabled || !columnValuesSupported;
   const supportsTypedComparison = columnSchema ? supportsTypedViewComparison(columnSchema.type) : false;
   const availableOperators = columnSchema ? viewPredicateOperators(columnSchema.type) : [];
   const activePredicateOperator = availableOperators.includes(predicateOperator)
@@ -106,7 +115,7 @@ export function FilterPanel({
   }
 
   const updateFilter = (nextFilter: ColumnFilter) => {
-    if (disabled || !nextFilter.column) return;
+    if (disabled || !filterSupported || !nextFilter.column) return;
     const compactFilter = compactColumnFilter(nextFilter);
     let replaced = false;
     const filters = model.filters.flatMap((item) => {
@@ -120,12 +129,12 @@ export function FilterPanel({
   };
 
   const removeColumnFilter = (column: string) => {
-    if (disabled) return;
+    if (disabled || !filterSupported) return;
     onApply({ ...model, filters: activeFilters.filter((item) => item.column !== column) });
   };
 
   const removePredicate = (filter: ColumnFilter, index: number) => {
-    if (disabled) return;
+    if (disabled || !filterSupported) return;
     updateFilter({
       ...filter,
       predicates: filter.predicates.filter((_, candidateIndex) => candidateIndex !== index)
@@ -133,7 +142,7 @@ export function FilterPanel({
   };
 
   const removeSelectedValue = (filter: ColumnFilter, value: unknown) => {
-    if (disabled || !filter.valueFilter) return;
+    if (disabled || !filterSupported || !filter.valueFilter) return;
     const key = selectionValueKey(value);
     updateFilter({
       ...filter,
@@ -145,7 +154,7 @@ export function FilterPanel({
   };
 
   const removeValueFlag = (filter: ColumnFilter, flag: "includeNulls" | "includeNaN") => {
-    if (disabled || !filter.valueFilter) return;
+    if (disabled || !filterSupported || !filter.valueFilter) return;
     updateFilter({
       ...filter,
       valueFilter: {
@@ -156,7 +165,7 @@ export function FilterPanel({
   };
 
   const toggleValue = (value: unknown) => {
-    if (viewQueryControlsDisabled || !columnSchema || !activeColumn || !supportsTypedComparison) {
+    if (valueControlsDisabled || !columnSchema || !activeColumn || !supportsTypedComparison) {
       return;
     }
     const nextSelected = new Map(selectedValues);
@@ -183,7 +192,7 @@ export function FilterPanel({
 
   const addPredicate = () => {
     if (
-      viewQueryControlsDisabled ||
+      filterControlsDisabled ||
       !columnSchema ||
       !activeColumn ||
       !availableOperators.includes(activePredicateOperator) ||
@@ -205,7 +214,7 @@ export function FilterPanel({
   };
 
   const applySort = () => {
-    if (viewQueryControlsDisabled || !columnSchema || !activeColumn || !supportsTypedComparison) return;
+    if (sortControlsDisabled || !columnSchema || !activeColumn || !supportsTypedComparison) return;
     setSortEditor({
       modelKey: modelSortKey,
       rules: prioritizeSortRule(draftSort, {
@@ -217,12 +226,12 @@ export function FilterPanel({
   };
 
   const removeSort = (index: number) => {
-    if (disabled) return;
+    if (disabled || !sortSupported) return;
     setSortEditor({ modelKey: modelSortKey, rules: draftSort.filter((_, ruleIndex) => ruleIndex !== index) });
   };
 
   const toggleSortDirection = (index: number) => {
-    if (disabled) return;
+    if (disabled || !sortSupported) return;
     setSortEditor({
       modelKey: modelSortKey,
       rules: draftSort.map((rule, ruleIndex) =>
@@ -241,7 +250,7 @@ export function FilterPanel({
   };
 
   const toggleSortNulls = (index: number) => {
-    if (disabled) return;
+    if (disabled || !sortSupported) return;
     setSortEditor({
       modelKey: modelSortKey,
       rules: draftSort.map((rule, ruleIndex) =>
@@ -260,7 +269,7 @@ export function FilterPanel({
   };
 
   const moveSort = (index: number, offset: -1 | 1) => {
-    if (disabled) return;
+    if (disabled || !sortSupported) return;
     const nextIndex = index + offset;
     if (nextIndex < 0 || nextIndex >= draftSort.length) return;
     const rules = [...draftSort];
@@ -274,8 +283,8 @@ export function FilterPanel({
   const sortDirty = !sameSortRules(draftSort, model.sort);
 
   const clearColumn = () => {
-    if (disabled || !columnSchema || !activeColumn) return;
-    const nextSort = model.sort.filter((rule) => rule.column !== activeColumn);
+    if (disabled || !filterSupported || !columnSchema || !activeColumn) return;
+    const nextSort = sortSupported ? model.sort.filter((rule) => rule.column !== activeColumn) : model.sort;
     const nextSortKey = sortRulesKey(nextSort);
     setSortEditor({
       modelKey: nextSortKey,
@@ -292,34 +301,44 @@ export function FilterPanel({
   };
 
   const clearAll = () => {
-    if (disabled) return;
-    const nextSort: FilterModel["sort"] = [];
+    if (disabled || (!filterSupported && !sortSupported)) return;
+    const nextSort: FilterModel["sort"] = sortSupported ? [] : model.sort;
     const nextSortKey = sortRulesKey(nextSort);
     setSortEditor({ modelKey: nextSortKey, rules: nextSort });
     setSortInput({ modelKey: nextSortKey, columnId: "", direction: "asc", nulls: "last" });
-    onApply({ filters: [], sort: nextSort });
+    onApply(
+      filterSupported && sortSupported
+        ? { filters: [], sort: [] }
+        : {
+            ...(model.logic === undefined ? {} : { logic: model.logic }),
+            filters: filterSupported ? [] : model.filters,
+            sort: nextSort
+          }
+    );
   };
 
   return (
     <section className="panel filterSortPanel" aria-busy={disabled}>
       <div className="panelHeader">
-        <h2>Filters / Sorts</h2>
-        <button type="button" disabled={disabled} onClick={clearAll}>
+        <h2>{panelLabel}</h2>
+        <button type="button" disabled={disabled || (!filterSupported && !sortSupported)} onClick={clearAll}>
           Clear all
         </button>
       </div>
 
-      <ActiveFilterOverview
-        filters={activeFilters}
-        metadata={metadata}
-        disabled={disabled}
-        onRemoveColumn={removeColumnFilter}
-        onRemovePredicate={removePredicate}
-        onRemoveSelectedValue={removeSelectedValue}
-        onRemoveValueFlag={removeValueFlag}
-      />
+      {filterSupported && (
+        <ActiveFilterOverview
+          filters={activeFilters}
+          metadata={metadata}
+          disabled={disabled}
+          onRemoveColumn={removeColumnFilter}
+          onRemovePredicate={removePredicate}
+          onRemoveSelectedValue={removeSelectedValue}
+          onRemoveValueFlag={removeValueFlag}
+        />
+      )}
 
-      <details className="filterSection" open>
+      <details className="filterSection" open hidden={!filterSupported}>
         <summary>FILTERS</summary>
         <button
           type="button"
@@ -370,17 +389,17 @@ export function FilterPanel({
             aria-label={`Search values for ${activeColumn || "selected column"}`}
             value={search}
             placeholder="Search values"
-            disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
+            disabled={valueControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onChange={(event) => setSearch(event.target.value)}
             onKeyDown={(event) => {
-              if (!viewQueryControlsDisabled && supportsTypedComparison && event.key === "Enter" && activeColumn) {
+              if (!valueControlsDisabled && supportsTypedComparison && event.key === "Enter" && activeColumn) {
                 onRequestValues(activeColumn, search);
               }
             }}
           />
           <button
             type="button"
-            disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
+            disabled={valueControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onClick={() => {
               if (activeColumn) onRequestValues(activeColumn, search);
             }}
@@ -398,7 +417,7 @@ export function FilterPanel({
                 <input
                   type="checkbox"
                   checked={selectedValues.has(selectionKey)}
-                  disabled={viewQueryControlsDisabled || !supportsTypedComparison}
+                  disabled={valueControlsDisabled || !supportsTypedComparison}
                   onChange={() => toggleValue(selectionValue)}
                 />
                 <span>{item.value}</span>
@@ -407,6 +426,11 @@ export function FilterPanel({
             );
           })}
           {columnValueResponse?.hasMore && <small>More values available. Refine the search to narrow results.</small>}
+          {!columnValuesSupported && (
+            <small className="mutedText" role="status">
+              Value lists are unavailable. Use a predicate instead.
+            </small>
+          )}
         </div>
 
         <div className="predicateBuilder">
@@ -414,7 +438,7 @@ export function FilterPanel({
             <select
               aria-label="Condition combination"
               value={activeFilter?.logic ?? "and"}
-              disabled={viewQueryControlsDisabled || !hasActiveColumn}
+              disabled={filterControlsDisabled || !hasActiveColumn}
               onChange={(event) => {
                 if (!columnSchema || !activeColumn) return;
                 const existing = activeFilter;
@@ -435,7 +459,7 @@ export function FilterPanel({
           <select
             aria-label="Predicate operator"
             value={activePredicateOperator}
-            disabled={viewQueryControlsDisabled || !hasActiveColumn}
+            disabled={filterControlsDisabled || !hasActiveColumn}
             onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}
           >
             {availableOperators.map((operator) => (
@@ -450,7 +474,7 @@ export function FilterPanel({
               value={predicateValue}
               maxLength={MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS}
               placeholder="Value"
-              disabled={viewQueryControlsDisabled || !hasActiveColumn}
+              disabled={filterControlsDisabled || !hasActiveColumn}
               onChange={(event) => setPredicateValue(truncateViewValueTextToCodePoints(event.target.value))}
             />
           )}
@@ -460,14 +484,14 @@ export function FilterPanel({
               value={secondPredicateValue}
               maxLength={MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS}
               placeholder="And"
-              disabled={viewQueryControlsDisabled || !hasActiveColumn}
+              disabled={filterControlsDisabled || !hasActiveColumn}
               onChange={(event) => setSecondPredicateValue(truncateViewValueTextToCodePoints(event.target.value))}
             />
           )}
           <button
             type="button"
             disabled={
-              viewQueryControlsDisabled ||
+              filterControlsDisabled ||
               !hasActiveColumn ||
               !availableOperators.includes(activePredicateOperator) ||
               !hasCompletePredicateValues(activePredicateOperator, predicateValue, secondPredicateValue)
@@ -488,8 +512,12 @@ export function FilterPanel({
           Clear column
         </button>
       </details>
-
-      <details className="filterSection" open={sortOpen} onToggle={(event) => setSortOpen(event.currentTarget.open)}>
+      <details
+        className="filterSection"
+        open={sortOpen}
+        hidden={!sortSupported}
+        onToggle={(event) => setSortOpen(event.currentTarget.open)}
+      >
         <summary>SORTS</summary>
         <label>
           Column
@@ -511,7 +539,7 @@ export function FilterPanel({
           <select
             aria-label="Sort direction"
             value={sortDirection}
-            disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
+            disabled={sortControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onChange={(event) =>
               setSortInput({
                 modelKey: modelSortKey,
@@ -527,7 +555,7 @@ export function FilterPanel({
           <select
             aria-label="Sort null placement"
             value={sortNulls}
-            disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
+            disabled={sortControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onChange={(event) =>
               setSortInput({
                 modelKey: modelSortKey,
@@ -542,7 +570,7 @@ export function FilterPanel({
           </select>
           <button
             type="button"
-            disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
+            disabled={sortControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onClick={applySort}
           >
             {draftSort.some((rule) => rule.column === activeColumn) ? "Prioritize sort" : "Add to sort"}
@@ -653,6 +681,11 @@ export function FilterPanel({
           </button>
         </div>
       </details>
+      {!sortSupported && (
+        <p className="mutedText" role="status">
+          Sorting is unavailable for this dataframe.
+        </p>
+      )}
     </section>
   );
 }

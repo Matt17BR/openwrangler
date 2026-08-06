@@ -3317,59 +3317,28 @@ test("editor phases reject partial or invalid Jupyter environments before launch
   }
 });
 
-posixTest("remote Jupyter phases forward only an owned private descriptor path", async () => {
+posixTest("remote Python and R Jupyter phases forward only an owned private descriptor path", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-remote-jupyter-"));
   const privateRoot = join(directory, "private");
-  const descriptorPath = join(privateRoot, "remote-jupyter.json");
-  const resultPath = join(privateRoot, "result.json");
-  let launchedEnvironment;
   try {
     await mkdir(privateRoot, { recursive: true, mode: 0o700 });
-    await writeFile(descriptorPath, '{"bounded":true}\n', { mode: 0o400 });
-    await chmod(descriptorPath, 0o400);
-    await runEditorAcceptancePhase(
-      {
-        editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
-        workspace: privateRoot,
-        userData: join(privateRoot, "user-data"),
-        extensions: join(privateRoot, "extensions"),
-        developmentPaths: [],
-        testModule: join(privateRoot, "acceptance.js"),
-        python: join(privateRoot, "python"),
-        phase: "jupyter-remote",
-        resultPath,
-        remoteJupyterDescriptorPath: descriptorPath
-      },
-      {
-        platform: "linux",
-        environment: {
-          PATH: "/safe/bin",
-          OPEN_WRANGLER_EDITOR_TEMP_ROOT: privateRoot
-        },
-        spawnProcess(_executable, _arguments, options) {
-          launchedEnvironment = options.env;
-          return fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true }) });
-        }
-      }
-    );
-    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR, descriptorPath);
-    assert.equal(
-      Object.values(launchedEnvironment).some((value) => typeof value === "string" && value.includes("bounded")),
-      false
-    );
-
-    await chmod(descriptorPath, 0o600);
-    await assert.rejects(
-      runEditorAcceptancePhase(
+    for (const phase of ["jupyter-remote", "jupyter-r-remote"]) {
+      const phaseSlug = phase.replaceAll("jupyter-", "");
+      const descriptorPath = join(privateRoot, `${phaseSlug}-descriptor.json`);
+      const resultPath = join(privateRoot, `${phaseSlug}-result.json`);
+      let launchedEnvironment;
+      await writeFile(descriptorPath, '{"bounded":true}\n', { mode: 0o400 });
+      await chmod(descriptorPath, 0o400);
+      await runEditorAcceptancePhase(
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: privateRoot,
-          userData: join(privateRoot, "user-data"),
-          extensions: join(privateRoot, "extensions"),
+          userData: join(privateRoot, `${phaseSlug}-user-data`),
+          extensions: join(privateRoot, `${phaseSlug}-extensions`),
           developmentPaths: [],
           testModule: join(privateRoot, "acceptance.js"),
           python: join(privateRoot, "python"),
-          phase: "jupyter-remote",
+          phase,
           resultPath,
           remoteJupyterDescriptorPath: descriptorPath
         },
@@ -3379,13 +3348,47 @@ posixTest("remote Jupyter phases forward only an owned private descriptor path",
             PATH: "/safe/bin",
             OPEN_WRANGLER_EDITOR_TEMP_ROOT: privateRoot
           },
-          spawnProcess() {
-            assert.fail("An unsafe remote Jupyter descriptor must fail before editor spawn.");
+          spawnProcess(_executable, _arguments, options) {
+            launchedEnvironment = options.env;
+            return fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true }) });
           }
         }
-      ),
-      /mode-0400/u
-    );
+      );
+      assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR, descriptorPath);
+      assert.equal(
+        Object.values(launchedEnvironment).some((value) => typeof value === "string" && value.includes("bounded")),
+        false
+      );
+
+      await chmod(descriptorPath, 0o600);
+      await assert.rejects(
+        runEditorAcceptancePhase(
+          {
+            editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+            workspace: privateRoot,
+            userData: join(privateRoot, `${phaseSlug}-user-data`),
+            extensions: join(privateRoot, `${phaseSlug}-extensions`),
+            developmentPaths: [],
+            testModule: join(privateRoot, "acceptance.js"),
+            python: join(privateRoot, "python"),
+            phase,
+            resultPath,
+            remoteJupyterDescriptorPath: descriptorPath
+          },
+          {
+            platform: "linux",
+            environment: {
+              PATH: "/safe/bin",
+              OPEN_WRANGLER_EDITOR_TEMP_ROOT: privateRoot
+            },
+            spawnProcess() {
+              assert.fail("An unsafe remote Jupyter descriptor must fail before editor spawn.");
+            }
+          }
+        ),
+        /mode-0400/u
+      );
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

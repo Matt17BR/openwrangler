@@ -589,15 +589,18 @@ test("cancels rejected response bodies without turning content failures into fai
   }
 });
 
-test("scheduled released-Jupyter acceptance uses only the prepared private Xvfb", () => {
+test("manually dispatched released-Jupyter acceptance uses only the prepared private Xvfb", () => {
   const workflow = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
   const prepareStart = workflow.indexOf("      - id: prepare_xvfb\n");
   const packagedStart = workflow.indexOf("      - id: packaged_editor\n");
   const uploadStart = workflow.indexOf("      - name: Upload packaged-editor failure diagnostics\n");
+  const packagedRStart = workflow.indexOf("      - id: packaged_editor_r\n");
+  const uploadRStart = workflow.indexOf("      - name: Upload packaged-editor R failure diagnostics\n");
 
   assert.notEqual(prepareStart, -1, "the workflow must prepare the pinned Xvfb package");
   assert.equal(prepareStart < packagedStart, true, "Xvfb preparation must precede packaged acceptance");
   assert.equal(packagedStart < uploadStart, true, "the packaged step must remain independently observable");
+  assert.equal(uploadStart < packagedRStart && packagedRStart < uploadRStart, true);
 
   const prepareStep = workflow.slice(prepareStart, packagedStart);
   assert.match(prepareStep, /scripts\/prepare-xvfb\.mjs", "--print-path"/u);
@@ -610,6 +613,12 @@ test("scheduled released-Jupyter acceptance uses only the prepared private Xvfb"
     /^\s+OPEN_WRANGLER_XVFB_EXECUTABLE: \$\{\{ steps\.prepare_xvfb\.outputs\.executable \}\}$/mu
   );
   assert.doesNotMatch(packagedStep, /^\s+OPEN_WRANGLER_EDITOR_DISPLAY: (?:headless|current)$/mu);
+  const packagedRStep = workflow.slice(packagedRStart, uploadRStart);
+  assert.match(packagedRStep, /^\s+OPEN_WRANGLER_EDITOR_DISPLAY: xvfb$/mu);
+  assert.match(
+    packagedRStep,
+    /^\s+OPEN_WRANGLER_XVFB_EXECUTABLE: \$\{\{ steps\.prepare_xvfb\.outputs\.executable \}\}$/mu
+  );
 });
 
 function sha256(value) {

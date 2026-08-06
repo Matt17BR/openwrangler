@@ -11,9 +11,32 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   any other cleaning step. Median fills keep the existing column type. Integer and decimal medians must fit that type
   exactly, decimal values must fit the column scale, and datetime values must match the column's timezone awareness.
   Generated Python code follows the same rules without converting the dataframe to another engine.
+- Added the first R notebook viewer for Open Wrangler 2. The notebook picker can open base `data.frame`, tibble, and
+  `data.table` objects directly from IRkernel, page across the complete frame, apply compound viewing filters and
+  ordered sorts, search and select column values, and calculate filter-aware column and dataset profiles. Profiles
+  include missing and distinct counts, common values, numeric statistics and histograms, text lengths, boolean
+  counts, and date ranges. Explicit R row names appear in the grid gutter and stay with their source rows after a
+  query.
+- Added the first native R cleaning operation for Open Wrangler 2. **Rename Column** uses the regular draft, code
+  preview, apply, discard, inspection, edit-latest, and undo workflow for base data frames, tibbles, and data tables.
+  It keeps the notebook object unchanged, generates executable R, and lets users copy that code or save it as a `.R`
+  script. Other R operations, cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto are
+  still in development.
 
 ### Changed
 
+- Renamed **Export Python Script** to **Export Generated Script**. Python sessions keep the `.clean.py` default;
+  generated R code uses `.clean.R` and an R script filter.
+- The Open Wrangler 2 notebook gate now tests local R in VS Code and Cursor and a containerized R kernel in VS Code.
+  It covers filters, value selection, profiles, paging, sort order, kernel restart, source preservation, and cleanup
+  with fixed R and package versions.
+- Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
+  ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
+  to the notebook's source object.
+- Added a packaged-editor R editing screenshot and acceptance journey. VS Code and Cursor now drive Rename preview,
+  discard, apply, inspection, edit-latest, copy, `.R` script export, and undo against the same VSIX. The journey also
+  checks that base data frames, tibbles, and data tables are unchanged.
+- The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and
   view-only; streaming DataFrames, files, cleaning, exports, saved output, remote or authenticated clusters, and Spark

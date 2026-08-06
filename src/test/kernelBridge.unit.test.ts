@@ -140,6 +140,22 @@ describe("kernel protocol responses", () => {
     expect(parseKernelResponse(text, marker, requestId)).toEqual(initializedResponse);
   });
 
+  it("stops collecting kernel output at the caller's UTF-8 byte limit", async () => {
+    const encoder = new TextEncoder();
+    async function* outputs() {
+      yield {
+        items: [
+          {
+            mime: "application/x.notebook.stream.stdout",
+            data: encoder.encode("éé")
+          }
+        ]
+      };
+    }
+
+    await expect(kernelOutputsToText(outputs(), 3)).rejects.toThrow("kernel output exceeds the byte limit");
+  });
+
   it("surfaces stable Jupyter kernel error output instead of reporting a missing marker", async () => {
     const encoder = new TextEncoder();
     async function* outputs() {

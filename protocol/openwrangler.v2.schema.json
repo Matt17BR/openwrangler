@@ -6,7 +6,8 @@
   "oneOf": [{ "$ref": "#/definitions/RuntimeRequestEnvelope" }, { "$ref": "#/definitions/RuntimeResponseEnvelope" }],
   "definitions": {
     "ProtocolVersion": { "type": "integer", "enum": [2] },
-    "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas", "pyspark"] },
+    "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas", "pyspark", "r"] },
+    "RDataframeFlavor": { "type": "string", "enum": ["r.data.frame", "r.tibble", "r.data.table"] },
     "SessionMode": { "type": "string", "enum": ["viewing", "editing"] },
     "RequestPriority": { "type": "string", "enum": ["interactive", "background"] },
     "SessionSource": {
@@ -182,7 +183,16 @@
         "cancel": { "type": "boolean" },
         "exportCsv": { "type": "boolean" },
         "exportParquet": { "type": "boolean" },
-        "notebookInsert": { "type": "boolean" }
+        "notebookInsert": { "type": "boolean" },
+        "filter": { "type": "boolean" },
+        "sort": { "type": "boolean" },
+        "profile": { "type": "boolean" },
+        "columnValues": { "type": "boolean" },
+        "supportedOperations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/OperationKind" }
+        }
       }
     },
     "ColumnType": {
@@ -274,6 +284,11 @@
       "properties": {
         "id": { "type": "string" },
         "rowNumber": { "type": "integer", "minimum": 0 },
+        "rowLabel": {
+          "description": "Optional source row label. rowNumber remains the zero-based logical grid position.",
+          "type": "string",
+          "maxLength": 1024
+        },
         "values": { "type": "array", "items": { "$ref": "#/definitions/CellValue" } }
       }
     },
@@ -1508,11 +1523,38 @@
         "filterModel",
         "steps"
       ],
+      "not": {
+        "anyOf": [
+          {
+            "required": ["backend"],
+            "properties": { "backend": { "const": "r" } },
+            "not": { "required": ["rDataframeFlavor"] }
+          },
+          {
+            "required": ["backend", "rDataframeFlavor"],
+            "properties": { "backend": { "not": { "const": "r" } } }
+          },
+          {
+            "required": ["backend", "source"],
+            "properties": {
+              "backend": { "const": "r" },
+              "source": {
+                "required": ["kind"],
+                "properties": { "kind": { "not": { "const": "notebookVariable" } } }
+              }
+            }
+          }
+        ]
+      },
       "properties": {
         "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
         "backend": { "$ref": "#/definitions/DataBackend" },
+        "rDataframeFlavor": {
+          "description": "Required only for a confirmed R notebook session; forbidden for every other backend.",
+          "$ref": "#/definitions/RDataframeFlavor"
+        },
         "mode": { "$ref": "#/definitions/SessionMode" },
         "source": { "$ref": "#/definitions/SessionSource" },
         "capabilities": { "$ref": "#/definitions/SourceCapabilities" },
@@ -1554,6 +1596,16 @@
             "properties": {
               "backend": { "const": "pyspark" },
               "mode": { "const": "editing" }
+            }
+          },
+          {
+            "required": ["backend"],
+            "properties": {
+              "backend": { "const": "r" },
+              "source": {
+                "required": ["kind"],
+                "properties": { "kind": { "enum": ["file", "notebookOutput"] } }
+              }
             }
           }
         ]

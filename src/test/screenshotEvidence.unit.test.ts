@@ -225,10 +225,13 @@ describe("packaged editor screenshot evidence", () => {
       "notebook-pandas",
       "notebook-code-insertion",
       "notebook-variable-picker",
+      "notebook-r-picker",
       "notebook-pyspark-picker",
       "notebook-polars",
       "notebook-duckdb",
-      "notebook-pyspark"
+      "notebook-pyspark",
+      "notebook-r",
+      "notebook-r-editing"
     ]);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
@@ -260,7 +263,63 @@ describe("packaged editor screenshot evidence", () => {
     expect(packagedScreenshotFileName("vscode", "notebook-pyspark-picker", "dark")).toBe(
       "vscode-notebook-pyspark-picker-dark.png"
     );
+    expect(packagedScreenshotFileName("vscode", "notebook-r-picker", "dark")).toBe("vscode-notebook-r-picker-dark.png");
+    expect(packagedScreenshotFileName("vscode", "notebook-r", "dark")).toBe("vscode-notebook-r-dark.png");
+    expect(packagedScreenshotFileName("vscode", "notebook-r-editing", "dark")).toBe(
+      "vscode-notebook-r-editing-dark.png"
+    );
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
+  });
+
+  it("captures R notebook media from the local released-Jupyter journey", () => {
+    const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
+    const rJourney = extensionHost.slice(
+      extensionHost.indexOf("async function exerciseReleasedRJupyterExtension"),
+      extensionHost.indexOf("async function assertReleasedProfileStat")
+    );
+
+    expect(rJourney).toMatch(
+      /const screenshotOutput =\s+phase === "jupyter-r" && process\.platform === "linux"[\s\S]{0,120}OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS/u
+    );
+    expect(extensionHost).toContain('source: ["# Browse an R data frame with Open Wrangler\\n", "orders_frame\\n"]');
+    expect(rJourney).toContain('["orders_frame", "data.frame"]');
+    expect(rJourney).toContain('["orders_tibble", "tibble"]');
+    expect(rJourney).toContain('["orders_table", "data.table"]');
+    expect(extensionHost).not.toContain('"base_frame <- data.frame("');
+    expect(rJourney).toContain("prepareReleasedRNotebookScreenshotWorkbench(workbench, notebook, notebookEditor)");
+    expect(rJourney).toContain("captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput)");
+    expect(rJourney).toContain(
+      "captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput)"
+    );
+    expect(extensionHost).toContain('"regional_orders <- data.frame("');
+    expect(extensionHost).toContain('"  order_id = 2400000L + media_index,"');
+    expect(extensionHost).toContain("\"  market = rep(c('DACH', 'Nordics', 'France', 'Iberia')");
+    expect(extensionHost).toContain('"  revenue = media_revenue,"');
+    expect(extensionHost).toContain(
+      'packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-picker", "dark")'
+    );
+    expect(rJourney).toContain(
+      'packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r", "dark")'
+    );
+    expect(extensionHost).toContain(
+      'packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-editing", "dark")'
+    );
+    expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:editing")');
+    expect(extensionHost).toContain("PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT");
+    expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:variable-picker")');
+    expect(rJourney).toContain('recordAcceptanceProgress("jupyter-r:screenshot:workbench")');
+    expect(rJourney).toContain('selectOption("gte")');
+    expect(rJourney).toContain('selectOption("equals")');
+    expect(rJourney).toContain('await assertReleasedProfileStat(profile, "Min", "20,000")');
+    expect(rJourney).toContain("/^priority, Priority 1 · Ascending · nulls last/u");
+    expect(rJourney).toContain("/^revenue, Priority 2 · Descending · nulls last/u");
+    expect(rJourney).toContain('fitReleasedRMediaColumns(testing, app, sessionId, ["order_id", "market", "revenue"])');
+    expect(rJourney).toContain(
+      'assertOnlyCompleteMediaColumnsVisible(app, ["order_id", "market", "revenue"], "The R notebook media scene")'
+    );
+    expect(rJourney).toContain("const alignedViewport = await alignPackagedSceneRowBoundary(workbench, app)");
+    expect(rJourney).toContain("alignedViewport\n    );");
+    expect(extensionHost).toContain("assertReleasedRPrivateNotebookContentHidden(workbench)");
   });
 
   it("keeps public notebook captures free of acceptance-only fixture labels", () => {

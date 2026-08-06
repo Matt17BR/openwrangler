@@ -73,6 +73,31 @@ describe("FilterPanel", () => {
     expect(screen.getByText("Preparing filters...")).toBeInTheDocument();
   });
 
+  it("keeps supported predicates while disabling value lists and unavailable sorting", () => {
+    const onRequestValues = vi.fn();
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={new Map()}
+        filterSupported={true}
+        sortSupported={false}
+        columnValuesSupported={false}
+        onApply={() => undefined}
+        onRequestValues={onRequestValues}
+      />
+    );
+
+    expect(screen.getByRole("textbox", { name: "Search values for city" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByText("Value lists are unavailable. Use a predicate instead.")).toBeVisible();
+    expect(screen.getByText("Sorting is unavailable for this dataframe.")).toBeVisible();
+    expect(screen.queryByRole("combobox", { name: "Sort column" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    expect(onRequestValues).not.toHaveBeenCalled();
+  });
+
   it("builds advanced values, predicates, sorts, and clear actions", () => {
     const onApply = vi.fn();
     const onRequestValues = vi.fn();
@@ -1038,6 +1063,9 @@ describe("SummaryPanel", () => {
       selectedColumnId?: string;
       metadataValue?: SessionMetadata;
       summaries?: ColumnSummary[];
+      profileSupported?: boolean;
+      filtersSupported?: boolean;
+      filtersLabel?: string;
       onSelectView?: (view: "column" | "dataset" | "filters") => void;
     } = {}
   ) => {
@@ -1049,6 +1077,9 @@ describe("SummaryPanel", () => {
         schemaById={new Map(metadataValue.schema.map((column) => [column.id, column]))}
         selectedColumnId={options.selectedColumnId}
         activeView={options.activeView ?? "column"}
+        profileSupported={options.profileSupported}
+        filtersSupported={options.filtersSupported}
+        filtersLabel={options.filtersLabel}
         onSelectView={options.onSelectView ?? (() => undefined)}
       />
     );
@@ -1058,7 +1089,7 @@ describe("SummaryPanel", () => {
     const onSelectView = vi.fn();
     renderSummary({ activeView: "column", onSelectView });
 
-    expect(screen.getByRole("tablist", { name: "Column profiles view" })).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "Column profiles and filters view" })).toBeInTheDocument();
     const tabs = screen.getAllByRole("tab");
     expect(tabs.map((tab) => tab.textContent)).toEqual(["Column", "Dataset", "Filters"]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
@@ -1071,6 +1102,27 @@ describe("SummaryPanel", () => {
     fireEvent.keyDown(tabs[1]!, { key: "End" });
     expect(onSelectView).toHaveBeenLastCalledWith("filters");
     expect(tabs[2]).toHaveFocus();
+  });
+
+  it("keeps keyboard navigation inside the visible sort-only tab", () => {
+    const onSelectView = vi.fn();
+    renderSummary({
+      activeView: "filters",
+      profileSupported: false,
+      filtersSupported: true,
+      filtersLabel: "Sorts",
+      onSelectView
+    });
+
+    const sorts = screen.getByRole("tab", { name: "Sorts" });
+    sorts.focus();
+    for (const key of ["ArrowRight", "ArrowLeft", "Home", "End"]) {
+      fireEvent.keyDown(sorts, { key });
+      expect(onSelectView).toHaveBeenLastCalledWith("filters");
+      expect(sorts).toHaveFocus();
+    }
+    expect(screen.queryByRole("tab", { name: "Column" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Dataset" })).not.toBeInTheDocument();
   });
 
   it("renders only the selected column with exact scalar and sampled-distribution provenance", () => {

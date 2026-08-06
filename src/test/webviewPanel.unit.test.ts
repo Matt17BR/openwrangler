@@ -2436,6 +2436,40 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toEqual([]);
   });
 
+  it("rejects a valid preview outside the session's advertised operation set", async () => {
+    const limitedOpened: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: {
+        ...openedResponse.metadata,
+        capabilities: {
+          ...openedResponse.metadata.capabilities,
+          supportedOperations: ["renameColumn"]
+        }
+      }
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") return limitedOpened;
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+    const harness = createPanelHarness({ request }, { openResponse: limitedOpened });
+    await harness.open();
+    request.mockClear();
+
+    await harness.send({
+      kind: "runtimeRequest",
+      request: {
+        kind: "previewStep",
+        step: { id: "custom", kind: "customCode", params: { code: "result = df" } },
+        offset: 0,
+        limit: 200,
+        columnOffset: 0,
+        columnLimit: 16
+      }
+    });
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("decodes only the exact change-import-options message shape", async () => {
     const source: SessionSource = {
       kind: "file",
@@ -4046,6 +4080,107 @@ describe("OpenWranglerPanel retained view state", () => {
       expect(request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0]).toMatchObject({
         backend: "pyspark",
         mode: "viewing"
+      })
+    );
+  });
+
+  it("uses the default viewing mode for R notebooks and caps the initial page to 100,000 cells", async () => {
+    vi.spyOn(workspace, "getConfiguration").mockImplementation(
+      () =>
+        ({
+          get: (key: string, fallback?: unknown): unknown => {
+            if (key === "fetchBlockSize" || key === "fetchColumnBlockSize") return 10_000;
+            return fallback;
+          }
+        }) as vscode.WorkspaceConfiguration
+    );
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "r_frame",
+      variableName: "r_frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") {
+        return {
+          ...openedResponse,
+          metadata: {
+            ...metadata,
+            backend: "r",
+            rDataframeFlavor: "r.data.frame",
+            mode: "viewing",
+            source,
+            capabilities: {
+              editable: false,
+              lazy: false,
+              cancel: false,
+              exportCsv: false,
+              exportParquet: false,
+              notebookInsert: false
+            }
+          }
+        };
+      }
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+
+    createPanelHarness(
+      { request },
+      { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
+    );
+
+    await vi.waitFor(() => {
+      const openRequest = request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0];
+      expect(openRequest).toMatchObject({
+        backend: "r",
+        mode: "viewing",
+        pageSize: 390,
+        columnOffset: 0,
+        columnLimit: 256
+      });
+      if (!openRequest || openRequest.kind !== "openSession") throw new Error("Expected an open-session request.");
+      expect(openRequest.pageSize * openRequest.columnLimit).toBeLessThanOrEqual(100_000);
+    });
+  });
+
+  it("honors an explicit editing-mode preference for an R notebook variable", async () => {
+    vi.spyOn(workspace, "getConfiguration").mockImplementation(
+      () =>
+        ({
+          get: (key: string, fallback?: unknown): unknown => (key === "notebookStartMode" ? "editing" : fallback)
+        }) as vscode.WorkspaceConfiguration
+    );
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "r_frame",
+      variableName: "r_frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") {
+        return {
+          ...openedResponse,
+          metadata: {
+            ...metadata,
+            backend: "r",
+            rDataframeFlavor: "r.data.frame",
+            mode: "editing",
+            source
+          }
+        };
+      }
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+
+    createPanelHarness(
+      { request },
+      { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
+    );
+
+    await vi.waitFor(() =>
+      expect(request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0]).toMatchObject({
+        backend: "r",
+        mode: "editing"
       })
     );
   });

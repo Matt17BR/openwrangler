@@ -13,13 +13,29 @@ export const REMOTE_JUPYTER_SETUP_INACTIVITY_TIMEOUT_MS = 180_000;
 export const REMOTE_JUPYTER_SETUP_HEARTBEAT_MS = 60_000;
 export const REMOTE_JUPYTER_BASE_IMAGE =
   "python:3.12.10-slim-bookworm@sha256:fd95fa221297a88e1cf49c55ec1828edd7c5a428187e67b5d1805692d11588db";
+export const REMOTE_R_JUPYTER_BASE_IMAGE =
+  "rocker/r-ver:4.5.2@sha256:fd4ccdd3a4a6f7ef805e2daeee2a0fe3bf126bc231f36351223baecf5a595a4c";
 
 const MODULE_DIRECTORY = fileURLToPath(new URL(".", import.meta.url));
 const DEFAULT_BUILD_CONTEXT = resolve(MODULE_DIRECTORY, "remote-jupyter");
 const OWNER_LABEL = "io.openwrangler.remote-jupyter.owner";
 const CONTAINER_PORT = 8888;
-const REMOTE_KERNEL_NAME = "openwrangler-remote-acceptance";
-const REMOTE_KERNEL_LABEL = "Open Wrangler Remote Acceptance";
+const REMOTE_FIXTURE_DEFINITIONS = Object.freeze({
+  python: Object.freeze({
+    dockerfile: "Dockerfile",
+    imageName: "openwrangler-remote-jupyter",
+    kernelName: "openwrangler-remote-acceptance",
+    kernelLabel: "Open Wrangler Remote Acceptance",
+    language: "python"
+  }),
+  r: Object.freeze({
+    dockerfile: "Dockerfile.r",
+    imageName: "openwrangler-remote-r-jupyter",
+    kernelName: "openwrangler-r-remote-acceptance",
+    kernelLabel: "R (Open Wrangler Remote)",
+    language: "R"
+  })
+});
 const DOCKER_OUTPUT_MAX_BYTES = 64 * 1024;
 const DOCKER_COMPLETION_UNKNOWN_CODE = "REMOTE_JUPYTER_DOCKER_COMPLETION_UNKNOWN";
 const STATUS_MAX_BYTES = 16 * 1024;
@@ -76,6 +92,13 @@ export function remoteJupyterHostnameForRun(runId) {
 
 export function remoteJupyterOwnershipMayBeLive(error) {
   return error?.code === REMOTE_JUPYTER_OWNERSHIP_UNCERTAIN_CODE;
+}
+
+export function remoteJupyterFixtureDefinition(fixtureKind) {
+  if (fixtureKind !== "python" && fixtureKind !== "r") {
+    throw new Error('Remote Jupyter fixture kind must be exactly "python" or "r".');
+  }
+  return REMOTE_FIXTURE_DEFINITIONS[fixtureKind];
 }
 
 function notifyRemoteJupyterOwnershipUncertain(callback, error) {
@@ -234,6 +257,7 @@ export async function startRemoteJupyterAcceptanceFixture(
     dockerPrivateDirectory,
     dockerExecutable = "docker",
     buildContext = DEFAULT_BUILD_CONTEXT,
+    fixtureKind = "python",
     runCommand = runBoundedDockerCommand,
     fetchImpl = globalThis.fetch,
     randomUUIDImpl = randomUUID,
@@ -251,6 +275,7 @@ export async function startRemoteJupyterAcceptanceFixture(
   } = {}
 ) {
   if (!remoteJupyterAcceptanceEnabled(environment)) return undefined;
+  const fixtureDefinition = remoteJupyterFixtureDefinition(fixtureKind);
   if (!isPlainObject(credentials) || !TOKEN.test(credentials.token ?? "")) {
     throw new Error("Remote Jupyter acceptance requires one separately generated opaque authentication token.");
   }
@@ -310,7 +335,7 @@ export async function startRemoteJupyterAcceptanceFixture(
   const compactOwner = ownerId.replaceAll("-", "").toLowerCase();
   const hostname = remoteJupyterHostnameForRun(credentials.runId);
   const containerName = `ow-rj-${compactOwner.slice(0, 24)}`;
-  const imageTag = `openwrangler-remote-jupyter:${compactOwner}`;
+  const imageTag = `${fixtureDefinition.imageName}:${compactOwner}`;
   const token = credentials.token;
   const docker = createDockerClient({
     dockerExecutable,
@@ -351,7 +376,7 @@ export async function startRemoteJupyterAcceptanceFixture(
           "--no-cache",
           "--pull=false",
           "--file",
-          resolve(buildContext, "Dockerfile"),
+          resolve(buildContext, fixtureDefinition.dockerfile),
           "--label",
           `${OWNER_LABEL}=${ownerId}`,
           "--tag",
@@ -417,7 +442,7 @@ export async function startRemoteJupyterAcceptanceFixture(
     await injectAuthenticationToken(setupDocker, resources.containerId, token);
     const baseUrl = await resolveLoopbackBaseUrl(setupDocker, resources.containerId);
     setupBudget.checkpoint("setup:readiness-start");
-    await waitForJupyterStatus(baseUrl, token, {
+    await waitForJupyterStatus(baseUrl, token, fixtureDefinition, {
       fetchImpl,
       now: monotonicNow,
       sleep,
@@ -984,6 +1009,7 @@ async function resolveLoopbackBaseUrl(docker, containerId) {
 async function waitForJupyterStatus(
   baseUrl,
   token,
+  fixtureDefinition,
   { fetchImpl, now, sleep, timeoutMs, progressIntervalMs, onProgress }
 ) {
   const deadline = now() + timeoutMs;
@@ -1031,7 +1057,7 @@ async function waitForJupyterStatus(
           if (
             kernelspecResponse?.status === 200 &&
             /^application\/json(?:\s*;|$)/iu.test(kernelspecResponse.headers?.get?.("content-type") ?? "") &&
-            isExpectedRemoteKernelspec(await readBoundedJsonResponse(kernelspecResponse))
+            isExpectedRemoteKernelspec(await readBoundedJsonResponse(kernelspecResponse), fixtureDefinition)
           ) {
             return;
           }
@@ -1048,27 +1074,35 @@ async function waitForJupyterStatus(
   throw new Error("Remote Jupyter Server did not become ready within its fixed deadline.");
 }
 
-function isExpectedRemoteKernelspec(report) {
+function isExpectedRemoteKernelspec(report, fixtureDefinition) {
   if (!isPlainObject(report) || !isPlainObject(report.kernelspecs)) return false;
-  const candidate = report.kernelspecs[REMOTE_KERNEL_NAME];
-  if (!isPlainObject(candidate) || candidate.name !== REMOTE_KERNEL_NAME || !isPlainObject(candidate.spec)) {
+  const candidate = report.kernelspecs[fixtureDefinition.kernelName];
+  if (!isPlainObject(candidate) || candidate.name !== fixtureDefinition.kernelName || !isPlainObject(candidate.spec)) {
     return false;
   }
   const { argv, display_name: displayName, language } = candidate.spec;
-  return (
-    Array.isArray(argv) &&
-    argv.length === 6 &&
-    typeof argv[0] === "string" &&
-    argv[0].startsWith("/") &&
-    argv.slice(1).every((value) => typeof value === "string") &&
-    argv[1] === "-Xfrozen_modules=off" &&
-    argv[2] === "-m" &&
-    argv[3] === "ipykernel_launcher" &&
-    argv[4] === "-f" &&
-    argv[5] === "{connection_file}" &&
-    displayName === REMOTE_KERNEL_LABEL &&
-    language === "python"
-  );
+  if (
+    !Array.isArray(argv) ||
+    argv.length !== 6 ||
+    typeof argv[0] !== "string" ||
+    !argv[0].startsWith("/") ||
+    argv.slice(1).some((value) => typeof value !== "string") ||
+    displayName !== fixtureDefinition.kernelLabel ||
+    language !== fixtureDefinition.language
+  ) {
+    return false;
+  }
+  return fixtureDefinition.language === "python"
+    ? argv[1] === "-Xfrozen_modules=off" &&
+        argv[2] === "-m" &&
+        argv[3] === "ipykernel_launcher" &&
+        argv[4] === "-f" &&
+        argv[5] === "{connection_file}"
+    : argv[1] === "--slave" &&
+        argv[2] === "-e" &&
+        argv[3] === "IRkernel::main()" &&
+        argv[4] === "--args" &&
+        argv[5] === "{connection_file}";
 }
 
 async function readBoundedJsonResponse(response) {
