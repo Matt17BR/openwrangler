@@ -4,7 +4,7 @@
 
 <h1 align="center">Open Wrangler</h1>
 
-<p align="center">A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks. Open, clean, and export Pandas or Polars data. DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames can be viewed from live Jupyter notebooks.</p>
+<p align="center">A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks. It supports native Pandas and Polars editing, DuckDB and PySpark viewing, and early R notebook support in Open Wrangler 2 development builds.</p>
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/explore.png" width="1440" height="870"></a>
 
@@ -178,7 +178,7 @@ Generated R can be copied or saved as a `.R` script.
 The rest of the R operation catalog, cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto
 are still in development. The
 [current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2)
-show the live variable picker and viewing workbench; an editing screenshot will follow its packaged-editor test.
+show the live variable picker and viewing workbench. Editing screenshots will be added before v2 is released.
 
 ## Export
 
