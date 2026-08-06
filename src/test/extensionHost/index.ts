@@ -3737,6 +3737,11 @@ async function exerciseReleasedRFillMissingJourney(
     isNull: true,
     isNaN: false
   });
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The direct R Fill missing values journey must resynchronize the editor before returning."
+  );
 }
 
 async function releasedRVisibleRows(
