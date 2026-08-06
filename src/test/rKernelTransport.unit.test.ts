@@ -102,6 +102,17 @@ describe("native R kernel protocol", () => {
       sessionId,
       summaries: [{ columnId: "r:c:0", numeric: { exactMin: { raw: 1 } } }]
     });
+    const derivedColumnSummary = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: summaryRequestId,
+      kind: "summary",
+      sessionId,
+      summaries: [{ ...minimalSummary(), columnId: longDerivedColumnId() }]
+    });
+    expect(decodeRKernelResponseJson(derivedColumnSummary, summaryRequestId)).toMatchObject({
+      kind: "summary",
+      summaries: [{ columnId: longDerivedColumnId() }]
+    });
 
     const stats = JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -260,6 +271,26 @@ describe("native R kernel protocol", () => {
   it("validates page windows and repeated stable sort identities before dispatch", () => {
     const valid = openRequest();
     expect(JSON.parse(encodeRKernelRequest(valid))).toEqual(valid);
+    const derivedSortRequest: RKernelRequest = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        page: {
+          ...valid.payload.page,
+          view: {
+            ...valid.payload.page.view,
+            sorts: [
+              {
+                column: { id: longDerivedColumnId(), name: "value copy" },
+                direction: "asc",
+                nulls: "last"
+              }
+            ]
+          }
+        }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(derivedSortRequest))).toEqual(derivedSortRequest);
     const repeated: RKernelRequest = {
       ...valid,
       payload: {
@@ -392,6 +423,63 @@ describe("native R kernel protocol", () => {
         previewRequestId
       )
     ).toThrow("invalid action");
+  });
+
+  it("strictly validates native R Clone Column requests, derived identities, and structural diffs", () => {
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "clone-step",
+          kind: "cloneColumn",
+          params: { column: { id: "r:c:0", name: "value" }, newName: "value copy" }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    const response = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalCloneFramePage(),
+      diff: { ...minimalRenameDiff(), addedColumns: ["value copy"] },
+      code: "open_wrangler_result <- frame\n"
+    });
+    const decoded = decodeRKernelResponseJson(response, previewRequestId);
+    expect(decoded).toMatchObject({
+      kind: "stepPreview",
+      diff: { addedColumns: ["value copy"], removedColumns: [] }
+    });
+    if (decoded.kind !== "stepPreview") throw new Error("Expected a native R clone preview.");
+    expect(decoded.page.schema.map(({ id }) => id)).toEqual(["r:c:0", "c:step:clone-step:0"]);
+
+    const malformed = structuredClone(request) as unknown as {
+      payload: { step: { params: Record<string, unknown> } };
+    };
+    malformed.payload.step.params.extra = true;
+    expect(() => encodeRKernelRequest(malformed as unknown as RKernelRequest)).toThrow("invalid fields");
+
+    const oversizedReference = structuredClone(request) as unknown as {
+      payload: { step: { params: { column: { id: string } } } };
+    };
+    oversizedReference.payload.step.params.column.id = "x".repeat(R_FRAME_CONTRACT_LIMITS.columnIdBytes + 1);
+    expect(() => encodeRKernelRequest(oversizedReference as unknown as RKernelRequest)).toThrow(
+      "request.payload.step.params.column.id"
+    );
+
+    const malformedDiff = JSON.parse(response) as { diff: { addedColumns: unknown[] } };
+    malformedDiff.diff.addedColumns = [17];
+    expect(() => decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId)).toThrow(
+      "response.diff.addedColumns[0]"
+    );
   });
 
   it("strictly validates native R Drop Columns requests and structural diffs", () => {
@@ -1523,6 +1611,12 @@ function sortRule() {
   return { column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" } as const;
 }
 
+function longDerivedColumnId() {
+  const id = `c:step:${"x".repeat(130)}:0`;
+  if (Buffer.byteLength(id, "utf8") <= 128) throw new Error("long derived-column fixture is too short");
+  return id;
+}
+
 function renameStep() {
   return {
     id: "rename-step",
@@ -1545,7 +1639,7 @@ function minimalRenameDiff() {
 
 function minimalFramePage() {
   return {
-    contractVersion: 4,
+    contractVersion: 5,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -1576,6 +1670,24 @@ function minimalFramePage() {
       ]
     }
   } as const;
+}
+
+function minimalCloneFramePage() {
+  const frame = structuredClone(minimalFramePage()) as unknown as {
+    shape: { rows: number; columns: number };
+    schema: Array<Record<string, unknown>>;
+    page: { columnIds: string[]; rows: Array<{ values: unknown[] }> };
+  };
+  frame.shape.columns = 2;
+  frame.schema.push({
+    ...frame.schema[0],
+    id: "c:step:clone-step:0",
+    name: "value copy",
+    position: 1
+  });
+  frame.page.columnIds.push("c:step:clone-step:0");
+  frame.page.rows[0]?.values.push({ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false });
+  return frame;
 }
 
 function minimalSummary() {

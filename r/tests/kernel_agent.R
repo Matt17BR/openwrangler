@@ -18,6 +18,8 @@ atomic_rename_session_id <- "88888888-8888-4888-8888-888888888888"
 drop_session_id <- "99999999-9999-4999-8999-999999999999"
 select_session_id <- "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 select_table_session_id <- "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+clone_session_id <- "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+clone_table_session_id <- "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -328,7 +330,7 @@ named_rows <- dispatch(
   list(sessionId = second_session_id, variableName = "named_rows", page = page_window())
 )
 assert_identical(named_rows$kind, "page", "a dataframe with explicit row names could not be opened")
-assert_identical(named_rows$page$contractVersion, 4L, "the R kernel agent emitted the wrong frame contract")
+assert_identical(named_rows$page$contractVersion, 5L, "the R kernel agent emitted the wrong frame contract")
 assert_identical(named_rows$page$frameSemantics$rowNames, "explicit", "explicit R row names were hidden")
 assert_identical(named_rows$page$page$rows[[1L]]$rowLabel, "named-row", "the explicit R row label changed")
 named_rows_closed <- dispatch("closeSession", list(sessionId = second_session_id))
@@ -1005,6 +1007,387 @@ rm("select_table", "open_wrangler_result", envir = .GlobalEnv)
 select_table_closed <- dispatch("closeSession", list(sessionId = select_table_session_id))
 assert_identical(select_table_closed$kind, "closed", "the R data.table selection session did not close")
 
+source_environment$clone_frame <- data.frame(
+  duplicate = c(1L, 2L),
+  duplicate = c(3L, NA_integer_),
+  `non syntactic` = as.Date(c("2026-05-01", "2026-05-02")),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b")
+)
+clone_source_before <- unserialize(serialize(source_environment$clone_frame, NULL, version = 3L))
+clone_step <- function(
+  id = "clone-step",
+  column_id = "r:c:1",
+  column_name = "duplicate",
+  new_name = "duplicate copy"
+) {
+  list(
+    id = id,
+    kind = "cloneColumn",
+    params = list(column = list(id = column_id, name = column_name), newName = new_name)
+  )
+}
+clone_open <- dispatch(
+  "openSession",
+  list(sessionId = clone_session_id, variableName = "clone_frame", page = page_window())
+)
+assert_identical(clone_open$kind, "page", "the R Clone Column session did not open")
+clone_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = clone_session_id,
+    revision = 0L,
+    step = clone_step(),
+    page = page_window(column_offset = 3L, column_limit = 1L)
+  )
+)
+assert_identical(clone_preview$kind, "stepPreview", "the R Clone Column step did not preview")
+assert_identical(clone_preview$revision, 1L, "the R clone preview revision changed")
+assert_identical(clone_preview$page$page$columnIds, list("c:step:clone-step:0"), "the R clone lost its derived identity")
+assert_identical(clone_preview$page$schema[[4L]]$position, 3L, "the R clone published the wrong position")
+assert_identical(
+  clone_preview$page$schema[[4L]]$nullable,
+  clone_preview$page$schema[[2L]]$nullable,
+  "the R clone changed source nullability"
+)
+assert_identical(clone_preview$diff$addedColumns, list("duplicate copy"), "the R clone diff lost its output")
+assert_identical(clone_preview$diff$removedColumns, list(), "the R clone diff removed a column")
+assert_identical(clone_preview$diff$addedRows, 0L, "the R clone diff added rows")
+assert_identical(clone_preview$diff$removedRows, 0L, "the R clone diff removed rows")
+assert_identical(clone_preview$diff$changedCells, 0L, "the R clone diff changed cell values")
+assert_identical(clone_preview$diff$cells, list(), "the R clone diff returned cell payloads")
+clone_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = clone_session_id, revision = 1L, page = page_window())
+)
+assert_identical(clone_discard$action, "discard", "the R clone draft did not discard")
+assert_identical(clone_discard$revision, 2L, "discarding the R clone did not advance the revision")
+assert_identical(clone_discard$page$shape$columns, 3L, "discarding the R clone kept its output")
+
+clone_preview <- dispatch(
+  "previewStep",
+  list(sessionId = clone_session_id, revision = 2L, step = clone_step(), page = page_window())
+)
+clone_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = clone_session_id, revision = 3L, page = page_window())
+)
+assert_identical(clone_apply$action, "apply", "the R clone draft did not apply")
+assert_identical(clone_apply$revision, 4L, "applying the R clone did not advance the revision")
+assert_identical(
+  vapply(clone_apply$page$schema, `[[`, character(1L), "id"),
+  c("r:c:0", "r:c:1", "r:c:2", "c:step:clone-step:0"),
+  "applying the R clone changed stable identities"
+)
+assert_identical(
+  vapply(clone_apply$page$schema, `[[`, character(1L), "name"),
+  c("duplicate", "duplicate", "non syntactic", "duplicate copy"),
+  "applying the R clone repaired duplicate names"
+)
+clone_inspection <- dispatch(
+  "inspectStep",
+  list(sessionId = clone_session_id, revision = 4L, stepId = "clone-step", page = page_window())
+)
+assert_identical(clone_inspection$kind, "stepInspection", "the applied R clone could not be inspected")
+assert_identical(length(clone_inspection$inputSchema), 3L, "R clone inspection lost its input schema")
+assert_identical(length(clone_inspection$outputSchema), 4L, "R clone inspection lost its output schema")
+assert_identical(
+  clone_inspection$outputSchema[[4L]]$id,
+  "c:step:clone-step:0",
+  "R clone inspection lost its derived identity"
+)
+assert_identical(clone_inspection$diff$addedColumns, list("duplicate copy"), "R clone inspection lost its diff")
+
+clone_rename_step <- list(
+  id = "rename-clone-step",
+  kind = "renameColumn",
+  params = list(
+    column = list(id = "c:step:clone-step:0", name = "duplicate copy"),
+    newName = "renamed copy"
+  )
+)
+clone_rename_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = clone_session_id,
+    revision = 4L,
+    step = clone_rename_step,
+    page = page_window()
+  )
+)
+assert_identical(clone_rename_preview$kind, "stepPreview", "a rename could not target the R clone output")
+clone_rename_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = clone_session_id, revision = 5L, page = page_window())
+)
+assert_identical(
+  clone_rename_apply$page$schema[[4L]]$id,
+  "c:step:clone-step:0",
+  "mixed R clone replay changed the derived identity"
+)
+assert_identical(clone_rename_apply$page$schema[[4L]]$name, "renamed copy", "mixed R clone replay lost the rename")
+clone_after_mixed_inspection <- dispatch(
+  "inspectStep",
+  list(sessionId = clone_session_id, revision = 6L, stepId = "clone-step", page = page_window())
+)
+assert_identical(
+  clone_after_mixed_inspection$diff$addedColumns,
+  list("duplicate copy"),
+  "mixed replay changed the R clone diff"
+)
+if (!grepl(".ow_clone_position", clone_rename_apply$code, fixed = TRUE)) {
+  stop("generated R Clone Column code lost its positional binding", call. = FALSE)
+}
+assign("clone_frame", source_environment$clone_frame, envir = .GlobalEnv)
+eval(parse(text = clone_rename_apply$code), envir = .GlobalEnv)
+clone_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  names(clone_generated),
+  c("duplicate", "duplicate", "non syntactic", "renamed copy"),
+  "generated R clone/rename code returned the wrong columns"
+)
+assert_identical(clone_generated[[4L]], clone_source_before[[2L]], "generated R clone copied the wrong duplicate")
+assert_identical(row.names(clone_generated), row.names(clone_source_before), "generated R clone changed row names")
+assert_identical(
+  get("clone_frame", envir = .GlobalEnv, inherits = FALSE),
+  clone_source_before,
+  "generated R clone code mutated its source dataframe"
+)
+rm("clone_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+wide_clone_names <- c("duplicate", "duplicate", sprintf("wide_%04d", 3:2048))
+wide_clone_source <- as.data.frame(
+  setNames(replicate(2048L, 1L, simplify = FALSE), wide_clone_names),
+  optional = TRUE
+)
+wide_clone_before <- unserialize(serialize(wide_clone_source, NULL, version = 3L))
+assign("clone_frame", wide_clone_source, envir = .GlobalEnv)
+wide_clone_error <- tryCatch(
+  {
+    eval(parse(text = clone_rename_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = function(error) error
+)
+if (is.null(wide_clone_error) || !grepl("column limit reached", conditionMessage(wide_clone_error), fixed = TRUE)) {
+  stop("generated R Clone Column code did not enforce the frame width limit", call. = FALSE)
+}
+assert_identical(
+  get("clone_frame", envir = .GlobalEnv, inherits = FALSE),
+  wide_clone_before,
+  "the generated R clone width guard mutated its source"
+)
+rm("clone_frame", envir = .GlobalEnv)
+
+clone_rename_undo <- dispatch(
+  "undoStep",
+  list(sessionId = clone_session_id, revision = 6L, page = page_window())
+)
+assert_identical(clone_rename_undo$action, "undo", "the mixed R clone rename did not undo")
+assert_identical(clone_rename_undo$page$schema[[4L]]$name, "duplicate copy", "undo lost the R clone")
+clone_edit_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = clone_session_id,
+    revision = 7L,
+    step = clone_step(column_id = "r:c:2", column_name = "non syntactic", new_name = "date copy"),
+    replaceStepId = "clone-step",
+    page = page_window()
+  )
+)
+assert_identical(clone_edit_preview$kind, "stepPreview", "the latest R clone could not be edited")
+assert_identical(
+  clone_edit_preview$page$schema[[4L]]$id,
+  "c:step:clone-step:0",
+  "editing the R clone regenerated its output identity"
+)
+assert_identical(clone_edit_preview$page$schema[[4L]]$name, "date copy", "editing the R clone kept the old output")
+clone_edit_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = clone_session_id, revision = 8L, page = page_window())
+)
+assert_identical(clone_edit_apply$action, "apply", "the edited R clone did not apply")
+clone_undo <- dispatch(
+  "undoStep",
+  list(sessionId = clone_session_id, revision = 9L, page = page_window())
+)
+assert_identical(clone_undo$action, "undo", "the edited R clone did not undo")
+assert_identical(clone_undo$revision, 10L, "undoing the R clone did not advance the revision")
+assert_identical(clone_undo$page$shape$columns, 3L, "undoing the R clone did not restore the source schema")
+
+invalid_clone_steps <- list(
+  clone_step("clone-collision", new_name = "duplicate"),
+  clone_step("clone-private", new_name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_clone")
+)
+for (invalid_step in invalid_clone_steps) {
+  invalid_clone <- dispatch(
+    "previewStep",
+    list(sessionId = clone_session_id, revision = 10L, step = invalid_step, page = page_window())
+  )
+  assert_identical(invalid_clone$kind, "error", "an invalid R clone was accepted")
+  assert_identical(invalid_clone$code, "invalid_request", "the invalid R clone diagnostic changed")
+}
+for (stale_step in list(
+  clone_step("clone-stale", column_id = "r:c:99"),
+  clone_step("clone-misnamed", column_name = "wrong")
+)) {
+  stale_clone <- dispatch(
+    "previewStep",
+    list(sessionId = clone_session_id, revision = 10L, step = stale_step, page = page_window())
+  )
+  assert_identical(stale_clone$kind, "error", "a stale R clone was accepted")
+  assert_identical(stale_clone$code, "stale_column", "the stale R clone diagnostic changed")
+}
+long_clone_step_id <- paste0("long-", strrep("x", 1019L))
+long_clone_column_id <- paste0("c:step:", long_clone_step_id, ":0")
+if (nchar(long_clone_column_id, type = "bytes") <= 1024L) {
+  stop("the long derived R identity regression did not cross the legacy name bound", call. = FALSE)
+}
+long_clone_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = clone_session_id,
+    revision = 10L,
+    step = clone_step(long_clone_step_id, "r:c:0", "duplicate", "long copy"),
+    page = page_window()
+  )
+)
+assert_identical(long_clone_preview$kind, "stepPreview", "a bounded long R clone identity did not preview")
+assert_identical(
+  long_clone_preview$page$schema[[4L]]$id,
+  long_clone_column_id,
+  "the bounded long R clone identity changed"
+)
+long_clone_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = clone_session_id, revision = 11L, page = page_window())
+)
+assert_identical(long_clone_apply$action, "apply", "the bounded long R clone did not apply")
+long_clone_sorted <- dispatch(
+  "getPage",
+  list(
+    sessionId = clone_session_id,
+    page = page_window(list(list(
+      column = list(id = long_clone_column_id, name = "long copy"),
+      direction = "desc",
+      nulls = "last"
+    )))
+  )
+)
+assert_identical(long_clone_sorted$kind, "page", "a long derived R identity could not be sorted")
+long_clone_summary <- dispatch(
+  "getSummary",
+  list(
+    sessionId = clone_session_id,
+    columns = I(list(list(id = long_clone_column_id, name = "long copy"))),
+    view = empty_view()
+  )
+)
+assert_identical(long_clone_summary$kind, "summary", "a long derived R identity could not be profiled")
+assert_identical(
+  long_clone_summary$summaries[[1L]]$columnId,
+  long_clone_column_id,
+  "profiling changed the long derived R identity"
+)
+long_clone_values <- dispatch(
+  "getColumnValues",
+  list(
+    sessionId = clone_session_id,
+    column = list(id = long_clone_column_id, name = "long copy"),
+    view = empty_view(),
+    search = NULL,
+    limit = 10L
+  )
+)
+assert_identical(long_clone_values$kind, "columnValues", "a long derived R identity lost its values")
+long_clone_rename <- dispatch(
+  "previewStep",
+  list(
+    sessionId = clone_session_id,
+    revision = 12L,
+    step = list(
+      id = "rename-long-derived",
+      kind = "renameColumn",
+      params = list(
+        column = list(id = long_clone_column_id, name = "long copy"),
+        newName = "renamed long copy"
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(long_clone_rename$kind, "stepPreview", "a long derived R identity could not be targeted")
+assert_identical(
+  long_clone_rename$page$schema[[4L]]$id,
+  long_clone_column_id,
+  "targeting a long derived R identity changed its lineage"
+)
+long_clone_rename_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = clone_session_id, revision = 13L, page = page_window())
+)
+assert_identical(long_clone_rename_discard$action, "discard", "the long-derived R rename did not discard")
+long_clone_undo <- dispatch(
+  "undoStep",
+  list(sessionId = clone_session_id, revision = 14L, page = page_window())
+)
+assert_identical(long_clone_undo$action, "undo", "the bounded long R clone did not undo")
+assert_identical(long_clone_undo$revision, 15L, "undoing the bounded long R clone changed the revision")
+assert_identical(long_clone_undo$page$shape$columns, 3L, "undoing the bounded long R clone kept its output")
+assert_identical(source_environment$clone_frame, clone_source_before, "the R clone lifecycle mutated its source")
+clone_closed <- dispatch("closeSession", list(sessionId = clone_session_id))
+assert_identical(clone_closed$kind, "closed", "the R Clone Column session did not close")
+
+source_environment$clone_table <- data.table::data.table(
+  primary_key = c(2L, 1L),
+  value = c("b", "a")
+)
+data.table::setkey(source_environment$clone_table, primary_key)
+clone_table_before <- data.table::copy(source_environment$clone_table)
+clone_table_open <- dispatch(
+  "openSession",
+  list(sessionId = clone_table_session_id, variableName = "clone_table", page = page_window())
+)
+assert_identical(clone_table_open$kind, "page", "the R data.table clone session did not open")
+clone_table_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = clone_table_session_id,
+    revision = 0L,
+    step = clone_step("clone-table-step", "r:c:1", "value", "value copy"),
+    page = page_window()
+  )
+)
+assert_identical(
+  clone_table_preview$page$frameSemantics$keyColumnIds,
+  list("r:c:0"),
+  "the R data.table clone changed its key identity"
+)
+assert_identical(
+  clone_table_preview$page$schema[[3L]]$id,
+  "c:step:clone-table-step:0",
+  "the R data.table clone lost its derived identity"
+)
+clone_table_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = clone_table_session_id, revision = 1L, page = page_window())
+)
+assign("clone_table", source_environment$clone_table, envir = .GlobalEnv)
+eval(parse(text = clone_table_apply$code), envir = .GlobalEnv)
+clone_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(class(clone_table_generated), c("data.table", "data.frame"), "generated clone lost data.table class")
+assert_identical(data.table::key(clone_table_generated), "primary_key", "generated clone lost the data.table key")
+assert_identical(clone_table_generated[[3L]], clone_table_before[[2L]], "generated data.table clone copied the wrong column")
+assert_identical(
+  get("clone_table", envir = .GlobalEnv, inherits = FALSE),
+  clone_table_before,
+  "generated R data.table clone mutated its source"
+)
+rm("clone_table", "open_wrangler_result", envir = .GlobalEnv)
+assert_identical(source_environment$clone_table, clone_table_before, "the R data.table clone mutated its source")
+clone_table_closed <- dispatch("closeSession", list(sessionId = clone_table_session_id))
+assert_identical(clone_table_closed$kind, "closed", "the R data.table clone session did not close")
+
 oversized_mutation_response <- FALSE
 atomic_contract <- openwrangler_r_frame_contract
 real_atomic_materialize <- atomic_contract$materialize_view_page
@@ -1158,6 +1541,7 @@ missing_package_contract <- list(
   isolate_capture = function(...) stop("unexpected isolated capture", call. = FALSE),
   rename_column = function(...) stop("unexpected rename", call. = FALSE),
   rename_column_at = function(...) stop("unexpected rename", call. = FALSE),
+  clone_column_at = function(...) stop("unexpected clone", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),

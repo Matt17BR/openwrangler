@@ -17,7 +17,7 @@ const identifierPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a
 const maximumVariableNameBytes = 1_024;
 const maximumDiagnosticBytes = 4_096;
 const maximumGeneratedCodeBytes = 4 * 1_024 * 1_024;
-const maximumStepIdBytes = 1_024;
+const maximumStepIdBytes = R_FRAME_CONTRACT_LIMITS.stepIdBytes;
 
 export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "duplicate_session",
@@ -90,6 +90,15 @@ export interface RKernelRenameColumnStep {
   }>;
 }
 
+export interface RKernelCloneColumnStep {
+  readonly id: string;
+  readonly kind: "cloneColumn";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    newName: string;
+  }>;
+}
+
 export interface RKernelDropColumnsStep {
   readonly id: string;
   readonly kind: "dropColumns";
@@ -106,7 +115,8 @@ export interface RKernelSelectColumnsStep {
   }>;
 }
 
-export type RKernelTransformStep = RKernelRenameColumnStep | RKernelDropColumnsStep | RKernelSelectColumnsStep;
+export type RKernelTransformStep =
+  RKernelRenameColumnStep | RKernelCloneColumnStep | RKernelDropColumnsStep | RKernelSelectColumnsStep;
 
 export interface RKernelStepPreviewResult {
   readonly sessionId: string;
@@ -650,8 +660,9 @@ function validateRequest(request: RKernelRequest): void {
 function validateTransformStep(value: unknown): void {
   const step = exactRecord(value, ["id", "kind", "params"], "R kernel transform step");
   boundedText(step.id, "request.payload.step.id", maximumStepIdBytes, false);
-  if (step.kind === "renameColumn") {
-    const params = exactRecord(step.params, ["column", "newName"], "R kernel rename parameters");
+  if (step.kind === "renameColumn" || step.kind === "cloneColumn") {
+    const operation = step.kind === "renameColumn" ? "rename" : "clone";
+    const params = exactRecord(step.params, ["column", "newName"], `R kernel ${operation} parameters`);
     validateColumnReference(params.column, "request.payload.step.params.column");
     boundedText(params.newName, "request.payload.step.params.newName", maximumVariableNameBytes, false);
     return;
@@ -697,7 +708,7 @@ function validateStructuralDiff(value: unknown): DataDiff {
     diff.changedCells !== 0 ||
     diff.truncated !== false ||
     !Array.isArray(diff.addedColumns) ||
-    diff.addedColumns.length !== 0 ||
+    diff.addedColumns.length > R_FRAME_CONTRACT_LIMITS.columns ||
     !Array.isArray(diff.removedColumns) ||
     diff.removedColumns.length > R_FRAME_CONTRACT_LIMITS.columns ||
     !Array.isArray(diff.cells) ||
@@ -705,13 +716,16 @@ function validateStructuralDiff(value: unknown): DataDiff {
   ) {
     fail("R kernel structural diff is invalid.");
   }
+  const addedColumns = diff.addedColumns.map((column, index) =>
+    boundedText(column, `response.diff.addedColumns[${index}]`, maximumVariableNameBytes, true)
+  );
   const removedColumns = diff.removedColumns.map((column, index) =>
     boundedText(column, `response.diff.removedColumns[${index}]`, maximumVariableNameBytes, true)
   );
   const result: DataDiff = {
     addedRows: 0,
     removedRows: 0,
-    addedColumns: [],
+    addedColumns,
     removedColumns,
     changedCells: 0,
     cells: [],
@@ -746,7 +760,7 @@ function validateColumnReferences(value: unknown): void {
 function validateColumnReference(value: unknown, label: string): Readonly<{ id: string; name: string }> {
   const reference = exactRecord(value, ["id", "name"], label);
   return Object.freeze({
-    id: boundedText(reference.id, `${label}.id`, 128, false),
+    id: boundedText(reference.id, `${label}.id`, R_FRAME_CONTRACT_LIMITS.columnIdBytes, false),
     name: boundedText(reference.name, `${label}.name`, maximumVariableNameBytes, true)
   });
 }
@@ -868,7 +882,7 @@ function isPredicateOperator(value: unknown): value is PredicateFilter["operator
 function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
   for (const [index, summary] of summaries.entries()) {
     const label = `R kernel summary ${index}`;
-    boundedText(summary.columnId, `${label}.columnId`, 128, false);
+    boundedText(summary.columnId, `${label}.columnId`, R_FRAME_CONTRACT_LIMITS.columnIdBytes, false);
     boundedText(summary.column, `${label}.column`, maximumVariableNameBytes, true);
     boundedText(summary.rawType, `${label}.rawType`, maximumVariableNameBytes, false);
     if (summary.totalCount > R_FRAME_CONTRACT_LIMITS.profileRows) {
@@ -996,7 +1010,7 @@ function validateSorts(values: unknown, label: string): void {
   for (const [index, value] of values.entries()) {
     const rule = exactRecord(value, ["column", "direction", "nulls"], `R kernel page sort ${index}`);
     const column = exactRecord(rule.column, ["id", "name"], `R kernel page sort ${index} column`);
-    const id = boundedText(column.id, `${label}[${index}].column.id`, 128, false);
+    const id = boundedText(column.id, `${label}[${index}].column.id`, R_FRAME_CONTRACT_LIMITS.columnIdBytes, false);
     boundedText(column.name, `${label}[${index}].column.name`, maximumVariableNameBytes, true);
     if (seen.has(id)) fail("R page sorts contain a repeated column identity.");
     seen.add(id);

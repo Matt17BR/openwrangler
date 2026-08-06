@@ -1,5 +1,5 @@
 openwrangler_r_frame_contract <- local({
-  contract_version <- 4L
+  contract_version <- 5L
   maximum_rows <- .Machine$integer.max
   maximum_columns <- 2048L
   maximum_page_rows <- 1000L
@@ -20,6 +20,8 @@ openwrangler_r_frame_contract <- local({
   maximum_factor_levels <- 100000L
   maximum_text_bytes <- 8192L
   maximum_name_bytes <- 1024L
+  maximum_step_id_bytes <- 1024L
+  maximum_column_id_bytes <- 2048L
   maximum_payload_bytes <- 16L * 1024L * 1024L
   private_row_id_prefix <- "__open_wrangler_internal_row_id_"
   metadata_base_bytes <- 1024L
@@ -90,6 +92,27 @@ openwrangler_r_frame_contract <- local({
       abort("text-too-large", sprintf("%s exceeds %d UTF-8 bytes", label, maximum_bytes))
     }
     converted
+  }
+
+  is_canonical_column_id <- function(value) {
+    source_match <- regexec("^r:c:(0|[1-9][0-9]*)$", value, perl = TRUE)
+    source_parts <- regmatches(value, source_match)[[1L]]
+    if (length(source_parts) != 0L) {
+      ordinal <- suppressWarnings(as.double(source_parts[[2L]]))
+      return(is.finite(ordinal) && ordinal < maximum_columns)
+    }
+
+    derived_match <- regexec(
+      "^c:step:([^\\x00]+):(0|[1-9][0-9]*)$",
+      value,
+      perl = TRUE
+    )
+    derived_parts <- regmatches(value, derived_match)[[1L]]
+    if (length(derived_parts) == 0L) return(FALSE)
+    ordinal <- suppressWarnings(as.double(derived_parts[[3L]]))
+    nchar(derived_parts[[2L]], type = "bytes") <= maximum_step_id_bytes &&
+      is.finite(ordinal) &&
+      ordinal < maximum_columns
   }
 
   bounded_text_array <- function(values, label, maximum_bytes = maximum_text_bytes, budget = NULL) {
@@ -520,7 +543,7 @@ openwrangler_r_frame_contract <- local({
       label <- sprintf("sort_rules[[%d]]", index)
       rule <- exact_named_list(sort_rules[[index]], c("column", "direction", "nulls"), label)
       reference <- exact_named_list(rule$column, c("id", "name"), paste0(label, "$column"))
-      column_id <- bounded_utf8(reference$id, paste0(label, "$column$id"), maximum_name_bytes)
+      column_id <- bounded_utf8(reference$id, paste0(label, "$column$id"), maximum_column_id_bytes)
       column_name <- bounded_utf8(reference$name, paste0(label, "$column$name"), maximum_name_bytes)
       schema_ids <- vapply(descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
       position <- match(column_id, schema_ids)
@@ -564,7 +587,7 @@ openwrangler_r_frame_contract <- local({
 
   resolve_column_reference <- function(reference, descriptor, label) {
     reference <- exact_named_list(reference, c("id", "name"), label)
-    column_id <- bounded_utf8(reference$id, paste0(label, "$id"), maximum_name_bytes)
+    column_id <- bounded_utf8(reference$id, paste0(label, "$id"), maximum_column_id_bytes)
     column_name <- bounded_utf8(reference$name, paste0(label, "$name"), maximum_name_bytes)
     schema_ids <- vapply(descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
     position <- match(column_id, schema_ids)
@@ -1116,7 +1139,7 @@ openwrangler_r_frame_contract <- local({
     resolved <- lapply(seq_along(column_references), function(index) {
       label <- sprintf("column_references[[%d]]", index)
       reference <- exact_named_list(column_references[[index]], c("id", "name"), label)
-      column_id <- bounded_utf8(reference$id, paste0(label, "$id"), maximum_name_bytes)
+      column_id <- bounded_utf8(reference$id, paste0(label, "$id"), maximum_column_id_bytes)
       column_name <- bounded_utf8(reference$name, paste0(label, "$name"), maximum_name_bytes)
       position <- match(column_id, schema_ids)
       if (is.na(position) || !identical(descriptor$schema[[position]]$name, column_name)) {
@@ -1542,13 +1565,16 @@ openwrangler_r_frame_contract <- local({
     capture
   }
 
-  capture_frame <- function(value, nullability_source = NULL, source_positions = NULL) {
+  capture_frame <- function(value, nullability_source = NULL, source_positions = NULL, output_ids = NULL) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
     if (!is.null(nullability_source)) validate_capture(nullability_source)
-    if (is.null(nullability_source) && !is.null(source_positions)) {
-      abort("internal-error", "source_positions requires a source R capture")
+    if (is.null(nullability_source) && (!is.null(source_positions) || !is.null(output_ids))) {
+      abort("internal-error", "derived R column mappings require a source R capture")
+    }
+    if (!is.null(output_ids) && is.null(source_positions)) {
+      abort("internal-error", "explicit R output IDs require a source-column mapping")
     }
     flavor <- frame_flavor(value)
     assert_frame_attributes(value, flavor)
@@ -1577,7 +1603,7 @@ openwrangler_r_frame_contract <- local({
           length(source_positions) != length(output_schema) ||
           any(source_positions < 1L) ||
           any(source_positions > length(source_schema)) ||
-          anyDuplicated(source_positions)
+          (is.null(output_ids) && anyDuplicated(source_positions))
       ) {
         abort("internal-error", "a derived R frame has an invalid source-column mapping")
       }
@@ -1591,9 +1617,49 @@ openwrangler_r_frame_contract <- local({
       }, logical(1L), USE.NAMES = FALSE)
 
       generated_ids <- vapply(output_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
-      retained_ids <- vapply(source_positions, function(position) {
+      mapped_source_ids <- vapply(source_positions, function(position) {
         source_schema[[position]]$id
       }, character(1L), USE.NAMES = FALSE)
+      if (is.null(output_ids)) {
+        output_ids <- mapped_source_ids
+      } else {
+        if (!is.character(output_ids) || length(output_ids) != length(output_schema) || anyNA(output_ids)) {
+          abort("internal-error", "a derived R frame has invalid explicit output identities")
+        }
+        output_ids <- vapply(seq_along(output_ids), function(index) {
+          bounded_utf8(output_ids[[index]], sprintf("output_ids[[%d]]", index), maximum_column_id_bytes)
+        }, character(1L), USE.NAMES = FALSE)
+        if (
+          any(output_ids == "") ||
+            anyDuplicated(output_ids) ||
+            !all(vapply(output_ids, is_canonical_column_id, logical(1L), USE.NAMES = FALSE))
+        ) {
+          abort("internal-error", "a derived R frame has invalid explicit output identities")
+        }
+        source_ids <- vapply(source_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+        for (index in seq_along(output_ids)) {
+          existing_position <- match(output_ids[[index]], source_ids)
+          if (!is.na(existing_position) && existing_position != source_positions[[index]]) {
+            abort("internal-error", "a derived R frame remapped an existing column identity")
+          }
+        }
+        for (index in seq_along(output_ids)) {
+          source_position <- source_positions[[index]]
+          source_id <- source_ids[[source_position]]
+          if (!identical(output_ids[[index]], source_id)) {
+            prior_indices <- seq_len(index - 1L)
+            if (
+              length(prior_indices) == 0L ||
+                !any(
+                  source_positions[prior_indices] == source_position &
+                    output_ids[prior_indices] == source_id
+                )
+            ) {
+              abort("internal-error", "a derived R frame replaced a retained source identity")
+            }
+          }
+        }
+      }
       for (index in seq_along(output_schema)) {
         source_column <- source_schema[[source_positions[[index]]]]
         output_column <- output_schema[[index]]
@@ -1604,8 +1670,16 @@ openwrangler_r_frame_contract <- local({
         ) {
           abort("internal-error", "a derived R frame changed retained column type metadata")
         }
-        inspected$descriptor$schema[[index]]$id <- retained_ids[[index]]
+        inspected$descriptor$schema[[index]]$id <- output_ids[[index]]
         inspected$descriptor$schema[[index]]$nullable <- source_nullable[[index]]
+      }
+
+      old_id_bytes <- sum(vapply(generated_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+      new_id_bytes <- sum(vapply(output_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+      if (new_id_bytes > old_id_bytes) {
+        budget <- new_payload_budget(inspected$metadataBytes)
+        spend_payload_budget(budget, new_id_bytes - old_id_bytes, "derived R column identities")
+        inspected$metadataBytes <- budget$used
       }
 
       generated_key_ids <- inspected$descriptor$frameSemantics$keyColumnIds
@@ -1614,7 +1688,7 @@ openwrangler_r_frame_contract <- local({
         if (anyNA(key_positions)) {
           abort("internal-error", "a derived R frame retained an invalid data.table key")
         }
-        retained_key_ids <- retained_ids[key_positions]
+        retained_key_ids <- output_ids[key_positions]
         old_key_bytes <- sum(vapply(generated_key_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
         new_key_bytes <- sum(vapply(retained_key_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
         if (new_key_bytes > old_key_bytes) {
@@ -1730,6 +1804,59 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     rename_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  clone_column_at <- function(value, position, old_name, new_name) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the clone column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    if (!identical(inspected$descriptor$schema[[position]]$name, old_name)) {
+      abort("stale-column", "the clone column name no longer matches the R dataframe")
+    }
+    new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+    if (identical(new_name, "")) {
+      abort("invalid-column-name", "new_name must not be empty")
+    }
+    if (is_private_column_name(old_name) || is_private_column_name(new_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (any(names(value) == new_name)) {
+      abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
+    }
+    if (column_count >= maximum_columns) {
+      abort("invalid-view-query", "cloneColumn exceeds the supported R column limit")
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = new_name, value = result[[position]])
+    } else {
+      original_names <- names(result)
+      result[[length(result) + 1L]] <- result[[position]]
+      names(result) <- c(original_names, new_name)
+    }
+    result
+  }
+
+  clone_column <- function(value, column_reference, new_name) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    clone_column_at(value, resolved$position, resolved$name, new_name)
   }
 
   drop_columns_at <- function(value, positions, expected_names) {
@@ -2423,6 +2550,8 @@ openwrangler_r_frame_contract <- local({
     isolate_capture = isolate_capture,
     rename_column = rename_column,
     rename_column_at = rename_column_at,
+    clone_column = clone_column,
+    clone_column_at = clone_column_at,
     drop_columns = drop_columns,
     drop_columns_at = drop_columns_at,
     select_columns = select_columns,
@@ -2456,6 +2585,7 @@ openwrangler_r_frame_contract <- local({
       factorLevels = maximum_factor_levels,
       textBytes = maximum_text_bytes,
       nameBytes = maximum_name_bytes,
+      columnIdBytes = maximum_column_id_bytes,
       payloadBytes = maximum_payload_bytes
     )
   )

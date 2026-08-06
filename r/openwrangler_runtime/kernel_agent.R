@@ -101,10 +101,10 @@ openwrangler_r_kernel_agent <- local({
     value
   }
 
-  decode_column_reference <- function(value, label) {
+  decode_column_reference <- function(value, label, maximum_id_bytes) {
     reference <- exact_record(value, c("id", "name"), label)
     list(
-      id = bounded_text(reference$id, paste0(label, ".id"), maximum_identifier_bytes),
+      id = bounded_text(reference$id, paste0(label, ".id"), maximum_id_bytes),
       name = bounded_text(reference$name, paste0(label, ".name"), maximum_variable_name_bytes)
     )
   }
@@ -149,7 +149,11 @@ openwrangler_r_kernel_agent <- local({
     }
     rules <- lapply(seq_along(value), function(index) {
       rule <- exact_record(value[[index]], c("column", "direction", "nulls"), sprintf("sort[%d]", index))
-      column <- decode_column_reference(rule$column, sprintf("sort[%d].column", index))
+      column <- decode_column_reference(
+        rule$column,
+        sprintf("sort[%d].column", index),
+        limits$columnIdBytes
+      )
       if (!rule$direction %in% c("asc", "desc") || !rule$nulls %in% c("first", "last")) {
         abort("invalid_request", sprintf("sort[%d] has an unsupported order", index))
       }
@@ -279,7 +283,11 @@ openwrangler_r_kernel_agent <- local({
         label,
         optional_fields = c("logic", "valueFilter")
       )
-      filter$column <- decode_column_reference(filter$column, paste0(label, ".column"))
+      filter$column <- decode_column_reference(
+        filter$column,
+        paste0(label, ".column"),
+        limits$columnIdBytes
+      )
       filter$type <- bounded_text(filter$type, paste0(label, ".type"), 32L)
       if (!filter$type %in% c("string", "integer", "float", "boolean", "datetime", "date", "duration")) {
         abort("invalid_request", sprintf("%s.type is unsupported", label))
@@ -325,7 +333,7 @@ openwrangler_r_kernel_agent <- local({
       abort("invalid_request", "request.payload.columns must be a bounded non-empty array")
     }
     references <- lapply(seq_along(value), function(index) {
-      decode_column_reference(value[[index]], sprintf("columns[%d]", index))
+      decode_column_reference(value[[index]], sprintf("columns[%d]", index), limits$columnIdBytes)
     })
     ids <- vapply(references, `[[`, character(1L), "id", USE.NAMES = FALSE)
     if (anyDuplicated(ids)) {
@@ -429,25 +437,37 @@ openwrangler_r_kernel_agent <- local({
     as.integer(session$revision + 1L)
   }
 
-  decode_transform_step <- function(value, maximum_columns) {
+  decode_transform_step <- function(value, limits) {
     step <- exact_record(value, c("id", "kind", "params"), "request.payload.step")
     step_id <- bounded_text(step$id, "request.payload.step.id", maximum_step_id_bytes)
     if (identical(step_id, "")) abort("invalid_request", "request.payload.step.id may not be empty")
     kind <- bounded_text(step$kind, "request.payload.step.kind", 64L)
-    if (identical(kind, "renameColumn")) {
+    if (kind %in% c("renameColumn", "cloneColumn")) {
       params <- exact_record(step$params, c("column", "newName"), "request.payload.step.params")
       new_name <- bounded_text(params$newName, "request.payload.step.params.newName", maximum_variable_name_bytes)
       if (identical(new_name, "")) {
         abort("invalid_request", "request.payload.step.params.newName may not be empty")
       }
-      return(list(
+      decoded <- list(
         id = step_id,
         kind = kind,
         params = list(
-          column = decode_column_reference(params$column, "request.payload.step.params.column"),
+          column = decode_column_reference(
+            params$column,
+            "request.payload.step.params.column",
+            limits$columnIdBytes
+          ),
           newName = new_name
         )
-      ))
+      )
+      if (identical(kind, "cloneColumn")) {
+        decoded$outputId <- bounded_text(
+          paste0("c:step:", step_id, ":0"),
+          "the derived R clone column identity",
+          limits$columnIdBytes
+        )
+      }
+      return(decoded)
     }
     if (kind %in% c("dropColumns", "selectColumns")) {
       params <- exact_record(step$params, "columns", "request.payload.step.params")
@@ -457,12 +477,16 @@ openwrangler_r_kernel_agent <- local({
           is.object(columns) ||
           !is.null(names(columns)) ||
           length(columns) == 0L ||
-          length(columns) > maximum_columns
+          length(columns) > limits$columns
       ) {
         abort("invalid_request", "request.payload.step.params.columns must be a bounded non-empty array")
       }
       columns <- lapply(seq_along(columns), function(index) {
-        decode_column_reference(columns[[index]], sprintf("request.payload.step.params.columns[%d]", index))
+        decode_column_reference(
+          columns[[index]],
+          sprintf("request.payload.step.params.columns[%d]", index),
+          limits$columnIdBytes
+        )
       })
       column_ids <- vapply(columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
       if (anyDuplicated(column_ids)) {
@@ -470,7 +494,7 @@ openwrangler_r_kernel_agent <- local({
       }
       return(list(id = step_id, kind = kind, params = list(columns = columns)))
     }
-    if (!kind %in% c("renameColumn", "dropColumns", "selectColumns")) {
+    if (!kind %in% c("renameColumn", "cloneColumn", "dropColumns", "selectColumns")) {
       abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
     }
     abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
@@ -491,6 +515,25 @@ openwrangler_r_kernel_agent <- local({
       position = as.integer(matches[[1L]]),
       oldName = step$params$column$name,
       newName = step$params$newName
+    )
+  }
+
+  bind_clone_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (
+      length(matches) != 1L ||
+        !identical(schema[[matches[[1L]]]]$name, step$params$column$name)
+    ) {
+      abort("stale_column", "The clone column reference no longer matches the active R dataframe", TRUE)
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      position = as.integer(matches[[1L]]),
+      oldName = step$params$column$name,
+      newName = step$params$newName,
+      outputId = step$outputId
     )
   }
 
@@ -555,6 +598,24 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
+    if (identical(step$kind, "cloneColumn")) {
+      bound <- bind_clone_step(capture, step)
+      result <- frame_contract$clone_column_at(source, bound$position, bound$oldName, bound$newName)
+      source_positions <- c(seq_along(capture$descriptor$schema), bound$position)
+      output_ids <- c(
+        vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+        bound$outputId
+      )
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = source_positions,
+          output_ids = output_ids
+        ),
+        bound = bound
+      ))
+    }
     if (identical(step$kind, "dropColumns")) {
       bound <- bind_drop_step(capture, step)
       positions <- vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
@@ -613,7 +674,7 @@ openwrangler_r_kernel_agent <- local({
     encodeString(value, quote = "\"", justify = "none", na.encode = FALSE)
   }
 
-  compile_plan <- function(variable_name, bound_plan) {
+  compile_plan <- function(variable_name, bound_plan, maximum_columns) {
     if (length(bound_plan) == 0L) return("")
     lines <- c(
       "open_wrangler_result <- local({",
@@ -648,6 +709,26 @@ openwrangler_r_kernel_agent <- local({
             step$position,
             r_string(step$newName)
           )
+        )
+      } else if (identical(step$kind, "cloneColumn")) {
+        lines <- c(
+          lines,
+          sprintf("  .ow_clone_position <- %dL", step$position),
+          sprintf("  .ow_clone_source_name <- %s", r_string(step$oldName)),
+          sprintf("  .ow_clone_name <- %s", r_string(step$newName)),
+          "  if (ncol(.ow_result) < .ow_clone_position || !identical(names(.ow_result)[[.ow_clone_position]], .ow_clone_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (.ow_clone_name == \"\" || any(names(.ow_result) == .ow_clone_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+          sprintf(
+            "  if (ncol(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
+            maximum_columns
+          ),
+          "  if (inherits(.ow_result, \"data.table\")) {",
+          "    data.table::set(.ow_result, j = .ow_clone_name, value = .ow_result[[.ow_clone_position]])",
+          "  } else {",
+          "    .ow_clone_existing_names <- names(.ow_result)",
+          "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_result[[.ow_clone_position]]",
+          "    names(.ow_result) <- c(.ow_clone_existing_names, .ow_clone_name)",
+          "  }"
         )
       } else if (identical(step$kind, "dropColumns")) {
         positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
@@ -696,6 +777,7 @@ openwrangler_r_kernel_agent <- local({
   }
 
   step_diff <- function(bound) {
+    added_columns <- if (identical(bound$kind, "cloneColumn")) bound$newName else character()
     removed_columns <- if (identical(bound$kind, "dropColumns")) {
       vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
     } else if (identical(bound$kind, "selectColumns")) {
@@ -706,7 +788,7 @@ openwrangler_r_kernel_agent <- local({
     list(
       addedRows = 0L,
       removedRows = 0L,
-      addedColumns = I(character()),
+      addedColumns = I(added_columns),
       removedColumns = I(removed_columns),
       changedCells = 0L,
       cells = I(list()),
@@ -743,7 +825,7 @@ openwrangler_r_kernel_agent <- local({
       action = action,
       revision = session$revision,
       page = materialize(frame_contract, active_capture(session), page),
-      code = compile_plan(session$variableName, session$boundPlan)
+      code = compile_plan(session$variableName, session$boundPlan, frame_contract$limits$columns)
     )
   }
 
@@ -754,6 +836,7 @@ openwrangler_r_kernel_agent <- local({
       "isolate_capture",
       "rename_column",
       "rename_column_at",
+      "clone_column_at",
       "drop_columns_at",
       "select_columns_at",
       "materialize_view_page",
@@ -908,7 +991,11 @@ openwrangler_r_kernel_agent <- local({
         if (!exists(session_id, envir = sessions, inherits = FALSE)) {
           abort("unknown_session", "The requested R session is no longer available", TRUE)
         }
-        column <- decode_column_reference(payload$column, "request.payload.column")
+        column <- decode_column_reference(
+          payload$column,
+          "request.payload.column",
+          frame_contract$limits$columnIdBytes
+        )
         view <- decode_view(payload$view, frame_contract$limits)
         search <- if (is.null(payload$search)) {
           NULL
@@ -947,7 +1034,7 @@ openwrangler_r_kernel_agent <- local({
           abort("invalid_request", "Apply or discard the current R draft before previewing another step", TRUE)
         }
         page <- decode_page(payload$page, frame_contract$limits)
-        step <- decode_transform_step(payload$step, frame_contract$limits$columns)
+        step <- decode_transform_step(payload$step, frame_contract$limits)
         replace_step_id <- if ("replaceStepId" %in% names(payload)) {
           value <- bounded_text(payload$replaceStepId, "request.payload.replaceStepId", maximum_step_id_bytes)
           if (identical(value, "")) abort("invalid_request", "request.payload.replaceStepId may not be empty")
@@ -1000,7 +1087,11 @@ openwrangler_r_kernel_agent <- local({
           revision = candidate$revision,
           page = materialize(frame_contract, candidate$draft, page),
           diff = step_diff(applied$bound),
-          code = compile_plan(candidate$variableName, candidate_bound_plan)
+          code = compile_plan(
+            candidate$variableName,
+            candidate_bound_plan,
+            frame_contract$limits$columns
+          )
         )
         preflight_response(response)
         assign(session_id, candidate, envir = sessions)
@@ -1040,7 +1131,7 @@ openwrangler_r_kernel_agent <- local({
           inputSchema = input_page$schema,
           outputSchema = output_page$schema,
           diff = step_diff(after$boundPlan[[step_index]]),
-          code = compile_plan(session$variableName, after$boundPlan)
+          code = compile_plan(session$variableName, after$boundPlan, frame_contract$limits$columns)
         ))
       }
 
