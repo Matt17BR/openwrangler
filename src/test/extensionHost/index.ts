@@ -1942,7 +1942,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
       kind: "typedSelection",
       version: 1,
       columnType: "float",
-      cell: { kind: "number", raw: "1200", display: "1200", isNull: false, isNaN: false }
+      cell: { kind: "number", raw: 1200, display: "1200", isNull: false, isNaN: false }
     }
   ]);
   assert.deepEqual(groupFilter?.predicates, [{ kind: "predicate", operator: "equals", value: "B" }]);
