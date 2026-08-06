@@ -2003,6 +2003,10 @@ openwrangler_r_frame_contract <- local({
       if (identical(semantics$kind, "double") && identical(unique_keys[[selected[[result_index]]]], "0")) {
         encoded <- ordinary_cell("number", "0", "0")
       }
+      selection_cell <- encoded
+      if (identical(semantics$kind, "double") && identical(encoded$kind, "number")) {
+        selection_cell$raw <- as.double(encoded$raw)
+      }
       list(
         value = encoded$display,
         count = as.integer(counts[[selected[[result_index]]]]),
@@ -2010,7 +2014,7 @@ openwrangler_r_frame_contract <- local({
           kind = "typedSelection",
           version = 1L,
           columnType = column_descriptor$type,
-          cell = encoded
+          cell = selection_cell
         )
       )
     })

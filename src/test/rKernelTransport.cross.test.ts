@@ -29,6 +29,7 @@ const summaryRequestId = "88888888-8888-4888-8888-888888888888";
 const statsRequestId = "99999999-9999-4999-8999-999999999999";
 const filteredPageRequestId = "f1111111-1111-4111-8111-111111111111";
 const valuesRequestId = "f2222222-2222-4222-8222-222222222222";
+const numericValuesRequestId = "f3333333-3333-4333-8333-333333333333";
 
 describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
   it("pages current same-schema values, rejects structural changes, and closes the live session", () => {
@@ -105,6 +106,18 @@ describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
         limit: 10
       }
     });
+    const numericValues = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: numericValuesRequestId,
+      kind: "getColumnValues",
+      payload: {
+        sessionId,
+        column: { id: "r:c:0", name: "value" },
+        view: emptyView(),
+        search: "1200",
+        limit: 10
+      }
+    });
     const namedRows = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: namedRowsRequestId,
@@ -112,16 +125,17 @@ describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
       payload: { sessionId: namedRowsSessionId, variableName: "named_rows", page: pageWindow() }
     });
     const code = `
-frame <- data.frame(value = c(1L, 3L, 2L), label = c("a", "c", "b"), stringsAsFactors = FALSE)
+frame <- data.frame(value = c(1, 3, 2), label = c("a", "c", "b"), stringsAsFactors = FALSE)
 named_rows <- data.frame(value = 1L, row.names = "named-row")
 ${bootstrap}
 ${open.code}
-frame <- data.frame(value = c(9L, 7L, 8L), label = c("i", "g", "h"), stringsAsFactors = FALSE)
+frame <- data.frame(value = c(1200, 7, 8), label = c("i", "g", "h"), stringsAsFactors = FALSE)
 ${page.code}
 ${summary.code}
 ${stats.code}
 ${filteredPage.code}
 ${values.code}
+${numericValues.code}
 frame <- data.frame(value = 999L, label = "replacement", stringsAsFactors = FALSE)
 ${sourceChanged.code}
 ${close.code}
@@ -135,6 +149,10 @@ ${namedRows.code}
     const datasetStats = decodeRKernelResponseJson(marked(result.stdout, stats.marker), statsRequestId);
     const filtered = decodeRKernelResponseJson(marked(result.stdout, filteredPage.marker), filteredPageRequestId);
     const columnValues = decodeRKernelResponseJson(marked(result.stdout, values.marker), valuesRequestId);
+    const numericColumnValues = decodeRKernelResponseJson(
+      marked(result.stdout, numericValues.marker),
+      numericValuesRequestId
+    );
     const changed = decodeRKernelResponseJson(marked(result.stdout, sourceChanged.marker), sourceChangedRequestId);
     const closed = decodeRKernelResponseJson(marked(result.stdout, close.marker), closeRequestId);
     const namedRowsPage = decodeRKernelResponseJson(marked(result.stdout, namedRows.marker), namedRowsRequestId);
@@ -143,12 +161,12 @@ ${namedRows.code}
     if (paged.kind !== "page") throw new Error("Expected a page response.");
     expect(paged.page.page.rows.map((row) => row.rowNumber)).toEqual([0, 1, 2]);
     expect(paged.page.page.rows.map((row) => row.id)).toEqual(["r:r:0", "r:r:2", "r:r:1"]);
-    expect(paged.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(["9", "8", "7"]);
+    expect(paged.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(["1200", "8", "7"]);
     if (profiled.kind === "error") throw new Error(`R profile failed: ${profiled.code}: ${profiled.message}`);
     expect(profiled).toMatchObject({
       kind: "summary",
       sessionId,
-      summaries: [{ columnId: "r:c:0", numeric: { min: 7, max: 9 }, totalCount: 3 }]
+      summaries: [{ columnId: "r:c:0", numeric: { min: 7, max: 1200 }, totalCount: 3 }]
     });
     expect(datasetStats).toMatchObject({
       kind: "datasetStats",
@@ -169,6 +187,24 @@ ${namedRows.code}
           value: "h",
           count: 1,
           selectionValue: { kind: "typedSelection", version: 1, columnType: "string" }
+        }
+      ],
+      hasMore: false
+    });
+    expect(numericColumnValues).toMatchObject({
+      kind: "columnValues",
+      sessionId,
+      column: "value",
+      values: [
+        {
+          value: "1200",
+          count: 1,
+          selectionValue: {
+            kind: "typedSelection",
+            version: 1,
+            columnType: "float",
+            cell: { kind: "number", raw: 1200, display: "1200", isNull: false, isNaN: false }
+          }
         }
       ],
       hasMore: false

@@ -560,7 +560,7 @@ zero_value_index <- match("0", vapply(signed_zero_values$values, `[[`, character
 assert_true(!is.na(zero_value_index), "column values omitted the grouped zero value")
 zero_value <- signed_zero_values$values[[zero_value_index]]
 assert_identical(zero_value$count, 2L, "column values did not group signed zero")
-assert_identical(zero_value$selectionValue$cell$raw, "0", "the grouped zero token retained a negative sign")
+assert_identical(zero_value$selectionValue$cell$raw, 0, "the grouped zero token retained a negative sign")
 signed_zero_page <- openwrangler_r_frame_contract$materialize_view_page(
   signed_zero_capture,
   view_query(filters = list(column_filter(
@@ -580,6 +580,41 @@ assert_identical(
   vapply(signed_zero_page$page$rows, `[[`, character(1L), "id"),
   c("r:r:0", "r:r:1"),
   "the grouped zero token did not select both signed zeros"
+)
+
+numeric_value_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(score = c(1200, 8, 7)))
+numeric_values <- openwrangler_r_frame_contract$materialize_column_values(
+  numeric_value_capture,
+  list(id = "r:c:0", name = "score"),
+  search = "1200",
+  limit = 10L
+)
+assert_identical(length(numeric_values$values), 1L, "numeric column-value search returned the wrong result count")
+numeric_selection <- numeric_values$values[[1L]]$selectionValue
+assert_identical(
+  numeric_selection$cell$raw,
+  1200,
+  "finite numeric selections did not use a JSON-compatible numeric raw value"
+)
+numeric_selection_page <- openwrangler_r_frame_contract$materialize_view_page(
+  numeric_value_capture,
+  view_query(filters = list(column_filter(
+    "r:c:0",
+    "score",
+    "float",
+    value_filter = list(
+      kind = "values",
+      selectedValues = list(numeric_selection),
+      includeNulls = FALSE,
+      includeNaN = FALSE
+    )
+  ))),
+  column_limit = 1L
+)
+assert_identical(
+  vapply(numeric_selection_page$page$rows, `[[`, character(1L), "id"),
+  "r:r:0",
+  "finite numeric selections did not round-trip through a view filter"
 )
 
 amount_values <- openwrangler_r_frame_contract$materialize_column_values(

@@ -713,6 +713,10 @@ describe("App progressive profiling and view correlation", () => {
     const latestValues = requestsOfKind("getColumnValues").at(-1);
     if (!latestValues) throw new Error("Expected the searched values request.");
     expect(viewId(latestValues)).not.toBe(viewId(firstValues));
+    expect(latestValues.search).toBe("mil");
+    await waitFor(() =>
+      expect(cancellationMessages().flatMap((message) => message.viewRequestIds)).toContain(viewId(firstValues))
+    );
 
     dispatch({
       kind: "columnValues",
