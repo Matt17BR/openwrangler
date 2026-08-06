@@ -22,6 +22,7 @@ const pageRequestId = "33333333-3333-4333-8333-333333333333";
 const closeRequestId = "44444444-4444-4444-8444-444444444444";
 const summaryRequestId = "55555555-5555-4555-8555-555555555555";
 const statsRequestId = "66666666-6666-4666-8666-666666666666";
+const valuesRequestId = "77777777-7777-4777-8777-777777777777";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -84,7 +85,7 @@ describe("native R kernel protocol", () => {
 
   it("strictly decodes bounded column profiles and dataset statistics", () => {
     const summary = JSON.stringify({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: summaryRequestId,
       kind: "summary",
       sessionId,
@@ -97,22 +98,24 @@ describe("native R kernel protocol", () => {
     });
 
     const stats = JSON.stringify({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: statsRequestId,
       kind: "datasetStats",
       sessionId,
+      totalRows: 1,
       stats: minimalDatasetStats()
     });
     expect(decodeRKernelResponseJson(stats, statsRequestId)).toMatchObject({
       kind: "datasetStats",
       sessionId,
+      totalRows: 1,
       stats: { missingCells: 0, missingValuesByColumn: [{ column: "value", count: 0 }] }
     });
 
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
-          transportVersion: 1,
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
           requestId: summaryRequestId,
           kind: "summary",
           sessionId,
@@ -124,10 +127,11 @@ describe("native R kernel protocol", () => {
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
-          transportVersion: 1,
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
           requestId: statsRequestId,
           kind: "datasetStats",
           sessionId,
+          totalRows: 1,
           stats: { ...minimalDatasetStats(), missingRows: -1 }
         }),
         statsRequestId
@@ -137,7 +141,7 @@ describe("native R kernel protocol", () => {
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
-          transportVersion: 1,
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
           requestId: summaryRequestId,
           kind: "summary",
           sessionId,
@@ -154,7 +158,7 @@ describe("native R kernel protocol", () => {
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
-          transportVersion: 1,
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
           requestId: summaryRequestId,
           kind: "summary",
           sessionId,
@@ -184,15 +188,67 @@ describe("native R kernel protocol", () => {
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
-          transportVersion: 1,
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
           requestId: statsRequestId,
           kind: "datasetStats",
           sessionId,
+          totalRows: 1,
           stats: { ...minimalDatasetStats(), missingCells: 1 }
         }),
         statsRequestId
       )
     ).toThrow("inconsistent missing-value totals");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: statsRequestId,
+          kind: "datasetStats",
+          sessionId,
+          totalRows: 0,
+          stats: {
+            missingCells: 1,
+            missingRows: 1,
+            duplicateRows: 0,
+            missingValuesByColumn: [{ column: "value", count: 1 }]
+          }
+        }),
+        statsRequestId
+      )
+    ).toThrow("filtered row count");
+  });
+
+  it("strictly decodes typed column values", () => {
+    const encoded = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: valuesRequestId,
+      kind: "columnValues",
+      sessionId,
+      column: "value",
+      values: [minimalColumnValue()],
+      hasMore: false
+    });
+
+    expect(decodeRKernelResponseJson(encoded, valuesRequestId)).toMatchObject({
+      kind: "columnValues",
+      column: "value",
+      values: [{ value: "1", count: 1 }],
+      hasMore: false
+    });
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: valuesRequestId,
+          kind: "columnValues",
+          sessionId,
+          column: "value",
+          values: [{ value: "1", count: 1 }],
+          hasMore: false
+        }),
+        valuesRequestId
+      )
+    ).toThrow("typed selection");
   });
 
   it("validates page windows and repeated stable sort identities before dispatch", () => {
@@ -204,7 +260,7 @@ describe("native R kernel protocol", () => {
         ...valid.payload,
         page: {
           ...valid.payload.page,
-          sorts: [sortRule(), sortRule()]
+          view: { ...valid.payload.page.view, sorts: [sortRule(), sortRule()] }
         }
       }
     };
@@ -219,10 +275,10 @@ describe("native R kernel protocol", () => {
 
   it("validates projected profile identities before dispatch", () => {
     const request: RKernelRequest = {
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: summaryRequestId,
       kind: "getSummary",
-      payload: { sessionId, columns: [{ id: "r:c:0", name: "value" }] }
+      payload: { sessionId, columns: [{ id: "r:c:0", name: "value" }], view: emptyView() }
     };
     expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
     expect(() =>
@@ -231,6 +287,77 @@ describe("native R kernel protocol", () => {
         payload: { ...request.payload, columns: [...request.payload.columns, ...request.payload.columns] }
       })
     ).toThrow("repeated identity");
+  });
+
+  it("validates R filter operators, typed selections, and value limits before dispatch", () => {
+    const valid: RKernelRequest = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: pageRequestId,
+      kind: "getPage",
+      payload: {
+        sessionId,
+        page: {
+          ...pageWindow(),
+          view: {
+            filters: [
+              {
+                column: { id: "r:c:0", name: "value" },
+                type: "float",
+                predicates: [{ kind: "predicate", operator: "isNaN" }],
+                valueFilter: {
+                  kind: "values",
+                  selectedValues: [
+                    {
+                      kind: "typedSelection",
+                      version: 1,
+                      columnType: "float",
+                      cell: {
+                        kind: "infinity",
+                        raw: null,
+                        display: "Inf",
+                        isNull: false,
+                        isNaN: false,
+                        sign: 1
+                      }
+                    }
+                  ],
+                  includeNulls: false,
+                  includeNaN: false
+                }
+              }
+            ],
+            sorts: []
+          }
+        }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(valid))).toEqual(valid);
+
+    const invalidOperator = structuredClone(valid) as Extract<RKernelRequest, { kind: "getPage" }>;
+    const operatorFilter = invalidOperator.payload.page.view.filters[0] as unknown as { type: string };
+    operatorFilter.type = "string";
+    expect(() => encodeRKernelRequest(invalidOperator)).toThrow("is invalid");
+
+    const invalidSelection = structuredClone(valid) as Extract<RKernelRequest, { kind: "getPage" }>;
+    const selection = invalidSelection.payload.page.view.filters[0]?.valueFilter?.selectedValues[0] as {
+      columnType: string;
+    };
+    selection.columnType = "integer";
+    expect(() => encodeRKernelRequest(invalidSelection)).toThrow("typed selection");
+
+    const valuesRequest: RKernelRequest = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: valuesRequestId,
+      kind: "getColumnValues",
+      payload: {
+        sessionId,
+        column: { id: "r:c:0", name: "value" },
+        view: emptyView(),
+        search: null,
+        limit: 0
+      }
+    };
+    expect(() => encodeRKernelRequest(valuesRequest)).toThrow("must be positive");
   });
 
   it("rejects extra or malformed request fields before kernel dispatch", () => {
@@ -243,7 +370,10 @@ describe("native R kernel protocol", () => {
         ...valid,
         payload: {
           ...valid.payload,
-          page: { ...valid.payload.page, sorts: [{ ...sortRule(), extra: true }] }
+          page: {
+            ...valid.payload.page,
+            view: { ...valid.payload.page.view, sorts: [{ ...sortRule(), extra: true }] }
+          }
         }
       },
       {
@@ -252,7 +382,10 @@ describe("native R kernel protocol", () => {
           ...valid.payload,
           page: {
             ...valid.payload.page,
-            sorts: [{ ...sortRule(), column: { ...sortRule().column, extra: true } }]
+            view: {
+              ...valid.payload.page.view,
+              sorts: [{ ...sortRule(), column: { ...sortRule().column, extra: true } }]
+            }
           }
         }
       }
@@ -268,7 +401,7 @@ describe("native R kernel protocol", () => {
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
-          transportVersion: 1,
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
           requestId: openRequestId,
           kind: "closed",
           sessionId,
@@ -280,7 +413,7 @@ describe("native R kernel protocol", () => {
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
-          transportVersion: 1,
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
           requestId: openRequestId,
           kind: "error",
           code: "runtime_error",
@@ -293,7 +426,7 @@ describe("native R kernel protocol", () => {
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
-          transportVersion: 1,
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
           requestId: openRequestId,
           kind: "error",
           code: "unsupported-row-names",
@@ -374,7 +507,7 @@ describe("exact IRkernel session transport", () => {
     await expect(transport.dispose()).resolves.toBeUndefined();
   });
 
-  it("opens, pages, profiles, and closes one immutable R session on its exact kernel", async () => {
+  it("opens, pages, profiles, retrieves values, and closes one immutable R session on its exact kernel", async () => {
     const requests: RKernelRequest[] = [];
     const controller = controlledRKernel(async (request) => {
       requests.push(request);
@@ -392,7 +525,17 @@ describe("exact IRkernel session transport", () => {
         return response(request, {
           kind: "datasetStats",
           sessionId: request.payload.sessionId,
+          totalRows: 1,
           stats: minimalDatasetStats()
+        });
+      }
+      if (request.kind === "getColumnValues") {
+        return response(request, {
+          kind: "columnValues",
+          sessionId: request.payload.sessionId,
+          column: "value",
+          values: [minimalColumnValue()],
+          hasMore: false
         });
       }
       return response(request, {
@@ -410,6 +553,7 @@ describe("exact IRkernel session transport", () => {
       pageRequestId,
       summaryRequestId,
       statsRequestId,
+      valuesRequestId,
       closeRequestId
     ]);
 
@@ -420,10 +564,16 @@ describe("exact IRkernel session transport", () => {
     await expect(transport.getPage(sessionId, pageWindow([sortRule()]))).resolves.toMatchObject({
       page: { rows: [{ id: "r:r:0" }] }
     });
-    await expect(transport.getSummary(sessionId, [{ id: "r:c:0", name: "value" }])).resolves.toMatchObject([
-      { columnId: "r:c:0", totalCount: 1 }
-    ]);
-    await expect(transport.getDatasetStats(sessionId)).resolves.toEqual(minimalDatasetStats());
+    await expect(transport.getSummary(sessionId, [{ id: "r:c:0", name: "value" }], emptyView())).resolves.toMatchObject(
+      [{ columnId: "r:c:0", totalCount: 1 }]
+    );
+    await expect(transport.getDatasetStats(sessionId, emptyView())).resolves.toEqual({
+      totalRows: 1,
+      stats: minimalDatasetStats()
+    });
+    await expect(
+      transport.getColumnValues(sessionId, { id: "r:c:0", name: "value" }, emptyView(), "1", 25)
+    ).resolves.toMatchObject({ column: "value", values: [{ value: "1", count: 1 }], hasMore: false });
     await expect(transport.close(sessionId)).resolves.toBeUndefined();
     await expect(transport.dispose()).resolves.toBeUndefined();
 
@@ -434,10 +584,11 @@ describe("exact IRkernel session transport", () => {
       "getPage",
       "getSummary",
       "getDatasetStats",
+      "getColumnValues",
       "closeSession"
     ]);
     expect(requests[1]).toMatchObject({
-      payload: { page: { sorts: [{ column: { id: "r:c:0", name: "value" } }] } }
+      payload: { page: { view: { sorts: [{ column: { id: "r:c:0", name: "value" } }] } } }
     });
   });
 
@@ -999,7 +1150,7 @@ function testRuntimeFiles(): Readonly<Record<string, string>> {
 
 function openRequest(): Extract<RKernelRequest, { kind: "openSession" }> {
   return {
-    transportVersion: 1,
+    transportVersion: R_KERNEL_TRANSPORT_VERSION,
     requestId: openRequestId,
     kind: "openSession",
     payload: { sessionId, variableName: "frame", page: pageWindow() }
@@ -1007,7 +1158,17 @@ function openRequest(): Extract<RKernelRequest, { kind: "openSession" }> {
 }
 
 function pageWindow(sorts: readonly ReturnType<typeof sortRule>[] = []) {
-  return { rowOffset: 0, rowLimit: 100, columnOffset: 0, columnLimit: 100, sorts } as const;
+  return {
+    rowOffset: 0,
+    rowLimit: 100,
+    columnOffset: 0,
+    columnLimit: 100,
+    view: { filters: [], sorts }
+  } as const;
+}
+
+function emptyView() {
+  return { filters: [], sorts: [] } as const;
 }
 
 function sortRule() {
@@ -1016,7 +1177,7 @@ function sortRule() {
 
 function minimalFramePage() {
   return {
-    contractVersion: 2,
+    contractVersion: 3,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -1075,8 +1236,21 @@ function minimalDatasetStats() {
   } as const;
 }
 
+function minimalColumnValue() {
+  return {
+    value: "1",
+    count: 1,
+    selectionValue: {
+      kind: "typedSelection",
+      version: 1,
+      columnType: "integer",
+      cell: { kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false }
+    }
+  } as const;
+}
+
 function response(request: RKernelRequest, body: Record<string, unknown>) {
-  return { transportVersion: 1, requestId: request.requestId, ...body };
+  return { transportVersion: R_KERNEL_TRANSPORT_VERSION, requestId: request.requestId, ...body };
 }
 
 function createTransport(

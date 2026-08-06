@@ -5,7 +5,6 @@ import {
   type CellValue,
   type ColumnSchema,
   type ColumnSummary,
-  type DatasetStats,
   type DatasetStatsRequest,
   type ErrorResponse,
   type FilterModel,
@@ -17,7 +16,9 @@ import {
   type SessionMetadata,
   type SessionSource,
   type SummaryRequest,
-  type SourceCapabilities
+  type SourceCapabilities,
+  type ValueCount,
+  type ValuesRequest
 } from "../../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
 import {
@@ -26,9 +27,17 @@ import {
   type RKernelOpenResult,
   type RKernelRequestOptions
 } from "./rKernelTransport";
-import type { RKernelColumnReference, RKernelPageWindow, RKernelSortRule } from "./rKernelProtocol";
+import type {
+  RKernelColumnFilter,
+  RKernelColumnReference,
+  RKernelDatasetStatsResult,
+  RKernelPageWindow,
+  RKernelSortRule,
+  RKernelViewQuery
+} from "./rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
+  type RColumnType,
   type RDataframeFlavor,
   type RFrameCell,
   type RFramePageContract
@@ -48,10 +57,10 @@ const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   exportCsv: false,
   exportParquet: false,
   notebookInsert: false,
-  filter: false,
+  filter: true,
   sort: true,
   profile: true,
-  columnValues: false
+  columnValues: true
 });
 
 /** Narrow transport surface used by the canonical bridge and its contract tests. */
@@ -62,9 +71,22 @@ export interface RKernelBridgeTransport {
   getSummary(
     sessionId: string,
     columns: readonly RKernelColumnReference[],
+    view: RKernelViewQuery,
     options?: RKernelRequestOptions
   ): Promise<readonly ColumnSummary[]>;
-  getDatasetStats(sessionId: string, options?: RKernelRequestOptions): Promise<DatasetStats>;
+  getDatasetStats(
+    sessionId: string,
+    view: RKernelViewQuery,
+    options?: RKernelRequestOptions
+  ): Promise<RKernelDatasetStatsResult>;
+  getColumnValues(
+    sessionId: string,
+    column: RKernelColumnReference,
+    view: RKernelViewQuery,
+    search: string | undefined,
+    limit: number,
+    options?: RKernelRequestOptions
+  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>>;
   close(sessionId: string, options?: RKernelRequestOptions): Promise<void>;
   isSessionMapped(sessionId: string): boolean;
   dispose(): Promise<void>;
@@ -155,6 +177,8 @@ export class RKernelBridge implements OpenWranglerBridge {
         return this.getSummary(request, options);
       case "getDatasetStats":
         return this.getDatasetStats(request, options);
+      case "getColumnValues":
+        return this.getColumnValues(request, options);
       case "closeSession":
         return this.closeSession(request.sessionId, options);
       default:
@@ -210,7 +234,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     try {
       const result = await this.transport.open(
         request.source.variableName as string,
-        pageWindow(0, request.pageSize, request.columnOffset, request.columnLimit, []),
+        pageWindow(0, request.pageSize, request.columnOffset, request.columnLimit, emptyRViewQuery()),
         transportOptions(options, sessionId)
       );
       if (generation !== this.kernelGeneration) {
@@ -252,11 +276,9 @@ export class RKernelBridge implements OpenWranglerBridge {
         request.viewRequestId
       );
     }
-    if (request.filterModel.filters.length > 0) return unsupportedRequest(request);
-
-    let sorts: readonly RKernelSortRule[];
+    let view: RKernelViewQuery;
     try {
-      sorts = resolveSorts(request.filterModel, session.schema);
+      view = resolveViewQuery(request.filterModel, session.schema);
       validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
     } catch (error) {
       return errorResponse(
@@ -271,7 +293,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     try {
       const contract = await this.transport.getPage(
         request.sessionId,
-        pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, sorts),
+        pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, view),
         transportOptions(options)
       );
       if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
@@ -281,7 +303,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         revision: 0,
         viewRequestId: request.viewRequestId,
         page: gridPageFromContract(contract),
-        metadata: metadataFor(session, copyFilterModel(request.filterModel))
+        metadata: metadataFor(session, copyFilterModel(request.filterModel), contract.page.totalRows)
       };
     } catch (error) {
       if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
@@ -312,9 +334,10 @@ export class RKernelBridge implements OpenWranglerBridge {
     }
 
     let columns: readonly RKernelColumnReference[];
+    let view: RKernelViewQuery;
     try {
       columns = resolveProfileColumns(requestedIds, confirmed.schema);
-      resolveSorts(request.filterModel, confirmed.schema);
+      view = resolveViewQuery(request.filterModel, confirmed.schema);
     } catch (error) {
       return errorResponse(
         "invalid_view",
@@ -326,7 +349,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     }
 
     try {
-      const summaries = await this.transport.getSummary(request.sessionId, columns, transportOptions(options));
+      const summaries = await this.transport.getSummary(request.sessionId, columns, view, transportOptions(options));
       if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
       assertSummaryContract(confirmed, columns, summaries);
       return {
@@ -352,8 +375,9 @@ export class RKernelBridge implements OpenWranglerBridge {
     const invalid = validateProfileRequest(request, session);
     if (invalid) return invalid;
     const confirmed = session as RBridgeSession;
+    let view: RKernelViewQuery;
     try {
-      resolveSorts(request.filterModel, confirmed.schema);
+      view = resolveViewQuery(request.filterModel, confirmed.schema);
     } catch (error) {
       return errorResponse(
         "invalid_view",
@@ -365,20 +389,77 @@ export class RKernelBridge implements OpenWranglerBridge {
     }
 
     try {
-      const stats = await this.transport.getDatasetStats(request.sessionId, transportOptions(options));
+      const result = await this.transport.getDatasetStats(request.sessionId, view, transportOptions(options));
       if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
-      assertDatasetStatsContract(confirmed, stats);
+      assertDatasetStatsContract(confirmed, result, view);
       return {
         kind: "datasetStats",
         revision: 0,
         viewRequestId: request.viewRequestId,
         stats: {
-          ...stats,
-          missingValuesByColumn: stats.missingValuesByColumn.map((entry) => ({ ...entry }))
+          ...result.stats,
+          missingValuesByColumn: result.stats.missingValuesByColumn.map((entry) => ({ ...entry }))
         }
       };
     } catch (error) {
       if (confirmed.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      if (error instanceof RKernelDiagnosticError) {
+        return diagnosticResponse(error, request.sessionId, request.viewRequestId);
+      }
+      throw error;
+    }
+  }
+
+  private async getColumnValues(request: ValuesRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) return unknownSessionError(request.sessionId, request.viewRequestId);
+    if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+    if (request.revision !== 0) {
+      return errorResponse(
+        "stale_revision",
+        "This R session is read-only and has revision 0.",
+        true,
+        request.sessionId,
+        request.viewRequestId
+      );
+    }
+
+    let column: RKernelColumnReference;
+    let view: RKernelViewQuery;
+    try {
+      column = resolveNamedColumn(request.column, session.schema, "values");
+      view = resolveViewQuery(request.filterModel, session.schema);
+    } catch (error) {
+      return errorResponse(
+        "invalid_view",
+        error instanceof Error ? error.message : String(error),
+        true,
+        request.sessionId,
+        request.viewRequestId
+      );
+    }
+
+    try {
+      const result = await this.transport.getColumnValues(
+        request.sessionId,
+        column,
+        view,
+        request.search,
+        request.limit,
+        transportOptions(options)
+      );
+      if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      assertColumnValuesContract(session, column, result, request.limit);
+      return {
+        kind: "columnValues",
+        revision: 0,
+        viewRequestId: request.viewRequestId,
+        column: result.column,
+        values: result.values.map((entry) => ({ ...entry })),
+        hasMore: result.hasMore
+      };
+    } catch (error) {
+      if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
       if (error instanceof RKernelDiagnosticError) {
         return diagnosticResponse(error, request.sessionId, request.viewRequestId);
       }
@@ -547,9 +628,103 @@ function pageWindow(
   rowLimit: number,
   columnOffset: number,
   columnLimit: number,
-  sorts: readonly RKernelSortRule[]
+  view: RKernelViewQuery
 ): RKernelPageWindow {
-  return Object.freeze({ rowOffset, rowLimit, columnOffset, columnLimit, sorts });
+  return Object.freeze({ rowOffset, rowLimit, columnOffset, columnLimit, view });
+}
+
+function emptyRViewQuery(): RKernelViewQuery {
+  return Object.freeze({ filters: Object.freeze([]), sorts: Object.freeze([]) });
+}
+
+function resolveViewQuery(filterModel: FilterModel, schema: readonly ColumnSchema[]): RKernelViewQuery {
+  const filters = Object.freeze(
+    filterModel.filters.map<RKernelColumnFilter>((filter) => {
+      const column = resolveNamedColumn(filter.column, schema, "filter");
+      const schemaColumn = schema.find((candidate) => candidate.id === column.id) as ColumnSchema;
+      const columnType = requireRColumnType(schemaColumn.type);
+      if (filter.type !== columnType) {
+        throw new TypeError(
+          `The filter for ${JSON.stringify(filter.column)} declares ${filter.type}, but the R column is ${schemaColumn.type}.`
+        );
+      }
+      return Object.freeze({
+        column,
+        type: columnType,
+        ...(filter.logic ? { logic: filter.logic } : {}),
+        ...(filter.valueFilter
+          ? {
+              valueFilter: Object.freeze({
+                ...filter.valueFilter,
+                selectedValues: Object.freeze([...filter.valueFilter.selectedValues])
+              })
+            }
+          : {}),
+        predicates: Object.freeze(filter.predicates.map((predicate) => Object.freeze({ ...predicate })))
+      });
+    })
+  );
+  return Object.freeze({
+    ...(filterModel.logic ? { logic: filterModel.logic } : {}),
+    filters,
+    sorts: resolveSorts(filterModel, schema)
+  });
+}
+
+function assertColumnValuesContract(
+  session: RBridgeSession,
+  requested: RKernelColumnReference,
+  result: Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>,
+  limit: number
+): void {
+  const schema = session.schema.find((column) => column.id === requested.id);
+  if (!schema || schema.name !== requested.name || result.column !== requested.name || result.values.length > limit) {
+    throw new Error("The R kernel returned values for the wrong column or request limit.");
+  }
+  const expectedType = requireRColumnType(schema.type);
+  if (
+    result.values.some(
+      (entry) =>
+        !Number.isSafeInteger(entry.count) ||
+        entry.count < 1 ||
+        entry.selectionValue === undefined ||
+        entry.selectionValue.columnType !== expectedType
+    )
+  ) {
+    throw new Error("The R kernel returned values with incompatible typed selections.");
+  }
+}
+
+function requireRColumnType(type: ColumnSchema["type"]): RColumnType {
+  if (
+    type === "string" ||
+    type === "integer" ||
+    type === "float" ||
+    type === "boolean" ||
+    type === "datetime" ||
+    type === "date" ||
+    type === "duration"
+  ) {
+    return type;
+  }
+  throw new TypeError(`The R dataframe exposed an unsupported ${type} column type.`);
+}
+
+function resolveNamedColumn(
+  name: string,
+  schema: readonly ColumnSchema[],
+  purpose: "filter" | "sort" | "values"
+): RKernelColumnReference {
+  const matches = schema.filter((column) => column.name === name);
+  if (matches.length !== 1) {
+    throw new TypeError(
+      matches.length === 0
+        ? `The ${purpose} column ${JSON.stringify(name)} is no longer in this R dataframe.`
+        : `The ${purpose} column ${JSON.stringify(name)} is ambiguous because that name is repeated.`
+    );
+  }
+  const column = matches[0] as ColumnSchema;
+  return Object.freeze({ id: column.id, name: column.name });
 }
 
 function resolveSorts(filterModel: FilterModel, schema: readonly ColumnSchema[]): readonly RKernelSortRule[] {
@@ -559,15 +734,8 @@ function resolveSorts(filterModel: FilterModel, schema: readonly ColumnSchema[])
   const seen = new Set<string>();
   return Object.freeze(
     filterModel.sort.map((rule) => {
-      const matches = schema.filter((column) => column.name === rule.column);
-      if (matches.length !== 1) {
-        throw new TypeError(
-          matches.length === 0
-            ? `The sort column ${JSON.stringify(rule.column)} is no longer in this R dataframe.`
-            : `The sort column ${JSON.stringify(rule.column)} is ambiguous because that name is repeated.`
-        );
-      }
-      const column = matches[0] as ColumnSchema;
+      const reference = resolveNamedColumn(rule.column, schema, "sort");
+      const column = schema.find((candidate) => candidate.id === reference.id) as ColumnSchema;
       if (seen.has(column.id)) throw new TypeError(`The sort column ${JSON.stringify(rule.column)} is repeated.`);
       seen.add(column.id);
       return Object.freeze({
@@ -594,7 +762,6 @@ function validateProfileRequest(
       request.viewRequestId
     );
   }
-  if (request.filterModel.filters.length > 0) return unsupportedRequest(request);
   return undefined;
 }
 
@@ -624,7 +791,10 @@ function assertSummaryContract(
     throw new Error("The R kernel returned summaries for the wrong column projection.");
   }
   const schemaById = new Map(session.schema.map((column) => [column.id, column]));
-  const totalRows = session.shape.rows;
+  const totalRows = summaries[0]?.totalCount ?? 0;
+  if (totalRows > session.shape.rows || summaries.some((summary) => summary.totalCount !== totalRows)) {
+    throw new Error("The R kernel returned summaries for inconsistent filtered views.");
+  }
   for (const [index, summary] of summaries.entries()) {
     const reference = requested[index] as RKernelColumnReference;
     const schema = schemaById.get(reference.id);
@@ -654,25 +824,31 @@ function assertSummaryContract(
   }
 }
 
-function assertDatasetStatsContract(session: RBridgeSession, stats: DatasetStats): void {
-  const rows = session.shape.rows;
+function assertDatasetStatsContract(
+  session: RBridgeSession,
+  result: RKernelDatasetStatsResult,
+  view: RKernelViewQuery
+): void {
+  const rows = result.totalRows;
   const columns = session.schema.length;
   if (
-    stats.missingRows > rows ||
-    stats.duplicateRows > Math.max(0, rows - 1) ||
-    stats.missingCells > rows * columns ||
-    stats.missingValuesByColumn.length !== columns
+    rows > session.shape.rows ||
+    (view.filters.length === 0 && rows !== session.shape.rows) ||
+    result.stats.missingRows > rows ||
+    result.stats.duplicateRows > Math.max(0, rows - 1) ||
+    result.stats.missingCells > rows * columns ||
+    result.stats.missingValuesByColumn.length !== columns
   ) {
     throw new Error("The R kernel returned dataset statistics outside the active dataframe shape.");
   }
   let missingCells = 0;
-  for (const [index, entry] of stats.missingValuesByColumn.entries()) {
+  for (const [index, entry] of result.stats.missingValuesByColumn.entries()) {
     if (entry.column !== session.schema[index]?.name || entry.count > rows) {
       throw new Error("The R kernel returned dataset statistics for the wrong column projection.");
     }
     missingCells += entry.count;
   }
-  if (missingCells !== stats.missingCells) {
+  if (missingCells !== result.stats.missingCells) {
     throw new Error("The R kernel returned inconsistent missing-value totals.");
   }
 }
@@ -701,7 +877,11 @@ function sessionFromContract(sessionId: string, source: SessionSource, contract:
   };
 }
 
-function metadataFor(session: RBridgeSession, filterModel: FilterModel): SessionMetadata {
+function metadataFor(
+  session: RBridgeSession,
+  filterModel: FilterModel,
+  filteredRows: number = session.shape.rows
+): SessionMetadata {
   return {
     protocolVersion: PROTOCOL_VERSION,
     sessionId: session.sessionId,
@@ -712,7 +892,7 @@ function metadataFor(session: RBridgeSession, filterModel: FilterModel): Session
     source: copySource(session.source),
     capabilities: R_CAPABILITIES,
     shape: { ...session.shape },
-    filteredShape: { ...session.shape },
+    filteredShape: { rows: filteredRows, columns: session.shape.columns },
     schema: session.schema.map((column) => ({ ...column })),
     filterModel,
     steps: []
@@ -751,7 +931,7 @@ function assertSameSessionContract(session: RBridgeSession, contract: RFramePage
     contract.frameSemantics.rowNames !== session.rowNames ||
     contract.page.offset !== request.offset ||
     contract.page.limit !== request.limit ||
-    contract.page.totalRows !== session.shape.rows ||
+    contract.page.totalRows > session.shape.rows ||
     contract.page.columnOffset !== request.columnOffset ||
     contract.page.columnLimit !== request.columnLimit ||
     !sameSchema(session.schema, contract.schema)

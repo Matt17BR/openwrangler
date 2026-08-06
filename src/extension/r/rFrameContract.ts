@@ -1,4 +1,4 @@
-export const R_FRAME_CONTRACT_VERSION = 2 as const;
+export const R_FRAME_CONTRACT_VERSION = 3 as const;
 
 export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   rows: 2_147_483_647,
@@ -6,6 +6,9 @@ export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   pageRows: 1_000,
   pageColumns: 256,
   pageCells: 100_000,
+  filters: 64,
+  predicatesPerFilter: 64,
+  selectedValuesPerFilter: 10_000,
   sortRules: 64,
   profileColumns: 64,
   profileRows: 1_000_000,
@@ -359,7 +362,7 @@ function decodePage(
   const totalRows = boundedInteger(record.totalRows, "page.totalRows", R_FRAME_CONTRACT_LIMITS.rows);
   const columnOffset = boundedInteger(record.columnOffset, "page.columnOffset", shape.columns);
   const columnLimit = boundedInteger(record.columnLimit, "page.columnLimit", R_FRAME_CONTRACT_LIMITS.pageColumns);
-  if (totalRows !== shape.rows) fail("page.totalRows does not match shape.rows.");
+  if (totalRows > shape.rows) fail("page.totalRows exceeds the source shape.");
   const expectedColumns = schema.slice(columnOffset, Math.min(shape.columns, columnOffset + columnLimit));
   const columnIds = decodeStringArray(record.columnIds, "page.columnIds", R_FRAME_CONTRACT_LIMITS.nameBytes);
   if (
@@ -371,14 +374,15 @@ function decodePage(
     fail("page.columnIds do not match the requested schema projection.");
   }
   if (!Array.isArray(record.rows)) fail("page.rows must be an array.");
-  const expectedRowCount = Math.min(limit, shape.rows - offset);
+  if (offset > totalRows) fail("page.offset exceeds the filtered row count.");
+  const expectedRowCount = Math.min(limit, totalRows - offset);
   if (record.rows.length !== expectedRowCount) fail("page.rows does not match the requested row window.");
   if (record.rows.length * columnIds.length > R_FRAME_CONTRACT_LIMITS.pageCells) {
     fail("R frame page exceeds the cell limit.");
   }
   const rows = Object.freeze(
     record.rows.map((row, index) =>
-      decodeRow(row, shape.rows, offset + index, expectedColumns, rowNames, `page.rows[${index}]`)
+      decodeRow(row, shape.rows, totalRows, offset + index, expectedColumns, rowNames, `page.rows[${index}]`)
     )
   );
   if (new Set(rows.map((row) => row.id)).size !== rows.length) {
@@ -389,21 +393,22 @@ function decodePage(
 
 function decodeRow(
   value: unknown,
-  totalRows: number,
+  sourceRows: number,
+  visibleRows: number,
   expectedRowNumber: number,
   columns: readonly RColumnSchema[],
   rowNames: "positional" | "explicit",
   label: string
 ): RFrameRow {
   const record = exactRecord(value, ["id", "rowNumber", "values"], ["rowLabel"]);
-  const rowNumber = boundedInteger(record.rowNumber, `${label}.rowNumber`, Math.max(0, totalRows - 1));
+  const rowNumber = boundedInteger(record.rowNumber, `${label}.rowNumber`, Math.max(0, visibleRows - 1));
   if (rowNumber !== expectedRowNumber) {
     fail(`${label}.rowNumber is not the logical grid position.`);
   }
   const id = boundedString(record.id, `${label}.id`, R_FRAME_CONTRACT_LIMITS.nameBytes);
   const sourceMatch = /^r:r:(0|[1-9][0-9]*)$/.exec(id);
   const sourcePosition = sourceMatch ? Number(sourceMatch[1]) : Number.NaN;
-  if (!Number.isSafeInteger(sourcePosition) || sourcePosition < 0 || sourcePosition >= totalRows) {
+  if (!Number.isSafeInteger(sourcePosition) || sourcePosition < 0 || sourcePosition >= sourceRows) {
     fail(`${label}.id is not an in-range stable source row identity.`);
   }
   const hasRowLabel = Object.prototype.hasOwnProperty.call(record, "rowLabel");

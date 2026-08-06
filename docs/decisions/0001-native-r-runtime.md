@@ -37,8 +37,9 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
 - Display text does not inherit `options(OutDec)` or the process time zone. POSIXct values with a null or empty
   timezone display in UTC while retaining that original metadata, and reserved integer missing-value sentinels are
   never accepted as ordinary values.
-- Read-only sort rules use the captured positional column ID and name. They are stable, keep source row IDs, and can
-  choose direction and missing-value placement independently for each key.
+- Read-only filters and sorts use the captured positional column ID and name. They remain stable with duplicate names,
+  keep source row IDs, and never become cleaning steps. Filters support compound AND/OR logic, typed predicates, and
+  selected values; sorts choose direction and missing-value placement independently for each key.
 - Row, column, cell, factor-level, text, and encoded-payload limits are checked by the R producer and again by the
   TypeScript decoder. The producer accounts for metadata and cells while building a page and stops before allocating
   a complete oversized page or JSON string.
@@ -64,8 +65,11 @@ never settles may detach from the UI, but its ownership record remains until the
 perform that close.
 
 The current notebook viewer does not copy the complete dataframe when a session opens. It records the source binding
-and structural descriptor, then reads current values for pages, sorts, and profiles without writing to the object.
-Same-schema changes made in the notebook are therefore visible; structural changes ask the user to reopen the frame.
+and structural descriptor, then reads current values for pages, filters, sorts, value searches, and profiles without
+writing to the object. Column values return bounded counts and typed selections. Profiles and dataset statistics use
+the current viewing filters, and the private dataset-statistics response binds its counts to the filtered row total
+from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
+user to reopen the frame.
 Before any future draft, apply, generated-code check, or custom-code evaluation that could mutate an object, the
 runtime must make a fresh isolated copy; `data.table` must use `data.table::copy()`. Acceptance tests for editing must
 prove that success, failure, cancellation, undo, and disposal leave the notebook object unchanged.
@@ -93,6 +97,8 @@ and plain R support may be advertised only after their exact-document helpers pa
 - The existing Python runtime and stable v1 release line remain independent of R development.
 - The grid and transformation model can be shared, but execution, object ownership, type handling, and generated code
   stay native to the selected language and dataframe flavor.
+- Read-only R viewing now includes pages, compound filters, ordered sorts, value search and selection, and profiles.
+  It does not include cleaning steps, generated code, exports, Quarto, R Markdown, or plain `.R` documents.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
 - R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and

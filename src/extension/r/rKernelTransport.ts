@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
-import type { ColumnSummary, DatasetStats } from "../../shared/protocol";
+import type { ColumnSummary, ValueCount } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import {
@@ -18,11 +18,13 @@ import {
   encodeRKernelRequest,
   R_KERNEL_MAX_RESPONSE_BYTES,
   R_KERNEL_TRANSPORT_VERSION,
+  type RKernelDatasetStatsResult,
   type RKernelErrorResponse,
   type RKernelColumnReference,
   type RKernelPageWindow,
   type RKernelRequest,
-  type RKernelResponse
+  type RKernelResponse,
+  type RKernelViewQuery
 } from "./rKernelProtocol";
 import {
   buildRKernelBootstrapCode,
@@ -236,9 +238,10 @@ export class RKernelSessionTransport {
   async getSummary(
     sessionId: string,
     columns: readonly RKernelColumnReference[],
+    view: RKernelViewQuery,
     options: RKernelRequestOptions = {}
   ): Promise<readonly ColumnSummary[]> {
-    const request = this.request("getSummary", { sessionId, columns });
+    const request = this.request("getSummary", { sessionId, columns, view });
     encodeRKernelRequest(request);
     const response = await this.executeMappedRequest(sessionId, request, options);
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
@@ -248,15 +251,43 @@ export class RKernelSessionTransport {
     return response.summaries;
   }
 
-  async getDatasetStats(sessionId: string, options: RKernelRequestOptions = {}): Promise<DatasetStats> {
-    const request = this.request("getDatasetStats", { sessionId });
+  async getDatasetStats(
+    sessionId: string,
+    view: RKernelViewQuery,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelDatasetStatsResult> {
+    const request = this.request("getDatasetStats", { sessionId, view });
     encodeRKernelRequest(request);
     const response = await this.executeMappedRequest(sessionId, request, options);
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
     if (response.kind !== "datasetStats" || response.sessionId !== sessionId) {
       throw new Error("The R kernel returned mismatched dataset statistics.");
     }
-    return response.stats;
+    return { totalRows: response.totalRows, stats: response.stats };
+  }
+
+  async getColumnValues(
+    sessionId: string,
+    column: RKernelColumnReference,
+    view: RKernelViewQuery,
+    search: string | undefined,
+    limit: number,
+    options: RKernelRequestOptions = {}
+  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>> {
+    const request = this.request("getColumnValues", {
+      sessionId,
+      column,
+      view,
+      search: search ?? null,
+      limit
+    });
+    encodeRKernelRequest(request);
+    const response = await this.executeMappedRequest(sessionId, request, options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "columnValues" || response.sessionId !== sessionId) {
+      throw new Error("The R kernel returned mismatched column values.");
+    }
+    return Object.freeze({ column: response.column, values: response.values, hasMore: response.hasMore });
   }
 
   async close(sessionId: string, options: RKernelRequestOptions = {}): Promise<void> {
@@ -285,7 +316,7 @@ export class RKernelSessionTransport {
 
   private async executeMappedRequest(
     sessionId: string,
-    request: Extract<RKernelRequest, { kind: "getPage" | "getSummary" | "getDatasetStats" }>,
+    request: Extract<RKernelRequest, { kind: "getPage" | "getSummary" | "getDatasetStats" | "getColumnValues" }>,
     options: RKernelRequestOptions
   ): Promise<RKernelResponse> {
     this.assertActive();

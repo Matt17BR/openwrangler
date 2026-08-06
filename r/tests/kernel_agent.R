@@ -25,23 +25,29 @@ agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, so
 
 page_window <- function(
   sorts = list(),
+  filters = list(),
+  logic = NULL,
   row_offset = 0L,
   row_limit = 100L,
   column_offset = 0L,
   column_limit = 100L
 ) {
+  view <- list(filters = I(filters), sorts = I(sorts))
+  if (!is.null(logic)) view$logic <- logic
   list(
     rowOffset = row_offset,
     rowLimit = row_limit,
     columnOffset = column_offset,
     columnLimit = column_limit,
-    sorts = I(sorts)
+    view = view
   )
 }
 
+empty_view <- function() list(filters = I(list()), sorts = I(list()))
+
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 1L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 2L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -93,6 +99,50 @@ assert_identical(
   "the R agent changed sorted source-row identities"
 )
 
+score_filter <- list(
+  column = list(id = "r:c:1", name = "score"),
+  type = "float",
+  predicates = I(list(list(kind = "predicate", operator = "gt", value = 1)))
+)
+filtered_view <- list(filters = I(list(score_filter)), sorts = I(list()))
+filtered <- dispatch(
+  "getPage",
+  list(sessionId = session_id, page = page_window(filters = list(score_filter)))
+)
+assert_identical(filtered$page$page$totalRows, 1L, "the R agent did not report the filtered row count")
+assert_identical(filtered$page$page$rows[[1L]]$id, "r:r:2", "filtering changed the stable source row identity")
+assert_identical(filtered$page$page$rows[[1L]]$rowNumber, 0L, "filtering did not reset logical row numbering")
+
+filtered_summary <- dispatch(
+  "getSummary",
+  list(
+    sessionId = session_id,
+    columns = I(list(list(id = "r:c:1", name = "score"))),
+    view = filtered_view
+  )
+)
+assert_identical(filtered_summary$summaries[[1L]]$totalCount, 1L, "R profiles ignored the active filter")
+assert_identical(filtered_summary$summaries[[1L]]$numeric$min, 2L, "the filtered R profile minimum changed")
+
+values_response <- dispatch(
+  "getColumnValues",
+  list(
+    sessionId = session_id,
+    column = list(id = "r:c:0", name = "group"),
+    view = empty_view(),
+    search = "A",
+    limit = 10L
+  )
+)
+assert_identical(values_response$kind, "columnValues", "the R agent did not return column values")
+assert_identical(values_response$values[[1L]]$value, "a", "column-value search did not use ASCII folding")
+assert_identical(values_response$values[[1L]]$count, 2L, "column-value counts changed")
+assert_identical(
+  values_response$values[[1L]]$selectionValue$columnType,
+  "string",
+  "R column values omitted their typed selection"
+)
+
 summary_response <- dispatch(
   "getSummary",
   list(
@@ -100,7 +150,8 @@ summary_response <- dispatch(
     columns = I(list(
       list(id = "r:c:1", name = "score"),
       list(id = "r:c:0", name = "group")
-    ))
+    )),
+    view = empty_view()
   )
 )
 assert_identical(summary_response$kind, "summary", "the R agent did not return column profiles")
@@ -115,16 +166,21 @@ assert_identical(summary_response$summaries[[1L]]$numeric$min, 1L, "the R agent 
 assert_identical(summary_response$summaries[[1L]]$numeric$max, 2L, "the R agent changed numeric maxima")
 assert_identical(summary_response$summaries[[2L]]$topValues[[1L]]$value, "a", "the R agent changed top values")
 
-stats_response <- dispatch("getDatasetStats", list(sessionId = session_id))
+stats_response <- dispatch("getDatasetStats", list(sessionId = session_id, view = empty_view()))
 assert_identical(stats_response$kind, "datasetStats", "the R agent did not return dataset statistics")
 assert_identical(stats_response$requestId, request_id, "the R agent changed dataset-profile correlation")
+assert_identical(stats_response$totalRows, 3L, "the R agent omitted the dataset-profile row count")
 assert_identical(stats_response$stats$missingCells, 1L, "the R agent changed missing-cell counts")
 assert_identical(stats_response$stats$missingRows, 1L, "the R agent changed missing-row counts")
 assert_identical(stats_response$stats$duplicateRows, 0L, "the R agent changed duplicate-row counts")
 
 stale_profile <- dispatch(
   "getSummary",
-  list(sessionId = session_id, columns = I(list(list(id = "r:c:1", name = "old_score"))))
+  list(
+    sessionId = session_id,
+    columns = I(list(list(id = "r:c:1", name = "old_score"))),
+    view = empty_view()
+  )
 )
 assert_identical(stale_profile$kind, "error", "a stale R profile column was accepted")
 assert_identical(stale_profile$code, "stale_column", "the stale profile diagnostic changed")
@@ -133,7 +189,8 @@ repeated_profile <- dispatch(
   "getSummary",
   list(
     sessionId = session_id,
-    columns = I(list(list(id = "r:c:0", name = "group"), list(id = "r:c:0", name = "group")))
+    columns = I(list(list(id = "r:c:0", name = "group"), list(id = "r:c:0", name = "group"))),
+    view = empty_view()
   )
 )
 assert_identical(repeated_profile$kind, "error", "a repeated R profile column was accepted")
@@ -147,7 +204,8 @@ oversized_profile <- dispatch(
       list(id = "r:c:0", name = "group"),
       list(id = "r:c:1", name = "score"),
       list(id = "r:c:2", name = "missing")
-    ))
+    )),
+    view = empty_view()
   )
 )
 assert_identical(oversized_profile$kind, "error", "an oversized R profile was accepted")
@@ -171,7 +229,11 @@ assert_identical(
 )
 live_summary <- dispatch(
   "getSummary",
-  list(sessionId = session_id, columns = I(list(list(id = "r:c:1", name = "score"))))
+  list(
+    sessionId = session_id,
+    columns = I(list(list(id = "r:c:1", name = "score"))),
+    view = empty_view()
+  )
 )
 assert_identical(live_summary$summaries[[1L]]$numeric$min, 101L, "a live R profile kept stale values")
 assert_identical(live_summary$summaries[[1L]]$numeric$max, 103L, "a live R profile missed current values")
@@ -244,7 +306,7 @@ named_rows <- dispatch(
   list(sessionId = second_session_id, variableName = "named_rows", page = page_window())
 )
 assert_identical(named_rows$kind, "page", "a dataframe with explicit row names could not be opened")
-assert_identical(named_rows$page$contractVersion, 2L, "the R kernel agent emitted the wrong frame contract")
+assert_identical(named_rows$page$contractVersion, 3L, "the R kernel agent emitted the wrong frame contract")
 assert_identical(named_rows$page$frameSemantics$rowNames, "explicit", "explicit R row names were hidden")
 assert_identical(named_rows$page$page$rows[[1L]]$rowLabel, "named-row", "the explicit R row label changed")
 named_rows_closed <- dispatch("closeSession", list(sessionId = second_session_id))
@@ -276,6 +338,7 @@ missing_package_contract <- list(
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
   materialize_summaries = function(...) stop("unexpected summary materialization", call. = FALSE),
   materialize_dataset_stats = function(...) stop("unexpected dataset profile", call. = FALSE),
+  materialize_column_values = function(...) stop("unexpected column values", call. = FALSE),
   limits = openwrangler_r_frame_contract$limits
 )
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
