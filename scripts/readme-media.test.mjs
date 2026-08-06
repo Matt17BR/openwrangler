@@ -504,6 +504,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
+    /Open Wrangler 2 development builds can also open base R `data\.frame`, tibble, and `data\.table` variables from\s+IRkernel/u
+  );
+  assert.match(readme, /\| R \(v2 development\)\s+\|/u);
+  assert.match(
+    readme,
     /alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows"/u
   );
   assert.match(
@@ -554,6 +559,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /\[full results\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
   );
+  assert.match(
+    readme,
+    /These are the current stable results\. We will rerun the comparison from the exact Open Wrangler 2 release candidate\s+before v2 ships\./u
+  );
   for (const row of [
     /\| Pandas CSV\s+\| Show notebook preview \|\s+\*\*0\.34 s\*\* \|\s+1\.49 s \|/u,
     /\| Pandas CSV\s+\| Open workbench\s+\|\s+\*\*0\.60 s\*\* \|\s+1\.01 s \|/u,
@@ -583,7 +592,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(readme, /#263/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   const v2Roadmap = readme.slice(readme.indexOf("- **v2:**"), readme.indexOf("## Contributing and support"));
-  assert.match(v2Roadmap, /add native R data frames, tibbles, and `data\.table`, then add Quarto and R Markdown/u);
+  assert.match(
+    v2Roadmap,
+    /finish native R notebook support for data frames, tibbles, and `data\.table`, then add Quarto and R Markdown/u
+  );
   assert.match(
     v2Roadmap,
     /\[R architecture decision\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/decisions\/0001-native-r-runtime\.md\)/u
@@ -642,6 +654,16 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /^## File entry points$/mu);
   assert.match(gallery, /^## Export code and cleaned data$/mu);
   assert.match(gallery, /^## Notebook dataframes$/mu);
+  assert.match(gallery, /^## R notebooks \(Open Wrangler 2\)$/mu);
+  assert.match(
+    readme,
+    /\[current R notebook screenshots\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/v2\/docs\/media-gallery\.md#r-notebooks-open-wrangler-2\)/u
+  );
+  assert.match(
+    gallery,
+    /base `data\.frame`, tibble, and `data\.table` variables in the active\s+IRkernel\. Each variable stays in R\./u
+  );
+  assert.match(gallery, /Cleaning steps, generated R code, exports, Quarto, R Markdown, and plain `\.R` files/u);
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
   assert.match(gallery, /^## Editor and theme support$/mu);
   assert.doesNotMatch(gallery, /<td><strong>/u);
@@ -672,6 +694,25 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /href="images\/readme\/v1\.2\/gallery\/by-example-setup\.png"[\s\S]{0,300}by-example-setup-detail\.png[\s\S]{0,900}href="images\/readme\/v1\.2\/gallery\/by-example-preview\.png"[\s\S]{0,300}by-example-preview-detail\.png/u
   );
   assert.doesNotMatch(gallery, /images\/readme\/v1\.1/u);
+
+  const rNotebookPicker = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-picker-dark.png")
+  );
+  assertPng(rNotebookPicker, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(900), false);
+  const rNotebookPickerDetail = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-picker-detail-dark.png")
+  );
+  assertPng(rNotebookPickerDetail, publicMediaPhysicalLength(1_040), publicMediaPhysicalLength(380), false);
+  assertExactPixels(
+    PNG.sync.read(rNotebookPickerDetail).data,
+    cropPixels(PNG.sync.read(rNotebookPicker), publicMediaPhysicalRect({ x: 0, y: 0, width: 1_040, height: 380 })),
+    publicMediaPhysicalLength(1_040),
+    "The R notebook picker detail must remain an exact crop of its accepted source."
+  );
+  const rNotebookWorkbench = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-dark.png")
+  );
+  assertPng(rNotebookWorkbench, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(881), false);
 
   const richDuckDb = readFileSync(
     resolve(root, "docs", "images", "readme", "v1.2", "gallery", "duckdb-rich-parquet.png")

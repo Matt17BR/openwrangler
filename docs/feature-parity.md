@@ -71,28 +71,27 @@ Inline MIME v2 output shows every captured column and pages the captured rows at
 
 ## Native R work for Open Wrangler 2
 
-R support has not been released. On the Open Wrangler 2 branch, R notebooks can open base `data.frame`, tibble, and
-`data.table` variables in a read-only workbench through IRkernel. Pages, compound filters, ordered sorts, value search,
-and column and dataset profiles run in R; the dataframe is not passed through Python.
+R support is not in a released package yet. On the Open Wrangler 2 branch, R notebooks can open base `data.frame`,
+tibble, and `data.table` variables in a read-only workbench through IRkernel. Pages, compound filters, ordered sorts,
+value search, and column and dataset profiles run in R; the dataframe is not passed through Python.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed at `6742255` with local
-R 4.5.2 in VS Code and Cursor and a containerized IRkernel in VS Code. The test selected `score = 1200`, added
-`group = B`, checked the filtered row and profiles, cleared the view, exercised sort priority, restarted the kernel,
-and closed without changing the source object or leaving a session behind.
+R 4.5.2 in VS Code and Cursor and a containerized IRkernel in VS Code. It covered filters, profiles, sort priority,
+kernel restart, source preservation, and cleanup.
 
-R screenshots and a short README section still need to be captured from the packaged extension before a preview
-ships. Cleaning, generated R code, exports, Quarto, R Markdown, and plain `.R` files are not available yet.
+The [product gallery](media-gallery.md#r-notebooks-open-wrangler-2) shows the packaged IRkernel picker and workbench.
+Cleaning, generated R code, exports, Quarto, R Markdown, and plain `.R` files are not available yet.
 
 | Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                     |
 | -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | --------------------------------------------- |
-| Native R frame paging and typed cells        | Internal     | Partial | Projected pages, row labels, local/remote packaged tests | Public docs, screenshots, and preview         |
-| Native R compound viewing filters            | Internal     | Partial | R contracts and packaged value/predicate path            | Public docs, screenshots, and preview         |
-| Native R value search and selections         | Internal     | Partial | Typed selection contracts and packaged value path        | Public docs, screenshots, and preview         |
-| Native R ordered viewing sorts               | Internal     | Partial | Pure-R tests and local/remote packaged tests             | Public docs, screenshots, and preview         |
-| Native R column and dataset profiles         | Internal     | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Public docs, screenshots, and preview         |
-| Base `data.frame`, tibble, and `data.table`  | Internal     | Partial | Native discovery, paging, queries, and profile tests     | Public docs, screenshots, and preview         |
-| Exact IRkernel session transport             | Internal     | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                             |
-| Notebook workbench                           | Internal     | Partial | Packaged paging/profiles plus production axe             | Public screenshots and editing                |
+| Native R frame paging and typed cells        | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                               |
+| Native R compound viewing filters            | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                               |
+| Native R value search and selections         | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                               |
+| Native R ordered viewing sorts               | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                               |
+| Native R column and dataset profiles         | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                               |
+| Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                               |
+| Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                             |
+| Notebook workbench                           | v2 branch    | Partial | Packaged paging/profiles, screenshots, production axe    | Preview release and editing                   |
 | R cleaning operations and generated code     | No           | Planned | Read-only viewing only                                   | Native R IR, adapters, code generation, tests |
 | Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper   |
 

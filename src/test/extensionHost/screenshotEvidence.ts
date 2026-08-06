@@ -50,10 +50,12 @@ export const PACKAGED_SCREENSHOT_SCENES = [
   "notebook-pandas",
   "notebook-code-insertion",
   "notebook-variable-picker",
+  "notebook-r-picker",
   "notebook-pyspark-picker",
   "notebook-polars",
   "notebook-duckdb",
-  "notebook-pyspark"
+  "notebook-pyspark",
+  "notebook-r"
 ] as const;
 export const PACKAGED_SCREENSHOT_FEATURED_COLUMNS = [
   "order_id",

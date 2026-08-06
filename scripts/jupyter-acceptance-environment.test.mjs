@@ -424,7 +424,7 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
 
   const setupExecution = remoteRJourney.indexOf("await executeReleasedNotebookCell(");
   const exactRefocus = remoteRJourney.indexOf("const actionNotebookEditor = await showExactReleasedNotebook(notebook)");
-  const firstToolbarAction = remoteRJourney.indexOf("const picker = await activateReleasedNotebookVariableAction(");
+  const firstToolbarAction = remoteRJourney.indexOf("picker = await activateReleasedNotebookVariableAction(");
   assert.ok(
     setupExecution >= 0 && exactRefocus > setupExecution && firstToolbarAction > exactRefocus,
     "The first R toolbar click must refocus the exact notebook after kernel setup."

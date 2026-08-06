@@ -6,6 +6,7 @@ sizes in the images describe the example, not a row or column limit.
 [Workbench](#grid-and-sidebar) · [Files](#file-entry-points) ·
 [Explore](#filters-profiles-sorts-and-column-search) · [Clean](#cleaning-drafts-and-history) ·
 [Export](#export-code-and-cleaned-data) · [Notebooks](#notebook-dataframes) ·
+[R preview](#r-notebooks-open-wrangler-2) ·
 [Editors](#editor-and-theme-support)
 
 ## Grid and sidebar
@@ -155,6 +156,19 @@ PySpark support is notebook-only and view-only. It uses an existing local 4.2 Cl
 page loads without counting or caching the entire DataFrame, and the exact row total appears after the last page. The
 ordering badge distinguishes Spark source order from an explicit sort and explains why repeatable rows need a unique
 final sort key.
+
+## R notebooks (Open Wrangler 2)
+
+<a href="images/editor-acceptance/vscode-notebook-r-picker-dark.png"><img alt="An R notebook variable picker listing a base data frame, data.table, and tibble" src="images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png" width="1040" height="380"></a>
+
+Open Wrangler 2 development builds discover base `data.frame`, tibble, and `data.table` variables in the active
+IRkernel. Each variable stays in R.
+
+<img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="1440" height="881">
+
+The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
+It is view-only. Cleaning steps, generated R code, exports, Quarto, R Markdown, and plain `.R` files are still in
+development.
 
 ## DuckDB nested and temporal values
 
