@@ -8,6 +8,7 @@ import {
   type ColumnSummary,
   type DataDiff,
   type DatasetStatsRequest,
+  type DropColumnsTransformStep,
   type ErrorResponse,
   type FilterModel,
   type GridPage,
@@ -41,7 +42,7 @@ import type {
   RKernelDatasetStatsResult,
   RKernelPageWindow,
   RKernelPlanUpdatedResult,
-  RKernelRenameColumnStep,
+  RKernelTransformStep,
   RKernelSortRule,
   RKernelStepInspectionResult,
   RKernelStepPreviewResult,
@@ -61,7 +62,9 @@ import {
 } from "./rNotebookVariableDiscovery";
 
 const CLOSED_SESSION_LIMIT = 1_024;
-const R_SUPPORTED_OPERATIONS = Object.freeze(["renameColumn"] as OperationKind[]) as OperationKind[];
+const R_SUPPORTED_OPERATIONS = Object.freeze(["dropColumns", "renameColumn"] as OperationKind[]) as OperationKind[];
+
+type RTransformStep = RenameColumnTransformStep | DropColumnsTransformStep;
 
 const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   editable: true,
@@ -104,7 +107,7 @@ export interface RKernelBridgeTransport {
   previewStep(
     sessionId: string,
     revision: number,
-    step: RKernelRenameColumnStep,
+    step: RKernelTransformStep,
     page: RKernelPageWindow,
     replaceStepId?: string,
     options?: RKernelRequestOptions
@@ -145,6 +148,7 @@ interface RBridgeSession {
   readonly dataframeFlavor: RDataframeFlavor;
   readonly shape: Readonly<{ rows: number; columns: number }>;
   readonly sourceSchema: readonly ColumnSchema[];
+  readonly sourceKeyColumnIds: readonly string[];
   readonly rowNames: RFramePageContract["frameSemantics"]["rowNames"];
   mode: SessionMode;
   revision: number;
@@ -153,7 +157,7 @@ interface RBridgeSession {
   filterModel: FilterModel;
   steps: readonly RetainedTransformStep[];
   planInputSchemas: readonly (readonly ColumnSchema[])[];
-  draftStep?: RenameColumnTransformStep;
+  draftStep?: RTransformStep;
   draftReplacesStepId?: string;
   draftInputSchema?: readonly ColumnSchema[];
   draftBaseFilterModel?: FilterModel;
@@ -560,7 +564,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         request.sessionId
       );
     }
-    if (request.step.kind !== "renameColumn") {
+    if (request.step.kind !== "renameColumn" && request.step.kind !== "dropColumns") {
       return errorResponse(
         "unsupported_operation",
         `The native R runtime does not support ${request.step.kind}.`,
@@ -592,7 +596,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     let nextFilterModel: FilterModel;
     let view: RKernelViewQuery;
     try {
-      targetSchema = schemaAfterRename(inputSchema, request.step);
+      targetSchema = schemaAfterRStep(inputSchema, request.step);
       nextFilterModel = reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
       view = resolveViewQuery(nextFilterModel, targetSchema);
       validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
@@ -609,7 +613,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     const expectedSchema = confirmed.schema;
     const draftBaseFilterModel = copyFilterModel(confirmed.filterModel);
     const draftBaseViewChangeEpoch = confirmed.viewChangeEpoch;
-    const rStep = rRenameStep(request.step);
+    const rStep = rTransformStep(request.step);
     try {
       const result = await this.transport.previewStep(
         request.sessionId,
@@ -628,11 +632,12 @@ export class RKernelBridge implements OpenWranglerBridge {
         return staleResponseError(request.sessionId);
       }
       assertMutationContract(confirmed, result.page, request, targetSchema);
+      assertStructuralDiff(request.step, inputSchema, targetSchema, result.diff);
 
       confirmed.revision = result.revision;
       confirmed.schema = schemaFromContract(result.page);
       confirmed.filterModel = nextFilterModel;
-      confirmed.draftStep = copyRenameStep(request.step);
+      confirmed.draftStep = copyRTransformStep(request.step);
       confirmed.draftReplacesStepId = request.replaceStepId;
       confirmed.draftInputSchema = copySchema(inputSchema);
       confirmed.draftBaseFilterModel = draftBaseFilterModel;
@@ -742,13 +747,13 @@ export class RKernelBridge implements OpenWranglerBridge {
 
       const priorRestore = confirmed.lastAppliedViewRestore;
       if (request.kind === "applyDraft") {
-        const draftStep = confirmed.draftStep as RenameColumnTransformStep;
+        const draftStep = confirmed.draftStep as RTransformStep;
         const draftInputSchema = confirmed.draftInputSchema as readonly ColumnSchema[];
         if (confirmed.draftReplacesStepId === undefined) {
-          confirmed.steps = [...confirmed.steps, copyRenameStep(draftStep)];
+          confirmed.steps = [...confirmed.steps, copyRTransformStep(draftStep)];
           confirmed.planInputSchemas = [...confirmed.planInputSchemas, copySchema(draftInputSchema)];
         } else {
-          confirmed.steps = [...confirmed.steps.slice(0, -1), copyRenameStep(draftStep)];
+          confirmed.steps = [...confirmed.steps.slice(0, -1), copyRTransformStep(draftStep)];
           confirmed.planInputSchemas = [...confirmed.planInputSchemas.slice(0, -1), copySchema(draftInputSchema)];
         }
         confirmed.committedSchema = schemaFromContract(result.page);
@@ -856,6 +861,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (!sameSchema(inputSchema, result.inputSchema) || !sameSchema(outputSchema, result.outputSchema)) {
         throw new Error("The R kernel returned mismatched applied-step schemas.");
       }
+      assertStructuralDiff(session.steps[stepIndex] as RTransformStep, inputSchema, outputSchema, result.diff);
       return {
         kind: "stepInspection",
         revision: session.revision,
@@ -1262,6 +1268,7 @@ function sessionFromContract(
     dataframeFlavor: contract.dataframeFlavor,
     shape: Object.freeze({ ...contract.shape }),
     sourceSchema: schema,
+    sourceKeyColumnIds: Object.freeze([...contract.frameSemantics.keyColumnIds]),
     committedSchema: schema,
     schema,
     rowNames: contract.frameSemantics.rowNames,
@@ -1285,7 +1292,7 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.sha
     mode: session.mode,
     source: copySource(session.source),
     capabilities: R_CAPABILITIES,
-    shape: { ...session.shape },
+    shape: { rows: session.shape.rows, columns: session.schema.length },
     filteredShape: { rows: filteredRows, columns: session.schema.length },
     schema: copySchema(session.schema),
     filterModel: copyFilterModel(session.filterModel),
@@ -1293,7 +1300,7 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.sha
     ...(session.planInputSchemas.length > 0
       ? { latestStepInputSchema: copySchema(session.planInputSchemas.at(-1) as readonly ColumnSchema[]) }
       : {}),
-    ...(session.draftStep ? { draftStep: copyRenameStep(session.draftStep) } : {}),
+    ...(session.draftStep ? { draftStep: copyRTransformStep(session.draftStep) } : {}),
     ...(session.draftReplacesStepId ? { draftReplacesStepId: session.draftReplacesStepId } : {})
   };
 }
@@ -1335,18 +1342,21 @@ function assertSessionContract(
   request: PageWindowCoordinates,
   expectedSchema: readonly ColumnSchema[]
 ): void {
+  const resolvedColumnOffset = Math.min(request.columnOffset, expectedSchema.length);
   const expectedColumnIds = expectedSchema
-    .slice(request.columnOffset, request.columnOffset + request.columnLimit)
+    .slice(resolvedColumnOffset, resolvedColumnOffset + request.columnLimit)
     .map((column) => column.id);
+  const expectedKeyColumnIds = retainedKeyPrefix(session.sourceKeyColumnIds, expectedSchema);
   const mismatches = [
     contract.dataframeFlavor === session.dataframeFlavor ? undefined : "dataframe flavor",
     contract.shape.rows === session.shape.rows ? undefined : "row count",
     contract.shape.columns === expectedSchema.length ? undefined : "column count",
     contract.frameSemantics.rowNames === session.rowNames ? undefined : "row-name semantics",
+    isDeepStrictEqual(contract.frameSemantics.keyColumnIds, expectedKeyColumnIds) ? undefined : "key columns",
     contract.page.offset === request.offset ? undefined : "row offset",
     contract.page.limit === request.limit ? undefined : "row limit",
     contract.page.totalRows <= session.shape.rows ? undefined : "filtered row count",
-    contract.page.columnOffset === request.columnOffset ? undefined : "column offset",
+    contract.page.columnOffset === resolvedColumnOffset ? undefined : "column offset",
     contract.page.columnLimit === request.columnLimit ? undefined : "column limit",
     sameSchema(expectedSchema, contract.schema) ? undefined : "schema",
     isDeepStrictEqual(contract.page.columnIds, expectedColumnIds) ? undefined : "column projection"
@@ -1402,10 +1412,8 @@ function copySchema(schema: readonly ColumnSchema[]): ColumnSchema[] {
   return schema.map((column) => ({ ...column }));
 }
 
-function schemaAfterRename(
-  inputSchema: readonly ColumnSchema[],
-  step: RenameColumnTransformStep
-): readonly ColumnSchema[] {
+function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransformStep): readonly ColumnSchema[] {
+  if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
   );
@@ -1421,6 +1429,33 @@ function schemaAfterRename(
     inputSchema.map((column) =>
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
+  );
+}
+
+function schemaAfterDrop(
+  inputSchema: readonly ColumnSchema[],
+  step: DropColumnsTransformStep
+): readonly ColumnSchema[] {
+  if (!Array.isArray(step.params.columns) || step.params.columns.length === 0) {
+    throw new TypeError("Drop Columns requires at least one R column.");
+  }
+  const inputById = new Map(inputSchema.map((column) => [column.id, column]));
+  const droppedIds = new Set<string>();
+  for (const reference of step.params.columns) {
+    const column = inputById.get(reference.id);
+    if (!column || column.name !== reference.name) {
+      throw new TypeError("A drop column reference no longer matches the active R dataframe.");
+    }
+    if (droppedIds.has(reference.id)) throw new TypeError("Drop Columns contains a repeated R column identity.");
+    droppedIds.add(reference.id);
+  }
+  if (droppedIds.size >= inputSchema.length) {
+    throw new TypeError("Drop Columns must leave at least one visible R column.");
+  }
+  return Object.freeze(
+    inputSchema
+      .filter((column) => !droppedIds.has(column.id))
+      .map((column, position) => Object.freeze({ ...column, position }))
   );
 }
 
@@ -1478,7 +1513,18 @@ function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, Colum
   );
 }
 
-function rRenameStep(step: RenameColumnTransformStep): RKernelRenameColumnStep {
+function rTransformStep(step: RTransformStep): RKernelTransformStep {
+  if (step.kind === "dropColumns") {
+    const columns = step.params.columns.map((column) => Object.freeze({ ...column }));
+    if (!columns[0]) throw new TypeError("Drop Columns requires at least one R column.");
+    return Object.freeze({
+      id: step.id,
+      kind: "dropColumns" as const,
+      params: Object.freeze({
+        columns: Object.freeze(columns) as readonly [RKernelColumnReference, ...RKernelColumnReference[]]
+      })
+    });
+  }
   return Object.freeze({
     id: step.id,
     kind: "renameColumn" as const,
@@ -1486,7 +1532,16 @@ function rRenameStep(step: RenameColumnTransformStep): RKernelRenameColumnStep {
   });
 }
 
-function copyRenameStep(step: RenameColumnTransformStep): RenameColumnTransformStep {
+function copyRTransformStep(step: RTransformStep): RTransformStep {
+  if (step.kind === "dropColumns") {
+    const columns = step.params.columns.map((column) => ({ ...column }));
+    if (!columns[0]) throw new TypeError("Drop Columns requires at least one R column.");
+    return {
+      id: step.id,
+      kind: "dropColumns",
+      params: { columns: columns as [RKernelColumnReference, ...RKernelColumnReference[]] }
+    };
+  }
   return {
     id: step.id,
     kind: "renameColumn",
@@ -1495,8 +1550,42 @@ function copyRenameStep(step: RenameColumnTransformStep): RenameColumnTransformS
 }
 
 function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
-  if (step.kind !== "renameColumn") throw new TypeError("The R bridge retained an unsupported cleaning step.");
-  return copyRenameStep(step);
+  if (step.kind !== "renameColumn" && step.kind !== "dropColumns") {
+    throw new TypeError("The R bridge retained an unsupported cleaning step.");
+  }
+  return copyRTransformStep(step);
+}
+
+function retainedKeyPrefix(sourceKeyColumnIds: readonly string[], schema: readonly ColumnSchema[]): readonly string[] {
+  const ids = new Set(schema.map((column) => column.id));
+  const retained: string[] = [];
+  for (const id of sourceKeyColumnIds) {
+    if (!ids.has(id)) break;
+    retained.push(id);
+  }
+  return retained;
+}
+
+function assertStructuralDiff(
+  step: RTransformStep,
+  inputSchema: readonly ColumnSchema[],
+  outputSchema: readonly ColumnSchema[],
+  diff: DataDiff
+): void {
+  const outputIds = new Set(outputSchema.map((column) => column.id));
+  const expectedRemoved = inputSchema.filter((column) => !outputIds.has(column.id)).map((column) => column.name);
+  const valid =
+    diff.addedRows === 0 &&
+    diff.removedRows === 0 &&
+    diff.addedColumns.length === 0 &&
+    isDeepStrictEqual(diff.removedColumns, expectedRemoved) &&
+    diff.changedCells === 0 &&
+    diff.cells.length === 0 &&
+    diff.truncated === false &&
+    (step.kind === "dropColumns"
+      ? expectedRemoved.length === step.params.columns.length
+      : expectedRemoved.length === 0);
+  if (!valid) throw new Error("The R kernel returned a structural diff for the wrong columns.");
 }
 
 function copyDiff(diff: DataDiff): DataDiff {

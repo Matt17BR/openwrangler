@@ -1,5 +1,5 @@
 openwrangler_r_frame_contract <- local({
-  contract_version <- 3L
+  contract_version <- 4L
   maximum_rows <- .Machine$integer.max
   maximum_columns <- 2048L
   maximum_page_rows <- 1000L
@@ -1542,11 +1542,14 @@ openwrangler_r_frame_contract <- local({
     capture
   }
 
-  capture_frame <- function(value, nullability_source = NULL) {
+  capture_frame <- function(value, nullability_source = NULL, source_positions = NULL) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
     if (!is.null(nullability_source)) validate_capture(nullability_source)
+    if (is.null(nullability_source) && !is.null(source_positions)) {
+      abort("internal-error", "source_positions requires a source R capture")
+    }
     flavor <- frame_flavor(value)
     assert_frame_attributes(value, flavor)
     snapshot <- isolated_snapshot(value, flavor)
@@ -1559,18 +1562,67 @@ openwrangler_r_frame_contract <- local({
     )
     if (!is.null(nullability_source)) {
       source_schema <- nullability_source$descriptor$schema
-      if (length(source_schema) != length(inspected$descriptor$schema)) {
-        abort("internal-error", "a derived R frame changed width while preserving nullability")
+      output_schema <- inspected$descriptor$schema
+      if (is.null(source_positions)) {
+        if (length(source_schema) != length(output_schema)) {
+          abort("internal-error", "a derived R frame changed width without a source-column mapping")
+        }
+        source_positions <- seq_along(source_schema)
       }
-      source_nullable <- vapply(seq_along(source_schema), function(index) {
-        value <- source_schema[[index]]$nullable
+      if (
+        !is.numeric(source_positions) ||
+          anyNA(source_positions) ||
+          any(!is.finite(source_positions)) ||
+          any(source_positions != floor(source_positions)) ||
+          length(source_positions) != length(output_schema) ||
+          any(source_positions < 1L) ||
+          any(source_positions > length(source_schema)) ||
+          anyDuplicated(source_positions)
+      ) {
+        abort("internal-error", "a derived R frame has an invalid source-column mapping")
+      }
+      source_positions <- as.integer(source_positions)
+      source_nullable <- vapply(source_positions, function(position) {
+        value <- source_schema[[position]]$nullable
         if (length(value) != 1L || !is.logical(value) || is.na(value)) {
           abort("internal-error", "an R capture retained invalid nullability metadata")
         }
         value
       }, logical(1L), USE.NAMES = FALSE)
-      for (index in seq_along(source_schema)) {
+
+      generated_ids <- vapply(output_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      retained_ids <- vapply(source_positions, function(position) {
+        source_schema[[position]]$id
+      }, character(1L), USE.NAMES = FALSE)
+      for (index in seq_along(output_schema)) {
+        source_column <- source_schema[[source_positions[[index]]]]
+        output_column <- output_schema[[index]]
+        if (
+          !identical(output_column$rawType, source_column$rawType) ||
+            !identical(output_column$type, source_column$type) ||
+            !identical(output_column$semantics, source_column$semantics)
+        ) {
+          abort("internal-error", "a derived R frame changed retained column type metadata")
+        }
+        inspected$descriptor$schema[[index]]$id <- retained_ids[[index]]
         inspected$descriptor$schema[[index]]$nullable <- source_nullable[[index]]
+      }
+
+      generated_key_ids <- inspected$descriptor$frameSemantics$keyColumnIds
+      if (length(generated_key_ids) != 0L) {
+        key_positions <- match(generated_key_ids, generated_ids)
+        if (anyNA(key_positions)) {
+          abort("internal-error", "a derived R frame retained an invalid data.table key")
+        }
+        retained_key_ids <- retained_ids[key_positions]
+        old_key_bytes <- sum(vapply(generated_key_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+        new_key_bytes <- sum(vapply(retained_key_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+        if (new_key_bytes > old_key_bytes) {
+          budget <- new_payload_budget(inspected$metadataBytes)
+          spend_payload_budget(budget, new_key_bytes - old_key_bytes, "derived data.table key metadata")
+          inspected$metadataBytes <- budget$used
+        }
+        inspected$descriptor$frameSemantics$keyColumnIds <- json_array(retained_key_ids)
       }
     }
     capture <- new.env(parent = emptyenv())
@@ -1615,7 +1667,7 @@ openwrangler_r_frame_contract <- local({
     capture_frame(read_capture_frame(capture), nullability_source = capture)
   }
 
-  rename_column <- function(value, column_reference, new_name) {
+  rename_column_at <- function(value, position, old_name, new_name) {
     metrics <- new_capture_metrics()
     inspected <- inspect_frame(
       value,
@@ -1623,27 +1675,35 @@ openwrangler_r_frame_contract <- local({
       validate_values = FALSE,
       metrics = metrics
     )
-    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    position <- whole_number(position, "column position", inspected$descriptor$shape$columns)
+    if (position < 1L || position > inspected$descriptor$shape$columns) {
+      abort("stale-column", "the rename column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    if (!identical(inspected$descriptor$schema[[position]]$name, old_name)) {
+      abort("stale-column", "the rename column name no longer matches the R dataframe")
+    }
     new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
     if (identical(new_name, "")) {
       abort("invalid-column-name", "new_name must not be empty")
     }
-    if (is_private_column_name(resolved$name) || is_private_column_name(new_name)) {
+    if (is_private_column_name(old_name) || is_private_column_name(new_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
 
     column_names <- names(value)
-    collisions <- which(column_names == new_name & seq_along(column_names) != resolved$position)
+    collisions <- which(column_names == new_name & seq_along(column_names) != position)
     if (length(collisions) != 0L) {
       abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
     }
 
     result <- isolated_snapshot(value, inspected$flavor)
     if (identical(inspected$flavor, "r.data.table")) {
-      data.table::setnames(result, old = resolved$position, new = new_name)
+      data.table::setnames(result, old = position, new = new_name)
     } else {
       result_names <- names(result)
-      result_names[[resolved$position]] <- new_name
+      result_names[[position]] <- new_name
       names(result) <- result_names
     }
 
@@ -1659,6 +1719,92 @@ openwrangler_r_frame_contract <- local({
       abort("internal-error", "renaming a column changed its stable identity")
     }
     result
+  }
+
+  rename_column <- function(value, column_reference, new_name) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    rename_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  drop_columns_at <- function(value, positions, expected_names) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    if (
+      !is.numeric(positions) ||
+        anyNA(positions) ||
+        any(!is.finite(positions)) ||
+        any(positions != floor(positions)) ||
+        length(positions) == 0L ||
+        any(positions < 1L) ||
+        any(positions > column_count) ||
+        anyDuplicated(positions)
+    ) {
+      abort("stale-column", "the drop column positions no longer match the R dataframe")
+    }
+    positions <- as.integer(positions)
+    if (!is.character(expected_names) || length(expected_names) != length(positions) || anyNA(expected_names)) {
+      abort("stale-column", "the drop column names no longer match the R dataframe")
+    }
+    expected_names <- vapply(seq_along(expected_names), function(index) {
+      bounded_utf8(expected_names[[index]], sprintf("expected_names[[%d]]", index), maximum_name_bytes)
+    }, character(1L), USE.NAMES = FALSE)
+    if (!identical(names(value)[positions], expected_names)) {
+      abort("stale-column", "the drop column names no longer match the R dataframe")
+    }
+    if (length(positions) >= column_count) {
+      abort("invalid-view-query", "dropColumns must leave at least one visible column")
+    }
+
+    keep_positions <- setdiff(seq_len(column_count), positions)
+    if (identical(inspected$flavor, "r.data.table")) {
+      result <- isolated_snapshot(value, inspected$flavor)[, keep_positions, with = FALSE]
+    } else {
+      result <- isolated_snapshot(value, inspected$flavor)
+      for (position in sort(positions, decreasing = TRUE)) result[[position]] <- NULL
+    }
+    result
+  }
+
+  drop_columns <- function(value, column_references) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    if (
+      !is.list(column_references) ||
+        is.object(column_references) ||
+        !is.null(attributes(column_references)) ||
+        length(column_references) == 0L
+    ) {
+      abort("invalid-view-query", "column_references must be a non-empty unnamed list")
+    }
+    resolved <- lapply(seq_along(column_references), function(index) {
+      resolve_column_reference(
+        column_references[[index]],
+        inspected$descriptor,
+        sprintf("column_references[[%d]]", index)
+      )
+    })
+    column_ids <- vapply(resolved, `[[`, character(1L), "columnId", USE.NAMES = FALSE)
+    if (anyDuplicated(column_ids)) {
+      abort("invalid-view-query", "column_references may address each column only once")
+    }
+    positions <- vapply(resolved, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+    expected_names <- vapply(resolved, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    drop_columns_at(value, positions, expected_names)
   }
 
   validate_capture <- function(capture) {
@@ -1721,7 +1867,7 @@ openwrangler_r_frame_contract <- local({
     total_columns <- descriptor$shape$columns
     row_offset <- whole_number(row_offset, "row_offset", total_rows)
     row_limit <- whole_number(row_limit, "row_limit", maximum_page_rows)
-    column_offset <- whole_number(column_offset, "column_offset", total_columns)
+    column_offset <- min(whole_number(column_offset, "column_offset", maximum_columns), total_columns)
     column_limit <- whole_number(column_limit, "column_limit", maximum_page_columns)
     row_count <- min(row_limit, total_rows - row_offset)
     column_count <- min(column_limit, total_columns - column_offset)
@@ -2198,6 +2344,9 @@ openwrangler_r_frame_contract <- local({
     capture_live_frame = capture_live_frame,
     isolate_capture = isolate_capture,
     rename_column = rename_column,
+    rename_column_at = rename_column_at,
+    drop_columns = drop_columns,
+    drop_columns_at = drop_columns_at,
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,
     materialize_view_page = materialize_view_page,

@@ -503,7 +503,10 @@ describe("canonical R kernel bridge", () => {
     const opened = await bridge.request(openRequest("editing"));
     expect(opened).toMatchObject({
       kind: "sessionOpened",
-      metadata: { mode: "editing", capabilities: { editable: true, supportedOperations: ["renameColumn"] } }
+      metadata: {
+        mode: "editing",
+        capabilities: { editable: true, supportedOperations: ["dropColumns", "renameColumn"] }
+      }
     });
 
     transport.getPage.mockResolvedValueOnce(source);
@@ -664,6 +667,167 @@ describe("canonical R kernel bridge", () => {
         }
       }
     });
+  });
+
+  it("drops exact R columns without renumbering survivors and restores the view on undo", async () => {
+    const source = frameContract();
+    const dropped = dropContract(source, ["r:c:0"]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    transport.getPage.mockResolvedValueOnce(source);
+    await bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 0,
+      viewRequestId: "drop-view",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8,
+      filterModel: {
+        filters: [
+          {
+            column: "value",
+            type: "float",
+            predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+          }
+        ],
+        sort: [{ column: "count", direction: "desc", nulls: "last" }]
+      }
+    });
+
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: dropped,
+      diff: dropDiff("value"),
+      code: "open_wrangler_result <- orders"
+    });
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step: {
+        id: "r-drop-1",
+        kind: "dropColumns",
+        params: { columns: [{ id: "r:c:0", name: "value" }] }
+      },
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      {
+        id: "r-drop-1",
+        kind: "dropColumns",
+        params: { columns: [{ id: "r:c:0", name: "value" }] }
+      },
+      expect.objectContaining({
+        view: {
+          filters: [],
+          sorts: [expect.objectContaining({ column: { id: "r:c:1", name: "count" } })]
+        }
+      }),
+      undefined,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      metadata: {
+        shape: { rows: 1, columns: 7 },
+        filteredShape: { rows: 1, columns: 7 },
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:1", name: "count", position: 0 })]),
+        filterModel: { filters: [], sort: [expect.objectContaining({ column: "count" })] },
+        draftStep: { id: "r-drop-1", kind: "dropColumns" }
+      },
+      diff: { removedColumns: ["value"] }
+    });
+
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: dropped,
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(bridge.request(planRequest("applyDraft", 1))).resolves.toMatchObject({
+      kind: "planUpdated",
+      metadata: { steps: [{ id: "r-drop-1", kind: "dropColumns" }] }
+    });
+
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 2,
+      stepId: "r-drop-1",
+      stepIndex: 0,
+      inputPage: source,
+      outputPage: dropped,
+      inputSchema: source.schema,
+      outputSchema: dropped.schema,
+      diff: dropDiff("value"),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      bridge.request({
+        kind: "inspectStep",
+        sessionId,
+        revision: 2,
+        stepId: "r-drop-1",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({ kind: "stepInspection", diff: { removedColumns: ["value"] } });
+
+    transport.undoStep.mockResolvedValueOnce({
+      sessionId,
+      action: "undo",
+      revision: 3,
+      page: source,
+      code: ""
+    });
+    await expect(bridge.request(planRequest("undoStep", 2))).resolves.toMatchObject({
+      kind: "planUpdated",
+      metadata: {
+        shape: { rows: 1, columns: 8 },
+        filterModel: {
+          filters: [expect.objectContaining({ column: "value" })],
+          sort: [expect.objectContaining({ column: "count" })]
+        }
+      }
+    });
+  });
+
+  it("rejects dropping every R column before kernel dispatch", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const response = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step: {
+        id: "r-drop-all",
+        kind: "dropColumns",
+        params: { columns: source.schema.map(({ id, name }) => ({ id, name })) as [{ id: string; name: string }] }
+      },
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+
+    expect(response).toMatchObject({ kind: "error", code: "invalid_request" });
+    expect(transport.previewStep).not.toHaveBeenCalled();
   });
 
   it("keeps a view changed during an R draft and reconciles it back by stable column ID", async () => {
@@ -1160,7 +1324,7 @@ function frameContract(
     { kind: "infinity", raw: null, display: "Inf", isNull: false, isNaN: false, sign: 1 }
   ];
   return {
-    contractVersion: 3,
+    contractVersion: 4,
     dataframeFlavor: "r.data.frame",
     shape: { rows: options.totalRows ?? 1, columns: 8 },
     frameSemantics: {
@@ -1206,6 +1370,36 @@ function renameContract(source: RFramePageContract, columnId: string, name: stri
   };
 }
 
+function dropContract(source: RFramePageContract, columnIds: readonly string[]): RFramePageContract {
+  const dropped = new Set(columnIds);
+  const sourcePositions = source.schema
+    .map((column, position) => ({ column, position }))
+    .filter(({ column }) => !dropped.has(column.id));
+  const schema = sourcePositions.map(({ column }, position) => ({ ...column, position }));
+  const retainedIds = new Set(schema.map((column) => column.id));
+  const keyColumnIds: string[] = [];
+  for (const id of source.frameSemantics.keyColumnIds) {
+    if (!retainedIds.has(id)) break;
+    keyColumnIds.push(id);
+  }
+  const projectedPositions = source.page.columnIds.flatMap((id, position) => (retainedIds.has(id) ? [position] : []));
+  return {
+    ...source,
+    shape: { ...source.shape, columns: schema.length },
+    frameSemantics: { ...source.frameSemantics, keyColumnIds },
+    schema,
+    page: {
+      ...source.page,
+      columnOffset: Math.min(source.page.columnOffset, schema.length),
+      columnIds: source.page.columnIds.filter((id) => retainedIds.has(id)),
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: projectedPositions.map((position) => ({ ...(row.values[position] as RFrameCell) }))
+      }))
+    }
+  };
+}
+
 function renameDiff(): DataDiff {
   return {
     addedRows: 0,
@@ -1216,6 +1410,10 @@ function renameDiff(): DataDiff {
     cells: [],
     truncated: false
   };
+}
+
+function dropDiff(...removedColumns: string[]): DataDiff {
+  return { ...renameDiff(), removedColumns };
 }
 
 function column(
@@ -1267,6 +1465,6 @@ function rCapabilities(): SourceCapabilities {
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: ["renameColumn"]
+    supportedOperations: ["dropColumns", "renameColumn"]
   };
 }

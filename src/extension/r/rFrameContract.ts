@@ -1,4 +1,4 @@
-export const R_FRAME_CONTRACT_VERSION = 3 as const;
+export const R_FRAME_CONTRACT_VERSION = 4 as const;
 
 export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   rows: 2_147_483_647,
@@ -137,6 +137,7 @@ export interface RFramePageContract {
 }
 
 const exactIntegerPattern = /^-?(?:0|[1-9][0-9]*)$/u;
+const sourceColumnIdPattern = /^r:c:(0|[1-9][0-9]*)$/u;
 const finiteNumberPattern = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/iu;
 const isoDatePattern = /^(\d{4})-(\d{2})-(\d{2})$/u;
 const signedInteger64Minimum = -(1n << 63n);
@@ -262,7 +263,10 @@ export function decodeRFramePage(value: unknown): RFramePageContract {
 function decodeColumn(value: unknown, position: number): RColumnSchema {
   const record = exactRecord(value, ["id", "name", "position", "rawType", "type", "nullable", "semantics"]);
   const id = boundedString(record.id, `schema[${position}].id`, R_FRAME_CONTRACT_LIMITS.nameBytes);
-  if (id !== `r:c:${position}`) fail(`schema[${position}].id is not the stable positional ID.`);
+  const idMatch = sourceColumnIdPattern.exec(id);
+  if (!idMatch || Number(idMatch[1]) >= R_FRAME_CONTRACT_LIMITS.columns) {
+    fail(`schema[${position}].id is not a stable R source-column ID.`);
+  }
   if (record.position !== position) fail(`schema[${position}].position is not contiguous.`);
   const name = boundedString(record.name, `schema[${position}].name`, R_FRAME_CONTRACT_LIMITS.nameBytes);
   const rawType = boundedString(record.rawType, `schema[${position}].rawType`, R_FRAME_CONTRACT_LIMITS.nameBytes);

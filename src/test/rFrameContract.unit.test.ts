@@ -7,7 +7,7 @@ function decodeCandidate(candidate: Record<string, unknown>) {
 
 function minimalContract(): Record<string, unknown> {
   return {
-    contractVersion: 3,
+    contractVersion: 4,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -54,7 +54,7 @@ function dateContract(raw: string): Record<string, unknown> {
 }
 
 describe("native R frame contract decoder", () => {
-  it("accepts a strict positional frame page and freezes it", () => {
+  it("accepts a strict frame page and freezes it", () => {
     const decoded = decodeRFramePageJson(JSON.stringify(minimalContract()));
 
     expect(decoded.dataframeFlavor).toBe("r.data.frame");
@@ -65,13 +65,13 @@ describe("native R frame contract decoder", () => {
     expect(Object.isFrozen(decoded.page.rows[0]?.values)).toBe(true);
   });
 
-  it("keeps duplicate names safe because identity is positional", () => {
+  it("keeps duplicate names safe while retained source identities become sparse", () => {
     const candidate = minimalContract();
     candidate.shape = { rows: 1, columns: 2 };
     candidate.schema = [
       ...(candidate.schema as unknown[]),
       {
-        id: "r:c:1",
+        id: "r:c:2",
         name: "value",
         position: 1,
         rawType: "character",
@@ -82,7 +82,7 @@ describe("native R frame contract decoder", () => {
     ];
     const page = candidate.page as Record<string, unknown>;
     page.columnLimit = 2;
-    page.columnIds = ["r:c:0", "r:c:1"];
+    page.columnIds = ["r:c:0", "r:c:2"];
     const row = (page.rows as Array<Record<string, unknown>>)[0];
     if (!row) throw new Error("test row missing");
     row.values = [
@@ -93,7 +93,7 @@ describe("native R frame contract decoder", () => {
     const decoded = decodeCandidate(candidate);
     expect(decoded.schema.map(({ id, name }) => ({ id, name }))).toEqual([
       { id: "r:c:0", name: "value" },
-      { id: "r:c:1", name: "value" }
+      { id: "r:c:2", name: "value" }
     ]);
   });
 
@@ -244,9 +244,9 @@ describe("native R frame contract decoder", () => {
       }
     ],
     [
-      "non-positional column IDs",
+      "malformed source column IDs",
       (candidate: Record<string, unknown>) => {
-        (candidate.schema as Array<Record<string, unknown>>)[0]!.id = "r:c:1";
+        (candidate.schema as Array<Record<string, unknown>>)[0]!.id = "r:c:01";
       }
     ],
     [

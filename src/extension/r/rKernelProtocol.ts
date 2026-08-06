@@ -90,6 +90,16 @@ export interface RKernelRenameColumnStep {
   }>;
 }
 
+export interface RKernelDropColumnsStep {
+  readonly id: string;
+  readonly kind: "dropColumns";
+  readonly params: Readonly<{
+    columns: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+  }>;
+}
+
+export type RKernelTransformStep = RKernelRenameColumnStep | RKernelDropColumnsStep;
+
 export interface RKernelStepPreviewResult {
   readonly sessionId: string;
   readonly revision: number;
@@ -167,7 +177,7 @@ export type RKernelRequest =
       payload: Readonly<{
         sessionId: string;
         revision: number;
-        step: RKernelRenameColumnStep;
+        step: RKernelTransformStep;
         replaceStepId?: string;
         page: RKernelPageWindow;
       }>;
@@ -437,7 +447,7 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       sessionId: identifier(record.sessionId, "response.sessionId"),
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
       page: decodeRFramePage(record.page),
-      diff: validateRenameDiff(record.diff),
+      diff: validateStructuralDiff(record.diff),
       code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
     });
   }
@@ -500,7 +510,7 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       outputPage,
       inputSchema,
       outputSchema,
-      diff: validateRenameDiff(record.diff),
+      diff: validateStructuralDiff(record.diff),
       code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
     });
   }
@@ -595,7 +605,7 @@ function validateRequest(request: RKernelRequest): void {
     );
     identifier(payload.sessionId, "request.payload.sessionId");
     boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
-    validateRenameStep(payload.step);
+    validateTransformStep(payload.step);
     if (payload.replaceStepId !== undefined) {
       boundedText(payload.replaceStepId, "request.payload.replaceStepId", maximumStepIdBytes, false);
     }
@@ -629,16 +639,36 @@ function validateRequest(request: RKernelRequest): void {
   fail("R kernel request has an unsupported kind.");
 }
 
-function validateRenameStep(value: unknown): void {
-  const step = exactRecord(value, ["id", "kind", "params"], "R kernel rename step");
+function validateTransformStep(value: unknown): void {
+  const step = exactRecord(value, ["id", "kind", "params"], "R kernel transform step");
   boundedText(step.id, "request.payload.step.id", maximumStepIdBytes, false);
-  if (step.kind !== "renameColumn") fail("R kernel rename step has an unsupported operation.");
-  const params = exactRecord(step.params, ["column", "newName"], "R kernel rename parameters");
-  validateColumnReference(params.column, "request.payload.step.params.column");
-  boundedText(params.newName, "request.payload.step.params.newName", maximumVariableNameBytes, false);
+  if (step.kind === "renameColumn") {
+    const params = exactRecord(step.params, ["column", "newName"], "R kernel rename parameters");
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    boundedText(params.newName, "request.payload.step.params.newName", maximumVariableNameBytes, false);
+    return;
+  }
+  if (step.kind === "dropColumns") {
+    const params = exactRecord(step.params, ["columns"], "R kernel drop parameters");
+    if (
+      !Array.isArray(params.columns) ||
+      params.columns.length === 0 ||
+      params.columns.length > R_FRAME_CONTRACT_LIMITS.columns
+    ) {
+      fail("R kernel drop columns must be a bounded non-empty array.");
+    }
+    const seen = new Set<string>();
+    for (const [index, candidate] of params.columns.entries()) {
+      const reference = validateColumnReference(candidate, `request.payload.step.params.columns[${index}]`);
+      if (seen.has(reference.id)) fail("R kernel drop columns contain a repeated identity.");
+      seen.add(reference.id);
+    }
+    return;
+  }
+  fail("R kernel transform step has an unsupported operation.");
 }
 
-function validateRenameDiff(value: unknown): DataDiff {
+function validateStructuralDiff(value: unknown): DataDiff {
   const diff = exactRecord(value, [
     "addedRows",
     "removedRows",
@@ -656,17 +686,20 @@ function validateRenameDiff(value: unknown): DataDiff {
     !Array.isArray(diff.addedColumns) ||
     diff.addedColumns.length !== 0 ||
     !Array.isArray(diff.removedColumns) ||
-    diff.removedColumns.length !== 0 ||
+    diff.removedColumns.length > R_FRAME_CONTRACT_LIMITS.columns ||
     !Array.isArray(diff.cells) ||
     diff.cells.length !== 0
   ) {
-    fail("R kernel rename diff is invalid.");
+    fail("R kernel structural diff is invalid.");
   }
+  const removedColumns = diff.removedColumns.map((column, index) =>
+    boundedText(column, `response.diff.removedColumns[${index}]`, maximumVariableNameBytes, true)
+  );
   const result: DataDiff = {
     addedRows: 0,
     removedRows: 0,
     addedColumns: [],
-    removedColumns: [],
+    removedColumns,
     changedCells: 0,
     cells: [],
     truncated: false

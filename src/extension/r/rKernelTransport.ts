@@ -23,7 +23,7 @@ import {
   type RKernelColumnReference,
   type RKernelPageWindow,
   type RKernelPlanUpdatedResult,
-  type RKernelRenameColumnStep,
+  type RKernelTransformStep,
   type RKernelRequest,
   type RKernelResponse,
   type RKernelStepInspectionResult,
@@ -297,7 +297,7 @@ export class RKernelSessionTransport {
   async previewStep(
     sessionId: string,
     revision: number,
-    step: RKernelRenameColumnStep,
+    step: RKernelTransformStep,
     page: RKernelPageWindow,
     replaceStepId?: string,
     options: RKernelRequestOptions = {}
