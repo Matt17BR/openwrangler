@@ -455,6 +455,7 @@ openwrangler_r_kernel_agent <- local({
       if (
         !is.list(columns) ||
           is.object(columns) ||
+          !is.null(names(columns)) ||
           length(columns) == 0L ||
           length(columns) > maximum_columns
       ) {

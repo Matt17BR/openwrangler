@@ -669,6 +669,32 @@ drop_undo <- dispatch(
 assert_identical(drop_undo$action, "undo", "the R drop did not undo")
 assert_identical(drop_undo$page$shape$columns, 3L, "undoing the R drop did not restore the original schema")
 assert_identical(source_environment$drop_frame, drop_source_before, "the R drop lifecycle mutated its source")
+
+named_drop_columns <- dispatch(
+  "previewStep",
+  list(
+    sessionId = drop_session_id,
+    revision = 7L,
+    step = list(
+      id = "named-drop-columns",
+      kind = "dropColumns",
+      params = list(columns = list(named = list(id = "r:c:0", name = "duplicate")))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(named_drop_columns$kind, "error", "an object-shaped R drop column list was accepted")
+assert_identical(named_drop_columns$code, "invalid_request", "the object-shaped R drop diagnostic changed")
+drop_retry <- dispatch(
+  "previewStep",
+  list(sessionId = drop_session_id, revision = 7L, step = drop_step("drop-retry"), page = page_window())
+)
+assert_identical(drop_retry$kind, "stepPreview", "a malformed R drop request changed the session revision")
+drop_retry_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = drop_session_id, revision = 8L, page = page_window())
+)
+assert_identical(drop_retry_discard$action, "discard", "the R drop retry could not be discarded")
 drop_closed <- dispatch("closeSession", list(sessionId = drop_session_id))
 assert_identical(drop_closed$kind, "closed", "the R drop session did not close")
 
