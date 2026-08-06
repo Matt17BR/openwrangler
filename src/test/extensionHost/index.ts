@@ -645,7 +645,9 @@ export async function run(): Promise<void> {
   assert.ok(
     contributions.menus?.["editor/title"]?.some(
       (item) =>
-        item.command === "openWrangler.runRDocument" && item.when === rDocumentPredicate && item.group === "navigation@1"
+        item.command === "openWrangler.runRDocument" &&
+        item.when === rDocumentPredicate &&
+        item.group === "navigation@1"
     ),
     "R document editors must expose the Open Wrangler title action."
   );
@@ -672,7 +674,9 @@ export async function run(): Promise<void> {
   assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
       (item) =>
-        item.command === "openWrangler.runRDocument" && item.when === rDocumentPredicate && item.group === "navigation@49"
+        item.command === "openWrangler.runRDocument" &&
+        item.when === rDocumentPredicate &&
+        item.group === "navigation@49"
     ),
     "R document tabs must expose Run in Open Wrangler in their context menu."
   );
