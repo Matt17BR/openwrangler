@@ -16,7 +16,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   ordered sorts, search and select column values, and calculate filter-aware column and dataset profiles. Profiles
   include missing and distinct counts, common values, numeric statistics and histograms, text lengths, boolean
   counts, and date ranges. Explicit R row names appear in the grid gutter and stay with their source rows after a
-  query. Cleaning steps, generated code, exports, and Quarto/R Markdown are not available yet.
+  query.
+- Added the first native R cleaning operation for Open Wrangler 2. **Rename Column** uses the regular draft, code
+  preview, apply, discard, inspection, edit-latest, and undo workflow for base data frames, tibbles, and data tables.
+  It keeps the notebook object unchanged, generates executable R, and lets users copy that code or save it as a `.R`
+  script. Other R operations, cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto are
+  still in development.
 
 ### Changed
 

@@ -171,9 +171,14 @@ Closing the view leaves Spark work that has already started alone, so Open Wrang
 jobs.
 
 Open Wrangler 2 development builds can also open base R `data.frame`, tibble, and `data.table` variables from
-IRkernel. The R workbench currently supports paging, filters, multi-column sorts, value search, and profiles. It is
-view-only for now: cleaning steps, generated R code, exports, Quarto, R Markdown, and plain `.R` files are still being
-built. See the [current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2).
+IRkernel. The R workbench supports paging, filters, multi-column sorts, value search, and profiles. Editing mode now
+supports **Rename Column**: preview the draft and generated R, then apply, discard, inspect, edit, or undo the step.
+Generated R can be copied or saved as a `.R` script.
+
+The rest of the R operation catalog, cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto
+are still in development. The
+[current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2)
+show the live variable picker and viewing workbench; an editing screenshot will follow its packaged-editor test.
 
 ## Export
 
@@ -183,7 +188,7 @@ built. See the [current R notebook screenshots](https://github.com/Matt17BR/open
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data-detail.png" width="995" height="344"></a></td>
   </tr>
   <tr>
-    <td>Copy generated code, insert it into a notebook, or save it as a Python script.</td>
+    <td>Copy generated code or save it as a Python or R script. Python sessions can also insert it into the notebook.</td>
     <td>Export a cleaned CSV or Parquet file without overwriting the source.</td>
   </tr>
 </table>
@@ -196,7 +201,7 @@ built. See the [current R notebook screenshots](https://github.com/Matt17BR/open
 | Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series                     | Native, including duplicate column labels                 |
 | DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation                      | Native; notebook relations are viewing-only               |
 | PySpark 4.2.x        | No                                     | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles |
-| R (v2 development)   | No                                     | `data.frame`, tibble, `data.table`    | Native IRkernel viewing; editing is not ready             |
+| R (v2 development)   | No                                     | `data.frame`, tibble, `data.table`    | Native IRkernel viewing; Rename Column in Editing mode    |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
@@ -252,8 +257,9 @@ before v2 ships.
 
 - **v1:** keep improving performance, DuckDB coverage, and support for other desktop VS Code forks. Fork support is
   currently experimental.
-- **v2:** finish native R notebook support for data frames, tibbles, and `data.table`, then add Quarto and R Markdown
-  workflows. The
+- **v2:** finish native R notebook support for data frames, tibbles, and `data.table`, then add Quarto and R Markdown.
+  Rename Column is the first editing operation; the rest of the cleaning catalog, data export, notebook insertion,
+  and plain `.R` workflows are still being built. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).

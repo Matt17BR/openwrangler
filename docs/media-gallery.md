@@ -167,8 +167,12 @@ IRkernel. Each variable stays in R.
 <img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="1440" height="881">
 
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
-It is view-only. Cleaning steps, generated R code, exports, Quarto, R Markdown, and plain `.R` files are still in
-development.
+Editing mode also supports Rename Column with draft preview, generated R, apply, discard, inspection, latest-step
+editing, and undo. Generated R can be copied or saved as a `.R` script. The images above show the packaged viewing
+journey; the editing journey does not have an accepted screenshot yet.
+
+Other R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` files are
+still in development.
 
 ## DuckDB nested and temporal values
 

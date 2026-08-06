@@ -663,7 +663,18 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     gallery,
     /base `data\.frame`, tibble, and `data\.table` variables in the active\s+IRkernel\. Each variable stays in R\./u
   );
-  assert.match(gallery, /Cleaning steps, generated R code, exports, Quarto, R Markdown, and plain `\.R` files/u);
+  assert.match(
+    gallery,
+    /Editing mode also supports Rename Column with draft preview, generated R, apply, discard, inspection, latest-step\s+editing, and undo/u
+  );
+  assert.match(
+    gallery,
+    /The images above show the packaged viewing\s+journey; the editing journey does not have an accepted screenshot yet/u
+  );
+  assert.match(
+    gallery,
+    /Other R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `\.R` files are\s+still in development/u
+  );
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
   assert.match(gallery, /^## Editor and theme support$/mu);
   assert.doesNotMatch(gallery, /<td><strong>/u);

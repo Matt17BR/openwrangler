@@ -61,7 +61,7 @@ import {
 } from "./rNotebookVariableDiscovery";
 
 const CLOSED_SESSION_LIMIT = 1_024;
-const R_SUPPORTED_OPERATIONS: OperationKind[] = Object.freeze(["renameColumn"]);
+const R_SUPPORTED_OPERATIONS = Object.freeze(["renameColumn"] as OperationKind[]) as OperationKind[];
 
 const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   editable: true,

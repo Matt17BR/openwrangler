@@ -9,8 +9,9 @@ Open Wrangler has three cooperating parts:
 3. A language runtime owns dataframe work. Python sessions use the bundled runtime in a selected interpreter or active
    Jupyter kernel. R notebook sessions use the bundled R reader inside the selected IRkernel.
 
-Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects a read-only R
-viewer to the shared protocol, coordinator, notebook command, grid, filters, sorts, value picker, and profiles. The
+Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects native R notebook
+sessions to the shared protocol, coordinator, notebook command, grid, filters, sorts, value picker, and profiles. Its
+first editing slice supports Rename Column through the shared draft and cleaning-history UI. The
 [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
@@ -83,12 +84,21 @@ complete object or JSON string is built. The canonical grid protocol carries row
 row numbers. The kernel agent uses a small R-only transport, which `RKernelBridge` validates and maps to the shared
 host protocol; the Python runtime never reads those messages.
 
-`r/openwrangler_runtime/kernel_agent.R` owns the first read-only R sessions. The host creates a UUID before an open,
+`r/openwrangler_runtime/kernel_agent.R` owns native R sessions. The host creates a UUID before an open,
 and the agent records the named object's shape, schema, and source binding. Later page, filter, sort, profile, dataset
 statistics, and column-value requests read through that binding and reject structural changes. These messages have a
 separate versioned schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
 request IDs, and oversized responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote
 IRkernel does not need access to the extension filesystem.
+
+Viewing does not copy the complete R object. The first editing request takes one isolated source snapshot, then keeps
+the original, committed result, and optional draft separate. Rename Column resolves its `{id, name}` reference to one
+exact position, so duplicate and non-syntactic names remain unambiguous. Base data frames and tibbles are copied with
+R serialization; `data.table` uses `data.table::copy()` before `setnames()`, preserving keys without mutating the
+notebook variable. Preview, apply, discard, latest-step replacement, undo, and applied-step inspection use increasing
+session revisions. Each mutation builds and encodes its complete response before publishing the candidate state.
+Generated code repeats the positional and stale-name checks, returns a new R object, and can be copied or saved as a
+`.R` script.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
 session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
@@ -97,22 +107,24 @@ started, its candidate ID stays mapped to that kernel and one close is sent ther
 finishes. Page and profile requests that time out or are cancelled still retain the original execution's settlement
 promise. The transport waits for that promise before sending another request to the same IRkernel. Kernel restart
 ends the mappings. Close uses the mapped kernel and never looks one up by URI. Session IDs and pending cleanup records
-have fixed bounds, and repeated disposal joins the same cleanup operation.
+have fixed bounds, and repeated disposal joins the same cleanup operation. Once a mutation returns its correlated
+response, a later host cancellation cannot hide the new revision.
 
 Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
-the fixed response codes `unsupported_frame`, `missing_package`, `page_too_large`, and `stale_column`. Request errors,
-missing variables or sessions, and unexpected runtime failures also use a fixed code list. Messages are limited to
-4 KiB, and TypeScript rejects any unrecognized code. Native variable discovery requires `jsonlite` and `rlang` in the
-selected kernel. It recognizes exact base `data.frame`, tibble, and `data.table` class vectors without evaluating
-active or delayed bindings. The notebook command routes those variables through a read-only coordinator session and
-enables native filters, ordered sorts, value search and selection, and column and dataset profiles. Cleaning steps,
-generated code, exports, Quarto, R Markdown, and plain `.R` documents remain unsupported. R sessions open with header
-profiles off so opening a frame does not immediately scan every visible column. Users can enable them, and the profile
-drawer still loads the selected column or dataset on request. The packaged VS Code/Cursor journey now selects a real R column and checks its
+a fixed response-code list that includes `unsupported_frame`, `missing_package`, `page_too_large`, `stale_column`,
+`stale_revision`, and `unsupported_operation`. Messages are limited to 4 KiB, and TypeScript rejects any unrecognized
+code. Native variable discovery requires `jsonlite` and `rlang` in the selected kernel. It recognizes exact base
+`data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The notebook
+command enables native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
+mode currently exposes only Rename Column. Other cleaning operations, cleaned-data export, R notebook insertion,
+Quarto, R Markdown, and plain `.R` documents remain unsupported. R sessions open with header profiles off so opening
+a frame does not immediately scan every visible column. Users can enable them, and the profile drawer still loads the
+selected column or dataset on request. The packaged VS Code/Cursor viewing journey selects a real R column and checks its
 rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
 duplicate-row statistics. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code
 and Cursor with R 4.5.2. The hosted gate also passes against a containerized IRkernel in VS Code, including kernel
-restart, reopening the frame, and final session cleanup.
+restart, reopening the frame, and final session cleanup. Rename editing has native R and cross-language transport
+tests; its packaged editor journey is still pending.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 

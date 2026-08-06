@@ -72,30 +72,35 @@ Inline MIME v2 output shows every captured column and pages the captured rows at
 ## Native R work for Open Wrangler 2
 
 R support is not in a released package yet. On the Open Wrangler 2 branch, R notebooks can open base `data.frame`,
-tibble, and `data.table` variables in a read-only workbench through IRkernel. Pages, compound filters, ordered sorts,
-value search, and column and dataset profiles run in R; the dataframe is not passed through Python.
+tibble, and `data.table` variables through IRkernel. Pages, compound filters, ordered sorts, value search, and column
+and dataset profiles run in R; the dataframe is not passed through Python. Editing mode currently supports Rename
+Column. The operation follows the same draft, generated-code, apply, discard, inspection, edit-latest, and undo flow
+as the released Python engines. Generated R can be copied or saved as a `.R` script.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed at `6742255` with local
 R 4.5.2 in VS Code and Cursor and a containerized IRkernel in VS Code. It covered filters, profiles, sort priority,
 kernel restart, source preservation, and cleanup.
 
 The [product gallery](media-gallery.md#r-notebooks-open-wrangler-2) shows the packaged IRkernel picker and workbench.
-Cleaning, generated R code, exports, Quarto, R Markdown, and plain `.R` files are not available yet.
-R sessions already advertise Rename Column as their first planned cleaning operation, but editing stays disabled until
-preview, apply, discard, undo, and generated R code work together.
+Those images cover viewing and profiles; they do not count as editing evidence. Native R and cross-language tests now
+cover Rename Column against base data frames, tibbles, keyed data tables, duplicate names, and non-syntactic names.
+The remaining R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R`
+files are not available yet.
 
-| Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                      |
-| -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | ---------------------------------------------- |
-| Native R frame paging and typed cells        | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                                |
-| Native R compound viewing filters            | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                                |
-| Native R value search and selections         | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                                |
-| Native R ordered viewing sorts               | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                                |
-| Native R column and dataset profiles         | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                                |
-| Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                                |
-| Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                              |
-| Notebook workbench                           | v2 branch    | Partial | Packaged paging/profiles, screenshots, production axe    | Preview release and editing                    |
-| R cleaning operations and generated code     | No           | Planned | Rename-only capability; editing remains disabled         | Native R preview/apply/undo and generated code |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper    |
+| Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                    |
+| -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | -------------------------------------------- |
+| Native R frame paging and typed cells        | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                              |
+| Native R compound viewing filters            | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                              |
+| Native R value search and selections         | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                              |
+| Native R ordered viewing sorts               | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                              |
+| Native R column and dataset profiles         | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                              |
+| Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                              |
+| Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                            |
+| Notebook workbench                           | v2 branch    | Partial | Packaged paging/profiles, screenshots, production axe    | Preview release and packaged editing journey |
+| R cleaning operations and generated code     | Rename only  | Partial | Native/transport lifecycle and executable-code tests     | Packaged journey and remaining operations    |
+| Copy or save generated R                     | Rename only  | Partial | Generated-code identity and `.R` Save-dialog contract    | End-to-end copy and save acceptance          |
+| Cleaned-data export and notebook insertion   | No           | Planned | No public R path                                         | Native export and exact-notebook insertion   |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper  |
 
 ## DuckDB file-backed preview matrix
 
@@ -393,7 +398,7 @@ This makes the production-bundle grid interaction, summaries/Quick Insights, vie
 
 Editable code and runtime-selection slice, 2026-07-15:
 
-- After every packaged Pandas and Polars representative plan, acceptance replaces the Code Preview buffer with an identifiable edit, invokes the real Copy Code command, reads the editor clipboard, invokes Export Python Script with an isolated destination, and verifies both outputs byte-for-byte. The production CodeMirror bundle separately covers editing, syntax highlighting, overflow/focus behavior, and VS Code tokens under the visual/axe matrix.
+- After every packaged Pandas and Polars representative plan, acceptance replaces the Code Preview buffer with an identifiable edit, invokes the real Copy Code command, reads the editor clipboard, invokes **Export Generated Script** with an isolated destination, and verifies both outputs byte-for-byte. The production CodeMirror bundle separately covers editing, syntax highlighting, overflow/focus behavior, and VS Code tokens under the visual/axe matrix.
 - Successful copy/export notifications no longer block command completion while awaiting toast dismissal; clipboard and file writes remain awaited. The generated function before editing is still executed against both engines and compared with the native adapter result, with Polars conversion prohibited.
 - Runtime acceptance invokes Change Runtime with an executable wrapper around the same supported interpreter but isolated from site packages. A Polars open returns the structured `missing_dependencies` diagnostic before process startup, points to the explicit install command, and retains no session.
 - The Install Runtime Dependencies command receives an explicit decline and returns without running pip, changing configuration, or starting a process. Clear Runtime removes the workspace override and reveals the configured fallback. Resolver tests cover relative/absolute paths, the exact Python 3.10 to 3.14 range, and engine/format-specific modules; normal resolution still prefers explicit configuration, then the Python extension, then system interpreters.
@@ -576,7 +581,7 @@ This hardens existing **Done** runtime-selection and recovery rows; it does not 
 
 Source-safe Python-script export slice, 2026-07-17:
 
-- The public Export Python Script command is zero-argument and ignores hostile URI/object arguments. After trust and active-code checks it always asks VS Code for a destination, rechecks trust after the dialog, and returns false on cancellation or failure. The environment-gated acceptance API is the only deterministic-destination seam and calls the same production writer. A public-command filesystem test returns a real `.py` hard-link alias from the Save-dialog boundary and proves the immutable dataframe source is not changed; the installed editor flow proves a hostile argument cannot bypass the visible Save dialog, exports the edited CodeMirror buffer byte-for-byte, and cancels a second dialog without creating a file.
+- The public **Export Generated Script** command is zero-argument and ignores hostile URI/object arguments. After trust and active-code checks it always asks VS Code for a destination, rechecks trust after the dialog, and returns false on cancellation or failure. The environment-gated acceptance API is the only deterministic-destination seam and calls the same production writer. A public-command filesystem test returns a real `.py` hard-link alias from the Save-dialog boundary and proves the immutable dataframe source is not changed; the installed editor flow proves a hostile argument cannot bypass the visible Save dialog, exports the edited CodeMirror buffer byte-for-byte, and cancels a second dialog without creating a file.
 - Public session metadata now pins the exact immutable `openSession` request source across initial, page, mutation, replay, and recovery responses, so malformed runtime source metadata cannot redirect the guard. Exact `vscode-remote` URIs retain their authority, a simultaneous remote workspace must name the same host, and local/cross-remote mismatches fail before Node filesystem I/O. The authority contract is unit-tested; an actual Remote SSH/WSL host run remains part of the separate remote/cross-platform hardening gate rather than being inferred from local paths.
 - The writer checks exact, normalized, canonical, parent-symlink, direct-symlink, hard-link, platform-case, directory, virtual, and remote-host destinations. It captures usable identities for every concrete source, the selected destination, and its parent; reserves one of sixteen random sibling names exclusively; records the created file identity; writes and flushes the complete edited buffer; closes it; then revalidates source, destination, parent, and temp state immediately before one rename. Missing or all-zero source/destination identities fail closed. A source rename, appeared/replaced/deleted destination, changed parent, or substituted temp cannot be published; an unidentifiable or substituted temp is deliberately not removed by pathname.
 - Fault injection covers non-collision exclusive-open failure, post-open identity failure, exhausted and retried name collisions, partial write, sync, first/cleanup close, source/destination/parent/temp revalidation, destination replacement, cleanup removal, already-absent cleanup, and second-validation `realpath`/`stat`/`lstat` failures. Every applicable failure preserves the protected source and any concurrently changed destination, removes only a still-identified owned temp, and retains both primary and cleanup errors when cleanup itself fails.
