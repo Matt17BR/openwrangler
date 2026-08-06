@@ -45,8 +45,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   chooses `score = 1200` from R's typed value results, adds `group = B` as a second-column predicate, and checks the
   single matching row, its stable source ID and row name, the filtered column and dataset profiles, Clear all, and the
   existing multi-sort controls. A serialized copy of the source frame must still match before and after that journey,
-  and the private runtime binding must be gone after close. This added interaction must pass in the next exact hosted
-  run before an R preview. CI does not install R in packaging, Python, browser, or ordinary editor jobs.
+  and the private runtime binding must be gone after close. The exact hosted result is recorded below. CI does not
+  install R in packaging, Python, browser, or ordinary editor jobs.
 - `npm run test:scripts` runs the focused cross-platform contracts for editor environment isolation, private home/config/runtime trees, fresh correlated phase outcomes, progress-aware deadlines, classified failures, sanitized evidence retention, POSIX process-group cleanup, the Windows Job Object supervisor and parent lease, genuine Restricted Mode launches, the explicit visible-debug opt-out, pinned private-Xvfb preparation and lifecycle, Remote SSH child-error latching, exact Xvfb socket/lock identity receipts, candidate provenance, exact staged-file receipts, bounded staged-tree manifests, fail-fast Jupyter VSIX target/native-payload compatibility, the container-isolated remote-Jupyter runner, and structural release readiness. Release-document fixtures include fenced, commented, raw-HTML, duplicate, placeholder, future-action, untracked-reference, empty-changelog, and contradictory-README decoys. Crafted VSIX fixtures cover omitted legal files, symlink-mode entries, missing manifest-referenced assets, oversized expansion, encrypted flags, and CRC corruption through the same streaming validator used by both package verification and stable readiness. Descriptor-bound VSIX file fixtures reject hard links, symbolic links, empty or sparse oversized inputs, and named-path inode swaps around the read. Pinned Cursor and Remote SSH acquisition additionally read product metadata, package metadata, runtime files, and licenses through bounded no-follow descriptors whose named path, containment, identity, and complete snapshot must remain stable; their adversarial fixtures cover replacement, in-place mutation, and hard links. Cursor network bytes enter only a random mode-`0600` quarantine descriptor and cannot be published until exact status, one unambiguous length, SHA-256, descriptor identity, and named-path identity all agree; a rejected status, header, or body is explicitly disposed. Stable-publication fixtures also require immutable Git-commit source reads and reject content or parent-identity changes in either final output, including a same-size first-output mutation while the second output is read. Parsed-YAML fixtures bind the complete dispatch and job graph through a bounded, cycle-safe canonical digest in addition to semantic validation; they move or duplicate readiness/upload steps, remove the event-commit binding, alter shell/failure/condition controls, add workflow/job execution overrides or permission escalation, insert post-readiness mutations, weaken commands, change runners or action inputs, remove required evidence, add broad uploads, expose publisher credentials, remove the locked CLI guard, add a preview registry flag, or place mutations between canonical verification and a publisher boundary. None may satisfy the canonical stable workflow. Stable-tag fixtures require the exact protected `origin/main` source, require canonical version binding, one non-force atomic single-ref push, a private credential that never enters arguments or child environment, cleanup after success or failure, exact recognition and scrubbing of Git credential-store's atomic approval and rejection rewrites, rejection of any other replacement, and exact lightweight post-push verification; conflicting, annotated, ambiguous, stale, dirty, wildcard, force, and delete forms fail. GitHub publication tests accept absent, exact partial, and exact complete releases while rejecting conflicting tags, metadata, assets, digests, and bytes. Publisher unit tests retain the migration-false compatibility case, while the checked-in stable and preview workflows require exact `immutable: true`; false or missing state blocks registry promotion. Open VSX tests require the exact stable identity, publisher login, public checksum, and downloaded VSIX; retry is bounded to missing or transient post-publish metadata, and the default contract proves all ninety-one attempts in the fifteen-minute window. Marketplace tests separately enforce the pipeline's explicit maximum reviewed forty-attempt public-verification bound. Stable-candidate fixtures additionally require the complete pinned ordered step allowlists, reject every removal plus inserted/replaced/mutable actions, exercise the producer's real package-source composition, accept only the expected post-write directory-link-count transition while every owned file receipt stays fixed, and prove stable consume mode cannot fall back to a moving editor download. Platform-specific cases are skipped only where the host cannot provide the primitive under test.
   Release-document fixtures also require the preview and stable README sections to retain the same editor-support matrix.
   This local command remains the complete superset of the four disjoint CI groups below.
@@ -490,13 +490,11 @@ compound filters and sorts, typed value selection, column and dataset profiles, 
 and cleanup. They also check that header profiles start off; the journey does not turn them on. The temporary R
 library is deleted with the run.
 
-[Run 31055045808](https://github.com/Matt17BR/openwrangler/actions/runs/31055045808) passed from commit
-`3860685db0e9e9a49f120fdbc039bb8367414e28` on 2026-08-05. It covered local R 4.5.2 in VS Code 1.132.0 and
-Cursor 3.14.7, plus the containerized R kernel in VS Code. The remote path restarted the kernel, recreated the
-variables, reopened the frame, and finished with no Open Wrangler session or private R binding left behind. This run
-predates the packaged filter/value interaction above and does not count as evidence for it. It also does not cover
-editing, Quarto, or R Markdown work. Native filter and value-search contracts are already part of the R 4.4/4.5
-lanes.
+[Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed from commit
+`67422557e2377f5fe806e3b4892b261dd48d9d6a` on 2026-08-06. It covered local R 4.5.2 in VS Code and Cursor, plus the
+containerized R kernel in VS Code. The journey checked typed value selection, a compound filter, filtered profiles,
+Clear all, sort priority, restart and reopen, source preservation, and final cleanup. It does not cover cleaning,
+generated R code, exports, Quarto, R Markdown, or plain `.R` files.
 
 ```bash
 OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
@@ -648,6 +646,9 @@ smoke and eight-session study run against the release candidate and produce rele
 The report includes all ten values, failures, minimum, maximum, median, and type-7 p95. Only a material median
 regression blocks release; p95 is review context. Release evidence still requires ten successful samples in all eight
 sessions.
+
+The 1.2.1 results remain the published comparison while v2 is in development. Before 2.0 is released, rerun the full
+study with the VSIX that will be published, review the raw results, and update the README and a new versioned report.
 
 Every session owns a mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
 extension directories are prepared once per arm to avoid repeated Marketplace downloads. One JSON result is written

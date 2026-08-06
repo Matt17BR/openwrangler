@@ -147,5 +147,6 @@ Before publication, a second reviewer checks the eight session IDs, ten samples 
 the recorded start and end events, recalculated summaries, median regression decisions, memory coverage, and failures. The
 report must contain no private paths, source values, screenshots, logs, or proprietary package contents.
 
-Record the method and calculation review in
-[`docs/performance/data-wrangler-1.2.1/review.md`](performance/data-wrangler-1.2.1/review.md).
+The 1.2.1 review is kept in
+[`docs/performance/data-wrangler-1.2.1/review.md`](performance/data-wrangler-1.2.1/review.md). Create a new versioned
+review for each later release, using the VSIX that will be published.
