@@ -1323,6 +1323,16 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerRequest({ ...request, source: metadata.source })).toBe(false);
     expect(isOpenWranglerResponse(opened)).toBe(true);
     expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-open", response: opened })).toBe(true);
+    for (const invalidSource of [
+      { kind: "file" as const, label: "frame.csv", path: "/workspace/frame.csv" },
+      { kind: "notebookOutput" as const, label: "saved R output" }
+    ]) {
+      const invalidOpened = { ...opened, metadata: { ...rMetadata, source: invalidSource } };
+      expect(isOpenWranglerResponse(invalidOpened)).toBe(false);
+      expect(
+        validateTransportSchema({ protocolVersion: 2, requestId: `r-${invalidSource.kind}`, response: invalidOpened })
+      ).toBe(false);
+    }
     const { rDataframeFlavor: _rDataframeFlavor, ...rMetadataWithoutFlavor } = rMetadata;
     const rWithoutFlavor = { ...opened, metadata: rMetadataWithoutFlavor };
     expect(isOpenWranglerResponse(rWithoutFlavor)).toBe(false);

@@ -812,6 +812,43 @@ describe("exact IRkernel session transport", () => {
     ]);
   });
 
+  it("returns a correlated mutation without a post-response kernel lookup", async () => {
+    let kernelLookups = 0;
+    const controller = controlledRKernel(async (request) => {
+      if (request.kind === "previewStep") {
+        return response(request, {
+          kind: "stepPreview",
+          sessionId,
+          revision: 1,
+          page: minimalFramePage(),
+          diff: minimalRenameDiff(),
+          code: "open_wrangler_result <- frame\n"
+        });
+      }
+      if (request.kind === "closeSession") {
+        return response(request, { kind: "closed", sessionId });
+      }
+      return response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() });
+    });
+    mockKernel(controller.kernel, async () => {
+      kernelLookups += 1;
+      if (kernelLookups > 4) throw new Error("unexpected post-response kernel lookup");
+      return controller.kernel;
+    });
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [sessionId, openRequestId, previewRequestId, closeRequestId]);
+
+    await transport.open("frame", pageWindow());
+    await expect(transport.previewStep(sessionId, 0, renameStep(), pageWindow())).resolves.toMatchObject({
+      sessionId,
+      revision: 1
+    });
+    expect(kernelLookups).toBe(4);
+    await transport.close(sessionId);
+    await transport.dispose();
+  });
+
   it("invalidates mapped sessions when the exact IRkernel restarts", async () => {
     const controller = controlledRKernel(async (request) =>
       response(request, { kind: "page", sessionId: request.payload.sessionId, page: minimalFramePage() })

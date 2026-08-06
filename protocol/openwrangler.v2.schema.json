@@ -1533,6 +1533,16 @@
           {
             "required": ["backend", "rDataframeFlavor"],
             "properties": { "backend": { "not": { "const": "r" } } }
+          },
+          {
+            "required": ["backend", "source"],
+            "properties": {
+              "backend": { "const": "r" },
+              "source": {
+                "required": ["kind"],
+                "properties": { "kind": { "not": { "const": "notebookVariable" } } }
+              }
+            }
           }
         ]
       },

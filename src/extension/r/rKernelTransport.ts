@@ -464,6 +464,10 @@ export class RKernelSessionTransport {
       this.installKernelSettlementBarrier(kernel, detached.settlement);
       throw detached;
     }
+    // Once an edit returns its own decoded response, the R session may already
+    // have advanced. A later selection lookup, cancellation, or host disposal
+    // must not hide that result and leave the coordinator at a stale revision.
+    if (isRMutationRequest(request)) return response;
     const postflight = this.assertKernelStillSelected(acquired);
     void postflight.catch(() => undefined);
     await withKernelTimeout(postflight, remainingTimeout(timeoutMs, started), () => undefined, options.cancellation);
@@ -937,6 +941,31 @@ export class RKernelSessionTransport {
     this.resolveOpenIdle = undefined;
     resolve?.();
   }
+}
+
+function isRMutationRequest(
+  request: Extract<
+    RKernelRequest,
+    {
+      kind:
+        | "getPage"
+        | "getSummary"
+        | "getDatasetStats"
+        | "getColumnValues"
+        | "previewStep"
+        | "applyDraft"
+        | "discardDraft"
+        | "undoStep"
+        | "inspectStep";
+    }
+  >
+): boolean {
+  return (
+    request.kind === "previewStep" ||
+    request.kind === "applyDraft" ||
+    request.kind === "discardDraft" ||
+    request.kind === "undoStep"
+  );
 }
 
 async function waitForFailedOpenCleanup(completion: Promise<boolean>): Promise<boolean> {
