@@ -1748,7 +1748,7 @@ async function exerciseReleasedRJupyterExtension(
       sort: true,
       profile: true,
       columnValues: true,
-      supportedOperations: ["dropColumns", "renameColumn"]
+      supportedOperations: ["selectColumns", "dropColumns", "renameColumn"]
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
@@ -1866,7 +1866,11 @@ async function exerciseReleasedRJupyterExtension(
         `the editable native ${expected.rDataframeFlavor} session`
       );
       assert.equal(session.metadata.mode, "editing");
-      assert.deepEqual(session.metadata.capabilities.supportedOperations, ["dropColumns", "renameColumn"]);
+      assert.deepEqual(session.metadata.capabilities.supportedOperations, [
+        "selectColumns",
+        "dropColumns",
+        "renameColumn"
+      ]);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
       const previewed = await previewReleasedRRename(
@@ -2414,7 +2418,7 @@ async function exerciseReleasedREditingJourney(
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: ["dropColumns", "renameColumn"]
+    supportedOperations: ["selectColumns", "dropColumns", "renameColumn"]
   });
   assert.deepEqual(
     opened.metadata.schema.slice(0, 4).map((column) => column.name),
@@ -2699,6 +2703,161 @@ async function exerciseReleasedREditingJourney(
     30_000,
     "undoing the native R Drop Columns step"
   );
+
+  recordAcceptanceProgress(`${phase}:editing:select-preview-discard`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Select Columns");
+  const selected = await previewReleasedRSelect(testing, workbench, app, sessionId, ["score", "row_id", "label"]);
+  app = selected.app;
+  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema
+          .slice(0, 4)
+          .map((column) => column.name)
+          .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
+      );
+    },
+    30_000,
+    "discarding the native R Select Columns preview"
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:select-preview-apply-inspect-undo`);
+  app = await releasedRSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "the restored R session before applying Select Columns"
+  );
+  const appliedSelection = await previewReleasedRSelect(testing, workbench, app, sessionId, [
+    "score",
+    "row_id",
+    "label"
+  ]);
+  app = appliedSelection.app;
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.kind === "selectColumns" &&
+        step.id === appliedSelection.stepId &&
+        active.metadata.schema.map((column) => column.name).join("\u0000") === "score\u0000row_id\u0000label"
+      );
+    },
+    30_000,
+    "applying the native R Select Columns step"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Select Columns step must be acknowledged before inspection."
+  );
+  await vscode.commands.executeCommand("openWrangler.selectStep", appliedSelection.stepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === appliedSelection.stepId,
+    30_000,
+    "the applied native R Select Columns inspection"
+  );
+  const selectInspection = testing.activeSession()?.stepInspection;
+  assert.ok(selectInspection, "Selecting the applied R Select Columns step must publish its inspection.");
+  assert.deepEqual(selectInspection.diff.removedColumns, ["group"]);
+  assert.deepEqual(
+    selectInspection.outputSchema.map((column) => column.name),
+    ["score", "row_id", "label"]
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Select Columns session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Select Columns inspection"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Select Columns session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema
+          .slice(0, 4)
+          .map((column) => column.name)
+          .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
+      );
+    },
+    30_000,
+    "undoing the native R Select Columns step"
+  );
+}
+
+async function previewReleasedRSelect(
+  testing: TestApi,
+  workbench: Page,
+  app: Locator,
+  sessionId: string,
+  selectedNames: readonly string[],
+  variableName = "orders_frame"
+): Promise<Readonly<{ app: Locator; stepId: string }>> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Select columns/u }).click();
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const columns = dialog.getByRole("group", { name: "Columns to keep", exact: true });
+  for (const name of selectedNames) {
+    await columns.getByRole("checkbox", { name, exact: true }).check();
+  }
+  await dialog
+    .getByText(`Selected order: ${selectedNames.join(" → ")}`, { exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "selectColumns" &&
+        draft.params.columns.map((column) => column.name).join("\u0000") === selectedNames.join("\u0000") &&
+        active.metadata.schema.map((column) => column.name).join("\u0000") === selectedNames.join("\u0000")
+      );
+    },
+    30_000,
+    "the native R Select Columns preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  const active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep?.kind === "selectColumns", "The native R selection must retain its draft.");
+  const stepId = active.metadata.draftStep.id;
+  assertReleasedRSelectGeneratedCode(active.code ?? "", selectedNames, variableName);
+  const codePreview = await waitForCodePreview(workbench, selectedNames[0] ?? ".ow_select_positions", "R");
+  assertReleasedRSelectGeneratedCode(await codePreview.innerText(), selectedNames, variableName);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Select Columns preview must be acknowledged by its exact renderer."
+  );
+  return {
+    app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Select Columns preview"),
+    stepId
+  };
 }
 
 async function previewReleasedRDrop(
@@ -2837,6 +2996,18 @@ function assertReleasedRDropGeneratedCode(code: string, sourceName: string, vari
   assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
   assert.ok(code.includes(".ow_drop_positions"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+function assertReleasedRSelectGeneratedCode(
+  code: string,
+  selectedNames: readonly string[],
+  variableName = "orders_frame"
+): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(".ow_select_positions"));
+  for (const name of selectedNames) assert.ok(code.includes(JSON.stringify(name)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 

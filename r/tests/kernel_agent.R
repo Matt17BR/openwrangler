@@ -16,6 +16,8 @@ tibble_rename_session_id <- "66666666-6666-4666-8666-666666666666"
 table_rename_session_id <- "77777777-7777-4777-8777-777777777777"
 atomic_rename_session_id <- "88888888-8888-4888-8888-888888888888"
 drop_session_id <- "99999999-9999-4999-8999-999999999999"
+select_session_id <- "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+select_table_session_id <- "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -698,6 +700,311 @@ assert_identical(drop_retry_discard$action, "discard", "the R drop retry could n
 drop_closed <- dispatch("closeSession", list(sessionId = drop_session_id))
 assert_identical(drop_closed$kind, "closed", "the R drop session did not close")
 
+source_environment$select_frame <- data.frame(
+  duplicate = c(1L, 2L),
+  duplicate = c(3L, 4L),
+  `non syntactic` = as.Date(c("2026-04-01", "2026-04-02")),
+  remove = c("a", "b"),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b")
+)
+select_source_before <- unserialize(serialize(source_environment$select_frame, NULL, version = 3L))
+select_step <- function(
+  id = "select-step",
+  columns = list(
+    list(id = "r:c:2", name = "non syntactic"),
+    list(id = "r:c:0", name = "duplicate")
+  )
+) {
+  list(id = id, kind = "selectColumns", params = list(columns = I(columns)))
+}
+select_open <- dispatch(
+  "openSession",
+  list(sessionId = select_session_id, variableName = "select_frame", page = page_window())
+)
+assert_identical(select_open$kind, "page", "the R Select Columns session did not open")
+select_nullability <- vapply(select_open$page$schema, `[[`, logical(1L), "nullable")
+select_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = select_session_id,
+    revision = 0L,
+    step = select_step(),
+    page = page_window(column_offset = 2L, column_limit = 1L)
+  )
+)
+assert_identical(select_preview$kind, "stepPreview", "the R Select Columns step did not preview")
+assert_identical(
+  vapply(select_preview$page$schema, `[[`, character(1L), "id"),
+  c("r:c:2", "r:c:0"),
+  "the R selection did not retain user order and stable identities"
+)
+assert_identical(
+  vapply(select_preview$page$schema, `[[`, integer(1L), "position"),
+  0:1,
+  "the R selection did not reindex public positions"
+)
+assert_identical(
+  vapply(select_preview$page$schema, `[[`, logical(1L), "nullable"),
+  select_nullability[c(3L, 1L)],
+  "the R selection changed retained nullability"
+)
+assert_identical(select_preview$page$page$columnOffset, 2L, "the R selection did not resolve an obsolete viewport")
+assert_identical(select_preview$page$page$columnIds, list(), "an obsolete selection viewport returned columns")
+assert_identical(
+  select_preview$diff$removedColumns,
+  list("duplicate", "remove"),
+  "the R selection diff did not report omitted columns in input order"
+)
+assert_identical(select_preview$diff$addedColumns, list(), "the R selection diff reported added columns")
+assert_identical(select_preview$diff$changedCells, 0L, "the R selection diff reported changed cells")
+select_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = select_session_id, revision = 1L, page = page_window())
+)
+assert_identical(select_discard$action, "discard", "the R selection draft did not discard")
+assert_identical(select_discard$page$shape$columns, 4L, "discarding the R selection kept its projection")
+
+select_preview <- dispatch(
+  "previewStep",
+  list(sessionId = select_session_id, revision = 2L, step = select_step(), page = page_window())
+)
+select_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = select_session_id, revision = 3L, page = page_window())
+)
+assert_identical(select_apply$action, "apply", "the R selection draft did not apply")
+assert_identical(
+  vapply(select_apply$page$schema, `[[`, character(1L), "id"),
+  c("r:c:2", "r:c:0"),
+  "applying the R selection changed stable identities"
+)
+select_inspection <- dispatch(
+  "inspectStep",
+  list(sessionId = select_session_id, revision = 4L, stepId = "select-step", page = page_window())
+)
+assert_identical(select_inspection$kind, "stepInspection", "the applied R selection could not be inspected")
+assert_identical(
+  vapply(select_inspection$outputSchema, `[[`, character(1L), "id"),
+  c("r:c:2", "r:c:0"),
+  "R selection inspection lost its output schema"
+)
+assert_identical(
+  select_inspection$diff$removedColumns,
+  list("duplicate", "remove"),
+  "R selection inspection lost its diff"
+)
+
+select_rename_step <- list(
+  id = "select-rename-step",
+  kind = "renameColumn",
+  params = list(column = list(id = "r:c:0", name = "duplicate"), newName = "retained duplicate")
+)
+select_rename_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = select_session_id,
+    revision = 4L,
+    step = select_rename_step,
+    page = page_window()
+  )
+)
+assert_identical(select_rename_preview$kind, "stepPreview", "a rename could not follow the R selection")
+select_rename_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = select_session_id, revision = 5L, page = page_window())
+)
+assert_identical(
+  vapply(select_rename_apply$page$schema, `[[`, character(1L), "name"),
+  c("non syntactic", "retained duplicate"),
+  "the mixed R selection/rename plan replayed the wrong schema"
+)
+select_after_mixed_inspection <- dispatch(
+  "inspectStep",
+  list(sessionId = select_session_id, revision = 6L, stepId = "select-step", page = page_window())
+)
+assert_identical(
+  select_after_mixed_inspection$diff$removedColumns,
+  list("duplicate", "remove"),
+  "mixed replay changed the R selection diff"
+)
+assign("select_frame", source_environment$select_frame, envir = .GlobalEnv)
+eval(parse(text = select_rename_apply$code), envir = .GlobalEnv)
+select_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  names(select_generated),
+  c("non syntactic", "retained duplicate"),
+  "generated R selection/rename code returned the wrong columns"
+)
+assert_identical(
+  get("select_frame", envir = .GlobalEnv, inherits = FALSE),
+  select_source_before,
+  "generated R selection code mutated its source dataframe"
+)
+rm("select_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+select_rename_undo <- dispatch(
+  "undoStep",
+  list(sessionId = select_session_id, revision = 6L, page = page_window())
+)
+assert_identical(select_rename_undo$action, "undo", "the mixed R rename did not undo")
+select_edit_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = select_session_id,
+    revision = 7L,
+    step = select_step(
+      columns = list(
+        list(id = "r:c:1", name = "duplicate"),
+        list(id = "r:c:3", name = "remove")
+      )
+    ),
+    replaceStepId = "select-step",
+    page = page_window()
+  )
+)
+assert_identical(
+  vapply(select_edit_preview$page$schema, `[[`, character(1L), "id"),
+  c("r:c:1", "r:c:3"),
+  "editing the R selection did not replay its original input"
+)
+select_edit_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = select_session_id, revision = 8L, page = page_window())
+)
+assert_identical(select_edit_apply$page$shape$columns, 2L, "the edited R selection did not apply")
+select_undo <- dispatch(
+  "undoStep",
+  list(sessionId = select_session_id, revision = 9L, page = page_window())
+)
+assert_identical(select_undo$action, "undo", "the R selection did not undo")
+assert_identical(select_undo$page$shape$columns, 4L, "undoing the R selection did not restore the source schema")
+
+invalid_select_steps <- list(
+  list(
+    id = "named-select-columns",
+    kind = "selectColumns",
+    params = list(columns = list(named = list(id = "r:c:0", name = "duplicate")))
+  ),
+  select_step("empty-select-columns", list()),
+  select_step(
+    "repeated-select-columns",
+    list(list(id = "r:c:0", name = "duplicate"), list(id = "r:c:0", name = "duplicate"))
+  )
+)
+for (invalid_step in invalid_select_steps) {
+  invalid_select <- dispatch(
+    "previewStep",
+    list(
+      sessionId = select_session_id,
+      revision = 10L,
+      step = invalid_step,
+      page = page_window()
+    )
+  )
+  assert_identical(invalid_select$kind, "error", "a malformed R selection was accepted")
+  assert_identical(invalid_select$code, "invalid_request", "the malformed R selection diagnostic changed")
+}
+for (stale_step in list(
+  select_step("stale-select-columns", list(list(id = "r:c:99", name = "duplicate"))),
+  select_step("misnamed-select-columns", list(list(id = "r:c:0", name = "wrong")))
+)) {
+  stale_select <- dispatch(
+    "previewStep",
+    list(
+      sessionId = select_session_id,
+      revision = 10L,
+      step = stale_step,
+      page = page_window()
+    )
+  )
+  assert_identical(stale_select$kind, "error", "a stale R selection was accepted")
+  assert_identical(stale_select$code, "stale_column", "the stale R selection diagnostic changed")
+}
+source_environment$private_select_frame <- data.frame(
+  `__OPEN_WRANGLER_INTERNAL_ROW_ID_user` = 1L,
+  public = 2L,
+  check.names = FALSE
+)
+private_select_session_id <- "11111111-1111-4111-8111-111111111119"
+private_select_open <- dispatch(
+  "openSession",
+  list(sessionId = private_select_session_id, variableName = "private_select_frame", page = page_window())
+)
+assert_identical(private_select_open$kind, "page", "the reserved-name R selection session did not open")
+private_select <- dispatch(
+  "previewStep",
+  list(
+    sessionId = private_select_session_id,
+    revision = 0L,
+    step = select_step(
+      "private-select-columns",
+      list(list(id = "r:c:0", name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_user"))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(private_select$kind, "error", "a reserved private R column was selectable")
+assert_identical(private_select$code, "invalid_request", "the reserved R selection diagnostic changed")
+private_select_closed <- dispatch("closeSession", list(sessionId = private_select_session_id))
+assert_identical(private_select_closed$kind, "closed", "the reserved-name R selection session did not close")
+assert_identical(source_environment$select_frame, select_source_before, "the R selection lifecycle mutated its source")
+select_closed <- dispatch("closeSession", list(sessionId = select_session_id))
+assert_identical(select_closed$kind, "closed", "the R Select Columns session did not close")
+
+source_environment$select_table <- data.table::data.table(
+  k1 = c(1L, 1L),
+  k2 = c(1L, 2L),
+  value = c("a", "b"),
+  other = 3:4
+)
+data.table::setkey(source_environment$select_table, k1, k2)
+select_table_before <- data.table::copy(source_environment$select_table)
+select_table_open <- dispatch(
+  "openSession",
+  list(sessionId = select_table_session_id, variableName = "select_table", page = page_window())
+)
+assert_identical(select_table_open$kind, "page", "the R data.table selection session did not open")
+select_table_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = select_table_session_id,
+    revision = 0L,
+    step = select_step(
+      "select-table-step",
+      list(
+        list(id = "r:c:3", name = "other"),
+        list(id = "r:c:1", name = "k2"),
+        list(id = "r:c:0", name = "k1")
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(
+  select_table_preview$page$frameSemantics$keyColumnIds,
+  list("r:c:0", "r:c:1"),
+  "the R data.table selection changed its stable key prefix"
+)
+select_table_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = select_table_session_id, revision = 1L, page = page_window())
+)
+assign("select_table", source_environment$select_table, envir = .GlobalEnv)
+eval(parse(text = select_table_apply$code), envir = .GlobalEnv)
+select_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(class(select_table_generated), c("data.table", "data.frame"), "generated selection lost data.table class")
+assert_identical(names(select_table_generated), c("other", "k2", "k1"), "generated data.table selection lost user order")
+assert_identical(data.table::key(select_table_generated), c("k1", "k2"), "generated selection lost data.table key")
+assert_identical(
+  get("select_table", envir = .GlobalEnv, inherits = FALSE),
+  select_table_before,
+  "generated R data.table selection mutated its source"
+)
+rm("select_table", "open_wrangler_result", envir = .GlobalEnv)
+select_table_closed <- dispatch("closeSession", list(sessionId = select_table_session_id))
+assert_identical(select_table_closed$kind, "closed", "the R data.table selection session did not close")
+
 oversized_mutation_response <- FALSE
 atomic_contract <- openwrangler_r_frame_contract
 real_atomic_materialize <- atomic_contract$materialize_view_page
@@ -852,6 +1159,7 @@ missing_package_contract <- list(
   rename_column = function(...) stop("unexpected rename", call. = FALSE),
   rename_column_at = function(...) stop("unexpected rename", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
+  select_columns_at = function(...) stop("unexpected select", call. = FALSE),
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
   materialize_summaries = function(...) stop("unexpected summary materialization", call. = FALSE),
   materialize_dataset_stats = function(...) stop("unexpected dataset profile", call. = FALSE),

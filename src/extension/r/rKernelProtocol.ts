@@ -98,7 +98,15 @@ export interface RKernelDropColumnsStep {
   }>;
 }
 
-export type RKernelTransformStep = RKernelRenameColumnStep | RKernelDropColumnsStep;
+export interface RKernelSelectColumnsStep {
+  readonly id: string;
+  readonly kind: "selectColumns";
+  readonly params: Readonly<{
+    columns: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+  }>;
+}
+
+export type RKernelTransformStep = RKernelRenameColumnStep | RKernelDropColumnsStep | RKernelSelectColumnsStep;
 
 export interface RKernelStepPreviewResult {
   readonly sessionId: string;
@@ -650,22 +658,27 @@ function validateTransformStep(value: unknown): void {
   }
   if (step.kind === "dropColumns") {
     const params = exactRecord(step.params, ["columns"], "R kernel drop parameters");
-    if (
-      !Array.isArray(params.columns) ||
-      params.columns.length === 0 ||
-      params.columns.length > R_FRAME_CONTRACT_LIMITS.columns
-    ) {
-      fail("R kernel drop columns must be a bounded non-empty array.");
-    }
-    const seen = new Set<string>();
-    for (const [index, candidate] of params.columns.entries()) {
-      const reference = validateColumnReference(candidate, `request.payload.step.params.columns[${index}]`);
-      if (seen.has(reference.id)) fail("R kernel drop columns contain a repeated identity.");
-      seen.add(reference.id);
-    }
+    validateTransformColumnReferences(params.columns, "drop");
+    return;
+  }
+  if (step.kind === "selectColumns") {
+    const params = exactRecord(step.params, ["columns"], "R kernel select parameters");
+    validateTransformColumnReferences(params.columns, "select");
     return;
   }
   fail("R kernel transform step has an unsupported operation.");
+}
+
+function validateTransformColumnReferences(value: unknown, operation: "drop" | "select"): void {
+  if (!Array.isArray(value) || value.length === 0 || value.length > R_FRAME_CONTRACT_LIMITS.columns) {
+    fail(`R kernel ${operation} columns must be a bounded non-empty array.`);
+  }
+  const seen = new Set<string>();
+  for (const [index, candidate] of value.entries()) {
+    const reference = validateColumnReference(candidate, `request.payload.step.params.columns[${index}]`);
+    if (seen.has(reference.id)) fail(`R kernel ${operation} columns contain a repeated identity.`);
+    seen.add(reference.id);
+  }
 }
 
 function validateStructuralDiff(value: unknown): DataDiff {

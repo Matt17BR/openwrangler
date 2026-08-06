@@ -390,6 +390,161 @@ assert_error(
 )
 assert_identical(drop_frame, drop_before, "a failed drop mutated its source")
 
+select_frame <- data.frame(
+  duplicate = c(1L, 2L),
+  duplicate = c(3L, 4L),
+  `non syntactic` = as.Date(c("2026-04-01", "2026-04-02")),
+  keep = c("alpha", NA_character_),
+  remove = c(TRUE, FALSE),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b")
+)
+select_before <- unserialize(serialize(select_frame, NULL, version = 3L))
+select_capture <- openwrangler_r_frame_contract$capture_frame(select_frame)
+select_references <- list(
+  list(id = "r:c:3", name = "keep"),
+  list(id = "r:c:1", name = "duplicate"),
+  list(id = "r:c:0", name = "duplicate"),
+  list(id = "r:c:2", name = "non syntactic")
+)
+selected_frame <- openwrangler_r_frame_contract$select_columns(select_frame, select_references)
+selected_capture <- openwrangler_r_frame_contract$capture_frame(
+  selected_frame,
+  nullability_source = select_capture,
+  source_positions = c(4L, 2L, 1L, 3L)
+)
+assert_identical(class(selected_frame), "data.frame", "selecting changed the base data.frame class")
+assert_identical(
+  names(selected_frame),
+  c("keep", "duplicate", "duplicate", "non syntactic"),
+  "selecting did not retain user order and exact names"
+)
+assert_identical(row.names(selected_frame), row.names(select_frame), "selecting changed explicit row names")
+assert_identical(
+  attributes(selected_frame[[4L]]),
+  attributes(select_frame[[3L]]),
+  "selecting changed retained column attributes"
+)
+assert_identical(
+  vapply(selected_capture$descriptor$schema, `[[`, character(1L), "id"),
+  c("r:c:3", "r:c:1", "r:c:0", "r:c:2"),
+  "selecting renumbered retained column identities"
+)
+assert_identical(
+  vapply(selected_capture$descriptor$schema, `[[`, integer(1L), "position"),
+  0:3,
+  "selecting did not reindex public column positions"
+)
+assert_identical(
+  vapply(selected_capture$descriptor$schema, `[[`, logical(1L), "nullable"),
+  vapply(select_capture$descriptor$schema[c(4L, 2L, 1L, 3L)], `[[`, logical(1L), "nullable"),
+  "selecting changed retained nullability"
+)
+assert_identical(select_frame, select_before, "selecting mutated the source data.frame")
+selected_frame[[1L]][1L] <- "changed"
+assert_identical(select_frame, select_before, "the selected data.frame shared storage with its source")
+
+select_tibble <- tibble::as_tibble(select_frame, .name_repair = "minimal")
+select_tibble_before <- unserialize(serialize(select_tibble, NULL, version = 3L))
+selected_tibble <- openwrangler_r_frame_contract$select_columns(select_tibble, select_references)
+assert_identical(
+  class(selected_tibble),
+  c("tbl_df", "tbl", "data.frame"),
+  "selecting changed the tibble class"
+)
+assert_identical(
+  names(selected_tibble),
+  c("keep", "duplicate", "duplicate", "non syntactic"),
+  "tibble selection repaired duplicate or non-syntactic names"
+)
+assert_identical(select_tibble, select_tibble_before, "selecting mutated the source tibble")
+
+select_table <- data.table::data.table(k1 = c(1L, 1L), k2 = c(1L, 2L), value = c("a", "b"), other = 3:4)
+data.table::setkey(select_table, k1, k2)
+select_table_before <- data.table::copy(select_table)
+select_table_capture <- openwrangler_r_frame_contract$capture_frame(select_table)
+select_table_full_key <- openwrangler_r_frame_contract$select_columns(
+  select_table,
+  list(
+    list(id = "r:c:3", name = "other"),
+    list(id = "r:c:1", name = "k2"),
+    list(id = "r:c:0", name = "k1")
+  )
+)
+select_table_full_capture <- openwrangler_r_frame_contract$capture_frame(
+  select_table_full_key,
+  nullability_source = select_table_capture,
+  source_positions = c(4L, 2L, 1L)
+)
+assert_identical(names(select_table_full_key), c("other", "k2", "k1"), "data.table selection lost user order")
+assert_identical(
+  data.table::key(select_table_full_key),
+  c("k1", "k2"),
+  "selecting both key columns did not retain the data.table key"
+)
+assert_identical(
+  select_table_full_capture$descriptor$frameSemantics$keyColumnIds,
+  I(c("r:c:0", "r:c:1")),
+  "selecting reordered columns changed stable data.table key identities"
+)
+select_table_prefix <- openwrangler_r_frame_contract$select_columns(
+  select_table,
+  list(list(id = "r:c:3", name = "other"), list(id = "r:c:0", name = "k1"))
+)
+assert_identical(data.table::key(select_table_prefix), "k1", "selecting a key prefix did not retain it")
+select_table_without_prefix <- openwrangler_r_frame_contract$select_columns(
+  select_table,
+  list(list(id = "r:c:1", name = "k2"), list(id = "r:c:3", name = "other"))
+)
+assert_identical(data.table::key(select_table_without_prefix), NULL, "selecting without the first key retained a stale key")
+assert_identical(select_table, select_table_before, "selecting mutated the source data.table")
+select_table_full_key[, other := 99L]
+assert_identical(select_table, select_table_before, "the selected data.table shared storage with its source")
+
+assert_error(
+  openwrangler_r_frame_contract$select_columns(
+    select_frame,
+    list(list(id = "r:c:0", name = "duplicate"), list(id = "r:c:0", name = "duplicate"))
+  ),
+  "column_references may address each column only once"
+)
+assert_error(
+  openwrangler_r_frame_contract$select_columns(select_frame, list(list(id = "r:c:99", name = "duplicate"))),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$select_columns(select_frame, list(list(id = "r:c:0", name = "wrong"))),
+  "stale-column"
+)
+assert_error(openwrangler_r_frame_contract$select_columns(select_frame, list()), "non-empty unnamed list")
+assert_error(
+  openwrangler_r_frame_contract$select_columns(
+    select_frame,
+    list(named = list(id = "r:c:0", name = "duplicate"))
+  ),
+  "non-empty unnamed list"
+)
+private_select_frame <- data.frame(
+  `__OPEN_WRANGLER_INTERNAL_ROW_ID_user` = 1L,
+  public = 2L,
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$select_columns(
+    private_select_frame,
+    list(list(id = "r:c:0", name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_user"))
+  ),
+  "reserved-column-name"
+)
+assert_error(
+  openwrangler_r_frame_contract$drop_columns(
+    private_select_frame,
+    list(list(id = "r:c:0", name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_user"))
+  ),
+  "reserved-column-name"
+)
+assert_identical(select_frame, select_before, "a failed selection mutated its source")
+
 collision_frame <- data.frame(first = 1L, second = 2L)
 assert_error(
   openwrangler_r_frame_contract$rename_column(

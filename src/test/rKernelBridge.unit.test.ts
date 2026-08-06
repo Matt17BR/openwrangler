@@ -6,6 +6,7 @@ import type {
   DatasetStats,
   OpenSessionRequest,
   OpenWranglerRequest,
+  SelectColumnsTransformStep,
   SourceCapabilities
 } from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
@@ -505,7 +506,7 @@ describe("canonical R kernel bridge", () => {
       kind: "sessionOpened",
       metadata: {
         mode: "editing",
-        capabilities: { editable: true, supportedOperations: ["dropColumns", "renameColumn"] }
+        capabilities: { editable: true, supportedOperations: ["selectColumns", "dropColumns", "renameColumn"] }
       }
     });
 
@@ -803,6 +804,283 @@ describe("canonical R kernel bridge", () => {
         }
       }
     });
+  });
+
+  it("selects and reorders exact R columns through the complete mutation lifecycle", async () => {
+    const source = dataTableContract(frameContract(), ["r:c:0", "r:c:1"]);
+    const selected = selectContract(source, ["r:c:3", "r:c:1", "r:c:0"]);
+    const editedSelection = selectContract(source, ["r:c:0", "r:c:1"]);
+    const firstRemoved = ["date", "elapsed", "flag", "missing", "infinite"];
+    const editedRemoved = ["date", "when", "elapsed", "flag", "missing", "infinite"];
+    const selectStep: SelectColumnsTransformStep = {
+      id: "r-select-1",
+      kind: "selectColumns",
+      params: {
+        columns: [
+          { id: "r:c:3", name: "when" },
+          { id: "r:c:1", name: "count" },
+          { id: "r:c:0", name: "value" }
+        ]
+      }
+    };
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    transport.getPage.mockResolvedValueOnce(source);
+    await bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 0,
+      viewRequestId: "select-view",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8,
+      filterModel: {
+        filters: [
+          {
+            column: "value",
+            type: "float",
+            predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+          }
+        ],
+        sort: [
+          { column: "date", direction: "asc", nulls: "first" },
+          { column: "count", direction: "desc", nulls: "last" }
+        ]
+      }
+    });
+
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: selected,
+      diff: dropDiff(...firstRemoved),
+      code: "open_wrangler_result <- orders[c(4L, 2L, 1L)]"
+    });
+    const previewRequest = {
+      kind: "previewStep" as const,
+      sessionId,
+      revision: 0,
+      step: selectStep,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    };
+    const preview = await bridge.request(previewRequest);
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      selectStep,
+      expect.objectContaining({
+        view: {
+          filters: [expect.objectContaining({ column: { id: "r:c:0", name: "value" } })],
+          sorts: [expect.objectContaining({ column: { id: "r:c:1", name: "count" } })]
+        }
+      }),
+      undefined,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      metadata: {
+        shape: { rows: 1, columns: 3 },
+        schema: [
+          { id: "r:c:3", name: "when", position: 0, type: "datetime", nullable: true },
+          { id: "r:c:1", name: "count", position: 1, type: "integer", nullable: true },
+          { id: "r:c:0", name: "value", position: 2, type: "float", nullable: true }
+        ],
+        filterModel: {
+          filters: [expect.objectContaining({ column: "value" })],
+          sort: [expect.objectContaining({ column: "count" })]
+        },
+        draftStep: { id: "r-select-1", kind: "selectColumns" }
+      },
+      diff: { removedColumns: firstRemoved }
+    });
+
+    transport.discardDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "discard",
+      revision: 2,
+      page: source,
+      code: ""
+    });
+    await expect(bridge.request(planRequest("discardDraft", 1))).resolves.toMatchObject({
+      kind: "planUpdated",
+      metadata: {
+        filterModel: {
+          filters: [expect.objectContaining({ column: "value" })],
+          sort: [expect.objectContaining({ column: "date" }), expect.objectContaining({ column: "count" })]
+        }
+      }
+    });
+
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 3,
+      page: selected,
+      diff: dropDiff(...firstRemoved),
+      code: "open_wrangler_result <- orders[c(4L, 2L, 1L)]"
+    });
+    await bridge.request({ ...previewRequest, revision: 2 });
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 4,
+      page: selected,
+      code: "open_wrangler_result <- orders[c(4L, 2L, 1L)]"
+    });
+    await expect(bridge.request(planRequest("applyDraft", 3))).resolves.toMatchObject({
+      kind: "planUpdated",
+      metadata: { steps: [{ id: "r-select-1", kind: "selectColumns" }] }
+    });
+
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 4,
+      stepId: "r-select-1",
+      stepIndex: 0,
+      inputPage: source,
+      outputPage: selected,
+      inputSchema: source.schema,
+      outputSchema: selected.schema,
+      diff: dropDiff(...firstRemoved),
+      code: "open_wrangler_result <- orders[c(4L, 2L, 1L)]"
+    });
+    await expect(
+      bridge.request({
+        kind: "inspectStep",
+        sessionId,
+        revision: 4,
+        stepId: "r-select-1",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepInspection",
+      outputSchema: [
+        expect.objectContaining({ id: "r:c:3", position: 0 }),
+        expect.objectContaining({ id: "r:c:1", position: 1 }),
+        expect.objectContaining({ id: "r:c:0", position: 2 })
+      ],
+      diff: { removedColumns: firstRemoved }
+    });
+
+    const replacementStep: SelectColumnsTransformStep = {
+      id: "r-select-1",
+      kind: "selectColumns",
+      params: {
+        columns: [
+          { id: "r:c:0", name: "value" },
+          { id: "r:c:1", name: "count" }
+        ]
+      }
+    };
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 5,
+      page: editedSelection,
+      diff: dropDiff(...editedRemoved),
+      code: "open_wrangler_result <- orders[c(1L, 2L)]"
+    });
+    await expect(
+      bridge.request({
+        ...previewRequest,
+        revision: 4,
+        replaceStepId: "r-select-1",
+        step: replacementStep
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        draftReplacesStepId: "r-select-1",
+        draftStep: { id: "r-select-1", kind: "selectColumns" },
+        latestStepInputSchema: [
+          expect.objectContaining({ id: "r:c:0", name: "value", position: 0 }),
+          expect.objectContaining({ id: "r:c:1", name: "count", position: 1 }),
+          expect.objectContaining({ id: "r:c:2", name: "date", position: 2 }),
+          expect.objectContaining({ id: "r:c:3", name: "when", position: 3 }),
+          expect.objectContaining({ id: "r:c:4", name: "elapsed", position: 4 }),
+          expect.objectContaining({ id: "r:c:5", name: "flag", position: 5 }),
+          expect.objectContaining({ id: "r:c:6", name: "missing", position: 6 }),
+          expect.objectContaining({ id: "r:c:7", name: "infinite", position: 7 })
+        ]
+      }
+    });
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 6,
+      page: editedSelection,
+      code: "open_wrangler_result <- orders[c(1L, 2L)]"
+    });
+    await bridge.request(planRequest("applyDraft", 5));
+
+    transport.undoStep.mockResolvedValueOnce({
+      sessionId,
+      action: "undo",
+      revision: 7,
+      page: source,
+      code: ""
+    });
+    await expect(bridge.request(planRequest("undoStep", 6))).resolves.toMatchObject({
+      kind: "planUpdated",
+      metadata: {
+        steps: [],
+        filterModel: {
+          filters: [expect.objectContaining({ column: "value" })],
+          sort: [expect.objectContaining({ column: "date" }), expect.objectContaining({ column: "count" })]
+        }
+      }
+    });
+  });
+
+  it("rejects Select Columns responses with the wrong retained data-table key prefix", async () => {
+    const source = dataTableContract(frameContract(), ["r:c:0", "r:c:1"]);
+    const selected = selectContract(source, ["r:c:3", "r:c:1", "r:c:0"]);
+    const invalidKeys = {
+      ...selected,
+      frameSemantics: { ...selected.frameSemantics, keyColumnIds: ["r:c:1"] }
+    } satisfies RFramePageContract;
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: invalidKeys,
+      diff: dropDiff("date", "elapsed", "flag", "missing", "infinite"),
+      code: "open_wrangler_result <- orders[c(4L, 2L, 1L)]"
+    });
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-select-invalid-keys",
+          kind: "selectColumns",
+          params: {
+            columns: [
+              { id: "r:c:3", name: "when" },
+              { id: "r:c:1", name: "count" },
+              { id: "r:c:0", name: "value" }
+            ]
+          }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).rejects.toThrow("key columns");
   });
 
   it("rejects dropping every R column before kernel dispatch", async () => {
@@ -1400,6 +1678,54 @@ function dropContract(source: RFramePageContract, columnIds: readonly string[]):
   };
 }
 
+function selectContract(source: RFramePageContract, columnIds: readonly string[]): RFramePageContract {
+  const sourceSchemaById = new Map(source.schema.map((column) => [column.id, column]));
+  const pagePositionById = new Map(source.page.columnIds.map((id, position) => [id, position]));
+  const schema = columnIds.map((id, position) => {
+    const column = sourceSchemaById.get(id);
+    if (!column) throw new Error(`Unknown fake R select column ${id}.`);
+    return { ...column, position };
+  });
+  const retainedIds = new Set(columnIds);
+  const keyColumnIds: string[] = [];
+  for (const id of source.frameSemantics.keyColumnIds) {
+    if (!retainedIds.has(id)) break;
+    keyColumnIds.push(id);
+  }
+  const projectedPositions = columnIds.map((id) => {
+    const position = pagePositionById.get(id);
+    if (position === undefined) throw new Error(`Fake R select page does not contain ${id}.`);
+    return position;
+  });
+  return {
+    ...source,
+    shape: { ...source.shape, columns: schema.length },
+    frameSemantics: { ...source.frameSemantics, keyColumnIds },
+    schema,
+    page: {
+      ...source.page,
+      columnOffset: 0,
+      columnIds: [...columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: projectedPositions.map((position) => ({ ...(row.values[position] as RFrameCell) }))
+      }))
+    }
+  };
+}
+
+function dataTableContract(source: RFramePageContract, keyColumnIds: readonly string[]): RFramePageContract {
+  return {
+    ...source,
+    dataframeFlavor: "r.data.table",
+    frameSemantics: {
+      ...source.frameSemantics,
+      classes: ["data.table", "data.frame"],
+      keyColumnIds: [...keyColumnIds]
+    }
+  };
+}
+
 function renameDiff(): DataDiff {
   return {
     addedRows: 0,
@@ -1465,6 +1791,6 @@ function rCapabilities(): SourceCapabilities {
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: ["dropColumns", "renameColumn"]
+    supportedOperations: ["selectColumns", "dropColumns", "renameColumn"]
   };
 }
