@@ -573,12 +573,13 @@ export function registerNativeViews(
           : notebook.cellCount;
       const insertion = await insertGeneratedNotebookCell(notebook, insertionIndex, code, {
         source: snapshot.metadata.source.label,
-        backend: snapshot.metadata.backend
+        backend: snapshot.metadata.backend,
+        languageId: runtimeIdentityForSessionMetadata(snapshot.metadata).runtimeLanguage
       });
       lastNotebookInsertionStatus = insertion.status;
       if (insertion.status === "stale") {
         void vscode.window.showWarningMessage(
-          "The originating notebook changed or was replaced before Open Wrangler could insert the generated function. Reopen it and try again."
+          "The originating notebook changed or was replaced before Open Wrangler could insert the generated code. Reopen it and try again."
         );
         return false;
       }
@@ -589,10 +590,10 @@ export function registerNativeViews(
         return false;
       }
       if (insertion.status === "rejected") {
-        void vscode.window.showErrorMessage("VS Code could not insert the generated Open Wrangler function.");
+        void vscode.window.showErrorMessage("VS Code could not insert the generated Open Wrangler code.");
         return false;
       }
-      void vscode.window.showInformationMessage("Inserted the generated cleaning function into its notebook.");
+      void vscode.window.showInformationMessage("Inserted the generated cleaning code into its notebook.");
       return true;
     }),
     vscode.commands.registerCommand("openWrangler.exportData", async () => {

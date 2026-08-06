@@ -3185,7 +3185,7 @@ function rCapabilities(): SourceCapabilities {
     cancel: false,
     exportCsv: false,
     exportParquet: false,
-    notebookInsert: false,
+    notebookInsert: true,
     filter: true,
     sort: true,
     profile: true,

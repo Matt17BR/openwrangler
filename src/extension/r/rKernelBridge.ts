@@ -94,7 +94,7 @@ const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   cancel: false,
   exportCsv: false,
   exportParquet: false,
-  notebookInsert: false,
+  notebookInsert: true,
   filter: true,
   sort: true,
   profile: true,

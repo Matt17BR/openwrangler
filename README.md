@@ -178,14 +178,14 @@ columns and counts Unicode characters. Lowercase accepts the same inputs and can
 a new character column. Convert type handles strings, integers, floating-point values, booleans, dates, and datetimes.
 Values that cannot be converted become `NA`. All seven operations can be previewed, applied, discarded, inspected,
 edited, or undone.
-Generated R can be copied or saved as a `.R` script.
+Generated R can be copied, saved as a `.R` script, or inserted into the notebook that opened the dataframe.
 
 Convert type does not change an active `data.table` key column. Clone that column first, then convert the copy.
 
-Other R cleaning operations, cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto are
-not supported yet. They are planned after the native notebook path is complete. The
+Other R cleaning operations, cleaned-data export, live dataframes from plain `.R` documents, R Markdown, and Quarto
+are not supported yet. They are planned after the native notebook path is complete. The
 [current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2)
-show the live variable picker, profiles, and a Rename Column draft with native generated R.
+show the live variable picker, profiles, a Rename Column draft, and generated R inserted into its notebook.
 
 ## Export
 
@@ -195,7 +195,7 @@ show the live variable picker, profiles, and a Rename Column draft with native g
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data-detail.png" width="995" height="344"></a></td>
   </tr>
   <tr>
-    <td>Copy generated code or save it as a Python or R script. Python sessions can also insert it into the notebook.</td>
+    <td>Copy generated code or save it as a Python or R script. Python and R notebook sessions can also insert it into the notebook that opened the dataframe.</td>
     <td>Editing sessions backed by Pandas, Polars, or DuckDB can export a cleaned CSV or Parquet file without overwriting the source.</td>
   </tr>
 </table>
@@ -265,8 +265,9 @@ before v2 ships.
 - **v1:** keep improving performance, DuckDB coverage, and support for other desktop VS Code forks. Fork support is
   currently experimental.
 - **v2:** finish native R notebook support for data frames, tibbles, and `data.table`, then add Quarto and R Markdown.
-  Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase are available now. The rest of the cleaning catalog, data
-  export, notebook insertion, and plain `.R` workflows are planned after the native notebook path is complete. The
+  Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase are available now. Generated R can be inserted
+  into its originating notebook. The rest of the cleaning catalog, data export, and plain `.R` workflows are planned
+  after the native notebook path is complete. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).

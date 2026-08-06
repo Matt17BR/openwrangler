@@ -684,8 +684,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /Other R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `\.R` files are\s+not supported yet\.[\s\S]{0,100}planned after the native notebook path is complete/u
+    /Other R cleaning operations, cleaned-data export, Quarto, R Markdown, and live dataframes from plain `\.R` documents\s+are not supported yet\.[\s\S]{0,100}planned after the native notebook path is complete/u
   );
+  assert.match(gallery, /vscode-notebook-r-code-insertion-detail-dark\.png/u);
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
   assert.match(gallery, /^## Editor and theme support$/mu);
   assert.doesNotMatch(gallery, /<td><strong>/u);
@@ -739,6 +740,23 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-editing-dark.png")
   );
   assertPng(rNotebookEditing, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(900), false);
+  const rNotebookCodeInsertion = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-code-insertion-dark.png")
+  );
+  assertPng(rNotebookCodeInsertion, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(900), false);
+  const rNotebookCodeInsertionDetail = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-code-insertion-detail-dark.png")
+  );
+  assertPng(rNotebookCodeInsertionDetail, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(430), false);
+  assertExactPixels(
+    PNG.sync.read(rNotebookCodeInsertionDetail).data,
+    cropPixels(
+      PNG.sync.read(rNotebookCodeInsertion),
+      publicMediaPhysicalRect({ x: 0, y: 0, width: 1_440, height: 430 })
+    ),
+    publicMediaPhysicalLength(1_440),
+    "The R notebook insertion detail must remain an exact crop of its accepted source."
+  );
 
   const richDuckDb = readFileSync(
     resolve(root, "docs", "images", "readme", "v1.2", "gallery", "duckdb-rich-parquet.png")

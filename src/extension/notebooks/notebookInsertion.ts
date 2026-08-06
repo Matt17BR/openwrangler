@@ -2,9 +2,12 @@ import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import type { DataBackend } from "../../shared/protocol";
 
+export type NotebookInsertionLanguage = "python" | "r";
+
 export interface NotebookInsertionMetadata {
   source: string;
   backend: DataBackend;
+  languageId: NotebookInsertionLanguage;
 }
 
 export type NotebookInsertionResult =
@@ -25,6 +28,9 @@ export async function insertGeneratedNotebookCell(
   metadata: NotebookInsertionMetadata
 ): Promise<NotebookInsertionResult> {
   if (!code.trim()) throw new Error("Generated notebook code must not be empty.");
+  if (metadata.languageId !== "python" && metadata.languageId !== "r") {
+    throw new Error("Generated notebook cells support only Python or R.");
+  }
   if (!Number.isInteger(index) || index < 0 || index > notebook.cellCount) {
     throw new Error(`Notebook insertion index ${index} is outside the document.`);
   }
@@ -64,11 +70,12 @@ async function performInsertion(
   let edit: vscode.WorkspaceEdit;
   try {
     insertionId = randomUUID();
-    const cell = new vscode.NotebookCellData(vscode.NotebookCellKind.Code, code, "python");
+    const cell = new vscode.NotebookCellData(vscode.NotebookCellKind.Code, code, metadata.languageId);
     cell.metadata = {
       openWrangler: {
         source: metadata.source,
         backend: metadata.backend,
+        languageId: metadata.languageId,
         generated: true,
         insertionId
       }
@@ -204,7 +211,7 @@ function isExpectedAppliedCell(
     markerMatches += 1;
     if (
       cell.kind === vscode.NotebookCellKind.Code &&
-      cell.document.languageId === "python" &&
+      cell.document.languageId === metadata.languageId &&
       cell.document.getText() === code &&
       isInsertionMarker(marker, metadata, insertionId)
     ) {
@@ -230,6 +237,7 @@ function isInsertionMarker(value: unknown, metadata: NotebookInsertionMetadata, 
   return (
     marker.source === metadata.source &&
     marker.backend === metadata.backend &&
+    marker.languageId === metadata.languageId &&
     marker.generated === true &&
     marker.insertionId === insertionId
   );

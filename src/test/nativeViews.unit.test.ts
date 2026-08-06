@@ -966,8 +966,24 @@ describe("native operation commands", () => {
       origin,
       3,
       "def clean_data(df):\n    return df\n",
-      { source: "frame", backend: "pandas" }
+      { source: "frame", backend: "pandas", languageId: "python" }
     );
+  });
+
+  it("inserts generated R into its originating notebook with the R cell language", async () => {
+    const origin = notebookDocument("file:///workspace/orders.ipynb", 4);
+    const active = rNotebookSnapshot();
+    nativeMocks.notebookDocuments.push(origin);
+    nativeMocks.activeNotebookEditor = { notebook: origin, selections: [{ end: 2 }] };
+    register(active, origin);
+
+    await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(true);
+
+    expect(nativeMocks.insertGeneratedNotebookCell).toHaveBeenCalledWith(origin, 2, active.code, {
+      source: "orders",
+      backend: "r",
+      languageId: "r"
+    });
   });
 
   it("does not wait for an actionless missing-code notification", async () => {
@@ -1032,7 +1048,7 @@ describe("native operation commands", () => {
     expect(registered.notebookInsertionStatus()).toBe(status);
     expect(messageMock).toHaveBeenCalledWith(expect.stringContaining(message));
     expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
-      "Inserted the generated cleaning function into its notebook."
+      "Inserted the generated cleaning code into its notebook."
     );
     expect(nativeMocks.insertGeneratedNotebookCell).toHaveBeenCalledOnce();
   });
@@ -1233,7 +1249,7 @@ function rNotebookSnapshot(): ActiveSessionSnapshot {
       cancel: false,
       exportCsv: false,
       exportParquet: false,
-      notebookInsert: false,
+      notebookInsert: true,
       supportedOperations: ["renameColumn"]
     }
   };

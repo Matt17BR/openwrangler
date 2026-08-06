@@ -1732,7 +1732,7 @@ async function exerciseReleasedRJupyterExtension(
         backend: "r",
         rDataframeFlavor: "r.data.frame",
         firstValue: "1",
-        notebookInsert: false
+        notebookInsert: true
       },
       "the orders R data.frame opened from the notebook picker"
     );
@@ -1743,7 +1743,7 @@ async function exerciseReleasedRJupyterExtension(
       cancel: false,
       exportCsv: false,
       exportParquet: false,
-      notebookInsert: false,
+      notebookInsert: true,
       filter: true,
       sort: true,
       profile: true,
@@ -1776,7 +1776,7 @@ async function exerciseReleasedRJupyterExtension(
         backend: "r",
         rDataframeFlavor: "r.data.frame",
         firstValue: "1",
-        notebookInsert: false
+        notebookInsert: true
       },
       "the orders R data.frame opened in editing mode"
     );
@@ -1821,7 +1821,7 @@ async function exerciseReleasedRJupyterExtension(
           backend: "r",
           rDataframeFlavor: "r.data.frame",
           firstValue: "2400001",
-          notebookInsert: false
+          notebookInsert: true
         },
         "the representative R orders session"
       );
@@ -1838,7 +1838,7 @@ async function exerciseReleasedRJupyterExtension(
         backend: "r" as const,
         rDataframeFlavor: "r.tibble" as const,
         firstValue: "1",
-        notebookInsert: false
+        notebookInsert: true
       },
       {
         name: "orders_table",
@@ -1846,7 +1846,7 @@ async function exerciseReleasedRJupyterExtension(
         backend: "r" as const,
         rDataframeFlavor: "r.data.table" as const,
         firstValue: "1",
-        notebookInsert: false
+        notebookInsert: true
       }
     ] as const;
     for (const expected of additionalRFrames) {
@@ -1965,7 +1965,7 @@ async function exerciseReleasedRJupyterExtension(
         backend: "r",
         rDataframeFlavor: "r.data.frame",
         firstValue: "1",
-        notebookInsert: false
+        notebookInsert: true
       },
       "the R restart session"
     );
@@ -2016,7 +2016,7 @@ async function exerciseReleasedRJupyterExtension(
         backend: "r",
         rDataframeFlavor: "r.data.frame",
         firstValue: "1",
-        notebookInsert: false
+        notebookInsert: true
       },
       "the reopened R session after kernel restart"
     );
@@ -2427,7 +2427,7 @@ async function exerciseReleasedREditingJourney(
     cancel: false,
     exportCsv: false,
     exportParquet: false,
-    notebookInsert: false,
+    notebookInsert: true,
     filter: true,
     sort: true,
     profile: true,
@@ -2516,7 +2516,7 @@ async function exerciseReleasedREditingJourney(
   const firstApplied = testing.activeSession();
   assert.ok(firstApplied, "The applied native R rename must retain its session.");
   assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
-  assert.equal(firstApplied.metadata.capabilities.notebookInsert, false);
+  assert.equal(firstApplied.metadata.capabilities.notebookInsert, true);
   assert.equal(firstApplied.metadata.capabilities.exportCsv, false);
   assert.equal(firstApplied.metadata.capabilities.exportParquet, false);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
@@ -2618,6 +2618,15 @@ async function exerciseReleasedREditingJourney(
     readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
     [],
     "The R script export must not retain sibling temporary files."
+  );
+  const insertedRCellIndex = await assertReleasedRNotebookCodeInsertion(
+    testing,
+    notebook,
+    reapplied,
+    generatedCode,
+    "orders_frame",
+    phase,
+    outputDirectory
   );
 
   recordAcceptanceProgress(`${phase}:editing:undo`);
@@ -3325,6 +3334,22 @@ async function exerciseReleasedREditingJourney(
   if (lowercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Lowercase undo failed.");
   assert.equal(lowercaseUndo.page.rows[0]?.values[1]?.display, "A");
   await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:lowercase-source-after-undo`);
+
+  if (phase === "jupyter-r" && screenshotOutput) {
+    await captureReleasedJupyterCodeInsertion(
+      workbench,
+      notebook,
+      insertedRCellIndex,
+      "orders_frame",
+      generatedCode,
+      screenshotOutput,
+      {
+        languageId: "r",
+        scene: "notebook-r-code-insertion",
+        progress: "jupyter-r:screenshot:code-insertion"
+      }
+    );
+  }
 }
 
 async function previewReleasedRTextLength(
@@ -7448,6 +7473,120 @@ async function assertReleasedSessionPage(
   return response;
 }
 
+async function assertReleasedRNotebookCodeInsertion(
+  testing: TestApi,
+  notebook: vscode.NotebookDocument,
+  active: NonNullable<ReturnType<TestApi["activeSession"]>>,
+  code: string,
+  variableName: string,
+  phase: "jupyter-r" | "jupyter-r-remote",
+  outputDirectory: string
+): Promise<number> {
+  assert.equal(active.metadata.source.kind, "notebookVariable");
+  assert.equal(active.metadata.source.variableName, variableName);
+  assert.equal(active.metadata.backend, "r");
+  assert.equal(active.metadata.mode, "editing");
+  assert.equal(active.metadata.capabilities.notebookInsert, true);
+  assert.ok(code, "R notebook insertion requires native generated R code.");
+  assertReleasedRGeneratedCode(code, "case_id");
+  const before = Array.from({ length: notebook.cellCount }, (_, index) => ({
+    text: notebook.cellAt(index).document.getText(),
+    languageId: notebook.cellAt(index).document.languageId
+  }));
+  const decoyPath = path.join(outputDirectory, `${phase}.r-insertion-decoy.ipynb`);
+  writeFileSync(
+    decoyPath,
+    JSON.stringify({
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: ["decoy_value <- 99\n"]
+        }
+      ],
+      metadata: {
+        kernelspec: {
+          display_name: "R (Open Wrangler)",
+          language: "R",
+          name: "ir"
+        }
+      },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
+  const decoy = await vscode.workspace.openNotebookDocument(vscode.Uri.file(decoyPath));
+  try {
+    await vscode.window.showNotebookDocument(decoy, { viewColumn: vscode.ViewColumn.One });
+    assertExactOpenNotebookDocument(decoy, "after showing the native R insertion decoy");
+    const decoyBefore = Array.from({ length: decoy.cellCount }, (_, index) => ({
+      text: decoy.cellAt(index).document.getText(),
+      languageId: decoy.cellAt(index).document.languageId
+    }));
+
+    testing.setActiveSession(active.sessionId);
+    assertExactOpenNotebookDocument(notebook, "before native R insertion");
+    assert.equal(
+      vscode.window.activeNotebookEditor?.notebook,
+      decoy,
+      "Native R insertion acceptance must keep a different notebook active."
+    );
+    recordAcceptanceProgress(`${phase}:editing:insertion-dispatch`);
+    const result = await withBoundedAcceptancePromise(
+      vscode.commands.executeCommand<boolean>("openWrangler.insertNotebookCode"),
+      30_000,
+      "native R generated-code insertion"
+    );
+    assert.equal(result, true, "Native R generated-code insertion must report success.");
+    assert.deepEqual(
+      Array.from({ length: decoy.cellCount }, (_, index) => ({
+        text: decoy.cellAt(index).document.getText(),
+        languageId: decoy.cellAt(index).document.languageId
+      })),
+      decoyBefore,
+      "Native R insertion must not target a different active notebook."
+    );
+    const inserted = Array.from({ length: notebook.cellCount }, (_, index) => index).filter((index) => {
+      const cell = notebook.cellAt(index);
+      return (
+        cell.document.getText() === code &&
+        cell.document.languageId === "r" &&
+        cell.metadata.openWrangler?.source === variableName
+      );
+    });
+    assert.equal(inserted.length, 1, "Native R insertion must add one uniquely marked R cell.");
+    const insertedIndex = inserted[0];
+    assert.notEqual(insertedIndex, undefined);
+    const insertedCell = notebook.cellAt(insertedIndex);
+    const marker = insertedCell.metadata.openWrangler;
+    assert.deepEqual(marker, {
+      source: variableName,
+      backend: "r",
+      languageId: "r",
+      generated: true,
+      insertionId: marker.insertionId
+    });
+    assert.equal(typeof marker.insertionId, "string");
+    assert.deepEqual(
+      Array.from({ length: notebook.cellCount }, (_, index) => index)
+        .filter((index) => index !== insertedIndex)
+        .map((index) => ({
+          text: notebook.cellAt(index).document.getText(),
+          languageId: notebook.cellAt(index).document.languageId
+        })),
+      before,
+      "Native R insertion must not rewrite any existing cell."
+    );
+    return insertedIndex;
+  } finally {
+    const decoyTab = notebookTab(decoy.uri);
+    if (decoyTab) await vscode.window.tabGroups.close(decoyTab, true);
+    rmSync(decoyPath, { force: true });
+  }
+}
+
 async function assertReleasedNotebookCodeInsertion(
   testing: TestApi,
   notebook: vscode.NotebookDocument,
@@ -7619,12 +7758,23 @@ async function captureReleasedJupyterCodeInsertion(
   insertedIndex: number,
   variableName: string,
   code: string,
-  outputDirectory: string
+  outputDirectory: string,
+  options: {
+    languageId: "python" | "r";
+    progress: string;
+    scene: Parameters<typeof packagedScreenshotFileName>[1];
+  } = {
+    languageId: "python",
+    progress: "jupyter-allow:screenshot:code-insertion",
+    scene: "notebook-code-insertion"
+  }
 ): Promise<void> {
-  recordAcceptanceProgress("jupyter-allow:screenshot:code-insertion");
+  recordAcceptanceProgress(options.progress);
   assert.equal(path.isAbsolute(outputDirectory), true);
   assert.equal(notebook.cellAt(insertedIndex).document.getText(), code);
+  assert.equal(notebook.cellAt(insertedIndex).document.languageId, options.languageId);
   assert.equal(notebook.cellAt(insertedIndex).metadata.openWrangler?.source, variableName);
+  assert.equal(notebook.cellAt(insertedIndex).metadata.openWrangler?.languageId, options.languageId);
   assert.equal(
     insertedIndex,
     notebook.cellCount - 1,
@@ -7675,7 +7825,7 @@ async function captureReleasedJupyterCodeInsertion(
       workbench,
       path.resolve(
         outputDirectory,
-        packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-code-insertion", "dark")
+        packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", options.scene, "dark")
       )
     );
   } finally {
@@ -17616,7 +17766,8 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     recordAcceptanceProgress("verify:notebook:direct-insertion");
     const inserted = await insertGeneratedNotebookCell(notebook, 1, "def clean_data(df):\n    return df\n", {
       source: "df",
-      backend: "polars"
+      backend: "polars",
+      languageId: "python"
     });
     assert.deepEqual(inserted, { status: "applied" });
     assert.equal(notebook.cellCount, 2);
@@ -17624,6 +17775,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.deepEqual(notebook.cellAt(1).metadata.openWrangler, {
       source: "df",
       backend: "polars",
+      languageId: "python",
       generated: true,
       insertionId: notebook.cellAt(1).metadata.openWrangler.insertionId
     });
@@ -17725,6 +17877,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.deepEqual(pandasInsertionMetadata, {
       source: "pandas_frame",
       backend: "pandas",
+      languageId: "python",
       generated: true,
       insertionId: pandasInsertionMetadata.insertionId
     });

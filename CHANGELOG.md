@@ -40,6 +40,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   boolean, date, or datetime values and keeps the column's stable identity. Values that cannot be converted become
   `NA`. Source and target pairs that would lose units or `integer64` precision are rejected. Clone the column first
   when the original also needs to be kept.
+- R notebook sessions can now insert generated cleaning code into the notebook that opened the dataframe. Open
+  Wrangler adds one `r` cell and confirms the exact edit before reporting success.
 
 ### Changed
 

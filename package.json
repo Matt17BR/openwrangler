@@ -304,7 +304,7 @@
       },
       {
         "command": "openWrangler.insertNotebookCode",
-        "title": "Open Wrangler: Insert Function into Originating Notebook",
+        "title": "Open Wrangler: Insert Generated Code into Originating Notebook",
         "icon": "$(notebook)"
       },
       {
@@ -494,7 +494,7 @@
           {
             "id": "export",
             "title": "Save code or data",
-            "description": "Copy generated code, save it as a script, insert generated Python code into the originating notebook, or export cleaned data to a new CSV or Parquet file."
+            "description": "Copy generated code, save it as a script, insert it into the originating notebook, or export cleaned data to a new CSV or Parquet file."
           }
         ]
       }
