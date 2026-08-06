@@ -895,11 +895,12 @@ async function verifyRProfileAccessibility(browser) {
   const backendBadge = page.locator('[data-session-badge="backend"]');
   const modeBadge = page.locator('[data-session-badge="mode"]');
   await backendBadge.waitFor();
+  await modeBadge.waitFor();
   if (
     (await backendBadge.textContent())?.trim() !== "R" ||
-    (await modeBadge.textContent())?.trim() !== "Viewing only"
+    (await modeBadge.textContent())?.trim() !== "viewing"
   ) {
-    throw new Error(`${harness} did not expose the R and Viewing only session badges.`);
+    throw new Error(`${harness} did not expose the R backend and viewing-mode badges.`);
   }
   await page.getByRole("rowheader", { name: "Row 1, label baseline" }).waitFor();
 
