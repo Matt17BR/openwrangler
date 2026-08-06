@@ -1437,7 +1437,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
   const target = releasedJupyterKernelTarget(phase);
   const source = [
     "row_count <- 1205L",
-    "base_frame <- data.frame(",
+    "orders_frame <- data.frame(",
     "  row_id = seq_len(row_count),",
     "  group = c(rep('A', 602L), rep('B', row_count - 602L)),",
     "  score = as.numeric(seq_len(row_count)),",
@@ -1446,15 +1446,15 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "  stringsAsFactors = FALSE",
     ")",
     "for (column_index in seq_len(20L)) {",
-    "  base_frame[[sprintf('extra_%02d', column_index)]] <- sprintf('value-%02d-%04d', column_index, seq_len(row_count))",
+    "  orders_frame[[sprintf('extra_%02d', column_index)]] <- sprintf('value-%02d-%04d', column_index, seq_len(row_count))",
     "}",
-    "base_frame$extra_20[1L] <- NA_character_",
-    "row.names(base_frame) <- sprintf('case-%04d', seq_len(row_count))",
-    "orders_tibble <- tibble::as_tibble(base_frame, .name_repair = 'minimal')",
-    "orders_table <- data.table::as.data.table(base_frame)",
-    "base_frame_before <- serialize(base_frame, NULL, version = 3L)",
+    "orders_frame$extra_20[1L] <- NA_character_",
+    "row.names(orders_frame) <- sprintf('case-%04d', seq_len(row_count))",
+    "orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = 'minimal')",
+    "orders_table <- data.table::as.data.table(orders_frame)",
+    "orders_frame_before <- serialize(orders_frame, NULL, version = 3L)",
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
-    "  pid = Sys.getpid(), rows = nrow(base_frame), columns = ncol(base_frame),",
+    "  pid = Sys.getpid(), rows = nrow(orders_frame), columns = ncol(orders_frame),",
     "  rVersion = as.character(getRversion()),",
     "  remoteRunId = Sys.getenv('OPEN_WRANGLER_REMOTE_RUN_ID', unset = ''),",
     "  hostname = unname(Sys.info()[['nodename']])",
@@ -1463,7 +1463,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
   const bindingProbe = [
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_BINDING_RESULT)}, as.character(jsonlite::toJSON(list(`,
     `  runtimeBindingPresent = exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE),`,
-    "  sourceUnchanged = isTRUE(identical(serialize(base_frame, NULL, version = 3L), base_frame_before))",
+    "  sourceUnchanged = isTRUE(identical(serialize(orders_frame, NULL, version = 3L), orders_frame_before))",
     "), auto_unbox = TRUE)), '\\n', sep = '')"
   ];
   writeFileSync(
@@ -1483,6 +1483,13 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
           metadata: {},
           outputs: [],
           source: bindingProbe.map((line) => `${line}\n`)
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: ["# Browse an R data frame with Open Wrangler\n", "orders_frame\n"]
         }
       ],
       metadata: {
@@ -1588,6 +1595,10 @@ async function exerciseReleasedRJupyterExtension(
   const notebookPath = path.join(directory, "r-dataframes.ipynb");
   const notebookUri = vscode.Uri.file(notebookPath);
   const kernelTarget = releasedJupyterKernelTarget(phase);
+  const screenshotOutput =
+    phase === "jupyter-r" && process.platform === "linux"
+      ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
+      : undefined;
   writeReleasedRNotebook(notebookPath, phase);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
@@ -1622,37 +1633,46 @@ async function exerciseReleasedRJupyterExtension(
       notebookEditor,
       "The first R toolbar action must retain the exact editor used to execute setup."
     );
-    const picker = await activateReleasedNotebookVariableAction(workbench, notebook, async () => {
-      const consent = await waitForReleasedJupyterConsent(workbench, testing);
-      await consent.allow.click();
-      await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    });
-    for (const [name, flavor] of [
-      ["base_frame", "data.frame"],
-      ["orders_tibble", "tibble"],
-      ["orders_table", "data.table"]
-    ] as const) {
-      const row = await releasedJupyterQuickPickRow(picker, name);
-      assert.ok(row, `The real R variable picker must expose ${name}.`);
-      assert.match((await row.innerText()).replace(/\s+/gu, " "), new RegExp(`R · ${flavor}.*Viewing only`, "u"));
+    const restorePickerWorkbench = screenshotOutput
+      ? await prepareReleasedRNotebookScreenshotWorkbench(workbench, notebook, notebookEditor)
+      : undefined;
+    let picker: Locator | undefined;
+    try {
+      picker = await activateReleasedNotebookVariableAction(workbench, notebook, async () => {
+        const consent = await waitForReleasedJupyterConsent(workbench, testing);
+        await consent.allow.click();
+        await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+      });
+      for (const [name, flavor] of [
+        ["orders_frame", "data.frame"],
+        ["orders_tibble", "tibble"],
+        ["orders_table", "data.table"]
+      ] as const) {
+        const row = await releasedJupyterQuickPickRow(picker, name);
+        assert.ok(row, `The real R variable picker must expose ${name}.`);
+        assert.match((await row.innerText()).replace(/\s+/gu, " "), new RegExp(`R · ${flavor}.*Viewing only`, "u"));
+      }
+      if (screenshotOutput) await captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput);
+      const ordersRow = await releasedJupyterQuickPickRow(picker, "orders_frame");
+      assert.ok(ordersRow);
+      await ordersRow.click();
+    } finally {
+      await restorePickerWorkbench?.();
     }
-    const baseRow = await releasedJupyterQuickPickRow(picker, "base_frame");
-    assert.ok(baseRow);
-    await baseRow.click();
 
     const base = await waitForReleasedVariableSession(
       workbench,
       testing,
       notebook,
       {
-        name: "base_frame",
+        name: "orders_frame",
         type: "data.frame",
         backend: "r",
         rDataframeFlavor: "r.data.frame",
         firstValue: "1",
         notebookInsert: false
       },
-      "the base R data.frame opened from the notebook picker"
+      "the orders R data.frame opened from the notebook picker"
     );
     await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page`);
     assert.deepEqual(base.metadata.capabilities, {
@@ -1668,9 +1688,9 @@ async function exerciseReleasedRJupyterExtension(
       columnValues: true
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
-    await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
+    await exerciseReleasedRGridJourney(testing, workbench, base.sessionId, screenshotOutput);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
-    await disposePackagedSessionPanel(testing, base.sessionId, "the base R data.frame session");
+    await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
 
     for (const expected of [
       {
@@ -1704,13 +1724,13 @@ async function exerciseReleasedRJupyterExtension(
     }
 
     await showExactReleasedNotebook(notebook);
-    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "base_frame");
+    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
     const beforeRestart = await waitForReleasedVariableSession(
       workbench,
       testing,
       notebook,
       {
-        name: "base_frame",
+        name: "orders_frame",
         type: "data.frame",
         backend: "r",
         rDataframeFlavor: "r.data.frame",
@@ -1755,13 +1775,13 @@ async function exerciseReleasedRJupyterExtension(
       assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
       assert.equal(replacementSetup.hostname, kernelTarget.remote.hostname);
     }
-    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "base_frame");
+    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
     const recovered = await waitForReleasedVariableSession(
       workbench,
       testing,
       notebook,
       {
-        name: "base_frame",
+        name: "orders_frame",
         type: "data.frame",
         backend: "r",
         rDataframeFlavor: "r.data.frame",
@@ -1803,7 +1823,12 @@ async function exerciseReleasedRJupyterExtension(
   if (acceptanceError) throw acceptanceError.value;
 }
 
-async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+async function exerciseReleasedRGridJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  screenshotOutput?: string
+): Promise<void> {
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -2141,6 +2166,258 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   });
   assert.equal(groupFirst.kind, "page");
   if (groupFirst.kind === "page") assert.equal(groupFirst.page.rows[0]?.values[0]?.display, "602");
+  if (screenshotOutput) {
+    await captureReleasedRJupyterWorkbench(workbench, testing, sessionId, screenshotOutput);
+  }
+}
+
+async function captureReleasedRJupyterWorkbench(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  outputDirectory: string
+): Promise<void> {
+  if (process.platform !== "linux") return;
+  assert.equal(path.isAbsolute(outputDirectory), true, "R notebook screenshot output must be one absolute directory.");
+  const previousViewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  const previousThemeKind = vscode.window.activeColorTheme.kind;
+  const workbenchConfiguration = vscode.workspace.getConfiguration("workbench");
+  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
+  const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const settings = [
+    { configuration: windowConfiguration, key: "autoDetectColorScheme" },
+    { configuration: windowConfiguration, key: "autoDetectHighContrast" },
+    { configuration: windowConfiguration, key: "commandCenter" },
+    { configuration: windowConfiguration, key: "title" },
+    { configuration: workbenchConfiguration, key: "colorTheme" },
+    { configuration: workbenchConfiguration, key: "statusBar.visible" },
+    { configuration: breadcrumbs, key: "enabled" }
+  ] as const;
+  const previousSettings = settings.map(({ configuration, key }) => ({
+    configuration,
+    key,
+    value: configuration.inspect(key)?.globalValue
+  }));
+
+  try {
+    await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    assert.deepEqual(
+      await workbench.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+      "The R workbench scene requires the standard 1440 by 900 editor viewport."
+    );
+    await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update(
+      "title",
+      "${activeEditorShort}${separator}Open Wrangler",
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update(
+      "colorTheme",
+      releasedJupyterScreenshotTheme(),
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+      10_000,
+      "the dark R notebook screenshot theme"
+    );
+    await closeVisibleWorkbenchPart(workbench, ".part.auxiliarybar", [
+      "workbench.action.closeAuxiliaryBar",
+      "workbench.action.toggleAuxiliaryBar"
+    ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.panel", [
+      "workbench.action.closePanel",
+      "workbench.action.togglePanel"
+    ]);
+    await clearReleasedJupyterScreenshotTransientUi(workbench);
+
+    const active = testing.activeSession();
+    assert.equal(active?.sessionId, sessionId, "The R screenshot must retain the exact live session.");
+    assert.ok(active, "The R screenshot requires one active dataframe session.");
+    assert.equal(active.metadata.backend, "r");
+    assert.equal(active.metadata.mode, "viewing");
+    assert.equal(active.metadata.source.kind, "notebookVariable");
+    assert.equal(active.metadata.source.variableName, "orders_frame");
+    assert.deepEqual(active.metadata.shape, { rows: 1_205, columns: 24 });
+    assert.deepEqual(active.metadata.filterModel.filters, []);
+    assert.deepEqual(active.metadata.filterModel.sort, [
+      { column: "group", direction: "asc", nulls: "last" },
+      { column: "score", direction: "desc", nulls: "last" }
+    ]);
+    assert.deepEqual(active.metadata.steps, []);
+    assert.equal(active.metadata.draftStep, undefined);
+
+    const readyTarget = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    const readyApp = await exactSessionApp(readyTarget.frame, sessionId);
+    assert.ok(readyApp, "The R screenshot requires the exact live Open Wrangler renderer.");
+    await waitFor(
+      () => testing.panelSynchronizable(sessionId),
+      10_000,
+      "the R screenshot renderer to complete its host handshake"
+    );
+    const score = columnReference(active.metadata, "score");
+    const captureWidths = {
+      ...active.viewState.columnWidths,
+      ...Object.fromEntries(
+        active.metadata.schema.slice(0, 4).map((column, index) => [column.id, index === 3 ? 210 : 155])
+      )
+    };
+    await testing.updateViewState(sessionId, {
+      ...active.viewState,
+      columnWidths: captureWidths,
+      selectedColumnId: score.id,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(await testing.synchronizePanel(sessionId), true, "The R screenshot view must synchronize.");
+
+    let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    let app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "The synchronized R screenshot requires its exact renderer generation.");
+    const profileToggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });
+    if ((await profileToggle.getAttribute("aria-expanded")) !== "true") await profileToggle.click();
+    let drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    await drawer.waitFor({ state: "visible", timeout: 10_000 });
+    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+    let filterPanel = drawer.locator(".filterSortPanel").first();
+    await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
+    const advancedMode = filterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
+    if ((await advancedMode.count()) > 0 && (await advancedMode.isVisible())) await advancedMode.click();
+    await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "score" });
+    await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("gte");
+    await filterPanel.getByLabel("gte predicate value", { exact: true }).fill("1200");
+    await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+    filterPanel = drawer.locator(".filterSortPanel").first();
+    await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+    await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
+    await filterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+    await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+    await waitFor(
+      () => {
+        const current = testing.activeSession();
+        return (
+          current?.metadata.filteredShape.rows === 6 &&
+          current.viewState.filterModel.filters.length === 2 &&
+          current.viewState.filterModel.sort.map((rule) => rule.column).join(",") === "group,score"
+        );
+      },
+      30_000,
+      "the R media filters and ordered sorts to publish one combined view"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The R media filter result must be acknowledged before its profile is captured."
+    );
+
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "The filtered R screenshot must retain its exact renderer.");
+    const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await columnSearch.fill("score");
+    await app
+      .getByRole("option", { name: /^score,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await columnSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === score.id,
+      10_000,
+      "the R media scene to select its numeric score column"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The R media score selection must be acknowledged before profiling."
+    );
+    drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    await drawer.getByRole("tab", { name: "Column", exact: true }).click();
+    const profile = drawer.getByRole("tabpanel");
+    await profile.getByRole("heading", { name: "score", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await profile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 30_000
+    });
+    await assertReleasedProfileStat(profile, "Rows", "6");
+    await assertReleasedProfileStat(profile, "Distinct", "6");
+    await assertReleasedProfileStat(profile, "Min", "1,200");
+    await assertReleasedProfileStat(profile, "Max", "1,205");
+
+    const sidebar = await arrangePackagedProductSidebar(workbench, "filter-result");
+    const filtersTree = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
+    for (const item of [
+      /^score, 1 condition/u,
+      /^group, 1 condition/u,
+      /^group, Priority 1 · Ascending · nulls last/u,
+      /^score, Priority 2 · Descending · nulls last/u
+    ]) {
+      await filtersTree.getByRole("treeitem", { name: item }).first().waitFor({ state: "visible", timeout: 10_000 });
+    }
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "The arranged R screenshot must retain its exact renderer.");
+    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+    assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING ONLY");
+    assert.equal(await app.getByRole("button", { name: "Add step", exact: true }).count(), 0);
+    assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+    await app
+      .getByRole("status", { name: "Visible rows", exact: true })
+      .filter({ hasText: "Rows 1–6 of 6" })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await app
+      .getByRole("rowheader", { name: "Row 1, label case-1205", exact: true })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await assertMediaColumnTitlesUnclipped(app, ["row_id", "group", "score"], "The R notebook media scene");
+
+    const commands = new Set(await vscode.commands.getCommands(true));
+    if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+    if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
+    await workbench.mouse.move(Math.floor(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.width * 0.75), 40);
+    await workbench.waitForTimeout(500);
+    const transient = await workbench
+      .locator(
+        ".quick-input-widget:visible, .monaco-dialog-box:visible, .context-view.monaco-menu-container:visible, " +
+          ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible, " +
+          ".monaco-hover:visible"
+      )
+      .allInnerTexts();
+    assert.deepEqual(
+      transient.map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 500)),
+      [],
+      "R screenshot capture must not retain transient workbench UI."
+    );
+
+    mkdirSync(outputDirectory, { recursive: true });
+    recordAcceptanceProgress("jupyter-r:screenshot:workbench");
+    await captureNotebookWorkbenchScreenshot(
+      workbench,
+      path.resolve(
+        outputDirectory,
+        packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r", "dark")
+      )
+    );
+  } finally {
+    for (const { configuration, key, value } of previousSettings.reverse()) {
+      await configuration.update(key, value, vscode.ConfigurationTarget.Global);
+    }
+    await workbench.setViewportSize(previousViewport);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === previousThemeKind,
+      10_000,
+      "the R notebook workbench to restore its prior color theme"
+    );
+    await workbench.waitForTimeout(500);
+  }
 }
 
 async function assertReleasedProfileStat(panel: Locator, label: string, expected: string): Promise<void> {
@@ -10083,6 +10360,129 @@ async function prepareReleasedJupyterScreenshotWorkbench(
     );
     await workbench.waitForTimeout(1_000);
   };
+}
+
+async function prepareReleasedRNotebookScreenshotWorkbench(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  editor: vscode.NotebookEditor
+): Promise<() => Promise<void>> {
+  const restore = await prepareReleasedJupyterScreenshotWorkbench(workbench, notebook, editor);
+  try {
+    await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    assert.deepEqual(
+      await workbench.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+      "The R notebook picker scene requires the standard 1440 by 900 editor viewport."
+    );
+    const requiredCommands = ["notebook.cell.collapseCellInput", "notebook.cell.collapseCellOutput"] as const;
+    const commands = new Set(await vscode.commands.getCommands(true));
+    for (const command of requiredCommands) {
+      assert.ok(commands.has(command), `R notebook media requires the built-in ${command} command.`);
+    }
+    for (const privateIndex of [0, 1]) {
+      const privateCell = new vscode.NotebookRange(privateIndex, privateIndex + 1);
+      editor.selection = privateCell;
+      editor.selections = [privateCell];
+      editor.revealRange(privateCell, vscode.NotebookEditorRevealType.InCenter);
+      await vscode.commands.executeCommand(requiredCommands[0]);
+      await vscode.commands.executeCommand(requiredCommands[1]);
+    }
+    const publicCell = new vscode.NotebookRange(2, 3);
+    editor.selection = publicCell;
+    editor.selections = [publicCell];
+    editor.revealRange(publicCell, vscode.NotebookEditorRevealType.AtTop);
+    await waitFor(
+      () => editor.visibleRanges.some((visible) => visible.start <= 2 && visible.end > 2),
+      WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+      "the public R notebook cell to be visible before picker capture"
+    );
+    await workbench.waitForTimeout(600);
+    await assertReleasedRPrivateNotebookContentHidden(workbench);
+    return restore;
+  } catch (error) {
+    await restore();
+    throw error;
+  }
+}
+
+async function captureReleasedRJupyterVariablePicker(
+  workbench: Page,
+  picker: Locator,
+  outputDirectory: string
+): Promise<void> {
+  if (process.platform !== "linux") return;
+  assert.equal(path.isAbsolute(outputDirectory), true, "R notebook screenshot output must be one absolute directory.");
+  const expected = [
+    ["orders_frame", "R · data.frame"],
+    ["orders_tibble", "R · tibble"],
+    ["orders_table", "R · data.table"]
+  ] as const;
+  for (const [name, typeLabel] of expected) {
+    const row = await releasedJupyterQuickPickRow(picker, name);
+    assert.ok(row, `The R media picker must expose ${name}.`);
+    await row.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    const label = (await row.innerText()).replace(/\s+/gu, " ");
+    assert.ok(label.includes(typeLabel), `The R media picker must label ${name} as ${typeLabel}.`);
+    assert.ok(label.includes("Viewing only"), `The R media picker must mark ${name} as viewing only.`);
+  }
+  await assertReleasedNotebookVariablePickerGeometry(
+    picker,
+    expected.map(([name]) => name)
+  );
+  await assertReleasedRPrivateNotebookContentHidden(workbench);
+  mkdirSync(outputDirectory, { recursive: true });
+  recordAcceptanceProgress("jupyter-r:screenshot:variable-picker");
+  await captureNotebookWorkbenchScreenshot(
+    workbench,
+    path.resolve(
+      outputDirectory,
+      packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-picker", "dark")
+    )
+  );
+}
+
+async function assertReleasedRPrivateNotebookContentHidden(workbench: Page): Promise<void> {
+  const exposed = await workbench.locator("body").evaluate(
+    (body, prohibited) => {
+      type TextElement = {
+        readonly children: ArrayLike<TextElement>;
+        readonly textContent: string | null;
+        getBoundingClientRect(): { bottom: number; height: number; left: number; top: number; width: number };
+      };
+      type TextBody = TextElement & { querySelectorAll(selector: string): ArrayLike<TextElement> };
+      const page = globalThis as unknown as {
+        getComputedStyle(element: TextElement): { display: string; visibility: string };
+        innerHeight: number;
+        innerWidth: number;
+      };
+      return Array.from((body as unknown as TextBody).querySelectorAll("*")).flatMap((element) => {
+        const marker = prohibited.find((candidate) => element.textContent?.includes(candidate));
+        if (!marker) return [];
+        if (Array.from(element.children).some((child) => child.textContent?.includes(marker))) return [];
+        const style = page.getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden") return [];
+        const bounds = element.getBoundingClientRect();
+        return bounds.width > 0 &&
+          bounds.height > 0 &&
+          bounds.left < page.innerWidth &&
+          bounds.top < page.innerHeight &&
+          bounds.bottom > 0
+          ? [marker]
+          : [];
+      });
+    },
+    [
+      RELEASED_JUPYTER_R_SETUP_RESULT,
+      RELEASED_JUPYTER_R_BINDING_RESULT,
+      "orders_frame_before",
+      R_KERNEL_RUNTIME_BINDING
+    ]
+  );
+  assert.deepEqual(exposed, [], "R notebook media must not expose acceptance markers or private binding probes.");
 }
 
 async function captureReleasedJupyterPandasPreview(
