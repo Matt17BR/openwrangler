@@ -204,6 +204,36 @@ describe("native operation commands", () => {
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({ action: "openOperation" });
   });
 
+  it("shows and dispatches only operations advertised by the active dataframe", async () => {
+    const limited = noDraftSnapshot();
+    limited.metadata = {
+      ...limited.metadata,
+      capabilities: {
+        editable: true,
+        lazy: false,
+        cancel: true,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false,
+        supportedOperations: ["renameColumn"]
+      }
+    };
+    register(limited);
+
+    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual(["Rename column"]);
+
+    await command("openWrangler.startOperation")("customCode");
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+    expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith("Custom code is not available for this dataframe.");
+
+    await command("openWrangler.startOperation")("renameColumn");
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledOnce();
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+      action: "openOperation",
+      operationKind: "renameColumn"
+    });
+  });
+
   it("makes each effective native filter node remove that column filter", async () => {
     const filtered = noDraftSnapshot();
     filtered.viewState.filterModel = {

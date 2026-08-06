@@ -359,6 +359,36 @@ describe("protocol-v2 response validation", () => {
     ).toBe(false);
   });
 
+  it("accepts a unique supported-operation list and rejects malformed catalogs", () => {
+    const opened = responses[1];
+    if (opened?.kind !== "sessionOpened") throw new Error("Expected the session-opened fixture.");
+    const limited = {
+      ...opened,
+      metadata: {
+        ...opened.metadata,
+        capabilities: { ...capabilities, supportedOperations: ["renameColumn"] }
+      }
+    };
+
+    expect(isOpenWranglerResponse(limited)).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 2, requestId: "limited-operations", response: limited })).toBe(
+      true
+    );
+    for (const supportedOperations of [["renameColumn", "renameColumn"], ["futureOperation"], "renameColumn"]) {
+      const malformed = {
+        ...limited,
+        metadata: {
+          ...limited.metadata,
+          capabilities: { ...limited.metadata.capabilities, supportedOperations }
+        }
+      };
+      expect(isOpenWranglerResponse(malformed)).toBe(false);
+      expect(
+        validateTransportSchema({ protocolVersion: 2, requestId: "malformed-operations", response: malformed })
+      ).toBe(false);
+    }
+  });
+
   it("rejects empty, duplicate, or positionally ambiguous schema identities", () => {
     const otherColumn = {
       id: "column:1",
@@ -1272,7 +1302,8 @@ describe("protocol-v2 request validation", () => {
         filter: false,
         sort: true,
         profile: true,
-        columnValues: false
+        columnValues: false,
+        supportedOperations: ["renameColumn"]
       },
       filterModel: { logic: "and" as const, filters: [], sort: [] },
       steps: []

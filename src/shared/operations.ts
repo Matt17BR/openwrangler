@@ -1,4 +1,4 @@
-import type { OperationKind, SessionMetadata } from "./protocol";
+import type { OperationKind, SessionMetadata, SourceCapabilities, TransformStep } from "./protocol";
 
 export type OperationGroup =
   | "Rows / order"
@@ -166,14 +166,36 @@ export function operationByKind(kind: OperationKind): OperationCatalogItem {
   return operation;
 }
 
-export function canStartOperation(metadata: Pick<SessionMetadata, "mode" | "draftStep"> | undefined): boolean {
-  return metadata?.mode === "editing" && metadata.draftStep === undefined;
+export function supportsOperation(capabilities: SourceCapabilities | undefined, kind: OperationKind): boolean {
+  return capabilities?.supportedOperations?.includes(kind) ?? true;
+}
+
+export function supportedOperationCatalog(
+  capabilities: SourceCapabilities | undefined
+): readonly OperationCatalogItem[] {
+  return capabilities?.supportedOperations === undefined
+    ? operationCatalog
+    : operationCatalog.filter((operation) => supportsOperation(capabilities, operation.kind));
+}
+
+type OperationEntryMetadata = {
+  mode: SessionMetadata["mode"];
+  draftStep?: TransformStep;
+  capabilities?: SourceCapabilities;
+};
+
+export function canStartOperation(metadata: OperationEntryMetadata | undefined, kind?: OperationKind): boolean {
+  if (metadata?.mode !== "editing" || metadata.draftStep !== undefined) return false;
+  return kind === undefined
+    ? supportedOperationCatalog(metadata.capabilities).length > 0
+    : supportsOperation(metadata.capabilities, kind);
 }
 
 export function canEditLatestStep(
-  metadata: Pick<SessionMetadata, "mode" | "draftStep" | "steps"> | undefined
+  metadata: (OperationEntryMetadata & Pick<SessionMetadata, "steps">) | undefined
 ): boolean {
-  return canStartOperation(metadata) && Boolean(metadata?.steps.length);
+  const latest = metadata?.steps.at(-1);
+  return latest !== undefined && canStartOperation(metadata, latest.kind);
 }
 
 function item(

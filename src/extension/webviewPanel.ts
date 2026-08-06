@@ -9,6 +9,7 @@ import type {
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
+import { supportsOperation } from "../shared/operations";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import { decodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
@@ -1443,6 +1444,12 @@ export class OpenWranglerPanel {
       revision: this.sessionRevision
     };
     if (!isOpenWranglerRequest(request) || !WEBVIEW_RUNTIME_REQUEST_KINDS.has(request.kind)) return undefined;
+    if (
+      request.kind === "previewStep" &&
+      (!this.snapshot || !supportsOperation(this.snapshot.metadata.capabilities, request.step.kind))
+    ) {
+      return undefined;
+    }
     return {
       kind: "runtimeRequest",
       request,

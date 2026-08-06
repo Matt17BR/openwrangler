@@ -3422,6 +3422,24 @@ describe("App file import options", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Wait for the current import-options change to finish.");
   });
 
+  it("ignores unsupported operation actions and opens the advertised catalog", async () => {
+    const limitedMetadata: SessionMetadata = {
+      ...metadata,
+      capabilities: { ...metadata.capabilities, supportedOperations: ["renameColumn"] }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: limitedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "openOperation", operationKind: "customCode" });
+    expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
+
+    dispatchAppMessage({ kind: "editorAction", action: "openOperation", operationKind: "renameColumn" });
+    expect(await screen.findByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
+    expect(screen.getByText("Rename column", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.queryByText("Custom code", { selector: "strong" })).toBeNull();
+  });
+
   it("restores an accepted mutation without ending the host-owned import transaction", async () => {
     render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });

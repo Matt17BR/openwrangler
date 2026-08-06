@@ -36,7 +36,7 @@ import {
 } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
-import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
+import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
 import { SummaryPanel, summaryPanelId, summaryTabId, type SummaryPanelView } from "./summary/SummaryPanel";
@@ -1032,7 +1032,7 @@ export function App() {
             setForegroundError("Wait for the visible columns to finish loading before adding a cleaning step.");
             return;
           }
-          if (!canStartOperation(metadataRef.current)) return;
+          if (!canStartOperation(metadataRef.current, response.operationKind)) return;
           if (stepInspectionTargetRef.current) clearStepInspection();
           rememberOperationReturnFocus();
           setEditingStep(undefined);
@@ -1925,6 +1925,7 @@ export function App() {
   ]);
 
   const previewStep = (step: TransformStep, replaceStepId?: string) => {
+    if (!supportsOperation(metadataRef.current?.capabilities, step.kind)) return;
     if (!beginMutation()) return;
     const columnWindow = desiredColumnWindow.current;
     vscode.postMessage({
@@ -1976,7 +1977,7 @@ export function App() {
       }
       return;
     }
-    if (!canStartOperation(metadataRef.current)) return;
+    if (!canStartOperation(metadataRef.current, kind)) return;
     if (stepInspectionTargetRef.current) clearStepInspection();
     rememberOperationReturnFocus();
     setEditingStep(undefined);

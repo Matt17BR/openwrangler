@@ -81,19 +81,21 @@ kernel restart, source preservation, and cleanup.
 
 The [product gallery](media-gallery.md#r-notebooks-open-wrangler-2) shows the packaged IRkernel picker and workbench.
 Cleaning, generated R code, exports, Quarto, R Markdown, and plain `.R` files are not available yet.
+R sessions already advertise Rename Column as their first planned cleaning operation, but editing stays disabled until
+preview, apply, discard, undo, and generated R code work together.
 
-| Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                     |
-| -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | --------------------------------------------- |
-| Native R frame paging and typed cells        | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                               |
-| Native R compound viewing filters            | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                               |
-| Native R value search and selections         | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                               |
-| Native R ordered viewing sorts               | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                               |
-| Native R column and dataset profiles         | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                               |
-| Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                               |
-| Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                             |
-| Notebook workbench                           | v2 branch    | Partial | Packaged paging/profiles, screenshots, production axe    | Preview release and editing                   |
-| R cleaning operations and generated code     | No           | Planned | Read-only viewing only                                   | Native R IR, adapters, code generation, tests |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper   |
+| Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                      |
+| -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | ---------------------------------------------- |
+| Native R frame paging and typed cells        | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                                |
+| Native R compound viewing filters            | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                                |
+| Native R value search and selections         | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                                |
+| Native R ordered viewing sorts               | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                                |
+| Native R column and dataset profiles         | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                                |
+| Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                                |
+| Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                              |
+| Notebook workbench                           | v2 branch    | Partial | Packaged paging/profiles, screenshots, production axe    | Preview release and editing                    |
+| R cleaning operations and generated code     | No           | Planned | Rename-only capability; editing remains disabled         | Native R preview/apply/undo and generated code |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper    |
 
 ## DuckDB file-backed preview matrix
 

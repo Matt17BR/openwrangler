@@ -2,7 +2,14 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import { isActiveColumnFilter, viewSortModelSignature } from "../shared/filterModel";
-import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
+import {
+  canEditLatestStep,
+  canStartOperation,
+  operationCatalog,
+  operationByKind,
+  supportedOperationCatalog,
+  supportsOperation
+} from "../shared/operations";
 import { dataBackendLabel, formatSessionRowCount, supportsViewingCapability } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { isCodePreviewWebviewMessage, type CodePreviewHostMessage } from "../shared/codePreviewMessages";
@@ -431,7 +438,13 @@ export function registerNativeViews(
     vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
-      if (snapshot && !canStartOperation(snapshot.metadata)) {
+      if (snapshot && kind !== undefined && !supportsOperation(snapshot.metadata.capabilities, kind)) {
+        void vscode.window.showInformationMessage(
+          `${operationByKind(kind).title} is not available for this dataframe.`
+        );
+        return;
+      }
+      if (snapshot && !canStartOperation(snapshot.metadata, kind)) {
         void vscode.window.showInformationMessage(
           snapshot.metadata.draftStep
             ? "Apply or discard the current draft before adding another cleaning step."
@@ -688,7 +701,7 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
   if (!metadata) return [new ViewNode("Open a dataframe", "Operations appear here", "wand")];
   const editable = metadata.mode === "editing";
   const canStart = canStartOperation(metadata);
-  return operationCatalog.map(
+  return supportedOperationCatalog(metadata.capabilities).map(
     (operation) =>
       new ViewNode(
         operation.title,
