@@ -504,21 +504,22 @@ generated R code, exports, Quarto, R Markdown, or plain `.R` files.
 
 Focused R and TypeScript tests on the current v2 branch cover Rename Column in Editing mode. They exercise draft
 preview, executable generated R, apply, discard, inspection, latest-step editing, undo, revision errors, exact-kernel
-correlation, and source isolation for base data frames, tibbles, and keyed data tables. Copy and **Export Generated
-Script** use the shared host commands, with `.R` as the R save format. This is source-level evidence; the next packaged
-R editor journey still needs to drive the editing controls, clipboard, and Save dialog before the v2 preview gate can
-count them as accepted.
+correlation, and source isolation for base data frames, tibbles, and keyed data tables. The packaged VS Code and
+Cursor journey drives those controls in the real workbench, copies the generated R, saves it through the `.R` Save
+dialog, and checks the source objects again after editing.
 
-Local screenshot mode also captures the real IRkernel variable picker and a separate generated 2,400-row orders
-dataframe in the R workbench. The workbench image shows two filters, two ordered sorts, and exact revenue statistics.
+Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
+viewing workbench, and a separate 1,205-row Rename draft in Editing mode. The viewing image shows two filters, two
+ordered sorts, and exact revenue statistics. The editing image shows the native R code preview beside the draft,
+cleaning history, and Apply/Discard controls.
 The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 881
 logical pixels so the grid ends on a complete row. Both are captured at 2× physical density. Capture fails if setup
 cells or private markers are visible, if a grid row or column is clipped, or if the source R object changes. The
 accepted files are
 `docs/images/editor-acceptance/vscode-notebook-r-picker-dark.png` and
-`docs/images/editor-acceptance/vscode-notebook-r-dark.png`; the gallery uses a lossless crop of the picker at
-`docs/images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png`. These captures show viewing and profiles,
-not the new Rename Column workflow.
+`docs/images/editor-acceptance/vscode-notebook-r-dark.png`, and
+`docs/images/editor-acceptance/vscode-notebook-r-editing-dark.png`; the gallery uses a lossless crop of the picker at
+`docs/images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png`.
 
 ```bash
 npm run build:test-extension &&

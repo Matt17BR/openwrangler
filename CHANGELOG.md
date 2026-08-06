@@ -33,6 +33,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
   ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
   to the notebook's source object.
+- Added a packaged-editor R editing screenshot and acceptance journey. VS Code and Cursor now drive Rename preview,
+  discard, apply, inspection, edit-latest, copy, `.R` script export, and undo against the same VSIX. The journey also
+  checks that base data frames, tibbles, and data tables are unchanged.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and

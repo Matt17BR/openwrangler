@@ -483,7 +483,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /^## Open files$/mu);
   assert.match(
     readme,
-    /If a required Python package is missing, Open Wrangler\s+lists it and asks before installing anything\./u
+    /If a required Python package\s+is missing, Open Wrangler lists it and asks before installing anything\./u
   );
   assert.match(
     readme,
@@ -493,7 +493,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Column search covers the full schema and includes data-type icons/u);
   assert.match(readme, /Hover or focus any histogram bin to see its range and row count/u);
   assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
-  assert.match(readme, /Choose from 28 built-in operations/u);
+  assert.match(readme, /Choose from 28 operations/u);
   assert.match(readme, /preview shows the changed values and generated Polars code/u);
   assert.match(readme, /Insert generated code into the notebook that opened the dataframe/u);
   assert.match(readme, /\*\*Open in Open Wrangler\*\* loads the current live dataframe/u);
@@ -669,7 +669,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /The images above show the packaged viewing\s+journey; the editing journey does not have an accepted screenshot yet/u
+    /The editing image comes from the packaged VS Code journey; the same VSIX passed the matching journey in Cursor/u
+  );
+  assert.match(
+    gallery,
+    /alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R"/u
   );
   assert.match(
     gallery,
@@ -724,6 +728,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-dark.png")
   );
   assertPng(rNotebookWorkbench, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(881), false);
+  const rNotebookEditing = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-editing-dark.png")
+  );
+  assertPng(rNotebookEditing, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(900), false);
 
   const richDuckDb = readFileSync(
     resolve(root, "docs", "images", "readme", "v1.2", "gallery", "duckdb-rich-parquet.png")

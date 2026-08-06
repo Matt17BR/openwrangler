@@ -178,7 +178,7 @@ Generated R can be copied or saved as a `.R` script.
 The rest of the R operation catalog, cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto
 are still in development. The
 [current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2)
-show the live variable picker and viewing workbench. Editing screenshots will be added before v2 is released.
+show the live variable picker, profiles, and a Rename draft with native generated R.
 
 ## Export
 

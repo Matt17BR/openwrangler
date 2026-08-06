@@ -81,26 +81,27 @@ as the released Python engines. Generated R can be copied or saved as a `.R` scr
 R 4.5.2 in VS Code and Cursor and a containerized IRkernel in VS Code. It covered filters, profiles, sort priority,
 kernel restart, source preservation, and cleanup.
 
-The [product gallery](media-gallery.md#r-notebooks-open-wrangler-2) shows the packaged IRkernel picker and workbench.
-Those images cover viewing and profiles; they do not count as editing evidence. Native R and cross-language tests now
-cover Rename Column against base data frames, tibbles, keyed data tables, duplicate names, and non-syntactic names.
+The [product gallery](media-gallery.md#r-notebooks-open-wrangler-2) shows the packaged IRkernel picker, viewing
+workbench, and Rename draft with generated R. The packaged VS Code and Cursor journey drives the complete Rename
+lifecycle against a base data frame and also previews and discards the same operation for a tibble and keyed
+`data.table`. Native R and cross-language tests add duplicate-name and non-syntactic-name coverage.
 The remaining R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R`
 files are not available yet.
 
-| Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                    |
-| -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | -------------------------------------------- |
-| Native R frame paging and typed cells        | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                              |
-| Native R compound viewing filters            | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                              |
-| Native R value search and selections         | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                              |
-| Native R ordered viewing sorts               | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                              |
-| Native R column and dataset profiles         | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                              |
-| Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                              |
-| Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                            |
-| Notebook workbench                           | v2 branch    | Partial | Packaged paging/profiles, screenshots, production axe    | Preview release and packaged editing journey |
-| R cleaning operations and generated code     | Rename only  | Partial | Native/transport lifecycle and executable-code tests     | Packaged journey and remaining operations    |
-| Copy or save generated R                     | Rename only  | Partial | Generated-code identity and `.R` Save-dialog contract    | End-to-end copy and save acceptance          |
-| Cleaned-data export and notebook insertion   | No           | Planned | No public R path                                         | Native export and exact-notebook insertion   |
-| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper  |
+| Surface                                      | Availability | Status  | Recorded evidence                                        | Remaining acceptance gate                   |
+| -------------------------------------------- | ------------ | ------- | -------------------------------------------------------- | ------------------------------------------- |
+| Native R frame paging and typed cells        | v2 branch    | Partial | Projected pages, row labels, local/remote packaged tests | Preview release                             |
+| Native R compound viewing filters            | v2 branch    | Partial | R contracts and packaged value/predicate path            | Preview release                             |
+| Native R value search and selections         | v2 branch    | Partial | Typed selection contracts and packaged value path        | Preview release                             |
+| Native R ordered viewing sorts               | v2 branch    | Partial | Pure-R tests and local/remote packaged tests             | Preview release                             |
+| Native R column and dataset profiles         | v2 branch    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release                             |
+| Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                             |
+| Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                           |
+| Notebook workbench                           | v2 branch    | Partial | Packaged viewing/editing, screenshots, production axe    | Preview release                             |
+| R cleaning operations and generated code     | Rename only  | Partial | Native tests and packaged VS Code/Cursor journey         | Remaining operations                        |
+| Copy or save generated R                     | Rename only  | Partial | Packaged clipboard and `.R` Save-dialog journey          | Preview release                             |
+| Cleaned-data export and notebook insertion   | No           | Planned | No public R path                                         | Native export and exact-notebook insertion  |
+| Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper |
 
 ## DuckDB file-backed preview matrix
 

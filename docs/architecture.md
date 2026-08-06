@@ -125,8 +125,9 @@ selected column or dataset on request. The packaged VS Code/Cursor viewing journ
 rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
 duplicate-row statistics. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code
 and Cursor with R 4.5.2. The hosted gate also passes against a containerized IRkernel in VS Code, including kernel
-restart, reopening the frame, and final session cleanup. Rename editing has native R and cross-language transport
-tests; its packaged editor journey is still pending.
+restart, reopening the frame, and final session cleanup. The packaged Rename journey drives preview, discard, apply,
+inspection, edit-latest, copy, script export, and undo through the real workbench in VS Code and Cursor. It covers a
+base data frame, tibble, and keyed data table and checks that each notebook object stays unchanged.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 
