@@ -59,7 +59,7 @@ base_page <- openwrangler_r_frame_contract$materialize_page(
   column_limit = 20L
 )
 assert_identical(base_page$dataframeFlavor, "r.data.frame", "base data.frame flavor changed")
-assert_identical(base_page$contractVersion, 2L, "R frame contract version changed")
+assert_identical(base_page$contractVersion, 3L, "R frame contract version changed")
 assert_identical(base_page$shape, list(rows = 3L, columns = 10L), "base frame shape changed")
 assert_identical(base_page$frameSemantics$rowNames, "positional", "automatic row names were not positional")
 assert_true(is.null(base_page$page$rows[[1L]]$rowLabel), "automatic row names leaked into the page")
@@ -201,7 +201,9 @@ assert_identical(
 )
 assert_identical(base_frame, profile_source_before, "profiling mutated the source data.frame")
 
-base_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(base_capture)
+base_stats_result <- openwrangler_r_frame_contract$materialize_dataset_stats(base_capture)
+assert_identical(base_stats_result$totalRows, 3, "dataset statistics lost their row-count binding")
+base_stats <- base_stats_result$stats
 assert_identical(base_stats$missingCells, 10, "dataset missing-cell count changed")
 assert_identical(base_stats$missingRows, 2L, "dataset missing-row count changed")
 assert_identical(base_stats$duplicateRows, 0L, "dataset duplicate-row count changed")
@@ -238,7 +240,7 @@ assert_identical(empty_summaries[[2L]]$topValues, I(list()), "empty numeric prof
 
 duplicate_profile_frame <- data.frame(value = c(1L, 1L, NA_integer_), flag = c(TRUE, TRUE, NA))
 duplicate_profile_capture <- openwrangler_r_frame_contract$capture_frame(duplicate_profile_frame)
-duplicate_profile_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(duplicate_profile_capture)
+duplicate_profile_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(duplicate_profile_capture)$stats
 assert_identical(duplicate_profile_stats$missingCells, 2, "all-null counts changed")
 assert_identical(duplicate_profile_stats$missingRows, 1L, "all-null row count changed")
 assert_identical(duplicate_profile_stats$duplicateRows, 1L, "duplicate-row count changed")
@@ -327,6 +329,428 @@ sort_rule <- function(id, name, direction = "asc", nulls = "last") {
   list(column = list(id = id, name = name), direction = direction, nulls = nulls)
 }
 
+view_query <- function(filters = list(), sorts = list(), logic = NULL) {
+  query <- list(filters = filters, sorts = sorts)
+  if (!is.null(logic)) query$logic <- logic
+  query
+}
+
+predicate <- function(operator, value = NULL, second_value = NULL) {
+  result <- list(kind = "predicate", operator = operator)
+  if (!is.null(value)) result$value <- value
+  if (!is.null(second_value)) result$secondValue <- second_value
+  result
+}
+
+column_filter <- function(id, name, type, predicates = list(), value_filter = NULL, logic = NULL) {
+  result <- list(column = list(id = id, name = name), type = type, predicates = predicates)
+  if (!is.null(value_filter)) result$valueFilter <- value_filter
+  if (!is.null(logic)) result$logic <- logic
+  result
+}
+
+filter_frame <- data.frame(
+  text = c("Alpha", "beta", "Alpha", "CAFÉ", "alpha", NA_character_),
+  amount = c(NA_real_, NaN, Inf, -Inf, 5.5, 5.5),
+  wide = bit64::as.integer64(c(
+    "-9223372036854775807", "0", "9223372036854775806", "10", "-10", "9007199254740993"
+  )),
+  date = as.Date(c("2026-01-01", "2026-01-02", "2026-01-03", NA, "2026-01-05", "2026-01-06")),
+  when = as.POSIXct(
+    c("2026-01-01 00:00:00", "2026-01-02 01:00:00", "2026-01-03 02:00:00", NA,
+      "2026-01-05 04:00:00", "2026-01-06 05:00:00"),
+    tz = "UTC"
+  ),
+  elapsed = as.difftime(c(1, 2, 3, NA, 5, 6), units = "hours"),
+  flag = c(TRUE, FALSE, NA, TRUE, FALSE, TRUE),
+  row.names = paste0("label-", seq_len(6L)),
+  stringsAsFactors = FALSE
+)
+filter_before <- unserialize(serialize(filter_frame, NULL, version = 3L))
+filter_capture <- openwrangler_r_frame_contract$capture_frame(filter_frame)
+
+text_contains <- view_query(filters = list(column_filter(
+  "r:c:0", "text", "string", list(predicate("contains", "ALP"))
+)))
+text_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  text_contains,
+  row_limit = 10L,
+  column_limit = 7L
+)
+assert_identical(text_page$page$totalRows, 3L, "ASCII-folded text filtering returned the wrong row count")
+assert_identical(
+  vapply(text_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:0", "r:r:2", "r:r:4"),
+  "filtered pages lost stable source row identities"
+)
+assert_identical(
+  vapply(text_page$page$rows, `[[`, character(1L), "rowLabel"),
+  c("label-1", "label-3", "label-5"),
+  "filtered pages lost explicit source row labels"
+)
+assert_identical(
+  vapply(text_page$page$rows, `[[`, integer(1L), "rowNumber"),
+  0:2,
+  "filtered pages did not use logical row numbers"
+)
+
+null_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(filters = list(column_filter("r:c:1", "amount", "float", list(predicate("isNull"))))),
+  column_limit = 7L
+)
+nan_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(filters = list(column_filter("r:c:1", "amount", "float", list(predicate("isNaN"))))),
+  column_limit = 7L
+)
+assert_identical(null_page$page$rows[[1L]]$id, "r:r:0", "float NA was not filtered as null")
+assert_identical(nan_page$page$rows[[1L]]$id, "r:r:1", "float NaN was not filtered separately from NA")
+
+or_value_filter <- list(
+  kind = "values",
+  selectedValues = list(5.5),
+  includeNulls = FALSE,
+  includeNaN = FALSE
+)
+or_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(filters = list(column_filter(
+    "r:c:1",
+    "amount",
+    "float",
+    predicates = list(predicate("isNaN")),
+    value_filter = or_value_filter,
+    logic = "or"
+  ))),
+  column_limit = 7L
+)
+assert_identical(
+  vapply(or_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:1", "r:r:4", "r:r:5"),
+  "OR logic within one R column filter changed"
+)
+
+outer_or_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(
+    filters = list(
+      column_filter("r:c:0", "text", "string", list(predicate("equals", "beta"))),
+      column_filter("r:c:6", "flag", "boolean", list(predicate("equals", TRUE)))
+    ),
+    logic = "or"
+  ),
+  column_limit = 7L
+)
+assert_identical(
+  vapply(outer_or_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:0", "r:r:1", "r:r:3", "r:r:5"),
+  "OR logic across R column filters changed"
+)
+
+wide_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(filters = list(column_filter(
+    "r:c:2", "wide", "integer", list(predicate("gt", "9007199254740992"))
+  ))),
+  column_limit = 7L
+)
+assert_identical(
+  vapply(wide_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:2", "r:r:5"),
+  "integer64 filtering lost precision"
+)
+
+date_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(filters = list(column_filter(
+    "r:c:3", "date", "date", list(predicate("between", "2026-01-02", "2026-01-05"))
+  ))),
+  column_limit = 7L
+)
+assert_identical(
+  vapply(date_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:1", "r:r:2", "r:r:4"),
+  "Date filtering changed inclusive bounds"
+)
+
+datetime_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(filters = list(column_filter(
+    "r:c:4", "when", "datetime", list(predicate("gte", "2026-01-03T02:00:00Z"))
+  ))),
+  column_limit = 7L
+)
+assert_identical(
+  vapply(datetime_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:2", "r:r:4", "r:r:5"),
+  "POSIXct filtering changed absolute timestamps"
+)
+datetime_offset_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(filters = list(column_filter(
+    "r:c:4", "when", "datetime", list(predicate("equals", "2026-01-03T04:00+02:00"))
+  ))),
+  column_limit = 7L
+)
+assert_identical(
+  datetime_offset_page$page$rows[[1L]]$id,
+  "r:r:2",
+  "POSIXct filtering did not normalize an offset datetime without seconds"
+)
+
+duration_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(filters = list(column_filter(
+    "r:c:5", "elapsed", "duration", list(predicate("between", "7200", "18000"))
+  ))),
+  column_limit = 7L
+)
+assert_identical(
+  vapply(duration_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:1", "r:r:2", "r:r:4"),
+  "difftime filtering did not interpret public values as seconds"
+)
+
+literal_contract <- jsonlite::fromJSON("fixtures/view-literal-contract.json", simplifyVector = FALSE)
+literal_frame <- data.frame(
+  date = as.Date("2024-01-01"),
+  datetime = as.POSIXct("2024-01-01 00:00:00", tz = "UTC"),
+  duration = as.difftime(0, units = "secs")
+)
+literal_capture <- openwrangler_r_frame_contract$capture_frame(literal_frame)
+literal_columns <- list(
+  date = list(id = "r:c:0", name = "date"),
+  datetime = list(id = "r:c:1", name = "datetime"),
+  duration = list(id = "r:c:2", name = "duration")
+)
+materialize_literal <- function(case) {
+  column <- literal_columns[[case$type]]
+  openwrangler_r_frame_contract$materialize_view_page(
+    literal_capture,
+    view_query(filters = list(column_filter(
+      column$id,
+      column$name,
+      case$type,
+      list(predicate("gte", case$value))
+    ))),
+    row_limit = 1L,
+    column_limit = 3L
+  )
+}
+for (case in literal_contract$accepted) {
+  if (case$type %in% names(literal_columns)) {
+    materialize_literal(case)
+  }
+}
+for (case in literal_contract$rejected) {
+  if (case$type %in% names(literal_columns)) {
+    assert_error(materialize_literal(case), "invalid-view-value")
+  }
+}
+
+signed_zero_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = c(-0, 0, 1)))
+signed_zero_values <- openwrangler_r_frame_contract$materialize_column_values(
+  signed_zero_capture,
+  list(id = "r:c:0", name = "value"),
+  limit = 10L
+)
+zero_value_index <- match("0", vapply(signed_zero_values$values, `[[`, character(1L), "value"))
+assert_true(!is.na(zero_value_index), "column values omitted the grouped zero value")
+zero_value <- signed_zero_values$values[[zero_value_index]]
+assert_identical(zero_value$count, 2L, "column values did not group signed zero")
+assert_identical(zero_value$selectionValue$cell$raw, 0, "the grouped zero token retained a negative sign")
+signed_zero_page <- openwrangler_r_frame_contract$materialize_view_page(
+  signed_zero_capture,
+  view_query(filters = list(column_filter(
+    "r:c:0",
+    "value",
+    "float",
+    value_filter = list(
+      kind = "values",
+      selectedValues = list(zero_value$selectionValue),
+      includeNulls = FALSE,
+      includeNaN = FALSE
+    )
+  ))),
+  column_limit = 1L
+)
+assert_identical(
+  vapply(signed_zero_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:0", "r:r:1"),
+  "the grouped zero token did not select both signed zeros"
+)
+
+numeric_value_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(score = c(1200, 8, 7)))
+numeric_values <- openwrangler_r_frame_contract$materialize_column_values(
+  numeric_value_capture,
+  list(id = "r:c:0", name = "score"),
+  search = "1200",
+  limit = 10L
+)
+assert_identical(length(numeric_values$values), 1L, "numeric column-value search returned the wrong result count")
+numeric_selection <- numeric_values$values[[1L]]$selectionValue
+assert_identical(
+  numeric_selection$cell$raw,
+  1200,
+  "finite numeric selections did not use a JSON-compatible numeric raw value"
+)
+numeric_selection_page <- openwrangler_r_frame_contract$materialize_view_page(
+  numeric_value_capture,
+  view_query(filters = list(column_filter(
+    "r:c:0",
+    "score",
+    "float",
+    value_filter = list(
+      kind = "values",
+      selectedValues = list(numeric_selection),
+      includeNulls = FALSE,
+      includeNaN = FALSE
+    )
+  ))),
+  column_limit = 1L
+)
+assert_identical(
+  vapply(numeric_selection_page$page$rows, `[[`, character(1L), "id"),
+  "r:r:0",
+  "finite numeric selections did not round-trip through a view filter"
+)
+
+amount_values <- openwrangler_r_frame_contract$materialize_column_values(
+  filter_capture,
+  list(id = "r:c:1", name = "amount"),
+  limit = 10L
+)
+assert_identical(
+  vapply(amount_values$values, `[[`, character(1L), "value"),
+  c("5.5", "-Inf", "Inf"),
+  "column values were not deterministically ordered by count and display"
+)
+assert_identical(
+  vapply(amount_values$values, `[[`, integer(1L), "count"),
+  c(2L, 1L, 1L),
+  "column-value counts changed"
+)
+limited_amount_values <- openwrangler_r_frame_contract$materialize_column_values(
+  filter_capture,
+  list(id = "r:c:1", name = "amount"),
+  limit = 2L
+)
+assert_identical(limited_amount_values$hasMore, TRUE, "bounded column values did not report truncation")
+positive_infinity <- amount_values$values[[3L]]$selectionValue
+infinity_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  view_query(filters = list(column_filter(
+    "r:c:1",
+    "amount",
+    "float",
+    value_filter = list(
+      kind = "values",
+      selectedValues = list(positive_infinity),
+      includeNulls = FALSE,
+      includeNaN = FALSE
+    )
+  ))),
+  column_limit = 7L
+)
+assert_identical(infinity_page$page$rows[[1L]]$id, "r:r:2", "typed Infinity selection did not round-trip")
+
+assert_typed_selection_round_trip <- function(column_id, column_name, column_type, display, expected_row_id) {
+  values <- openwrangler_r_frame_contract$materialize_column_values(
+    filter_capture,
+    list(id = column_id, name = column_name),
+    limit = 10L
+  )
+  match_index <- match(display, vapply(values$values, `[[`, character(1L), "value"))
+  assert_true(!is.na(match_index), sprintf("column values did not contain %s", display))
+  page <- openwrangler_r_frame_contract$materialize_view_page(
+    filter_capture,
+    view_query(filters = list(column_filter(
+      column_id,
+      column_name,
+      column_type,
+      value_filter = list(
+        kind = "values",
+        selectedValues = list(values$values[[match_index]]$selectionValue),
+        includeNulls = FALSE,
+        includeNaN = FALSE
+      )
+    ))),
+    column_limit = 7L
+  )
+  assert_identical(
+    vapply(page$page$rows, `[[`, character(1L), "id"),
+    expected_row_id,
+    sprintf("typed %s selection did not round-trip", column_type)
+  )
+}
+
+assert_typed_selection_round_trip("r:c:2", "wide", "integer", "9223372036854775806", "r:r:2")
+assert_typed_selection_round_trip("r:c:3", "date", "date", "2026-01-03", "r:r:2")
+assert_typed_selection_round_trip(
+  "r:c:4",
+  "when",
+  "datetime",
+  "2026-01-03T02:00:00.000000",
+  "r:r:2"
+)
+assert_typed_selection_round_trip("r:c:5", "elapsed", "duration", "3 hours", "r:r:2")
+
+searched_values <- openwrangler_r_frame_contract$materialize_column_values(
+  filter_capture,
+  list(id = "r:c:0", name = "text"),
+  search = "ALP",
+  limit = 2L
+)
+assert_identical(
+  vapply(searched_values$values, `[[`, character(1L), "value"),
+  c("Alpha", "alpha"),
+  "column-value search did not use portable ASCII folding"
+)
+assert_identical(searched_values$hasMore, FALSE, "column-value search reported a false truncation")
+
+combined_view <- view_query(
+  filters = list(
+    column_filter("r:c:0", "text", "string", list(predicate("contains", "alp"))),
+    column_filter("r:c:6", "flag", "boolean", list(predicate("equals", TRUE)))
+  ),
+  sorts = list(sort_rule("r:c:2", "wide", "desc", "last"))
+)
+combined_page <- openwrangler_r_frame_contract$materialize_view_page(
+  filter_capture,
+  combined_view,
+  row_limit = 10L,
+  column_limit = 7L
+)
+assert_identical(
+  vapply(combined_page$page$rows, `[[`, character(1L), "id"),
+  "r:r:0",
+  "compound filtering or post-filter sorting changed the visible rows"
+)
+filtered_summary <- openwrangler_r_frame_contract$materialize_summaries(
+  filter_capture,
+  list(profile_reference(filter_capture, 1L)),
+  text_contains
+)[[1L]]
+assert_identical(filtered_summary$totalCount, 3L, "column profiles ignored the current filter")
+filtered_stats_result <- openwrangler_r_frame_contract$materialize_dataset_stats(filter_capture, text_contains)
+assert_identical(filtered_stats_result$totalRows, 3, "filtered dataset statistics lost their view row count")
+filtered_stats <- filtered_stats_result$stats
+assert_identical(filtered_stats$missingCells, 2, "dataset statistics ignored filtered rows")
+assert_identical(filtered_stats$missingRows, 2L, "filtered missing-row counts changed")
+assert_identical(filter_frame, filter_before, "native R viewing filters mutated the source dataframe")
+
+table_filter_page <- openwrangler_r_frame_contract$materialize_view_page(
+  table_capture,
+  view_query(filters = list(column_filter(
+    "r:c:0", "primary_key", "integer", list(predicate("gt", 1L))
+  ))),
+  column_limit = 2L
+)
+assert_identical(table_filter_page$page$rows[[1L]]$id, "r:r:1", "data.table filtering lost its source row ID")
+assert_true(identical(table_frame, table_before), "view filtering mutated the source data.table")
+
 sort_frame <- data.frame(
   group = c("b", "a", "a", "b", NA, "a", "a"),
   score = c(2, 1, 1, 1, 9, NA, NaN),
@@ -336,10 +760,10 @@ sort_frame <- data.frame(
 sort_capture <- openwrangler_r_frame_contract$capture_frame(sort_frame)
 sort_page <- openwrangler_r_frame_contract$materialize_view_page(
   sort_capture,
-  sort_rules = list(
-    sort_rule("r:c:0", "group", "asc", "last"),
-    sort_rule("r:c:1", "score", "desc", "first")
-  ),
+  view_query = view_query(sorts = list(
+      sort_rule("r:c:0", "group", "asc", "last"),
+      sort_rule("r:c:1", "score", "desc", "first")
+    )),
   row_limit = 7L,
   column_limit = 3L
 )
@@ -363,7 +787,7 @@ duplicate_sort_frame <- data.frame(
 duplicate_sort_capture <- openwrangler_r_frame_contract$capture_frame(duplicate_sort_frame)
 duplicate_sort_page <- openwrangler_r_frame_contract$materialize_view_page(
   duplicate_sort_capture,
-  list(sort_rule("r:c:1", "duplicate")),
+  view_query(sorts = list(sort_rule("r:c:1", "duplicate"))),
   row_limit = 2L,
   column_limit = 2L
 )
@@ -380,7 +804,7 @@ assert_identical(
 
 sort_window <- openwrangler_r_frame_contract$materialize_view_page(
   sort_capture,
-  sort_rules = list(sort_rule("r:c:0", "group")),
+  view_query = view_query(sorts = list(sort_rule("r:c:0", "group"))),
   row_offset = 1L,
   row_limit = 3L,
   column_offset = 2L,
@@ -433,7 +857,7 @@ assert_identical(large_direct_metrics$directRowPositions, 5, "the unsorted page 
 assert_identical(large_direct_metrics$sortOrderBuilds, 0, "the unsorted page built a full row order")
 assert_identical(large_direct_metrics$cachedSortRows, 0L, "the unsorted page retained a full row order")
 
-large_sort_ascending <- list(sort_rule("r:c:0", "order_key", "asc", "last"))
+large_sort_ascending <- view_query(sorts = list(sort_rule("r:c:0", "order_key", "asc", "last")))
 invisible(openwrangler_r_frame_contract$materialize_view_page(
   large_capture,
   large_sort_ascending,
@@ -479,7 +903,7 @@ bounded_cache_rules <- lapply(seq_len(cache_key_count), function(index) {
 })
 invisible(openwrangler_r_frame_contract$materialize_view_page(
   bounded_cache_capture,
-  bounded_cache_rules,
+  view_query(sorts = bounded_cache_rules),
   row_limit = 1L,
   column_limit = 1L
 ))
@@ -494,7 +918,7 @@ assert_identical(
 )
 invisible(openwrangler_r_frame_contract$materialize_view_page(
   bounded_cache_capture,
-  bounded_cache_rules,
+  view_query(sorts = bounded_cache_rules),
   row_limit = 1L,
   column_limit = 1L
 ))
@@ -506,7 +930,7 @@ assert_identical(
 
 invisible(openwrangler_r_frame_contract$materialize_view_page(
   large_capture,
-  list(sort_rule("r:c:0", "order_key", "desc", "last")),
+  view_query(sorts = list(sort_rule("r:c:0", "order_key", "desc", "last"))),
   row_limit = 1L,
   column_limit = 1L
 ))
@@ -545,7 +969,7 @@ assert_error(
 mutable_source <- new.env(parent = emptyenv())
 mutable_source$frame <- data.frame(order_key = c(3L, 1L, 2L), payload = letters[1:3])
 mutable_capture <- openwrangler_r_frame_contract$capture_live_frame(function() mutable_source$frame)
-mutable_rule <- list(sort_rule("r:c:0", "order_key", "asc", "last"))
+mutable_rule <- view_query(sorts = list(sort_rule("r:c:0", "order_key", "asc", "last")))
 mutable_first <- openwrangler_r_frame_contract$materialize_view_page(
   mutable_capture,
   mutable_rule,
@@ -626,7 +1050,7 @@ wide_sort_frame <- data.frame(
 wide_sort_capture <- openwrangler_r_frame_contract$capture_frame(wide_sort_frame)
 wide_sort_ascending <- openwrangler_r_frame_contract$materialize_view_page(
   wide_sort_capture,
-  list(sort_rule("r:c:0", "wide", "asc", "last")),
+  view_query(sorts = list(sort_rule("r:c:0", "wide", "asc", "last"))),
   row_limit = 7L,
   column_limit = 1L
 )
@@ -642,7 +1066,7 @@ assert_identical(
 )
 wide_sort_descending <- openwrangler_r_frame_contract$materialize_view_page(
   wide_sort_capture,
-  list(sort_rule("r:c:0", "wide", "desc", "first")),
+  view_query(sorts = list(sort_rule("r:c:0", "wide", "desc", "first"))),
   row_limit = 7L,
   column_limit = 1L
 )
@@ -660,42 +1084,42 @@ assert_identical(
 assert_error(
   openwrangler_r_frame_contract$materialize_view_page(
     sort_capture,
-    list(sort_rule("r:c:0", "stale name"))
+    view_query(sorts = list(sort_rule("r:c:0", "stale name")))
   ),
   "stale-column"
 )
 assert_error(
   openwrangler_r_frame_contract$materialize_view_page(
     sort_capture,
-    list(sort_rule("r:c:7", "group"))
+    view_query(sorts = list(sort_rule("r:c:7", "group")))
   ),
   "stale-column"
 )
 assert_error(
   openwrangler_r_frame_contract$materialize_view_page(
     sort_capture,
-    list(sort_rule("r:c:0", "group"), sort_rule("r:c:0", "group", "desc"))
+    view_query(sorts = list(sort_rule("r:c:0", "group"), sort_rule("r:c:0", "group", "desc")))
   ),
   "each column only once"
 )
 assert_error(
   openwrangler_r_frame_contract$materialize_view_page(
     sort_capture,
-    list(sort_rule("r:c:0", "group", "sideways"))
+    view_query(sorts = list(sort_rule("r:c:0", "group", "sideways")))
   ),
   "must be one of"
 )
 assert_error(
   openwrangler_r_frame_contract$materialize_view_page(
     sort_capture,
-    list(c(sort_rule("r:c:0", "group"), list(extra = TRUE)))
+    view_query(sorts = list(c(sort_rule("r:c:0", "group"), list(extra = TRUE))))
   ),
   "missing or unknown fields"
 )
 assert_error(
   openwrangler_r_frame_contract$materialize_view_page(
     sort_capture,
-    setNames(list(sort_rule("r:c:0", "group")), "named")
+    view_query(sorts = setNames(list(sort_rule("r:c:0", "group")), "named"))
   ),
   "unnamed list"
 )
@@ -709,7 +1133,7 @@ assert_identical(
 )
 explicit_names_page <- openwrangler_r_frame_contract$materialize_view_page(
   explicit_names_capture,
-  list(sort_rule("r:c:0", "value", "asc", "last")),
+  view_query(sorts = list(sort_rule("r:c:0", "value", "asc", "last"))),
   row_offset = 1L,
   row_limit = 2L,
   column_limit = 1L

@@ -44,11 +44,14 @@ if (length(args) == 2L) {
   column_name <- names(frame)[[1L]]
   cat(openwrangler_r_frame_contract$encode_view_page(
     capture,
-    sort_rules = list(list(
-      column = list(id = "r:c:0", name = column_name),
-      direction = "desc",
-      nulls = "last"
-    )),
+    view_query = list(
+      filters = list(),
+      sorts = list(list(
+        column = list(id = "r:c:0", name = column_name),
+        direction = "desc",
+        nulls = "last"
+      ))
+    ),
     row_limit = 3L,
     column_limit = 20L
   ))

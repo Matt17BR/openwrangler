@@ -1,8 +1,10 @@
-import { decodeRFramePage, R_FRAME_CONTRACT_LIMITS, type RFramePageContract } from "./rFrameContract";
-import type { ColumnSummary, DatasetStats } from "../../shared/protocol";
+import { decodeRFramePage, R_FRAME_CONTRACT_LIMITS, type RColumnType, type RFramePageContract } from "./rFrameContract";
+import { supportsViewPredicate } from "../../shared/filterModel";
+import type { ColumnSummary, DatasetStats, PredicateFilter, ValueCount } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 1 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 2 as const;
+export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 
 const identifierPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -31,12 +33,37 @@ export interface RKernelSortRule {
   readonly nulls: "first" | "last";
 }
 
+export interface RKernelColumnFilter {
+  readonly column: RKernelColumnReference;
+  readonly type: RColumnType;
+  readonly logic?: "and" | "or";
+  readonly valueFilter?: Readonly<{
+    kind: "values";
+    selectedValues: readonly unknown[];
+    includeNulls: boolean;
+    includeNaN: boolean;
+    search?: string;
+  }>;
+  readonly predicates: readonly Readonly<PredicateFilter>[];
+}
+
+export interface RKernelViewQuery {
+  readonly logic?: "and" | "or";
+  readonly filters: readonly RKernelColumnFilter[];
+  readonly sorts: readonly RKernelSortRule[];
+}
+
 export interface RKernelPageWindow {
   readonly rowOffset: number;
   readonly rowLimit: number;
   readonly columnOffset: number;
   readonly columnLimit: number;
-  readonly sorts: readonly RKernelSortRule[];
+  readonly view: RKernelViewQuery;
+}
+
+export interface RKernelDatasetStatsResult {
+  readonly totalRows: number;
+  readonly stats: DatasetStats;
 }
 
 export interface RKernelColumnReference {
@@ -61,13 +88,29 @@ export type RKernelRequest =
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
       kind: "getSummary";
-      payload: Readonly<{ sessionId: string; columns: readonly RKernelColumnReference[] }>;
+      payload: Readonly<{
+        sessionId: string;
+        columns: readonly RKernelColumnReference[];
+        view: RKernelViewQuery;
+      }>;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
       kind: "getDatasetStats";
-      payload: Readonly<{ sessionId: string }>;
+      payload: Readonly<{ sessionId: string; view: RKernelViewQuery }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "getColumnValues";
+      payload: Readonly<{
+        sessionId: string;
+        column: RKernelColumnReference;
+        view: RKernelViewQuery;
+        search: string | null;
+        limit: number;
+      }>;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -102,7 +145,17 @@ export type RKernelResponse =
       requestId: string;
       kind: "datasetStats";
       sessionId: string;
+      totalRows: number;
       stats: DatasetStats;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "columnValues";
+      sessionId: string;
+      column: string;
+      values: readonly ValueCount[];
+      hasMore: boolean;
     }>
   | RKernelErrorResponse;
 
@@ -117,7 +170,11 @@ export interface RKernelErrorResponse {
 
 export function encodeRKernelRequest(request: RKernelRequest): string {
   validateRequest(request);
-  return JSON.stringify(request);
+  const encoded = JSON.stringify(request);
+  if (Buffer.byteLength(encoded, "utf8") > R_KERNEL_MAX_REQUEST_BYTES) {
+    fail("R kernel request exceeds the byte limit.");
+  }
+  return encoded;
 }
 
 export function decodeRKernelResponseJson(payload: string, expectedRequestId: string): RKernelResponse {
@@ -181,8 +238,9 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
     });
   }
   if (kind === "datasetStats") {
-    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "stats"]);
+    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "totalRows", "stats"]);
     validateEnvelope(record, expected);
+    const totalRows = boundedInteger(record.totalRows, "response.totalRows", R_FRAME_CONTRACT_LIMITS.rows);
     const candidate: unknown = {
       kind: "datasetStats",
       revision: 0,
@@ -195,13 +253,53 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
     if (candidate.stats.missingValuesByColumn.length > R_FRAME_CONTRACT_LIMITS.columns) {
       fail("R kernel dataset-statistics response exceeds the column limit.");
     }
-    validateRDatasetStats(candidate.stats);
+    validateRDatasetStats(candidate.stats, totalRows);
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
       kind: "datasetStats" as const,
       sessionId: identifier(record.sessionId, "response.sessionId"),
+      totalRows,
       stats: Object.freeze(candidate.stats)
+    });
+  }
+  if (kind === "columnValues") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "column",
+      "values",
+      "hasMore"
+    ]);
+    validateEnvelope(record, expected);
+    const candidate: unknown = {
+      kind: "columnValues",
+      revision: 0,
+      viewRequestId: "r-kernel-values",
+      column: record.column,
+      values: record.values,
+      hasMore: record.hasMore
+    };
+    if (!isOpenWranglerResponse(candidate) || candidate.kind !== "columnValues") {
+      fail("R kernel column-values response is invalid.");
+    }
+    if (candidate.values.length > 10_000) fail("R kernel column-values response exceeds the value limit.");
+    for (const [index, entry] of candidate.values.entries()) {
+      boundedText(entry.value, `response.values[${index}].value`, R_FRAME_CONTRACT_LIMITS.textBytes, true);
+      if (entry.count <= 0 || entry.selectionValue === undefined) {
+        fail("R kernel column-values response requires a typed selection for every value.");
+      }
+    }
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "columnValues" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      column: boundedText(record.column, "response.column", maximumVariableNameBytes, true),
+      values: Object.freeze(candidate.values),
+      hasMore: candidate.hasMore
     });
   }
   if (kind === "closed") {
@@ -257,14 +355,33 @@ function validateRequest(request: RKernelRequest): void {
     return;
   }
   if (record.kind === "getSummary") {
-    const payload = exactRecord(record.payload, ["sessionId", "columns"], "R kernel summary payload");
+    const payload = exactRecord(record.payload, ["sessionId", "columns", "view"], "R kernel summary payload");
     identifier(payload.sessionId, "request.payload.sessionId");
     validateColumnReferences(payload.columns);
+    validateViewQuery(payload.view);
     return;
   }
   if (record.kind === "getDatasetStats") {
-    const payload = exactRecord(record.payload, ["sessionId"], "R kernel dataset-statistics payload");
+    const payload = exactRecord(record.payload, ["sessionId", "view"], "R kernel dataset-statistics payload");
     identifier(payload.sessionId, "request.payload.sessionId");
+    validateViewQuery(payload.view);
+    return;
+  }
+  if (record.kind === "getColumnValues") {
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "column", "view", "search", "limit"],
+      "R kernel column-values payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    validateColumnReference(payload.column, "request.payload.column");
+    validateViewQuery(payload.view);
+    if (payload.search !== null) {
+      boundedText(payload.search, "request.payload.search", R_FRAME_CONTRACT_LIMITS.textBytes, true);
+    }
+    if (boundedInteger(payload.limit, "request.payload.limit", 10_000) < 1) {
+      fail("request.payload.limit must be positive.");
+    }
     return;
   }
   if (record.kind === "closeSession") {
@@ -281,12 +398,133 @@ function validateColumnReferences(value: unknown): void {
   }
   const seen = new Set<string>();
   for (const [index, candidate] of value.entries()) {
-    const reference = exactRecord(candidate, ["id", "name"], `R kernel summary column ${index}`);
-    const id = boundedText(reference.id, `request.payload.columns[${index}].id`, 128, false);
-    boundedText(reference.name, `request.payload.columns[${index}].name`, maximumVariableNameBytes, true);
+    const reference = validateColumnReference(candidate, `request.payload.columns[${index}]`);
+    const id = reference.id;
     if (seen.has(id)) fail("R kernel summary columns contain a repeated identity.");
     seen.add(id);
   }
+}
+
+function validateColumnReference(value: unknown, label: string): Readonly<{ id: string; name: string }> {
+  const reference = exactRecord(value, ["id", "name"], label);
+  return Object.freeze({
+    id: boundedText(reference.id, `${label}.id`, 128, false),
+    name: boundedText(reference.name, `${label}.name`, maximumVariableNameBytes, true)
+  });
+}
+
+function validateViewQuery(value: unknown): void {
+  const view = exactRecord(value, ["filters", "sorts"], ["logic"], "R kernel view query");
+  if (view.logic !== undefined && view.logic !== "and" && view.logic !== "or") {
+    fail("R kernel view logic is invalid.");
+  }
+  if (!Array.isArray(view.filters) || view.filters.length > R_FRAME_CONTRACT_LIMITS.filters) {
+    fail("R kernel view filters exceed the supported limit.");
+  }
+  for (const [index, value] of view.filters.entries()) {
+    const filter = exactRecord(
+      value,
+      ["column", "type", "predicates"],
+      ["logic", "valueFilter"],
+      `R kernel view filter ${index}`
+    );
+    validateColumnReference(filter.column, `request.view.filters[${index}].column`);
+    if (!isRColumnType(filter.type)) fail("R kernel view filter type is invalid.");
+    if (filter.logic !== undefined && filter.logic !== "and" && filter.logic !== "or") {
+      fail("R kernel column-filter logic is invalid.");
+    }
+    if (!Array.isArray(filter.predicates) || filter.predicates.length > R_FRAME_CONTRACT_LIMITS.predicatesPerFilter) {
+      fail("R kernel view predicates exceed the supported limit.");
+    }
+    for (const [predicateIndex, predicate] of filter.predicates.entries()) {
+      validatePredicate(predicate, `request.view.filters[${index}].predicates[${predicateIndex}]`, filter.type);
+    }
+    if (filter.valueFilter !== undefined) {
+      validateValueFilter(filter.valueFilter, `request.view.filters[${index}].valueFilter`, filter.type);
+    }
+  }
+  validateSorts(view.sorts, "request.view.sorts");
+}
+
+function validatePredicate(value: unknown, label: string, columnType: RColumnType): void {
+  const predicate = exactRecord(value, ["kind", "operator"], ["value", "secondValue"], label);
+  if (
+    predicate.kind !== "predicate" ||
+    !isPredicateOperator(predicate.operator) ||
+    !supportsViewPredicate(columnType, predicate.operator)
+  ) {
+    fail(`${label} is invalid.`);
+  }
+  const nullary = new Set(["isNull", "isNotNull", "isNaN", "isNotNaN"]);
+  if (!nullary.has(predicate.operator) && !("value" in predicate)) fail(`${label}.value is required.`);
+  if (predicate.operator === "between" && !("secondValue" in predicate)) fail(`${label}.secondValue is required.`);
+  if ("value" in predicate) validateViewValue(predicate.value, `${label}.value`, columnType);
+  if ("secondValue" in predicate) validateViewValue(predicate.secondValue, `${label}.secondValue`, columnType);
+}
+
+function validateValueFilter(value: unknown, label: string, columnType: RColumnType): void {
+  const filter = exactRecord(value, ["kind", "selectedValues", "includeNulls", "includeNaN"], ["search"], label);
+  if (
+    filter.kind !== "values" ||
+    typeof filter.includeNulls !== "boolean" ||
+    typeof filter.includeNaN !== "boolean" ||
+    !Array.isArray(filter.selectedValues) ||
+    filter.selectedValues.length > R_FRAME_CONTRACT_LIMITS.selectedValuesPerFilter
+  ) {
+    fail(`${label} is invalid.`);
+  }
+  for (const [index, selected] of filter.selectedValues.entries()) {
+    validateViewValue(selected, `${label}.selectedValues[${index}]`, columnType);
+  }
+  if (filter.search !== undefined)
+    boundedText(filter.search, `${label}.search`, R_FRAME_CONTRACT_LIMITS.textBytes, true);
+}
+
+function validateViewValue(value: unknown, label: string, columnType: RColumnType): void {
+  if (typeof value === "string") {
+    boundedText(value, label, 65_536, true);
+    return;
+  }
+  if (value === null || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) return;
+  if (!isRecord(value)) fail(`${label} is not a supported view value.`);
+  const token = exactRecord(value, ["kind", "version", "columnType", "cell"], label);
+  if (token.kind !== "typedSelection" || token.version !== 1 || token.columnType !== columnType) {
+    fail(`${label} is not a valid typed selection.`);
+  }
+  const candidate: unknown = {
+    kind: "columnValues",
+    revision: 0,
+    viewRequestId: "r-kernel-request-validation",
+    column: "value",
+    values: [{ value: "value", count: 1, selectionValue: value }],
+    hasMore: false
+  };
+  if (!isOpenWranglerResponse(candidate)) fail(`${label} is not a valid typed selection.`);
+}
+
+function isRColumnType(value: unknown): value is RColumnType {
+  return new Set<RColumnType>(["string", "integer", "float", "boolean", "datetime", "date", "duration"]).has(
+    value as RColumnType
+  );
+}
+
+function isPredicateOperator(value: unknown): value is PredicateFilter["operator"] {
+  return new Set<PredicateFilter["operator"]>([
+    "equals",
+    "notEquals",
+    "contains",
+    "startsWith",
+    "endsWith",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "between",
+    "isNull",
+    "isNotNull",
+    "isNaN",
+    "isNotNaN"
+  ]).has(value as PredicateFilter["operator"]);
 }
 
 function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
@@ -384,10 +622,18 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
   }
 }
 
-function validateRDatasetStats(stats: DatasetStats): void {
+function validateRDatasetStats(stats: DatasetStats, totalRows: number): void {
+  if (
+    stats.missingRows > totalRows ||
+    stats.duplicateRows > Math.max(0, totalRows - 1) ||
+    stats.missingCells > totalRows * stats.missingValuesByColumn.length
+  ) {
+    fail("R kernel dataset statistics exceed the filtered row count.");
+  }
   let missingCells = 0;
   for (const [index, entry] of stats.missingValuesByColumn.entries()) {
     boundedText(entry.column, `R kernel dataset stats column ${index}`, maximumVariableNameBytes, true);
+    if (entry.count > totalRows) fail("R kernel dataset statistics exceed the filtered row count.");
     missingCells += entry.count;
   }
   if (missingCells !== stats.missingCells) {
@@ -396,20 +642,24 @@ function validateRDatasetStats(stats: DatasetStats): void {
 }
 
 function validatePage(value: unknown): void {
-  const page = exactRecord(value, ["rowOffset", "rowLimit", "columnOffset", "columnLimit", "sorts"], "R kernel page");
+  const page = exactRecord(value, ["rowOffset", "rowLimit", "columnOffset", "columnLimit", "view"], "R kernel page");
   boundedInteger(page.rowOffset, "page.rowOffset", R_FRAME_CONTRACT_LIMITS.rows);
   boundedInteger(page.rowLimit, "page.rowLimit", R_FRAME_CONTRACT_LIMITS.pageRows);
   boundedInteger(page.columnOffset, "page.columnOffset", R_FRAME_CONTRACT_LIMITS.columns);
   boundedInteger(page.columnLimit, "page.columnLimit", R_FRAME_CONTRACT_LIMITS.pageColumns);
-  if (!Array.isArray(page.sorts) || page.sorts.length > R_FRAME_CONTRACT_LIMITS.sortRules) {
+  validateViewQuery(page.view);
+}
+
+function validateSorts(values: unknown, label: string): void {
+  if (!Array.isArray(values) || values.length > R_FRAME_CONTRACT_LIMITS.sortRules) {
     fail("R page sorts exceed the supported limit.");
   }
   const seen = new Set<string>();
-  for (const [index, value] of page.sorts.entries()) {
+  for (const [index, value] of values.entries()) {
     const rule = exactRecord(value, ["column", "direction", "nulls"], `R kernel page sort ${index}`);
     const column = exactRecord(rule.column, ["id", "name"], `R kernel page sort ${index} column`);
-    const id = boundedText(column.id, `page.sorts[${index}].column.id`, 128, false);
-    boundedText(column.name, `page.sorts[${index}].column.name`, maximumVariableNameBytes, true);
+    const id = boundedText(column.id, `${label}[${index}].column.id`, 128, false);
+    boundedText(column.name, `${label}[${index}].column.name`, maximumVariableNameBytes, true);
     if (seen.has(id)) fail("R page sorts contain a repeated column identity.");
     seen.add(id);
     if (rule.direction !== "asc" && rule.direction !== "desc") fail("R page sort direction is invalid.");
@@ -424,10 +674,21 @@ function validateEnvelope(record: Record<string, unknown>, expectedRequestId: st
   }
 }
 
-function exactRecord(value: unknown, fields: readonly string[], label = "R kernel response"): Record<string, unknown> {
+function exactRecord(
+  value: unknown,
+  fields: readonly string[],
+  optionalFieldsOrLabel: readonly string[] | string = [],
+  suppliedLabel?: string
+): Record<string, unknown> {
+  const optionalFields = typeof optionalFieldsOrLabel === "string" ? [] : optionalFieldsOrLabel;
+  const label =
+    typeof optionalFieldsOrLabel === "string" ? optionalFieldsOrLabel : (suppliedLabel ?? "R kernel response");
   if (!isRecord(value)) fail(`${label} must be an object.`);
   const keys = Object.keys(value);
-  if (keys.length !== fields.length || keys.some((key) => !fields.includes(key))) {
+  if (
+    fields.some((field) => !Object.prototype.hasOwnProperty.call(value, field)) ||
+    keys.some((key) => !fields.includes(key) && !optionalFields.includes(key))
+  ) {
     fail(`${label} has invalid fields.`);
   }
   return value;

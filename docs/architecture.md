@@ -10,7 +10,7 @@ Open Wrangler has three cooperating parts:
    Jupyter kernel. R notebook sessions use the bundled R reader inside the selected IRkernel.
 
 Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects a read-only R
-viewer to the shared protocol, coordinator, notebook command, grid, and profiles. The
+viewer to the shared protocol, coordinator, notebook command, grid, filters, sorts, value picker, and profiles. The
 [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
@@ -44,9 +44,12 @@ sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matri
 unrecognized attributes fail instead of losing R semantics. Source positions provide stable row identity. Explicit R
 row names travel separately as row labels and appear in the grid gutter instead of becoming a data column.
 
-The same module can apply an ordered list of viewing sorts before it builds a page. A rule names a column by both its
-positional ID and captured name, which keeps duplicate names unambiguous and rejects stale references. Rules are
-applied in priority order, with independent direction and missing-value placement; ties keep their previous order.
+The same module applies compound viewing filters and an ordered list of viewing sorts before it builds a page. Every
+filter and sort names a column by both its positional ID and captured name, which keeps duplicate names unambiguous
+and rejects stale references. Filters support per-column and cross-column AND/OR logic, typed predicates, null and
+NaN controls, and selected values. Public date, datetime, and duration literals follow the same fixture-backed rules
+as Python and saved notebook views. Rules are applied in priority order, with independent direction and missing-value
+placement; ties keep their previous order.
 R's `NA` and `NaN` values share the requested missing-value placement while their cell encodings remain distinct.
 Exact `bit64::integer64` values are compared without converting them to doubles. Sorting works on row positions and
 does not reorder or otherwise change the source frame. A sorted page keeps each source row ID and explicit row label,
@@ -55,17 +58,22 @@ and 32 MiB of row-order state. It rebuilds that order when those values change, 
 by-reference update, and releases the cache when sorting is cleared. Larger sorts rebuild for each page instead of
 retaining an unbounded cache.
 
-Column profiles use the same captured schema and stable column IDs as grid pages. A request can include up to 64
+Column profiles and value searches use the same captured schema, stable column IDs, and viewing filters as grid
+pages. A request can include up to 64
 columns. It is rejected before scanning when it exceeds 1,000,000 rows or 5,000,000 cells. Dataset profiles use the
 same row limit and a separate 5,000,000-cell limit. These caps keep an automatic profile request from monopolizing the
 user's R kernel, which the Jupyter API cannot cancel independently. The R runtime returns at most ten common values
-and twenty numeric histogram bins per column. It keeps `NA` and `NaN` counts separate for plain doubles, preserves
+and twenty numeric histogram bins per column. Column-value requests return bounded counts and typed selections;
+ASCII case folding is used for search, and signed zero has one selection token that matches both `-0` and `+0`. The
+runtime keeps `NA` and `NaN` counts separate for plain doubles, preserves
 exact integer and `bit64::integer64` extrema, counts Unicode text length by code point, and reports native factor,
 logical, Date, POSIXct, and difftime statistics. Dataset statistics report missing cells, rows with a missing value,
-duplicate rows, and missing counts in source-column order. Profiling reads the live R object again and rejects a
-changed shape, schema, or column semantics. It does not sort or modify the source object.
+duplicate rows, and missing counts in source-column order. Their private response also carries the filtered row count
+from the same correlated request; the R encoder, TypeScript decoder, and bridge validate every count against it.
+Profiling reads the live R object again and rejects a changed shape, schema, or column semantics. Viewing queries do
+not modify the source object.
 
-`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 2, exact fields, canonical
+`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 3, exact fields, canonical
 class/type combinations, contiguous positional column IDs, unique in-range source row IDs, logical row positions,
 matching row and column windows, and values valid for their R column. Positional frames may not send row labels;
 explicit row-name frames must send one bounded label for every returned row. The current limits are 2,048 source
@@ -76,8 +84,8 @@ row numbers. The kernel agent uses a small R-only transport, which `RKernelBridg
 host protocol; the Python runtime never reads those messages.
 
 `r/openwrangler_runtime/kernel_agent.R` owns the first read-only R sessions. The host creates a UUID before an open,
-and the agent records the named object's shape, schema, and source binding. Later page, sort, and profile requests read
-through that binding and reject structural changes. Open, page, profile, dataset-statistics, and close messages have a
+and the agent records the named object's shape, schema, and source binding. Later page, filter, sort, profile, dataset
+statistics, and column-value requests read through that binding and reject structural changes. These messages have a
 separate versioned schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
 request IDs, and oversized responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote
 IRkernel does not need access to the extension filesystem.
@@ -97,10 +105,10 @@ missing variables or sessions, and unexpected runtime failures also use a fixed 
 4 KiB, and TypeScript rejects any unrecognized code. Native variable discovery requires `jsonlite` and `rlang` in the
 selected kernel. It recognizes exact base `data.frame`, tibble, and `data.table` class vectors without evaluating
 active or delayed bindings. The notebook command routes those variables through a read-only coordinator session and
-enables native column and dataset profiles. Filters, value search, cleaning, exports, and generated code stay disabled
-until their R implementations exist. R sessions open with header profiles off so opening a frame does not immediately
-scan every visible column. Users can enable them, and the profile drawer still loads the selected column or dataset on
-request. The packaged VS Code/Cursor journey now selects a real R column and checks its
+enables native filters, ordered sorts, value search and selection, and column and dataset profiles. Cleaning steps,
+generated code, exports, Quarto, R Markdown, and plain `.R` documents remain unsupported. R sessions open with header
+profiles off so opening a frame does not immediately scan every visible column. Users can enable them, and the profile
+drawer still loads the selected column or dataset on request. The packaged VS Code/Cursor journey now selects a real R column and checks its
 rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
 duplicate-row statistics. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code
 and Cursor with R 4.5.2. The hosted gate also passes against a containerized IRkernel in VS Code, including kernel

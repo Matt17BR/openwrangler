@@ -1,7 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { decodeRKernelResponseJson, encodeRKernelRequest, type RKernelRequest } from "../extension/r/rKernelProtocol";
+import {
+  R_KERNEL_TRANSPORT_VERSION,
+  decodeRKernelResponseJson,
+  encodeRKernelRequest,
+  type RKernelRequest
+} from "../extension/r/rKernelProtocol";
 import {
   R_KERNEL_RUNTIME_BINDING,
   buildRKernelBootstrapCode,
@@ -22,18 +27,21 @@ const namedRowsRequestId = "66666666-6666-4666-8666-666666666666";
 const sourceChangedRequestId = "77777777-7777-4777-8777-777777777777";
 const summaryRequestId = "88888888-8888-4888-8888-888888888888";
 const statsRequestId = "99999999-9999-4999-8999-999999999999";
+const filteredPageRequestId = "f1111111-1111-4111-8111-111111111111";
+const valuesRequestId = "f2222222-2222-4222-8222-222222222222";
+const numericValuesRequestId = "f3333333-3333-4333-8333-333333333333";
 
 describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
   it("pages current same-schema values, rejects structural changes, and closes the live session", () => {
     const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
     const open = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: openRequestId,
       kind: "openSession",
       payload: { sessionId, variableName: "frame", page: pageWindow() }
     });
     const page = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: pageRequestId,
       kind: "getPage",
       payload: {
@@ -42,44 +50,92 @@ describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
       }
     });
     const close = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: closeRequestId,
       kind: "closeSession",
       payload: { sessionId }
     });
     const summary = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: summaryRequestId,
       kind: "getSummary",
-      payload: { sessionId, columns: [{ id: "r:c:0", name: "value" }] }
+      payload: { sessionId, columns: [{ id: "r:c:0", name: "value" }], view: emptyView() }
     });
     const stats = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: statsRequestId,
       kind: "getDatasetStats",
-      payload: { sessionId }
+      payload: { sessionId, view: emptyView() }
     });
     const sourceChanged = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: sourceChangedRequestId,
       kind: "getPage",
       payload: { sessionId, page: pageWindow() }
     });
+    const filteredPage = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: filteredPageRequestId,
+      kind: "getPage",
+      payload: {
+        sessionId,
+        page: {
+          ...pageWindow(),
+          view: {
+            filters: [
+              {
+                column: { id: "r:c:1", name: "label" },
+                type: "string",
+                predicates: [{ kind: "predicate", operator: "contains", value: "H" }]
+              }
+            ],
+            sorts: []
+          }
+        }
+      }
+    });
+    const values = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: valuesRequestId,
+      kind: "getColumnValues",
+      payload: {
+        sessionId,
+        column: { id: "r:c:1", name: "label" },
+        view: emptyView(),
+        search: "H",
+        limit: 10
+      }
+    });
+    const numericValues = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: numericValuesRequestId,
+      kind: "getColumnValues",
+      payload: {
+        sessionId,
+        column: { id: "r:c:0", name: "value" },
+        view: emptyView(),
+        search: "1200",
+        limit: 10
+      }
+    });
     const namedRows = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: namedRowsRequestId,
       kind: "openSession",
       payload: { sessionId: namedRowsSessionId, variableName: "named_rows", page: pageWindow() }
     });
     const code = `
-frame <- data.frame(value = c(1L, 3L, 2L), label = c("a", "c", "b"), stringsAsFactors = FALSE)
+frame <- data.frame(value = c(1, 3, 2), label = c("a", "c", "b"), stringsAsFactors = FALSE)
 named_rows <- data.frame(value = 1L, row.names = "named-row")
 ${bootstrap}
 ${open.code}
-frame <- data.frame(value = c(9L, 7L, 8L), label = c("i", "g", "h"), stringsAsFactors = FALSE)
+frame <- data.frame(value = c(1200, 7, 8), label = c("i", "g", "h"), stringsAsFactors = FALSE)
 ${page.code}
 ${summary.code}
 ${stats.code}
+${filteredPage.code}
+${values.code}
+${numericValues.code}
 frame <- data.frame(value = 999L, label = "replacement", stringsAsFactors = FALSE)
 ${sourceChanged.code}
 ${close.code}
@@ -91,6 +147,12 @@ ${namedRows.code}
     const paged = decodeRKernelResponseJson(marked(result.stdout, page.marker), pageRequestId);
     const profiled = decodeRKernelResponseJson(marked(result.stdout, summary.marker), summaryRequestId);
     const datasetStats = decodeRKernelResponseJson(marked(result.stdout, stats.marker), statsRequestId);
+    const filtered = decodeRKernelResponseJson(marked(result.stdout, filteredPage.marker), filteredPageRequestId);
+    const columnValues = decodeRKernelResponseJson(marked(result.stdout, values.marker), valuesRequestId);
+    const numericColumnValues = decodeRKernelResponseJson(
+      marked(result.stdout, numericValues.marker),
+      numericValuesRequestId
+    );
     const changed = decodeRKernelResponseJson(marked(result.stdout, sourceChanged.marker), sourceChangedRequestId);
     const closed = decodeRKernelResponseJson(marked(result.stdout, close.marker), closeRequestId);
     const namedRowsPage = decodeRKernelResponseJson(marked(result.stdout, namedRows.marker), namedRowsRequestId);
@@ -99,17 +161,53 @@ ${namedRows.code}
     if (paged.kind !== "page") throw new Error("Expected a page response.");
     expect(paged.page.page.rows.map((row) => row.rowNumber)).toEqual([0, 1, 2]);
     expect(paged.page.page.rows.map((row) => row.id)).toEqual(["r:r:0", "r:r:2", "r:r:1"]);
-    expect(paged.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(["9", "8", "7"]);
+    expect(paged.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(["1200", "8", "7"]);
     if (profiled.kind === "error") throw new Error(`R profile failed: ${profiled.code}: ${profiled.message}`);
     expect(profiled).toMatchObject({
       kind: "summary",
       sessionId,
-      summaries: [{ columnId: "r:c:0", numeric: { min: 7, max: 9 }, totalCount: 3 }]
+      summaries: [{ columnId: "r:c:0", numeric: { min: 7, max: 1200 }, totalCount: 3 }]
     });
     expect(datasetStats).toMatchObject({
       kind: "datasetStats",
       sessionId,
       stats: { missingCells: 0, missingRows: 0, duplicateRows: 0 }
+    });
+    expect(filtered).toMatchObject({
+      kind: "page",
+      sessionId,
+      page: { page: { totalRows: 1, rows: [{ id: "r:r:2", rowNumber: 0 }] } }
+    });
+    expect(columnValues).toMatchObject({
+      kind: "columnValues",
+      sessionId,
+      column: "label",
+      values: [
+        {
+          value: "h",
+          count: 1,
+          selectionValue: { kind: "typedSelection", version: 1, columnType: "string" }
+        }
+      ],
+      hasMore: false
+    });
+    expect(numericColumnValues).toMatchObject({
+      kind: "columnValues",
+      sessionId,
+      column: "value",
+      values: [
+        {
+          value: "1200",
+          count: 1,
+          selectionValue: {
+            kind: "typedSelection",
+            version: 1,
+            columnType: "float",
+            cell: { kind: "number", raw: 1200, display: "1200", isNull: false, isNaN: false }
+          }
+        }
+      ],
+      hasMore: false
     });
     expect(changed).toMatchObject({
       kind: "error",
@@ -118,7 +216,7 @@ ${namedRows.code}
       message: expect.stringContaining("changed shape or schema")
     });
     expect(closed).toEqual({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: closeRequestId,
       kind: "closed",
       sessionId
@@ -142,29 +240,30 @@ ${namedRows.code}
     const typedCloseId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
     const open = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: typedOpenId,
       kind: "openSession",
       payload: { sessionId: typedSessionId, variableName: "typed", page: pageWindow() }
     });
     const names = ["amount", "flag", "text", "category", "date", "when", "elapsed", "wide"];
     const summary = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: typedSummaryId,
       kind: "getSummary",
       payload: {
         sessionId: typedSessionId,
-        columns: names.map((name, index) => ({ id: `r:c:${index}`, name }))
+        columns: names.map((name, index) => ({ id: `r:c:${index}`, name })),
+        view: emptyView()
       }
     });
     const stats = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: typedStatsId,
       kind: "getDatasetStats",
-      payload: { sessionId: typedSessionId }
+      payload: { sessionId: typedSessionId, view: emptyView() }
     });
     const close = requestCode({
-      transportVersion: 1,
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: typedCloseId,
       kind: "closeSession",
       payload: { sessionId: typedSessionId }
@@ -297,7 +396,11 @@ function marked(output: string, marker: string): string {
 }
 
 function pageWindow(sorts: readonly RKernelSort[] = []) {
-  return { rowOffset: 0, rowLimit: 100, columnOffset: 0, columnLimit: 100, sorts } as const;
+  return { rowOffset: 0, rowLimit: 100, columnOffset: 0, columnLimit: 100, view: { filters: [], sorts } } as const;
+}
+
+function emptyView() {
+  return { filters: [], sorts: [] } as const;
 }
 
 type RKernelSort = {
