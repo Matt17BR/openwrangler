@@ -2355,7 +2355,7 @@ export function App() {
                 </details>
               )}
               <span className="sessionBadge modeBadge" data-session-badge="mode">
-                {metadata.backend === "pyspark" || metadata.backend === "r" ? "Viewing only" : metadata.mode}
+                {metadata.backend === "pyspark" ? "Viewing only" : metadata.mode}
               </span>
               <span className="sessionBadge backendBadge" data-session-badge="backend">
                 {dataBackendLabel(metadata.backend)}

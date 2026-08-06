@@ -524,12 +524,7 @@ export function registerNativeViews(
         void vscode.window.showInformationMessage("Add a cleaning step before exporting generated code.");
         return;
       }
-      const destination = await vscode.window.showSaveDialog({
-        title: "Export Open Wrangler Python Code",
-        defaultUri: defaultExportUri(snapshot, ".clean.py"),
-        filters: { "Python script": ["py"] },
-        saveLabel: "Export code"
-      });
+      const destination = await vscode.window.showSaveDialog(generatedScriptSaveOptions(snapshot));
       if (!destination) return false;
       if (!(await requireTrustedWorkspace("export code"))) return false;
       try {
@@ -909,6 +904,24 @@ export function defaultExportUri(snapshot: ActiveSessionSnapshot, suffix: string
   }
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
   return workspace ? vscode.Uri.joinPath(workspace, fileName) : vscode.Uri.file(path.join(process.cwd(), fileName));
+}
+
+function generatedScriptSaveOptions(snapshot: ActiveSessionSnapshot): vscode.SaveDialogOptions {
+  const runtimeIdentity = runtimeIdentityForSessionMetadata(snapshot.metadata);
+  if (runtimeIdentity.codeDialect === "r.base") {
+    return {
+      title: "Export Open Wrangler R Code",
+      defaultUri: defaultExportUri(snapshot, ".clean.R"),
+      filters: { "R script": ["R", "r"] },
+      saveLabel: "Export code"
+    };
+  }
+  return {
+    title: "Export Open Wrangler Python Code",
+    defaultUri: defaultExportUri(snapshot, ".clean.py"),
+    filters: { "Python script": ["py"] },
+    saveLabel: "Export code"
+  };
 }
 
 async function exportGeneratedCode(

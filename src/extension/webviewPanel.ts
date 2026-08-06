@@ -267,7 +267,7 @@ export class OpenWranglerPanel {
     const { pageSize, columnLimit } = fetchGridBlockSize(this.backend);
     const isFile = this.source.kind === "file";
     const mode =
-      this.backend === "pyspark" || this.backend === "r"
+      this.backend === "pyspark"
         ? "viewing"
         : getSetting<"editing" | "viewing">(
             isFile ? "fileStartMode" : "notebookStartMode",

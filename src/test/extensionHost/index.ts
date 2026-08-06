@@ -1700,7 +1700,10 @@ async function exerciseReleasedRJupyterExtension(
       ] as const) {
         const row = await releasedJupyterQuickPickRow(picker, name);
         assert.ok(row, `The real R variable picker must expose ${name}.`);
-        assert.match((await row.innerText()).replace(/\s+/gu, " "), new RegExp(`R · ${flavor}.*Viewing only`, "u"));
+        assert.match(
+          (await row.innerText()).replace(/\s+/gu, " "),
+          new RegExp(`R · ${flavor}.*Live notebook session`, "u")
+        );
       }
       if (screenshotOutput) await captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput);
       const ordersRow = await releasedJupyterQuickPickRow(picker, "orders_frame");
@@ -1919,7 +1922,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, "The native R journey requires its exact production webview.");
   assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
-  assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING ONLY");
+  assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
   await app
     .getByRole("rowheader", { name: "Row 1, label case-0001", exact: true })
     .waitFor({ state: "visible", timeout: 10_000 });
@@ -2431,7 +2434,7 @@ async function captureReleasedRJupyterWorkbench(
     app = await exactSessionApp(target.frame, sessionId);
     assert.ok(app, "The arranged R screenshot must retain its exact renderer.");
     assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
-    assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING ONLY");
+    assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
     assert.equal(await app.getByRole("button", { name: "Add step", exact: true }).count(), 0);
     assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
     await app
@@ -10508,7 +10511,7 @@ async function captureReleasedRJupyterVariablePicker(
     await row.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
     const label = (await row.innerText()).replace(/\s+/gu, " ");
     assert.ok(label.includes(typeLabel), `The R media picker must label ${name} as ${typeLabel}.`);
-    assert.ok(label.includes("Viewing only"), `The R media picker must mark ${name} as viewing only.`);
+    assert.ok(label.includes("Live notebook session"), `The R media picker must mark ${name} as a live session.`);
   }
   await assertReleasedNotebookVariablePickerGeometry(
     picker,
@@ -13964,7 +13967,7 @@ async function capturePackagedExportOutcomeScenes(
   assert.match(await codePreview.innerText(), /import polars as pl/u);
   const panel = workbench.locator(".part.panel:visible").first();
   await panel.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  await panel.locator('[aria-label*="Export Python Script"]:visible').first().waitFor({
+  await panel.locator('[aria-label*="Export Generated Script"]:visible').first().waitFor({
     state: "visible",
     timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
   });

@@ -119,12 +119,13 @@ function codePreviewLanguage(codeDialect: CodeDialect | null): Extension {
     case "python.polars":
     case "python.duckdb":
       return python();
+    case "r.base":
     case null:
       return [];
   }
 }
 
-function codePreviewEditability(editable: boolean, languageLabel: "Python" | undefined): Extension {
+function codePreviewEditability(editable: boolean, languageLabel: "Python" | "R" | undefined): Extension {
   const subject = languageLabel ? `generated ${languageLabel} code preview` : "Open Wrangler code preview";
   return [
     EditorState.readOnly.of(!editable),

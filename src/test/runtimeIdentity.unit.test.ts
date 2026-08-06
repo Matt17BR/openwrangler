@@ -34,7 +34,7 @@ describe("host runtime identity", () => {
     "keeps the native %s flavor separate from its R runtime",
     (rDataframeFlavor) => {
       const actual = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor });
-      expect(actual).toEqual({ runtimeLanguage: "r", dataframeFlavor: rDataframeFlavor, codeDialect: null });
+      expect(actual).toEqual({ runtimeLanguage: "r", dataframeFlavor: rDataframeFlavor, codeDialect: "r.base" });
       expect(isRuntimeIdentity(actual)).toBe(true);
     }
   );
@@ -55,6 +55,7 @@ describe("host runtime identity", () => {
     expect(codeDialectLanguageLabel("python.pandas")).toBe("Python");
     expect(codeDialectLanguageLabel("python.polars")).toBe("Python");
     expect(codeDialectLanguageLabel("python.duckdb")).toBe("Python");
+    expect(codeDialectLanguageLabel("r.base")).toBe("R");
     expect(codeDialectLanguageLabel(null)).toBeUndefined();
   });
 
@@ -65,6 +66,9 @@ describe("host runtime identity", () => {
     { runtimeLanguage: "python", dataframeFlavor: "polars", codeDialect: "python.pandas" },
     { runtimeLanguage: "python", dataframeFlavor: "pyspark", codeDialect: "python.polars" },
     { runtimeLanguage: "python", dataframeFlavor: "pandas", codeDialect: null },
+    { runtimeLanguage: "r", dataframeFlavor: "r.tibble", codeDialect: null },
+    { runtimeLanguage: "r", dataframeFlavor: "r.data.frame", codeDialect: "python.pandas" },
+    { runtimeLanguage: "python", dataframeFlavor: "r.data.table", codeDialect: "r.base" },
     { runtimeLanguage: "python", dataframeFlavor: "auto", codeDialect: "python.pandas" }
   ])("rejects a malformed or inconsistent identity: %j", (candidate) => {
     expect(isRuntimeIdentity(candidate)).toBe(false);
@@ -74,6 +78,7 @@ describe("host runtime identity", () => {
 describe("private Code Preview messages", () => {
   const polarsIdentity = runtimeIdentityForDataBackend("polars");
   const pysparkIdentity = runtimeIdentityForDataBackend("pyspark");
+  const rIdentity = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor: "r.tibble" });
 
   it("accepts the current private host and webview messages", () => {
     expect(
@@ -98,6 +103,14 @@ describe("private Code Preview messages", () => {
         code: "# PySpark viewing-only session.",
         editable: false,
         runtimeIdentity: pysparkIdentity
+      })
+    ).toBe(true);
+    expect(
+      isCodePreviewHostMessage({
+        kind: "codePreview",
+        code: "clean_data <- function(df) df\n",
+        editable: true,
+        runtimeIdentity: rIdentity
       })
     ).toBe(true);
     expect(isCodePreviewWebviewMessage({ kind: "ready" })).toBe(true);

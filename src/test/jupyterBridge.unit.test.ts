@@ -1067,7 +1067,7 @@ describe("notebook command provenance", () => {
       expect.objectContaining({
         label: "sales_tbl",
         description: "R · tibble",
-        detail: "Viewing only"
+        detail: "Live notebook session"
       })
     ]);
     expect(notebookMocks.executeCode).toHaveBeenCalledTimes(2);

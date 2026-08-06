@@ -158,10 +158,7 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
           (isRecord(candidate.source) &&
             candidate.source.kind === "notebookVariable" &&
             (candidate.mode === undefined || candidate.mode === "viewing"))) &&
-        (candidate.backend !== "r" ||
-          (isRecord(candidate.source) &&
-            candidate.source.kind === "notebookVariable" &&
-            (candidate.mode === undefined || candidate.mode === "viewing"))) &&
+        (candidate.backend !== "r" || (isRecord(candidate.source) && candidate.source.kind === "notebookVariable")) &&
         optional(candidate, "mode", (mode) => isOneOf(mode, ["viewing", "editing"])) &&
         isBoundedPageSize(candidate.pageSize) &&
         isNonNegativeInteger(candidate.columnOffset) &&
@@ -548,8 +545,7 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     isOneOf(candidate.backend, DATA_BACKENDS) &&
     (candidate.backend !== "pyspark" ||
       (isRecord(candidate.source) && candidate.source.kind === "notebookVariable" && candidate.mode === "viewing")) &&
-    (candidate.backend !== "r" ||
-      (isRecord(candidate.source) && candidate.source.kind === "notebookVariable" && candidate.mode === "viewing")) &&
+    (candidate.backend !== "r" || (isRecord(candidate.source) && candidate.source.kind === "notebookVariable")) &&
     (candidate.backend === "r"
       ? isOneOf(candidate.rDataframeFlavor, R_DATAFRAME_FLAVORS)
       : !Object.prototype.hasOwnProperty.call(candidate, "rDataframeFlavor")) &&

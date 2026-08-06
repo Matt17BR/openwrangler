@@ -20,6 +20,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Renamed **Export Python Script** to **Export Generated Script**. Python sessions keep the `.clean.py` default;
+  generated R code uses `.clean.R` and an R script filter.
 - The Open Wrangler 2 notebook gate now tests local R in VS Code and Cursor and a containerized R kernel in VS Code.
   It covers filters, value selection, profiles, paging, sort order, kernel restart, source preservation, and cleanup
   with fixed R and package versions.

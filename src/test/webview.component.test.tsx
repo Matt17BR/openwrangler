@@ -2361,7 +2361,7 @@ describe("App file import options", () => {
         ...metadata,
         backend: "r",
         rDataframeFlavor: "r.data.frame",
-        mode: "viewing",
+        mode: "editing",
         capabilities: {
           ...metadata.capabilities,
           editable: false,
@@ -2376,6 +2376,8 @@ describe("App file import options", () => {
     });
 
     expect(await screen.findByRole("cell", { name: "Milan" })).toBeVisible();
+    expect(screen.getByText(/^editing$/iu)).toBeVisible();
+    expect(screen.queryByText("Viewing only")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Sorts" }));
 
     const drawer = screen.getByRole("complementary", { name: "Sorts" });

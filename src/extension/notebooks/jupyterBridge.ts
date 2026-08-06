@@ -177,7 +177,7 @@ function notebookVariableQuickPickItem(variable: NotebookPickerVariable): Notebo
     return {
       label: variable.name,
       description: `R · ${flavor}`,
-      detail: "Viewing only",
+      detail: "Live notebook session",
       variable
     };
   }

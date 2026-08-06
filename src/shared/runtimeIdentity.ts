@@ -4,7 +4,7 @@ type RDataframeFlavor = NonNullable<SessionMetadata["rDataframeFlavor"]>;
 
 export type RuntimeLanguage = "python" | "r";
 export type DataframeFlavor = "pandas" | "polars" | "duckdb" | "pyspark" | RDataframeFlavor;
-export type CodeDialect = "python.pandas" | "python.polars" | "python.duckdb";
+export type CodeDialect = "python.pandas" | "python.polars" | "python.duckdb" | "r.base";
 
 export interface RuntimeIdentity {
   readonly runtimeLanguage: RuntimeLanguage;
@@ -52,14 +52,14 @@ export function runtimeIdentityForSessionMetadata(
   return Object.freeze({
     runtimeLanguage: "r" as const,
     dataframeFlavor: metadata.rDataframeFlavor,
-    codeDialect: null
+    codeDialect: "r.base" as const
   });
 }
 
 export function isRuntimeIdentity(value: unknown): value is RuntimeIdentity {
   if (!hasExactKeys(value, ["runtimeLanguage", "dataframeFlavor", "codeDialect"])) return false;
   if (isRDataframeFlavor(value.dataframeFlavor)) {
-    return value.runtimeLanguage === "r" && value.codeDialect === null;
+    return value.runtimeLanguage === "r" && value.codeDialect === "r.base";
   }
   if (!isPythonDataframeFlavor(value.dataframeFlavor)) return false;
   const expected = runtimeIdentityForDataBackend(value.dataframeFlavor);
@@ -70,12 +70,14 @@ export function isRuntimeIdentity(value: unknown): value is RuntimeIdentity {
   );
 }
 
-export function codeDialectLanguageLabel(codeDialect: CodeDialect | null): "Python" | undefined {
+export function codeDialectLanguageLabel(codeDialect: CodeDialect | null): "Python" | "R" | undefined {
   switch (codeDialect) {
     case "python.pandas":
     case "python.polars":
     case "python.duckdb":
       return "Python";
+    case "r.base":
+      return "R";
     case null:
       return undefined;
   }

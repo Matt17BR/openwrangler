@@ -659,6 +659,20 @@ describe("native operation commands", () => {
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toMatchObject({ code: "def clean_data(df):\n    return df.dropna()\n" });
 
+    const rEditable = rNotebookSnapshot();
+    registered.setActiveSession(rEditable);
+    expect(posted.at(-1)).toEqual({
+      kind: "codePreview",
+      code: rEditable.code,
+      editable: true,
+      runtimeIdentity: {
+        runtimeLanguage: "r",
+        dataframeFlavor: "r.data.frame",
+        codeDialect: "r.base"
+      }
+    });
+    expect(codePreviewView.description).toBe("R");
+
     const viewingOnly = noDraftSnapshot();
     viewingOnly.metadata = { ...viewingOnly.metadata, backend: "pyspark", mode: "viewing" };
     viewingOnly.code = "# A viewing-only backend cannot expose editable generated code.";
@@ -726,6 +740,20 @@ describe("native operation commands", () => {
       })
     );
     expect(nativeMocks.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses an R script name and filter when exporting generated R code", async () => {
+    register(rNotebookSnapshot());
+
+    await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
+
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledOnce();
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith({
+      title: "Export Open Wrangler R Code",
+      defaultUri: expect.objectContaining({ fsPath: "/workspace/orders.clean.R" }),
+      filters: { "R script": ["R", "r"] },
+      saveLabel: "Export code"
+    });
   });
 
   it("exports the exact webview session even when another dataframe becomes active during the dialogs", async () => {
@@ -1180,6 +1208,33 @@ function notebookVariableSnapshot(): ActiveSessionSnapshot {
       exportCsv: true,
       exportParquet: true,
       notebookInsert: true
+    }
+  };
+  return result;
+}
+
+function rNotebookSnapshot(): ActiveSessionSnapshot {
+  const result = noDraftSnapshot();
+  result.code = "clean_data <- function(df) {\n  df\n}\n";
+  result.metadata = {
+    ...result.metadata,
+    backend: "r",
+    rDataframeFlavor: "r.data.frame",
+    mode: "editing",
+    source: {
+      kind: "notebookVariable",
+      label: "orders",
+      variableName: "orders",
+      uri: "file:///workspace/orders.ipynb"
+    },
+    capabilities: {
+      editable: true,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      notebookInsert: false,
+      supportedOperations: ["renameColumn"]
     }
   };
   return result;

@@ -29,7 +29,7 @@
 | `openWrangler.moveViewSortDown`              | Open Wrangler: Move View Sort Down                       |
 | `openWrangler.removeViewSort`                | Open Wrangler: Remove View Sort                          |
 | `openWrangler.copyCode`                      | Open Wrangler: Copy Generated Code                       |
-| `openWrangler.exportCode`                    | Open Wrangler: Export Python Script                      |
+| `openWrangler.exportCode`                    | Open Wrangler: Export Generated Script                   |
 | `openWrangler.insertNotebookCode`            | Open Wrangler: Insert Function into Originating Notebook |
 | `openWrangler.exportData`                    | Open Wrangler: Export Cleaned Data                       |
 | `openWrangler.openSourceFile`                | Open Wrangler: Open Source File                          |

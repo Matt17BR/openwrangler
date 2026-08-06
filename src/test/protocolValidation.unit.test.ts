@@ -1269,7 +1269,7 @@ describe("protocol-v2 request validation", () => {
     );
   });
 
-  it("accepts R only as an identified live notebook frame in viewing mode", () => {
+  it("accepts R only as an identified live notebook frame in either session mode", () => {
     const source = {
       kind: "notebookVariable" as const,
       label: "r_frame",
@@ -1311,7 +1311,15 @@ describe("protocol-v2 request validation", () => {
     const opened = { ...responses[1], metadata: rMetadata, summaries: [] };
 
     expect(isOpenWranglerRequest(request)).toBe(true);
-    expect(isOpenWranglerRequest({ ...request, mode: "editing" })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, mode: "editing" })).toBe(true);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "r-editing-open",
+        priority: "interactive",
+        request: { ...request, mode: "editing" }
+      })
+    ).toBe(true);
     expect(isOpenWranglerRequest({ ...request, source: metadata.source })).toBe(false);
     expect(isOpenWranglerResponse(opened)).toBe(true);
     expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-open", response: opened })).toBe(true);
@@ -1321,7 +1329,11 @@ describe("protocol-v2 request validation", () => {
     expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-no-flavor", response: rWithoutFlavor })).toBe(
       false
     );
-    expect(isOpenWranglerResponse({ ...opened, metadata: { ...rMetadata, mode: "editing" } })).toBe(false);
+    const editingOpened = { ...opened, metadata: { ...rMetadata, mode: "editing" as const } };
+    expect(isOpenWranglerResponse(editingOpened)).toBe(true);
+    expect(
+      validateTransportSchema({ protocolVersion: 2, requestId: "r-editing-opened", response: editingOpened })
+    ).toBe(true);
     const nonRWithFlavor = { ...responses[1], metadata: { ...metadata, rDataframeFlavor: "r.tibble" as const } };
     expect(isOpenWranglerResponse(nonRWithFlavor)).toBe(false);
     expect(

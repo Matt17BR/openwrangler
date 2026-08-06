@@ -4084,7 +4084,7 @@ describe("OpenWranglerPanel retained view state", () => {
     );
   });
 
-  it("forces an R notebook variable into viewing mode and caps its initial page to 100,000 cells", async () => {
+  it("uses the default viewing mode for R notebooks and caps the initial page to 100,000 cells", async () => {
     vi.spyOn(workspace, "getConfiguration").mockImplementation(
       () =>
         ({
@@ -4141,6 +4141,48 @@ describe("OpenWranglerPanel retained view state", () => {
       if (!openRequest || openRequest.kind !== "openSession") throw new Error("Expected an open-session request.");
       expect(openRequest.pageSize * openRequest.columnLimit).toBeLessThanOrEqual(100_000);
     });
+  });
+
+  it("honors an explicit editing-mode preference for an R notebook variable", async () => {
+    vi.spyOn(workspace, "getConfiguration").mockImplementation(
+      () =>
+        ({
+          get: (key: string, fallback?: unknown): unknown => (key === "notebookStartMode" ? "editing" : fallback)
+        }) as vscode.WorkspaceConfiguration
+    );
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "r_frame",
+      variableName: "r_frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") {
+        return {
+          ...openedResponse,
+          metadata: {
+            ...metadata,
+            backend: "r",
+            rDataframeFlavor: "r.data.frame",
+            mode: "editing",
+            source
+          }
+        };
+      }
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+
+    createPanelHarness(
+      { request },
+      { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
+    );
+
+    await vi.waitFor(() =>
+      expect(request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0]).toMatchObject({
+        backend: "r",
+        mode: "editing"
+      })
+    );
   });
 
   it("routes the PySpark Reconnect action through the host-only live-session recovery", async () => {
